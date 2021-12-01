@@ -8,7 +8,10 @@ if (flvjs.isSupported()) {
     flvPlayer.load();
 
     function play() {
-        console.log("play");
         flvPlayer.play();
+    }
+
+    function pause() {
+        flvPlayer.pause();
     }
 }

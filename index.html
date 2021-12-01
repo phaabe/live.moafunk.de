@@ -1,30 +1,37 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <title>Moafunk Radio</title>
+
     <link rel="stylesheet" type="text/css" href="main.css" media="screen" />
 </head>
 <body>
-    <center>
-    <img class="logo" src="./moafunk.png"/>
-    <h2>Moafunk Radio</h2>
-    Hello World!</br>
-    Moafunk Radio is a new living project aka it is under construction.</br>
-    When live, you may be able to here something, though.</br>
-    We are working on making this easier for you <3 </br></br>
-    <h3>How this works with luck on a computer</h3>
-    1. Reload page</br>
-    2. Click very often where the black screen appears.</br>
-    3. If you don't hear music, repeat.</br>
-    <h3>How this works for sure on iOS, Android or computer</h3>
-    1. Download VLC Media Player</br>
-    2. Copy this URL in VLC media player: </br>
-    https://stream.moafunk.de/live/stream-io.flv</br></br>
+    <div class="container">
+        <img class="logo" src="./moafunk.png" alt="Moafunk Logo"/>
+        <h2>Moafunk Radio</h2>
+        Hello World!<br>
+        Moafunk Radio is a new living project aka it is under construction.<br>
+        When live, you may be able to here something, though.<br>
+        We are working on making this easier for you <3 <br><br>
+        <h3>How this works with luck on a computer</h3>
+        1. Reload page<br>
+        2. Click very often where the black screen appears.<br>
+        3. If you don't hear music, repeat.<br>
+        <h3>How this works for sure on iOS, Android or computer</h3>
+        1. Download VLC Media Player<br>
+        2. Copy this URL in VLC media player: <br>
+        https://stream.moafunk.de/live/stream-io.flv<br><br>
 
-    <video id="videoElement" width="300"></video>
+        <video id="videoElement" class="video-element"></video>
 
-    <button class="btn-play" onclick="play()"></button>
+        <div class="actions">
+            <button class="btn btn-play" onclick="play()"></button>
+            <button class='btn btn-pause' onclick="pause()"></button>
+        </div>
 
-    <script src="node_modules/flv.js/dist/flv.js"></script>
-    <script src="main.js"></script>
-    </center>
+        <script src="node_modules/flv.js/dist/flv.js"></script>
+        <script src="main.js"></script>
+    </div>
 </body>
 </html>
