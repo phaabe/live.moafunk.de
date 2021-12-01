@@ -1,0 +1,16 @@
+body {
+    font-family: Courier New, sans-serif;
+}
+
+.logo {
+    width: 200px;
+}
+
+.btn-play {
+    width: 74px;
+    height: 74px;
+    border-style: solid;
+    box-sizing: border-box;
+    border-width: 37px 0 37px 74px;
+    border-color: white white white #202020;
+}

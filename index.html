@@ -1,10 +1,10 @@
 <html>
 <head>
-
+    <link rel="stylesheet" type="text/css" href="main.css" media="screen" />
 </head>
-<body style="font-family: Courier New;sans-serif" width=100%>
+<body>
     <center>
-    <img width=200 src="./moafunk.png"/>
+    <img class="logo" src="./moafunk.png"/>
     <h2>Moafunk Radio</h2>
     Hello World!</br>
     Moafunk Radio is a new living project aka it is under construction.</br>
@@ -20,19 +20,11 @@
     https://stream.moafunk.de/live/stream-io.flv</br></br>
 
     <video id="videoElement" width="300"></video>
-    <script src="https://cdn.bootcss.com/flv.js/1.5.0/flv.min.js"></script>
-    <script>
-        if (flvjs.isSupported()) {
-            var videoElement = document.getElementById('videoElement');
-            var flvPlayer = flvjs.createPlayer({
-                                               type: 'flv',
-                                               url: 'https://stream.moafunk.de/live/stream-io.flv'
-                                               });
-                                               flvPlayer.attachMediaElement(videoElement);
-                                               flvPlayer.load();
-                                               flvPlayer.play();
-        }
-    </script>
+
+    <button class="btn-play" onclick="play()"></button>
+
+    <script src="node_modules/flv.js/dist/flv.js"></script>
+    <script src="main.js"></script>
     </center>
 </body>
 </html>
