@@ -8,10 +8,14 @@ if (flvjs.isSupported()) {
     flvPlayer.load();
 
     function play() {
-        flvPlayer.play();
-    }
-
-    function pause() {
-        flvPlayer.pause();
+        let btn = document.getElementById('btn-play');
+        let playing = btn.className.includes("btn-pause");
+        if (playing) {
+            flvPlayer.pause();
+            btn.className = "btn";
+        } else {
+            flvPlayer.play();
+            btn.className = "btn btn-pause";
+        }
     }
 }

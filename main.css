@@ -29,6 +29,7 @@ body {
     will-change: border-width;
     cursor: pointer;
     border-color: white white white #202020;
+    border-width: 37px 0 37px 74px;
 }
 
 .btn-play {
