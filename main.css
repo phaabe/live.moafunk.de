@@ -1,0 +1,40 @@
+body {
+    font-family: Courier New, sans-serif;
+}
+
+.container {
+    text-align: center;
+}
+
+.logo {
+    width: 200px;
+}
+
+.video-element {
+    display: none;
+}
+
+.actions {
+    margin-top: 3em;
+}
+
+.btn {
+    width: 10em;
+    height: 10em;
+    border-style: solid;
+    box-sizing: border-box;
+    background: white;
+
+    transition: 100ms all ease;
+    will-change: border-width;
+    cursor: pointer;
+    border-color: white white white #202020;
+    border-width: 5em 0 5em 10em;
+
+    -webkit-tap-highlight-color: transparent;
+}
+
+.btn-pause {
+    border-style: double;
+    border-width: 0 0 0 5em;
+}
