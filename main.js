@@ -1,22 +1,19 @@
-let isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 let video = document.getElementById('videoElement');
-if (isIOS) {
+
+if (flvjs.isSupported()) {
+    let flvPlayer = flvjs.createPlayer({
+        type: 'flv',
+        url: 'https://stream.moafunk.de/live/stream-io.flv'
+    });
+    flvPlayer.attachMediaElement(videoElement);
+    flvPlayer.load();
+} else if (Hls.isSupported()) {
     let videoSrc = 'https://stream.moafunk.de/live/stream-io/index.m3u8';
-    if (Hls.isSupported()) {
-        let hls = new Hls();
-        hls.loadSource(videoSrc);
-        hls.attachMedia(video);
-    }
-} else {
-    if (flvjs.isSupported()) {
-        let flvPlayer = flvjs.createPlayer({
-            type: 'flv',
-            url: 'https://stream.moafunk.de/live/stream-io.flv'
-        });
-        flvPlayer.attachMediaElement(videoElement);
-        flvPlayer.load();
-    }
+    let hls = new Hls();
+    hls.loadSource(videoSrc);
+    hls.attachMedia(video);
 }
+
 
 function play() {
     let btn = document.getElementById('btn-play');
