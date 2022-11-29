@@ -20,60 +20,10 @@
 
 </head>
 <body>
-    <div class="container">
-        <!-- TOP -->
-        <img class="logo" src="./moafunk.png" alt="Moafunk Logo"/>
-        <h2>Moafunk Radio</h2>
-        We broadcast music from Moabit.<br/><br/>
-        <!-- PLAY BUTTON -->
-        <video id="videoElement" class="video-element"></video>
-        <div class="actions">
-            <button id="btn-play" class="btn" onclick="play()"></button>
-        </div>
-        <br/>
-
-        <!-- TEXT -->
-        <h3>Hello World!</h3>
-        Moafunk Radio is a new living project under construction.<br/>
-        We are constantly improving the concept, the web page, the moderations, the music.<br/>
-        However, this is all about music and about giving people<br/>
-        a place to broadcast their music. Get in touch!<br/><br/>
-        <h3>How this works with iOS</h3>
-        1. Download VLC Media Player App<br/>
-        2. Copy this URL into VLC media player: <br/>
-        https://stream.moafunk.de/live/stream-io.flv<br/><br/>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <!-- Or if you want the latest version from the main branch -->
-    <!-- <script src="https://cdn.jsdelivr.net/npm/hls.js@canary"></script> -->
-    <video id="video"></video>
-    <script>
-    var video = document.getElementById('video');
-    var videoSrc = 'https://stream.moafunk.de/live/stream-io/index.m3u8';
-    console.log(Hls.isSupported());
-    if (Hls.isSupported()) {
-        var hls = new Hls();
-        hls.loadSource(videoSrc);
-        hls.attachMedia(video);
-    }
-    // HLS.js is not supported on platforms that do not have Media Source
-    // Extensions (MSE) enabled.
-    //
-    // When the browser has built-in HLS support (check using `canPlayType`),
-    // we can provide an HLS manifest (i.e. .m3u8 URL) directly to the video
-    // element through the `src` property. This is using the built-in support
-    // of the plain video element, without using HLS.js.
-    //
-    // Note: it would be more normal to wait on the 'canplay' event below however
-    // on Safari (where you are most likely to find built-in HLS support) the
-    // video.src URL must be on the user-driven white-list before a 'canplay'
-    // event will be emitted; the last video event that can be reliably
-    // listened-for when the URL is not on the white-list is 'loadedmetadata'.
-    else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = videoSrc;
-    }
-    </script>
+    <video width="352" height="198" controls>
+        <source src="https://stream.moafunk.de/live/stream-io/index.m3u8" >
+    </video>
+    
 </body>
 </html>
 
