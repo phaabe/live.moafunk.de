@@ -7,14 +7,6 @@ if (flvjs.isSupported()) {
     });
     flvPlayer.attachMediaElement(videoElement);
     flvPlayer.load();
-} else if (Hls.isSupported()) {
-    let videoSrc = 'https://stream.moafunk.de/live/stream-io/index.m3u8';
-    let hls = new Hls();
-    hls.loadSource(videoSrc);
-    hls.attachMedia(video);
-    hls.on(hls.Events.MANIFEST_PARSED, function() {
-        video.play();
-      });
 }
 
 
