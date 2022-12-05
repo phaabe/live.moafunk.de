@@ -2,17 +2,20 @@
     <head>
     </head>
     <body>
-        <video id="video" controls></video>
+        <video src="https://stream.moafunk.de/live/stream-io/index.m3u8" id="video"></video>
+        <button id="playButton">Play</button>
+
         <script>
-        var video = document.getElementById('video');
-        if(Hls.isSupported()) {
-            var hls = new Hls();
-            hls.loadSource('https://stream.moafunk.de/live/stream-io/index.m3u8');
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED,function() {
-            video.play();
+            const video = document.getElementById('video');
+            const playButton = document.getElementById('playButton');
+    
+            video.style.display = "none";
+
+            playButton.addEventListener('click', function() {
+                video.play();
             });
-        }
         </script>
+
     </body>
 </html>
+<!--https://stream.moafunk.de/live/stream-io/index.m3u8-->
