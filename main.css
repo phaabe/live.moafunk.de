@@ -36,11 +36,21 @@ a {
     cursor: pointer;
     border-color: white white white #202020;
     border-width: 5em 0 5em 10em;
+    rotate: 0deg;
 
     -webkit-tap-highlight-color: transparent;
 }
 
 .btn-pause {
-    border-style: double;
-    border-width: 0 0 0 5em;
+    border-width: 5em 0 5em 10em;
+    
+    animation-name: rotate; 
+    animation-duration: 2s; 
+    animation-iteration-count: infinite;
+    animation-timing-function: linear;
+}
+
+@keyframes rotate {
+    from {transform: rotate(0deg);}
+    to {transform: rotate(360deg);}
 }
