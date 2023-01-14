@@ -4,6 +4,8 @@ let btn;
 let playing;
 let live;
 
+let platform = navigator?.userAgentData?.platform || navigator?.platform || 'unknown'
+
 fetch('https://stream.moafunk.de/live/stream-io/index.m3u8', { method: 'HEAD' })
   .then(response => {
     if (response.status === 200) {
@@ -20,8 +22,7 @@ fetch('https://stream.moafunk.de/live/stream-io/index.m3u8', { method: 'HEAD' })
     live=false;
   });
 
-
-if (/iPhone|iPod|iPad/.test(navigator.platform)){
+if (/iPhone|iPod|iPad/.test(platform)){
 //if (true){
     console.log('is iOS');
     video = document.getElementById('player');
