@@ -2,6 +2,23 @@
 let video;
 let btn;
 let playing;
+let live;
+
+fetch('https://stream.moafunk.de/live/stream-io/index.m3u8', { method: 'HEAD' })
+  .then(response => {
+    if (response.status === 200) {
+      document.querySelector('#status').innerHTML = 'Live now';
+      live=true;
+    } else {
+      document.querySelector('#status').innerHTML = 'Off air<br/><span style="font-size:13pt;">(we announce shows via Tele- and Instagram)</span>';
+      live=false;
+    }
+  })
+  .catch(error => {
+    console.error('Error:', error);
+    document.querySelector('#status').innerHTML = 'Off';
+    live=false;
+  });
 
 
 if (/iPhone|iPod|iPad/.test(navigator.platform)){
@@ -30,20 +47,12 @@ function play() {
         video.pause();
         btn.className = "btn";
     } else {
+      if (live){
         video.play();
         btn.className = "btn btn-pause";
+      } else {
+        // btn.className = "btn btn-off";
+      }
     }
 }
 
-fetch('https://stream.moafunk.de/live/stream-io/index.m3u8', { method: 'HEAD' })
-  .then(response => {
-    if (response.status === 200) {
-      document.querySelector('#status').innerHTML = 'Live now';
-    } else {
-      document.querySelector('#status').innerHTML = 'Off air';
-    }
-  })
-  .catch(error => {
-    console.error('Error:', error);
-    document.querySelector('#status').innerHTML = 'Off';
-  });

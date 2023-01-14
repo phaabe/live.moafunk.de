@@ -1,5 +1,6 @@
 body {
     font-family: Courier New, sans-serif;
+    font-size: 18pt;
 }
 
 a {
@@ -45,4 +46,24 @@ a {
 .btn-pause {
     border-style: double;
     border-width: 0 0 0 5em;
+}
+
+.btn-off {
+    animation-name: rotateoff;
+    animation-duration: 500ms;
+    animation-iteration-count: 1;
+    animation-timing-function: linear;
+}
+
+@keyframes rotateoff {
+    0%   {transform: rotate(0deg);}
+    25%  {transform: rotate(5deg);}
+    50% {transform: rotate(0deg);}
+    75%  {transform: rotate(5deg);}
+    100% {transform: rotate(0deg);}
+
+}
+
+.links {
+    font-size: 15pt;
 }
