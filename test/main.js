@@ -1,3 +1,7 @@
+// ==============================
+// Streaming and Playback Setup
+// ==============================
+
 // Define the media element and play button.
 const video = document.getElementById('player');
 const btn = document.getElementById('btn-play');
@@ -30,8 +34,14 @@ fetch(hlsUrl, { method: 'HEAD' })
 // Initialize playback based on platform support.
 if (/iPhone|iPod|iPad/.test(platform)) {
   console.log('is iOS');
-  // iOS supports HLS natively in <video>, so set the source.
+  // iOS supports HLS natively in <video>
   video.src = hlsUrl;
+  video.setAttribute("playsinline", "true");
+  video.setAttribute("webkit-playsinline", "true");
+  // Instead of moving the element off-screen, use minimal size and transparency:
+  video.style.width = "1px";
+  video.style.height = "1px";
+  video.style.opacity = "0";
 } else if (flvjs.isSupported()) {
   console.log('flvjs is supported, this is not iOS');
   // Use flv.js to play the FLV stream.
@@ -47,6 +57,9 @@ if (/iPhone|iPod|iPad/.test(platform)) {
 
 // Play/pause toggle function.
 function play() {
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
   if (!video) return;
   if (!video.paused) {
     video.pause();
@@ -58,65 +71,90 @@ function play() {
     }
   }
 }
-//
-// --- New Code for dB Level Meter ---
 
-// Set up Web Audio API components.
+// ==============================
+// Web Audio & dB Meter Setup
+// ==============================
+
+// Create an AudioContext and an AnalyserNode.
 const AudioContext = window.AudioContext || window.webkitAudioContext;
 const audioCtx = new AudioContext();
-
-// Create an analyser node.
 const analyser = audioCtx.createAnalyser();
-analyser.fftSize = 256; // Adjust for smoother or more detailed readings.
+analyser.fftSize = 256;  // Adjust FFT size if needed
 const bufferLength = analyser.frequencyBinCount;
 const dataArray = new Uint8Array(bufferLength);
 
-// Connect the video element to the analyser.
-// Note: createMediaElementSource can only be called once per element,
-// so make sure not to call it multiple times if re-initializing.
+// Connect the video element's audio to the analyser.
+// Note: createMediaElementSource can only be called once per element.
 const source = audioCtx.createMediaElementSource(video);
 source.connect(analyser);
-// You may want to connect the analyser to the destination if you want audio playback.
-// However, if the video element is already outputting sound, this is optional.
+// Optionally, connect the analyser to the destination if you need to hear the audio.
 analyser.connect(audioCtx.destination);
 
-// Set up the canvas for the meter.
+// ==============================
+// dB Meter Drawing (6 Circles)
+// ==============================
+
+// Set up the canvas for the level meter.
 const canvas = document.getElementById('meterCanvas');
 const canvasCtx = canvas.getContext('2d');
 
-// Function to draw the meter.
-function drawMeter() {
-  requestAnimationFrame(drawMeter);
+// Function to draw 6 circles for the dB level meter.
+function drawMeterCircles() {
+  requestAnimationFrame(drawMeterCircles);
 
-  // Get frequency data.
+  // Retrieve frequency data from the analyser.
   analyser.getByteFrequencyData(dataArray);
 
-  // Compute an average volume from frequency data.
+  // Compute an average level from the frequency data.
   let sum = 0;
   for (let i = 0; i < bufferLength; i++) {
     sum += dataArray[i];
   }
-  let average = sum / bufferLength;
+  const average = sum / bufferLength;
 
-  // Convert average to dB.
-  // Note: The conversion here is approximate. The raw data ranges from 0 to 255.
-  // We normalize and convert to dB: 20 * log10(normalizedValue).
-  let normalized = average / 255;
-  let dB = normalized > 0 ? 20 * Math.log10(normalized) : -Infinity;
+  // Normalize the average to a 0–1 scale.
+  const normalized = average / 255;
+
+  // Determine how many circles should be filled (0 to 6).
+  const totalCircles = 6;
+  let circlesFilled = Math.floor(normalized * totalCircles);
+  if (circlesFilled > totalCircles) {
+    circlesFilled = totalCircles;
+  }
 
   // Clear the canvas.
   canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Draw a simple meter bar.
-  let meterWidth = normalized * canvas.width;
-  canvasCtx.fillStyle = 'lime';
-  canvasCtx.fillRect(0, 0, meterWidth, canvas.height);
+  // Calculate spacing and radius for the circles.
+  const spacing = canvas.width / (totalCircles + 1);
+  const centerY = canvas.height / 2;
+  const radius = Math.min(spacing / 2 - 5, centerY - 5);
 
-  // Optionally, display the numerical dB value.
-  canvasCtx.fillStyle = 'white';
-  canvasCtx.font = '16px sans-serif';
-  canvasCtx.fillText(dB.toFixed(1) + ' dB', 10, canvas.height / 2 + 6);
+  // Draw each circle.
+  for (let i = 0; i < totalCircles; i++) {
+    const centerX = spacing * (i + 1);
+
+    // Draw the circle outline.
+    canvasCtx.beginPath();
+    canvasCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    canvasCtx.strokeStyle = "black";
+    canvasCtx.lineWidth = 2;
+    canvasCtx.stroke();
+    canvasCtx.closePath();
+
+    // If this circle is active (i.e. below the current level), fill it.
+    if (i < circlesFilled) {
+      canvasCtx.beginPath();
+      canvasCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      // For the last (highest) circle, use yellow; otherwise, use grey.
+      canvasCtx.fillStyle = (i === totalCircles - 4) ? "#ffe95f" : "grey";
+      canvasCtx.fill();
+      canvasCtx.closePath();
+    }
+  }
 }
 
-// Start the drawing loop.
-drawMeter();
+// Start the drawing loop for the dB meter.
+drawMeterCircles();
+
