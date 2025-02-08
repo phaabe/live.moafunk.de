@@ -1,0 +1,69 @@
+body {
+    font-family: Courier New, sans-serif;
+    font-size: 18pt;
+}
+
+a {
+    color: #000;
+    text-decoration: underline;
+}
+
+.container {
+    text-align: center;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.logo {
+    width: 200px;
+}
+
+.video-element {
+    display: none;
+}
+
+.actions {
+    margin-top: 3em;
+    text-align: center;
+}
+
+.btn {
+    width: 2em;
+    height: 10em;
+    border-style: solid;
+    box-sizing: border-box;
+    background: white;
+
+    transition: 100ms all ease;
+    will-change: border-width;
+    cursor: pointer;
+    border-color: white white white #202020;
+    border-width: 5em 0 5em 10em;
+
+    -webkit-tap-highlight-color: transparent;
+}
+
+.btn-pause {
+    border-style: double;
+    border-width: 0 0 0 5em;
+}
+
+.btn-off {
+    animation-name: rotateoff;
+    animation-duration: 500ms;
+    animation-iteration-count: 1;
+    animation-timing-function: linear;
+}
+
+@keyframes rotateoff {
+    0%   {transform: rotate(0deg);}
+    25%  {transform: rotate(5deg);}
+    50% {transform: rotate(0deg);}
+    75%  {transform: rotate(5deg);}
+    100% {transform: rotate(0deg);}
+
+}
+
+.links {
+    font-size: 15pt;
+}

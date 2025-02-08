@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Moafunk Radio</title>
+
+    <script async defer data-domain="live.moafunk.de" src="https://plausible.moafunk.de/js/plausible.js"></script>
+    <link rel="stylesheet" type="text/css" href="main.css" media="screen" />
+
+    <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="./icons/favicon-16x16.png">
+    <link rel="manifest" href="./icons/site.webmanifest">
+    <link rel="mask-icon" href="./icons/safari-pinned-tab.svg" color="#333333">
+    <link rel="shortcut icon" href="./icons/favicon.ico">
+    <meta name="msapplication-TileColor" content="#2b5797">
+    <meta name="msapplication-config" content="./icons/browserconfig.xml">
+    <meta name="theme-color" content="#ffffff">
+    <meta http-equiv="Content-Security-Policy"
+          content="connect-src 'self' https://stream.moafunk.de/live/stream-io/index.m3u8 https://stream.moafunk.de/live/stream-io.flv https://plausible.moafunk.de/api/event;" />
+</head>
+<body>
+  <div class="container">
+    <!-- TOP -->
+    <br/><br/>
+    <img class="logo" src="./moafunk.png" alt="Moafunk Logo"/>
+    <h2>Moafunk Radio</h2>
+    We broadcast music<br/>from Moabit.<br/>
+
+    <!-- PLAY BUTTON AND VIDEO ELEMENT -->
+    <video id="player" class="video-element" controls></video>
+    <div class="actions">
+      <button id="btn-play" class="btn" onclick="play()"></button>
+      <script src="./flv.min.js"></script>
+      <script src="./main.js"></script>
+    </div>
+    <br/><br/>
+
+    <div id="status"></div>
+    <br/><br/><br/><br/><br/><br/>
+    <h3>Links</h3>
+    <div class="links">
+      Show some love on <a href="https://www.instagram.com/moafunk_radio/">The Gram</a>.<br/>
+      Stay tuned on <a href="https://2a5.de/h7JV">Telegram</a>.<br/>
+      Listen to <a href="https://www.mixcloud.com/radiomoafunk/">recordings</a>.<br/><br/>
+      <a href="./tech-rider.html">Tech Rider</a>
+    </div><br/><br/>
+    <br/><br/><br/><br/><br/><br/>
+  </div>
+</body>
+</html>
