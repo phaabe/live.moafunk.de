@@ -2,17 +2,17 @@
 // Streaming and Playback Setup
 // ==============================
 
-// Define the media element and play button.
-const video = document.getElementById('player');
-const btn = document.getElementById('btn-play');
-let live = false;
+// Determine the platform.
+const platform = navigator?.userAgentData?.platform || navigator?.platform || 'unknown';
 
 // Stream URLs.
 const hlsUrl = 'https://stream.moafunk.de/live/stream-io/index.m3u8';
 const flvUrl = 'https://stream.moafunk.de/live/stream-io.flv';
 
-// Determine the platform.
-const platform = navigator?.userAgentData?.platform || navigator?.platform || 'unknown';
+// Define a variable for the media element (this will be either a video or an audio element).
+let mediaElement;
+const btn = document.getElementById('btn-play');
+let live = false;
 
 // Check if the stream is live.
 fetch(hlsUrl, { method: 'HEAD' })
@@ -31,42 +31,55 @@ fetch(hlsUrl, { method: 'HEAD' })
     live = false;
   });
 
-// Initialize playback based on platform support.
+// Platform-specific media element setup.
 if (/iPhone|iPod|iPad/.test(platform)) {
-  console.log('is iOS');
-  // iOS supports HLS natively in <video>
-  video.src = hlsUrl;
-  video.setAttribute("playsinline", "true");
-  video.setAttribute("webkit-playsinline", "true");
-  // Instead of moving the element off-screen, use minimal size and transparency:
-  video.style.width = "1px";
-  video.style.height = "1px";
-  video.style.opacity = "0";
-} else if (flvjs.isSupported()) {
-  console.log('flvjs is supported, this is not iOS');
-  // Use flv.js to play the FLV stream.
-  const flvPlayer = flvjs.createPlayer({
-    type: 'flv',
-    url: flvUrl
-  });
-  flvPlayer.attachMediaElement(video);
-  flvPlayer.load();
+  console.log('is iOS - using audio element for playback and analysis');
+  // Use an audio element on iOS.
+  // Either select an existing audio element...
+  mediaElement = document.getElementById('playerAudio');
+  if (!mediaElement) {
+    // ...or create one if it doesn't exist.
+    mediaElement = document.createElement('audio');
+    mediaElement.id = 'playerAudio';
+    document.body.appendChild(mediaElement);
+  }
+  mediaElement.src = hlsUrl;
+  mediaElement.setAttribute("playsinline", "true");
+  mediaElement.setAttribute("webkit-playsinline", "true");
+  // Optionally, style it to be minimally visible.
+  mediaElement.style.width = "1px";
+  mediaElement.style.height = "1px";
+  mediaElement.style.opacity = "0";
 } else {
-  console.log(platform + ' not supported as platform for streaming!');
+  // On non-iOS platforms, use the existing video element.
+  mediaElement = document.getElementById('player');
+  if (/flvjs/i.test(navigator.userAgent) || flvjs.isSupported()) {
+    console.log('flvjs is supported, using video element with flv.js');
+    const flvPlayer = flvjs.createPlayer({
+      type: 'flv',
+      url: flvUrl
+    });
+    flvPlayer.attachMediaElement(mediaElement);
+    flvPlayer.load();
+  } else {
+    // Fallback to native HLS support.
+    mediaElement.src = hlsUrl;
+  }
 }
 
 // Play/pause toggle function.
 function play() {
-  if (audioCtx.state === 'suspended') {
+  // Resume AudioContext if needed (see below).
+  if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume();
   }
-  if (!video) return;
-  if (!video.paused) {
-    video.pause();
+  if (!mediaElement) return;
+  if (!mediaElement.paused) {
+    mediaElement.pause();
     btn.className = "btn";
   } else {
     if (live) {
-      video.play();
+      mediaElement.play();
       btn.className = "btn btn-pause";
     }
   }
@@ -84,11 +97,10 @@ analyser.fftSize = 256;  // Adjust FFT size if needed
 const bufferLength = analyser.frequencyBinCount;
 const dataArray = new Uint8Array(bufferLength);
 
-// Connect the video element's audio to the analyser.
-// Note: createMediaElementSource can only be called once per element.
-const source = audioCtx.createMediaElementSource(video);
+// Connect the media element's audio to the analyser.
+const source = audioCtx.createMediaElementSource(mediaElement);
 source.connect(analyser);
-// Optionally, connect the analyser to the destination if you need to hear the audio.
+// Ensure we still hear the audio:
 analyser.connect(audioCtx.destination);
 
 // ==============================
@@ -148,7 +160,7 @@ function drawMeterCircles() {
       canvasCtx.beginPath();
       canvasCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
       // For the last (highest) circle, use yellow; otherwise, use grey.
-      canvasCtx.fillStyle = (i === totalCircles - 4) ? "#ffe95f" : "grey";
+      canvasCtx.fillStyle = (i === totalCircles - 1) ? "yellow" : "grey";
       canvasCtx.fill();
       canvasCtx.closePath();
     }
@@ -157,4 +169,3 @@ function drawMeterCircles() {
 
 // Start the drawing loop for the dB meter.
 drawMeterCircles();
-
