@@ -27,8 +27,16 @@
     <h2>Moafunk Radio</h2>
     We broadcast music<br/>from Moabit.<br/>
 
-    <!-- PLAY BUTTON AND VIDEO ELEMENT -->
-    <video id="player" class="video-element" controls></video>
+    <!-- MEDIA ELEMENTS -->
+    <div id="media-container">
+      <!-- Video player for non-iOS -->
+      <video id="player" class="video-element" controls></video>
+      
+      <!-- Audio player for iOS - will be shown/hidden by JavaScript -->
+      <audio id="playerAudio" controls playsinline webkit-playsinline preload="auto"></audio>
+    </div>
+    
+    <!-- Custom play button -->
     <div class="actions">
       <button id="btn-play" class="btn" onclick="play()"></button>
     </div>

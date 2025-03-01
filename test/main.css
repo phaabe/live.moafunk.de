@@ -18,8 +18,24 @@ a {
     width: 200px;
 }
 
+/* Media container to hold both audio and video elements */
+#media-container {
+    width: 100%;
+    max-width: 300px;
+    margin: 0 auto;
+}
+
+/* Video element (hidden by default, shown on non-iOS) */
 .video-element {
     display: none;
+}
+
+/* Audio element styling (hidden by default, shown on iOS via JS) */
+#playerAudio {
+    display: none;
+    width: 100%;
+    margin: 10px auto;
+    border-radius: 8px;
 }
 
 .actions {

@@ -2,19 +2,30 @@
 // Streaming and Playback Setup
 // ==============================
 
-// Determine the platform.
+// Determine the platform
 const platform = navigator?.userAgentData?.platform || navigator?.platform || 'unknown';
+const isIOS = /iPhone|iPod|iPad/.test(platform);
+console.log('Platform detected:', platform, 'isIOS:', isIOS);
 
-// Stream URLs.
+// Stream URLs
 const hlsUrl = 'https://stream.moafunk.de/live/stream-io/index.m3u8';
 const flvUrl = 'https://stream.moafunk.de/live/stream-io.flv';
 
-// Define a variable for the media element (this will be either a video or an audio element).
-let mediaElement;
+// UI elements
 const btn = document.getElementById('btn-play');
+const canvas = document.getElementById('meterCanvas');
+const canvasCtx = canvas.getContext('2d');
 let live = false;
 
-// Check if the stream is live.
+// Audio analysis variables
+let audioCtx = null;
+let mediaElement = null;
+let analyser = null;
+let dataArray = null;
+let animationFrame = null;
+let audioSource = null;
+
+// Check if the stream is live
 fetch(hlsUrl, { method: 'HEAD' })
   .then(response => {
     if (response.status === 200) {
@@ -31,141 +42,272 @@ fetch(hlsUrl, { method: 'HEAD' })
     live = false;
   });
 
-// Platform-specific media element setup.
-if (/iPhone|iPod|iPad/.test(platform)) {
-  console.log('is iOS - using audio element for playback and analysis');
-  // Use an audio element on iOS.
-  // Either select an existing audio element...
-  mediaElement = document.getElementById('playerAudio');
-  if (!mediaElement) {
-    // ...or create one if it doesn't exist.
-    mediaElement = document.createElement('audio');
-    mediaElement.id = 'playerAudio';
-    document.body.appendChild(mediaElement);
-  }
-  mediaElement.src = hlsUrl;
-  mediaElement.setAttribute("playsinline", "true");
-  mediaElement.setAttribute("webkit-playsinline", "true");
-  // Optionally, style it to be minimally visible.
-  mediaElement.style.width = "1px";
-  mediaElement.style.height = "1px";
-  mediaElement.style.opacity = "0";
-} else {
-  // On non-iOS platforms, use the existing video element.
-  mediaElement = document.getElementById('player');
-  if (/flvjs/i.test(navigator.userAgent) || flvjs.isSupported()) {
-    console.log('flvjs is supported, using video element with flv.js');
-    const flvPlayer = flvjs.createPlayer({
-      type: 'flv',
-      url: flvUrl
-    });
-    flvPlayer.attachMediaElement(mediaElement);
-    flvPlayer.load();
-  } else {
-    // Fallback to native HLS support.
-    mediaElement.src = hlsUrl;
-  }
-}
+// ==============================
+// Audio Setup - Platform specific
+// ==============================
 
-// Play/pause toggle function.
-function play() {
-  // Resume AudioContext if needed (see below).
-  if (audioCtx && audioCtx.state === 'suspended') {
-    audioCtx.resume();
-  }
-  if (!mediaElement) return;
-  if (!mediaElement.paused) {
-    mediaElement.pause();
-    btn.className = "btn";
+// Set up the appropriate media element
+function setupMediaElement() {
+  if (isIOS) {
+    console.log('iOS device detected, using audio element');
+    
+    // Get or create audio element
+    mediaElement = document.getElementById('playerAudio');
+    
+    // Make it visible on iOS (helps with permissions)
+    mediaElement.style.display = 'block';
+    
+    // Set source
+    mediaElement.src = hlsUrl;
   } else {
-    if (live) {
-      mediaElement.play();
-      btn.className = "btn btn-pause";
+    console.log('Non-iOS device detected, using video element');
+    
+    // Use the video element
+    mediaElement = document.getElementById('player');
+    
+    // Set up FLV.js if supported
+    if (flvjs && flvjs.isSupported()) {
+      console.log('FLV.js is supported');
+      const flvPlayer = flvjs.createPlayer({
+        type: 'flv',
+        url: flvUrl
+      });
+      flvPlayer.attachMediaElement(mediaElement);
+      flvPlayer.load();
+    } else {
+      // Fall back to HLS
+      console.log('Using HLS fallback');
+      mediaElement.src = hlsUrl;
     }
   }
+  
+  return mediaElement;
+}
+
+// Initialize Web Audio API
+function initWebAudio() {
+  try {
+    // Create audio context
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AudioContext();
+    console.log('Audio context created, state:', audioCtx.state);
+    
+    // Create analyzer
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    
+    // Create data array for frequency analysis
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    
+    return true;
+  } catch (error) {
+    console.error('Failed to initialize Web Audio API:', error);
+    return false;
+  }
+}
+
+// Connect media element to audio analyzer
+function connectAudioAnalyzer() {
+  if (!audioCtx || !mediaElement || !analyser) {
+    console.error('Cannot connect audio: missing context, media element, or analyzer');
+    return false;
+  }
+  
+  try {
+    // Create source from media element (if not already created)
+    if (!audioSource) {
+      audioSource = audioCtx.createMediaElementSource(mediaElement);
+      
+      // Connect to analyzer and destination
+      audioSource.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      
+      console.log('Audio connections established');
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Failed to connect audio:', error);
+    return false;
+  }
 }
 
 // ==============================
-// Web Audio & dB Meter Setup
+// Play/Pause Functionality
 // ==============================
 
-// Create an AudioContext and an AnalyserNode.
-const AudioContext = window.AudioContext || window.webkitAudioContext;
-const audioCtx = new AudioContext();
-const analyser = audioCtx.createAnalyser();
-analyser.fftSize = 256;  // Adjust FFT size if needed
-const bufferLength = analyser.frequencyBinCount;
-const dataArray = new Uint8Array(bufferLength);
+// Play/pause toggle function
+function play() {
+  // Early return if not live
+  if (!live) return;
+  
+  // Make sure media element is set up
+  if (!mediaElement) {
+    setupMediaElement();
+  }
+  
+  // Toggle playback state
+  if (!mediaElement.paused) {
+    // Currently playing - pause it
+    mediaElement.pause();
+    btn.className = "btn";
+    
+    // Stop animation
+    if (animationFrame) {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    }
+  } else {
+    // Currently paused - play it
+    
+    // For iOS, we need to initialize audio on user interaction
+    if (!audioCtx && isIOS) {
+      initWebAudio();
+    }
+    
+    // Resume audio context if suspended
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume().then(() => {
+        console.log('AudioContext resumed');
+      });
+    }
+    
+    // Attempt to play
+    mediaElement.play().then(() => {
+      console.log('Playback started');
+      btn.className = "btn btn-pause";
+      
+      // Connect audio analyzer after playback starts
+      // This is especially important for iOS
+      if (audioCtx && !audioSource) {
+        connectAudioAnalyzer();
+      }
+      
+      // Start visualization
+      if (!animationFrame) {
+        drawMeterCircles();
+      }
+    }).catch(error => {
+      console.error('Error starting playback:', error);
+      
+      // Show the native audio player on iOS to help with permissions
+      if (isIOS) {
+        mediaElement.style.display = 'block';
+        alert('Please tap the audio controls to start playing');
+      }
+    });
+  }
+}
 
-// Connect the media element's audio to the analyser.
-const source = audioCtx.createMediaElementSource(mediaElement);
-source.connect(analyser);
-// Ensure we still hear the audio:
-analyser.connect(audioCtx.destination);
+// Setup when document is ready
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('Document ready');
+  
+  // Set up media element
+  setupMediaElement();
+  
+  // For non-iOS devices, we can initialize audio right away
+  if (!isIOS) {
+    initWebAudio();
+  }
+  
+  // For iOS, set up audio element event handlers
+  if (isIOS && mediaElement) {
+    // This is crucial for iOS - connect analyzer when playback actually starts
+    mediaElement.addEventListener('playing', () => {
+      console.log('Media playback started');
+      
+      // Make sure audio context is initialized and resumed
+      if (!audioCtx) {
+        initWebAudio();
+      }
+      
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      
+      // Connect analyzer if not already connected
+      if (!audioSource) {
+        connectAudioAnalyzer();
+      }
+      
+      // Start visualization if not already running
+      if (!animationFrame) {
+        drawMeterCircles();
+      }
+      
+      // Update button state
+      btn.className = "btn btn-pause";
+    });
+  }
+});
 
 // ==============================
-// dB Meter Drawing (6 Circles)
+// dB Meter Visualization
 // ==============================
 
-// Set up the canvas for the level meter.
-const canvas = document.getElementById('meterCanvas');
-const canvasCtx = canvas.getContext('2d');
-
-// Function to draw 6 circles for the dB level meter.
+// Draw the db meter visualization
 function drawMeterCircles() {
-  requestAnimationFrame(drawMeterCircles);
-
-  // Retrieve frequency data from the analyser.
-  analyser.getByteFrequencyData(dataArray);
-
-  // Compute an average level from the frequency data.
-  let sum = 0;
-  for (let i = 0; i < bufferLength; i++) {
-    sum += dataArray[i];
-  }
-  const average = sum / bufferLength;
-
-  // Normalize the average to a 0–1 scale.
-  const normalized = average / 255;
-
-  // Determine how many circles should be filled (0 to 6).
-  const totalCircles = 6;
-  let circlesFilled = Math.floor(normalized * totalCircles);
-  if (circlesFilled > totalCircles) {
-    circlesFilled = totalCircles;
-  }
-
-  // Clear the canvas.
+  // Schedule next frame
+  animationFrame = requestAnimationFrame(drawMeterCircles);
+  
+  // Clear canvas
   canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-
-  // Calculate spacing and radius for the circles.
+  
+  // Set up drawing constants
+  const totalCircles = 6;
   const spacing = canvas.width / (totalCircles + 1);
   const centerY = canvas.height / 2;
   const radius = Math.min(spacing / 2 - 5, centerY - 5);
-
-  // Draw each circle.
+  
+  // Default to 0 circles filled
+  let circlesFilled = 0;
+  
+  // Only analyze audio if everything is properly set up and playing
+  if (audioCtx && 
+      analyser && 
+      dataArray && 
+      mediaElement && 
+      !mediaElement.paused) {
+    
+    try {
+      // Get frequency data
+      analyser.getByteFrequencyData(dataArray);
+      
+      // Calculate average volume
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        sum += dataArray[i];
+      }
+      const average = sum / dataArray.length;
+      
+      // Map to number of circles (0-6)
+      const normalized = average / 255;
+      circlesFilled = Math.min(totalCircles, Math.floor(normalized * totalCircles));
+    } catch (error) {
+      console.error('Error analyzing audio:', error);
+    }
+  }
+  
+  // Draw all circles
   for (let i = 0; i < totalCircles; i++) {
     const centerX = spacing * (i + 1);
-
-    // Draw the circle outline.
+    
+    // Draw outline
     canvasCtx.beginPath();
     canvasCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
     canvasCtx.strokeStyle = "black";
     canvasCtx.lineWidth = 2;
     canvasCtx.stroke();
     canvasCtx.closePath();
-
-    // If this circle is active (i.e. below the current level), fill it.
+    
+    // Fill active circles
     if (i < circlesFilled) {
       canvasCtx.beginPath();
       canvasCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-      // For the last (highest) circle, use yellow; otherwise, use grey.
       canvasCtx.fillStyle = (i === totalCircles - 1) ? "yellow" : "grey";
       canvasCtx.fill();
       canvasCtx.closePath();
     }
   }
 }
-
-// Start the drawing loop for the dB meter.
-drawMeterCircles();
