@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>SoundCloud Image Editor</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 40px; }
+    #drop-zone { border: 2px dashed #ccc; padding: 40px; margin: 20px auto; width: 300px; cursor: pointer; }
+    canvas { display: block; margin: 20px auto; border: 1px solid #aaa; }
+    button { margin-top: 10px; padding: 10px 20px; font-size: 16px; }
+  </style>
+</head>
+<body>
+
+<h2>SoundCloud Image Editor</h2>
+
+<div id="drop-zone">Drop image here or click to upload</div>
+<input type="file" id="file-input" accept="image/*" style="display:none">
+
+<canvas id="canvas" width="800" height="800"></canvas>
+<a id="download" download="soundcloud-image.png">
+  <button>Download Image</button>
+</a>
+
+<script>
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const downloadLink = document.getElementById('download');
+
+  // Replace with your logo path or a base64 string
+  const logoSrc = 'moafunk.png'; // e.g., 'data:image/png;base64,...'
+  const logoImage = new Image();
+  logoImage.src = logoSrc;
+
+  dropZone.addEventListener('click', () => fileInput.click());
+
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropZone.style.borderColor = 'black';
+  });
+
+  dropZone.addEventListener('dragleave', () => {
+    dropZone.style.borderColor = '#ccc';
+  });
+
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.style.borderColor = '#ccc';
+    handleFile(e.dataTransfer.files[0]);
+  });
+
+  fileInput.addEventListener('change', () => {
+    handleFile(fileInput.files[0]);
+  });
+
+  function handleFile(file) {
+    if (!file.type.startsWith('image/')) return;
+    const img = new Image();
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      img.onload = () => processImage(img);
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function processImage(img) {
+    // Step 1: auto-crop to center square
+    const size = Math.min(img.width, img.height);
+    const offsetX = (img.width - size) / 2;
+    const offsetY = (img.height - size) / 2;
+
+    // Step 2: draw to canvas scaled to 800x800
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, offsetX, offsetY, size, size, 0, 0, 800, 800);
+
+    // Step 3: draw logo when loaded
+    logoImage.onload = () => drawLogo();
+    if (logoImage.complete) drawLogo();
+  }
+
+  function drawLogo() {
+    const maxSize = 200; // maximum width or height
+    const padding = 20;
+  
+    const logoAspect = logoImage.width / logoImage.height;
+    let drawWidth = maxSize;
+    let drawHeight = maxSize;
+  
+    if (logoAspect > 1) {
+      // Landscape logo
+      drawHeight = maxSize / logoAspect;
+    } else {
+      // Portrait or square logo
+      drawWidth = maxSize * logoAspect;
+    }
+  
+    const x = canvas.width - drawWidth - padding;
+    const y = canvas.height - drawHeight - padding;
+  
+    ctx.drawImage(logoImage, x, y, drawWidth, drawHeight);
+  
+    // Update download link
+    downloadLink.href = canvas.toDataURL('image/png');
+  }
+</script>
+
+</body>
+</html>
