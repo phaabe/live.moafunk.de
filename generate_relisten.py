@@ -188,6 +188,42 @@ def generate_html(tracks):
             padding: 20px;
         }}
         
+        /* Responsive design for smaller screens */
+        @media (max-width: 768px) {{
+            .tracks-grid {{
+                grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+                gap: 15px;
+                margin: 15px;
+                padding: 15px;
+            }}
+        }}
+        
+        @media (max-width: 480px) {{
+            .tracks-grid {{
+                grid-template-columns: 1fr;
+                gap: 15px;
+                margin: 10px;
+                padding: 10px;
+            }}
+            
+            .track-tile {{
+                min-height: 80vh;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                text-align: center;
+                padding: 30px;
+            }}
+            
+            .track-artwork {{
+                width: 60%;
+                max-width: 300px;
+                aspect-ratio: 1;
+                margin-bottom: 20px;
+            }}
+        }}
+        
         .track-tile {{
             cursor: pointer;
             border: 2px solid #000;
@@ -313,6 +349,29 @@ def generate_html(tracks):
             color: #999;
             margin-top: 20px;
         }}
+        
+        /* Mobile optimizations */
+        @media (max-width: 768px) {{
+            .track-title {{
+                font-size: 16pt;
+            }}
+            
+            .track-date {{
+                font-size: 14pt;
+            }}
+            
+            .track-duration {{
+                font-size: 13pt;
+            }}
+            
+            .track-description {{
+                font-size: 12pt;
+            }}
+            
+            .player-footer {{
+                display: none !important; /* Hide footer on mobile since we open SoundCloud directly */
+            }}
+        }}
     </style>
 </head>
 <body>
@@ -399,6 +458,15 @@ def generate_html(tracks):
         function playTrack(index) {{
             const track = tracks[index];
             currentTrackIndex = index;
+            
+            // Check if on mobile device
+            const isMobile = window.innerWidth <= 768 || /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            
+            if (isMobile) {{
+                // On mobile, directly open SoundCloud link
+                window.open(track.permalink_url, '_blank');
+                return;
+            }}
             
             // Update UI - remove playing state from all tiles
             document.querySelectorAll('.track-tile').forEach(tile => {{
