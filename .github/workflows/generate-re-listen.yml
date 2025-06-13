@@ -17,8 +17,8 @@ jobs:
       - name: Run script with secrets
         run: |
           uv run generate_relisten.py \
-            --client-id "${{ secrets.CLIENT_ID }}" \
-            --client-secret "${{ secrets.CLIENT_SECRET }}"
+            --client-id "${{ secrets.SOUNDCLOUD_CLIENT_ID }}" \
+            --client-secret "${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}"
 
       - name: Commit generated HTML
         run: |
