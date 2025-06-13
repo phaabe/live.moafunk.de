@@ -1,4 +1,4 @@
-name: Example
+name: Generate re-listen.html page
 
 on:
   workflow_dispatch:  # Manual trigger
