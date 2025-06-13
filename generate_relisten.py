@@ -37,7 +37,7 @@ def get_access_token(client_id, client_secret):
     if response.status_code != 200:
         print(f"Failed to get access token: {response.status_code}")
         print(f"Response: {response.text}")
-        return None
+        raise Exception(f"Failed to get access token: {response.status_code}")
     
     return response.json().get('access_token')
 
@@ -93,7 +93,7 @@ def fetch_soundcloud_tracks(client_id, client_secret, username='radio-moafunk'):
     if response.status_code != 200:
         print(f"Failed to fetch tracks: {response.status_code}")
         print(f"Response: {response.text}")
-        return []
+        raise Exception(f"Failed to fetch tracks: {response.status_code}")
     
     tracks = response.json()
     
@@ -559,7 +559,7 @@ def main():
     
     if not tracks:
         print("No tracks found or API error occurred")
-        return
+        raise Exception("No tracks found or API error occurred")
     
     # Format track data
     formatted_tracks = format_track_data(tracks)
