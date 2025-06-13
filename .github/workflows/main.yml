@@ -1,0 +1,31 @@
+name: Example
+
+on:
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  uv-example:
+    name: python
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run script with secrets
+        run: |
+          uv run generate_relisten.py \
+            --client-id "${{ secrets.CLIENT_ID }}" \
+            --client-secret "${{ secrets.CLIENT_SECRET }}"
+
+      - name: Commit generated HTML
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add re-listen.html
+          git commit -m "[bot] update re-listen.html" || echo "No changes to commit"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
