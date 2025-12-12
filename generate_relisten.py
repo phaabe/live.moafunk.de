@@ -399,7 +399,7 @@ def generate_html(tracks):
 <body>
     <div class="container">
         <br/><br/>
-        <img class="logo" src="./moafunk.png" alt="Moafunk Logo"/>
+        <a href=index.html><img class="logo" src="./moafunk.png" alt="Moafunk Logo"/></a>
         <h2>Re-Listen</h2>
         <p>Listen to past Moafunk Radio recordings</p>
         
