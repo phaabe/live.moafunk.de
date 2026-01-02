@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>UNHEARD Artists Form - Moafunk Radio</title>
+
+    <script async defer data-domain="live.moafunk.de" src="https://plausible.moafunk.de/js/plausible.js"></script>
+    <link rel="stylesheet" type="text/css" href="/main.css" media="screen" />
+
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png">
+    <link rel="manifest" href="/icons/site.webmanifest">
+    <link rel="mask-icon" href="/icons/safari-pinned-tab.svg" color="#333333">
+    <link rel="shortcut icon" href="/icons/favicon.ico">
+    <meta name="msapplication-TileColor" content="#2b5797">
+    <meta name="msapplication-config" href="/icons/browserconfig.xml">
+    <meta name="theme-color" content="#ffffff">
+    
+    <style>
+        .uaf-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        .uaf-header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .uaf-header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .uaf-header p {
+            font-size: 1.1em;
+            opacity: 0.8;
+        }
+
+        .uaf-form {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 30px;
+            border-radius: 8px;
+        }
+
+        .form-section {
+            margin-bottom: 30px;
+        }
+
+        .form-section h2 {
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .form-group input[type="text"],
+        .form-group input[type="url"],
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            color: #fff;
+            font-size: 1em;
+            font-family: inherit;
+            box-sizing: border-box;
+        }
+
+        .form-group input[type="file"] {
+            width: 100%;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            color: #fff;
+            font-size: 1em;
+            cursor: pointer;
+        }
+
+        .form-group input[type="file"]::file-selector-button {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 12px;
+        }
+
+        .form-group input[type="file"]::file-selector-button:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+
+        .form-group input::placeholder,
+        .form-group textarea::placeholder {
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .form-group .hint {
+            font-size: 0.9em;
+            opacity: 0.6;
+            margin-top: 4px;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            margin-right: 8px;
+            cursor: pointer;
+            width: 18px;
+            height: 18px;
+        }
+
+        .checkbox-group label {
+            margin-bottom: 0;
+            cursor: pointer;
+        }
+
+        .track-section {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 20px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        .track-section h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+
+        .social-links-group {
+            display: grid;
+            grid-template-columns: 120px 1fr;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .social-links-group label {
+            margin-bottom: 0;
+        }
+
+        .submit-button {
+            width: 100%;
+            padding: 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+            color: #fff;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .submit-button:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .submit-button:active {
+            transform: scale(0.98);
+        }
+
+        .optional-label {
+            opacity: 0.6;
+            font-weight: 400;
+            font-size: 0.9em;
+        }
+
+        @media (max-width: 768px) {
+            .uaf-container {
+                padding: 20px 15px;
+            }
+
+            .uaf-form {
+                padding: 20px 15px;
+            }
+
+            .social-links-group {
+                grid-template-columns: 1fr;
+            }
+
+            .social-links-group label {
+                margin-bottom: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="uaf-container">
+        <div class="uaf-header">
+            <h1>UNHEARD Artists Form</h1>
+            <p>Submit your music to be featured on UNHEARD</p>
+        </div>
+
+        <form class="uaf-form" id="uaf-form" enctype="multipart/form-data">
+            <!-- Basic Information Section -->
+            <div class="form-section">
+                <h2>Basic Information</h2>
+                
+                <div class="form-group">
+                    <label for="artist-name">Artist Name *</label>
+                    <input type="text" id="artist-name" name="artist-name" required placeholder="Your artist name">
+                </div>
+
+                <div class="form-group">
+                    <label for="pronouns">Pronouns *</label>
+                    <input type="text" id="pronouns" name="pronouns" required placeholder="e.g., she/her, he/him, they/them">
+                </div>
+
+                <div class="form-group">
+                    <label for="artist-pic">Artist Picture *</label>
+                    <div class="hint">Please upload a square format image (1:1 aspect ratio)</div>
+                    <input type="file" id="artist-pic" name="artist-pic" accept="image/*" required>
+                </div>
+            </div>
+
+            <!-- Voice Message Section -->
+            <div class="form-section">
+                <h2>Voice Message</h2>
+                
+                <div class="form-group">
+                    <label for="voice-message">Voice Message File</label>
+                    <input type="file" id="voice-message" name="voice-message" accept="audio/*">
+                    
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="no-voice-message" name="no-voice-message">
+                        <label for="no-voice-message">I don't want to submit a voice message</label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tracks Section -->
+            <div class="form-section">
+                <h2>Your Tracks</h2>
+                
+                <div class="track-section">
+                    <h3>Track 1 *</h3>
+                    <div class="form-group">
+                        <label for="track1-name">Track Name</label>
+                        <input type="text" id="track1-name" name="track1-name" required placeholder="Name of track 1">
+                    </div>
+                    <div class="form-group">
+                        <label for="track1-file">Track File</label>
+                        <input type="file" id="track1-file" name="track1-file" accept="audio/*" required>
+                    </div>
+                </div>
+
+                <div class="track-section">
+                    <h3>Track 2 *</h3>
+                    <div class="form-group">
+                        <label for="track2-name">Track Name</label>
+                        <input type="text" id="track2-name" name="track2-name" required placeholder="Name of track 2">
+                    </div>
+                    <div class="form-group">
+                        <label for="track2-file">Track File</label>
+                        <input type="file" id="track2-file" name="track2-file" accept="audio/*" required>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Social Media Section -->
+            <div class="form-section">
+                <h2>Social Media <span class="optional-label">(Optional)</span></h2>
+                
+                <div class="social-links-group">
+                    <label for="instagram">Instagram</label>
+                    <input type="url" id="instagram" name="instagram" placeholder="https://instagram.com/yourprofile">
+                </div>
+
+                <div class="social-links-group">
+                    <label for="soundcloud">SoundCloud</label>
+                    <input type="url" id="soundcloud" name="soundcloud" placeholder="https://soundcloud.com/yourprofile">
+                </div>
+
+                <div class="social-links-group">
+                    <label for="bandcamp">Bandcamp</label>
+                    <input type="url" id="bandcamp" name="bandcamp" placeholder="https://yourprofile.bandcamp.com">
+                </div>
+
+                <div class="social-links-group">
+                    <label for="spotify">Spotify</label>
+                    <input type="url" id="spotify" name="spotify" placeholder="https://open.spotify.com/artist/...">
+                </div>
+
+                <div class="social-links-group">
+                    <label for="other-social">Other</label>
+                    <input type="url" id="other-social" name="other-social" placeholder="Any other social media link">
+                </div>
+            </div>
+
+            <!-- Additional Information Section -->
+            <div class="form-section">
+                <h2>Additional Information <span class="optional-label">(Optional)</span></h2>
+                
+                <div class="form-group">
+                    <label for="upcoming-events">Upcoming Events</label>
+                    <textarea id="upcoming-events" name="upcoming-events" placeholder="Tell us about any upcoming gigs, releases, or events..."></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="mentions">Things We Should Mention in the Show</label>
+                    <textarea id="mentions" name="mentions" placeholder="Anything specific you'd like us to mention during the show..."></textarea>
+                </div>
+            </div>
+
+            <!-- Submit Button -->
+            <button type="submit" class="submit-button">Submit Application</button>
+        </form>
+    </div>
+
+    <script type="module">
+        const form = document.getElementById('uaf-form');
+        const voiceMessageFile = document.getElementById('voice-message');
+        const noVoiceMessageCheckbox = document.getElementById('no-voice-message');
+
+        // Handle voice message checkbox
+        noVoiceMessageCheckbox.addEventListener('change', function() {
+            if (this.checked) {
+                voiceMessageFile.disabled = true;
+                voiceMessageFile.required = false;
+                voiceMessageFile.value = '';
+            } else {
+                voiceMessageFile.disabled = false;
+            }
+        });
+
+        // Handle form submission
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            // TODO: Implement actual form submission logic
+            // This could involve sending data to a backend API, email service, etc.
+            
+            const formData = new FormData(form);
+            
+            console.log('Form submitted!');
+            console.log('Artist Name:', formData.get('artist-name'));
+            console.log('Pronouns:', formData.get('pronouns'));
+            
+            // Placeholder for actual submission
+            alert('Thank you for your submission! (Note: This is a skeleton implementation - submission logic needs to be implemented)');
+        });
+
+        // Optional: Add file validation for square images
+        document.getElementById('artist-pic').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const img = new Image();
+                img.onload = function() {
+                    if (img.width !== img.height) {
+                        alert('Please upload a square image (1:1 aspect ratio). Your image is ' + img.width + 'x' + img.height);
+                        e.target.value = '';
+                    }
+                };
+                img.src = URL.createObjectURL(file);
+            }
+        });
+    </script>
+</body>
+</html>
