@@ -1,2 +1,37 @@
 .idea/
 server/
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+
+# Environment variables
+.env
+.env.local
+
+# Generated files
+src/pages/re-listen.html
+public/data/tracks.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# IDE
+.vscode/
+*.swp
+*.swo
