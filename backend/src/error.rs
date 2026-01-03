@@ -1,0 +1,72 @@
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use thiserror::Error;
+
+pub type Result<T> = std::result::Result<T, AppError>;
+
+#[derive(Error, Debug)]
+pub enum AppError {
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+
+    #[error("Template error: {0}")]
+    Template(#[from] tera::Error),
+
+    #[error("Storage error: {0}")]
+    Storage(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Unauthorized")]
+    Unauthorized,
+
+    #[error("File too large: max {0}MB allowed")]
+    FileTooLarge(u64),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, message) = match &self {
+            AppError::Database(e) => {
+                tracing::error!("Database error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Database error".to_string(),
+                )
+            }
+            AppError::Template(e) => {
+                tracing::error!("Template error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Template error".to_string(),
+                )
+            }
+            AppError::Storage(msg) => {
+                tracing::error!("Storage error: {}", msg);
+                (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
+            }
+            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
+            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            AppError::FileTooLarge(max) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("File too large: max {}MB allowed", max),
+            ),
+            AppError::Internal(msg) => {
+                tracing::error!("Internal error: {}", msg);
+                (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
+            }
+        };
+
+        (status, message).into_response()
+    }
+}
