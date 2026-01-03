@@ -10,6 +10,10 @@ a {
   text-decoration: underline;
 }
 
+a.hover {
+  color: #ffec44;
+}
+
 .container {
   text-align: center;
   width: 100%;

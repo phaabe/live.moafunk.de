@@ -29,6 +29,11 @@
             margin-bottom: 40px;
         }
 
+        .uaf-header .logo {
+            display: block;
+            margin: 0 auto 20px;
+        }
+
         .uaf-header h1 {
             font-size: 2.5em;
             margin-bottom: 10px;
@@ -43,6 +48,7 @@
             background: rgba(255, 255, 255, 0.05);
             padding: 30px;
             border-radius: 8px;
+            text-align: left;
         }
 
         .form-section {
@@ -70,6 +76,7 @@
         .form-group input[type="url"],
         .form-group textarea {
             width: 100%;
+            max-width: 740px;
             padding: 12px;
             background: rgba(0, 0, 0, 0.3);
             border: 1px solid rgba(255, 255, 255, 0.2);
@@ -82,12 +89,14 @@
 
         .form-group input[type="file"] {
             width: 100%;
+            max-width: 740px;
             padding: 12px;
             background: rgba(0, 0, 0, 0.3);
             border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 4px;
             color: #fff;
             font-size: 1em;
+            box-sizing: border-box;
             cursor: pointer;
         }
 
@@ -168,28 +177,39 @@
 
         .social-links-group label {
             margin-bottom: 0;
+            text-align: right;
+            justify-self: end;
+        }
+
+        .social-links-group input {
+            width: 100%;
+            max-width: 740px;
+            box-sizing: border-box;
         }
 
         .submit-button {
             width: 100%;
-            padding: 16px;
-            background: rgba(255, 255, 255, 0.1);
-            border: 2px solid rgba(255, 255, 255, 0.3);
-            border-radius: 4px;
-            color: #fff;
-            font-size: 1.1em;
-            font-weight: 600;
+            padding: 20px;
+            margin-top: 30px;
+            background: #ffec44;
+            border: none;
+            border-radius: 0;
+            color: #000;
+            font-size: 1.2em;
+            font-weight: 700;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: none;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            box-shadow: none;
         }
 
         .submit-button:hover {
-            background: rgba(255, 255, 255, 0.2);
-            border-color: rgba(255, 255, 255, 0.5);
+            background: #ffec44;
         }
 
         .submit-button:active {
-            transform: scale(0.98);
+            background: #ffec44;
         }
 
         .submit-button:disabled {
@@ -257,12 +277,25 @@
                 padding: 20px 15px;
             }
 
+            .form-group input[type="file"] {
+                max-width: none;
+            }
+
+            .form-group input[type="text"],
+            .form-group input[type="url"],
+            .form-group textarea,
+            .social-links-group input {
+                max-width: none;
+            }
+
             .social-links-group {
                 grid-template-columns: 1fr;
             }
 
             .social-links-group label {
                 margin-bottom: 8px;
+                text-align: left;
+                justify-self: start;
             }
         }
     </style>
@@ -270,6 +303,7 @@
 <body>
     <div class="uaf-container">
         <div class="uaf-header">
+            <img class="logo" src="/moafunk.png" alt="Moafunk Logo" />
             <h1>UNHEARD Artists Form</h1>
             <p>Submit your music to be featured on UNHEARD</p>
         </div>
@@ -346,27 +380,27 @@
                 
                 <div class="social-links-group">
                     <label for="instagram">Instagram</label>
-                    <input type="url" id="instagram" name="instagram" placeholder="https://instagram.com/yourprofile">
+                    <input type="text" id="instagram" name="instagram" placeholder="https://instagram.com/yourprofile">
                 </div>
 
                 <div class="social-links-group">
                     <label for="soundcloud">SoundCloud</label>
-                    <input type="url" id="soundcloud" name="soundcloud" placeholder="https://soundcloud.com/yourprofile">
+                    <input type="text" id="soundcloud" name="soundcloud" placeholder="https://soundcloud.com/yourprofile">
                 </div>
 
                 <div class="social-links-group">
                     <label for="bandcamp">Bandcamp</label>
-                    <input type="url" id="bandcamp" name="bandcamp" placeholder="https://yourprofile.bandcamp.com">
+                    <input type="text" id="bandcamp" name="bandcamp" placeholder="https://yourprofile.bandcamp.com">
                 </div>
 
                 <div class="social-links-group">
                     <label for="spotify">Spotify</label>
-                    <input type="url" id="spotify" name="spotify" placeholder="https://open.spotify.com/artist/...">
+                    <input type="text" id="spotify" name="spotify" placeholder="https://open.spotify.com/artist/...">
                 </div>
 
                 <div class="social-links-group">
                     <label for="other-social">Other</label>
-                    <input type="url" id="other-social" name="other-social" placeholder="Any other social media link">
+                    <input type="text" id="other-social" name="other-social" placeholder="Any other social media link">
                 </div>
             </div>
 
@@ -402,7 +436,9 @@
 
     <script type="module">
         // Configuration - change this to your backend URL
-        const API_URL = 'https://admin.live.moafunk.de/api/submit';
+        const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:8000/api/submit'
+            : 'https://admin.live.moafunk.de/api/submit';
         const MAX_FILE_SIZE_MB = 20;
         const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
         
@@ -480,41 +516,22 @@
             formMessage.style.display = 'none';
             
             try {
-                // Use XMLHttpRequest for progress tracking
-                const xhr = new XMLHttpRequest();
-                
-                xhr.upload.addEventListener('progress', (e) => {
-                    if (e.lengthComputable) {
-                        const percentComplete = Math.round((e.loaded / e.total) * 100);
-                        progressFill.style.width = percentComplete + '%';
-                        progressText.textContent = `Uploading... ${percentComplete}%`;
-                    }
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    body: formData,
                 });
                 
-                const response = await new Promise((resolve, reject) => {
-                    xhr.open('POST', API_URL);
-                    
-                    xhr.onload = () => {
-                        if (xhr.status >= 200 && xhr.status < 300) {
-                            resolve(JSON.parse(xhr.responseText));
-                        } else {
-                            try {
-                                const error = JSON.parse(xhr.responseText);
-                                reject(new Error(error.detail || 'Upload failed'));
-                            } catch {
-                                reject(new Error('Upload failed: ' + xhr.statusText));
-                            }
-                        }
-                    };
-                    
-                    xhr.onerror = () => reject(new Error('Network error'));
-                    xhr.send(formData);
-                });
+                if (!response.ok) {
+                    const error = await response.text();
+                    throw new Error(error || 'Upload failed');
+                }
+                
+                const result = await response.json();
                 
                 // Success!
                 progressFill.style.width = '100%';
                 progressText.textContent = 'Upload complete!';
-                showMessage(response.message || 'Thank you for your submission! We\'ll be in touch soon.');
+                showMessage(result.message || 'Thank you for your submission! We\'ll be in touch soon.');
                 
                 // Reset form after delay
                 setTimeout(() => {
