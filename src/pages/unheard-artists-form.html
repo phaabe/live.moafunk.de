@@ -192,6 +192,56 @@
             transform: scale(0.98);
         }
 
+        .submit-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .upload-progress {
+            margin-top: 20px;
+        }
+
+        .progress-bar {
+            height: 8px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 0%;
+            transition: width 0.3s;
+            border-radius: 4px;
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 10px;
+            font-size: 0.9em;
+            opacity: 0.8;
+        }
+
+        .form-message {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .form-message.success {
+            background: rgba(72, 187, 120, 0.2);
+            border: 1px solid rgba(72, 187, 120, 0.5);
+            color: #48bb78;
+        }
+
+        .form-message.error {
+            background: rgba(252, 129, 129, 0.2);
+            border: 1px solid rgba(252, 129, 129, 0.5);
+            color: #fc8181;
+        }
+
         .optional-label {
             opacity: 0.6;
             font-weight: 400;
@@ -336,14 +386,34 @@
             </div>
 
             <!-- Submit Button -->
-            <button type="submit" class="submit-button">Submit Application</button>
+            <button type="submit" class="submit-button" id="submit-btn">Submit Application</button>
+            
+            <!-- Progress and Status -->
+            <div id="upload-progress" class="upload-progress" style="display: none;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <div class="progress-text" id="progress-text">Uploading...</div>
+            </div>
+            
+            <div id="form-message" class="form-message" style="display: none;"></div>
         </form>
     </div>
 
     <script type="module">
+        // Configuration - change this to your backend URL
+        const API_URL = 'https://admin.live.moafunk.de/api/submit';
+        const MAX_FILE_SIZE_MB = 20;
+        const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+        
         const form = document.getElementById('uaf-form');
         const voiceMessageFile = document.getElementById('voice-message');
         const noVoiceMessageCheckbox = document.getElementById('no-voice-message');
+        const submitBtn = document.getElementById('submit-btn');
+        const uploadProgress = document.getElementById('upload-progress');
+        const progressFill = document.getElementById('progress-fill');
+        const progressText = document.getElementById('progress-text');
+        const formMessage = document.getElementById('form-message');
 
         // Handle voice message checkbox
         noVoiceMessageCheckbox.addEventListener('change', function() {
@@ -356,27 +426,124 @@
             }
         });
 
+        // Validate file size
+        function validateFileSize(file, fieldName) {
+            if (file && file.size > MAX_FILE_SIZE_BYTES) {
+                throw new Error(`${fieldName} exceeds maximum size of ${MAX_FILE_SIZE_MB}MB`);
+            }
+            return true;
+        }
+
+        // Validate all files before submission
+        function validateFiles() {
+            const artistPic = document.getElementById('artist-pic').files[0];
+            const track1 = document.getElementById('track1-file').files[0];
+            const track2 = document.getElementById('track2-file').files[0];
+            const voiceMsg = document.getElementById('voice-message').files[0];
+            
+            validateFileSize(artistPic, 'Artist picture');
+            validateFileSize(track1, 'Track 1');
+            validateFileSize(track2, 'Track 2');
+            if (voiceMsg) {
+                validateFileSize(voiceMsg, 'Voice message');
+            }
+            
+            return true;
+        }
+
+        // Show message
+        function showMessage(message, isError = false) {
+            formMessage.textContent = message;
+            formMessage.className = 'form-message ' + (isError ? 'error' : 'success');
+            formMessage.style.display = 'block';
+        }
+
         // Handle form submission
-        form.addEventListener('submit', function(e) {
+        form.addEventListener('submit', async function(e) {
             e.preventDefault();
             
-            // TODO: Implement actual form submission logic
-            // This could involve sending data to a backend API, email service, etc.
+            // Validate files
+            try {
+                validateFiles();
+            } catch (error) {
+                showMessage(error.message, true);
+                return;
+            }
             
+            // Prepare form data
             const formData = new FormData(form);
             
-            console.log('Form submitted!');
-            console.log('Artist Name:', formData.get('artist-name'));
-            console.log('Pronouns:', formData.get('pronouns'));
+            // Disable submit button and show progress
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Uploading...';
+            uploadProgress.style.display = 'block';
+            formMessage.style.display = 'none';
             
-            // Placeholder for actual submission
-            alert('Thank you for your submission! (Note: This is a skeleton implementation - submission logic needs to be implemented)');
+            try {
+                // Use XMLHttpRequest for progress tracking
+                const xhr = new XMLHttpRequest();
+                
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percentComplete = Math.round((e.loaded / e.total) * 100);
+                        progressFill.style.width = percentComplete + '%';
+                        progressText.textContent = `Uploading... ${percentComplete}%`;
+                    }
+                });
+                
+                const response = await new Promise((resolve, reject) => {
+                    xhr.open('POST', API_URL);
+                    
+                    xhr.onload = () => {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            resolve(JSON.parse(xhr.responseText));
+                        } else {
+                            try {
+                                const error = JSON.parse(xhr.responseText);
+                                reject(new Error(error.detail || 'Upload failed'));
+                            } catch {
+                                reject(new Error('Upload failed: ' + xhr.statusText));
+                            }
+                        }
+                    };
+                    
+                    xhr.onerror = () => reject(new Error('Network error'));
+                    xhr.send(formData);
+                });
+                
+                // Success!
+                progressFill.style.width = '100%';
+                progressText.textContent = 'Upload complete!';
+                showMessage(response.message || 'Thank you for your submission! We\'ll be in touch soon.');
+                
+                // Reset form after delay
+                setTimeout(() => {
+                    form.reset();
+                    uploadProgress.style.display = 'none';
+                    progressFill.style.width = '0%';
+                }, 2000);
+                
+            } catch (error) {
+                showMessage(error.message || 'An error occurred. Please try again.', true);
+                uploadProgress.style.display = 'none';
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Submit Application';
+            }
         });
 
-        // Optional: Add file validation for square images
+        // File validation for square images
         document.getElementById('artist-pic').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (file) {
+                // Check file size first
+                if (file.size > MAX_FILE_SIZE_BYTES) {
+                    alert(`Artist picture exceeds maximum size of ${MAX_FILE_SIZE_MB}MB`);
+                    e.target.value = '';
+                    return;
+                }
+                
+                // Check for square aspect ratio
                 const img = new Image();
                 img.onload = function() {
                     if (img.width !== img.height) {
@@ -386,6 +553,17 @@
                 };
                 img.src = URL.createObjectURL(file);
             }
+        });
+
+        // Add file size validation to other file inputs
+        ['track1-file', 'track2-file', 'voice-message'].forEach(id => {
+            document.getElementById(id).addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file && file.size > MAX_FILE_SIZE_BYTES) {
+                    alert(`File exceeds maximum size of ${MAX_FILE_SIZE_MB}MB`);
+                    e.target.value = '';
+                }
+            });
         });
     </script>
 </body>
