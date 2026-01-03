@@ -240,10 +240,12 @@ pub async fn submit_form(
     .await?;
 
     let (track1_filename, track1_data, track1_content_type) = track1_file.unwrap();
-    let track1_key = storage::upload_file(
+    let track1_desired_name = format!("{} - {}", artist_name.trim(), track1_name.trim());
+    let track1_key = storage::upload_file_named(
         &state,
         artist_id,
         "track1",
+        &track1_desired_name,
         &track1_filename,
         track1_data,
         &track1_content_type,
@@ -251,10 +253,12 @@ pub async fn submit_form(
     .await?;
 
     let (track2_filename, track2_data, track2_content_type) = track2_file.unwrap();
-    let track2_key = storage::upload_file(
+    let track2_desired_name = format!("{} - {}", artist_name.trim(), track2_name.trim());
+    let track2_key = storage::upload_file_named(
         &state,
         artist_id,
         "track2",
+        &track2_desired_name,
         &track2_filename,
         track2_data,
         &track2_content_type,
@@ -262,9 +266,18 @@ pub async fn submit_form(
     .await?;
 
     let voice_key = if let Some((filename, data, content_type)) = voice_message {
+        let voice_desired_name = format!("{} - voice-message", artist_name.trim());
         Some(
-            storage::upload_file(&state, artist_id, "voice", &filename, data, &content_type)
-                .await?,
+            storage::upload_file_named(
+                &state,
+                artist_id,
+                "voice",
+                &voice_desired_name,
+                &filename,
+                data,
+                &content_type,
+            )
+            .await?,
         )
     } else {
         None
