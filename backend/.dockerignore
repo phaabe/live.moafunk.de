@@ -1,0 +1,23 @@
+# Keep the Docker build context small and avoid copying secrets.
+
+# Rust build artifacts
+/target/
+
+# Local runtime state
+/data/
+
+# VCS/editor cruft
+.git/
+.vscode/
+.DS_Store
+
+# Environment files are mounted at runtime via docker-compose
+.env
+.env.*
+
+# Private keys / certs should never be baked into images
+*.pem
+*.key
+
+# Node artifacts (in case present)
+node_modules/
