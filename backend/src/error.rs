@@ -54,7 +54,10 @@ impl IntoResponse for AppError {
                 tracing::error!("Storage error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
             }
-            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            AppError::Validation(msg) => {
+                tracing::warn!("Validation error: {}", msg);
+                (StatusCode::BAD_REQUEST, msg.clone())
+            }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             AppError::FileTooLarge(max) => (

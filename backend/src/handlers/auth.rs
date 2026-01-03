@@ -25,17 +25,7 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     Form(form): Form<LoginForm>,
 ) -> Result<Response> {
-    tracing::info!(
-        "Login attempt with password length: {}",
-        form.password.len()
-    );
-    tracing::debug!(
-        "Password hash from config: {}",
-        &state.config.admin_password_hash
-    );
-
     if auth::verify_password(&form.password, &state.config.admin_password_hash) {
-        tracing::info!("Password verification successful");
         let token = auth::create_session(&state).await?;
 
         let cookie = format!(
@@ -53,7 +43,6 @@ pub async fn login(
         )
             .into_response())
     } else {
-        tracing::warn!("Password verification failed");
         let mut context = tera::Context::new();
         context.insert("error", &Some("Invalid password".to_string()));
 

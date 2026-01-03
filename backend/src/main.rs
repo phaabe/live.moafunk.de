@@ -7,6 +7,7 @@ mod models;
 mod storage;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -41,11 +42,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Load config
     let config = Config::from_env()?;
-
-    tracing::info!(
-        "Loaded admin password hash: {}",
-        &config.admin_password_hash
-    );
 
     // Initialize database
     let db = SqlitePoolOptions::new()
@@ -105,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build CORS layer
     let cors = CorsLayer::new()
-        .allow_origin(Any) // Configure properly in production
+        .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
@@ -143,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
             "/shows/:id/download",
             get(handlers::download::download_show),
         )
+        .layer(DefaultBodyLimit::max(128 * 1024 * 1024))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

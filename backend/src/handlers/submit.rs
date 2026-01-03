@@ -12,6 +12,8 @@ pub async fn submit_form(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<SubmitResponse>> {
+    tracing::info!("Received form submission");
+
     let mut artist_name = String::new();
     let mut pronouns = String::new();
     let mut track1_name = String::new();
@@ -34,10 +36,12 @@ pub async fn submit_form(
     let max_size = state.config.max_file_size_bytes();
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
+        tracing::error!("Failed to read multipart field: {}", e);
         AppError::Validation(format!("Failed to read form field: {}", e))
     })? {
         let name = field.name().unwrap_or("").to_string();
-        
+        tracing::debug!("Processing field: {}", name);
+
         match name.as_str() {
             "artist-name" => {
                 artist_name = field.text().await.map_err(|e| {
@@ -45,9 +49,10 @@ pub async fn submit_form(
                 })?;
             }
             "pronouns" => {
-                pronouns = field.text().await.map_err(|e| {
-                    AppError::Validation(format!("Failed to read pronouns: {}", e))
-                })?;
+                pronouns = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::Validation(format!("Failed to read pronouns: {}", e)))?;
             }
             "track1-name" => {
                 track1_name = field.text().await.map_err(|e| {
@@ -63,24 +68,40 @@ pub async fn submit_form(
                 let value = field.text().await.unwrap_or_default();
                 no_voice_message = value == "on" || value == "true";
             }
-            "instagram" => instagram = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty()),
-            "soundcloud" => soundcloud = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty()),
-            "bandcamp" => bandcamp = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty()),
-            "spotify" => spotify = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty()),
-            "other-social" => other_social = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty()),
-            "upcoming-events" => upcoming_events = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty()),
-            "mentions" => mentions = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty()),
+            "instagram" => {
+                instagram = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty())
+            }
+            "soundcloud" => {
+                soundcloud = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty())
+            }
+            "bandcamp" => {
+                bandcamp = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty())
+            }
+            "spotify" => {
+                spotify = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty())
+            }
+            "other-social" => {
+                other_social =
+                    Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty())
+            }
+            "upcoming-events" => {
+                upcoming_events =
+                    Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty())
+            }
+            "mentions" => {
+                mentions = Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty())
+            }
             "artist-pic" => {
                 let filename = field.file_name().unwrap_or("image.jpg").to_string();
                 let content_type = field.content_type().unwrap_or("image/jpeg").to_string();
                 let data = field.bytes().await.map_err(|e| {
                     AppError::Validation(format!("Failed to read artist pic: {}", e))
                 })?;
-                
+
                 if data.len() as u64 > max_size {
                     return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
                 }
-                
+
                 artist_pic = Some((filename, data.to_vec(), content_type));
             }
             "voice-message" => {
@@ -90,11 +111,11 @@ pub async fn submit_form(
                     let data = field.bytes().await.map_err(|e| {
                         AppError::Validation(format!("Failed to read voice message: {}", e))
                     })?;
-                    
+
                     if data.len() as u64 > max_size {
                         return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
                     }
-                    
+
                     if !data.is_empty() {
                         voice_message = Some((filename, data.to_vec(), content_type));
                     }
@@ -103,27 +124,29 @@ pub async fn submit_form(
             "track1-file" => {
                 let filename = field.file_name().unwrap_or("track1.mp3").to_string();
                 let content_type = field.content_type().unwrap_or("audio/mpeg").to_string();
-                let data = field.bytes().await.map_err(|e| {
-                    AppError::Validation(format!("Failed to read track1: {}", e))
-                })?;
-                
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::Validation(format!("Failed to read track1: {}", e)))?;
+
                 if data.len() as u64 > max_size {
                     return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
                 }
-                
+
                 track1_file = Some((filename, data.to_vec(), content_type));
             }
             "track2-file" => {
                 let filename = field.file_name().unwrap_or("track2.mp3").to_string();
                 let content_type = field.content_type().unwrap_or("audio/mpeg").to_string();
-                let data = field.bytes().await.map_err(|e| {
-                    AppError::Validation(format!("Failed to read track2: {}", e))
-                })?;
-                
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::Validation(format!("Failed to read track2: {}", e)))?;
+
                 if data.len() as u64 > max_size {
                     return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
                 }
-                
+
                 track2_file = Some((filename, data.to_vec(), content_type));
             }
             _ => {}
@@ -144,7 +167,9 @@ pub async fn submit_form(
         return Err(AppError::Validation("Track 2 name is required".to_string()));
     }
     if artist_pic.is_none() {
-        return Err(AppError::Validation("Artist picture is required".to_string()));
+        return Err(AppError::Validation(
+            "Artist picture is required".to_string(),
+        ));
     }
     if track1_file.is_none() {
         return Err(AppError::Validation("Track 1 file is required".to_string()));
@@ -182,16 +207,43 @@ pub async fn submit_form(
 
     // Upload files to R2
     let (pic_filename, pic_data, pic_content_type) = artist_pic.unwrap();
-    let pic_key = storage::upload_file(&state, artist_id, "pic", &pic_filename, pic_data, &pic_content_type).await?;
+    let pic_key = storage::upload_file(
+        &state,
+        artist_id,
+        "pic",
+        &pic_filename,
+        pic_data,
+        &pic_content_type,
+    )
+    .await?;
 
     let (track1_filename, track1_data, track1_content_type) = track1_file.unwrap();
-    let track1_key = storage::upload_file(&state, artist_id, "track1", &track1_filename, track1_data, &track1_content_type).await?;
+    let track1_key = storage::upload_file(
+        &state,
+        artist_id,
+        "track1",
+        &track1_filename,
+        track1_data,
+        &track1_content_type,
+    )
+    .await?;
 
     let (track2_filename, track2_data, track2_content_type) = track2_file.unwrap();
-    let track2_key = storage::upload_file(&state, artist_id, "track2", &track2_filename, track2_data, &track2_content_type).await?;
+    let track2_key = storage::upload_file(
+        &state,
+        artist_id,
+        "track2",
+        &track2_filename,
+        track2_data,
+        &track2_content_type,
+    )
+    .await?;
 
     let voice_key = if let Some((filename, data, content_type)) = voice_message {
-        Some(storage::upload_file(&state, artist_id, "voice", &filename, data, &content_type).await?)
+        Some(
+            storage::upload_file(&state, artist_id, "voice", &filename, data, &content_type)
+                .await?,
+        )
     } else {
         None
     };
