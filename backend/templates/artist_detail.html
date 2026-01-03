@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ artist.name }} - UNHEARD Admin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        
+        .nav {
+            background: #16213e;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        
+        .nav h1 {
+            font-size: 1.4em;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        
+        .nav-links a {
+            color: #aaa;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .nav-links a:hover,
+        .nav-links a.active {
+            color: #fff;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        
+        .breadcrumb {
+            margin-bottom: 20px;
+        }
+        
+        .breadcrumb a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 30px;
+            gap: 20px;
+        }
+        
+        .header-info {
+            flex: 1;
+        }
+        
+        .header h2 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        
+        .header .pronouns {
+            color: #888;
+            font-size: 1.1em;
+        }
+        
+        .artist-pic {
+            width: 150px;
+            height: 150px;
+            border-radius: 8px;
+            object-fit: cover;
+            background: #333;
+        }
+        
+        .status-form {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        .status-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: opacity 0.3s;
+        }
+        
+        .status-btn:hover {
+            opacity: 0.8;
+        }
+        
+        .status-btn.approve {
+            background: #48bb78;
+            color: #1a1a2e;
+        }
+        
+        .status-btn.reject {
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+        
+        .status-btn.pending {
+            background: #f6ad55;
+            color: #1a1a2e;
+        }
+        
+        .section {
+            background: #16213e;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .section h3 {
+            font-size: 1.2em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #333;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 15px;
+        }
+        
+        .info-grid .label {
+            color: #888;
+            font-weight: 500;
+        }
+        
+        .info-grid .value {
+            color: #eee;
+        }
+        
+        .info-grid .value a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        
+        .info-grid .value a:hover {
+            text-decoration: underline;
+        }
+        
+        .track-player {
+            margin-bottom: 15px;
+        }
+        
+        .track-player .track-name {
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        
+        .track-player audio {
+            width: 100%;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
+        
+        .status-badge.pending {
+            background: #f6ad55;
+            color: #1a1a2e;
+        }
+        
+        .status-badge.approved {
+            background: #48bb78;
+            color: #1a1a2e;
+        }
+        
+        .status-badge.rejected {
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+        
+        .shows-list {
+            list-style: none;
+        }
+        
+        .shows-list li {
+            padding: 10px 0;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .shows-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .text-block {
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+        
+        .na {
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <h1>UNHEARD Admin</h1>
+        <div class="nav-links">
+            <a href="/artists" class="active">Artists</a>
+            <a href="/shows">Shows</a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+    
+    <div class="container">
+        <div class="breadcrumb">
+            <a href="/artists">← Back to Artists</a>
+        </div>
+        
+        <div class="header">
+            <div class="header-info">
+                <h2>{{ artist.name }}</h2>
+                <div class="pronouns">{{ artist.pronouns }}</div>
+                <div style="margin-top: 10px;">
+                    <span class="status-badge {{ artist.status }}">{{ artist.status }}</span>
+                </div>
+                
+                <div class="status-form">
+                    <form method="POST" action="/artists/{{ artist.id }}/status" style="display: inline;">
+                        <input type="hidden" name="status" value="approved">
+                        <button type="submit" class="status-btn approve">Approve</button>
+                    </form>
+                    <form method="POST" action="/artists/{{ artist.id }}/status" style="display: inline;">
+                        <input type="hidden" name="status" value="pending">
+                        <button type="submit" class="status-btn pending">Pending</button>
+                    </form>
+                    <form method="POST" action="/artists/{{ artist.id }}/status" style="display: inline;">
+                        <input type="hidden" name="status" value="rejected">
+                        <button type="submit" class="status-btn reject">Reject</button>
+                    </form>
+                </div>
+            </div>
+            
+            {% if file_urls.pic %}
+            <img src="{{ file_urls.pic }}" alt="{{ artist.name }}" class="artist-pic">
+            {% else %}
+            <div class="artist-pic"></div>
+            {% endif %}
+        </div>
+        
+        <div class="section">
+            <h3>Tracks</h3>
+            
+            <div class="track-player">
+                <div class="track-name">Track 1: {{ artist.track1_name }}</div>
+                {% if file_urls.track1 %}
+                <audio controls preload="none">
+                    <source src="{{ file_urls.track1 }}" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+                {% endif %}
+            </div>
+            
+            <div class="track-player">
+                <div class="track-name">Track 2: {{ artist.track2_name }}</div>
+                {% if file_urls.track2 %}
+                <audio controls preload="none">
+                    <source src="{{ file_urls.track2 }}" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="section">
+            <h3>Voice Message</h3>
+            {% if artist.no_voice_message %}
+            <p class="na">Artist opted out of voice message</p>
+            {% elif file_urls.voice %}
+            <audio controls preload="none">
+                <source src="{{ file_urls.voice }}" type="audio/mpeg">
+                Your browser does not support the audio element.
+            </audio>
+            {% else %}
+            <p class="na">No voice message uploaded</p>
+            {% endif %}
+        </div>
+        
+        <div class="section">
+            <h3>Social Media</h3>
+            <div class="info-grid">
+                <div class="label">Instagram</div>
+                <div class="value">
+                    {% if artist.instagram %}
+                    <a href="{{ artist.instagram }}" target="_blank">{{ artist.instagram }}</a>
+                    {% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+                
+                <div class="label">SoundCloud</div>
+                <div class="value">
+                    {% if artist.soundcloud %}
+                    <a href="{{ artist.soundcloud }}" target="_blank">{{ artist.soundcloud }}</a>
+                    {% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+                
+                <div class="label">Bandcamp</div>
+                <div class="value">
+                    {% if artist.bandcamp %}
+                    <a href="{{ artist.bandcamp }}" target="_blank">{{ artist.bandcamp }}</a>
+                    {% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+                
+                <div class="label">Spotify</div>
+                <div class="value">
+                    {% if artist.spotify %}
+                    <a href="{{ artist.spotify }}" target="_blank">{{ artist.spotify }}</a>
+                    {% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+                
+                <div class="label">Other</div>
+                <div class="value">
+                    {% if artist.other_social %}
+                    <a href="{{ artist.other_social }}" target="_blank">{{ artist.other_social }}</a>
+                    {% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h3>Additional Info</h3>
+            
+            <div style="margin-bottom: 20px;">
+                <strong>Upcoming Events:</strong>
+                <div class="text-block" style="margin-top: 8px;">
+                    {% if artist.upcoming_events %}{{ artist.upcoming_events }}{% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+            </div>
+            
+            <div>
+                <strong>Things to Mention:</strong>
+                <div class="text-block" style="margin-top: 8px;">
+                    {% if artist.mentions %}{{ artist.mentions }}{% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h3>Assigned Shows</h3>
+            {% if artist.shows %}
+            <ul class="shows-list">
+                {% for show in artist.shows %}
+                <li>
+                    <a href="/shows/{{ show.id }}">{{ show.title }} - {{ show.date }}</a>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="na">Not assigned to any shows yet</p>
+            {% endif %}
+        </div>
+        
+        <div class="section">
+            <h3>Metadata</h3>
+            <div class="info-grid">
+                <div class="label">Submitted</div>
+                <div class="value">{{ artist.created_at }}</div>
+                
+                <div class="label">Last Updated</div>
+                <div class="value">{% if artist.updated_at %}{{ artist.updated_at }}{% else %}<span class="na">Never</span>{% endif %}</div>
+                
+                <div class="label">Artist ID</div>
+                <div class="value">{{ artist.id }}</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

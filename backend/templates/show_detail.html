@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ show.title }} - UNHEARD Admin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        
+        .nav {
+            background: #16213e;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        
+        .nav h1 {
+            font-size: 1.4em;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        
+        .nav-links a {
+            color: #aaa;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .nav-links a:hover,
+        .nav-links a.active {
+            color: #fff;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        
+        .breadcrumb {
+            margin-bottom: 20px;
+        }
+        
+        .breadcrumb a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 30px;
+        }
+        
+        .header-info h2 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        
+        .header-info .date {
+            color: #888;
+            font-size: 1.1em;
+            margin-bottom: 10px;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
+        
+        .status-badge.scheduled {
+            background: #4299e1;
+            color: #fff;
+        }
+        
+        .status-badge.completed {
+            background: #48bb78;
+            color: #1a1a2e;
+        }
+        
+        .status-badge.cancelled {
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+        
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.95em;
+            text-decoration: none;
+            display: inline-block;
+            transition: opacity 0.3s;
+        }
+        
+        .btn:hover {
+            opacity: 0.8;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: #fff;
+        }
+        
+        .btn-success {
+            background: #48bb78;
+            color: #1a1a2e;
+        }
+        
+        .btn-danger {
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+        
+        .section {
+            background: #16213e;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .section h3 {
+            font-size: 1.2em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #333;
+        }
+        
+        .assign-form {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .assign-form select {
+            flex: 1;
+            padding: 10px;
+            background: #0f0f23;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 1em;
+        }
+        
+        .assign-form select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .artists-list {
+            list-style: none;
+        }
+        
+        .artists-list li {
+            padding: 15px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .artists-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .artist-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .artist-info a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        
+        .artist-info a:hover {
+            text-decoration: underline;
+        }
+        
+        .artist-info .pronouns {
+            color: #888;
+            font-size: 0.9em;
+        }
+        
+        .remove-btn {
+            padding: 6px 12px;
+            background: transparent;
+            border: 1px solid #fc8181;
+            border-radius: 4px;
+            color: #fc8181;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.3s;
+        }
+        
+        .remove-btn:hover {
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+        
+        .empty-state {
+            color: #666;
+            font-style: italic;
+            padding: 20px 0;
+        }
+        
+        .description {
+            color: #aaa;
+            line-height: 1.6;
+        }
+        
+        .status-form {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .status-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: opacity 0.3s;
+        }
+        
+        .status-btn:hover {
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <h1>UNHEARD Admin</h1>
+        <div class="nav-links">
+            <a href="/artists">Artists</a>
+            <a href="/shows" class="active">Shows</a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+    
+    <div class="container">
+        <div class="breadcrumb">
+            <a href="/shows">← Back to Shows</a>
+        </div>
+        
+        <div class="header">
+            <div class="header-info">
+                <h2>{{ show.title }}</h2>
+                <div class="date">{{ show.date }}</div>
+                <span class="status-badge {{ show.status }}">{{ show.status }}</span>
+                
+                <div class="status-form">
+                    <form method="POST" action="/shows/{{ show.id }}/status" style="display: inline;">
+                        <input type="hidden" name="status" value="scheduled">
+                        <button type="submit" class="status-btn" style="background: #4299e1; color: #fff;">Scheduled</button>
+                    </form>
+                    <form method="POST" action="/shows/{{ show.id }}/status" style="display: inline;">
+                        <input type="hidden" name="status" value="completed">
+                        <button type="submit" class="status-btn" style="background: #48bb78; color: #1a1a2e;">Completed</button>
+                    </form>
+                    <form method="POST" action="/shows/{{ show.id }}/status" style="display: inline;">
+                        <input type="hidden" name="status" value="cancelled">
+                        <button type="submit" class="status-btn" style="background: #fc8181; color: #1a1a2e;">Cancelled</button>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="header-actions">
+                {% if show.artists %}
+                <a href="/shows/{{ show.id }}/download" class="btn btn-primary">Download ZIP</a>
+                {% endif %}
+            </div>
+        </div>
+        
+        {% if show.description %}
+        <div class="section">
+            <h3>Description</h3>
+            <p class="description">{{ show.description }}</p>
+        </div>
+        {% endif %}
+        
+        <div class="section">
+            <h3>Assigned Artists ({{ show.artists|length }})</h3>
+            
+            {% if available_artists %}
+            <form method="POST" action="/shows/{{ show.id }}/assign" class="assign-form">
+                <select name="artist_id" required>
+                    <option value="">-- Select an artist to assign --</option>
+                    {% for artist in available_artists %}
+                    <option value="{{ artist.id }}">{{ artist.name }} ({{ artist.pronouns }})</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="btn btn-success">Assign</button>
+            </form>
+            {% else %}
+            <p style="color: #888; margin-bottom: 20px;">No approved artists available to assign.</p>
+            {% endif %}
+            
+            {% if show.artists %}
+            <ul class="artists-list">
+                {% for artist in show.artists %}
+                <li>
+                    <div class="artist-info">
+                        <a href="/artists/{{ artist.id }}">{{ artist.name }}</a>
+                        <span class="pronouns">{{ artist.pronouns }}</span>
+                    </div>
+                    <form method="POST" action="/shows/{{ show.id }}/unassign/{{ artist.id }}" style="display: inline;">
+                        <button type="submit" class="remove-btn">Remove</button>
+                    </form>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="empty-state">No artists assigned to this show yet.</p>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
