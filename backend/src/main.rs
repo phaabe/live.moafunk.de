@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
         |value: &tera::Value,
          args: &std::collections::HashMap<String, tera::Value>|
          -> tera::Result<tera::Value> {
-            let format = args
+            let _format = args
                 .get("format")
                 .and_then(|v| v.as_str())
                 .unwrap_or("%Y-%m-%d %H:%M");
@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
             "/shows/:id/download",
             get(handlers::download::download_show),
         )
-        .layer(DefaultBodyLimit::max(128 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(config.max_request_body_bytes()))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

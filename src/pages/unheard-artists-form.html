@@ -439,8 +439,10 @@
         const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
             ? 'http://localhost:8000/api/submit'
             : 'https://admin.live.moafunk.de/api/submit';
-        const MAX_FILE_SIZE_MB = 20;
-        const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+        const MAX_SINGLE_FILE_SIZE_MB = 50;
+        const MAX_TOTAL_UPLOAD_MB = 100;
+        const MAX_SINGLE_FILE_SIZE_BYTES = MAX_SINGLE_FILE_SIZE_MB * 1024 * 1024;
+        const MAX_TOTAL_UPLOAD_BYTES = MAX_TOTAL_UPLOAD_MB * 1024 * 1024;
         
         const form = document.getElementById('uaf-form');
         const voiceMessageFile = document.getElementById('voice-message');
@@ -464,8 +466,16 @@
 
         // Validate file size
         function validateFileSize(file, fieldName) {
-            if (file && file.size > MAX_FILE_SIZE_BYTES) {
-                throw new Error(`${fieldName} exceeds maximum size of ${MAX_FILE_SIZE_MB}MB`);
+            if (file && file.size > MAX_SINGLE_FILE_SIZE_BYTES) {
+                throw new Error(`${fieldName} exceeds maximum size of ${MAX_SINGLE_FILE_SIZE_MB}MB`);
+            }
+            return true;
+        }
+
+        function validateTotalSize(files) {
+            const total = files.reduce((sum, f) => sum + (f ? f.size : 0), 0);
+            if (total > MAX_TOTAL_UPLOAD_BYTES) {
+                throw new Error(`Total upload exceeds maximum size of ${MAX_TOTAL_UPLOAD_MB}MB`);
             }
             return true;
         }
@@ -483,6 +493,8 @@
             if (voiceMsg) {
                 validateFileSize(voiceMsg, 'Voice message');
             }
+
+            validateTotalSize([artistPic, track1, track2, voiceMsg]);
             
             return true;
         }
@@ -554,8 +566,8 @@
             const file = e.target.files[0];
             if (file) {
                 // Check file size first
-                if (file.size > MAX_FILE_SIZE_BYTES) {
-                    alert(`Artist picture exceeds maximum size of ${MAX_FILE_SIZE_MB}MB`);
+                if (file.size > MAX_SINGLE_FILE_SIZE_BYTES) {
+                    alert(`Artist picture exceeds maximum size of ${MAX_SINGLE_FILE_SIZE_MB}MB`);
                     e.target.value = '';
                     return;
                 }

@@ -34,6 +34,8 @@ pub async fn submit_form(
     let mut track2_file: Option<(String, Vec<u8>, String)> = None;
 
     let max_size = state.config.max_file_size_bytes();
+    let max_total_size = state.config.max_upload_size_bytes();
+    let mut total_file_bytes: u64 = 0;
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
         tracing::error!("Failed to read multipart field: {}", e);
@@ -102,6 +104,11 @@ pub async fn submit_form(
                     return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
                 }
 
+                total_file_bytes = total_file_bytes.saturating_add(data.len() as u64);
+                if total_file_bytes > max_total_size {
+                    return Err(AppError::UploadTooLarge(state.config.max_upload_size_mb));
+                }
+
                 artist_pic = Some((filename, data.to_vec(), content_type));
             }
             "voice-message" => {
@@ -114,6 +121,11 @@ pub async fn submit_form(
 
                     if data.len() as u64 > max_size {
                         return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
+                    }
+
+                    total_file_bytes = total_file_bytes.saturating_add(data.len() as u64);
+                    if total_file_bytes > max_total_size {
+                        return Err(AppError::UploadTooLarge(state.config.max_upload_size_mb));
                     }
 
                     if !data.is_empty() {
@@ -133,6 +145,11 @@ pub async fn submit_form(
                     return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
                 }
 
+                total_file_bytes = total_file_bytes.saturating_add(data.len() as u64);
+                if total_file_bytes > max_total_size {
+                    return Err(AppError::UploadTooLarge(state.config.max_upload_size_mb));
+                }
+
                 track1_file = Some((filename, data.to_vec(), content_type));
             }
             "track2-file" => {
@@ -145,6 +162,11 @@ pub async fn submit_form(
 
                 if data.len() as u64 > max_size {
                     return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
+                }
+
+                total_file_bytes = total_file_bytes.saturating_add(data.len() as u64);
+                if total_file_bytes > max_total_size {
+                    return Err(AppError::UploadTooLarge(state.config.max_upload_size_mb));
                 }
 
                 track2_file = Some((filename, data.to_vec(), content_type));

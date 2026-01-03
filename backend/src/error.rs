@@ -29,6 +29,9 @@ pub enum AppError {
     #[error("File too large: max {0}MB allowed")]
     FileTooLarge(u64),
 
+    #[error("Upload too large: max {0}MB allowed")]
+    UploadTooLarge(u64),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -63,6 +66,10 @@ impl IntoResponse for AppError {
             AppError::FileTooLarge(max) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("File too large: max {}MB allowed", max),
+            ),
+            AppError::UploadTooLarge(max) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("Total upload too large: max {}MB allowed", max),
             ),
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);

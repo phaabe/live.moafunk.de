@@ -263,6 +263,9 @@
     </style>
 </head>
 <body>
+        {% set assigned_artists = artists | default(value=[]) %}
+        {% set assignable_artists = available_artists | default(value=[]) %}
+
     <nav class="nav">
         <h1>UNHEARD Admin</h1>
         <div class="nav-links">
@@ -300,7 +303,7 @@
             </div>
             
             <div class="header-actions">
-                {% if show.artists %}
+                {% if assigned_artists | length > 0 %}
                 <a href="/shows/{{ show.id }}/download" class="btn btn-primary">Download ZIP</a>
                 {% endif %}
             </div>
@@ -314,13 +317,13 @@
         {% endif %}
         
         <div class="section">
-            <h3>Assigned Artists ({{ show.artists|length }})</h3>
+            <h3>Assigned Artists ({{ assigned_artists|length }})</h3>
             
-            {% if available_artists %}
+            {% if assignable_artists | length > 0 %}
             <form method="POST" action="/shows/{{ show.id }}/assign" class="assign-form">
                 <select name="artist_id" required>
                     <option value="">-- Select an artist to assign --</option>
-                    {% for artist in available_artists %}
+                    {% for artist in assignable_artists %}
                     <option value="{{ artist.id }}">{{ artist.name }} ({{ artist.pronouns }})</option>
                     {% endfor %}
                 </select>
@@ -330,9 +333,9 @@
             <p style="color: #888; margin-bottom: 20px;">No approved artists available to assign.</p>
             {% endif %}
             
-            {% if show.artists %}
+            {% if assigned_artists | length > 0 %}
             <ul class="artists-list">
-                {% for artist in show.artists %}
+                {% for artist in assigned_artists %}
                 <li>
                     <div class="artist-info">
                         <a href="/artists/{{ artist.id }}">{{ artist.name }}</a>

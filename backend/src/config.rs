@@ -16,6 +16,9 @@ pub struct Config {
     #[serde(default = "default_max_file_size")]
     pub max_file_size_mb: u64,
 
+    #[serde(default = "default_max_upload_size")]
+    pub max_upload_size_mb: u64,
+
     // R2 settings
     pub r2_account_id: String,
     pub r2_access_key_id: String,
@@ -41,7 +44,11 @@ fn default_database_url() -> String {
 }
 
 fn default_max_file_size() -> u64 {
-    20
+    50
+}
+
+fn default_max_upload_size() -> u64 {
+    100
 }
 
 fn default_bucket_name() -> String {
@@ -57,5 +64,14 @@ impl Config {
 
     pub fn max_file_size_bytes(&self) -> u64 {
         self.max_file_size_mb * 1024 * 1024
+    }
+
+    pub fn max_upload_size_bytes(&self) -> u64 {
+        self.max_upload_size_mb * 1024 * 1024
+    }
+
+    pub fn max_request_body_bytes(&self) -> usize {
+        // Allow some overhead for multipart boundaries/headers.
+        ((self.max_upload_size_mb + 10) * 1024 * 1024) as usize
     }
 }
