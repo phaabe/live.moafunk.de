@@ -494,6 +494,13 @@
         .cropper-view-box {
             position: relative;
         }
+
+        /* Visual filter for the artist picture (preview + saved).
+           Apply to the cropped image, not to the overlay assets. */
+        .cropper-view-box img:not(.uploader-overlay-logo),
+        .cropper-canvas img {
+            filter: saturate(0.85) contrast(1.2);
+        }
     </style>
 </head>
 <body>
@@ -681,7 +688,8 @@
         const overlayRoot = cropperWrapper.querySelector('.uploader-overlay');
 
         let artistPicCropper = null;
-        let artistPicCroppedBlob = null;
+        let artistPicCroppedFilteredBlob = null;
+        let artistPicBrandedBlob = null;
         let artistPicOriginalFilename = 'artist.jpg';
         let artistPicObjectUrl = null;
 
@@ -850,10 +858,16 @@
             // Prepare form data
             const formData = new FormData(form);
 
-            // If a crop was set, upload the cropped version
-            if (artistPicCroppedBlob) {
-                const safeName = (artistPicOriginalFilename || 'artist.jpg').replace(/\.[^/.]+$/, '');
-                formData.set('artist-pic', artistPicCroppedBlob, `${safeName}.jpg`);
+            // Add the processed variants without replacing the original upload.
+            // - artist-pic: original file from the form
+            // - artist-pic-cropped: cropped + filter (no overlay)
+            // - artist-pic-branded: cropped + filter + overlay
+            const safeName = (artistPicOriginalFilename || 'artist.jpg').replace(/\.[^/.]+$/, '');
+            if (artistPicCroppedFilteredBlob) {
+                formData.set('artist-pic-cropped', artistPicCroppedFilteredBlob, `${safeName}.jpg`);
+            }
+            if (artistPicBrandedBlob) {
+                formData.set('artist-pic-branded', artistPicBrandedBlob, `${safeName}.jpg`);
             }
             
             // Disable submit button and show progress
@@ -910,7 +924,8 @@
         }
 
         function resetCropUi() {
-            artistPicCroppedBlob = null;
+            artistPicCroppedFilteredBlob = null;
+            artistPicBrandedBlob = null;
             cropperWrapper.style.display = 'none';
         }
 
@@ -943,6 +958,9 @@
         async function drawOverlayOnCanvas(canvas) {
             const ctx = canvas.getContext('2d');
             const size = canvas.width; // 1024
+
+            // Never let prior image filters affect overlay rendering.
+            if (ctx) ctx.filter = 'none';
 
             // Wait for fonts and logo to load
             await Promise.all([moafunkLogoPromise, shoikaFontsPromise]);
@@ -1083,15 +1101,48 @@
 
             if (!canvas) return;
 
-            // Draw the overlay onto the canvas
-            await drawOverlayOnCanvas(canvas);
+            // Apply the same image filter as the preview (saturate down, contrast up).
+            // Do this before drawing the overlay.
+            {
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    const filtered = document.createElement('canvas');
+                    filtered.width = canvas.width;
+                    filtered.height = canvas.height;
+                    const fctx = filtered.getContext('2d');
+                    if (fctx) {
+                        fctx.filter = 'saturate(0.85) contrast(1.08)';
+                        fctx.drawImage(canvas, 0, 0);
+                        // Reset filter and copy back.
+                        ctx.save();
+                        ctx.setTransform(1, 0, 0, 1, 0, 0);
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.restore();
+                        ctx.filter = 'none';
+                        ctx.drawImage(filtered, 0, 0);
+                    }
+                }
+            }
 
-            const blob = await new Promise((resolve) => {
+            // Save cropped+filtered (no overlay)
+            const croppedFilteredBlob = await new Promise((resolve) => {
                 canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
             });
 
-            if (blob) {
-                artistPicCroppedBlob = blob;
+            if (croppedFilteredBlob) {
+                artistPicCroppedFilteredBlob = croppedFilteredBlob;
+            }
+
+            // Draw the overlay onto the canvas
+            await drawOverlayOnCanvas(canvas);
+
+            // Save branded (cropped+filtered+overlay)
+            const brandedBlob = await new Promise((resolve) => {
+                canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
+            });
+
+            if (brandedBlob) {
+                artistPicBrandedBlob = brandedBlob;
             }
         }
 
