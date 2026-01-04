@@ -151,3 +151,13 @@ IP=$(aws lightsail get-static-ip --static-ip-name "$STATIC_IP" --query 'staticIp
 echo "\nDone."
 echo "Static IP: $IP"
 echo "SSH: ssh -i <your.pem> ubuntu@$IP"
+
+echo "\nNext: deploy via GHCR (no on-server Rust build)."
+echo "1) Ensure the backend image exists in GHCR (GitHub Actions workflow: .github/workflows/backend-ghcr.yml)."
+echo "2) If the GHCR package is private, create a token with read:packages."
+echo "3) Deploy:"
+echo "   REGION=$REGION STATIC_IP=$STATIC_IP \\"
+echo "   PEM=<your.pem> \\"
+echo "   GHCR_USER=<github-username> GHCR_TOKEN=<read:packages-token> \\"
+echo "   UNHEARD_IMAGE=ghcr.io/<owner>/live.moafunk.de-backend UNHEARD_TAG=latest \\"
+echo "   ./backend/scripts/deploy_lightsail.sh"
