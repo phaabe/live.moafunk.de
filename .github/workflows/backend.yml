@@ -5,12 +5,12 @@ on:
     branches: [main]
     paths:
       - backend/**
-      - .github/workflows/backend-ghcr.yml
+      - .github/workflows/backend.yml
   pull_request:
     branches: [main]
     paths:
       - backend/**
-      - .github/workflows/backend-ghcr.yml
+      - .github/workflows/backend.yml
   workflow_dispatch:
     inputs:
       deploy:
@@ -40,7 +40,8 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/live.moafunk.de-backend
+  # Must match what deploy_lightsail.sh/docker-compose.prod.yml pull in production.
+  IMAGE_NAME: anneoneone/unheard-backend
 
 jobs:
   build-and-push:
@@ -64,8 +65,9 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.build == true
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: anneoneone
+          # Needs write:packages for ghcr.io/anneoneone/unheard-backend
+          password: ${{ secrets.GHCR_DEPLOY_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta
@@ -120,6 +122,7 @@ jobs:
           PEM=~/.ssh/lightsail.pem \
           GHCR_USER=anneoneone \
           GHCR_TOKEN_FILE=/tmp/ghcr-token.key \
+          UNHEARD_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" \
           UNHEARD_TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}" \
           SETUP_NGINX=0 \
           RUN_TESTS="${{ github.event_name == 'workflow_dispatch' && inputs.run_tests == false && '0' || '1' }}" \
