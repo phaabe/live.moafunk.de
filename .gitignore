@@ -1,6 +1,9 @@
 .idea/
 server/
 
+# Secrets
+*.pem
+
 # Dependencies
 node_modules/
 
@@ -30,6 +33,12 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# Rust
+backend/target/
+backend/Cargo.lock
+backend/data/
+backend/.env
 
 # IDE
 .vscode/

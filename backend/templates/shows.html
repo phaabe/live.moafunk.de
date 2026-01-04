@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shows - UNHEARD Admin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        
+        .nav {
+            background: #16213e;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        
+        .nav h1 {
+            font-size: 1.4em;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        
+        .nav-links a {
+            color: #aaa;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .nav-links a:hover,
+        .nav-links a.active {
+            color: #fff;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+        
+        .add-show-form {
+            background: #16213e;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        
+        .add-show-form h3 {
+            margin-bottom: 20px;
+        }
+        
+        .form-row {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .form-group {
+            flex: 1;
+            min-width: 200px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #888;
+        }
+        
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            background: #0f0f23;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 1em;
+        }
+        
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            background: #667eea;
+            border: none;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 1em;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .btn:hover {
+            background: #5a67d8;
+        }
+        
+        .shows-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #16213e;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .shows-table th,
+        .shows-table td {
+            padding: 15px 20px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+        
+        .shows-table th {
+            background: #0f0f23;
+            font-weight: 600;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            color: #888;
+        }
+        
+        .shows-table tr:hover {
+            background: #1e2a4a;
+        }
+        
+        .shows-table a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        
+        .shows-table a:hover {
+            text-decoration: underline;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        
+        .status.scheduled {
+            background: #4299e1;
+            color: #fff;
+        }
+        
+        .status.completed {
+            background: #48bb78;
+            color: #1a1a2e;
+        }
+        
+        .status.cancelled {
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+        
+        .artist-count {
+            background: #333;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.85em;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        
+        .empty-state p {
+            font-size: 1.1em;
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <h1>UNHEARD Admin</h1>
+        <div class="nav-links">
+            <a href="/artists">Artists</a>
+            <a href="/shows" class="active">Shows</a>
+            <a href="/logout">Logout</a>
+        </div>
+    </nav>
+    
+    <div class="container">
+        <div class="add-show-form">
+            <h3>Add New Show</h3>
+            <form method="POST" action="/shows">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="title">Show Title</label>
+                        <input type="text" id="title" name="title" required placeholder="e.g., UNHEARD #42">
+                    </div>
+                    <div class="form-group">
+                        <label for="date">Date & Time</label>
+                        <input type="datetime-local" id="date" name="date" required>
+                    </div>
+                    <div class="form-group" style="flex: 2;">
+                        <label for="description">Description (optional)</label>
+                        <input type="text" id="description" name="description" placeholder="Brief description...">
+                    </div>
+                    <div class="form-group" style="flex: 0; display: flex; align-items: flex-end;">
+                        <button type="submit" class="btn">Add Show</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+        
+        <div class="header">
+            <h2>Shows ({{ shows|length }})</h2>
+        </div>
+        
+        {% if shows %}
+        <table class="shows-table">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Date</th>
+                    <th>Status</th>
+                    <th>Artists</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in shows %}
+                <tr>
+                    <td><a href="/shows/{{ item.show.id }}">{{ item.show.title }}</a></td>
+                    <td>{{ item.show.date }}</td>
+                    <td><span class="status {{ item.show.status }}">{{ item.show.status }}</span></td>
+                    <td><span class="artist-count">{{ item.artist_count }} artist{% if item.artist_count != 1 %}s{% endif %}</span></td>
+                    <td>
+                        <a href="/shows/{{ item.show.id }}">Manage</a>
+                        {% if item.artist_count > 0 %}
+                        | <a href="/shows/{{ item.show.id }}/download">Download ZIP</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state">
+            <p>No shows created yet. Add one above!</p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
