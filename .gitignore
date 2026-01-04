@@ -15,8 +15,11 @@ dist/
 .env.local
 
 # Generated files
-src/pages/re-listen.html
-public/data/tracks.json
+frontend/src/pages/re-listen.html
+frontend/public/data/tracks.json
+
+# Tooling caches
+.vite/
 
 # Logs
 *.log
