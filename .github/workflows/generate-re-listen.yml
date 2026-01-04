@@ -1,7 +1,7 @@
 name: Generate re-listen.html page
 
 on:
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch: # Manual trigger
 
 jobs:
   uv-example:
@@ -10,6 +10,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
