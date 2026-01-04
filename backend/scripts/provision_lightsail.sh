@@ -14,7 +14,7 @@ set -euo pipefail
 # Example:
 #   REGION=eu-central-1 AZ=eu-central-1a \
 #   INSTANCE=unheard-backend STATIC_IP=unheard-backend-ip \
-#   KEYPAIR=unheard-key2 BLUEPRINT=ubuntu_22_04 BUNDLE=small_3_0 \
+#   KEYPAIR=unheard-key BLUEPRINT=ubuntu_22_04 BUNDLE=small_3_0 \
 #   ./backend/scripts/provision_lightsail.sh --yes
 
 if [[ "${1:-}" != "--yes" ]]; then

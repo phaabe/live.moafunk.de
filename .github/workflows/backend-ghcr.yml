@@ -55,9 +55,41 @@ jobs:
         with:
           context: backend
           file: backend/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.LIGHTSAIL_SSH_KEY }}" > ~/.ssh/lightsail.pem
+          chmod 600 ~/.ssh/lightsail.pem
+          # Add host key to known_hosts to avoid interactive prompt
+          ssh-keyscan -H ${{ secrets.LIGHTSAIL_IP }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy to Lightsail
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
+        run: |
+          # Write GHCR token to temp file
+          echo "$GHCR_TOKEN" > /tmp/ghcr-token.key
+
+          # Run deploy script (skips nginx setup since already configured)
+          IP="${{ secrets.LIGHTSAIL_IP }}" \
+          PEM=~/.ssh/lightsail.pem \
+          GHCR_USER=anneoneone \
+          GHCR_TOKEN_FILE=/tmp/ghcr-token.key \
+          SETUP_NGINX=0 \
+          RUN_TESTS=1 \
+          ./backend/scripts/deploy_lightsail.sh

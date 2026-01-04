@@ -14,7 +14,9 @@ Live streaming web radio from Moabit, Berlin.
 - **Frontend:** Vanilla TypeScript + Vite (in `frontend/`)
 - **Archive generator:** Python 3.13 + uv (in `frontend/`, SoundCloud API integration)
 - **Backend:** Rust (in `backend/`)
-- **Deployment:** GitHub Actions + GitHub Pages
+- **Deployment:**
+  - Frontend: GitHub Actions + GitHub Pages
+  - Backend: GitHub Actions → GHCR image → AWS Lightsail (Docker Compose) behind nginx
 
 ## Development Setup
 
@@ -155,9 +157,11 @@ These must be set as GitHub Secrets:
 
 ## CI/CD Pipeline
 
-The project uses GitHub Actions for automated deployment:
+The project uses GitHub Actions for automated builds and deployment.
 
-1. **On push to `main`:**
+### Frontend (GitHub Pages)
+
+On push to `main`:
    - Fetch SoundCloud tracks → `public/data/tracks.json`
    - Generate `re-listen.html` from JSON
    - Install Node.js dependencies
@@ -166,6 +170,17 @@ The project uses GitHub Actions for automated deployment:
    - Deploy to GitHub Pages
 
 See [.github/workflows/deploy.yml](.github/workflows/deploy.yml) for details.
+
+### Backend (GHCR + Lightsail)
+
+On push to `main`, the backend image is built and published to GitHub Container Registry (GHCR):
+
+- [.github/workflows/backend-ghcr.yml](.github/workflows/backend-ghcr.yml)
+
+The production backend is deployed by pulling that image on the Lightsail instance via Docker Compose:
+
+- [backend/scripts/deploy_lightsail.sh](backend/scripts/deploy_lightsail.sh)
+- Backend details and configuration: [backend/README.md](backend/README.md)
 
 ## Testing
 

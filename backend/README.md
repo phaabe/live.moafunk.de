@@ -75,6 +75,52 @@ docker compose logs -f
 docker compose down
 ```
 
+### Production Deployment (GHCR + pull)
+
+The repo includes a GitHub Actions workflow that builds and pushes the backend image to GHCR on every push to `main`:
+
+- [.github/workflows/backend-ghcr.yml](../.github/workflows/backend-ghcr.yml)
+
+On the server, use the prebuilt image (no Rust build on the instance):
+
+```bash
+REGION=eu-central-1 STATIC_IP=unheard-backend-ip \
+PEM=~/.ssh/unheard-key.pem \
+GHCR_USER=<github-username> GHCR_TOKEN_FILE=./ghcr-token.key \
+UNHEARD_IMAGE=ghcr.io/<owner>/live.moafunk.de-backend UNHEARD_TAG=latest \
+./backend/scripts/deploy_lightsail.sh
+```
+
+#### Useful Docker/GHCR Commands
+
+Login to GHCR (recommended: use a token piped via stdin so it doesn’t end up in shell history):
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u anneoneone --password-stdin
+```
+
+Inspect which platforms (architectures) a tag provides (useful when a server is `linux/amd64` and your build accidentally produced `linux/arm64` only):
+
+```bash
+docker manifest inspect ghcr.io/anneoneone/unheard-backend:latest
+```
+
+Retag an existing local image (common pattern after a CI build that produced a specific version/tag and you want to also publish/update `latest`):
+
+```bash
+docker tag "${GHCR_IMAGE}:${TAG}" "${GHCR_IMAGE}:latest"
+```
+
+Build and push a Linux/amd64 image to GHCR using BuildKit/buildx (useful when building on Apple Silicon but deploying to an amd64 VM):
+
+```bash
+docker buildx build \
+	--platform linux/amd64 \
+	-t ghcr.io/anneoneone/unheard-backend:latest \
+	-f backend/Dockerfile backend \
+	--push
+```
+
 ### 6. Nginx Setup
 
 ```bash

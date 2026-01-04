@@ -8,12 +8,24 @@ description = "Backend for UNHEARD Artists Form"
 [dependencies]
 # Web framework
 axum = { version = "0.7", features = ["multipart", "macros"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs", "io-util", "sync"] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "time",
+  "fs",
+  "io-util",
+  "sync",
+] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 
 # Database
 # Use FromRow derives but avoid pulling in sqlx's default feature set.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "sqlite",
+  "macros",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -27,7 +39,7 @@ argon2 = "0.5"
 rand = "0.8"
 
 # S3/R2 storage
-aws-sdk-s3 = "1"
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
@@ -46,4 +58,7 @@ serde_urlencoded = "0.7"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio-util = { version = "0.7.17", features = ["io"] }
 
-
+# Image processing (used when generating show ZIPs)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+imageproc = "0.25"
+ab_glyph = "0.2"

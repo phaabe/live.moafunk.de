@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.92-slim AS builder
+FROM rust:1.92-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -26,13 +26,16 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/unheard-backend /app/unheard-backend
 
 # Copy templates
 COPY templates ./templates
+
+# Copy stamping assets (fonts/logos)
+COPY assets ./assets
 
 # Create data directory
 RUN mkdir -p /app/data
