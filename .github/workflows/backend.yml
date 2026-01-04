@@ -1,7 +1,12 @@
-name: Build Backend Image (GHCR)
+name: BACKEND - Build, Push and Deploy Image (GHCR)
 
 on:
   push:
+    branches: [main]
+    paths:
+      - backend/**
+      - .github/workflows/backend-ghcr.yml
+  pull_request:
     branches: [main]
     paths:
       - backend/**
@@ -63,6 +68,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
+    # Only deploy on push to main, not on pull requests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build-and-push
     runs-on: ubuntu-latest
 

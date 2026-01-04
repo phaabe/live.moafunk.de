@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod error;
 mod handlers;
+mod image_overlay;
 mod models;
 mod storage;
 
@@ -118,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(handlers::admin::index))
         .route("/artists", get(handlers::admin::artists_list))
         .route("/artists/:id", get(handlers::admin::artist_detail))
+        .route("/artists/:id/delete", post(handlers::admin::delete_artist))
         .route(
             "/artists/:id/status",
             post(handlers::admin::update_artist_status),
@@ -130,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/shows", get(handlers::admin::shows_list))
         .route("/shows", post(handlers::admin::create_show))
         .route("/shows/:id", get(handlers::admin::show_detail))
+        .route("/shows/:id/delete", post(handlers::admin::delete_show))
         .route("/shows/:id/assign", post(handlers::admin::assign_artist))
         .route(
             "/shows/:id/unassign/:artist_id",

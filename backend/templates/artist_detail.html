@@ -125,6 +125,24 @@
             background: #fc8181;
             color: #1a1a2e;
         }
+
+        .danger-form {
+            margin-top: 12px;
+        }
+
+        .danger-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+
+        .danger-btn:hover {
+            opacity: 0.85;
+        }
         
         .status-btn.pending {
             background: #f6ad55;
@@ -269,6 +287,10 @@
                         <button type="submit" class="status-btn reject">Reject</button>
                     </form>
                 </div>
+
+                <form method="POST" action="/artists/{{ artist.id }}/delete" class="danger-form" onsubmit="return confirm('Really delete this artist and all uploaded files? This cannot be undone.');">
+                    <button type="submit" class="danger-btn">Delete Artist</button>
+                </form>
             </div>
             
             {% if file_urls.pic %}

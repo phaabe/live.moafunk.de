@@ -52,6 +52,15 @@ Required environment variables:
 - `R2_SECRET_ACCESS_KEY`: R2 API token secret
 - `R2_BUCKET_NAME`: Name of your R2 bucket
 
+Optional environment variables (ZIP artist image stamping):
+- `ARTIST_LOGO_DIR` (default: `./assets/artist_logos`)
+	- If a file exists at `./assets/artist_logos/<artist_id>.png` or `./assets/artist_logos/<artist_name>.png`, it will be used as the logo.
+- `DEFAULT_LOGO_PATH` (default: `./assets/brand/moafunk.png`)
+	- Used when no per-artist logo is found.
+- `OVERLAY_FONT_PATH` (optional)
+	- Path to a `.ttf` font file used to render the artist name.
+	- If unset, the server tries a few common system font paths.
+
 ### 4. Local Development
 
 ```bash

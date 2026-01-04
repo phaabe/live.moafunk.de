@@ -119,6 +119,26 @@
         .artists-table a:hover {
             text-decoration: underline;
         }
+
+        .action-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .delete-btn {
+            padding: 6px 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+
+        .delete-btn:hover {
+            opacity: 0.85;
+        }
         
         .status {
             display: inline-block;
@@ -152,6 +172,25 @@
         .empty-state p {
             font-size: 1.1em;
         }
+
+        .flash {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            border: 1px solid #333;
+        }
+
+        .flash.success {
+            background: #48bb78;
+            color: #1a1a2e;
+            border-color: #48bb78;
+        }
+
+        .flash.error {
+            background: #fc8181;
+            color: #1a1a2e;
+            border-color: #fc8181;
+        }
     </style>
 </head>
 <body>
@@ -174,6 +213,12 @@
                 <a href="/artists?status_filter=rejected" class="filter-btn {% if status_filter == 'rejected' %}active{% endif %}">Rejected</a>
             </div>
         </div>
+
+        {% if flash_message %}
+        <div class="flash {% if flash_kind %}{{ flash_kind }}{% endif %}">
+            {{ flash_message }}
+        </div>
+        {% endif %}
         
         {% if artists %}
         <table class="artists-table">
@@ -193,7 +238,14 @@
                     <td>{{ artist.pronouns }}</td>
                     <td><span class="status {{ artist.status }}">{{ artist.status }}</span></td>
                     <td>{{ artist.created_at }}</td>
-                    <td><a href="/artists/{{ artist.id }}">View Details</a></td>
+                    <td>
+                        <div class="action-row">
+                            <a href="/artists/{{ artist.id }}">View Details</a>
+                            <form method="POST" action="/artists/{{ artist.id }}/delete" style="margin: 0;" onsubmit="return confirm('Really delete this artist and all uploaded files? This cannot be undone.');">
+                                <button type="submit" class="delete-btn">Delete</button>
+                            </form>
+                        </div>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

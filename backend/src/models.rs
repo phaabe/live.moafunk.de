@@ -8,6 +8,8 @@ pub struct Artist {
     pub pronouns: String,
 
     pub pic_key: Option<String>,
+    pub pic_cropped_key: Option<String>,
+    pub pic_overlay_key: Option<String>,
     pub voice_message_key: Option<String>,
     pub no_voice_message: bool,
 
@@ -42,47 +44,10 @@ pub struct Show {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShowWithArtists {
-    #[serde(flatten)]
-    pub show: Show,
-    pub artists: Vec<Artist>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtistWithShows {
     #[serde(flatten)]
     pub artist: Artist,
     pub shows: Vec<Show>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Session {
-    pub token: String,
-    pub created_at: String,
-    pub expires_at: String,
-}
-
-// Form submission types
-#[derive(Debug, Deserialize)]
-pub struct SubmitFormData {
-    #[serde(rename = "artist-name")]
-    pub artist_name: String,
-    pub pronouns: String,
-    #[serde(rename = "track1-name")]
-    pub track1_name: String,
-    #[serde(rename = "track2-name")]
-    pub track2_name: String,
-    #[serde(rename = "no-voice-message", default)]
-    pub no_voice_message: bool,
-    pub instagram: Option<String>,
-    pub soundcloud: Option<String>,
-    pub bandcamp: Option<String>,
-    pub spotify: Option<String>,
-    #[serde(rename = "other-social")]
-    pub other_social: Option<String>,
-    #[serde(rename = "upcoming-events")]
-    pub upcoming_events: Option<String>,
-    pub mentions: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

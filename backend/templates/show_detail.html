@@ -306,6 +306,9 @@
                 {% if assigned_artists | length > 0 %}
                 <a href="/shows/{{ show.id }}/download" class="btn btn-primary">Download ZIP</a>
                 {% endif %}
+                <form method="POST" action="/shows/{{ show.id }}/delete" style="margin: 0;" onsubmit="return confirm('Really delete this show? This will remove all artist assignments from it. This cannot be undone.');">
+                    <button type="submit" class="btn btn-danger">Delete Show</button>
+                </form>
             </div>
         </div>
         

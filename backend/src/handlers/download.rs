@@ -1,4 +1,4 @@
-use crate::{auth, models, storage, AppError, AppState, Result};
+use crate::{auth, image_overlay, models, storage, AppError, AppState, Result};
 use axum::{
     extract::{Path, State},
     http::{header, Request, StatusCode},
@@ -29,11 +29,10 @@ pub async fn download_show(
     }
 
     // Get show
-    let show: Option<models::Show> =
-        sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-            .bind(show_id)
-            .fetch_optional(&state.db)
-            .await?;
+    let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?;
 
     let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
@@ -63,16 +62,29 @@ pub async fn download_show(
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
 
+        let mut collage_items: Vec<(String, Vec<u8>, String)> = Vec::new();
+
         for artist in &artists {
             let artist_dir = sanitize_filename(&artist.name);
 
             // Download and add artist picture
-            if let Some(key) = &artist.pic_key {
+            let pic_key = artist
+                .pic_overlay_key
+                .as_ref()
+                .or(artist.pic_cropped_key.as_ref())
+                .or(artist.pic_key.as_ref());
+            if let Some(key) = pic_key {
                 if let Ok((data, _)) = storage::download_file(&state, key).await {
                     let ext = std::path::Path::new(key)
                         .extension()
                         .and_then(|e| e.to_str())
-                        .unwrap_or("jpg");
+                        .unwrap_or("jpg")
+                        .to_string();
+
+                    if collage_items.len() < 4 {
+                        collage_items.push((artist.name.clone(), data.clone(), ext.clone()));
+                    }
+
                     let path = format!("{}/artist_pic.{}", artist_dir, ext);
                     zip.start_file(&path, options)
                         .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
@@ -169,6 +181,18 @@ Things to Mention:
                 .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
         }
 
+        // Create a 2x2 cover collage from up to 4 artist pictures.
+        if !collage_items.is_empty() {
+            if let Some(collage_png) =
+                image_overlay::build_show_collage(&state, collage_items).await
+            {
+                zip.start_file("cover.png", options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&collage_png)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
         // Create README.txt
         let readme = format!(
             r#"UNHEARD Show Package
@@ -180,6 +204,8 @@ Generated: {}
 Contents
 --------
 This package contains media files for all artists assigned to this show.
+
+    - cover.png - 2x2 collage of (up to) the first 4 artist pictures
 
 Each artist folder contains:
 - artist_pic.* - Artist profile picture (square format)
@@ -203,7 +229,7 @@ Enjoy the show!
         let mut playlist = String::from("#EXTM3U\n\n");
         for artist in &artists {
             let artist_dir = sanitize_filename(&artist.name);
-            
+
             if let Some(key) = &artist.track1_key {
                 let ext = std::path::Path::new(key)
                     .extension()
@@ -215,7 +241,7 @@ Enjoy the show!
                     artist.name, artist.track1_name, artist_dir, track_name, ext
                 ));
             }
-            
+
             if let Some(key) = &artist.track2_key {
                 let ext = std::path::Path::new(key)
                     .extension()
