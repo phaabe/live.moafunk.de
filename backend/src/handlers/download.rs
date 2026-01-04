@@ -1,4 +1,4 @@
-use crate::{auth, image_overlay, models, storage, AppError, AppState, Result};
+use crate::{auth, image_overlay, models, pdf, storage, AppError, AppState, Result};
 use axum::{
     extract::{Path, State},
     http::{header, Request, StatusCode},
@@ -6,6 +6,32 @@ use axum::{
 };
 use std::io::Write;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShowPackage {
+    Recording,
+    SocialMedia,
+    AllData,
+}
+
+impl ShowPackage {
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "recording" | "rec" => Some(Self::Recording),
+            "social-media" | "social" | "media" => Some(Self::SocialMedia),
+            "all-data" | "all" | "all-material" | "material" => Some(Self::AllData),
+            _ => None,
+        }
+    }
+
+    fn filename_suffix(self) -> &'static str {
+        match self {
+            Self::Recording => "recording",
+            Self::SocialMedia => "social-media",
+            Self::AllData => "all-data",
+        }
+    }
+}
 
 fn sanitize_filename(name: &str) -> String {
     name.chars()
@@ -18,17 +44,10 @@ fn sanitize_filename(name: &str) -> String {
         .to_string()
 }
 
-pub async fn download_show(
-    State(state): State<Arc<AppState>>,
-    Path(show_id): Path<i64>,
-    request: Request<axum::body::Body>,
-) -> Result<Response> {
-    let token = auth::get_session_from_cookies(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Err(AppError::Unauthorized);
-    }
-
-    // Get show
+async fn fetch_show_and_artists(
+    state: &Arc<AppState>,
+    show_id: i64,
+) -> Result<(models::Show, Vec<models::Artist>)> {
     let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
         .bind(show_id)
         .fetch_optional(&state.db)
@@ -36,7 +55,6 @@ pub async fn download_show(
 
     let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    // Get assigned artists
     let artists: Vec<models::Artist> = sqlx::query_as(
         r#"
         SELECT a.* FROM artists a
@@ -55,118 +73,514 @@ pub async fn download_show(
         ));
     }
 
-    // Create ZIP in memory
+    Ok((show, artists))
+}
+
+fn zip_filename(show: &models::Show, package: ShowPackage) -> String {
+    let date_str = show.date.split('T').next().unwrap_or(&show.date);
+    let show_title = sanitize_filename(&show.title);
+    format!(
+        "UNHEARD_{}_{}_{}.zip",
+        date_str,
+        show_title,
+        package.filename_suffix()
+    )
+}
+
+fn audio_filename(artist_name: &str, tag: &str, title: &str, ext: &str) -> String {
+    let artist = sanitize_filename(artist_name);
+    let title = sanitize_filename(title);
+    let tag = sanitize_filename(tag);
+    if title.trim().is_empty() {
+        format!("{} - {}.{}", artist, tag, ext)
+    } else {
+        format!("{} - {} - {}.{}", artist, tag, title, ext)
+    }
+}
+
+fn artist_zip_filename(artist: &models::Artist) -> String {
+    let name = sanitize_filename(&artist.name);
+    format!("UNHEARD_artist_{}_{}.zip", name, artist.id)
+}
+
+async fn fetch_artist_and_show(
+    state: &Arc<AppState>,
+    artist_id: i64,
+) -> Result<(models::Artist, Option<models::Show>)> {
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(artist_id)
+        .fetch_optional(&state.db)
+        .await?;
+    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let show: Option<models::Show> = sqlx::query_as(
+        r#"
+        SELECT s.* FROM shows s
+        INNER JOIN artist_show_assignments asa ON asa.show_id = s.id
+        WHERE asa.artist_id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(artist_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    Ok((artist, show))
+}
+
+pub async fn download_artist(
+    State(state): State<Arc<AppState>>,
+    Path(artist_id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = auth::get_session_from_cookies(&request);
+    if !auth::is_authenticated(&state, token.as_deref()).await {
+        return Err(AppError::Unauthorized);
+    }
+
+    let (artist, show) = fetch_artist_and_show(&state, artist_id).await?;
+    let artist_dir = sanitize_filename(&artist.name);
+
     let mut zip_buffer = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buffer));
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
 
-        let mut collage_items: Vec<(String, Vec<u8>, String)> = Vec::new();
+        if let Some(key) = &artist.pic_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("jpg");
+                let path = format!("{}/artist_pic_original.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
 
-        for artist in &artists {
-            let artist_dir = sanitize_filename(&artist.name);
+        if let Some(key) = &artist.pic_cropped_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("jpg");
+                let path = format!("{}/artist_pic_cropped.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
 
-            // Download and add artist picture
-            let pic_key = artist
-                .pic_overlay_key
-                .as_ref()
-                .or(artist.pic_cropped_key.as_ref())
-                .or(artist.pic_key.as_ref());
-            if let Some(key) = pic_key {
-                if let Ok((data, _)) = storage::download_file(&state, key).await {
-                    let ext = std::path::Path::new(key)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("jpg")
-                        .to_string();
+        if let Some(key) = &artist.pic_overlay_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("png");
+                let path = format!("{}/artist_pic_overlay.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
 
-                    // For the combined cover, prefer the cropped ("image_cropped") picture.
+        if let Some(key) = &artist.voice_message_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("mp3");
+                let path = format!("{}/voice_message.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        if let Some(key) = &artist.track1_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("mp3");
+                let track_name = sanitize_filename(&artist.track1_name);
+                let path = format!("{}/track1_{}.{}", artist_dir, track_name, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        if let Some(key) = &artist.track2_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("mp3");
+                let track_name = sanitize_filename(&artist.track2_name);
+                let path = format!("{}/track2_{}.{}", artist_dir, track_name, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        let assigned_show_line = if let Some(s) = &show {
+            format!("{} ({})", s.title, s.date)
+        } else {
+            "N/A".to_string()
+        };
+        let voice_line = if artist.no_voice_message {
+            "Artist opted out".to_string()
+        } else if artist.voice_message_key.is_some() {
+            "Uploaded".to_string()
+        } else {
+            "Not uploaded".to_string()
+        };
+
+        let info_content = format!(
+            r#"Artist: {}
+Pronouns: {}
+Status: {}
+Assigned Show: {}
+
+Track 1: {}
+Track 2: {}
+Voice Message: {}
+
+Social Media:
+- Instagram: {}
+- SoundCloud: {}
+- Bandcamp: {}
+- Spotify: {}
+- Other: {}
+
+Upcoming Events:
+{}
+
+Things to Mention:
+{}
+"#,
+            artist.name,
+            artist.pronouns,
+            artist.status,
+            assigned_show_line,
+            artist.track1_name,
+            artist.track2_name,
+            voice_line,
+            artist.instagram.as_deref().unwrap_or("N/A"),
+            artist.soundcloud.as_deref().unwrap_or("N/A"),
+            artist.bandcamp.as_deref().unwrap_or("N/A"),
+            artist.spotify.as_deref().unwrap_or("N/A"),
+            artist.other_social.as_deref().unwrap_or("N/A"),
+            artist.upcoming_events.as_deref().unwrap_or("N/A"),
+            artist.mentions.as_deref().unwrap_or("N/A"),
+        );
+
+        let path = format!("{}/info.txt", artist_dir);
+        zip.start_file(&path, options)
+            .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+        zip.write_all(info_content.as_bytes())
+            .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+
+        zip.finish()
+            .map_err(|e| AppError::Internal(format!("ZIP finish error: {}", e)))?;
+    }
+
+    let filename = artist_zip_filename(&artist);
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        zip_buffer,
+    )
+        .into_response())
+}
+
+pub async fn download_show_package(
+    State(state): State<Arc<AppState>>,
+    Path((show_id, package)): Path<(i64, String)>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = auth::get_session_from_cookies(&request);
+    if !auth::is_authenticated(&state, token.as_deref()).await {
+        return Err(AppError::Unauthorized);
+    }
+
+    let pkg = ShowPackage::parse(&package)
+        .ok_or_else(|| AppError::Validation("Invalid download package".to_string()))?;
+
+    download_show_impl(state, show_id, pkg).await
+}
+
+async fn download_show_impl(
+    state: Arc<AppState>,
+    show_id: i64,
+    package: ShowPackage,
+) -> Result<Response> {
+    let (show, artists) = fetch_show_and_artists(&state, show_id).await?;
+
+    let mut zip_buffer = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buffer));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        match package {
+            ShowPackage::Recording => {
+                // PDF with all artist infos
+                let pdf_bytes = pdf::build_recording_infos_pdf(&show, &artists);
+                zip.start_file("artists.pdf", options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&pdf_bytes)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+
+                // Audio files
+                for artist in &artists {
+                    if let Some(key) = &artist.voice_message_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("mp3");
+                            let filename = audio_filename(&artist.name, "T0", "voicemail", ext);
+                            let path = format!("audio/{}", filename);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+
+                    if let Some(key) = &artist.track1_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("mp3");
+                            let filename =
+                                audio_filename(&artist.name, "T1", &artist.track1_name, ext);
+                            let path = format!("audio/{}", filename);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+
+                    if let Some(key) = &artist.track2_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("mp3");
+                            let filename =
+                                audio_filename(&artist.name, "T2", &artist.track2_name, ext);
+                            let path = format!("audio/{}", filename);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+                }
+            }
+
+            ShowPackage::SocialMedia => {
+                // Overall cover (2x2 grid)
+                let mut collage_items: Vec<(String, Vec<u8>, String)> = Vec::new();
+                for artist in &artists {
+                    if collage_items.len() >= 4 {
+                        break;
+                    }
+                    let collage_key = artist
+                        .pic_cropped_key
+                        .as_ref()
+                        .or(artist.pic_key.as_ref())
+                        .or(artist.pic_overlay_key.as_ref());
+                    if let Some(key) = collage_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("jpg")
+                                .to_string();
+                            collage_items.push((artist.name.clone(), data, ext));
+                        }
+                    }
+                }
+
+                if !collage_items.is_empty() {
+                    if let Some(collage_png) =
+                        image_overlay::build_show_collage(&state, collage_items).await
+                    {
+                        zip.start_file("cover_overall.png", options)
+                            .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                        zip.write_all(&collage_png)
+                            .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+                    }
+                }
+
+                // Per-artist cover (cropped image with overlay)
+                for artist in &artists {
+                    let Some(key) = &artist.pic_overlay_key else {
+                        continue;
+                    };
+                    if let Ok((data, _)) = storage::download_file(&state, key).await {
+                        let ext = std::path::Path::new(key)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("png");
+                        let filename =
+                            format!("cover_artist/{}.{}", sanitize_filename(&artist.name), ext);
+                        zip.start_file(&filename, options)
+                            .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                        zip.write_all(&data)
+                            .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+                    }
+                }
+            }
+
+            ShowPackage::AllData => {
+                // Everything regarding all artists.
+                let mut collage_items: Vec<(String, Vec<u8>, String)> = Vec::new();
+
+                for artist in &artists {
+                    let artist_dir = sanitize_filename(&artist.name);
+
+                    // Original / cropped / overlay pictures (if present)
+                    if let Some(key) = &artist.pic_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("jpg");
+                            let path = format!("{}/artist_pic_original.{}", artist_dir, ext);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+
+                    if let Some(key) = &artist.pic_cropped_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("jpg");
+                            let path = format!("{}/artist_pic_cropped.{}", artist_dir, ext);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+
+                    if let Some(key) = &artist.pic_overlay_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("png");
+                            let path = format!("{}/artist_pic_overlay.{}", artist_dir, ext);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+
+                    // Build collage from cropped images.
                     if collage_items.len() < 4 {
                         let collage_key = artist
                             .pic_cropped_key
                             .as_ref()
                             .or(artist.pic_key.as_ref())
                             .or(artist.pic_overlay_key.as_ref());
-
-                        if let Some(ck) = collage_key {
-                            if let Ok((cdata, _)) = storage::download_file(&state, ck).await {
-                                let cext = std::path::Path::new(ck)
+                        if let Some(key) = collage_key {
+                            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                                let ext = std::path::Path::new(key)
                                     .extension()
                                     .and_then(|e| e.to_str())
                                     .unwrap_or("jpg")
                                     .to_string();
-                                collage_items.push((artist.name.clone(), cdata, cext));
-                            } else {
-                                collage_items.push((
-                                    artist.name.clone(),
-                                    data.clone(),
-                                    ext.clone(),
-                                ));
+                                collage_items.push((artist.name.clone(), data, ext));
                             }
-                        } else {
-                            collage_items.push((artist.name.clone(), data.clone(), ext.clone()));
                         }
                     }
 
-                    let path = format!("{}/artist_pic.{}", artist_dir, ext);
-                    zip.start_file(&path, options)
-                        .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
-                    zip.write_all(&data)
-                        .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
-                }
-            }
+                    // Voice message
+                    if let Some(key) = &artist.voice_message_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("mp3");
+                            let path = format!("{}/voice_message.{}", artist_dir, ext);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
 
-            // Download and add voice message
-            if let Some(key) = &artist.voice_message_key {
-                if let Ok((data, _)) = storage::download_file(&state, key).await {
-                    let ext = std::path::Path::new(key)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("mp3");
-                    let path = format!("{}/voice_message.{}", artist_dir, ext);
-                    zip.start_file(&path, options)
-                        .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
-                    zip.write_all(&data)
-                        .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
-                }
-            }
+                    // Tracks
+                    if let Some(key) = &artist.track1_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("mp3");
+                            let track_name = sanitize_filename(&artist.track1_name);
+                            let path = format!("{}/track1_{}.{}", artist_dir, track_name, ext);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
 
-            // Download and add track 1
-            if let Some(key) = &artist.track1_key {
-                if let Ok((data, _)) = storage::download_file(&state, key).await {
-                    let ext = std::path::Path::new(key)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("mp3");
-                    let track_name = sanitize_filename(&artist.track1_name);
-                    let path = format!("{}/track1_{}.{}", artist_dir, track_name, ext);
-                    zip.start_file(&path, options)
-                        .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
-                    zip.write_all(&data)
-                        .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
-                }
-            }
+                    if let Some(key) = &artist.track2_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("mp3");
+                            let track_name = sanitize_filename(&artist.track2_name);
+                            let path = format!("{}/track2_{}.{}", artist_dir, track_name, ext);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
 
-            // Download and add track 2
-            if let Some(key) = &artist.track2_key {
-                if let Ok((data, _)) = storage::download_file(&state, key).await {
-                    let ext = std::path::Path::new(key)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("mp3");
-                    let track_name = sanitize_filename(&artist.track2_name);
-                    let path = format!("{}/track2_{}.{}", artist_dir, track_name, ext);
-                    zip.start_file(&path, options)
-                        .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
-                    zip.write_all(&data)
-                        .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
-                }
-            }
-
-            // Create info.txt
-            let info_content = format!(
-                r#"Artist: {}
+                    // info.txt
+                    let info_content = format!(
+                        r#"Artist: {}
 Pronouns: {}
 
 Track 1: {}
@@ -185,114 +599,44 @@ Upcoming Events:
 Things to Mention:
 {}
 "#,
-                artist.name,
-                artist.pronouns,
-                artist.track1_name,
-                artist.track2_name,
-                artist.instagram.as_deref().unwrap_or("N/A"),
-                artist.soundcloud.as_deref().unwrap_or("N/A"),
-                artist.bandcamp.as_deref().unwrap_or("N/A"),
-                artist.spotify.as_deref().unwrap_or("N/A"),
-                artist.other_social.as_deref().unwrap_or("N/A"),
-                artist.upcoming_events.as_deref().unwrap_or("N/A"),
-                artist.mentions.as_deref().unwrap_or("N/A"),
-            );
+                        artist.name,
+                        artist.pronouns,
+                        artist.track1_name,
+                        artist.track2_name,
+                        artist.instagram.as_deref().unwrap_or("N/A"),
+                        artist.soundcloud.as_deref().unwrap_or("N/A"),
+                        artist.bandcamp.as_deref().unwrap_or("N/A"),
+                        artist.spotify.as_deref().unwrap_or("N/A"),
+                        artist.other_social.as_deref().unwrap_or("N/A"),
+                        artist.upcoming_events.as_deref().unwrap_or("N/A"),
+                        artist.mentions.as_deref().unwrap_or("N/A"),
+                    );
 
-            let path = format!("{}/info.txt", artist_dir);
-            zip.start_file(&path, options)
-                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
-            zip.write_all(info_content.as_bytes())
-                .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
-        }
+                    let path = format!("{}/info.txt", artist_dir);
+                    zip.start_file(&path, options)
+                        .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                    zip.write_all(info_content.as_bytes())
+                        .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+                }
 
-        // Create a 2x2 cover collage from up to 4 artist pictures.
-        if !collage_items.is_empty() {
-            if let Some(collage_png) =
-                image_overlay::build_show_collage(&state, collage_items).await
-            {
-                zip.start_file("cover.png", options)
-                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
-                zip.write_all(&collage_png)
-                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+                if !collage_items.is_empty() {
+                    if let Some(collage_png) =
+                        image_overlay::build_show_collage(&state, collage_items).await
+                    {
+                        zip.start_file("cover.png", options)
+                            .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                        zip.write_all(&collage_png)
+                            .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+                    }
+                }
             }
         }
-
-        // Create README.txt
-        let readme = format!(
-            r#"UNHEARD Show Package
-====================
-
-Show: {}
-Generated: {}
-
-Contents
---------
-This package contains media files for all artists assigned to this show.
-
-    - cover.png - 2x2 collage of (up to) the first 4 cropped artist pictures
-
-Each artist folder contains:
-- artist_pic.* - Artist profile picture (square format)
-- voice_message.* - Artist voice message (if provided)
-- track1_*.* - First track
-- track2_*.* - Second track
-- info.txt - Artist information and social media links
-
-Enjoy the show!
-"#,
-            show.title,
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
-        );
-
-        zip.start_file("README.txt", options)
-            .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
-        zip.write_all(readme.as_bytes())
-            .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
-
-        // Create playlist.m3u
-        let mut playlist = String::from("#EXTM3U\n\n");
-        for artist in &artists {
-            let artist_dir = sanitize_filename(&artist.name);
-
-            if let Some(key) = &artist.track1_key {
-                let ext = std::path::Path::new(key)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("mp3");
-                let track_name = sanitize_filename(&artist.track1_name);
-                playlist.push_str(&format!(
-                    "#EXTINF:-1,{} - {}\n{}/track1_{}.{}\n\n",
-                    artist.name, artist.track1_name, artist_dir, track_name, ext
-                ));
-            }
-
-            if let Some(key) = &artist.track2_key {
-                let ext = std::path::Path::new(key)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("mp3");
-                let track_name = sanitize_filename(&artist.track2_name);
-                playlist.push_str(&format!(
-                    "#EXTINF:-1,{} - {}\n{}/track2_{}.{}\n\n",
-                    artist.name, artist.track2_name, artist_dir, track_name, ext
-                ));
-            }
-        }
-
-        zip.start_file("playlist.m3u", options)
-            .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
-        zip.write_all(playlist.as_bytes())
-            .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
 
         zip.finish()
             .map_err(|e| AppError::Internal(format!("ZIP finish error: {}", e)))?;
     }
 
-    // Generate filename
-    let date_str = show.date.split('T').next().unwrap_or(&show.date);
-    let show_title = sanitize_filename(&show.title);
-    let filename = format!("UNHEARD_{}_{}.zip", date_str, show_title);
-
+    let filename = zip_filename(&show, package);
     Ok((
         StatusCode::OK,
         [
@@ -305,4 +649,18 @@ Enjoy the show!
         zip_buffer,
     )
         .into_response())
+}
+
+pub async fn download_show(
+    State(state): State<Arc<AppState>>,
+    Path(show_id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = auth::get_session_from_cookies(&request);
+    if !auth::is_authenticated(&state, token.as_deref()).await {
+        return Err(AppError::Unauthorized);
+    }
+
+    // Legacy endpoint: default to all-data.
+    download_show_impl(state, show_id, ShowPackage::AllData).await
 }

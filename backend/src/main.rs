@@ -5,6 +5,7 @@ mod error;
 mod handlers;
 mod image_overlay;
 mod models;
+mod pdf;
 mod storage;
 
 use axum::{
@@ -119,6 +120,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(handlers::admin::index))
         .route("/artists", get(handlers::admin::artists_list))
         .route("/artists/:id", get(handlers::admin::artist_detail))
+        .route(
+            "/artists/:id/download",
+            get(handlers::download::download_artist),
+        )
         .route("/artists/:id/delete", post(handlers::admin::delete_artist))
         .route(
             "/artists/:id/status",
@@ -145,6 +150,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/shows/:id/download",
             get(handlers::download::download_show),
+        )
+        .route(
+            "/shows/:id/download/:package",
+            get(handlers::download::download_show_package),
         )
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes()))
         .layer(cors)

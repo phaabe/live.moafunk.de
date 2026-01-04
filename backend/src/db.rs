@@ -125,6 +125,30 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Enforce: an artist can be assigned to at most 1 show.
+    // If a DB already contains multiple assignments per artist, keep the most recent one.
+    sqlx::query(
+        r#"
+        DELETE FROM artist_show_assignments
+        WHERE rowid NOT IN (
+            SELECT MAX(rowid)
+            FROM artist_show_assignments
+            GROUP BY artist_id
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_one_show_per_artist
+        ON artist_show_assignments(artist_id)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS sessions (

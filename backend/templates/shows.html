@@ -60,6 +60,29 @@
             align-items: center;
             margin-bottom: 30px;
         }
+
+        .filters {
+            display: flex;
+            gap: 10px;
+        }
+
+        .filter-btn {
+            padding: 8px 16px;
+            background: #16213e;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #aaa;
+            text-decoration: none;
+            font-size: 0.9em;
+            transition: all 0.3s;
+        }
+
+        .filter-btn:hover,
+        .filter-btn.active {
+            background: #667eea;
+            border-color: #667eea;
+            color: #fff;
+        }
         
         .add-show-form {
             background: #16213e;
@@ -109,17 +132,17 @@
         
         .btn {
             padding: 10px 20px;
-            background: #667eea;
+            background: #48bb78;
             border: none;
             border-radius: 4px;
-            color: #fff;
+            color: #1a1a2e;
             font-size: 1em;
             cursor: pointer;
             transition: background 0.3s;
         }
         
         .btn:hover {
-            background: #5a67d8;
+            background: #3fa966;
         }
         
         .shows-table {
@@ -197,6 +220,21 @@
             border-radius: 20px;
             font-size: 0.85em;
         }
+
+        .artist-count.none {
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+
+        .artist-count.partial {
+            background: #ffec44;
+            color: #1a1a2e;
+        }
+
+        .artist-count.full {
+            background: #48bb78;
+            color: #1a1a2e;
+        }
         
         .empty-state {
             text-align: center;
@@ -232,6 +270,41 @@
             gap: 12px;
             align-items: center;
             flex-wrap: wrap;
+        }
+
+        .download-btn {
+            display: inline-block;
+            padding: 7px 12px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 0.9em;
+            font-weight: 600;
+            color: #fff;
+            transition: opacity 0.2s;
+            white-space: nowrap;
+        }
+
+        .download-btn.recording {
+            background: #16213e;
+        }
+
+        .download-btn.social {
+            background: #667eea;
+        }
+
+        .download-btn.all {
+            background: #333;
+        }
+
+        /* Override `.shows-table a { color: ... }` so button text is readable. */
+        .shows-table a.download-btn,
+        .shows-table a.download-btn:visited {
+            color: #fff;
+        }
+
+        .download-btn:hover {
+            opacity: 0.85;
+            text-decoration: none;
         }
 
         .delete-btn {
@@ -285,6 +358,12 @@
         
         <div class="header">
             <h2>Shows ({{ shows|length }})</h2>
+            <div class="filters">
+                <a href="/shows?sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if not status_filter %}active{% endif %}">All</a>
+                <a href="/shows?status_filter=scheduled&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'scheduled' %}active{% endif %}">Scheduled</a>
+                <a href="/shows?status_filter=completed&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'completed' %}active{% endif %}">Completed</a>
+                <a href="/shows?status_filter=cancelled&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'cancelled' %}active{% endif %}">Cancelled</a>
+            </div>
         </div>
 
         {% if flash_message %}
@@ -300,32 +379,32 @@
                     <th>
                         {% set next_dir = "asc" %}
                         {% if sort == "title" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
-                        <a href="/shows?sort=title&dir={{ next_dir }}">
+                        <a href="/shows?sort=title&dir={{ next_dir }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}">
                             Title{% if sort == "title" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
                         </a>
                     </th>
                     <th>
                         {% set next_dir = "asc" %}
                         {% if sort == "date" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
-                        <a href="/shows?sort=date&dir={{ next_dir }}">
+                        <a href="/shows?sort=date&dir={{ next_dir }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}">
                             Date{% if sort == "date" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
                         </a>
                     </th>
                     <th>
                         {% set next_dir = "asc" %}
                         {% if sort == "status" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
-                        <a href="/shows?sort=status&dir={{ next_dir }}">
+                        <a href="/shows?sort=status&dir={{ next_dir }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}">
                             Status{% if sort == "status" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
                         </a>
                     </th>
                     <th>
                         {% set next_dir = "asc" %}
                         {% if sort == "artists" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
-                        <a href="/shows?sort=artists&dir={{ next_dir }}">
+                        <a href="/shows?sort=artists&dir={{ next_dir }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}">
                             Artists{% if sort == "artists" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
                         </a>
                     </th>
-                    <th>Actions</th>
+                    <th>Downloads</th>
                 </tr>
             </thead>
             <tbody>
@@ -335,20 +414,18 @@
                     <td>{{ item.show.date }}</td>
                     <td><span class="status {{ item.show.status }}">{{ item.show.status }}</span></td>
                     <td>
-                        <span class="artist-count">
+                        <span class="artist-count {% if item.artist_count == 0 %}none{% elif item.artist_count < 4 %}partial{% else %}full{% endif %}">
                             {{ item.artist_count }} artist{% if item.artist_count != 1 %}s{% endif %}
                             ({{ item.artists_left }} left)
                         </span>
                     </td>
                     <td>
                         <div class="action-row">
-                            <a href="/shows/{{ item.show.id }}">Manage</a>
                             {% if item.artist_count > 0 %}
-                            <a href="/shows/{{ item.show.id }}/download">Download ZIP</a>
+                            <a class="download-btn recording" href="/shows/{{ item.show.id }}/download/recording">Recording</a>
+                            <a class="download-btn social" href="/shows/{{ item.show.id }}/download/social-media">Social Media</a>
+                            <a class="download-btn all" href="/shows/{{ item.show.id }}/download/all-data">All Material</a>
                             {% endif %}
-                            <form method="POST" action="/shows/{{ item.show.id }}/delete" style="margin: 0;" onsubmit="return confirm('Really delete this show? This will remove all artist assignments from it. This cannot be undone.');">
-                                <button type="submit" class="delete-btn">Delete</button>
-                            </form>
                         </div>
                     </td>
                 </tr>

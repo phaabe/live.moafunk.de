@@ -148,6 +148,21 @@
             background: #667eea;
             color: #fff;
         }
+
+        .btn-download-recording {
+            background: #16213e;
+            color: #fff;
+        }
+
+        .btn-download-social {
+            background: #667eea;
+            color: #fff;
+        }
+
+        .btn-download-all {
+            background: #333;
+            color: #fff;
+        }
         
         .btn-success {
             background: #48bb78;
@@ -326,11 +341,10 @@
             
             <div class="header-actions">
                 {% if assigned_artists | length > 0 %}
-                <a href="/shows/{{ show.id }}/download" class="btn btn-primary">Download ZIP</a>
+                <a href="/shows/{{ show.id }}/download/recording" class="btn btn-download-recording">Recording Package</a>
+                <a href="/shows/{{ show.id }}/download/social-media" class="btn btn-download-social">Social Media Package</a>
+                <a href="/shows/{{ show.id }}/download/all-data" class="btn btn-download-all">All Material Package</a>
                 {% endif %}
-                <form method="POST" action="/shows/{{ show.id }}/delete" style="margin: 0;" onsubmit="return confirm('Really delete this show? This will remove all artist assignments from it. This cannot be undone.');">
-                    <button type="submit" class="btn btn-danger">Delete Show</button>
-                </form>
             </div>
         </div>
         
@@ -379,6 +393,10 @@
             <p class="empty-state">No artists assigned to this show yet.</p>
             {% endif %}
         </div>
+
+        <form method="POST" action="/shows/{{ show.id }}/delete" style="margin-top: 20px;" onsubmit="return confirm('Really delete this show? This will remove all artist assignments from it. This cannot be undone.');">
+            <button type="submit" class="btn btn-danger">Delete Show</button>
+        </form>
     </div>
 </body>
 </html>

@@ -168,7 +168,8 @@ sudo systemctl reload nginx
 - `GET /shows/:id` - Show detail
 - `POST /shows/:id/assign` - Assign artist to show
 - `POST /shows/:id/unassign/:artist_id` - Remove artist from show
-- `GET /shows/:id/download` - Download show media as ZIP
+- `GET /shows/:id/download` - Download show media as ZIP (legacy; same as all-data)
+- `GET /shows/:id/download/:package` - Download a show package as ZIP (`recording`, `social-media`, `all-data`)
 
 ## Directory Structure
 

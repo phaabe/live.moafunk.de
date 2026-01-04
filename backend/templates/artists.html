@@ -130,25 +130,7 @@
             text-decoration: underline;
         }
 
-        .action-row {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
 
-        .delete-btn {
-            padding: 6px 10px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.85em;
-            background: #fc8181;
-            color: #1a1a2e;
-        }
-
-        .delete-btn:hover {
-            opacity: 0.85;
-        }
         
         .status {
             display: inline-block;
@@ -242,6 +224,7 @@
                         </a>
                     </th>
                     <th>Pronouns</th>
+                    <th>Show</th>
                     <th>
                         {% set next_dir = "asc" %}
                         {% if sort == "status" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
@@ -256,7 +239,6 @@
                             Submitted{% if sort == "submitted" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
                         </a>
                     </th>
-                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -264,16 +246,9 @@
                 <tr>
                     <td><a href="/artists/{{ artist.id }}">{{ artist.name }}</a></td>
                     <td>{{ artist.pronouns }}</td>
+                    <td>{{ artist.show_titles | default(value="—") }}</td>
                     <td><span class="status {{ artist.status }}">{{ artist.status }}</span></td>
                     <td>{{ artist.created_at }}</td>
-                    <td>
-                        <div class="action-row">
-                            <a href="/artists/{{ artist.id }}">View Details</a>
-                            <form method="POST" action="/artists/{{ artist.id }}/delete" style="margin: 0;" onsubmit="return confirm('Really delete this artist and all uploaded files? This cannot be undone.');">
-                                <button type="submit" class="delete-btn">Delete</button>
-                            </form>
-                        </div>
-                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

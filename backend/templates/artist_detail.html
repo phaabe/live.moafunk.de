@@ -159,6 +159,20 @@
         .danger-btn:hover {
             opacity: 0.85;
         }
+
+        .download-btn {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 4px;
+            background: #667eea;
+            color: #fff;
+            text-decoration: none;
+            font-size: 0.9em;
+        }
+
+        .download-btn:hover {
+            opacity: 0.85;
+        }
         
         .status-btn.pending {
             background: #f6ad55;
@@ -335,6 +349,7 @@
                 </div>
                 
                 <div class="status-form">
+                    <a href="/artists/{{ artist.id }}/download" class="download-btn">Download ZIP</a>
                     <form method="POST" action="/artists/{{ artist.id }}/status" style="display: inline;">
                         <input type="hidden" name="status" value="approved">
                         <button type="submit" class="status-btn approve">Approve</button>
@@ -348,10 +363,6 @@
                         <button type="submit" class="status-btn reject">Reject</button>
                     </form>
                 </div>
-
-                <form method="POST" action="/artists/{{ artist.id }}/delete" class="danger-form" onsubmit="return confirm('Really delete this artist and all uploaded files? This cannot be undone.');">
-                    <button type="submit" class="danger-btn">Delete Artist</button>
-                </form>
             </div>
             
             {% if file_urls.pic %}
@@ -513,6 +524,10 @@
                 <div class="value">{{ artist.id }}</div>
             </div>
         </div>
+
+        <form method="POST" action="/artists/{{ artist.id }}/delete" class="danger-form" onsubmit="return confirm('Really delete this artist and all uploaded files? This cannot be undone.');">
+            <button type="submit" class="danger-btn">Delete Artist</button>
+        </form>
     </div>
 </body>
 </html>

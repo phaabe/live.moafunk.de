@@ -88,18 +88,42 @@ pub async fn artists_list(
         "DESC"
     };
     let order_by = match sort {
-        "name" => "name COLLATE NOCASE",
-        "status" => "status",
-        "submitted" => "created_at",
-        _ => "created_at",
+        "name" => "a.name COLLATE NOCASE",
+        "status" => "a.status",
+        "submitted" => "a.created_at",
+        _ => "a.created_at",
     };
 
     let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
     let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
 
-    let artists: Vec<models::Artist> = if let Some(status) = &status_filter {
+    #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+    struct ArtistListRow {
+        pub id: i64,
+        pub name: String,
+        pub pronouns: String,
+        pub status: String,
+        pub created_at: String,
+        pub show_titles: Option<String>,
+    }
+
+    let artists: Vec<ArtistListRow> = if let Some(status) = &status_filter {
         let query = format!(
-            "SELECT * FROM artists WHERE status = ? ORDER BY {} {}, id DESC",
+            r#"
+            SELECT
+                a.id,
+                a.name,
+                a.pronouns,
+                a.status,
+                a.created_at,
+                group_concat(s.title, ', ') AS show_titles
+            FROM artists a
+            LEFT JOIN artist_show_assignments asa ON asa.artist_id = a.id
+            LEFT JOIN shows s ON s.id = asa.show_id
+            WHERE a.status = ?
+            GROUP BY a.id
+            ORDER BY {} {}, a.id DESC
+            "#,
             order_by, dir
         );
         sqlx::query_as(&query)
@@ -108,7 +132,20 @@ pub async fn artists_list(
             .await?
     } else {
         let query = format!(
-            "SELECT * FROM artists ORDER BY {} {}, id DESC",
+            r#"
+            SELECT
+                a.id,
+                a.name,
+                a.pronouns,
+                a.status,
+                a.created_at,
+                group_concat(s.title, ', ') AS show_titles
+            FROM artists a
+            LEFT JOIN artist_show_assignments asa ON asa.artist_id = a.id
+            LEFT JOIN shows s ON s.id = asa.show_id
+            GROUP BY a.id
+            ORDER BY {} {}, a.id DESC
+            "#,
             order_by, dir
         );
         sqlx::query_as(&query).fetch_all(&state.db).await?
@@ -336,14 +373,22 @@ pub async fn assign_show(
         ));
     }
 
+    let mut tx = state.db.begin().await?;
+    // One show per artist: reassign by replacing any existing assignment.
+    sqlx::query("DELETE FROM artist_show_assignments WHERE artist_id = ?")
+        .bind(artist_id)
+        .execute(&mut *tx)
+        .await?;
+
     if let Err(e) = sqlx::query(
         "INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)",
     )
     .bind(artist_id)
     .bind(form.show_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     {
+        tx.rollback().await.ok();
         // Trigger-based enforcement can fail here; surface it as a user-facing message.
         tracing::warn!(artist_id, show_id = form.show_id, error = %e, "Failed to assign show");
         return Ok(redirect_with_flash(
@@ -352,6 +397,7 @@ pub async fn assign_show(
             "Could not assign: show already has 4 artists.".to_string(),
         ));
     }
+    tx.commit().await?;
 
     Ok(Redirect::to(&format!("/artists/{}", artist_id)).into_response())
 }
@@ -416,6 +462,11 @@ pub async fn shows_list(
         .and_then(|q| serde_urlencoded::from_str(q).ok())
         .unwrap_or_default();
 
+    let status_filter = query_params
+        .get("status_filter")
+        .cloned()
+        .filter(|s| !s.is_empty());
+
     let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
     let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
 
@@ -440,7 +491,16 @@ pub async fn shows_list(
         _ => "date",
     };
 
-    let shows: Vec<models::Show> = {
+    let shows: Vec<models::Show> = if let Some(status) = &status_filter {
+        let query = format!(
+            "SELECT * FROM shows WHERE status = ? ORDER BY {} {}, id DESC",
+            order_by, dir
+        );
+        sqlx::query_as(&query)
+            .bind(status)
+            .fetch_all(&state.db)
+            .await?
+    } else {
         let query = format!("SELECT * FROM shows ORDER BY {} {}, id DESC", order_by, dir);
         sqlx::query_as(&query).fetch_all(&state.db).await?
     };
@@ -479,6 +539,7 @@ pub async fn shows_list(
 
     let mut context = tera::Context::new();
     context.insert("shows", &shows_with_counts);
+    context.insert("status_filter", &status_filter);
     context.insert("flash_message", &flash_message);
     context.insert("flash_kind", &flash_kind);
     context.insert("sort", &sort);
@@ -605,29 +666,15 @@ pub async fn show_detail(
     let artist_count = artists.len() as i64;
     let artists_left = (MAX_ARTISTS_PER_SHOW - artist_count).max(0);
 
-    // Get available artists (approved, not assigned)
-    let assigned_ids: Vec<i64> = artists.iter().map(|a| a.id).collect();
+    // Get available artists (approved, not assigned to any show)
     let available_artists: Vec<models::Artist> = if artists_left == 0 {
         Vec::new()
-    } else if assigned_ids.is_empty() {
-        sqlx::query_as("SELECT * FROM artists WHERE status = 'approved' ORDER BY name")
-            .fetch_all(&state.db)
-            .await?
     } else {
-        let placeholders = assigned_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
-        let query = format!(
-            "SELECT * FROM artists WHERE status = 'approved' AND id NOT IN ({}) ORDER BY name",
-            placeholders
-        );
-        let mut q = sqlx::query_as(&query);
-        for id in &assigned_ids {
-            q = q.bind(id);
-        }
-        q.fetch_all(&state.db).await?
+        sqlx::query_as(
+            "SELECT * FROM artists WHERE status = 'approved' AND id NOT IN (SELECT artist_id FROM artist_show_assignments) ORDER BY name",
+        )
+        .fetch_all(&state.db)
+        .await?
     };
 
     let mut context = tera::Context::new();
@@ -687,14 +734,22 @@ pub async fn assign_artist(
         ));
     }
 
+    let mut tx = state.db.begin().await?;
+    // One show per artist: reassign by replacing any existing assignment.
+    sqlx::query("DELETE FROM artist_show_assignments WHERE artist_id = ?")
+        .bind(form.artist_id)
+        .execute(&mut *tx)
+        .await?;
+
     if let Err(e) = sqlx::query(
         "INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)",
     )
     .bind(form.artist_id)
     .bind(show_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     {
+        tx.rollback().await.ok();
         tracing::warn!(show_id, artist_id = form.artist_id, error = %e, "Failed to assign artist");
         return Ok(redirect_with_flash(
             &format!("/shows/{}", show_id),
@@ -702,6 +757,8 @@ pub async fn assign_artist(
             "Could not assign: show already has 4 artists.".to_string(),
         ));
     }
+
+    tx.commit().await?;
 
     Ok(Redirect::to(&format!("/shows/{}", show_id)).into_response())
 }
