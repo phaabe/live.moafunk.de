@@ -12,6 +12,7 @@ export default defineConfig({
         main: resolve(__dirname, 'src/index.html'),
         relisten: resolve(__dirname, 'src/pages/re-listen.html'),
         techrider: resolve(__dirname, 'src/pages/tech-rider.html'),
+        unheardform: resolve(__dirname, 'src/pages/unheard-artists-form.html'),
       },
     },
   },
