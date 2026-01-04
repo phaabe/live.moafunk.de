@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "cropperjs": "^1.6.2",
     "flv.js": "^1.6.2"
   },
   "devDependencies": {
