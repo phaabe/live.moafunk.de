@@ -1,6 +1,6 @@
 services:
   unheard-api:
-    image: "${UNHEARD_IMAGE:-ghcr.io/anneoneone/unheard-backend}:${UNHEARD_TAG:-latest}"
+    image: "${UNHEARD_IMAGE:-ghcr.io/phaabe/live.moafunk.de-backend}:${UNHEARD_TAG:-latest}"
     container_name: unheard-api
     restart: unless-stopped
     ports:

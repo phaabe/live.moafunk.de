@@ -13,8 +13,8 @@ set -euo pipefail
 # Example:
 #   REGION=eu-central-1 STATIC_IP=unheard-backend-ip \
 #   PEM=~/.ssh/unheard-key.pem \
-#   GHCR_USER=anneoneone GHCR_TOKEN=*** \
-#   UNHEARD_IMAGE=ghcr.io/anneoneone/unheard-backend UNHEARD_TAG=latest \
+#   GHCR_USER=phaabe GHCR_TOKEN=*** \
+#   UNHEARD_IMAGE=ghcr.io/phaabe/live.moafunk.de-backend UNHEARD_TAG=latest \
 #   ./backend/scripts/deploy_lightsail.sh
 
 REGION="${REGION:-$(aws configure get region 2>/dev/null || true)}"
@@ -31,7 +31,7 @@ GHCR_TOKEN_FILE="${GHCR_TOKEN_FILE:-}"
 # Optional: upload a local env file to the server as $REMOTE_DIR/.env
 ENV_FILE_PATH="${ENV_FILE_PATH:-}"
 
-UNHEARD_IMAGE="${UNHEARD_IMAGE:-ghcr.io/anneoneone/unheard-backend}"
+UNHEARD_IMAGE="${UNHEARD_IMAGE:-ghcr.io/phaabe/live.moafunk.de-backend}"
 UNHEARD_TAG="${UNHEARD_TAG:-latest}"
 
 # Optional: configure nginx (80/443) to reverse-proxy to the backend on 127.0.0.1:8000.
