@@ -6,6 +6,46 @@ use axum::{
 };
 use std::sync::Arc;
 
+const MAX_ARTISTS_PER_SHOW: i64 = 4;
+
+#[derive(Debug, sqlx::FromRow, serde::Serialize)]
+struct AvailableShow {
+    id: i64,
+    title: String,
+    date: String,
+    artists_left: i64,
+}
+
+fn normalize_show_date(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // Accept legacy values like `YYYY-MM-DDTHH:MM` or `YYYY-MM-DD HH:MM` and keep the date.
+    let first = trimmed
+        .split('T')
+        .next()
+        .unwrap_or(trimmed)
+        .split(' ')
+        .next()
+        .unwrap_or(trimmed);
+
+    if first.len() >= 10 {
+        first.chars().take(10).collect()
+    } else {
+        first.to_string()
+    }
+}
+
+fn redirect_with_flash(base: &str, kind: &str, msg: String) -> Response {
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("kind".to_string(), kind.to_string());
+    params.insert("msg".to_string(), msg);
+    let qs = serde_urlencoded::to_string(params).unwrap_or_default();
+    Redirect::to(&format!("{}?{}", base, qs)).into_response()
+}
+
 fn get_session_token<B>(request: &Request<B>) -> Option<String> {
     auth::get_session_from_cookies(request)
 }
@@ -34,18 +74,44 @@ pub async fn artists_list(
         .cloned()
         .filter(|s| !s.is_empty());
 
+    let sort = query_params
+        .get("sort")
+        .map(|s| s.as_str())
+        .unwrap_or("submitted");
+    let dir = query_params
+        .get("dir")
+        .map(|s| s.as_str())
+        .unwrap_or("desc");
+    let dir = if dir.eq_ignore_ascii_case("asc") {
+        "ASC"
+    } else {
+        "DESC"
+    };
+    let order_by = match sort {
+        "name" => "name COLLATE NOCASE",
+        "status" => "status",
+        "submitted" => "created_at",
+        _ => "created_at",
+    };
+
     let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
     let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
 
     let artists: Vec<models::Artist> = if let Some(status) = &status_filter {
-        sqlx::query_as("SELECT * FROM artists WHERE status = ? ORDER BY created_at DESC")
+        let query = format!(
+            "SELECT * FROM artists WHERE status = ? ORDER BY {} {}, id DESC",
+            order_by, dir
+        );
+        sqlx::query_as(&query)
             .bind(status)
             .fetch_all(&state.db)
             .await?
     } else {
-        sqlx::query_as("SELECT * FROM artists ORDER BY created_at DESC")
-            .fetch_all(&state.db)
-            .await?
+        let query = format!(
+            "SELECT * FROM artists ORDER BY {} {}, id DESC",
+            order_by, dir
+        );
+        sqlx::query_as(&query).fetch_all(&state.db).await?
     };
 
     let mut context = tera::Context::new();
@@ -53,6 +119,8 @@ pub async fn artists_list(
     context.insert("status_filter", &status_filter);
     context.insert("flash_message", &flash_message);
     context.insert("flash_kind", &flash_kind);
+    context.insert("sort", &sort);
+    context.insert("dir", &dir.to_lowercase());
 
     let html = state.templates.render("artists.html", &context)?;
     Ok(Html(html).into_response())
@@ -67,6 +135,14 @@ pub async fn artist_detail(
     if !auth::is_authenticated(&state, token.as_deref()).await {
         return Ok(Redirect::to("/login").into_response());
     }
+
+    let query_params: std::collections::HashMap<String, String> = request
+        .uri()
+        .query()
+        .and_then(|q| serde_urlencoded::from_str(q).ok())
+        .unwrap_or_default();
+    let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
+    let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
 
     let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
         .bind(id)
@@ -117,18 +193,28 @@ pub async fn artist_detail(
         }
     }
 
-    // Get available shows for assignment (scheduled, not already assigned)
-    let available_shows: Vec<models::Show> = sqlx::query_as(
+    // Get available shows for assignment (scheduled, not already assigned, and with remaining slots)
+    let available_shows: Vec<AvailableShow> = sqlx::query_as(
         r#"
-                SELECT * FROM shows
-                WHERE status = 'scheduled'
-                    AND id NOT IN (
-                        SELECT show_id FROM artist_show_assignments WHERE artist_id = ?
-                    )
-                ORDER BY date ASC
-                "#,
+        SELECT
+            s.id,
+            s.title,
+            s.date,
+            (? - COUNT(asa.artist_id)) AS artists_left
+        FROM shows s
+        LEFT JOIN artist_show_assignments asa ON asa.show_id = s.id
+        WHERE s.status = 'scheduled'
+          AND s.id NOT IN (
+              SELECT show_id FROM artist_show_assignments WHERE artist_id = ?
+          )
+        GROUP BY s.id
+        HAVING COUNT(asa.artist_id) < ?
+        ORDER BY s.date ASC
+        "#,
     )
+    .bind(MAX_ARTISTS_PER_SHOW)
     .bind(id)
+    .bind(MAX_ARTISTS_PER_SHOW)
     .fetch_all(&state.db)
     .await?;
 
@@ -138,6 +224,8 @@ pub async fn artist_detail(
     context.insert("artist", &artist_with_shows);
     context.insert("file_urls", &file_urls);
     context.insert("available_shows", &available_shows);
+    context.insert("flash_message", &flash_message);
+    context.insert("flash_kind", &flash_kind);
 
     let html = state.templates.render("artist_detail.html", &context)?;
     Ok(Html(html).into_response())
@@ -219,11 +307,51 @@ pub async fn assign_show(
     let form: models::AssignShowForm = serde_urlencoded::from_bytes(&bytes)
         .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
 
-    sqlx::query("INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)")
-        .bind(artist_id)
-        .bind(form.show_id)
-        .execute(&state.db)
-        .await?;
+    // If already assigned, keep it idempotent.
+    let already_assigned: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM artist_show_assignments WHERE artist_id = ? AND show_id = ? LIMIT 1",
+    )
+    .bind(artist_id)
+    .bind(form.show_id)
+    .fetch_optional(&state.db)
+    .await?;
+    if already_assigned.is_some() {
+        return Ok(Redirect::to(&format!("/artists/{}", artist_id)).into_response());
+    }
+
+    // Enforce max artists per show.
+    let current_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM artist_show_assignments WHERE show_id = ?")
+            .bind(form.show_id)
+            .fetch_one(&state.db)
+            .await?;
+    if current_count >= MAX_ARTISTS_PER_SHOW {
+        return Ok(redirect_with_flash(
+            &format!("/artists/{}", artist_id),
+            "error",
+            format!(
+                "This show already has {} artists assigned.",
+                MAX_ARTISTS_PER_SHOW
+            ),
+        ));
+    }
+
+    if let Err(e) = sqlx::query(
+        "INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)",
+    )
+    .bind(artist_id)
+    .bind(form.show_id)
+    .execute(&state.db)
+    .await
+    {
+        // Trigger-based enforcement can fail here; surface it as a user-facing message.
+        tracing::warn!(artist_id, show_id = form.show_id, error = %e, "Failed to assign show");
+        return Ok(redirect_with_flash(
+            &format!("/artists/{}", artist_id),
+            "error",
+            "Could not assign: show already has 4 artists.".to_string(),
+        ));
+    }
 
     Ok(Redirect::to(&format!("/artists/{}", artist_id)).into_response())
 }
@@ -291,9 +419,31 @@ pub async fn shows_list(
     let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
     let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
 
-    let shows: Vec<models::Show> = sqlx::query_as("SELECT * FROM shows ORDER BY date DESC")
-        .fetch_all(&state.db)
-        .await?;
+    let sort = query_params
+        .get("sort")
+        .map(|s| s.as_str())
+        .unwrap_or("date");
+    let dir_input = query_params
+        .get("dir")
+        .map(|s| s.as_str())
+        .unwrap_or("desc");
+    let dir = if dir_input.eq_ignore_ascii_case("asc") {
+        "ASC"
+    } else {
+        "DESC"
+    };
+    let order_by = match sort {
+        "title" => "title COLLATE NOCASE",
+        "status" => "status",
+        "date" => "date",
+        "artists" => "date", // sorted after counts are computed
+        _ => "date",
+    };
+
+    let shows: Vec<models::Show> = {
+        let query = format!("SELECT * FROM shows ORDER BY {} {}, id DESC", order_by, dir);
+        sqlx::query_as(&query).fetch_all(&state.db).await?
+    };
 
     // Get artist counts for each show
     let mut shows_with_counts: Vec<serde_json::Value> = Vec::new();
@@ -304,16 +454,35 @@ pub async fn shows_list(
                 .fetch_one(&state.db)
                 .await?;
 
+        let artists_left = (MAX_ARTISTS_PER_SHOW - count).max(0);
+
         shows_with_counts.push(serde_json::json!({
             "show": show,
             "artist_count": count,
+            "artists_left": artists_left,
         }));
+    }
+
+    // If requested, sort by artist count after we computed it.
+    if sort == "artists" {
+        let ascending = dir == "ASC";
+        shows_with_counts.sort_by(|a, b| {
+            let ac = a.get("artist_count").and_then(|v| v.as_i64()).unwrap_or(0);
+            let bc = b.get("artist_count").and_then(|v| v.as_i64()).unwrap_or(0);
+            if ascending {
+                ac.cmp(&bc)
+            } else {
+                bc.cmp(&ac)
+            }
+        });
     }
 
     let mut context = tera::Context::new();
     context.insert("shows", &shows_with_counts);
     context.insert("flash_message", &flash_message);
     context.insert("flash_kind", &flash_kind);
+    context.insert("sort", &sort);
+    context.insert("dir", &dir.to_lowercase());
 
     let html = state.templates.render("shows.html", &context)?;
     Ok(Html(html).into_response())
@@ -376,9 +545,18 @@ pub async fn create_show(
     let form: models::CreateShowForm = serde_urlencoded::from_bytes(&bytes)
         .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
 
+    let date = normalize_show_date(&form.date);
+    if date.is_empty() {
+        return Ok(redirect_with_flash(
+            "/shows",
+            "error",
+            "Date is required.".to_string(),
+        ));
+    }
+
     sqlx::query("INSERT INTO shows (title, date, description) VALUES (?, ?, ?)")
         .bind(&form.title)
-        .bind(&form.date)
+        .bind(&date)
         .bind(&form.description)
         .execute(&state.db)
         .await?;
@@ -395,6 +573,14 @@ pub async fn show_detail(
     if !auth::is_authenticated(&state, token.as_deref()).await {
         return Ok(Redirect::to("/login").into_response());
     }
+
+    let query_params: std::collections::HashMap<String, String> = request
+        .uri()
+        .query()
+        .and_then(|q| serde_urlencoded::from_str(q).ok())
+        .unwrap_or_default();
+    let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
+    let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
 
     let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
         .bind(id)
@@ -416,9 +602,14 @@ pub async fn show_detail(
     .fetch_all(&state.db)
     .await?;
 
+    let artist_count = artists.len() as i64;
+    let artists_left = (MAX_ARTISTS_PER_SHOW - artist_count).max(0);
+
     // Get available artists (approved, not assigned)
     let assigned_ids: Vec<i64> = artists.iter().map(|a| a.id).collect();
-    let available_artists: Vec<models::Artist> = if assigned_ids.is_empty() {
+    let available_artists: Vec<models::Artist> = if artists_left == 0 {
+        Vec::new()
+    } else if assigned_ids.is_empty() {
         sqlx::query_as("SELECT * FROM artists WHERE status = 'approved' ORDER BY name")
             .fetch_all(&state.db)
             .await?
@@ -443,6 +634,9 @@ pub async fn show_detail(
     context.insert("show", &show);
     context.insert("artists", &artists);
     context.insert("available_artists", &available_artists);
+    context.insert("artists_left", &artists_left);
+    context.insert("flash_message", &flash_message);
+    context.insert("flash_kind", &flash_kind);
 
     let html = state.templates.render("show_detail.html", &context)?;
     Ok(Html(html).into_response())
@@ -464,11 +658,50 @@ pub async fn assign_artist(
     let form: models::AssignArtistForm = serde_urlencoded::from_bytes(&bytes)
         .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
 
-    sqlx::query("INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)")
-        .bind(form.artist_id)
-        .bind(show_id)
-        .execute(&state.db)
-        .await?;
+    // If already assigned, keep it idempotent.
+    let already_assigned: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM artist_show_assignments WHERE artist_id = ? AND show_id = ? LIMIT 1",
+    )
+    .bind(form.artist_id)
+    .bind(show_id)
+    .fetch_optional(&state.db)
+    .await?;
+    if already_assigned.is_some() {
+        return Ok(Redirect::to(&format!("/shows/{}", show_id)).into_response());
+    }
+
+    // Enforce max artists per show.
+    let current_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM artist_show_assignments WHERE show_id = ?")
+            .bind(show_id)
+            .fetch_one(&state.db)
+            .await?;
+    if current_count >= MAX_ARTISTS_PER_SHOW {
+        return Ok(redirect_with_flash(
+            &format!("/shows/{}", show_id),
+            "error",
+            format!(
+                "This show already has {} artists assigned.",
+                MAX_ARTISTS_PER_SHOW
+            ),
+        ));
+    }
+
+    if let Err(e) = sqlx::query(
+        "INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)",
+    )
+    .bind(form.artist_id)
+    .bind(show_id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(show_id, artist_id = form.artist_id, error = %e, "Failed to assign artist");
+        return Ok(redirect_with_flash(
+            &format!("/shows/{}", show_id),
+            "error",
+            "Could not assign: show already has 4 artists.".to_string(),
+        ));
+    }
 
     Ok(Redirect::to(&format!("/shows/{}", show_id)).into_response())
 }

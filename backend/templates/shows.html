@@ -144,6 +144,16 @@
             text-transform: uppercase;
             color: #888;
         }
+
+        .shows-table th a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .shows-table th a:hover {
+            color: #fff;
+            text-decoration: underline;
+        }
         
         .shows-table tr:hover {
             background: #1e2a4a;
@@ -259,8 +269,8 @@
                         <input type="text" id="title" name="title" required placeholder="e.g., UNHEARD #42">
                     </div>
                     <div class="form-group">
-                        <label for="date">Date & Time</label>
-                        <input type="datetime-local" id="date" name="date" required>
+                        <label for="date">Date</label>
+                        <input type="date" id="date" name="date" required>
                     </div>
                     <div class="form-group" style="flex: 2;">
                         <label for="description">Description (optional)</label>
@@ -287,10 +297,34 @@
         <table class="shows-table">
             <thead>
                 <tr>
-                    <th>Title</th>
-                    <th>Date</th>
-                    <th>Status</th>
-                    <th>Artists</th>
+                    <th>
+                        {% set next_dir = "asc" %}
+                        {% if sort == "title" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
+                        <a href="/shows?sort=title&dir={{ next_dir }}">
+                            Title{% if sort == "title" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
+                        </a>
+                    </th>
+                    <th>
+                        {% set next_dir = "asc" %}
+                        {% if sort == "date" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
+                        <a href="/shows?sort=date&dir={{ next_dir }}">
+                            Date{% if sort == "date" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
+                        </a>
+                    </th>
+                    <th>
+                        {% set next_dir = "asc" %}
+                        {% if sort == "status" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
+                        <a href="/shows?sort=status&dir={{ next_dir }}">
+                            Status{% if sort == "status" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
+                        </a>
+                    </th>
+                    <th>
+                        {% set next_dir = "asc" %}
+                        {% if sort == "artists" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
+                        <a href="/shows?sort=artists&dir={{ next_dir }}">
+                            Artists{% if sort == "artists" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
+                        </a>
+                    </th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -300,7 +334,12 @@
                     <td><a href="/shows/{{ item.show.id }}">{{ item.show.title }}</a></td>
                     <td>{{ item.show.date }}</td>
                     <td><span class="status {{ item.show.status }}">{{ item.show.status }}</span></td>
-                    <td><span class="artist-count">{{ item.artist_count }} artist{% if item.artist_count != 1 %}s{% endif %}</span></td>
+                    <td>
+                        <span class="artist-count">
+                            {{ item.artist_count }} artist{% if item.artist_count != 1 %}s{% endif %}
+                            ({{ item.artists_left }} left)
+                        </span>
+                    </td>
                     <td>
                         <div class="action-row">
                             <a href="/shows/{{ item.show.id }}">Manage</a>
