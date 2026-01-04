@@ -81,6 +81,19 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Normalize legacy datetime-local values (e.g. 2026-01-04T20:00) into YYYY-MM-DD.
+    // We keep the column type as TEXT, but only store the date portion going forward.
+    sqlx::query(
+        r#"
+        UPDATE shows
+        SET date = substr(date, 1, 10)
+        WHERE length(date) > 10
+          AND date GLOB '????-??-??*'
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS artist_show_assignments (
@@ -90,6 +103,23 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             FOREIGN KEY (artist_id) REFERENCES artists(id) ON DELETE CASCADE,
             FOREIGN KEY (show_id) REFERENCES shows(id) ON DELETE CASCADE
         )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Enforce: a show can have at most 4 assigned artists.
+    // This protects all code paths and avoids race conditions.
+    sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_max_artists_per_show
+        BEFORE INSERT ON artist_show_assignments
+        BEGIN
+            SELECT CASE
+                WHEN (SELECT COUNT(*) FROM artist_show_assignments WHERE show_id = NEW.show_id) >= 4
+                THEN RAISE(ABORT, 'show has maximum number of artists (4)')
+            END;
+        END;
         "#,
     )
     .execute(pool)

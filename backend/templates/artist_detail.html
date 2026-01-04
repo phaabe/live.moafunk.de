@@ -66,6 +66,22 @@
         .breadcrumb a:hover {
             text-decoration: underline;
         }
+
+        .flash {
+            padding: 12px 15px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            margin-bottom: 20px;
+            background: #16213e;
+        }
+
+        .flash.success {
+            border-color: #48bb78;
+        }
+
+        .flash.error {
+            border-color: #fc8181;
+        }
         
         .header {
             display: flex;
@@ -236,6 +252,45 @@
         }
         
         .shows-list li:last-child {
+
+        .shows-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        .shows-table th,
+        .shows-table td {
+            padding: 12px;
+            border-bottom: 1px solid #333;
+            text-align: left;
+        }
+
+        .shows-table th {
+            color: #aaa;
+            font-weight: 600;
+            font-size: 0.9em;
+            background: #16213e;
+        }
+
+        .shows-table a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .shows-table a:hover {
+            text-decoration: underline;
+        }
+
+        .status-pill {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            border: 1px solid #333;
+            font-size: 0.85em;
+            color: #eee;
+            background: #1a1a2e;
+        }
             border-bottom: none;
         }
         
@@ -264,6 +319,12 @@
         <div class="breadcrumb">
             <a href="/artists">← Back to Artists</a>
         </div>
+
+        {% if flash_message %}
+        <div class="flash {% if flash_kind %}{{ flash_kind }}{% endif %}">
+            {{ flash_message }}
+        </div>
+        {% endif %}
         
         <div class="header">
             <div class="header-info">
@@ -364,21 +425,34 @@
                 
                 <div class="label">Spotify</div>
                 <div class="value">
-                    {% if artist.spotify %}
-                    <a href="{{ artist.spotify }}" target="_blank">{{ artist.spotify }}</a>
-                    {% else %}<span class="na">Not provided</span>{% endif %}
-                </div>
-                
-                <div class="label">Other</div>
-                <div class="value">
-                    {% if artist.other_social %}
-                    <a href="{{ artist.other_social }}" target="_blank">{{ artist.other_social }}</a>
-                    {% else %}<span class="na">Not provided</span>{% endif %}
-                </div>
-            </div>
-        </div>
-        
-        <div class="section">
+                    {% if artist.shows %}
+                    <table class="shows-table">
+                        <thead>
+                            <tr>
+                                <th>Title</th>
+                                <th>Date</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for show in artist.shows %}
+                            <tr>
+                                <td><a href="/shows/{{ show.id }}">{{ show.title }}</a></td>
+                                <td>{{ show.date }}</td>
+                                <td><span class="status-pill">{{ show.status }}</span></td>
+                                <td>
+                                    <form method="POST" action="/artists/{{ artist.id }}/unassign/{{ show.id }}" style="margin: 0;">
+                                        <button type="submit" class="status-btn reject">Unassign</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% else %}
+                    <p class="na">Not assigned to any shows yet</p>
+                    {% endif %}
             <h3>Additional Info</h3>
             
             <div style="margin-bottom: 20px;">
@@ -403,7 +477,7 @@
                 <select name="show_id" required style="flex: 1; padding: 8px 10px; border-radius: 4px; border: 1px solid #333; background: #1a1a2e; color: #eee;">
                     <option value="" disabled selected>Select a show…</option>
                     {% for s in available_shows %}
-                    <option value="{{ s.id }}">{{ s.title }} - {{ s.date }}</option>
+                    <option value="{{ s.id }}">{{ s.title }} - {{ s.date }} ({{ s.artists_left }} left)</option>
                     {% endfor %}
                 </select>
                 <button type="submit" class="status-btn approve">Assign</button>

@@ -66,6 +66,22 @@
         .breadcrumb a:hover {
             text-decoration: underline;
         }
+
+        .flash {
+            padding: 12px 15px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            margin-bottom: 20px;
+            background: #16213e;
+        }
+
+        .flash.success {
+            border-color: #48bb78;
+        }
+
+        .flash.error {
+            border-color: #fc8181;
+        }
         
         .header {
             display: flex;
@@ -279,6 +295,12 @@
         <div class="breadcrumb">
             <a href="/shows">← Back to Shows</a>
         </div>
+
+        {% if flash_message %}
+        <div class="flash {% if flash_kind %}{{ flash_kind }}{% endif %}">
+            {{ flash_message }}
+        </div>
+        {% endif %}
         
         <div class="header">
             <div class="header-info">
@@ -321,8 +343,9 @@
         
         <div class="section">
             <h3>Assigned Artists ({{ assigned_artists|length }})</h3>
+            <p style="color: #888; margin: 6px 0 20px;">{{ artists_left }} slot{% if artists_left != 1 %}s{% endif %} left (max 4)</p>
             
-            {% if assignable_artists | length > 0 %}
+            {% if artists_left > 0 and assignable_artists | length > 0 %}
             <form method="POST" action="/shows/{{ show.id }}/assign" class="assign-form">
                 <select name="artist_id" required>
                     <option value="">-- Select an artist to assign --</option>
@@ -332,6 +355,8 @@
                 </select>
                 <button type="submit" class="btn btn-success">Assign</button>
             </form>
+            {% elif artists_left == 0 %}
+            <p style="color: #888; margin-bottom: 20px;">This show already has 4 assigned artists.</p>
             {% else %}
             <p style="color: #888; margin-bottom: 20px;">No approved artists available to assign.</p>
             {% endif %}
