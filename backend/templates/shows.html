@@ -197,6 +197,46 @@
         .empty-state p {
             font-size: 1.1em;
         }
+
+        .flash {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            border: 1px solid #333;
+        }
+
+        .flash.success {
+            background: #48bb78;
+            color: #1a1a2e;
+            border-color: #48bb78;
+        }
+
+        .flash.error {
+            background: #fc8181;
+            color: #1a1a2e;
+            border-color: #fc8181;
+        }
+
+        .action-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .delete-btn {
+            padding: 6px 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+            background: #fc8181;
+            color: #1a1a2e;
+        }
+
+        .delete-btn:hover {
+            opacity: 0.85;
+        }
     </style>
 </head>
 <body>
@@ -236,6 +276,12 @@
         <div class="header">
             <h2>Shows ({{ shows|length }})</h2>
         </div>
+
+        {% if flash_message %}
+        <div class="flash {% if flash_kind %}{{ flash_kind }}{% endif %}">
+            {{ flash_message }}
+        </div>
+        {% endif %}
         
         {% if shows %}
         <table class="shows-table">
@@ -256,10 +302,15 @@
                     <td><span class="status {{ item.show.status }}">{{ item.show.status }}</span></td>
                     <td><span class="artist-count">{{ item.artist_count }} artist{% if item.artist_count != 1 %}s{% endif %}</span></td>
                     <td>
-                        <a href="/shows/{{ item.show.id }}">Manage</a>
-                        {% if item.artist_count > 0 %}
-                        | <a href="/shows/{{ item.show.id }}/download">Download ZIP</a>
-                        {% endif %}
+                        <div class="action-row">
+                            <a href="/shows/{{ item.show.id }}">Manage</a>
+                            {% if item.artist_count > 0 %}
+                            <a href="/shows/{{ item.show.id }}/download">Download ZIP</a>
+                            {% endif %}
+                            <form method="POST" action="/shows/{{ item.show.id }}/delete" style="margin: 0;" onsubmit="return confirm('Really delete this show? This will remove all artist assignments from it. This cannot be undone.');">
+                                <button type="submit" class="delete-btn">Delete</button>
+                            </form>
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}
