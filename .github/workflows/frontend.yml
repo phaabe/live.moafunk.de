@@ -1,4 +1,4 @@
-name: Build and Deploy
+name: FRONTEND - Build and Deploy
 
 on:
   push:
