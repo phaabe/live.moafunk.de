@@ -1,0 +1,38 @@
+{
+  "name": "moafunk-radio",
+  "version": "1.0.0",
+  "description": "Moafunk Radio - Live streaming web radio from Moabit, Berlin",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run generate:html && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "lint": "eslint . --ext .ts,.js,.html",
+    "lint:fix": "eslint . --ext .ts,.js,.html --fix",
+    "format": "prettier --write \"src/**/*.{ts,js,html,css}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,js,html,css}\"",
+    "generate:html": "node scripts/generate-html.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "flv.js": "^1.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/ui": "^1.1.0",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "jsdom": "^23.0.1",
+    "prettier": "^3.1.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.10",
+    "vitest": "^1.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
