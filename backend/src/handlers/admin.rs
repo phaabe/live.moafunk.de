@@ -70,11 +70,10 @@ pub async fn artist_detail(
         return Ok(Redirect::to("/login").into_response());
     }
 
-    let artist: Option<models::Artist> =
-        sqlx::query_as("SELECT * FROM artists WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?;
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
 
     let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
 
@@ -114,20 +113,74 @@ pub async fn artist_detail(
         }
     }
 
-    // Get available shows for assignment
-    let available_shows: Vec<models::Show> =
-        sqlx::query_as("SELECT * FROM shows WHERE status = 'scheduled' ORDER BY date ASC")
-            .fetch_all(&state.db)
-            .await?;
+    // Get available shows for assignment (scheduled, not already assigned)
+    let available_shows: Vec<models::Show> = sqlx::query_as(
+        r#"
+                SELECT * FROM shows
+                WHERE status = 'scheduled'
+                    AND id NOT IN (
+                        SELECT show_id FROM artist_show_assignments WHERE artist_id = ?
+                    )
+                ORDER BY date ASC
+                "#,
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let artist_with_shows = models::ArtistWithShows { artist, shows };
 
     let mut context = tera::Context::new();
-    context.insert("artist", &artist);
-    context.insert("shows", &shows);
+    context.insert("artist", &artist_with_shows);
     context.insert("file_urls", &file_urls);
     context.insert("available_shows", &available_shows);
 
     let html = state.templates.render("artist_detail.html", &context)?;
     Ok(Html(html).into_response())
+}
+
+pub async fn assign_show(
+    State(state): State<Arc<AppState>>,
+    Path(artist_id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    if !auth::is_authenticated(&state, token.as_deref()).await {
+        return Err(AppError::Unauthorized);
+    }
+
+    let bytes = axum::body::to_bytes(request.into_body(), 1024)
+        .await
+        .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
+    let form: models::AssignShowForm = serde_urlencoded::from_bytes(&bytes)
+        .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
+
+    sqlx::query("INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)")
+        .bind(artist_id)
+        .bind(form.show_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Redirect::to(&format!("/artists/{}", artist_id)).into_response())
+}
+
+pub async fn unassign_show(
+    State(state): State<Arc<AppState>>,
+    Path((artist_id, show_id)): Path<(i64, i64)>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    if !auth::is_authenticated(&state, token.as_deref()).await {
+        return Err(AppError::Unauthorized);
+    }
+
+    sqlx::query("DELETE FROM artist_show_assignments WHERE artist_id = ? AND show_id = ?")
+        .bind(artist_id)
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Redirect::to(&format!("/artists/{}", artist_id)).into_response())
 }
 
 pub async fn update_artist_status(
@@ -141,7 +194,8 @@ pub async fn update_artist_status(
     }
 
     // Parse form from body
-    let bytes = axum::body::to_bytes(request.into_body(), 1024).await
+    let bytes = axum::body::to_bytes(request.into_body(), 1024)
+        .await
         .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
     let form: models::StatusUpdateForm = serde_urlencoded::from_bytes(&bytes)
         .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
@@ -164,20 +218,18 @@ pub async fn shows_list(
         return Ok(Redirect::to("/login").into_response());
     }
 
-    let shows: Vec<models::Show> =
-        sqlx::query_as("SELECT * FROM shows ORDER BY date DESC")
-            .fetch_all(&state.db)
-            .await?;
+    let shows: Vec<models::Show> = sqlx::query_as("SELECT * FROM shows ORDER BY date DESC")
+        .fetch_all(&state.db)
+        .await?;
 
     // Get artist counts for each show
     let mut shows_with_counts: Vec<serde_json::Value> = Vec::new();
     for show in shows {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM artist_show_assignments WHERE show_id = ?",
-        )
-        .bind(show.id)
-        .fetch_one(&state.db)
-        .await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM artist_show_assignments WHERE show_id = ?")
+                .bind(show.id)
+                .fetch_one(&state.db)
+                .await?;
 
         shows_with_counts.push(serde_json::json!({
             "show": show,
@@ -201,19 +253,18 @@ pub async fn create_show(
         return Err(AppError::Unauthorized);
     }
 
-    let bytes = axum::body::to_bytes(request.into_body(), 4096).await
+    let bytes = axum::body::to_bytes(request.into_body(), 4096)
+        .await
         .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
     let form: models::CreateShowForm = serde_urlencoded::from_bytes(&bytes)
         .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
 
-    sqlx::query(
-        "INSERT INTO shows (title, date, description) VALUES (?, ?, ?)",
-    )
-    .bind(&form.title)
-    .bind(&form.date)
-    .bind(&form.description)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("INSERT INTO shows (title, date, description) VALUES (?, ?, ?)")
+        .bind(&form.title)
+        .bind(&form.date)
+        .bind(&form.description)
+        .execute(&state.db)
+        .await?;
 
     Ok(Redirect::to("/shows").into_response())
 }
@@ -228,11 +279,10 @@ pub async fn show_detail(
         return Ok(Redirect::to("/login").into_response());
     }
 
-    let show: Option<models::Show> =
-        sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?;
+    let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
 
     let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
@@ -256,7 +306,11 @@ pub async fn show_detail(
             .fetch_all(&state.db)
             .await?
     } else {
-        let placeholders = assigned_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = assigned_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let query = format!(
             "SELECT * FROM artists WHERE status = 'approved' AND id NOT IN ({}) ORDER BY name",
             placeholders
@@ -287,18 +341,17 @@ pub async fn assign_artist(
         return Err(AppError::Unauthorized);
     }
 
-    let bytes = axum::body::to_bytes(request.into_body(), 1024).await
+    let bytes = axum::body::to_bytes(request.into_body(), 1024)
+        .await
         .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
     let form: models::AssignArtistForm = serde_urlencoded::from_bytes(&bytes)
         .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
 
-    sqlx::query(
-        "INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)",
-    )
-    .bind(form.artist_id)
-    .bind(show_id)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)")
+        .bind(form.artist_id)
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
 
     Ok(Redirect::to(&format!("/shows/{}", show_id)).into_response())
 }
@@ -313,13 +366,11 @@ pub async fn unassign_artist(
         return Err(AppError::Unauthorized);
     }
 
-    sqlx::query(
-        "DELETE FROM artist_show_assignments WHERE artist_id = ? AND show_id = ?",
-    )
-    .bind(artist_id)
-    .bind(show_id)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("DELETE FROM artist_show_assignments WHERE artist_id = ? AND show_id = ?")
+        .bind(artist_id)
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
 
     Ok(Redirect::to(&format!("/shows/{}", show_id)).into_response())
 }
@@ -334,7 +385,8 @@ pub async fn update_show_status(
         return Err(AppError::Unauthorized);
     }
 
-    let bytes = axum::body::to_bytes(request.into_body(), 1024).await
+    let bytes = axum::body::to_bytes(request.into_body(), 1024)
+        .await
         .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
     let form: models::StatusUpdateForm = serde_urlencoded::from_bytes(&bytes)
         .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;

@@ -376,11 +376,26 @@
         
         <div class="section">
             <h3>Assigned Shows</h3>
+            {% if available_shows and available_shows | length > 0 %}
+            <form method="POST" action="/artists/{{ artist.id }}/assign" style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
+                <select name="show_id" required style="flex: 1; padding: 8px 10px; border-radius: 4px; border: 1px solid #333; background: #1a1a2e; color: #eee;">
+                    <option value="" disabled selected>Select a show…</option>
+                    {% for s in available_shows %}
+                    <option value="{{ s.id }}">{{ s.title }} - {{ s.date }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="status-btn approve">Assign</button>
+            </form>
+            {% endif %}
+
             {% if artist.shows %}
             <ul class="shows-list">
                 {% for show in artist.shows %}
                 <li>
                     <a href="/shows/{{ show.id }}">{{ show.title }} - {{ show.date }}</a>
+                    <form method="POST" action="/artists/{{ artist.id }}/unassign/{{ show.id }}" style="margin: 0;">
+                        <button type="submit" class="status-btn reject">Unassign</button>
+                    </form>
                 </li>
                 {% endfor %}
             </ul>
