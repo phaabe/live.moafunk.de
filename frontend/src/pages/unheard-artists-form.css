@@ -1,0 +1,483 @@
+@font-face {
+  font-family: 'Shoika';
+  src: url('/Shoika-font/Shoika%20Bold%20Italic.ttf') format('truetype');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Shoika';
+  src: url('/Shoika-font/Shoika%20Regular%20Italic.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Shoika';
+  src: url('/Shoika-font/Shoika%20Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+.uaf-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 40px 20px;
+}
+
+.uaf-header {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.uaf-header .logo {
+  display: block;
+  margin: 0 auto 20px;
+}
+
+.uaf-header h1 {
+  font-size: 2.5em;
+  margin-bottom: 10px;
+}
+
+.uaf-header p {
+  font-size: 1.1em;
+  opacity: 0.8;
+}
+
+.uaf-form {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 30px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.form-section {
+  margin-bottom: 30px;
+}
+
+.form-section h2 {
+  font-size: 1.5em;
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 400;
+}
+
+.form-group input[type='text'],
+.form-group input[type='url'],
+.form-group textarea {
+  width: 100%;
+  max-width: 740px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 1em;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.form-group input[type='file'] {
+  width: 100%;
+  max-width: 740px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 1em;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.form-group input[type='file']::file-selector-button {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 12px;
+}
+
+.form-group input[type='file']::file-selector-button:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.form-group textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+
+.form-group input::placeholder,
+.form-group textarea::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.form-group .hint {
+  font-size: 0.9em;
+  opacity: 0.6;
+  margin-top: 4px;
+}
+
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.checkbox-group input[type='checkbox'] {
+  margin-right: 8px;
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+.checkbox-group label {
+  margin-bottom: 0;
+  cursor: pointer;
+}
+
+.track-section {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 20px;
+  border-radius: 4px;
+  margin-bottom: 20px;
+}
+
+.track-section h3 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  font-size: 1.2em;
+}
+
+.social-links-group {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.social-links-group label {
+  margin-bottom: 0;
+  text-align: right;
+  justify-self: end;
+}
+
+.social-links-group input {
+  width: 100%;
+  max-width: 740px;
+  box-sizing: border-box;
+}
+
+.submit-button {
+  width: 100%;
+  padding: 20px;
+  margin-top: 30px;
+  background: #ffec44;
+  border: none;
+  border-radius: 0;
+  color: #000;
+  font-size: 1.2em;
+  font-weight: 700;
+  cursor: pointer;
+  transition: none;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  box-shadow: none;
+}
+
+.submit-button:hover {
+  background: #ffec44;
+}
+
+.submit-button:active {
+  background: #ffec44;
+}
+
+.submit-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.upload-progress {
+  margin-top: 20px;
+}
+
+.progress-bar {
+  height: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  width: 0%;
+  transition: width 0.3s;
+  border-radius: 4px;
+}
+
+.progress-text {
+  text-align: center;
+  margin-top: 10px;
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+
+.form-message {
+  margin-top: 20px;
+  padding: 15px;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.form-message.success {
+  background: rgba(72, 187, 120, 0.2);
+  border: 1px solid rgba(72, 187, 120, 0.5);
+  color: #48bb78;
+}
+
+.form-message.error {
+  background: rgba(252, 129, 129, 0.2);
+  border: 1px solid rgba(252, 129, 129, 0.5);
+  color: #fc8181;
+}
+
+.optional-label {
+  opacity: 0.6;
+  font-weight: 400;
+  font-size: 0.9em;
+}
+
+@media (max-width: 768px) {
+  .uaf-container {
+    padding: 20px 15px;
+  }
+
+  .uaf-form {
+    padding: 20px 15px;
+  }
+
+  .form-group input[type='file'] {
+    max-width: none;
+  }
+
+  .form-group input[type='text'],
+  .form-group input[type='url'],
+  .form-group textarea,
+  .social-links-group input {
+    max-width: none;
+  }
+
+  .social-links-group {
+    grid-template-columns: 1fr;
+  }
+
+  .social-links-group label {
+    margin-bottom: 8px;
+    text-align: left;
+    justify-self: start;
+  }
+}
+
+.cropper-wrapper {
+  margin-top: 12px;
+}
+
+.cropper-frame {
+  width: 100%;
+  max-width: 740px;
+  aspect-ratio: 1 / 1;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #111;
+  position: relative;
+}
+
+.cropper-frame img {
+  display: block;
+  max-width: 100%;
+}
+
+.cropper-controls {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.cropper-controls button {
+  border: 1px solid #ddd;
+  background: #fff;
+  padding: 8px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.cropper-controls button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.cropper-note {
+  font-size: 12px;
+  color: #666;
+}
+
+.uploader-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: 0;
+  padding: 0;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2000;
+  --overlay-side: 18px;
+  --overlay-bottom: 5%;
+  --overlay-logo: 15%;
+  --overlay-gap: 3%;
+  font-family: 'Shoika', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+}
+
+.cropper-crop-box .uploader-overlay,
+.cropper-view-box .uploader-overlay {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.uploader-overlay-left {
+  position: absolute;
+  left: 20%;
+  bottom: var(--overlay-bottom);
+  height: var(--overlay-logo);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 0.9;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.uploader-overlay-left .un {
+  color: #ffec44;
+  font-size: 64px;
+  font-family: 'Shoika', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  font-style: italic;
+  font-weight: 600;
+}
+
+.uploader-overlay-left .heard {
+  color: #fff;
+  font-size: 28px;
+  font-family: 'Shoika', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.uploader-overlay-logo {
+  position: absolute;
+  left: 50%;
+  bottom: var(--overlay-bottom);
+  transform: translateX(-50%);
+  height: var(--overlay-logo);
+  width: var(--overlay-logo);
+  object-fit: contain;
+}
+
+/* CropperJS applies `width/height: 100%` to any `img` inside `.cropper-view-box`.
+   Our overlay logo is also an `img`, so we must override that rule. */
+.cropper-view-box img.uploader-overlay-logo {
+  width: auto !important;
+  width: var(--overlay-logo) !important;
+  height: var(--overlay-logo) !important;
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.uploader-overlay-right {
+  position: absolute;
+  left: calc(50% + (var(--overlay-logo) / 2) + var(--overlay-gap));
+  right: var(--overlay-side);
+  bottom: var(--overlay-bottom);
+  height: var(--overlay-logo);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-style: normal;
+  font-family: 'Shoika', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  text-transform: uppercase;
+  font-size: 22px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
+@media (max-width: 520px) {
+  .uploader-overlay {
+    --overlay-side: 12px;
+    --overlay-gap: 2.5%;
+  }
+
+  .uploader-overlay-left {
+    left: 20%;
+  }
+
+  .uploader-overlay-left .un {
+    font-size: 26px;
+  }
+
+  .uploader-overlay-left .heard {
+    font-size: 22px;
+  }
+
+  .uploader-overlay-right {
+    font-size: 18px;
+    right: 12px;
+  }
+}
+
+.cropper-view-box {
+  position: relative;
+}
+
+/* Visual filter for the artist picture (preview + saved).
+   Apply to the cropped image, not to the overlay assets. */
+.cropper-view-box img:not(.uploader-overlay-logo),
+.cropper-canvas img {
+  filter: saturate(0.85) contrast(1.2);
+}

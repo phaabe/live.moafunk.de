@@ -61,6 +61,7 @@ function generateHTML(tracks) {
 
     <script async defer data-domain="live.moafunk.de" src="https://plausible.moafunk.de/js/plausible.js"></script>
     <link rel="stylesheet" type="text/css" href="/main.css" media="screen" />
+    <link rel="stylesheet" type="text/css" href="/pages/re-listen.css" media="screen" />
 
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png">
@@ -72,132 +73,7 @@ function generateHTML(tracks) {
     <meta name="msapplication-config" href="/icons/browserconfig.xml">
     <meta name="theme-color" content="#ffffff">
     
-    <style>
-        .tracks-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 20px;
-            margin: 20px;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        @media (max-width: 768px) {
-            .tracks-grid {
-                grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-                gap: 15px;
-                margin: 15px;
-                padding: 15px;
-            }
-        }
-        
-        @media (max-width: 480px) {
-            .tracks-grid {
-                grid-template-columns: 1fr;
-                gap: 0;
-                margin: 0;
-                padding: 0;
-            }
-            
-            .track-tile {
-                min-height: 100vh;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                align-items: center;
-                text-align: center;
-                padding: 40px 20px;
-                margin: 0;
-                border-radius: 0;
-            }
-            
-            .track-artwork {
-                width: 80%;
-                max-width: 280px;
-                aspect-ratio: 1;
-                margin-bottom: 30px;
-            }
-            
-            .track-title {
-                font-size: 24px !important;
-                margin-bottom: 15px;
-            }
-            
-            .track-date {
-                font-size: 18px !important;
-                margin-bottom: 10px;
-            }
-            
-            .track-duration {
-                font-size: 16px !important;
-                margin-bottom: 15px;
-            }
-            
-            .track-description {
-                font-size: 14px !important;
-                max-width: 300px;
-            }
-        }
-        
-        .track-tile {
-            cursor: pointer;
-            border: 2px solid #000;
-            transition: all 0.3s ease;
-            background: white;
-            padding: 15px;
-            text-align: left;
-        }
-        
-        .track-tile:hover {
-            transform: scale(1.02);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        }
-        
-        .track-artwork {
-            width: 100%;
-            aspect-ratio: 1;
-            object-fit: cover;
-            background: #f0f0f0;
-            display: block;
-            margin-bottom: 10px;
-        }
-        
-        .track-title {
-            margin: 10px 0 5px 0;
-            font-size: 14pt;
-            font-weight: bold;
-            line-height: 1.2;
-        }
-        
-        .track-date {
-            font-size: 12pt;
-            color: #666;
-            margin-bottom: 5px;
-        }
-        
-        .track-duration {
-            font-size: 11pt;
-            color: #999;
-        }
-        
-        .track-description {
-            font-size: 10pt;
-            color: #777;
-            margin-top: 5px;
-            line-height: 1.3;
-        }
-        
-        .container {
-            text-align: center;
-            padding: 20px;
-        }
-        
-        .logo {
-            width: 150px;
-            margin-bottom: 20px;
-        }
-    </style>
+    
 </head>
 <body>
     <div class="container">
