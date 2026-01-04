@@ -76,8 +76,8 @@ async fn main() -> anyhow::Result<()> {
         },
     );
 
-    // Initialize S3 client for R2
-    let s3_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+    // Initialize S3 client for R2 (avoid aws-config to reduce dependencies/compile time)
+    let s3_config = aws_sdk_s3::Config::builder()
         .endpoint_url(&config.r2_endpoint)
         .credentials_provider(aws_sdk_s3::config::Credentials::new(
             &config.r2_access_key_id,
@@ -86,11 +86,10 @@ async fn main() -> anyhow::Result<()> {
             None,
             "r2",
         ))
-        .region(aws_config::Region::new("auto"))
-        .load()
-        .await;
+        .region(aws_sdk_s3::config::Region::new("auto"))
+        .build();
 
-    let s3_client = aws_sdk_s3::Client::new(&s3_config);
+    let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
     let state = Arc::new(AppState {
         db,
@@ -122,6 +121,11 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/artists/:id/status",
             post(handlers::admin::update_artist_status),
+        )
+        .route("/artists/:id/assign", post(handlers::admin::assign_show))
+        .route(
+            "/artists/:id/unassign/:show_id",
+            post(handlers::admin::unassign_show),
         )
         .route("/shows", get(handlers::admin::shows_list))
         .route("/shows", post(handlers::admin::create_show))

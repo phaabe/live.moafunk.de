@@ -8,12 +8,24 @@ description = "Backend for UNHEARD Artists Form"
 [dependencies]
 # Web framework
 axum = { version = "0.7", features = ["multipart", "macros"] }
-tokio = { version = "1", features = ["full"] }
-tower = "0.4"
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "time",
+  "fs",
+  "io-util",
+  "sync",
+] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }
+# Use FromRow derives but avoid pulling in sqlx's default feature set.
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "sqlite",
+  "macros",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -27,8 +39,7 @@ argon2 = "0.5"
 rand = "0.8"
 
 # S3/R2 storage
-aws-sdk-s3 = "1"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
@@ -44,8 +55,10 @@ base64-url = "2"
 serde_urlencoded = "0.7"
 
 # ZIP support
-zip = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio-util = { version = "0.7.17", features = ["io"] }
 
-[dev-dependencies]
-tower = { version = "0.4", features = ["util"] }
+# Image processing (used when generating show ZIPs)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+imageproc = "0.25"
+ab_glyph = "0.2"
