@@ -1,4 +1,4 @@
-use crate::{AppError, AppState, Result};
+use crate::{AppState, Result};
 use argon2::{
     password_hash::{PasswordHash, PasswordVerifier},
     Argon2,
@@ -17,23 +17,10 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         Ok(h) => h,
         Err(_) => return false,
     };
-    
+
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)
         .is_ok()
-}
-
-pub fn hash_password(password: &str) -> Result<String> {
-    use argon2::password_hash::{PasswordHasher, SaltString};
-    
-    let salt = SaltString::generate(&mut rand::thread_rng());
-    let argon2 = Argon2::default();
-    
-    let hash = argon2
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|e| AppError::Internal(format!("Failed to hash password: {}", e)))?;
-    
-    Ok(hash.to_string())
 }
 
 pub fn generate_session_token() -> String {
@@ -45,42 +32,25 @@ pub fn generate_session_token() -> String {
 pub async fn create_session(state: &Arc<AppState>) -> Result<String> {
     let token = generate_session_token();
     let expires_at = Utc::now() + Duration::days(SESSION_DURATION_DAYS);
-    
-    sqlx::query(
-        "INSERT INTO sessions (token, expires_at) VALUES (?, ?)"
-    )
-    .bind(&token)
-    .bind(expires_at.to_rfc3339())
-    .execute(&state.db)
-    .await?;
-    
+
+    sqlx::query("INSERT INTO sessions (token, expires_at) VALUES (?, ?)")
+        .bind(&token)
+        .bind(expires_at.to_rfc3339())
+        .execute(&state.db)
+        .await?;
+
     Ok(token)
 }
 
 pub async fn validate_session(state: &Arc<AppState>, token: &str) -> bool {
     let result = sqlx::query_scalar::<_, String>(
-        "SELECT token FROM sessions WHERE token = ? AND expires_at > datetime('now')"
+        "SELECT token FROM sessions WHERE token = ? AND expires_at > datetime('now')",
     )
     .bind(token)
     .fetch_optional(&state.db)
     .await;
-    
+
     matches!(result, Ok(Some(_)))
-}
-
-pub async fn delete_session(state: &Arc<AppState>, token: &str) -> Result<()> {
-    sqlx::query("DELETE FROM sessions WHERE token = ?")
-        .bind(token)
-        .execute(&state.db)
-        .await?;
-    Ok(())
-}
-
-pub async fn cleanup_expired_sessions(state: &Arc<AppState>) -> Result<()> {
-    sqlx::query("DELETE FROM sessions WHERE expires_at <= datetime('now')")
-        .execute(&state.db)
-        .await?;
-    Ok(())
 }
 
 pub fn get_session_from_cookies<B>(request: &Request<B>) -> Option<String> {

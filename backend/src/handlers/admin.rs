@@ -10,14 +10,6 @@ fn get_session_token<B>(request: &Request<B>) -> Option<String> {
     auth::get_session_from_cookies(request)
 }
 
-async fn require_auth<B>(state: &Arc<AppState>, request: &Request<B>) -> Result<()> {
-    let token = get_session_token(request);
-    if !auth::is_authenticated(state, token.as_deref()).await {
-        return Err(AppError::Unauthorized);
-    }
-    Ok(())
-}
-
 pub async fn index() -> Redirect {
     Redirect::to("/artists")
 }
@@ -43,10 +35,7 @@ pub async fn artists_list(
         .filter(|s| !s.is_empty());
 
     let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
-    let flash_kind = query_params
-        .get("kind")
-        .cloned()
-        .filter(|s| !s.is_empty());
+    let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
 
     let artists: Vec<models::Artist> = if let Some(status) = &status_filter {
         sqlx::query_as("SELECT * FROM artists WHERE status = ? ORDER BY created_at DESC")
@@ -185,7 +174,10 @@ pub async fn delete_artist(
         tracing::error!(artist_id = id, error = %e, "Failed to delete artist storage prefix");
         return Ok(redirect_with_flash(
             "error",
-            format!("Failed to delete files for '{}'. Please try again.", artist.name),
+            format!(
+                "Failed to delete files for '{}'. Please try again.",
+                artist.name
+            ),
         ));
     }
 
@@ -198,7 +190,10 @@ pub async fn delete_artist(
         tracing::error!(artist_id = id, error = %e, "Failed to delete artist row");
         return Ok(redirect_with_flash(
             "error",
-            format!("Deleted files, but failed to delete '{}' from the database.", artist.name),
+            format!(
+                "Deleted files, but failed to delete '{}' from the database.",
+                artist.name
+            ),
         ));
     }
 
@@ -294,10 +289,7 @@ pub async fn shows_list(
         .unwrap_or_default();
 
     let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
-    let flash_kind = query_params
-        .get("kind")
-        .cloned()
-        .filter(|s| !s.is_empty());
+    let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
 
     let shows: Vec<models::Show> = sqlx::query_as("SELECT * FROM shows ORDER BY date DESC")
         .fetch_all(&state.db)
