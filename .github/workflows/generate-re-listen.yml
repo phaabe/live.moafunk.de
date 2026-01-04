@@ -3,10 +3,16 @@ name: Generate re-listen.html page
 on:
   workflow_dispatch: # Manual trigger
 
+permissions:
+  contents: write
+
 jobs:
   uv-example:
     name: python
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
 
     steps:
       - uses: actions/checkout@v4
@@ -19,17 +25,25 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Run script with secrets
         run: |
-          uv run generate_relisten.py \
+          uv run scripts/generate_relisten.py \
             --client-id "${{ secrets.SOUNDCLOUD_CLIENT_ID }}" \
             --client-secret "${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}"
+
+      - name: Generate re-listen.html
+        run: node scripts/generate-html.js
 
       - name: Commit generated HTML
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add re-listen.html
+          git add public/data/tracks.json src/pages/re-listen.html
           git commit -m "[bot] update re-listen.html" || echo "No changes to commit"
           git push
         env:
