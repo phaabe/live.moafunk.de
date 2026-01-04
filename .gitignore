@@ -3,6 +3,7 @@ server/
 
 # Secrets
 *.pem
+*.key
 
 # Dependencies
 node_modules/
