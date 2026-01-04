@@ -11,14 +11,13 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png">
     <link rel="manifest" href="/icons/site.webmanifest">
     <link rel="mask-icon" href="/icons/safari-pinned-tab.svg" color="#333333">
     <link rel="shortcut icon" href="/icons/favicon.ico">
     <meta name="msapplication-TileColor" content="#2b5797">
     <meta name="msapplication-config" href="/icons/browserconfig.xml">
     <meta name="theme-color" content="#ffffff">
-    
-    
 </head>
 <body>
     <div class="uaf-container">
@@ -34,144 +33,145 @@
                 <h2>Basic Information</h2>
                 
                 <div class="form-group">
-                    <script type="module" src="/pages/unheard-artists-form.ts"></script>
-        async function updateCroppedBlob() {
-            if (!artistPicCropper) return;
+                    <label for="artist-name">Artist Name *</label>
+                    <input type="text" id="artist-name" name="artist-name" required placeholder="Your artist name">
+                </div>
 
-            // Hide the HTML overlay so it doesn't get captured
-            if (overlayRoot) overlayRoot.style.visibility = 'hidden';
+                <div class="form-group">
+                    <label for="pronouns">Pronouns *</label>
+                    <input type="text" id="pronouns" name="pronouns" required placeholder="e.g., she/her, he/him, they/them">
+                </div>
 
-            const canvas = artistPicCropper.getCroppedCanvas({
-                width: 1024,
-                height: 1024,
-                imageSmoothingEnabled: true,
-                imageSmoothingQuality: 'high',
-            });
+                <div class="form-group">
+                    <label for="artist-pic">Artist Picture *</label>
+                    <input type="file" id="artist-pic" name="artist-pic" accept="image/*" required>
 
-            // Show the overlay again
-            if (overlayRoot) overlayRoot.style.visibility = 'visible';
+                    <div class="cropper-wrapper" id="artist-pic-cropper" style="display:none;">
+                        <div class="cropper-frame">
+                            <img id="artist-pic-cropper-img" alt="Crop your image" />
 
-            if (!canvas) return;
+                            <div class="uploader-overlay" aria-hidden="true">
+                                <div class="uploader-overlay-left">
+                                    <div class="un">UN</div>
+                                    <div class="heard">HEARD</div>
+                                </div>
+                                <img class="uploader-overlay-logo" src="/moafunk.png" alt="" />
+                                <div class="uploader-overlay-right" id="artist-pic-overlay-name"></div>
+                            </div>
+                        </div>
+                        <div class="cropper-controls">
+                            <button type="button" id="artist-pic-zoom-out" aria-label="Zoom out">-</button>
+                            <button type="button" id="artist-pic-zoom-in" aria-label="Zoom in">+</button>
+                            <span class="cropper-note">Drag to move. Use +/- to zoom.</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-            // Apply the same image filter as the preview (saturate down, contrast up).
-            // Do this before drawing the overlay.
-            {
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                    const filtered = document.createElement('canvas');
-                    filtered.width = canvas.width;
-                    filtered.height = canvas.height;
-                    const fctx = filtered.getContext('2d');
-                    if (fctx) {
-                        fctx.filter = 'saturate(0.85) contrast(1.08)';
-                        fctx.drawImage(canvas, 0, 0);
-                        // Reset filter and copy back.
-                        ctx.save();
-                        ctx.setTransform(1, 0, 0, 1, 0, 0);
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                        ctx.restore();
-                        ctx.filter = 'none';
-                        ctx.drawImage(filtered, 0, 0);
-                    }
-                }
-            }
+            <!-- Voice Message Section -->
+            <div class="form-section">
+                <h2>Voice Message</h2>
+                
+                <div class="form-group">
+                    <label for="voice-message">Voice Message File</label>
+                    <input type="file" id="voice-message" name="voice-message" accept="audio/*">
+                    
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="no-voice-message" name="no-voice-message">
+                        <label for="no-voice-message">I don't want to submit a voice message</label>
+                    </div>
+                </div>
+            </div>
 
-            // Save cropped+filtered (no overlay)
-            const croppedFilteredBlob = await new Promise((resolve) => {
-                canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
-            });
+            <!-- Tracks Section -->
+            <div class="form-section">
+                <h2>Your Tracks</h2>
+                
+                <div class="track-section">
+                    <h3>Track 1 *</h3>
+                    <div class="form-group">
+                        <label for="track1-name">Track Name</label>
+                        <input type="text" id="track1-name" name="track1-name" required placeholder="Name of track 1">
+                    </div>
+                    <div class="form-group">
+                        <label for="track1-file">Track File</label>
+                        <input type="file" id="track1-file" name="track1-file" accept="audio/*" required>
+                    </div>
+                </div>
 
-            if (croppedFilteredBlob) {
-                artistPicCroppedFilteredBlob = croppedFilteredBlob;
-            }
+                <div class="track-section">
+                    <h3>Track 2 *</h3>
+                    <div class="form-group">
+                        <label for="track2-name">Track Name</label>
+                        <input type="text" id="track2-name" name="track2-name" required placeholder="Name of track 2">
+                    </div>
+                    <div class="form-group">
+                        <label for="track2-file">Track File</label>
+                        <input type="file" id="track2-file" name="track2-file" accept="audio/*" required>
+                    </div>
+                </div>
+            </div>
 
-            // Draw the overlay onto the canvas
-            await drawOverlayOnCanvas(canvas);
+            <!-- Social Media Section -->
+            <div class="form-section">
+                <h2>Social Media <span class="optional-label">(Optional)</span></h2>
+                
+                <div class="social-links-group">
+                    <label for="instagram">Instagram</label>
+                    <input type="text" id="instagram" name="instagram" placeholder="https://instagram.com/yourprofile">
+                </div>
 
-            // Save branded (cropped+filtered+overlay)
-            const brandedBlob = await new Promise((resolve) => {
-                canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
-            });
+                <div class="social-links-group">
+                    <label for="soundcloud">SoundCloud</label>
+                    <input type="text" id="soundcloud" name="soundcloud" placeholder="https://soundcloud.com/yourprofile">
+                </div>
 
-            if (brandedBlob) {
-                artistPicBrandedBlob = brandedBlob;
-            }
-        }
+                <div class="social-links-group">
+                    <label for="bandcamp">Bandcamp</label>
+                    <input type="text" id="bandcamp" name="bandcamp" placeholder="https://yourprofile.bandcamp.com">
+                </div>
 
-        // Modern image uploader (zoom + drag + set frame)
-        artistPicInput.addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            resetCropUi();
-            destroyArtistCropper();
+                <div class="social-links-group">
+                    <label for="spotify">Spotify</label>
+                    <input type="text" id="spotify" name="spotify" placeholder="https://open.spotify.com/artist/...">
+                </div>
 
-            if (!file) return;
+                <div class="social-links-group">
+                    <label for="other-social">Other</label>
+                    <input type="text" id="other-social" name="other-social" placeholder="Any other social media link">
+                </div>
+            </div>
 
-            // Check file size first
-            if (file.size > MAX_SINGLE_FILE_SIZE_BYTES) {
-                alert(`Artist picture exceeds maximum size of ${MAX_SINGLE_FILE_SIZE_MB}MB`);
-                e.target.value = '';
-                return;
-            }
+            <!-- Additional Information Section -->
+            <div class="form-section">
+                <h2>Additional Information <span class="optional-label">(Optional)</span></h2>
+                
+                <div class="form-group">
+                    <label for="upcoming-events">Upcoming Events</label>
+                    <textarea id="upcoming-events" name="upcoming-events" placeholder="Tell us about any upcoming gigs, releases, or events..."></textarea>
+                </div>
 
-            artistPicOriginalFilename = file.name || 'artist.jpg';
-            artistPicObjectUrl = URL.createObjectURL(file);
-            cropperImg.src = artistPicObjectUrl;
-            cropperWrapper.style.display = 'block';
+                <div class="form-group">
+                    <label for="mentions">Things We Should Mention in the Show</label>
+                    <textarea id="mentions" name="mentions" placeholder="Anything specific you'd like us to mention during the show..."></textarea>
+                </div>
+            </div>
 
-            // Wait for image to be ready before creating cropper
-            cropperImg.onload = () => {
-                if (artistPicCropper) artistPicCropper.destroy();
-                artistPicCropper = new Cropper(cropperImg, {
-                    aspectRatio: 1,
-                    viewMode: 3,
-                    dragMode: 'move',
-                    // 90% => ~5% padding on each side (exact padding enforced via setCropBoxPadding).
-                    autoCropArea: 0.9,
-                    background: false,
-                    guides: false,
-                    center: false,
-                    highlight: false,
-                    cropBoxMovable: false,
-                    cropBoxResizable: false,
-                    toggleDragModeOnDblclick: false,
-                    responsive: true,
-                    zoomOnWheel: true,
-                    ready() {
-                        attachOverlayToActiveCropArea();
-                        requestAnimationFrame(fitOverlayName);
-                        requestAnimationFrame(() => setCropBoxPadding(0.05));
-                        // Generate initial cropped blob
-                        updateCroppedBlob();
-                    },
-                    cropend() {
-                        // Update cropped blob when user finishes dragging
-                        updateCroppedBlob();
-                    },
-                    zoom() {
-                        // Update cropped blob when user zooms
-                        updateCroppedBlob();
-                    },
-                });
-            };
-        });
+            <!-- Submit Button -->
+            <button type="submit" class="submit-button" id="submit-btn">Submit Application</button>
+            
+            <!-- Progress and Status -->
+            <div id="upload-progress" class="upload-progress" style="display: none;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <div class="progress-text" id="progress-text">Uploading...</div>
+            </div>
+            
+            <div id="form-message" class="form-message" style="display: none;"></div>
+        </form>
+    </div>
 
-        zoomInBtn.addEventListener('click', () => {
-            if (artistPicCropper) artistPicCropper.zoom(0.1);
-        });
-        zoomOutBtn.addEventListener('click', () => {
-            if (artistPicCropper) artistPicCropper.zoom(-0.1);
-        });
-
-        // Add file size validation to other file inputs
-        ['track1-file', 'track2-file', 'voice-message'].forEach(id => {
-            document.getElementById(id).addEventListener('change', function(e) {
-                const file = e.target.files[0];
-                if (file && file.size > MAX_SINGLE_FILE_SIZE_BYTES) {
-                    alert(`File exceeds maximum size of ${MAX_SINGLE_FILE_SIZE_MB}MB`);
-                    e.target.value = '';
-                }
-            });
-        });
-    </script>
+    <script type="module" src="/pages/unheard-artists-form.ts"></script>
 </body>
 </html>
