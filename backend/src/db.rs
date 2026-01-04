@@ -1,4 +1,28 @@
+use sqlx::Row;
 use sqlx::SqlitePool;
+
+async fn add_column_if_missing(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), sqlx::Error> {
+    let pragma = format!("PRAGMA table_info({})", table);
+    let rows = sqlx::query(&pragma).fetch_all(pool).await?;
+
+    let exists = rows.iter().any(|row| {
+        let name: String = row.get("name");
+        name == column
+    });
+
+    if exists {
+        return Ok(());
+    }
+
+    let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, decl);
+    sqlx::query(&alter).execute(pool).await?;
+    Ok(())
+}
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -9,6 +33,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             pronouns TEXT NOT NULL,
             
             pic_key TEXT,
+            pic_cropped_key TEXT,
+            pic_overlay_key TEXT,
             voice_message_key TEXT,
             no_voice_message INTEGER NOT NULL DEFAULT 0,
             
@@ -34,6 +60,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+
+    // Backfill schema for existing DBs created before columns were added.
+    add_column_if_missing(pool, "artists", "pic_cropped_key", "TEXT").await?;
+    add_column_if_missing(pool, "artists", "pic_overlay_key", "TEXT").await?;
 
     sqlx::query(
         r#"

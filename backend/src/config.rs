@@ -29,6 +29,12 @@ pub struct Config {
     // Computed R2 endpoint
     #[serde(skip)]
     pub r2_endpoint: String,
+
+    // Optional assets used for ZIP-time image stamping
+    // If not set, the code will fall back to local paths under ./data.
+    pub overlay_font_path: Option<String>,
+    pub artist_logo_dir: Option<String>,
+    pub default_logo_path: Option<String>,
 }
 
 fn default_host() -> String {
@@ -73,5 +79,21 @@ impl Config {
     pub fn max_request_body_bytes(&self) -> usize {
         // Allow some overhead for multipart boundaries/headers.
         ((self.max_upload_size_mb + 10) * 1024 * 1024) as usize
+    }
+
+    pub fn artist_logo_dir_path(&self) -> &str {
+        self.artist_logo_dir
+            .as_deref()
+            .unwrap_or("./assets/artist_logos")
+    }
+
+    pub fn default_logo_path_path(&self) -> &str {
+        self.default_logo_path
+            .as_deref()
+            .unwrap_or("./assets/brand/moafunk.png")
+    }
+
+    pub fn overlay_font_path_path(&self) -> Option<&str> {
+        self.overlay_font_path.as_deref()
     }
 }

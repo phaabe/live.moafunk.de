@@ -8,6 +8,8 @@ pub struct Artist {
     pub pronouns: String,
 
     pub pic_key: Option<String>,
+    pub pic_cropped_key: Option<String>,
+    pub pic_overlay_key: Option<String>,
     pub voice_message_key: Option<String>,
     pub no_voice_message: bool,
 

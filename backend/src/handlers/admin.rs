@@ -31,14 +31,21 @@ pub async fn artists_list(
         return Ok(Redirect::to("/login").into_response());
     }
 
-    let status_filter: Option<String> = request
+    let query_params: std::collections::HashMap<String, String> = request
         .uri()
         .query()
-        .and_then(|q| {
-            q.split('&')
-                .find(|p| p.starts_with("status_filter="))
-                .map(|p| p.trim_start_matches("status_filter=").to_string())
-        })
+        .and_then(|q| serde_urlencoded::from_str(q).ok())
+        .unwrap_or_default();
+
+    let status_filter = query_params
+        .get("status_filter")
+        .cloned()
+        .filter(|s| !s.is_empty());
+
+    let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
+    let flash_kind = query_params
+        .get("kind")
+        .cloned()
         .filter(|s| !s.is_empty());
 
     let artists: Vec<models::Artist> = if let Some(status) = &status_filter {
@@ -55,6 +62,8 @@ pub async fn artists_list(
     let mut context = tera::Context::new();
     context.insert("artists", &artists);
     context.insert("status_filter", &status_filter);
+    context.insert("flash_message", &flash_message);
+    context.insert("flash_kind", &flash_kind);
 
     let html = state.templates.render("artists.html", &context)?;
     Ok(Html(html).into_response())
@@ -92,7 +101,13 @@ pub async fn artist_detail(
 
     // Generate presigned URLs for files
     let mut file_urls = std::collections::HashMap::new();
-    if let Some(key) = &artist.pic_key {
+    // Prefer branded > cropped > original for preview.
+    let pic_key = artist
+        .pic_overlay_key
+        .as_ref()
+        .or(artist.pic_cropped_key.as_ref())
+        .or(artist.pic_key.as_ref());
+    if let Some(key) = pic_key {
         if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
             file_urls.insert("pic".to_string(), url);
         }
@@ -137,6 +152,60 @@ pub async fn artist_detail(
 
     let html = state.templates.render("artist_detail.html", &context)?;
     Ok(Html(html).into_response())
+}
+
+pub async fn delete_artist(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    if !auth::is_authenticated(&state, token.as_deref()).await {
+        return Err(AppError::Unauthorized);
+    }
+
+    // Ensure the artist exists (also gives a nicer error than deleting 0 rows).
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let redirect_with_flash = |kind: &str, msg: String| {
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("kind".to_string(), kind.to_string());
+        params.insert("msg".to_string(), msg);
+        let qs = serde_urlencoded::to_string(params).unwrap_or_default();
+        Redirect::to(&format!("/artists?{}", qs)).into_response()
+    };
+
+    // Delete ALL objects under this artist's prefix (covers historical/extra uploads too).
+    let prefix = format!("artists/{}/", id);
+    if let Err(e) = storage::delete_prefix(&state, &prefix).await {
+        tracing::error!(artist_id = id, error = %e, "Failed to delete artist storage prefix");
+        return Ok(redirect_with_flash(
+            "error",
+            format!("Failed to delete files for '{}'. Please try again.", artist.name),
+        ));
+    }
+
+    // Delete DB row last.
+    if let Err(e) = sqlx::query("DELETE FROM artists WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(artist_id = id, error = %e, "Failed to delete artist row");
+        return Ok(redirect_with_flash(
+            "error",
+            format!("Deleted files, but failed to delete '{}' from the database.", artist.name),
+        ));
+    }
+
+    Ok(redirect_with_flash(
+        "success",
+        format!("Deleted artist '{}' and all uploaded files.", artist.name),
+    ))
 }
 
 pub async fn assign_show(
@@ -218,6 +287,18 @@ pub async fn shows_list(
         return Ok(Redirect::to("/login").into_response());
     }
 
+    let query_params: std::collections::HashMap<String, String> = request
+        .uri()
+        .query()
+        .and_then(|q| serde_urlencoded::from_str(q).ok())
+        .unwrap_or_default();
+
+    let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
+    let flash_kind = query_params
+        .get("kind")
+        .cloned()
+        .filter(|s| !s.is_empty());
+
     let shows: Vec<models::Show> = sqlx::query_as("SELECT * FROM shows ORDER BY date DESC")
         .fetch_all(&state.db)
         .await?;
@@ -239,9 +320,53 @@ pub async fn shows_list(
 
     let mut context = tera::Context::new();
     context.insert("shows", &shows_with_counts);
+    context.insert("flash_message", &flash_message);
+    context.insert("flash_kind", &flash_kind);
 
     let html = state.templates.render("shows.html", &context)?;
     Ok(Html(html).into_response())
+}
+
+pub async fn delete_show(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    if !auth::is_authenticated(&state, token.as_deref()).await {
+        return Err(AppError::Unauthorized);
+    }
+
+    let redirect_with_flash = |kind: &str, msg: String| {
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("kind".to_string(), kind.to_string());
+        params.insert("msg".to_string(), msg);
+        let qs = serde_urlencoded::to_string(params).unwrap_or_default();
+        Redirect::to(&format!("/shows?{}", qs)).into_response()
+    };
+
+    let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    if let Err(e) = sqlx::query("DELETE FROM shows WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(show_id = id, error = %e, "Failed to delete show row");
+        return Ok(redirect_with_flash(
+            "error",
+            format!("Failed to delete show '{}'. Please try again.", show.title),
+        ));
+    }
+
+    Ok(redirect_with_flash(
+        "success",
+        format!("Deleted show '{}' and removed all assignments.", show.title),
+    ))
 }
 
 pub async fn create_show(
