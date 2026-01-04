@@ -40,8 +40,9 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  # Must match what deploy_lightsail.sh/docker-compose.prod.yml pull in production.
-  IMAGE_NAME: anneoneone/unheard-backend
+  # Must match what docker-compose.prod.yml / deploy_lightsail.sh pull in production.
+  # Use the repo owner namespace so the default GITHUB_TOKEN can push to GHCR.
+  IMAGE_NAME: ${{ github.repository_owner }}/live.moafunk.de-backend
 
 jobs:
   build-and-push:
@@ -65,9 +66,9 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.build == true
         with:
           registry: ${{ env.REGISTRY }}
-          username: anneoneone
-          # Needs write:packages for ghcr.io/anneoneone/unheard-backend
-          password: ${{ secrets.GHCR_DEPLOY_TOKEN }}
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN can push to ghcr.io/<repo_owner>/* when packages: write is granted.
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta
@@ -113,6 +114,7 @@ jobs:
       - name: Deploy to Lightsail
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
+          GHCR_USER: ${{ secrets.GHCR_DEPLOY_USER || github.repository_owner }}
         run: |
           # Write GHCR token to temp file
           echo "$GHCR_TOKEN" > /tmp/ghcr-token.key
@@ -120,7 +122,7 @@ jobs:
           # Run deploy script (skips nginx setup since already configured)
           IP="${{ secrets.LIGHTSAIL_IP }}" \
           PEM=~/.ssh/lightsail.pem \
-          GHCR_USER=anneoneone \
+          GHCR_USER="$GHCR_USER" \
           GHCR_TOKEN_FILE=/tmp/ghcr-token.key \
           UNHEARD_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" \
           UNHEARD_TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}" \
