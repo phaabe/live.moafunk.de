@@ -22,28 +22,30 @@ The project has been successfully modernized with the following changes:
 ### 3. Modern Folder Structure
 ```
 live.moafunk.de/
-├── src/                    # Source files (processed by Vite)
-│   ├── index.html
-│   ├── main.ts
-│   ├── main.css
-│   ├── config.ts
-│   ├── player.ts
-│   ├── streamDetector.ts
-│   └── pages/
-│       ├── re-listen.html  # Generated (gitignored)
-│       └── tech-rider.html
-├── public/                 # Static assets (copied as-is)
-│   ├── moafunk.png
-│   ├── icons/
-│   ├── sc-img.html         # Standalone tool
-│   └── CNAME
-├── scripts/                # Build scripts
-│   ├── generate_relisten.py  # Python: SoundCloud → JSON
-│   └── generate-html.js      # Node: JSON → HTML
-├── tests/                  # Test files
-│   ├── config.test.ts
-│   ├── streamDetector.test.ts
-│   └── test_generate_relisten.py
+├── backend/                # Rust backend
+└── frontend/               # Frontend + generators
+   ├── src/                # Source files (processed by Vite)
+   │   ├── index.html
+   │   ├── main.ts
+   │   ├── main.css
+   │   ├── config.ts
+   │   ├── player.ts
+   │   ├── streamDetector.ts
+   │   └── pages/
+   │       ├── re-listen.html  # Generated (gitignored)
+   │       └── tech-rider.html
+   ├── public/             # Static assets (copied as-is)
+   │   ├── moafunk.png
+   │   ├── icons/
+   │   ├── sc-img.html     # Standalone tool
+   │   └── CNAME
+   ├── scripts/            # Build scripts
+   │   ├── generate_relisten.py  # Python: SoundCloud → JSON
+   │   └── generate-html.js      # Node: JSON → HTML
+   └── tests/              # Test files
+      ├── config.test.ts
+      ├── streamDetector.test.ts
+      └── test_generate_relisten.py
 └── .github/workflows/
     └── deploy.yml          # Unified deployment pipeline
 ```
@@ -110,6 +112,7 @@ Before deploying, complete these steps:
 ### 1. Install Dependencies
 ```sh
 # Node.js dependencies
+cd frontend
 npm install
 
 # Verify Python environment
@@ -128,6 +131,7 @@ Get credentials: https://soundcloud.com/you/apps
 ### 3. Test Locally
 ```sh
 # Create .env file
+cd frontend
 cp .env.example .env
 
 # Generate tracks data (optional - requires SoundCloud credentials)
@@ -143,6 +147,7 @@ npm run dev
 
 ### 4. Verify Build
 ```sh
+cd frontend
 npm run build
 npm run preview
 ```
@@ -172,8 +177,8 @@ git push origin main
 - `generate_relisten.py` → `scripts/generate_relisten.py`
 
 ### Generated Files Now Gitignored
-- `src/pages/re-listen.html` (generated during build)
-- `public/data/tracks.json` (generated during build)
+- `frontend/src/pages/re-listen.html` (generated during build)
+- `frontend/public/data/tracks.json` (generated during build)
 
 ### Old Workflow Deprecated
 - `.github/workflows/generate-re-listen.yml` → replaced by `deploy.yml`
@@ -207,6 +212,7 @@ git push origin main
 ### Build fails with "tracks.json not found"
 **Solution:** Run Python script first to generate data:
 ```sh
+cd frontend
 uv run scripts/generate_relisten.py --client-id ... --client-secret ...
 ```
 

@@ -11,8 +11,9 @@ Live streaming web radio from Moabit, Berlin.
 
 ## Tech Stack
 
-- **Frontend:** Vanilla TypeScript + Vite
-- **Backend:** Python 3.13 (SoundCloud API integration)
+- **Frontend:** Vanilla TypeScript + Vite (in `frontend/`)
+- **Archive generator:** Python 3.13 + uv (in `frontend/`, SoundCloud API integration)
+- **Backend:** Rust (in `backend/`)
 - **Deployment:** GitHub Actions + GitHub Pages
 
 ## Development Setup
@@ -31,12 +32,17 @@ git clone https://github.com/yourusername/live.moafunk.de.git
 cd live.moafunk.de
 ```
 
-2. Install Node.js dependencies:
+2. Switch into the frontend directory:
+```sh
+cd frontend
+```
+
+3. Install Node.js dependencies:
 ```sh
 npm install
 ```
 
-3. Copy environment variables template:
+4. Copy environment variables template:
 ```sh
 cp .env.example .env
 ```
@@ -47,6 +53,7 @@ cp .env.example .env
 
 1. Generate tracks data from SoundCloud:
 ```sh
+cd frontend
 uv run scripts/generate_relisten.py \
   --client-id "$SOUNDCLOUD_CLIENT_ID" \
   --client-secret "$SOUNDCLOUD_CLIENT_SECRET"
@@ -54,6 +61,7 @@ uv run scripts/generate_relisten.py \
 
 2. Start development server:
 ```sh
+cd frontend
 npm run dev
 ```
 
@@ -65,6 +73,7 @@ npm run dev
 
 ```sh
 # First, generate tracks data
+cd frontend
 uv run scripts/generate_relisten.py \
   --client-id "$SOUNDCLOUD_CLIENT_ID" \
   --client-secret "$SOUNDCLOUD_CLIENT_SECRET"
@@ -73,7 +82,7 @@ uv run scripts/generate_relisten.py \
 npm run build
 ```
 
-The output will be in the `dist/` directory.
+The output will be in `frontend/dist/`.
 
 **Note:** In production (CI/CD), this is automated by the deployment workflow.
 
@@ -103,27 +112,30 @@ These must be set as GitHub Secrets:
 
 ```
 .
-├── src/
-│   ├── index.html          # Main live stream page
-│   ├── main.ts             # Entry point for TypeScript
-│   ├── main.css            # Global styles
-│   ├── config.ts           # Environment configuration
-│   ├── player.ts           # Audio player logic
-│   ├── streamDetector.ts   # Platform detection & stream status
-│   └── pages/
-│       ├── re-listen.html  # Generated archive page
-│       └── tech-rider.html # Equipment info page
-├── public/
-│   ├── sc-img.html         # SoundCloud artwork editor (standalone)
-│   ├── moafunk.png         # Logo
-│   ├── icons/              # Favicons & PWA icons
-│   └── CNAME               # GitHub Pages domain
-├── scripts/
-│   ├── generate_relisten.py  # Fetch SoundCloud tracks → JSON
-│   └── generate-html.js      # JSON → HTML template
-├── tests/                  # Vitest & pytest tests
+├── backend/                # Rust backend (independent)
+└── frontend/
+  ├── src/
+  │   ├── index.html          # Main live stream page
+  │   ├── main.ts             # Entry point for TypeScript
+  │   ├── main.css            # Global styles
+  │   ├── config.ts           # Environment configuration
+  │   ├── player.ts           # Audio player logic
+  │   ├── streamDetector.ts   # Platform detection & stream status
+  │   └── pages/
+  │       ├── re-listen.html  # Generated archive page (gitignored)
+  │       └── tech-rider.html # Equipment info page
+  ├── public/
+  │   ├── sc-img.html         # SoundCloud artwork editor (standalone)
+  │   ├── moafunk.png         # Logo
+  │   ├── icons/              # Favicons & PWA icons
+  │   └── CNAME               # GitHub Pages domain
+  ├── scripts/
+  │   ├── generate_relisten.py  # Fetch SoundCloud tracks → JSON
+  │   └── generate-html.js      # JSON → HTML template
+  ├── tests/                  # Vitest & pytest tests
+  ├── package.json            # Node.js dependencies
+  └── pyproject.toml          # Python deps for generator
 ├── .github/workflows/      # CI/CD pipelines
-└── package.json            # Node.js dependencies
 ```
 
 ## Available Commands
@@ -160,6 +172,7 @@ See [.github/workflows/deploy.yml](.github/workflows/deploy.yml) for details.
 ### JavaScript/TypeScript Tests
 
 ```sh
+cd frontend
 npm test              # Run all tests
 npm run test:ui       # Interactive test UI
 ```
@@ -167,7 +180,7 @@ npm run test:ui       # Interactive test UI
 ### Python Tests
 
 ```sh
-cd scripts
+cd frontend
 uv run pytest         # Run Python tests
 ```
 
