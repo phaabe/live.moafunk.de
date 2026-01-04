@@ -81,8 +81,32 @@ pub async fn download_show(
                         .unwrap_or("jpg")
                         .to_string();
 
+                    // For the combined cover, prefer the cropped ("image_cropped") picture.
                     if collage_items.len() < 4 {
-                        collage_items.push((artist.name.clone(), data.clone(), ext.clone()));
+                        let collage_key = artist
+                            .pic_cropped_key
+                            .as_ref()
+                            .or(artist.pic_key.as_ref())
+                            .or(artist.pic_overlay_key.as_ref());
+
+                        if let Some(ck) = collage_key {
+                            if let Ok((cdata, _)) = storage::download_file(&state, ck).await {
+                                let cext = std::path::Path::new(ck)
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .unwrap_or("jpg")
+                                    .to_string();
+                                collage_items.push((artist.name.clone(), cdata, cext));
+                            } else {
+                                collage_items.push((
+                                    artist.name.clone(),
+                                    data.clone(),
+                                    ext.clone(),
+                                ));
+                            }
+                        } else {
+                            collage_items.push((artist.name.clone(), data.clone(), ext.clone()));
+                        }
                     }
 
                     let path = format!("{}/artist_pic.{}", artist_dir, ext);
@@ -205,7 +229,7 @@ Contents
 --------
 This package contains media files for all artists assigned to this show.
 
-    - cover.png - 2x2 collage of (up to) the first 4 artist pictures
+    - cover.png - 2x2 collage of (up to) the first 4 cropped artist pictures
 
 Each artist folder contains:
 - artist_pic.* - Artist profile picture (square format)
