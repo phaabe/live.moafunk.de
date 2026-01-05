@@ -16,6 +16,7 @@ use axum::{
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -108,6 +109,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Build router
     let app = Router::new()
+        // Static assets (brand)
+        .nest_service("/assets/brand", ServeDir::new("assets/brand"))
         // Health check
         .route("/health", get(handlers::health_check))
         // Public API
@@ -125,10 +128,6 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::download::download_artist),
         )
         .route("/artists/:id/delete", post(handlers::admin::delete_artist))
-        .route(
-            "/artists/:id/status",
-            post(handlers::admin::update_artist_status),
-        )
         .route("/artists/:id/assign", post(handlers::admin::assign_show))
         .route(
             "/artists/:id/unassign/:show_id",
@@ -143,9 +142,10 @@ async fn main() -> anyhow::Result<()> {
             "/shows/:id/unassign/:artist_id",
             post(handlers::admin::unassign_artist),
         )
+        .route("/shows/:id/date", post(handlers::admin::update_show_date))
         .route(
-            "/shows/:id/status",
-            post(handlers::admin::update_show_status),
+            "/shows/:id/description",
+            post(handlers::admin::update_show_description),
         )
         .route(
             "/shows/:id/download",

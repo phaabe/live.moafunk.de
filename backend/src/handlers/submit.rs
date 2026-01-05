@@ -337,7 +337,7 @@ pub async fn submit_form(
             name, pronouns, track1_name, track2_name, no_voice_message,
             instagram, soundcloud, bandcamp, spotify, other_social,
             upcoming_events, mentions, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned')
         "#,
     )
     .bind(&artist_name)

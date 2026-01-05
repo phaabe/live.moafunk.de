@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - UNHEARD Admin</title>
+    <title>Login - Moafunk Admin</title>
     <style>
         * {
             margin: 0;
@@ -12,8 +12,8 @@
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #1a1a2e;
+            font-family: 'Courier New', Courier, monospace;
+            background: #000;
             color: #eee;
             min-height: 100vh;
             display: flex;
@@ -22,12 +22,26 @@
         }
         
         .login-container {
-            background: #16213e;
+            background: #000;
             padding: 40px;
-            border-radius: 8px;
+            border-radius: 4px;
+            border: 8px solid #ffec44;
             width: 100%;
             max-width: 400px;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            color: #fff;
+        }
+
+        .logo-wrap {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 18px;
+        }
+
+        .logo {
+            width: 140px;
+            max-width: 100%;
+            height: auto;
         }
         
         h1 {
@@ -49,33 +63,34 @@
         input[type="password"] {
             width: 100%;
             padding: 12px;
-            background: #0f0f23;
-            border: 1px solid #333;
+            background: #ffec44;
+            border: 1px solid #ffec44;
             border-radius: 4px;
-            color: #fff;
+            color: #000;
             font-size: 1em;
         }
         
         input[type="password"]:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #ffec44;
         }
         
         button {
             width: 100%;
             padding: 14px;
-            background: #667eea;
-            border: none;
+            background: transparent;
+            border: 1px solid #ffec44;
             border-radius: 4px;
-            color: #fff;
+            color: #ffec44;
             font-size: 1em;
             font-weight: 600;
             cursor: pointer;
-            transition: background 0.3s;
+            transition: background 0.2s, color 0.2s;
         }
         
         button:hover {
-            background: #5a67d8;
+            background: #ffec44;
+            color: #000;
         }
         
         .error {
@@ -90,7 +105,10 @@
 </head>
 <body>
     <div class="login-container">
-        <h1>UNHEARD Admin</h1>
+        <div class="logo-wrap">
+            <img src="/assets/brand/moafunk.png" alt="Moafunk" class="logo">
+        </div>
+        <h1>Moafunk Admin</h1>
         
         {% if error %}
         <div class="error">{{ error }}</div>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shows - UNHEARD Admin</title>
+    <title>Shows - Moafunk Admin</title>
     <style>
         * {
             margin: 0;
@@ -12,19 +12,33 @@
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #1a1a2e;
+            font-family: 'Courier New', Courier, monospace;
+            background: #000;
             color: #eee;
             min-height: 100vh;
         }
         
         .nav {
-            background: #16213e;
+            background: #000;
             padding: 15px 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #333;
+            border-bottom: 1px solid #ffec44;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .brand-logo {
+            width: 26px;
+            height: 26px;
+            object-fit: contain;
+            flex: 0 0 auto;
         }
         
         .nav h1 {
@@ -45,7 +59,7 @@
         
         .nav-links a:hover,
         .nav-links a.active {
-            color: #fff;
+            color: #ffec44;
         }
         
         .container {
@@ -68,7 +82,7 @@
 
         .filter-btn {
             padding: 8px 16px;
-            background: #16213e;
+            background: transparent;
             border: 1px solid #333;
             border-radius: 4px;
             color: #aaa;
@@ -79,15 +93,51 @@
 
         .filter-btn:hover,
         .filter-btn.active {
-            background: #667eea;
-            border-color: #667eea;
-            color: #fff;
+            background: #ffec44;
+            border-color: #ffec44;
+            color: #000;
+        }
+
+        .filter-scheduled-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #aaa;
+            text-decoration: none;
+            font-size: 0.9em;
+            transition: all 0.3s;
+        }
+
+        .filter-scheduled-btn:hover,
+        .filter-scheduled-btn.active {
+            background: #cecece;
+            border-color: #cecece;
+            color: #000;
+        }
+
+        .filter-completed-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #aaa;
+            text-decoration: none;
+            font-size: 0.9em;
+            transition: all 0.3s;
+        }
+
+        .filter-completed-btn:hover,
+        .filter-completed-btn.active {
+            background: #48bb78;
+            border-color: #48bb78;
+            color: #000;
         }
         
         .add-show-form {
-            background: #16213e;
+            background: #0f0f23;
             padding: 25px;
-            border-radius: 8px;
+            border-radius: 4px;
             margin-bottom: 30px;
         }
         
@@ -117,7 +167,7 @@
         .form-group textarea {
             width: 100%;
             padding: 10px;
-            background: #0f0f23;
+            background: #000;
             border: 1px solid #333;
             border-radius: 4px;
             color: #fff;
@@ -127,29 +177,34 @@
         .form-group input:focus,
         .form-group textarea:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #ffec44;
         }
         
         .btn {
             padding: 10px 20px;
-            background: #48bb78;
-            border: none;
+            background: transparent;
+            border: 1px solid #48bb78;
             border-radius: 4px;
-            color: #1a1a2e;
+            color: #48bb78;
             font-size: 1em;
             cursor: pointer;
-            transition: background 0.3s;
+            transition: background 0.2s, color 0.2s, border-color 0.2s;
+            text-decoration: none;
+            display: inline-block;
+            font-weight: 600;
+            white-space: nowrap;
         }
-        
+
         .btn:hover {
-            background: #3fa966;
+            background: #48bb78;
+            color: #000;
         }
         
         .shows-table {
             width: 100%;
             border-collapse: collapse;
-            background: #16213e;
-            border-radius: 8px;
+            background: #0f0f23;
+            border-radius: 4px;
             overflow: hidden;
         }
         
@@ -179,15 +234,15 @@
         }
         
         .shows-table tr:hover {
-            background: #1e2a4a;
+            background: #111;
         }
         
-        .shows-table a {
-            color: #667eea;
+        .shows-table a:not(.btn) {
+            color: #ffec44;
             text-decoration: none;
         }
         
-        .shows-table a:hover {
+        .shows-table a:not(.btn):hover {
             text-decoration: underline;
         }
         
@@ -200,19 +255,15 @@
         }
         
         .status.scheduled {
-            background: #4299e1;
-            color: #fff;
+            background: #cecece;
+            color: #000;
         }
         
         .status.completed {
             background: #48bb78;
-            color: #1a1a2e;
+            color: #000;
         }
         
-        .status.cancelled {
-            background: #fc8181;
-            color: #1a1a2e;
-        }
         
         .artist-count {
             background: #333;
@@ -223,17 +274,17 @@
 
         .artist-count.none {
             background: #fc8181;
-            color: #1a1a2e;
+            color: #000;
         }
 
         .artist-count.partial {
             background: #ffec44;
-            color: #1a1a2e;
+            color: #000;
         }
 
         .artist-count.full {
             background: #48bb78;
-            color: #1a1a2e;
+            color: #000;
         }
         
         .empty-state {
@@ -248,20 +299,20 @@
 
         .flash {
             padding: 12px 16px;
-            border-radius: 6px;
+            border-radius: 4px;
             margin-bottom: 16px;
             border: 1px solid #333;
         }
 
         .flash.success {
             background: #48bb78;
-            color: #1a1a2e;
+            color: #000;
             border-color: #48bb78;
         }
 
         .flash.error {
             background: #fc8181;
-            color: #1a1a2e;
+            color: #000;
             border-color: #fc8181;
         }
 
@@ -272,59 +323,61 @@
             flex-wrap: wrap;
         }
 
-        .download-btn {
-            display: inline-block;
-            padding: 7px 12px;
-            border-radius: 6px;
-            text-decoration: none;
-            font-size: 0.9em;
-            font-weight: 600;
-            color: #fff;
-            transition: opacity 0.2s;
-            white-space: nowrap;
+        /* Match show_detail.html download button look */
+        .btn-download-recording {
+            border-color: #00ff04;
+            color: #00ff04;
         }
 
-        .download-btn.recording {
-            background: #16213e;
+        .btn-download-recording:hover {
+            background: #00ff04;
+            color: #000;
         }
 
-        .download-btn.social {
-            background: #667eea;
+        .btn-download-social {
+            border-color: #ff00aa;
+            color: #ff00aa;
         }
 
-        .download-btn.all {
-            background: #333;
+        .btn-download-social:hover {
+            background: #ff00aa;
+            color: #000;
         }
 
-        /* Override `.shows-table a { color: ... }` so button text is readable. */
-        .shows-table a.download-btn,
-        .shows-table a.download-btn:visited {
-            color: #fff;
+        .btn-download-all {
+            border-color: #bbbbbb;
+            color: #bbbbbb;
         }
 
-        .download-btn:hover {
-            opacity: 0.85;
-            text-decoration: none;
+        .btn-download-all:hover {
+            background: #bbbbbb;
+            color: #000;
         }
+
+        /* Buttons inside the table keep their own colors (see :not(.btn) rules above). */
 
         .delete-btn {
             padding: 6px 10px;
-            border: none;
+            border: 1px solid #fc8181;
             border-radius: 4px;
             cursor: pointer;
             font-size: 0.85em;
-            background: #fc8181;
-            color: #1a1a2e;
+            background: transparent;
+            color: #fc8181;
         }
 
         .delete-btn:hover {
-            opacity: 0.85;
+            background: #fc8181;
+            color: #000;
         }
     </style>
 </head>
 <body>
     <nav class="nav">
-        <h1>UNHEARD Admin</h1>
+        <div class="brand">
+            <img src="/assets/brand/moafunk.png" alt="Moafunk" class="brand-logo">
+            <h1>Moafunk Admin</h1>
+        </div>
         <div class="nav-links">
             <a href="/artists">Artists</a>
             <a href="/shows" class="active">Shows</a>
@@ -360,9 +413,8 @@
             <h2>Shows ({{ shows|length }})</h2>
             <div class="filters">
                 <a href="/shows?sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if not status_filter %}active{% endif %}">All</a>
-                <a href="/shows?status_filter=scheduled&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'scheduled' %}active{% endif %}">Scheduled</a>
-                <a href="/shows?status_filter=completed&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'completed' %}active{% endif %}">Completed</a>
-                <a href="/shows?status_filter=cancelled&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'cancelled' %}active{% endif %}">Cancelled</a>
+                <a href="/shows?status_filter=scheduled&sort={{ sort }}&dir={{ dir }}" class="filter-scheduled-btn {% if status_filter == 'scheduled' %}active{% endif %}">Scheduled</a>
+                <a href="/shows?status_filter=completed&sort={{ sort }}&dir={{ dir }}" class="filter-completed-btn {% if status_filter == 'completed' %}active{% endif %}">Completed</a>
             </div>
         </div>
 
@@ -422,9 +474,9 @@
                     <td>
                         <div class="action-row">
                             {% if item.artist_count > 0 %}
-                            <a class="download-btn recording" href="/shows/{{ item.show.id }}/download/recording">Recording</a>
-                            <a class="download-btn social" href="/shows/{{ item.show.id }}/download/social-media">Social Media</a>
-                            <a class="download-btn all" href="/shows/{{ item.show.id }}/download/all-data">All Material</a>
+                            <a class="btn btn-download-recording" href="/shows/{{ item.show.id }}/download/recording">Recording</a>
+                            <a class="btn btn-download-social" href="/shows/{{ item.show.id }}/download/social-media">Social Media</a>
+                            <a class="btn btn-download-all" href="/shows/{{ item.show.id }}/download/all-data">All Material</a>
                             {% endif %}
                         </div>
                     </td>

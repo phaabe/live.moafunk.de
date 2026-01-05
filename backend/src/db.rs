@@ -52,11 +52,24 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             upcoming_events TEXT,
             mentions TEXT,
             
-            status TEXT NOT NULL DEFAULT 'pending',
+            status TEXT NOT NULL DEFAULT 'unassigned',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT
         )
         "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Normalize legacy artist statuses (pending/approved/rejected) to the new model.
+    // Keep DB values consistent with the assignment table.
+    sqlx::query(
+        "UPDATE artists SET status = 'unassigned' WHERE status NOT IN ('assigned', 'unassigned')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE artists SET status = 'assigned' WHERE id IN (SELECT artist_id FROM artist_show_assignments)",
     )
     .execute(pool)
     .await?;

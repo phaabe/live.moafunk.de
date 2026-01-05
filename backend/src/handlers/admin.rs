@@ -8,6 +8,15 @@ use std::sync::Arc;
 
 const MAX_ARTISTS_PER_SHOW: i64 = 4;
 
+fn derive_show_status(show_date: &str, today: &str) -> String {
+    // Dates are normalized to `YYYY-MM-DD`, so lexicographic compares work.
+    if show_date < today {
+        "completed".to_string()
+    } else {
+        "scheduled".to_string()
+    }
+}
+
 #[derive(Debug, sqlx::FromRow, serde::Serialize)]
 struct AvailableShow {
     id: i64,
@@ -69,10 +78,14 @@ pub async fn artists_list(
         .and_then(|q| serde_urlencoded::from_str(q).ok())
         .unwrap_or_default();
 
-    let status_filter = query_params
-        .get("status_filter")
+    let assignment_filter = query_params
+        .get("assignment_filter")
         .cloned()
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .and_then(|s| match s.as_str() {
+            "assigned" | "unassigned" => Some(s),
+            _ => None,
+        });
 
     let sort = query_params
         .get("sort")
@@ -89,7 +102,7 @@ pub async fn artists_list(
     };
     let order_by = match sort {
         "name" => "a.name COLLATE NOCASE",
-        "status" => "a.status",
+        "status" => "CASE WHEN asa.show_id IS NULL THEN 0 ELSE 1 END",
         "submitted" => "a.created_at",
         _ => "a.created_at",
     };
@@ -101,59 +114,49 @@ pub async fn artists_list(
     struct ArtistListRow {
         pub id: i64,
         pub name: String,
-        pub pronouns: String,
         pub status: String,
         pub created_at: String,
         pub show_titles: Option<String>,
     }
 
-    let artists: Vec<ArtistListRow> = if let Some(status) = &status_filter {
-        let query = format!(
-            r#"
-            SELECT
-                a.id,
-                a.name,
-                a.pronouns,
-                a.status,
-                a.created_at,
-                group_concat(s.title, ', ') AS show_titles
-            FROM artists a
-            LEFT JOIN artist_show_assignments asa ON asa.artist_id = a.id
-            LEFT JOIN shows s ON s.id = asa.show_id
-            WHERE a.status = ?
-            GROUP BY a.id
-            ORDER BY {} {}, a.id DESC
-            "#,
-            order_by, dir
-        );
-        sqlx::query_as(&query)
-            .bind(status)
-            .fetch_all(&state.db)
-            .await?
+    let mut where_clauses: Vec<&str> = Vec::new();
+    if let Some(af) = assignment_filter.as_deref() {
+        match af {
+            "assigned" => where_clauses.push("asa.show_id IS NOT NULL"),
+            "unassigned" => where_clauses.push("asa.show_id IS NULL"),
+            _ => {}
+        }
+    }
+
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
     } else {
-        let query = format!(
-            r#"
-            SELECT
-                a.id,
-                a.name,
-                a.pronouns,
-                a.status,
-                a.created_at,
-                group_concat(s.title, ', ') AS show_titles
-            FROM artists a
-            LEFT JOIN artist_show_assignments asa ON asa.artist_id = a.id
-            LEFT JOIN shows s ON s.id = asa.show_id
-            GROUP BY a.id
-            ORDER BY {} {}, a.id DESC
-            "#,
-            order_by, dir
-        );
-        sqlx::query_as(&query).fetch_all(&state.db).await?
+        format!("WHERE {}", where_clauses.join(" AND "))
     };
+
+    let query = format!(
+        r#"
+        SELECT
+            a.id,
+            a.name,
+            CASE WHEN asa.show_id IS NULL THEN 'unassigned' ELSE 'assigned' END AS status,
+            a.created_at,
+            group_concat(s.title, ', ') AS show_titles
+        FROM artists a
+        LEFT JOIN artist_show_assignments asa ON asa.artist_id = a.id
+        LEFT JOIN shows s ON s.id = asa.show_id
+        {}
+        GROUP BY a.id
+        ORDER BY {} {}, a.id DESC
+        "#,
+        where_sql, order_by, dir
+    );
+
+    let artists: Vec<ArtistListRow> = sqlx::query_as(&query).fetch_all(&state.db).await?;
 
     let mut context = tera::Context::new();
     context.insert("artists", &artists);
-    context.insert("status_filter", &status_filter);
+    context.insert("assignment_filter", &assignment_filter);
     context.insert("flash_message", &flash_message);
     context.insert("flash_kind", &flash_kind);
     context.insert("sort", &sort);
@@ -230,7 +233,7 @@ pub async fn artist_detail(
         }
     }
 
-    // Get available shows for assignment (scheduled, not already assigned, and with remaining slots)
+    // Get available shows for assignment (future/today, not already assigned, and with remaining slots)
     let available_shows: Vec<AvailableShow> = sqlx::query_as(
         r#"
         SELECT
@@ -240,7 +243,7 @@ pub async fn artist_detail(
             (? - COUNT(asa.artist_id)) AS artists_left
         FROM shows s
         LEFT JOIN artist_show_assignments asa ON asa.show_id = s.id
-        WHERE s.status = 'scheduled'
+                WHERE s.date >= date('now')
           AND s.id NOT IN (
               SELECT show_id FROM artist_show_assignments WHERE artist_id = ?
           )
@@ -397,6 +400,13 @@ pub async fn assign_show(
             "Could not assign: show already has 4 artists.".to_string(),
         ));
     }
+
+    sqlx::query(
+        "UPDATE artists SET status = 'assigned', updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(artist_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     Ok(Redirect::to(&format!("/artists/{}", artist_id)).into_response())
@@ -418,33 +428,14 @@ pub async fn unassign_show(
         .execute(&state.db)
         .await?;
 
+    sqlx::query(
+        "UPDATE artists SET status = 'unassigned', updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(artist_id)
+    .execute(&state.db)
+    .await?;
+
     Ok(Redirect::to(&format!("/artists/{}", artist_id)).into_response())
-}
-
-pub async fn update_artist_status(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-    request: Request<axum::body::Body>,
-) -> Result<Response> {
-    let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Err(AppError::Unauthorized);
-    }
-
-    // Parse form from body
-    let bytes = axum::body::to_bytes(request.into_body(), 1024)
-        .await
-        .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
-    let form: models::StatusUpdateForm = serde_urlencoded::from_bytes(&bytes)
-        .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
-
-    sqlx::query("UPDATE artists SET status = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(&form.status)
-        .bind(id)
-        .execute(&state.db)
-        .await?;
-
-    Ok(Redirect::to(&format!("/artists/{}", id)).into_response())
 }
 
 pub async fn shows_list(
@@ -465,7 +456,7 @@ pub async fn shows_list(
     let status_filter = query_params
         .get("status_filter")
         .cloned()
-        .filter(|s| !s.is_empty());
+        .filter(|s| s == "scheduled" || s == "completed");
 
     let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
     let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
@@ -485,25 +476,43 @@ pub async fn shows_list(
     };
     let order_by = match sort {
         "title" => "title COLLATE NOCASE",
-        "status" => "status",
+        "status" => "date", // apply status sort after deriving it
         "date" => "date",
         "artists" => "date", // sorted after counts are computed
         _ => "date",
     };
 
-    let shows: Vec<models::Show> = if let Some(status) = &status_filter {
-        let query = format!(
-            "SELECT * FROM shows WHERE status = ? ORDER BY {} {}, id DESC",
-            order_by, dir
-        );
-        sqlx::query_as(&query)
-            .bind(status)
-            .fetch_all(&state.db)
-            .await?
-    } else {
-        let query = format!("SELECT * FROM shows ORDER BY {} {}, id DESC", order_by, dir);
-        sqlx::query_as(&query).fetch_all(&state.db).await?
-    };
+    let today: String = sqlx::query_scalar("SELECT date('now')")
+        .fetch_one(&state.db)
+        .await?;
+
+    // Fetch first, then derive status and apply filter.
+    let query = format!("SELECT * FROM shows ORDER BY {} {}, id DESC", order_by, dir);
+    let mut shows: Vec<models::Show> = sqlx::query_as(&query).fetch_all(&state.db).await?;
+    for show in &mut shows {
+        show.status = derive_show_status(&show.date, &today);
+    }
+    if let Some(status) = &status_filter {
+        shows.retain(|s| s.status == *status);
+    }
+
+    // If requested, sort by derived status.
+    if sort == "status" {
+        let ascending = dir == "ASC";
+        shows.sort_by(|a, b| {
+            if ascending {
+                a.status
+                    .cmp(&b.status)
+                    .then_with(|| a.date.cmp(&b.date))
+                    .then_with(|| a.id.cmp(&b.id))
+            } else {
+                b.status
+                    .cmp(&a.status)
+                    .then_with(|| b.date.cmp(&a.date))
+                    .then_with(|| b.id.cmp(&a.id))
+            }
+        });
+    }
 
     // Get artist counts for each show
     let mut shows_with_counts: Vec<serde_json::Value> = Vec::new();
@@ -648,7 +657,12 @@ pub async fn show_detail(
         .fetch_optional(&state.db)
         .await?;
 
-    let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+    let mut show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    let today: String = sqlx::query_scalar("SELECT date('now')")
+        .fetch_one(&state.db)
+        .await?;
+    show.status = derive_show_status(&show.date, &today);
 
     // Get assigned artists
     let artists: Vec<models::Artist> = sqlx::query_as(
@@ -663,15 +677,32 @@ pub async fn show_detail(
     .fetch_all(&state.db)
     .await?;
 
+    // Generate presigned URLs for artist pictures (used for small thumbnails in show detail).
+    let mut artist_pic_urls: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for artist in &artists {
+        // Prefer branded > cropped > original for preview.
+        let pic_key = artist
+            .pic_overlay_key
+            .as_ref()
+            .or(artist.pic_cropped_key.as_ref())
+            .or(artist.pic_key.as_ref());
+        if let Some(key) = pic_key {
+            if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
+                artist_pic_urls.insert(artist.id.to_string(), url);
+            }
+        }
+    }
+
     let artist_count = artists.len() as i64;
     let artists_left = (MAX_ARTISTS_PER_SHOW - artist_count).max(0);
 
-    // Get available artists (approved, not assigned to any show)
+    // Get available artists (not assigned to any show)
     let available_artists: Vec<models::Artist> = if artists_left == 0 {
         Vec::new()
     } else {
         sqlx::query_as(
-            "SELECT * FROM artists WHERE status = 'approved' AND id NOT IN (SELECT artist_id FROM artist_show_assignments) ORDER BY name",
+            "SELECT * FROM artists WHERE id NOT IN (SELECT artist_id FROM artist_show_assignments) ORDER BY name",
         )
         .fetch_all(&state.db)
         .await?
@@ -682,6 +713,7 @@ pub async fn show_detail(
     context.insert("artists", &artists);
     context.insert("available_artists", &available_artists);
     context.insert("artists_left", &artists_left);
+    context.insert("artist_pic_urls", &artist_pic_urls);
     context.insert("flash_message", &flash_message);
     context.insert("flash_kind", &flash_kind);
 
@@ -758,6 +790,13 @@ pub async fn assign_artist(
         ));
     }
 
+    sqlx::query(
+        "UPDATE artists SET status = 'assigned', updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(form.artist_id)
+    .execute(&mut *tx)
+    .await?;
+
     tx.commit().await?;
 
     Ok(Redirect::to(&format!("/shows/{}", show_id)).into_response())
@@ -779,10 +818,17 @@ pub async fn unassign_artist(
         .execute(&state.db)
         .await?;
 
+    sqlx::query(
+        "UPDATE artists SET status = 'unassigned', updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(artist_id)
+    .execute(&state.db)
+    .await?;
+
     Ok(Redirect::to(&format!("/shows/{}", show_id)).into_response())
 }
 
-pub async fn update_show_status(
+pub async fn update_show_date(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     request: Request<axum::body::Body>,
@@ -792,17 +838,71 @@ pub async fn update_show_status(
         return Err(AppError::Unauthorized);
     }
 
+    #[derive(Debug, serde::Deserialize)]
+    struct UpdateShowDateForm {
+        date: String,
+    }
+
     let bytes = axum::body::to_bytes(request.into_body(), 1024)
         .await
         .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
-    let form: models::StatusUpdateForm = serde_urlencoded::from_bytes(&bytes)
+    let form: UpdateShowDateForm = serde_urlencoded::from_bytes(&bytes)
         .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
 
-    sqlx::query("UPDATE shows SET status = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(&form.status)
+    let date = normalize_show_date(&form.date);
+    if date.is_empty() {
+        return Ok(redirect_with_flash(
+            &format!("/shows/{}", id),
+            "error",
+            "Date is required.".to_string(),
+        ));
+    }
+
+    sqlx::query("UPDATE shows SET date = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(&date)
         .bind(id)
         .execute(&state.db)
         .await?;
 
-    Ok(Redirect::to(&format!("/shows/{}", id)).into_response())
+    Ok(redirect_with_flash(
+        &format!("/shows/{}", id),
+        "success",
+        "Updated show date.".to_string(),
+    ))
+}
+
+pub async fn update_show_description(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    if !auth::is_authenticated(&state, token.as_deref()).await {
+        return Err(AppError::Unauthorized);
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct UpdateShowDescriptionForm {
+        description: String,
+    }
+
+    let bytes = axum::body::to_bytes(request.into_body(), 16 * 1024)
+        .await
+        .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
+    let form: UpdateShowDescriptionForm = serde_urlencoded::from_bytes(&bytes)
+        .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
+
+    sqlx::query(
+        "UPDATE shows SET description = NULLIF(?, ''), updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(form.description.trim())
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+
+    Ok(redirect_with_flash(
+        &format!("/shows/{}", id),
+        "success",
+        "Updated show description.".to_string(),
+    ))
 }

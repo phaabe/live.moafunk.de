@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Artists - UNHEARD Admin</title>
+    <title>Artists - Moafunk Admin</title>
     <style>
         * {
             margin: 0;
@@ -12,19 +12,33 @@
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #1a1a2e;
+            font-family: 'Courier New', Courier, monospace;
+            background: #000;
             color: #eee;
             min-height: 100vh;
         }
         
         .nav {
-            background: #16213e;
+            background: #000;
             padding: 15px 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #333;
+            border-bottom: 1px solid #ffec44;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .brand-logo {
+            width: 26px;
+            height: 26px;
+            object-fit: contain;
+            flex: 0 0 auto;
         }
         
         .nav h1 {
@@ -45,7 +59,7 @@
         
         .nav-links a:hover,
         .nav-links a.active {
-            color: #fff;
+            color: #ffec44;
         }
         
         .container {
@@ -68,7 +82,7 @@
         
         .filter-btn {
             padding: 8px 16px;
-            background: #16213e;
+            background: transparent;
             border: 1px solid #333;
             border-radius: 4px;
             color: #aaa;
@@ -79,16 +93,30 @@
         
         .filter-btn:hover,
         .filter-btn.active {
-            background: #667eea;
-            border-color: #667eea;
-            color: #fff;
+            background: #ffec44;
+            border-color: #ffec44;
+            color: #000;
+        }
+
+        .filter-assigned-btn:hover,
+        .filter-assigned-btn.active {
+            background: #48bb78;
+            border-color: #48bb78;
+            color: #000;
+        }
+
+        .filter-unassigned-btn:hover,
+        .filter-unassigned-btn.active {
+            background: #fc8181;
+            border-color: #fc8181;
+            color: #000;
         }
         
         .artists-table {
             width: 100%;
             border-collapse: collapse;
-            background: #16213e;
-            border-radius: 8px;
+            background: #0f0f23;
+            border-radius: 4px;
             overflow: hidden;
         }
         
@@ -118,11 +146,11 @@
         }
         
         .artists-table tr:hover {
-            background: #1e2a4a;
+            background: #111;
         }
         
         .artists-table a {
-            color: #667eea;
+            color: #ffec44;
             text-decoration: none;
         }
         
@@ -130,7 +158,30 @@
             text-decoration: underline;
         }
 
+        .btn {
+            display: inline-block;
+            padding: 7px 12px;
+            border: 1px solid #ffec44;
+            border-radius: 4px;
+            background: transparent;
+            color: #ffec44;
+            text-decoration: none;
+            font-size: 0.85em;
+            font-weight: 600;
+            white-space: nowrap;
+            transition: background 0.2s, color 0.2s, border-color 0.2s;
+        }
 
+        .btn:hover {
+            background: #ffec44;
+            color: #000;
+        }
+
+        .btn-sm {
+            padding: 7px 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
         
         .status {
             display: inline-block;
@@ -140,19 +191,14 @@
             font-weight: 500;
         }
         
-        .status.pending {
-            background: #f6ad55;
-            color: #1a1a2e;
-        }
-        
-        .status.approved {
+        .status.assigned {
             background: #48bb78;
-            color: #1a1a2e;
+            color: #000;
         }
-        
-        .status.rejected {
+
+        .status.unassigned {
             background: #fc8181;
-            color: #1a1a2e;
+            color: #000;
         }
         
         .empty-state {
@@ -167,27 +213,30 @@
 
         .flash {
             padding: 12px 16px;
-            border-radius: 6px;
+            border-radius: 4px;
             margin-bottom: 16px;
             border: 1px solid #333;
         }
 
         .flash.success {
             background: #48bb78;
-            color: #1a1a2e;
+            color: #000;
             border-color: #48bb78;
         }
 
         .flash.error {
             background: #fc8181;
-            color: #1a1a2e;
+            color: #000;
             border-color: #fc8181;
         }
     </style>
 </head>
 <body>
     <nav class="nav">
-        <h1>UNHEARD Admin</h1>
+        <div class="brand">
+            <img src="/assets/brand/moafunk.png" alt="Moafunk" class="brand-logo">
+            <h1>Moafunk Admin</h1>
+        </div>
         <div class="nav-links">
             <a href="/artists" class="active">Artists</a>
             <a href="/shows">Shows</a>
@@ -199,10 +248,9 @@
         <div class="header">
             <h2>Artists ({{ artists|length }})</h2>
             <div class="filters">
-                <a href="/artists?sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if not status_filter %}active{% endif %}">All</a>
-                <a href="/artists?status_filter=pending&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'pending' %}active{% endif %}">Pending</a>
-                <a href="/artists?status_filter=approved&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'approved' %}active{% endif %}">Approved</a>
-                <a href="/artists?status_filter=rejected&sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if status_filter == 'rejected' %}active{% endif %}">Rejected</a>
+                <a href="/artists?sort={{ sort }}&dir={{ dir }}" class="filter-btn {% if not assignment_filter %}active{% endif %}">All</a>
+                <a href="/artists?assignment_filter=assigned&sort={{ sort }}&dir={{ dir }}" class="filter-btn filter-assigned-btn {% if assignment_filter == 'assigned' %}active{% endif %}">Assigned</a>
+                <a href="/artists?assignment_filter=unassigned&sort={{ sort }}&dir={{ dir }}" class="filter-btn filter-unassigned-btn {% if assignment_filter == 'unassigned' %}active{% endif %}">Unassigned</a>
             </div>
         </div>
 
@@ -219,43 +267,48 @@
                     <th>
                         {% set next_dir = "asc" %}
                         {% if sort == "name" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
-                        <a href="/artists?sort=name&dir={{ next_dir }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}">
+                        <a href="/artists?sort=name&dir={{ next_dir }}{% if assignment_filter %}&assignment_filter={{ assignment_filter }}{% endif %}">
                             Name{% if sort == "name" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
                         </a>
                     </th>
-                    <th>Pronouns</th>
                     <th>Show</th>
                     <th>
                         {% set next_dir = "asc" %}
                         {% if sort == "status" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
-                        <a href="/artists?sort=status&dir={{ next_dir }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}">
+                        <a href="/artists?sort=status&dir={{ next_dir }}{% if assignment_filter %}&assignment_filter={{ assignment_filter }}{% endif %}">
                             Status{% if sort == "status" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
                         </a>
                     </th>
                     <th>
                         {% set next_dir = "asc" %}
                         {% if sort == "submitted" and dir == "asc" %}{% set next_dir = "desc" %}{% endif %}
-                        <a href="/artists?sort=submitted&dir={{ next_dir }}{% if status_filter %}&status_filter={{ status_filter }}{% endif %}">
+                        <a href="/artists?sort=submitted&dir={{ next_dir }}{% if assignment_filter %}&assignment_filter={{ assignment_filter }}{% endif %}">
                             Submitted{% if sort == "submitted" %} {% if dir == "asc" %}↑{% else %}↓{% endif %}{% endif %}
                         </a>
                     </th>
+                    <th>Download</th>
                 </tr>
             </thead>
             <tbody>
                 {% for artist in artists %}
                 <tr>
                     <td><a href="/artists/{{ artist.id }}">{{ artist.name }}</a></td>
-                    <td>{{ artist.pronouns }}</td>
                     <td>{{ artist.show_titles | default(value="—") }}</td>
                     <td><span class="status {{ artist.status }}">{{ artist.status }}</span></td>
                     <td>{{ artist.created_at }}</td>
+                    <td>
+                        <a class="btn btn-sm" href="/artists/{{ artist.id }}/download">Download</a>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
         {% else %}
         <div class="empty-state">
-            <p>No artists found{% if status_filter %} with status "{{ status_filter }}"{% endif %}.</p>
+            <p>
+                No artists found
+                {% if assignment_filter %} with "{{ assignment_filter }}"{% endif %}.
+            </p>
         </div>
         {% endif %}
     </div>
