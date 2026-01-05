@@ -65,11 +65,6 @@ pub struct CreateShowForm {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct StatusUpdateForm {
-    pub status: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct AssignArtistForm {
     pub artist_id: i64,
 }

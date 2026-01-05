@@ -5,6 +5,12 @@ use image::{DynamicImage, ImageFormat, Rgba};
 use imageproc::drawing::{draw_text_mut, text_size};
 use std::sync::Arc;
 
+struct OverlayFonts {
+    un: FontArc,
+    heard: FontArc,
+    name: FontArc,
+}
+
 fn crop_square_rgba(img: &DynamicImage) -> image::RgbaImage {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -14,43 +20,16 @@ fn crop_square_rgba(img: &DynamicImage) -> image::RgbaImage {
     image::imageops::crop_imm(&rgba, x, y, side, side).to_image()
 }
 
-fn blend_text_with_outline(
-    dst: &mut image::RgbaImage,
-    font: &FontArc,
-    scale: PxScale,
-    text: &str,
-    x: i32,
-    y: i32,
-) {
-    let outline = render_text_image(font, scale, Rgba([0, 0, 0, 200]), text);
-    let fill = render_text_image(font, scale, Rgba([255, 255, 255, 255]), text);
-
-    let ox = x.max(0) as u32;
-    let oy = y.max(0) as u32;
-
-    // Subtle outline/shadow for readability.
-    let offsets: &[(i32, i32)] = &[(-2, 0), (2, 0), (0, -2), (0, 2)];
-    for (dx, dy) in offsets {
-        alpha_blend(
-            dst,
-            &outline,
-            (x + dx).max(0) as u32,
-            (y + dy).max(0) as u32,
-        );
-    }
-    alpha_blend(dst, &fill, ox, oy);
-}
-
 fn make_show_collage_sync(
     items: &[(String, Vec<u8>, String)],
-    font_bytes: Option<&[u8]>,
+    fonts: Option<&OverlayFonts>,
 ) -> Option<Vec<u8>> {
     // 2x2 grid. Fill missing tiles with black.
     let tile: u32 = 1024;
     let canvas: u32 = tile * 2;
     let mut out = image::RgbaImage::from_pixel(canvas, canvas, Rgba([0, 0, 0, 255]));
 
-    let font = font_bytes.and_then(|b| FontArc::try_from_vec(b.to_vec()).ok());
+    let fonts = fonts;
 
     for idx in 0..4usize {
         let x0 = if idx % 2 == 0 { 0 } else { tile };
@@ -66,16 +45,17 @@ fn make_show_collage_sync(
             image::imageops::resize(&cropped, tile, tile, image::imageops::FilterType::Lanczos3);
         alpha_blend(&mut out, &resized, x0, y0);
 
-        if let Some(ref font) = font {
+        if let Some(fonts) = fonts {
             let name = artist_name.trim();
             if !name.is_empty() {
                 let name = name.to_uppercase();
                 let max_w = (tile as f32 * 0.86) as u32;
-                let mut size = (tile as f32 * 0.085).clamp(18.0, 120.0);
+                // Artist names should be readable but not dominate the tile.
+                let mut size = (tile as f32 * 0.06).clamp(14.0, 90.0);
 
                 for _ in 0..12 {
                     let scale = PxScale::from(size);
-                    let (tw, _th) = text_size(scale, font, &name);
+                    let (tw, _th) = text_size(scale, &fonts.name, &name);
                     if tw <= max_w {
                         break;
                     }
@@ -86,29 +66,38 @@ fn make_show_collage_sync(
                 }
 
                 let scale = PxScale::from(size);
-                let (tw, th) = text_size(scale, font, &name);
+                let (tw, th) = text_size(scale, &fonts.name, &name);
                 let cx = x0 as i32 + (tile as i32 / 2);
                 let cy = y0 as i32 + (tile as i32 / 2);
                 let tx = cx - (tw as i32 / 2);
                 let ty = cy - (th as i32 / 2);
-                blend_text_with_outline(&mut out, font, scale, &name, tx, ty);
+                draw_text_mut(
+                    &mut out,
+                    Rgba([255, 255, 255, 255]),
+                    tx,
+                    ty,
+                    scale,
+                    &fonts.name,
+                    &name,
+                );
             }
         }
     }
 
     // Center UN / HEARD
-    if let Some(ref font) = font {
+    if let Some(fonts) = fonts {
         let label_un = "UN";
         let label_heard = "HEARD";
 
         let line_gap = (canvas as f32 * 0.015).round().clamp(6.0, 32.0) as i32;
-        let mut heard_size = (canvas as f32 * 0.13).clamp(40.0, 220.0);
+        // HEARD a bit smaller; UN much larger (roughly matching the frontend ratio).
+        let mut heard_size = (canvas as f32 * 0.105).clamp(34.0, 190.0);
 
         // Ensure HEARD fits comfortably within center region.
         let max_heard_w = (canvas as f32 * 0.70) as u32;
         for _ in 0..12 {
             let heard_scale = PxScale::from(heard_size);
-            let (hw, _hh) = text_size(heard_scale, font, label_heard);
+            let (hw, _hh) = text_size(heard_scale, &fonts.heard, label_heard);
             if hw <= max_heard_w {
                 break;
             }
@@ -116,48 +105,55 @@ fn make_show_collage_sync(
         }
 
         let heard_scale = PxScale::from(heard_size);
-        let (heard_w, heard_h) = text_size(heard_scale, font, label_heard);
+        let (heard_w, heard_h) = text_size(heard_scale, &fonts.heard, label_heard);
 
-        // Scale UN to match HEARD width.
+        // Scale UN to match HEARD's rendered width.
+        // Since "UN" is shorter, matching width naturally makes it much larger.
         let mut un_scale = PxScale::from(heard_size);
-        let (un_w0, _un_h0) = text_size(un_scale, font, label_un);
+        let (un_w0, _un_h0) = text_size(un_scale, &fonts.un, label_un);
         if un_w0 > 0 {
             let factor = heard_w as f32 / un_w0 as f32;
-            un_scale = PxScale::from((un_scale.y * factor).clamp(20.0, 260.0));
+            un_scale = PxScale::from((un_scale.y * factor).clamp(40.0, 420.0));
         }
-        let (un_w, un_h) = text_size(un_scale, font, label_un);
+        let (un_w, un_h) = text_size(un_scale, &fonts.un, label_un);
 
         let block_h = un_h as i32 + line_gap + heard_h as i32;
         let cx = canvas as i32 / 2;
         let cy = canvas as i32 / 2;
         let top = cy - block_h / 2;
 
-        // Draw UN (yellow) with outline.
+        // Draw UN (yellow) (match frontend overlay: no outline).
         let un_x = cx - (un_w as i32 / 2);
         let un_y = top;
-        let un_outline = render_text_image(font, un_scale, Rgba([0, 0, 0, 200]), label_un);
-        let un_fill = render_text_image(font, un_scale, Rgba([255, 236, 68, 255]), label_un);
-        for (dx, dy) in [(-3, 0), (3, 0), (0, -3), (0, 3)] {
-            alpha_blend(
-                &mut out,
-                &un_outline,
-                (un_x + dx).max(0) as u32,
-                (un_y + dy).max(0) as u32,
-            );
-        }
-        alpha_blend(&mut out, &un_fill, un_x.max(0) as u32, un_y.max(0) as u32);
+        draw_text_mut(
+            &mut out,
+            Rgba([255, 236, 68, 255]),
+            un_x,
+            un_y,
+            un_scale,
+            &fonts.un,
+            label_un,
+        );
 
-        // Draw HEARD (white) with outline.
+        // Draw HEARD (white) (match frontend overlay: no outline).
         let heard_x = cx - (heard_w as i32 / 2);
         let heard_y = top + un_h as i32 + line_gap;
-        blend_text_with_outline(&mut out, font, heard_scale, label_heard, heard_x, heard_y);
+        draw_text_mut(
+            &mut out,
+            Rgba([255, 255, 255, 255]),
+            heard_x,
+            heard_y,
+            heard_scale,
+            &fonts.heard,
+            label_heard,
+        );
     }
 
     encode_image(&DynamicImage::ImageRgba8(out), "png")
 }
 
 pub async fn build_show_collage(
-    state: &Arc<AppState>,
+    _state: &Arc<AppState>,
     mut items: Vec<(String, Vec<u8>, String)>,
 ) -> Option<Vec<u8>> {
     // Only up to 4 tiles.
@@ -165,85 +161,32 @@ pub async fn build_show_collage(
         items.truncate(4);
     }
 
-    let font_override = state.config.overlay_font_path_path().map(|s| s.to_string());
-
     let items_clone = items.clone();
 
+    // Use repo-provided Shoika fonts (match frontend overlay).
+    // (We intentionally do not rely on system fonts.)
+
     tokio::task::spawn_blocking(move || {
-        let font_bytes = load_font_bytes(font_override.as_deref());
-        make_show_collage_sync(&items_clone, font_bytes.as_deref())
+        let fonts = load_overlay_fonts();
+        make_show_collage_sync(&items_clone, fonts.as_ref())
     })
     .await
     .ok()
     .flatten()
 }
 
-fn candidate_font_paths() -> &'static [&'static str] {
-    &[
-        // Repo-provided Shoika (always prefer and only use Shoika)
-        "./assets/fonts/Shoika-font/Shoika Semi Bold Italic.ttf",
-        "./assets/fonts/Shoika-font/Shoika Bold Italic.ttf",
-        "./assets/fonts/Shoika-font/Shoika Regular Italic.ttf",
-    ]
-}
+fn load_overlay_fonts() -> Option<OverlayFonts> {
+    let un = std::fs::read("./assets/fonts/Shoika-font/Shoika Bold Italic.ttf")
+        .ok()
+        .and_then(|b| FontArc::try_from_vec(b).ok())?;
+    let heard = std::fs::read("./assets/fonts/Shoika-font/Shoika Regular Italic.ttf")
+        .ok()
+        .and_then(|b| FontArc::try_from_vec(b).ok())?;
+    let name = std::fs::read("./assets/fonts/Shoika-font/Shoika Bold.ttf")
+        .ok()
+        .and_then(|b| FontArc::try_from_vec(b).ok())?;
 
-fn load_font_bytes(font_path_override: Option<&str>) -> Option<Vec<u8>> {
-    if let Some(p) = font_path_override {
-        if let Ok(bytes) = std::fs::read(p) {
-            return Some(bytes);
-        }
-    }
-
-    for p in candidate_font_paths() {
-        if let Ok(bytes) = std::fs::read(p) {
-            return Some(bytes);
-        }
-    }
-
-    None
-}
-
-fn render_text_image(
-    font: &FontArc,
-    scale: PxScale,
-    color: Rgba<u8>,
-    text: &str,
-) -> image::RgbaImage {
-    // Supersample for sharper edges, then downscale.
-    let ss: f32 = 2.0;
-
-    let (tw, th) = text_size(scale, font, text);
-    let pad = 6u32;
-    let target_w = (tw + pad * 2).max(1);
-    let target_h = (th + pad * 2).max(1);
-
-    let hi_scale = PxScale::from((scale.y * ss).max(1.0));
-    let (hi_tw, hi_th) = text_size(hi_scale, font, text);
-    let hi_pad = ((pad as f32) * ss).round().max(1.0) as u32;
-    let hi_w = (hi_tw + hi_pad * 2).max(1);
-    let hi_h = (hi_th + hi_pad * 2).max(1);
-
-    let mut hi = image::RgbaImage::from_pixel(hi_w, hi_h, Rgba([0, 0, 0, 0]));
-    draw_text_mut(
-        &mut hi,
-        color,
-        hi_pad as i32,
-        hi_pad as i32,
-        hi_scale,
-        font,
-        text,
-    );
-
-    if hi_w == target_w && hi_h == target_h {
-        return hi;
-    }
-
-    image::imageops::resize(
-        &hi,
-        target_w,
-        target_h,
-        image::imageops::FilterType::Lanczos3,
-    )
+    Some(OverlayFonts { un, heard, name })
 }
 
 fn decode_image(data: &[u8], ext: &str) -> Option<DynamicImage> {

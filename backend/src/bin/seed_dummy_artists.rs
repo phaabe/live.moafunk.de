@@ -30,7 +30,7 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut database_url = DEFAULT_DATABASE_URL.to_string();
     let mut count: u32 = 10;
-    let mut status = "approved".to_string();
+    let mut status = "unassigned".to_string();
     let mut upload = false;
 
     let mut it = env::args().skip(1);
@@ -62,8 +62,8 @@ fn parse_args() -> Result<Args, String> {
         }
     }
 
-    if !matches!(status.as_str(), "pending" | "approved" | "rejected") {
-        return Err("--status must be one of: pending, approved, rejected".to_string());
+    if !matches!(status.as_str(), "assigned" | "unassigned") {
+        return Err("--status must be one of: assigned, unassigned".to_string());
     }
 
     Ok(Args {
@@ -79,7 +79,7 @@ fn help_text() -> String {
         "Seeds the SQLite DB with dummy artists.",
         "",
         "Usage:",
-        "  cargo run --bin seed_dummy_artists -- [--count N] [--database-url URL] [--status pending|approved|rejected] [--upload]",
+        "  cargo run --bin seed_dummy_artists -- [--count N] [--database-url URL] [--status assigned|unassigned] [--upload]",
         "",
         "Notes:",
         "  - Always satisfies DB-required artist columns.",
@@ -121,7 +121,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             upcoming_events TEXT,
             mentions TEXT,
 
-            status TEXT NOT NULL DEFAULT 'pending',
+            status TEXT NOT NULL DEFAULT 'unassigned',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT
         )

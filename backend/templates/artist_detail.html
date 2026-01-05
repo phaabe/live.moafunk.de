@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ artist.name }} - UNHEARD Admin</title>
+    <title>{{ artist.name }} - Moafunk Admin</title>
     <style>
         * {
             margin: 0;
@@ -12,19 +12,33 @@
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #1a1a2e;
+            font-family: 'Courier New', Courier, monospace;
+            background: #000;
             color: #eee;
             min-height: 100vh;
         }
         
         .nav {
-            background: #16213e;
+            background: #000;
             padding: 15px 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #333;
+            border-bottom: 1px solid #ffec44;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .brand-logo {
+            width: 26px;
+            height: 26px;
+            object-fit: contain;
+            flex: 0 0 auto;
         }
         
         .nav h1 {
@@ -45,7 +59,7 @@
         
         .nav-links a:hover,
         .nav-links a.active {
-            color: #fff;
+            color: #ffec44;
         }
         
         .container {
@@ -59,7 +73,7 @@
         }
         
         .breadcrumb a {
-            color: #667eea;
+            color: #ffec44;
             text-decoration: none;
         }
         
@@ -69,10 +83,10 @@
 
         .flash {
             padding: 12px 15px;
-            border-radius: 6px;
+            border-radius: 4px;
             border: 1px solid #333;
             margin-bottom: 20px;
-            background: #16213e;
+            background: #0f0f23;
         }
 
         .flash.success {
@@ -96,7 +110,7 @@
         }
         
         .header h2 {
-            font-size: 2em;
+            font-size: 2.4em;
             margin-bottom: 10px;
         }
         
@@ -108,7 +122,7 @@
         .artist-pic {
             width: 150px;
             height: 150px;
-            border-radius: 8px;
+            border-radius: 4px;
             object-fit: cover;
             background: #333;
         }
@@ -121,25 +135,36 @@
         
         .status-btn {
             padding: 8px 16px;
-            border: none;
+            background: transparent;
+            border: 1px solid #333;
             border-radius: 4px;
             cursor: pointer;
             font-size: 0.9em;
-            transition: opacity 0.3s;
+            transition: background 0.2s, color 0.2s, border-color 0.2s;
         }
         
         .status-btn:hover {
-            opacity: 0.8;
+            opacity: 1;
         }
         
         .status-btn.approve {
+            border-color: #48bb78;
+            color: #48bb78;
+        }
+
+        .status-btn.approve:hover {
             background: #48bb78;
-            color: #1a1a2e;
+            color: #000;
         }
         
         .status-btn.reject {
+            border-color: #fc8181;
+            color: #fc8181;
+        }
+
+        .status-btn.reject:hover {
             background: #fc8181;
-            color: #1a1a2e;
+            color: #000;
         }
 
         .danger-form {
@@ -148,27 +173,39 @@
 
         .danger-btn {
             padding: 8px 16px;
-            border: none;
+            border: 1px solid #fc8181;
             border-radius: 4px;
             cursor: pointer;
             font-size: 0.9em;
-            background: #fc8181;
-            color: #1a1a2e;
+            background: transparent;
+            color: #fc8181;
         }
 
         .danger-btn:hover {
-            opacity: 0.85;
+            background: #fc8181;
+            color: #000;
         }
-        
-        .status-btn.pending {
-            background: #f6ad55;
-            color: #1a1a2e;
+
+        .download-btn {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 4px;
+            background: transparent;
+            border: 1px solid #ffec44;
+            color: #ffec44;
+            text-decoration: none;
+            font-size: 0.9em;
+        }
+
+        .download-btn:hover {
+            background: #ffec44;
+            color: #000;
         }
         
         .section {
-            background: #16213e;
+            background: #0f0f23;
             padding: 25px;
-            border-radius: 8px;
+            border-radius: 4px;
             margin-bottom: 20px;
         }
         
@@ -177,6 +214,18 @@
             margin-bottom: 20px;
             padding-bottom: 10px;
             border-bottom: 1px solid #333;
+        }
+
+        .top-panels {
+            display: flex;
+            gap: 20px;
+            align-items: stretch;
+            flex-wrap: wrap;
+        }
+
+        .top-panels .section {
+            flex: 1;
+            min-width: 320px;
         }
         
         .info-grid {
@@ -195,7 +244,7 @@
         }
         
         .info-grid .value a {
-            color: #667eea;
+            color: #ffec44;
             text-decoration: none;
         }
         
@@ -216,69 +265,48 @@
             width: 100%;
         }
         
-        .status-badge {
+        .title-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .assign-status {
             display: inline-block;
             padding: 4px 12px;
-            border-radius: 20px;
+            border-radius: 999px;
             font-size: 0.9em;
-            font-weight: 500;
+            font-weight: 600;
         }
-        
-        .status-badge.pending {
-            background: #f6ad55;
-            color: #1a1a2e;
-        }
-        
-        .status-badge.approved {
+
+        .assign-status.assigned {
             background: #48bb78;
-            color: #1a1a2e;
+            color: #000;
         }
-        
-        .status-badge.rejected {
+
+        .assign-status.unassigned {
             background: #fc8181;
-            color: #1a1a2e;
+            color: #000;
         }
-        
-        .shows-list {
-            list-style: none;
-        }
-        
-        .shows-list li {
-            padding: 10px 0;
-            border-bottom: 1px solid #333;
+
+        .show-card {
             display: flex;
             justify-content: space-between;
             align-items: center;
-        }
-        
-        .shows-list li:last-child {
-
-        .shows-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
+            gap: 12px;
+            padding: 12px 14px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            background: #000;
         }
 
-        .shows-table th,
-        .shows-table td {
-            padding: 12px;
-            border-bottom: 1px solid #333;
-            text-align: left;
-        }
-
-        .shows-table th {
-            color: #aaa;
-            font-weight: 600;
-            font-size: 0.9em;
-            background: #16213e;
-        }
-
-        .shows-table a {
-            color: #667eea;
+        .show-card a {
+            color: #ffec44;
             text-decoration: none;
         }
 
-        .shows-table a:hover {
+        .show-card a:hover {
             text-decoration: underline;
         }
 
@@ -289,9 +317,17 @@
             border: 1px solid #333;
             font-size: 0.85em;
             color: #eee;
-            background: #1a1a2e;
+            background: #000;
+            white-space: nowrap;
         }
-            border-bottom: none;
+
+        .danger-note {
+            padding: 12px 14px;
+            border-radius: 4px;
+            border: 1px solid #fc8181;
+            color: #000;
+            background: #fc8181;
+            margin-bottom: 12px;
         }
         
         .text-block {
@@ -307,7 +343,10 @@
 </head>
 <body>
     <nav class="nav">
-        <h1>UNHEARD Admin</h1>
+        <div class="brand">
+            <img src="/assets/brand/moafunk.png" alt="Moafunk" class="brand-logo">
+            <h1>Moafunk Admin</h1>
+        </div>
         <div class="nav-links">
             <a href="/artists" class="active">Artists</a>
             <a href="/shows">Shows</a>
@@ -328,30 +367,15 @@
         
         <div class="header">
             <div class="header-info">
-                <h2>{{ artist.name }}</h2>
+                <div class="title-row">
+                    <h2 style="margin-bottom: 0;">{{ artist.name }}</h2>
+                    {% if artist.shows and artist.shows | length > 0 %}
+                    <span class="assign-status assigned">assigned</span>
+                    {% else %}
+                    <span class="assign-status unassigned">unassigned</span>
+                    {% endif %}
+                </div>
                 <div class="pronouns">{{ artist.pronouns }}</div>
-                <div style="margin-top: 10px;">
-                    <span class="status-badge {{ artist.status }}">{{ artist.status }}</span>
-                </div>
-                
-                <div class="status-form">
-                    <form method="POST" action="/artists/{{ artist.id }}/status" style="display: inline;">
-                        <input type="hidden" name="status" value="approved">
-                        <button type="submit" class="status-btn approve">Approve</button>
-                    </form>
-                    <form method="POST" action="/artists/{{ artist.id }}/status" style="display: inline;">
-                        <input type="hidden" name="status" value="pending">
-                        <button type="submit" class="status-btn pending">Pending</button>
-                    </form>
-                    <form method="POST" action="/artists/{{ artist.id }}/status" style="display: inline;">
-                        <input type="hidden" name="status" value="rejected">
-                        <button type="submit" class="status-btn reject">Reject</button>
-                    </form>
-                </div>
-
-                <form method="POST" action="/artists/{{ artist.id }}/delete" class="danger-form" onsubmit="return confirm('Really delete this artist and all uploaded files? This cannot be undone.');">
-                    <button type="submit" class="danger-btn">Delete Artist</button>
-                </form>
             </div>
             
             {% if file_urls.pic %}
@@ -359,6 +383,46 @@
             {% else %}
             <div class="artist-pic"></div>
             {% endif %}
+        </div>
+
+        <div class="section">
+            <h3>Assigned Show</h3>
+            {% if artist.shows and artist.shows | length > 0 %}
+                {% set s = artist.shows[0] %}
+                <div class="show-card">
+                    <div>
+                        <div style="font-weight: 600;">
+                            <a href="/shows/{{ s.id }}">{{ s.title }}</a>
+                        </div>
+                        <div style="color: #888; margin-top: 4px;">{{ s.date }}</div>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <span class="status-pill">{{ s.status }}</span>
+                        <form method="POST" action="/artists/{{ artist.id }}/unassign/{{ s.id }}" style="margin: 0;">
+                            <button type="submit" class="status-btn reject">Unassign</button>
+                        </form>
+                    </div>
+                </div>
+            {% else %}
+                {% if available_shows and available_shows | length > 0 %}
+                <form method="POST" action="/artists/{{ artist.id }}/assign" style="display: flex; gap: 10px; align-items: center;">
+                    <select name="show_id" required style="flex: 1; padding: 8px 10px; border-radius: 4px; border: 1px solid #333; background: #000; color: #eee;">
+                        <option value="" disabled selected>Select a show…</option>
+                        {% for s in available_shows %}
+                        <option value="{{ s.id }}">{{ s.title }} - {{ s.date }} ({{ s.artists_left }} left)</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="status-btn approve">Assign</button>
+                </form>
+                {% else %}
+                <p class="na">Not assigned to any show</p>
+                {% endif %}
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <h3>Download</h3>
+            <a href="/artists/{{ artist.id }}/download" class="download-btn">Artist Profile</a>
         </div>
         
         <div class="section">
@@ -408,96 +472,50 @@
                     <a href="{{ artist.instagram }}" target="_blank">{{ artist.instagram }}</a>
                     {% else %}<span class="na">Not provided</span>{% endif %}
                 </div>
-                
+
                 <div class="label">SoundCloud</div>
                 <div class="value">
                     {% if artist.soundcloud %}
                     <a href="{{ artist.soundcloud }}" target="_blank">{{ artist.soundcloud }}</a>
                     {% else %}<span class="na">Not provided</span>{% endif %}
                 </div>
-                
+
                 <div class="label">Bandcamp</div>
                 <div class="value">
                     {% if artist.bandcamp %}
                     <a href="{{ artist.bandcamp }}" target="_blank">{{ artist.bandcamp }}</a>
                     {% else %}<span class="na">Not provided</span>{% endif %}
                 </div>
-                
+
                 <div class="label">Spotify</div>
                 <div class="value">
-                    {% if artist.shows %}
-                    <table class="shows-table">
-                        <thead>
-                            <tr>
-                                <th>Title</th>
-                                <th>Date</th>
-                                <th>Status</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for show in artist.shows %}
-                            <tr>
-                                <td><a href="/shows/{{ show.id }}">{{ show.title }}</a></td>
-                                <td>{{ show.date }}</td>
-                                <td><span class="status-pill">{{ show.status }}</span></td>
-                                <td>
-                                    <form method="POST" action="/artists/{{ artist.id }}/unassign/{{ show.id }}" style="margin: 0;">
-                                        <button type="submit" class="status-btn reject">Unassign</button>
-                                    </form>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                    {% else %}
-                    <p class="na">Not assigned to any shows yet</p>
-                    {% endif %}
+                    {% if artist.spotify %}
+                    <a href="{{ artist.spotify }}" target="_blank">{{ artist.spotify }}</a>
+                    {% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+
+                <div class="label">Other</div>
+                <div class="value">
+                    {% if artist.other_social %}{{ artist.other_social }}{% else %}<span class="na">Not provided</span>{% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
             <h3>Additional Info</h3>
-            
             <div style="margin-bottom: 20px;">
                 <strong>Upcoming Events:</strong>
                 <div class="text-block" style="margin-top: 8px;">
                     {% if artist.upcoming_events %}{{ artist.upcoming_events }}{% else %}<span class="na">Not provided</span>{% endif %}
                 </div>
             </div>
-            
+
             <div>
                 <strong>Things to Mention:</strong>
                 <div class="text-block" style="margin-top: 8px;">
                     {% if artist.mentions %}{{ artist.mentions }}{% else %}<span class="na">Not provided</span>{% endif %}
                 </div>
             </div>
-        </div>
-        
-        <div class="section">
-            <h3>Assigned Shows</h3>
-            {% if available_shows and available_shows | length > 0 %}
-            <form method="POST" action="/artists/{{ artist.id }}/assign" style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
-                <select name="show_id" required style="flex: 1; padding: 8px 10px; border-radius: 4px; border: 1px solid #333; background: #1a1a2e; color: #eee;">
-                    <option value="" disabled selected>Select a show…</option>
-                    {% for s in available_shows %}
-                    <option value="{{ s.id }}">{{ s.title }} - {{ s.date }} ({{ s.artists_left }} left)</option>
-                    {% endfor %}
-                </select>
-                <button type="submit" class="status-btn approve">Assign</button>
-            </form>
-            {% endif %}
-
-            {% if artist.shows %}
-            <ul class="shows-list">
-                {% for show in artist.shows %}
-                <li>
-                    <a href="/shows/{{ show.id }}">{{ show.title }} - {{ show.date }}</a>
-                    <form method="POST" action="/artists/{{ artist.id }}/unassign/{{ show.id }}" style="margin: 0;">
-                        <button type="submit" class="status-btn reject">Unassign</button>
-                    </form>
-                </li>
-                {% endfor %}
-            </ul>
-            {% else %}
-            <p class="na">Not assigned to any shows yet</p>
-            {% endif %}
         </div>
         
         <div class="section">
@@ -512,6 +530,14 @@
                 <div class="label">Artist ID</div>
                 <div class="value">{{ artist.id }}</div>
             </div>
+        </div>
+
+        <div class="section">
+            <h3>Danger</h3>
+            <div class="danger-note">ATTENTION: Deleted artists cannot be restored!</div>
+            <form method="POST" action="/artists/{{ artist.id }}/delete" style="margin: 0;" onsubmit="return confirm('Really delete this artist and all uploaded files? This cannot be undone.');">
+                <button type="submit" class="danger-btn">Delete Artist</button>
+            </form>
         </div>
     </div>
 </body>
