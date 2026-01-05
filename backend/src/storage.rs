@@ -249,3 +249,80 @@ pub async fn delete_prefix(state: &Arc<AppState>, prefix: &str) -> Result<u64> {
 
     Ok(deleted)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pending (chunked) upload helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn build_pending_key(session_id: &str, file_type: &str, object_name: &str, ext: &str) -> String {
+    if ext.is_empty() {
+        format!("pending/{}/{}/{}", session_id, file_type, object_name)
+    } else {
+        format!("pending/{}/{}/{}.{}", session_id, file_type, object_name, ext)
+    }
+}
+
+/// Upload a file to a pending (session-based) location.
+pub async fn upload_file_to_pending(
+    state: &Arc<AppState>,
+    session_id: &str,
+    file_type: &str,
+    filename: &str,
+    data: Vec<u8>,
+    content_type: &str,
+) -> Result<String> {
+    let ext = extract_ext(filename);
+    let unique_id = Uuid::new_v4().to_string()[..8].to_string();
+    let key = build_pending_key(session_id, file_type, &unique_id, &ext);
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(ByteStream::from(data))
+        .content_type(content_type)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload file: {}", e)))?;
+
+    Ok(key)
+}
+
+/// Upload a file to a pending location with a human-readable name.
+pub async fn upload_file_to_pending_named(
+    state: &Arc<AppState>,
+    session_id: &str,
+    file_type: &str,
+    desired_name: &str,
+    original_filename: &str,
+    data: Vec<u8>,
+    content_type: &str,
+) -> Result<String> {
+    let ext = extract_ext(original_filename);
+    let mut safe_name = sanitize_object_name(desired_name);
+    if safe_name.len() > 120 {
+        safe_name.truncate(120);
+        safe_name = safe_name.trim_matches([' ', '-', '_']).to_string();
+    }
+
+    if safe_name.is_empty() {
+        let unique_id = Uuid::new_v4().to_string()[..8].to_string();
+        safe_name = unique_id;
+    }
+
+    let key = build_pending_key(session_id, file_type, &safe_name, &ext);
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(ByteStream::from(data))
+        .content_type(content_type)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload file: {}", e)))?;
+
+    Ok(key)
+}

@@ -174,6 +174,42 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_submissions (
+            session_id TEXT PRIMARY KEY,
+            artist_name TEXT NOT NULL,
+            pronouns TEXT NOT NULL,
+            track1_name TEXT NOT NULL,
+            track2_name TEXT NOT NULL,
+            no_voice_message INTEGER NOT NULL DEFAULT 0,
+            instagram TEXT,
+            soundcloud TEXT,
+            bandcamp TEXT,
+            spotify TEXT,
+            other_social TEXT,
+            upcoming_events TEXT,
+            mentions TEXT,
+            pic_key TEXT,
+            pic_cropped_key TEXT,
+            pic_overlay_key TEXT,
+            track1_key TEXT,
+            track2_key TEXT,
+            voice_key TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Clean up expired pending submissions (older than 1 hour)
+    sqlx::query("DELETE FROM pending_submissions WHERE expires_at < datetime('now')")
+        .execute(pool)
+        .await?;
+
     tracing::info!("Database migrations completed");
     Ok(())
 }

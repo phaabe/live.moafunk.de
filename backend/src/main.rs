@@ -113,8 +113,12 @@ async fn main() -> anyhow::Result<()> {
         .nest_service("/assets/brand", ServeDir::new("assets/brand"))
         // Health check
         .route("/health", get(handlers::health_check))
-        // Public API
+        // Public API (single-request upload, kept for backwards compatibility)
         .route("/api/submit", post(handlers::submit::submit_form))
+        // Chunked upload API (multi-request, stays under Cloudflare 100MB limit)
+        .route("/api/submit/init", post(handlers::submit_chunked::submit_init))
+        .route("/api/submit/file/:session_id", post(handlers::submit_chunked::submit_file))
+        .route("/api/submit/finalize/:session_id", post(handlers::submit_chunked::submit_finalize))
         // Auth routes
         .route("/login", get(handlers::auth::login_page))
         .route("/login", post(handlers::auth::login))
