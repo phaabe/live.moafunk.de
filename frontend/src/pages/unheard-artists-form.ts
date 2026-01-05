@@ -6,8 +6,8 @@ const API_URL =
     ? 'http://localhost:8000/api/submit'
     : 'https://admin.live.moafunk.de/api/submit';
 
-const MAX_SINGLE_FILE_SIZE_MB = 50;
-const MAX_TOTAL_UPLOAD_MB = 100;
+const MAX_SINGLE_FILE_SIZE_MB = 100;
+const MAX_TOTAL_UPLOAD_MB = 250;
 const MAX_SINGLE_FILE_SIZE_BYTES = MAX_SINGLE_FILE_SIZE_MB * 1024 * 1024;
 const MAX_TOTAL_UPLOAD_BYTES = MAX_TOTAL_UPLOAD_MB * 1024 * 1024;
 
