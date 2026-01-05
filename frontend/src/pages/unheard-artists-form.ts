@@ -3,8 +3,14 @@ import 'cropperjs/dist/cropper.css';
 
 const API_URL =
   window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:8000/api/submit'
-    : 'https://admin.live.moafunk.de/api/submit';
+    ? 'http://localhost:8000'
+    : 'https://admin.live.moafunk.de';
+
+const API_SUBMIT_INIT = `${API_URL}/api/submit/init`;
+const API_SUBMIT_FILE = (sessionId: string, field: string) =>
+  `${API_URL}/api/submit/file/${sessionId}?field=${field}`;
+const API_SUBMIT_FINALIZE = (sessionId: string) =>
+  `${API_URL}/api/submit/finalize/${sessionId}`;
 
 const MAX_SINGLE_FILE_SIZE_MB = 100;
 const MAX_TOTAL_UPLOAD_MB = 250;
@@ -176,6 +182,11 @@ function showMessage(message: string, isError = false): void {
   formMessage.style.display = 'block';
 }
 
+function updateProgress(percent: number, text: string): void {
+  progressFill.style.width = `${percent}%`;
+  progressText.textContent = text;
+}
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
 
@@ -191,14 +202,16 @@ form.addEventListener('submit', async (e) => {
     await updateCroppedBlob();
   }
 
-  const formData = new FormData(form);
+  // Gather files for chunked upload
+  const track1Input = getRequiredElement<HTMLInputElement>('track1-file');
+  const track2Input = getRequiredElement<HTMLInputElement>('track2-file');
+  const track1File = track1Input.files?.[0];
+  const track2File = track2Input.files?.[0];
+  const voiceFile = voiceMessageFile.files?.[0];
 
-  const safeName = (artistPicOriginalFilename || 'artist.jpg').replace(/\.[^/.]+$/, '');
-  if (artistPicCroppedFilteredBlob) {
-    formData.set('artist-pic-cropped', artistPicCroppedFilteredBlob, `${safeName}.jpg`);
-  }
-  if (artistPicBrandedBlob) {
-    formData.set('artist-pic-branded', artistPicBrandedBlob, `${safeName}.jpg`);
+  if (!track1File || !track2File) {
+    showMessage('Track files are required.', true);
+    return;
   }
 
   submitBtn.disabled = true;
@@ -207,24 +220,98 @@ form.addEventListener('submit', async (e) => {
   formMessage.style.display = 'none';
 
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      body: formData,
-    });
+    // Step 1: Initialize with text fields + images (small, fits under 100MB)
+    updateProgress(5, 'Initializing submission...');
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText || 'Upload failed');
+    const initData = new FormData();
+    // Text fields
+    initData.set('artist-name', (document.getElementById('artist-name') as HTMLInputElement).value);
+    initData.set('pronouns', (document.getElementById('pronouns') as HTMLInputElement).value);
+    initData.set('track1-name', (document.getElementById('track1-name') as HTMLInputElement).value);
+    initData.set('track2-name', (document.getElementById('track2-name') as HTMLInputElement).value);
+    if (noVoiceMessageCheckbox.checked) {
+      initData.set('no-voice-message', 'on');
+    }
+    // Optional text fields
+    const optionalFields = ['instagram', 'soundcloud', 'bandcamp', 'spotify', 'other-social', 'upcoming-events', 'mentions'];
+    for (const fieldId of optionalFields) {
+      const el = document.getElementById(fieldId) as HTMLInputElement | HTMLTextAreaElement | null;
+      if (el && el.value) {
+        initData.set(fieldId, el.value);
+      }
     }
 
-    const result: unknown = await response.json();
-    const message =
-      typeof result === 'object' && result && 'message' in result
-        ? String((result as { message: unknown }).message)
-        : "Thank you for your submission! We'll be in touch soon.";
+    // Image files (small)
+    const artistPicFile = artistPicInput.files?.[0];
+    if (artistPicFile) {
+      initData.set('artist-pic', artistPicFile);
+    }
+    const safeName = (artistPicOriginalFilename || 'artist.jpg').replace(/\.[^/.]+$/, '');
+    if (artistPicCroppedFilteredBlob) {
+      initData.set('artist-pic-cropped', artistPicCroppedFilteredBlob, `${safeName}.jpg`);
+    }
+    if (artistPicBrandedBlob) {
+      initData.set('artist-pic-branded', artistPicBrandedBlob, `${safeName}.jpg`);
+    }
 
-    progressFill.style.width = '100%';
-    progressText.textContent = 'Upload complete!';
+    const initResponse = await fetch(API_SUBMIT_INIT, {
+      method: 'POST',
+      body: initData,
+    });
+
+    if (!initResponse.ok) {
+      const errorText = await initResponse.text();
+      throw new Error(errorText || 'Failed to initialize submission');
+    }
+
+    const initResult = await initResponse.json() as { session_id: string };
+    const sessionId = initResult.session_id;
+
+    // Step 2: Upload track files individually (each under 100MB)
+    const filesToUpload: Array<{ field: string; file: File; label: string }> = [
+      { field: 'track1', file: track1File, label: 'Track 1' },
+      { field: 'track2', file: track2File, label: 'Track 2' },
+    ];
+    if (voiceFile && !noVoiceMessageCheckbox.checked) {
+      filesToUpload.push({ field: 'voice', file: voiceFile, label: 'Voice message' });
+    }
+
+    const totalFiles = filesToUpload.length;
+    for (let i = 0; i < filesToUpload.length; i++) {
+      const { field, file, label } = filesToUpload[i];
+      const baseProgress = 10 + (i / totalFiles) * 80;
+      updateProgress(baseProgress, `Uploading ${label}...`);
+
+      const fileData = new FormData();
+      fileData.set('file', file);
+
+      const fileResponse = await fetch(API_SUBMIT_FILE(sessionId, field), {
+        method: 'POST',
+        body: fileData,
+      });
+
+      if (!fileResponse.ok) {
+        const errorText = await fileResponse.text();
+        throw new Error(errorText || `Failed to upload ${label}`);
+      }
+    }
+
+    // Step 3: Finalize
+    updateProgress(95, 'Finalizing submission...');
+
+    const finalizeResponse = await fetch(API_SUBMIT_FINALIZE(sessionId), {
+      method: 'POST',
+    });
+
+    if (!finalizeResponse.ok) {
+      const errorText = await finalizeResponse.text();
+      throw new Error(errorText || 'Failed to finalize submission');
+    }
+
+    const result = await finalizeResponse.json() as { message?: string };
+    const message = result.message || "Thank you for your submission! We'll be in touch soon.";
+
+    updateProgress(100, 'Upload complete!');
     showMessage(message);
 
     setTimeout(() => {
