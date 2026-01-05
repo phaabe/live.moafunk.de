@@ -19,8 +19,8 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
     
-    # File upload size limit (5 files x 20MB + overhead)
-    client_max_body_size 120m;
+    # File upload size limit (250MB total + multipart overhead)
+    client_max_body_size 260m;
     
     # Proxy settings
     location / {
