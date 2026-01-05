@@ -50,11 +50,11 @@ fn default_database_url() -> String {
 }
 
 fn default_max_file_size() -> u64 {
-    50
+    100
 }
 
 fn default_max_upload_size() -> u64 {
-    100
+    250
 }
 
 fn default_bucket_name() -> String {

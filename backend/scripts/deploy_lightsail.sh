@@ -290,7 +290,7 @@ server {
   listen 80;
   server_name ${NGINX_DOMAIN};
 
-  client_max_body_size 120m;
+  client_max_body_size 260m;
 
   location / {
     proxy_pass http://127.0.0.1:8000;
