@@ -104,25 +104,25 @@ function main() {
     console.log(`Reading tracks from: ${TRACKS_JSON_PATH}`);
     
     if (!fs.existsSync(TRACKS_JSON_PATH)) {
-      console.error(`Error: Tracks JSON file not found at ${TRACKS_JSON_PATH}`);
-      console.error('');
-      console.error('Please run the Python script first to generate the tracks data:');
-      console.error('');
-      console.error('  uv run scripts/generate_relisten.py \\');
-      console.error('    --client-id "$SOUNDCLOUD_CLIENT_ID" \\');
-      console.error('    --client-secret "$SOUNDCLOUD_CLIENT_SECRET"');
-      console.error('');
-      console.error('Or set environment variables in .env and run:');
-      console.error('  uv run scripts/generate_relisten.py \\');
-      console.error('    --client-id "$SOUNDCLOUD_CLIENT_ID" \\');
-      console.error('    --client-secret "$SOUNDCLOUD_CLIENT_SECRET"');
-      console.error('');
-      process.exit(1);
+      console.warn(`Error: Tracks JSON file not found at ${TRACKS_JSON_PATH}`);
+      console.warn('');
+      console.warn('Please run the Python script first to generate the tracks data:');
+      console.warn('');
+      console.warn('  uv run scripts/generate_relisten.py \\');
+      console.warn('    --client-id "$SOUNDCLOUD_CLIENT_ID" \\');
+      console.warn('    --client-secret "$SOUNDCLOUD_CLIENT_SECRET"');
+      console.warn('');
+      console.warn('Or set environment variables in .env and run:');
+      console.warn('  uv run scripts/generate_relisten.py \\');
+      console.warn('    --client-id "$SOUNDCLOUD_CLIENT_ID" \\');
+      console.warn('    --client-secret "$SOUNDCLOUD_CLIENT_SECRET"');
+      console.warn('');
+      console.warn('Skipping re-listen page generation. Keeping existing page as-is.');
+      return;
     }
     
     const tracksData = fs.readFileSync(TRACKS_JSON_PATH, 'utf-8');
     const tracks = JSON.parse(tracksData);
-    
     console.log(`Loaded ${tracks.length} tracks`);
     
     const html = generateHTML(tracks);
