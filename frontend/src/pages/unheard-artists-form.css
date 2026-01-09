@@ -48,6 +48,59 @@
   opacity: 0.8;
 }
 
+.uaf-info {
+  background: rgba(255, 255, 255, 0.03);
+  padding: 30px;
+  border-radius: 8px;
+  margin-bottom: 30px;
+  text-align: left;
+  line-height: 1.6;
+}
+
+.uaf-info p {
+  margin-bottom: 1em;
+}
+
+.uaf-info details {
+  margin-top: 1em;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.uaf-info details:first-of-type {
+  margin-top: 1.5em;
+}
+
+.uaf-info summary {
+  font-size: 1.3em;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.5em 0.75em;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.uaf-info summary::-webkit-details-marker {
+  display: none;
+}
+
+.uaf-info summary::before {
+  content: '▶';
+  font-size: 0.7em;
+  transition: transform 0.2s ease;
+}
+
+.uaf-info details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.uaf-info details p {
+  padding: 0 0.75em 0.75em 1.75em;
+  margin: 0;
+}
+
 .uaf-form {
   background: rgba(255, 255, 255, 0.05);
   padding: 30px;
