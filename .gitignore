@@ -15,9 +15,9 @@ dist/
 .env
 .env.local
 
-# Generated files
-frontend/src/pages/re-listen.html
-frontend/public/data/tracks.json
+# Generated files (keep tracks.json when SoundCloud API works)
+# frontend/src/pages/re-listen.html
+# frontend/public/data/tracks.json
 
 # Tooling caches
 .vite/
