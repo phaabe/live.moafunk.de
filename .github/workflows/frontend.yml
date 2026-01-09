@@ -37,6 +37,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Generate tracks JSON from SoundCloud
+        continue-on-error: true
         run: |
           uv run scripts/generate_relisten.py \
             --client-id "${{ secrets.SOUNDCLOUD_CLIENT_ID }}" \
