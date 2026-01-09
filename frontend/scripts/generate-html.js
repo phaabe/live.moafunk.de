@@ -103,27 +103,24 @@ function main() {
   try {
     console.log(`Reading tracks from: ${TRACKS_JSON_PATH}`);
     
-    if (!fs.existsSync(TRACKS_JSON_PATH)) {
-      console.warn(`Error: Tracks JSON file not found at ${TRACKS_JSON_PATH}`);
-      console.warn('');
-      console.warn('Please run the Python script first to generate the tracks data:');
-      console.warn('');
-      console.warn('  uv run scripts/generate_relisten.py \\');
-      console.warn('    --client-id "$SOUNDCLOUD_CLIENT_ID" \\');
-      console.warn('    --client-secret "$SOUNDCLOUD_CLIENT_SECRET"');
-      console.warn('');
-      console.warn('Or set environment variables in .env and run:');
-      console.warn('  uv run scripts/generate_relisten.py \\');
-      console.warn('    --client-id "$SOUNDCLOUD_CLIENT_ID" \\');
-      console.warn('    --client-secret "$SOUNDCLOUD_CLIENT_SECRET"');
-      console.warn('');
-      console.warn('Skipping re-listen page generation. Keeping existing page as-is.');
-      return;
-    }
+    let tracks = [];
     
-    const tracksData = fs.readFileSync(TRACKS_JSON_PATH, 'utf-8');
-    const tracks = JSON.parse(tracksData);
-    console.log(`Loaded ${tracks.length} tracks`);
+    if (!fs.existsSync(TRACKS_JSON_PATH)) {
+      console.log(`Tracks JSON file not found at ${TRACKS_JSON_PATH}`);
+      
+      // If re-listen.html already exists, keep it as-is
+      if (fs.existsSync(OUTPUT_HTML_PATH)) {
+        console.log('Existing re-listen.html found. Keeping it as-is.');
+        return;
+      }
+      
+      // Otherwise generate an empty page so Vite can build
+      console.log('No existing re-listen.html found. Generating placeholder page.');
+    } else {
+      const tracksData = fs.readFileSync(TRACKS_JSON_PATH, 'utf-8');
+      tracks = JSON.parse(tracksData);
+      console.log(`Loaded ${tracks.length} tracks`);
+    }
     
     const html = generateHTML(tracks);
     
@@ -136,7 +133,9 @@ function main() {
     fs.writeFileSync(OUTPUT_HTML_PATH, html, 'utf-8');
     
     console.log(`Generated ${OUTPUT_HTML_PATH} successfully`);
-    console.log(`First 3 tracks: ${tracks.slice(0, 3).map(t => t.title).join(', ')}`);
+    if (tracks.length > 0) {
+      console.log(`First 3 tracks: ${tracks.slice(0, 3).map(t => t.title).join(', ')}`);
+    }
   } catch (error) {
     console.error('Error generating HTML:', error.message);
     process.exit(1);
