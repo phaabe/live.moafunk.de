@@ -28,20 +28,20 @@ jobs:
         uses: actions/configure-pages@v5
 
       # Python setup for SoundCloud API
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+      # - name: Setup Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: "3.13"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      # - name: Install uv
+      #   uses: astral-sh/setup-uv@v5
 
-      - name: Generate tracks JSON from SoundCloud
-        continue-on-error: true
-        run: |
-          uv run scripts/generate_relisten.py \
-            --client-id "${{ secrets.SOUNDCLOUD_CLIENT_ID }}" \
-            --client-secret "${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}"
+      # - name: Generate tracks JSON from SoundCloud
+      #   continue-on-error: true
+      #   run: |
+      #     uv run scripts/generate_relisten.py \
+      #       --client-id "${{ secrets.SOUNDCLOUD_CLIENT_ID }}" \
+      #       --client-secret "${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}"
 
       # Node.js setup for frontend build
       - name: Setup Node.js
