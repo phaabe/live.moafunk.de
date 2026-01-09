@@ -19,7 +19,8 @@ import html
 
 def get_access_token(client_id, client_secret):
     """Get OAuth access token using client credentials flow"""
-    url = "https://api.soundcloud.com/oauth2/token"
+    # Updated endpoint as of Oct 2024 - old api.soundcloud.com endpoint is deprecated
+    url = "https://secure.soundcloud.com/oauth/token"
     
     # Encode credentials
     credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
