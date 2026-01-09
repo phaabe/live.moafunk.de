@@ -575,10 +575,12 @@ artistPicInput.addEventListener('change', (e) => {
 
     artistPicCropper = new Cropper(cropperImg, {
       aspectRatio: 1,
-      viewMode: 3,
+      viewMode: 1,
       dragMode: 'move',
       autoCropArea: 0.9,
       background: false,
+      minContainerWidth: 200,
+      minContainerHeight: 200,
       guides: false,
       center: false,
       highlight: false,
