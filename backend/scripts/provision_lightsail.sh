@@ -102,6 +102,9 @@ echo "Keypair:  $KEYPAIR"
 echo "OS:       $BLUEPRINT"
 echo "Bundle:   $BUNDLE"
 
+# Note: FFmpeg is required for audio streaming functionality.
+# When running outside Docker, install with: apt-get install -y ffmpeg
+
 echo "\nChecking AWS identity..."
 aws sts get-caller-identity >/dev/null
 

@@ -7,7 +7,7 @@ description = "Backend for UNHEARD Artists Form"
 
 [dependencies]
 # Web framework
-axum = { version = "0.7", features = ["multipart", "macros"] }
+axum = { version = "0.7", features = ["multipart", "macros", "ws"] }
 tokio = { version = "1", features = [
   "rt-multi-thread",
   "macros",
@@ -16,8 +16,10 @@ tokio = { version = "1", features = [
   "fs",
   "io-util",
   "sync",
+  "process",
 ] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
+futures-util = "0.3"
 
 # Database
 # Use FromRow derives but avoid pulling in sqlx's default feature set.
@@ -59,6 +61,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio-util = { version = "0.7.17", features = ["io"] }
 
 # Image processing (used when generating show ZIPs)
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+] }
 imageproc = "0.25"
 ab_glyph = "0.2"

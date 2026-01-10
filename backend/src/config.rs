@@ -8,7 +8,7 @@ pub struct Config {
     pub port: u16,
 
     pub secret_key: String,
-    
+
     // Superadmin credentials (seeded on first run if no users exist)
     #[serde(default = "default_superadmin_username")]
     pub superadmin_username: String,
@@ -33,6 +33,12 @@ pub struct Config {
     // Computed R2 endpoint
     #[serde(skip)]
     pub r2_endpoint: String,
+
+    // RTMP streaming settings
+    #[serde(default = "default_rtmp_url")]
+    pub rtmp_url: String,
+    #[serde(default = "default_rtmp_stream_key")]
+    pub rtmp_stream_key: String,
 
     // Optional assets used for ZIP-time image stamping
     // If not set, the code will fall back to local paths under ./data.
@@ -69,6 +75,14 @@ fn default_bucket_name() -> String {
     "unheard-artists".to_string()
 }
 
+fn default_rtmp_url() -> String {
+    "rtmp://stream.moafunk.de/live".to_string()
+}
+
+fn default_rtmp_stream_key() -> String {
+    "stream-io".to_string()
+}
+
 impl Config {
     pub fn from_env() -> Result<Self, envy::Error> {
         let mut config: Config = envy::from_env()?;
@@ -103,5 +117,9 @@ impl Config {
 
     pub fn overlay_font_path_path(&self) -> Option<&str> {
         self.overlay_font_path.as_deref()
+    }
+
+    pub fn rtmp_destination(&self) -> String {
+        format!("{}/{}", self.rtmp_url, self.rtmp_stream_key)
     }
 }
