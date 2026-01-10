@@ -189,6 +189,18 @@ async fn main() -> anyhow::Result<()> {
             axum::routing::delete(handlers::api::api_delete_artist),
         )
         .route(
+            "/api/artists/:id/details",
+            axum::routing::put(handlers::api::api_update_artist_details),
+        )
+        .route(
+            "/api/artists/:id/picture",
+            axum::routing::put(handlers::api::api_update_artist_picture),
+        )
+        .route(
+            "/api/artists/:id/audio",
+            axum::routing::put(handlers::api::api_update_artist_audio),
+        )
+        .route(
             "/api/artists/:id/shows",
             post(handlers::api::api_assign_artist_to_show),
         )
@@ -232,6 +244,18 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/artists/:id/download",
             get(handlers::download::download_artist),
+        )
+        .route(
+            "/artists/:id/download/audio",
+            get(handlers::download::download_artist_audio),
+        )
+        .route(
+            "/artists/:id/download/images",
+            get(handlers::download::download_artist_images),
+        )
+        .route(
+            "/artists/:id/download/pdf",
+            get(handlers::download::download_artist_pdf),
         )
         .route("/artists/:id/delete", post(handlers::admin::delete_artist))
         .route("/artists/:id/assign", post(handlers::admin::assign_show))

@@ -99,13 +99,31 @@ export interface Artist {
   show_titles?: string;
 }
 
-export interface ArtistDetail extends Artist {
-  bio?: string;
-  image_url?: string;
-  soundcloud_url?: string;
-  instagram_url?: string;
-  shows: Show[];
-  available_shows: Show[];
+export interface AvailableShow {
+  id: number;
+  title: string;
+  date: string;
+  artists_left: number;
+}
+
+export interface ArtistDetail {
+  id: number;
+  name: string;
+  pronouns: string;
+  status: string;
+  created_at: string;
+  mentions?: string;
+  upcoming_events?: string;
+  soundcloud?: string;
+  instagram?: string;
+  bandcamp?: string;
+  spotify?: string;
+  other_social?: string;
+  track1_name: string;
+  track2_name: string;
+  file_urls: Record<string, string>;
+  shows: { id: number; title: string; date: string }[];
+  available_shows: AvailableShow[];
 }
 
 export const artistsApi = {
@@ -128,10 +146,65 @@ export const artistsApi = {
   delete: (id: number) => api.delete<void>(`/api/artists/${id}`),
 
   assignShow: (artistId: number, showId: number) =>
-    api.post<void>(`/api/artists/${artistId}/shows/${showId}`),
+    api.post<void>(`/api/artists/${artistId}/shows`, { show_id: showId }),
 
   unassignShow: (artistId: number, showId: number) =>
     api.delete<void>(`/api/artists/${artistId}/shows/${showId}`),
+
+  updateDetails: (id: number, data: {
+    mentions?: string;
+    upcoming_events?: string;
+    soundcloud?: string;
+    instagram?: string;
+    bandcamp?: string;
+    spotify?: string;
+    other_social?: string;
+  }) => api.put<void>(`/api/artists/${id}/details`, data),
+
+  updatePicture: async (id: number, data: {
+    original: File;
+    cropped: Blob;
+    branded: Blob;
+  }): Promise<void> => {
+    const formData = new FormData();
+    formData.append('original', data.original);
+    formData.append('cropped', data.cropped, 'cropped.jpg');
+    formData.append('branded', data.branded, 'branded.jpg');
+    const response = await fetch(`${API_BASE}/api/artists/${id}/picture`, {
+      method: 'PUT',
+      credentials: 'include',
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+      throw new Error(error.error || 'Upload failed');
+    }
+  },
+
+  updateAudio: async (id: number, data: {
+    voice?: File;
+    track1?: File;
+    track2?: File;
+    track1_name?: string;
+    track2_name?: string;
+  }): Promise<void> => {
+    const formData = new FormData();
+    if (data.voice) formData.append('voice', data.voice);
+    if (data.track1) formData.append('track1', data.track1);
+    if (data.track2) formData.append('track2', data.track2);
+    if (data.track1_name) formData.append('track1_name', data.track1_name);
+    if (data.track2_name) formData.append('track2_name', data.track2_name);
+    
+    const response = await fetch(`${API_BASE}/api/artists/${id}/audio`, {
+      method: 'PUT',
+      credentials: 'include',
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+      throw new Error(error.error || 'Upload failed');
+    }
+  },
 };
 
 // Shows API

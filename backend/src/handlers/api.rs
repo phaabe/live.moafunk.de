@@ -295,6 +295,7 @@ pub struct ArtistDetailResponse {
     status: String,
     created_at: String,
     mentions: Option<String>,
+    upcoming_events: Option<String>,
     soundcloud: Option<String>,
     instagram: Option<String>,
     bandcamp: Option<String>,
@@ -401,6 +402,7 @@ pub async fn api_artist_detail(
         status,
         created_at: artist.created_at,
         mentions: artist.mentions,
+        upcoming_events: artist.upcoming_events,
         soundcloud: artist.soundcloud,
         instagram: artist.instagram,
         bandcamp: artist.bandcamp,
@@ -471,6 +473,327 @@ pub async fn api_unassign_artist_from_show(
         .bind(show_id)
         .execute(&state.db)
         .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Artist Update API
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateArtistDetailsRequest {
+    mentions: Option<String>,
+    upcoming_events: Option<String>,
+    soundcloud: Option<String>,
+    instagram: Option<String>,
+    bandcamp: Option<String>,
+    spotify: Option<String>,
+    other_social: Option<String>,
+}
+
+pub async fn api_update_artist_details(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<UpdateArtistDetailsRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    sqlx::query(
+        r#"
+        UPDATE artists SET
+            mentions = ?,
+            upcoming_events = ?,
+            soundcloud = ?,
+            instagram = ?,
+            bandcamp = ?,
+            spotify = ?,
+            other_social = ?,
+            updated_at = datetime('now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(&req.mentions)
+    .bind(&req.upcoming_events)
+    .bind(&req.soundcloud)
+    .bind(&req.instagram)
+    .bind(&req.bandcamp)
+    .bind(&req.spotify)
+    .bind(&req.other_social)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+pub async fn api_update_artist_picture(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Get artist name for file naming
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let mut new_pic_key: Option<String> = None;
+    let mut new_pic_cropped_key: Option<String> = None;
+    let mut new_pic_overlay_key: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        let field_name = field.name().unwrap_or("").to_string();
+        let filename = field.file_name().unwrap_or("image.jpg").to_string();
+        let content_type = field.content_type().unwrap_or("image/jpeg").to_string();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("Failed to read file data: {}", e)))?;
+
+        if data.is_empty() {
+            continue;
+        }
+
+        match field_name.as_str() {
+            "original" => {
+                let key = storage::upload_file_named(
+                    &state,
+                    id,
+                    "pic",
+                    &artist.name,
+                    &filename,
+                    data.to_vec(),
+                    &content_type,
+                )
+                .await?;
+                new_pic_key = Some(key);
+            }
+            "cropped" => {
+                let key = storage::upload_file_named(
+                    &state,
+                    id,
+                    "pic-cropped",
+                    &format!("{}-cropped", artist.name),
+                    &filename,
+                    data.to_vec(),
+                    &content_type,
+                )
+                .await?;
+                new_pic_cropped_key = Some(key);
+            }
+            "branded" => {
+                let key = storage::upload_file_named(
+                    &state,
+                    id,
+                    "pic-overlay",
+                    &format!("{}-overlay", artist.name),
+                    &filename,
+                    data.to_vec(),
+                    &content_type,
+                )
+                .await?;
+                new_pic_overlay_key = Some(key);
+            }
+            _ => {}
+        }
+    }
+
+    // Update database with all three keys
+    if new_pic_key.is_some() || new_pic_cropped_key.is_some() || new_pic_overlay_key.is_some() {
+        sqlx::query(
+            r#"
+            UPDATE artists SET
+                pic_key = COALESCE(?, pic_key),
+                pic_cropped_key = COALESCE(?, pic_cropped_key),
+                pic_overlay_key = COALESCE(?, pic_overlay_key),
+                updated_at = datetime('now')
+            WHERE id = ?
+            "#,
+        )
+        .bind(&new_pic_key)
+        .bind(&new_pic_cropped_key)
+        .bind(&new_pic_overlay_key)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+pub async fn api_update_artist_audio(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Get artist name for file naming
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let mut new_voice_key: Option<String> = None;
+    let mut new_track1_key: Option<String> = None;
+    let mut new_track2_key: Option<String> = None;
+    let mut track1_name: Option<String> = None;
+    let mut track2_name: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        let field_name = field.name().unwrap_or("").to_string();
+
+        match field_name.as_str() {
+            "track1_name" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Failed to read field: {}", e)))?;
+                if !value.is_empty() {
+                    track1_name = Some(value);
+                }
+            }
+            "track2_name" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Failed to read field: {}", e)))?;
+                if !value.is_empty() {
+                    track2_name = Some(value);
+                }
+            }
+            "voice" => {
+                let filename = field.file_name().unwrap_or("voice.mp3").to_string();
+                let content_type = field.content_type().unwrap_or("audio/mpeg").to_string();
+                let data = field.bytes().await.map_err(|e| {
+                    AppError::BadRequest(format!("Failed to read file data: {}", e))
+                })?;
+
+                if !data.is_empty() {
+                    let key = storage::upload_file_named(
+                        &state,
+                        id,
+                        "voice",
+                        &format!("{}-voice", artist.name),
+                        &filename,
+                        data.to_vec(),
+                        &content_type,
+                    )
+                    .await?;
+                    new_voice_key = Some(key);
+                }
+            }
+            "track1" => {
+                let filename = field.file_name().unwrap_or("track1.mp3").to_string();
+                let content_type = field.content_type().unwrap_or("audio/mpeg").to_string();
+                let data = field.bytes().await.map_err(|e| {
+                    AppError::BadRequest(format!("Failed to read file data: {}", e))
+                })?;
+
+                if !data.is_empty() {
+                    let desired_name = track1_name
+                        .clone()
+                        .unwrap_or_else(|| format!("{}-track1", artist.name));
+                    let key = storage::upload_file_named(
+                        &state,
+                        id,
+                        "track1",
+                        &desired_name,
+                        &filename,
+                        data.to_vec(),
+                        &content_type,
+                    )
+                    .await?;
+                    new_track1_key = Some(key);
+                }
+            }
+            "track2" => {
+                let filename = field.file_name().unwrap_or("track2.mp3").to_string();
+                let content_type = field.content_type().unwrap_or("audio/mpeg").to_string();
+                let data = field.bytes().await.map_err(|e| {
+                    AppError::BadRequest(format!("Failed to read file data: {}", e))
+                })?;
+
+                if !data.is_empty() {
+                    let desired_name = track2_name
+                        .clone()
+                        .unwrap_or_else(|| format!("{}-track2", artist.name));
+                    let key = storage::upload_file_named(
+                        &state,
+                        id,
+                        "track2",
+                        &desired_name,
+                        &filename,
+                        data.to_vec(),
+                        &content_type,
+                    )
+                    .await?;
+                    new_track2_key = Some(key);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Build dynamic update query
+    let mut updates = Vec::new();
+
+    if new_voice_key.is_some() {
+        updates.push("voice_message_key = ?");
+    }
+    if new_track1_key.is_some() {
+        updates.push("track1_key = ?");
+    }
+    if new_track2_key.is_some() {
+        updates.push("track2_key = ?");
+    }
+    if track1_name.is_some() {
+        updates.push("track1_name = ?");
+    }
+    if track2_name.is_some() {
+        updates.push("track2_name = ?");
+    }
+
+    if !updates.is_empty() {
+        updates.push("updated_at = datetime('now')");
+        let sql = format!("UPDATE artists SET {} WHERE id = ?", updates.join(", "));
+
+        let mut query = sqlx::query(&sql);
+
+        if let Some(ref key) = new_voice_key {
+            query = query.bind(key);
+        }
+        if let Some(ref key) = new_track1_key {
+            query = query.bind(key);
+        }
+        if let Some(ref key) = new_track2_key {
+            query = query.bind(key);
+        }
+        if let Some(ref name) = track1_name {
+            query = query.bind(name);
+        }
+        if let Some(ref name) = track2_name {
+            query = query.bind(name);
+        }
+
+        query.bind(id).execute(&state.db).await?;
+    }
 
     Ok(Json(serde_json::json!({ "success": true })))
 }

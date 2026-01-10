@@ -21,13 +21,14 @@
     "flv.js": "^1.6.2",
     "pinia": "^2.1.7",
     "vue": "^3.4.15",
-    "vue-router": "^4.2.5"
+    "vue-router": "^4.2.5",
+    "wavesurfer.js": "^7.12.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.0.3",
     "@types/node": "^20.10.6",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "@vitejs/plugin-vue": "^5.0.3",
     "@vitest/ui": "^1.1.0",
     "eslint": "^8.56.0",
     "eslint-config-prettier": "^9.1.0",

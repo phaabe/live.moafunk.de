@@ -317,6 +317,214 @@ Things to Mention:
         .into_response())
 }
 
+/// Download only audio files for an artist (voice message + tracks)
+pub async fn download_artist_audio(
+    State(state): State<Arc<AppState>>,
+    Path(artist_id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = auth::get_session_from_cookies(&request);
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    require_admin(user.as_ref())?;
+
+    let (artist, _show) = fetch_artist_and_show(&state, artist_id).await?;
+    let artist_dir = sanitize_filename(&artist.name);
+
+    let mut zip_buffer = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buffer));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        if let Some(key) = &artist.voice_message_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("mp3");
+                let path = format!("{}/voice_message.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        if let Some(key) = &artist.track1_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("mp3");
+                let track_name = sanitize_filename(&artist.track1_name);
+                let path = format!("{}/track1_{}.{}", artist_dir, track_name, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        if let Some(key) = &artist.track2_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("mp3");
+                let track_name = sanitize_filename(&artist.track2_name);
+                let path = format!("{}/track2_{}.{}", artist_dir, track_name, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        zip.finish()
+            .map_err(|e| AppError::Internal(format!("ZIP finish error: {}", e)))?;
+    }
+
+    let name = sanitize_filename(&artist.name);
+    let filename = format!("UNHEARD_artist_{}_audio.zip", name);
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        zip_buffer,
+    )
+        .into_response())
+}
+
+/// Download only image files for an artist (original, cropped, overlay)
+pub async fn download_artist_images(
+    State(state): State<Arc<AppState>>,
+    Path(artist_id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = auth::get_session_from_cookies(&request);
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    require_admin(user.as_ref())?;
+
+    let (artist, _show) = fetch_artist_and_show(&state, artist_id).await?;
+    let artist_dir = sanitize_filename(&artist.name);
+
+    let mut zip_buffer = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buffer));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        if let Some(key) = &artist.pic_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("jpg");
+                let path = format!("{}/artist_pic_original.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        if let Some(key) = &artist.pic_cropped_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("jpg");
+                let path = format!("{}/artist_pic_cropped.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        if let Some(key) = &artist.pic_overlay_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("png");
+                let path = format!("{}/artist_pic_overlay.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        zip.finish()
+            .map_err(|e| AppError::Internal(format!("ZIP finish error: {}", e)))?;
+    }
+
+    let name = sanitize_filename(&artist.name);
+    let filename = format!("UNHEARD_artist_{}_images.zip", name);
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        zip_buffer,
+    )
+        .into_response())
+}
+
+/// Download artist info as PDF
+pub async fn download_artist_pdf(
+    State(state): State<Arc<AppState>>,
+    Path(artist_id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = auth::get_session_from_cookies(&request);
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    require_admin(user.as_ref())?;
+
+    let (artist, show) = fetch_artist_and_show(&state, artist_id).await?;
+
+    let assigned_show_line = if let Some(s) = &show {
+        format!("{} ({})", s.title, s.date)
+    } else {
+        "N/A".to_string()
+    };
+
+    let voice_line = if artist.no_voice_message {
+        "Artist opted out".to_string()
+    } else if artist.voice_message_key.is_some() {
+        "Uploaded".to_string()
+    } else {
+        "Not uploaded".to_string()
+    };
+
+    let pdf_data = pdf::generate_artist_pdf(&artist, &assigned_show_line, &voice_line)?;
+
+    let name = sanitize_filename(&artist.name);
+    let filename = format!("UNHEARD_artist_{}_info.pdf", name);
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/pdf".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        pdf_data,
+    )
+        .into_response())
+}
+
 pub async fn download_show_package(
     State(state): State<Arc<AppState>>,
     Path((show_id, package)): Path<(i64, String)>,
