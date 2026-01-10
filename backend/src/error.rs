@@ -1,7 +1,9 @@
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
+    Json,
 };
+use serde_json::json;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -20,11 +22,17 @@ pub enum AppError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+
     #[error("Not found: {0}")]
     NotFound(String),
 
-    #[error("Unauthorized")]
-    Unauthorized,
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 
     #[error("File too large: max {0}MB allowed")]
     FileTooLarge(u64),
@@ -61,8 +69,13 @@ impl IntoResponse for AppError {
                 tracing::warn!("Validation error: {}", msg);
                 (StatusCode::BAD_REQUEST, msg.clone())
             }
+            AppError::BadRequest(msg) => {
+                tracing::warn!("Bad request: {}", msg);
+                (StatusCode::BAD_REQUEST, msg.clone())
+            }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
-            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::FileTooLarge(max) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("File too large: max {}MB allowed", max),
@@ -77,6 +90,7 @@ impl IntoResponse for AppError {
             }
         };
 
-        (status, message).into_response()
+        // Return JSON error response for API compatibility
+        (status, Json(json!({ "error": message }))).into_response()
     }
 }

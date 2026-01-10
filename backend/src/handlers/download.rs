@@ -11,7 +11,7 @@ use std::sync::Arc;
 fn require_admin(user: Option<&models::User>) -> Result<()> {
     match user {
         Some(u) if u.role_enum().can_access_admin() => Ok(()),
-        _ => Err(AppError::Unauthorized),
+        _ => Err(AppError::Unauthorized("Unauthorized".to_string())),
     }
 }
 

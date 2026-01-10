@@ -1,0 +1,105 @@
+/* Design System Tokens - Shared between public site and admin panel */
+
+:root {
+  /* Colors */
+  --color-primary: #ffec44;
+  --color-primary-hover: #e6d43e;
+  --color-primary-text: #000;
+
+  --color-bg: #000;
+  --color-surface: #0f0f23;
+  --color-surface-alt: #1a1a2e;
+  --color-surface-hover: #252540;
+
+  --color-text: #eee;
+  --color-text-muted: #888;
+  --color-text-disabled: #666;
+
+  --color-border: #333;
+  --color-border-light: #444;
+
+  --color-link: #aaa;
+  --color-link-hover: #fff;
+
+  --color-success: #22c55e;
+  --color-success-bg: #183b18;
+  --color-error: #ef4444;
+  --color-error-bg: #3b1818;
+  --color-warning: #f59e0b;
+  --color-warning-bg: #3b2f18;
+
+  /* Typography */
+  --font-family: 'Courier New', Courier, monospace;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  --font-size-3xl: 1.875rem;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* Spacing */
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+  --spacing-2xl: 3rem;
+
+  /* Border Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+  --transition-slow: 350ms ease;
+
+  /* Z-index layers */
+  --z-dropdown: 100;
+  --z-modal-backdrop: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+}
+
+/* Base reset for admin pages */
+.admin-app {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-family);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-normal);
+  min-height: 100vh;
+}
+
+.admin-app *,
+.admin-app *::before,
+.admin-app *::after {
+  box-sizing: border-box;
+}
+
+.admin-app a {
+  color: var(--color-link);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+.admin-app a:hover {
+  color: var(--color-link-hover);
+}
