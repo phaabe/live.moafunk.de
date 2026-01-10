@@ -754,6 +754,13 @@ pub async fn api_create_user(
         ));
     }
 
+    // Artist users must have an expiration date
+    if req.role == "artist" && req.expires_at.is_none() {
+        return Err(AppError::BadRequest(
+            "Expiration date is required for artist users".to_string(),
+        ));
+    }
+
     // Generate random password
     let password = auth::generate_session_token()[..16].to_string();
     let password_hash = auth::hash_password(&password)?;
@@ -820,6 +827,139 @@ pub async fn api_delete_user(
         .await?;
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateUserRequest {
+    role: Option<String>,
+    expires_at: Option<String>,
+}
+
+pub async fn api_update_user(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<UpdateUserRequest>,
+) -> Result<impl IntoResponse> {
+    let current_user = require_admin(&state, &headers).await?;
+
+    // Get target user
+    let target_user: Option<models::User> = sqlx::query_as("SELECT * FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let target = target_user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    // Check role hierarchy - can only edit users below your level
+    let role_level = |role: &str| match role {
+        "artist" => 1,
+        "admin" => 2,
+        "superadmin" => 3,
+        _ => 0,
+    };
+
+    if role_level(&target.role) >= role_level(&current_user.role) {
+        return Err(AppError::Forbidden(
+            "Cannot edit users at or above your role level".to_string(),
+        ));
+    }
+
+    // If changing role, check if new role is below current user's level
+    if let Some(ref new_role) = req.role {
+        if role_level(new_role) >= role_level(&current_user.role) {
+            return Err(AppError::Forbidden(
+                "Cannot assign a role at or above your level".to_string(),
+            ));
+        }
+    }
+
+    // Determine final role (either new role or existing)
+    let final_role = req.role.as_ref().unwrap_or(&target.role);
+
+    // Artist users must have an expiration date
+    if final_role == "artist" {
+        // If changing to artist or already artist, check expires_at
+        let final_expires_at = req.expires_at.as_ref().or(target.expires_at.as_ref());
+        if final_expires_at.is_none() {
+            return Err(AppError::BadRequest(
+                "Expiration date is required for artist users".to_string(),
+            ));
+        }
+    }
+
+    // Update user
+    if let Some(role) = &req.role {
+        sqlx::query("UPDATE users SET role = ? WHERE id = ?")
+            .bind(role)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    if let Some(expires_at) = &req.expires_at {
+        sqlx::query("UPDATE users SET expires_at = ? WHERE id = ?")
+            .bind(expires_at)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    // Fetch updated user
+    let user: UserListItem =
+        sqlx::query_as("SELECT id, username, role, expires_at, created_at FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
+
+    Ok(Json(serde_json::json!({ "user": user })))
+}
+
+#[derive(Serialize)]
+pub struct ResetPasswordResponse {
+    password: String,
+}
+
+pub async fn api_reset_password(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let current_user = require_admin(&state, &headers).await?;
+
+    // Get target user
+    let target_user: Option<models::User> = sqlx::query_as("SELECT * FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let target = target_user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    // Check role hierarchy
+    let role_level = |role: &str| match role {
+        "artist" => 1,
+        "admin" => 2,
+        "superadmin" => 3,
+        _ => 0,
+    };
+
+    if role_level(&target.role) >= role_level(&current_user.role) {
+        return Err(AppError::Forbidden(
+            "Cannot reset password for users at or above your role level".to_string(),
+        ));
+    }
+
+    // Generate new password
+    let password = auth::generate_session_token()[..16].to_string();
+    let password_hash = auth::hash_password(&password)?;
+
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(&password_hash)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(ResetPasswordResponse { password }))
 }
 
 // ============================================================================

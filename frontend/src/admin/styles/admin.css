@@ -126,6 +126,11 @@ body {
   color: var(--color-warning);
 }
 
+.badge.pink {
+  background-color: #470058;
+  color: #e26fff;
+}
+
 /* Loading states */
 .loading-spinner {
   display: flex;

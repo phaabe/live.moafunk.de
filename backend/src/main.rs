@@ -10,7 +10,7 @@ mod storage;
 mod stream_bridge;
 
 use axum::{
-    extract::{DefaultBodyLimit, State, Query, WebSocketUpgrade},
+    extract::{DefaultBodyLimit, Query, State, WebSocketUpgrade},
     http::HeaderMap,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -49,12 +49,11 @@ async fn stream_ws_handler(
         State(state.stream_state.clone()),
         Query(query),
         headers,
-    ).await
+    )
+    .await
 }
 
-async fn stream_status_handler(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn stream_status_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     handlers::stream_ws::stream_status(State(state.stream_state.clone())).await
 }
 
@@ -66,7 +65,8 @@ async fn stream_stop_handler(
         State(state.clone()),
         State(state.stream_state.clone()),
         headers,
-    ).await
+    )
+    .await
 }
 
 #[tokio::main]
@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Run migrations
     db::run_migrations(&db).await?;
-    
+
     // Seed superadmin if no users exist
     db::seed_superadmin(&db, &config).await?;
 
@@ -162,27 +162,65 @@ async fn main() -> anyhow::Result<()> {
         // Public API (single-request upload, kept for backwards compatibility)
         .route("/api/submit", post(handlers::submit::submit_form))
         // Chunked upload API (multi-request, stays under Cloudflare 100MB limit)
-        .route("/api/submit/init", post(handlers::submit_chunked::submit_init))
-        .route("/api/submit/file/:session_id", post(handlers::submit_chunked::submit_file))
-        .route("/api/submit/finalize/:session_id", post(handlers::submit_chunked::submit_finalize))
+        .route(
+            "/api/submit/init",
+            post(handlers::submit_chunked::submit_init),
+        )
+        .route(
+            "/api/submit/file/:session_id",
+            post(handlers::submit_chunked::submit_file),
+        )
+        .route(
+            "/api/submit/finalize/:session_id",
+            post(handlers::submit_chunked::submit_finalize),
+        )
         // JSON API for admin SPA
         .route("/api/auth/login", post(handlers::api::api_login))
         .route("/api/auth/logout", post(handlers::api::api_logout))
         .route("/api/auth/me", get(handlers::api::api_me))
-        .route("/api/auth/change-password", post(handlers::api::api_change_password))
+        .route(
+            "/api/auth/change-password",
+            post(handlers::api::api_change_password),
+        )
         .route("/api/artists", get(handlers::api::api_artists_list))
         .route("/api/artists/:id", get(handlers::api::api_artist_detail))
-        .route("/api/artists/:id", axum::routing::delete(handlers::api::api_delete_artist))
-        .route("/api/artists/:id/shows", post(handlers::api::api_assign_artist_to_show))
-        .route("/api/artists/:id/shows/:show_id", axum::routing::delete(handlers::api::api_unassign_artist_from_show))
+        .route(
+            "/api/artists/:id",
+            axum::routing::delete(handlers::api::api_delete_artist),
+        )
+        .route(
+            "/api/artists/:id/shows",
+            post(handlers::api::api_assign_artist_to_show),
+        )
+        .route(
+            "/api/artists/:id/shows/:show_id",
+            axum::routing::delete(handlers::api::api_unassign_artist_from_show),
+        )
         .route("/api/shows", get(handlers::api::api_shows_list))
         .route("/api/shows", post(handlers::api::api_create_show))
         .route("/api/shows/:id", get(handlers::api::api_show_detail))
-        .route("/api/shows/:id", axum::routing::put(handlers::api::api_update_show))
-        .route("/api/shows/:id", axum::routing::delete(handlers::api::api_delete_show))
+        .route(
+            "/api/shows/:id",
+            axum::routing::put(handlers::api::api_update_show),
+        )
+        .route(
+            "/api/shows/:id",
+            axum::routing::delete(handlers::api::api_delete_show),
+        )
         .route("/api/users", get(handlers::api::api_users_list))
         .route("/api/users", post(handlers::api::api_create_user))
-        .route("/api/users/:id", axum::routing::delete(handlers::api::api_delete_user))
+        .route(
+            "/api/users/:id",
+            axum::routing::put(handlers::api::api_update_user),
+        )
+        .route(
+            "/api/users/:id",
+            axum::routing::delete(handlers::api::api_delete_user),
+        )
+        .route(
+            "/api/users/:id/reset-password",
+            post(handlers::api::api_reset_password),
+        )
         // Auth routes (template-based, kept for backwards compatibility)
         .route("/login", get(handlers::auth::login_page))
         .route("/login", post(handlers::auth::login))
@@ -234,7 +272,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/users", post(handlers::admin::create_user))
         .route("/users/:id/delete", post(handlers::admin::delete_user))
         // Change password (admin/superadmin only)
-        .route("/change-password", get(handlers::admin::change_password_page))
+        .route(
+            "/change-password",
+            get(handlers::admin::change_password_page),
+        )
         .route("/change-password", post(handlers::admin::change_password))
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes()))
         .layer(cors)
@@ -248,13 +289,18 @@ async fn main() -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             tracing::info!("Running expired user cleanup...");
-            match sqlx::query("DELETE FROM users WHERE expires_at IS NOT NULL AND expires_at < datetime('now')")
-                .execute(&cleanup_db)
-                .await
+            match sqlx::query(
+                "DELETE FROM users WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+            )
+            .execute(&cleanup_db)
+            .await
             {
                 Ok(result) => {
                     if result.rows_affected() > 0 {
-                        tracing::info!("Cleaned up {} expired user accounts", result.rows_affected());
+                        tracing::info!(
+                            "Cleaned up {} expired user accounts",
+                            result.rows_affected()
+                        );
                     }
                 }
                 Err(e) => tracing::error!("Failed to clean up expired users: {}", e),

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { usersApi, type AdminUser } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import { useAuthStore } from '../stores/auth';
@@ -12,6 +12,27 @@ const users = ref<AdminUser[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
+// Get available roles for creation based on current user's role
+const availableRoles = computed(() => {
+  const currentUser = authStore.user;
+  if (!currentUser) return [];
+  
+  const roles: Array<{ value: string; label: string }> = [
+    { value: 'artist', label: 'Artist' },
+    { value: 'admin', label: 'Admin' },
+    { value: 'superadmin', label: 'Superadmin' },
+  ];
+  
+  const roleLevel: Record<string, number> = { artist: 1, admin: 2, superadmin: 3 };
+  const currentLevel = roleLevel[currentUser.role] || 0;
+  
+  // Can only create users below current user's level
+  return roles.filter(role => {
+    const targetLevel = roleLevel[role.value] || 0;
+    return targetLevel < currentLevel;
+  });
+});
+
 const showCreateModal = ref(false);
 const creating = ref(false);
 const newUser = ref({
@@ -20,6 +41,8 @@ const newUser = ref({
   expires_at: '',
 });
 const createdPassword = ref<string | null>(null);
+const usernameError = ref<string | null>(null);
+const expiresAtError = ref<string | null>(null);
 
 async function loadUsers() {
   loading.value = true;
@@ -38,6 +61,66 @@ async function loadUsers() {
 async function createUser() {
   creating.value = true;
   error.value = null;
+  usernameError.value = null;
+  expiresAtError.value = null;
+
+  // Trim username
+  newUser.value.username = newUser.value.username.trim();
+
+  // Validate username
+  if (!newUser.value.username) {
+    usernameError.value = 'Username is required';
+    creating.value = false;
+    return;
+  }
+
+  if (newUser.value.username.length < 3) {
+    usernameError.value = 'Username must be at least 3 characters';
+    creating.value = false;
+    return;
+  }
+
+  if (newUser.value.username.length > 50) {
+    usernameError.value = 'Username must be less than 50 characters';
+    creating.value = false;
+    return;
+  }
+
+  if (!/^[a-zA-Z0-9_-]+$/.test(newUser.value.username)) {
+    usernameError.value = 'Username can only contain letters, numbers, hyphens, and underscores';
+    creating.value = false;
+    return;
+  }
+
+  // Check for duplicate username
+  const isDuplicate = users.value.some(
+    (user) => user.username.toLowerCase() === newUser.value.username.toLowerCase()
+  );
+  
+  if (isDuplicate) {
+    usernameError.value = 'Username already exists';
+    creating.value = false;
+    return;
+  }
+
+  // Validate artist expiration date
+  if (newUser.value.role === 'artist') {
+    if (!newUser.value.expires_at) {
+      expiresAtError.value = 'Expiration date is required for artist users';
+      creating.value = false;
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expiryDate = new Date(newUser.value.expires_at);
+    
+    if (expiryDate < today) {
+      expiresAtError.value = 'Expiration date cannot be in the past';
+      creating.value = false;
+      return;
+    }
+  }
 
   try {
     const response = await usersApi.create({
@@ -56,38 +139,31 @@ async function createUser() {
   }
 }
 
-async function deleteUser(id: number, username: string) {
-  if (!confirm(`Are you sure you want to delete user "${username}"?`)) return;
-
-  try {
-    await usersApi.delete(id);
-    flash.success(`User "${username}" deleted`);
-    await loadUsers();
-  } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to delete user');
-  }
-}
-
-// Check if current user can delete target user
-function canDeleteUser(targetUser: AdminUser): boolean {
+// Check if current user can edit target user based on role hierarchy
+function canEditUser(targetUser: AdminUser): boolean {
   const currentUser = authStore.user;
   if (!currentUser) return false;
   
-  // Can't delete yourself
-  if (targetUser.username === currentUser.username) return false;
+  const roleLevel: Record<string, number> = { artist: 1, admin: 2, superadmin: 3 };
+  const currentLevel = roleLevel[currentUser.role] || 0;
+  const targetLevel = roleLevel[targetUser.role] || 0;
   
-  // Only superadmin can delete admins and superadmins
-  if (targetUser.role === 'superadmin' || targetUser.role === 'admin') {
-    return currentUser.role === 'superadmin';
+  // Can only edit users below your role level
+  return currentLevel > targetLevel;
+}
+
+function copyPassword() {
+  if (createdPassword.value) {
+    navigator.clipboard.writeText(createdPassword.value);
+    flash.success('Password copied to clipboard');
   }
-  
-  // Admin and superadmin can delete artists
-  return currentUser.role === 'admin' || currentUser.role === 'superadmin';
 }
 
 function closeCreateModal() {
   showCreateModal.value = false;
   createdPassword.value = null;
+  usernameError.value = null;
+  expiresAtError.value = null;
 }
 
 onMounted(loadUsers);
@@ -124,7 +200,7 @@ onMounted(loadUsers);
               <span v-if="user.username === authStore.user?.username" class="badge success">you</span>
             </td>
             <td>
-              <span :class="['badge', user.role === 'superadmin' ? 'warning' : 'success']">
+              <span :class="['badge', user.role === 'superadmin' ? 'warning' : user.role === 'artist' ? 'pink' : 'success']">
                 {{ user.role }}
               </span>
             </td>
@@ -135,13 +211,9 @@ onMounted(loadUsers);
               {{ new Date(user.created_at).toLocaleDateString() }}
             </td>
             <td>
-              <button
-                v-if="canDeleteUser(user)"
-                class="action-link danger"
-                @click="deleteUser(user.id, user.username)"
-              >
-                Delete
-              </button>
+              <router-link v-if="canEditUser(user)" :to="`/users/${user.id}`" class="action-link">
+                Edit
+              </router-link>
               <span v-else class="text-muted">-</span>
             </td>
           </tr>
@@ -153,29 +225,40 @@ onMounted(loadUsers);
       <template v-if="createdPassword">
         <div class="password-result">
           <p>User created! Copy the password below (it won't be shown again):</p>
-          <code class="password-display">{{ createdPassword }}</code>
+          <code class="password-display">
+            {{ createdPassword }}
+            <button class="copy-btn" @click="copyPassword" title="Copy to clipboard">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+          </code>
         </div>
       </template>
       <template v-else>
         <form class="create-form" @submit.prevent="createUser">
-          <FormInput v-model="newUser.username" label="Username" required />
+          <div class="form-group">
+            <FormInput v-model="newUser.username" label="Username" required />
+            <p v-if="usernameError" class="error-message">{{ usernameError }}</p>
+          </div>
           <div class="form-group">
             <label class="label">Role</label>
             <select v-model="newUser.role" class="select-input">
-              <option value="artist">Artist</option>
-              <option value="admin">Admin</option>
-              <option v-if="authStore.user?.role === 'superadmin'" value="superadmin">
-                Superadmin
+              <option v-for="role in availableRoles" :key="role.value" :value="role.value">
+                {{ role.label }}
               </option>
             </select>
           </div>
-          <FormInput
-            v-if="newUser.role === 'artist'"
-            v-model="newUser.expires_at"
-            label="Expires At"
-            type="date"
-            required
-          />
+          <div v-if="newUser.role === 'artist'" class="form-group">
+            <FormInput
+              v-model="newUser.expires_at"
+              label="Expires At"
+              type="date"
+              required
+            />
+            <p v-if="expiresAtError" class="error-message">{{ expiresAtError }}</p>
+          </div>
         </form>
       </template>
       <template #footer>
@@ -235,17 +318,46 @@ onMounted(loadUsers);
   padding: var(--spacing-sm) var(--spacing-md);
 }
 
+.error-message {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  margin: var(--spacing-xs) 0 0 0;
+}
+
 .password-result {
   text-align: center;
 }
 
 .password-display {
   display: block;
+  position: relative;
   background-color: var(--color-surface-alt);
   padding: var(--spacing-md);
+  padding-right: calc(var(--spacing-md) + 32px);
   border-radius: var(--radius-md);
   margin-top: var(--spacing-md);
   font-size: var(--font-size-lg);
   word-break: break-all;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  right: var(--spacing-sm);
+  background: transparent;
+  border: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #ffffff;
+  transition: opacity var(--transition-fast);
+}
+
+.copy-btn:hover {
+  opacity: 0.7;
 }
 </style>

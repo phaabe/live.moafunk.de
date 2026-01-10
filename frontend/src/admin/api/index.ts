@@ -172,6 +172,12 @@ export const usersApi = {
   create: (data: { username: string; role: string; expires_at?: string }) =>
     api.post<{ user: AdminUser; password: string }>('/api/users', data),
 
+  update: (id: number, data: { role?: string; expires_at?: string }) =>
+    api.put<{ user: AdminUser }>(`/api/users/${id}`, data),
+
+  resetPassword: (id: number) =>
+    api.post<{ password: string }>(`/api/users/${id}/reset-password`, {}),
+
   delete: (id: number) => api.delete<void>(`/api/users/${id}`),
 
   changePassword: (currentPassword: string, newPassword: string) =>

@@ -9,6 +9,7 @@ const ShowsPage = () => import('./pages/ShowsPage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
 const StreamPage = () => import('./pages/StreamPage.vue');
 const UsersPage = () => import('./pages/UsersPage.vue');
+const UserEditPage = () => import('./pages/UserEditPage.vue');
 const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 
 const router = createRouter({
@@ -58,6 +59,12 @@ const router = createRouter({
       path: '/users',
       name: 'users',
       component: UsersPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+    },
+    {
+      path: '/users/:id',
+      name: 'user-edit',
+      component: UserEditPage,
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
