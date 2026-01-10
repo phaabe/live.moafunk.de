@@ -36,12 +36,13 @@ jobs:
       # - name: Install uv
       #   uses: astral-sh/setup-uv@v5
 
-      # - name: Generate tracks JSON from SoundCloud
-      #   continue-on-error: true
-      #   run: |
-      #     uv run scripts/generate_relisten.py \
-      #       --client-id "${{ secrets.SOUNDCLOUD_CLIENT_ID }}" \
-      #       --client-secret "${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}"
+      - name: Generate tracks JSON from SoundCloud
+        id: generate-tracks
+        continue-on-error: true
+        run: |
+          uv run scripts/generate_relisten.py \
+            --client-id "${{ secrets.SOUNDCLOUD_CLIENT_ID }}" \
+            --client-secret "${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}"
 
       # Node.js setup for frontend build
       - name: Setup Node.js
@@ -53,6 +54,18 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Generate re-listen.html from tracks
+        if: steps.generate-tracks.outcome == 'success'
+        run: |
+          node scripts/generate-html.js
+          echo "✅ Generated re-listen.html with SoundCloud tracks"
+
+      - name: Use fallback re-listen.html
+        if: steps.generate-tracks.outcome == 'failure'
+        run: |
+          echo "⚠️ SoundCloud API failed, using fallback re-listen.html"
+          echo "The static fallback page is already in src/pages/re-listen.html"
 
       - name: Run linter
         run: npm run lint
