@@ -7,9 +7,12 @@ mod image_overlay;
 mod models;
 mod pdf;
 mod storage;
+mod stream_bridge;
 
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State, Query, WebSocketUpgrade},
+    http::HeaderMap,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -23,11 +26,47 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 pub use config::Config;
 pub use error::{AppError, Result};
 
+use stream_bridge::SharedStreamState;
+
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub config: Config,
     pub templates: tera::Tera,
     pub s3_client: aws_sdk_s3::Client,
+    pub stream_state: SharedStreamState,
+}
+
+// Stream handler wrappers that extract stream_state from AppState
+async fn stream_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<handlers::stream_ws::StreamQuery>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    handlers::stream_ws::stream_ws_handler(
+        ws,
+        State(state.clone()),
+        State(state.stream_state.clone()),
+        Query(query),
+        headers,
+    ).await
+}
+
+async fn stream_status_handler(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    handlers::stream_ws::stream_status(State(state.stream_state.clone())).await
+}
+
+async fn stream_stop_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    handlers::stream_ws::stream_stop(
+        State(state.clone()),
+        State(state.stream_state.clone()),
+        headers,
+    ).await
 }
 
 #[tokio::main]
@@ -97,11 +136,15 @@ async fn main() -> anyhow::Result<()> {
 
     let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
+    // Initialize stream state
+    let stream_state = stream_bridge::new_shared_state();
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
         templates,
         s3_client,
+        stream_state,
     });
 
     // Build CORS layer
@@ -164,6 +207,10 @@ async fn main() -> anyhow::Result<()> {
         )
         // Stream page (accessible to all roles)
         .route("/stream", get(handlers::admin::stream_page))
+        // Stream WebSocket and API
+        .route("/ws/stream", get(stream_ws_handler))
+        .route("/api/stream/status", get(stream_status_handler))
+        .route("/api/stream/stop", post(stream_stop_handler))
         // User management (admin/superadmin only)
         .route("/users", get(handlers::admin::users_list))
         .route("/users", post(handlers::admin::create_user))

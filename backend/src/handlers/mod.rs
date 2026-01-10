@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod download;
+pub mod stream_ws;
 pub mod submit;
 pub mod submit_chunked;
 
