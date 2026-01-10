@@ -145,6 +145,13 @@ pub async fn api_change_password(
         .await
         .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
 
+    // Check role permission
+    if !user.role_enum().can_change_password() {
+        return Err(AppError::Forbidden(
+            "You don't have permission to change passwords".to_string(),
+        ));
+    }
+
     // Verify current password
     if !auth::verify_password(&req.current_password, &user.password_hash) {
         return Err(AppError::BadRequest(

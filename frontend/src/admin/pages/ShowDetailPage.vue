@@ -3,7 +3,9 @@ import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showsApi, type Show } from '../api';
 import { BaseButton, FormInput } from '@shared/components';
+import { useFlash } from '../composables/useFlash';
 
+const flash = useFlash();
 const route = useRoute();
 const router = useRouter();
 
@@ -45,6 +47,7 @@ async function saveShow() {
 
   try {
     await showsApi.update(show.value.id, editForm.value);
+    flash.success('Show updated successfully');
     router.push('/shows');
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to save show';

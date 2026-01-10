@@ -3,7 +3,9 @@ import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { artistsApi, type ArtistDetail } from '../api';
 import { BaseButton, BaseModal } from '@shared/components';
+import { useFlash } from '../composables/useFlash';
 
+const flash = useFlash();
 const route = useRoute();
 const router = useRouter();
 
@@ -33,6 +35,7 @@ async function deleteArtist() {
   deleting.value = true;
   try {
     await artistsApi.delete(artist.value.id);
+    flash.success(`Artist "${artist.value.name}" deleted`);
     router.push('/artists');
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to delete artist';

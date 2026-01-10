@@ -2,7 +2,9 @@
 import { ref, onMounted } from 'vue';
 import { showsApi, type Show, type Artist } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
+import { useFlash } from '../composables/useFlash';
 
+const flash = useFlash();
 const shows = ref<Show[]>([]);
 const artists = ref<Artist[]>([]);
 const loading = ref(true);
@@ -37,6 +39,7 @@ async function createShow() {
 
   try {
     await showsApi.create(newShow.value);
+    flash.success('Show created successfully');
     showCreateModal.value = false;
     newShow.value = { title: '', date: '', description: '' };
     await loadShows();
@@ -52,9 +55,10 @@ async function deleteShow(id: number) {
 
   try {
     await showsApi.delete(id);
+    flash.success('Show deleted');
     await loadShows();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to delete show';
+    flash.error(e instanceof Error ? e.message : 'Failed to delete show');
   }
 }
 

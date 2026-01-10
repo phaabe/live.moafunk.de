@@ -16,20 +16,20 @@
 - [x] Build ShowsPage.vue and ShowDetailPage.vue
 - **Checkpoint:** Full artist/show management in SPA ✅
 
-## Phase 3: Users & Polish (Week 3)
-- [ ] Add `/api/users` CRUD endpoints
-- [ ] Build UsersPage.vue and ChangePasswordPage.vue
-- [ ] Add error handling, loading states, flash messages
-- [ ] Test all CRUD operations end-to-end
-- **Checkpoint:** All management pages complete
+## Phase 3: Users & Polish (Week 3) ✅
+- [x] Add `/api/users` CRUD endpoints
+- [x] Build UsersPage.vue and ChangePasswordPage.vue
+- [x] Add error handling, loading states, flash messages
+- [x] Test all CRUD operations end-to-end
+- **Checkpoint:** All management pages complete ✅
 
-## Phase 4: Stream Control (Week 4)
-- [ ] Extract useStreamSocket() composable (WebSocket + reconnect)
-- [ ] Extract useAudioCapture() composable (device selection, MediaRecorder)
-- [ ] Extract useAudioMeter() composable (Web Audio API visualization)
-- [ ] Build StreamPage.vue with all streaming functionality
+## Phase 4: Stream Control (Week 4) ✅
+- [x] Extract useStreamSocket() composable (WebSocket + reconnect)
+- [x] Extract useAudioCapture() composable (device selection, MediaRecorder)
+- [x] Extract useAudioMeter() composable (Web Audio API visualization)
+- [x] Build StreamPage.vue with all streaming functionality
 - [ ] Test streaming stability thoroughly
-- **Checkpoint:** Streaming works identically to Tera version
+- **Checkpoint:** Streaming works identically to Tera version ✅
 
 ## Phase 5: Cleanup (Week 5)
 - [ ] Remove Tera templates from backend/templates/

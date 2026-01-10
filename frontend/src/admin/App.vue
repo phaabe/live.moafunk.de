@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 import { NavBar } from '@shared/components';
+import FlashToast from './components/FlashToast.vue';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -16,6 +17,7 @@ const showNav = computed(() => authStore.isAuthenticated && route.name !== 'logi
     <main class="main-content">
       <router-view />
     </main>
+    <FlashToast />
   </div>
 </template>
 

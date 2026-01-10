@@ -3,8 +3,10 @@ import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { usersApi } from '../api';
 import { BaseButton, FormInput } from '@shared/components';
+import { useFlash } from '../composables/useFlash';
 
 const router = useRouter();
+const flash = useFlash();
 
 const currentPassword = ref('');
 const newPassword = ref('');
@@ -28,6 +30,7 @@ async function changePassword() {
 
   try {
     await usersApi.changePassword(currentPassword.value, newPassword.value);
+    flash.success('Password changed successfully');
     router.push('/artists');
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to change password';

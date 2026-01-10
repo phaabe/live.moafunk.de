@@ -3,13 +3,14 @@ import { ref, onMounted } from 'vue';
 import { usersApi, type AdminUser } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import { useAuthStore } from '../stores/auth';
+import { useFlash } from '../composables/useFlash';
 
 const authStore = useAuthStore();
+const flash = useFlash();
 
 const users = ref<AdminUser[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
-const successMessage = ref<string | null>(null);
 
 const showCreateModal = ref(false);
 const creating = ref(false);
@@ -45,7 +46,7 @@ async function createUser() {
       expires_at: newUser.value.expires_at || undefined,
     });
     createdPassword.value = response.password;
-    successMessage.value = `User "${response.user.username}" created successfully`;
+    flash.success(`User "${response.user.username}" created successfully`);
     newUser.value = { username: '', role: 'artist', expires_at: '' };
     await loadUsers();
   } catch (e) {
@@ -60,10 +61,10 @@ async function deleteUser(id: number, username: string) {
 
   try {
     await usersApi.delete(id);
-    successMessage.value = `User "${username}" deleted`;
+    flash.success(`User "${username}" deleted`);
     await loadUsers();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to delete user';
+    flash.error(e instanceof Error ? e.message : 'Failed to delete user');
   }
 }
 
@@ -85,7 +86,6 @@ onMounted(loadUsers);
     </div>
 
     <div v-if="error" class="flash-message error">{{ error }}</div>
-    <div v-if="successMessage" class="flash-message success">{{ successMessage }}</div>
 
     <div v-if="loading" class="loading-spinner"></div>
 
