@@ -339,6 +339,11 @@
             color: #666;
             font-style: italic;
         }
+
+        .user-info {
+            color: #666;
+            font-size: 0.85em;
+        }
     </style>
 </head>
 <body>
@@ -348,9 +353,17 @@
             <h1>Moafunk Admin</h1>
         </div>
         <div class="nav-links">
+            <a href="/stream">Stream</a>
+            {% if user_role == "admin" or user_role == "superadmin" %}
             <a href="/artists" class="active">Artists</a>
             <a href="/shows">Shows</a>
+            <a href="/users">Users</a>
+            {% endif %}
+            {% if user_role == "admin" or user_role == "superadmin" %}
+            <a href="/change-password">Change Password</a>
+            {% endif %}
             <a href="/logout">Logout</a>
+            <span class="user-info">({{ username }})</span>
         </div>
     </nav>
     

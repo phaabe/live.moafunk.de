@@ -59,8 +59,25 @@ fn get_session_token<B>(request: &Request<B>) -> Option<String> {
     auth::get_session_from_cookies(request)
 }
 
-pub async fn index() -> Redirect {
-    Redirect::to("/artists")
+pub async fn index(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    match user {
+        Some(u) => {
+            // Redirect based on role
+            match u.role_enum() {
+                models::UserRole::Artist => Ok(Redirect::to("/stream").into_response()),
+                models::UserRole::Admin | models::UserRole::Superadmin => {
+                    Ok(Redirect::to("/artists").into_response())
+                }
+            }
+        }
+        None => Ok(Redirect::to("/login").into_response()),
+    }
 }
 
 pub async fn artists_list(
@@ -68,8 +85,16 @@ pub async fn artists_list(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Ok(Redirect::to("/login").into_response());
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can access artists page
+    if !user.role_enum().can_access_admin() {
+        return Ok(Redirect::to("/stream").into_response());
     }
 
     let query_params: std::collections::HashMap<String, String> = request
@@ -161,6 +186,8 @@ pub async fn artists_list(
     context.insert("flash_kind", &flash_kind);
     context.insert("sort", &sort);
     context.insert("dir", &dir.to_lowercase());
+    context.insert("user_role", &user.role);
+    context.insert("username", &user.username);
 
     let html = state.templates.render("artists.html", &context)?;
     Ok(Html(html).into_response())
@@ -172,8 +199,16 @@ pub async fn artist_detail(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Ok(Redirect::to("/login").into_response());
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can access artist detail
+    if !user.role_enum().can_access_admin() {
+        return Ok(Redirect::to("/stream").into_response());
     }
 
     let query_params: std::collections::HashMap<String, String> = request
@@ -266,6 +301,8 @@ pub async fn artist_detail(
     context.insert("available_shows", &available_shows);
     context.insert("flash_message", &flash_message);
     context.insert("flash_kind", &flash_kind);
+    context.insert("user_role", &user.role);
+    context.insert("username", &user.username);
 
     let html = state.templates.render("artist_detail.html", &context)?;
     Ok(Html(html).into_response())
@@ -277,7 +314,8 @@ pub async fn delete_artist(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -337,7 +375,8 @@ pub async fn assign_show(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -418,7 +457,8 @@ pub async fn unassign_show(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -443,8 +483,16 @@ pub async fn shows_list(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Ok(Redirect::to("/login").into_response());
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can access shows page
+    if !user.role_enum().can_access_admin() {
+        return Ok(Redirect::to("/stream").into_response());
     }
 
     let query_params: std::collections::HashMap<String, String> = request
@@ -553,6 +601,8 @@ pub async fn shows_list(
     context.insert("flash_kind", &flash_kind);
     context.insert("sort", &sort);
     context.insert("dir", &dir.to_lowercase());
+    context.insert("user_role", &user.role);
+    context.insert("username", &user.username);
 
     let html = state.templates.render("shows.html", &context)?;
     Ok(Html(html).into_response())
@@ -564,7 +614,8 @@ pub async fn delete_show(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -605,7 +656,8 @@ pub async fn create_show(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -640,8 +692,16 @@ pub async fn show_detail(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Ok(Redirect::to("/login").into_response());
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can access show detail
+    if !user.role_enum().can_access_admin() {
+        return Ok(Redirect::to("/stream").into_response());
     }
 
     let query_params: std::collections::HashMap<String, String> = request
@@ -716,6 +776,8 @@ pub async fn show_detail(
     context.insert("artist_pic_urls", &artist_pic_urls);
     context.insert("flash_message", &flash_message);
     context.insert("flash_kind", &flash_kind);
+    context.insert("user_role", &user.role);
+    context.insert("username", &user.username);
 
     let html = state.templates.render("show_detail.html", &context)?;
     Ok(Html(html).into_response())
@@ -727,7 +789,8 @@ pub async fn assign_artist(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -808,7 +871,8 @@ pub async fn unassign_artist(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -834,7 +898,8 @@ pub async fn update_show_date(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -877,7 +942,8 @@ pub async fn update_show_description(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = get_session_token(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
         return Err(AppError::Unauthorized);
     }
 
@@ -904,5 +970,376 @@ pub async fn update_show_description(
         &format!("/shows/{}", id),
         "success",
         "Updated show description.".to_string(),
+    ))
+}
+
+// =====================
+// Stream Page
+// =====================
+
+pub async fn stream_page(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("user_role", &user.role);
+    context.insert("username", &user.username);
+
+    let html = state.templates.render("stream.html", &context)?;
+    Ok(Html(html).into_response())
+}
+
+// =====================
+// User Management
+// =====================
+
+pub async fn users_list(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can access user management
+    if !user.role_enum().can_manage_users() {
+        return Ok(Redirect::to("/stream").into_response());
+    }
+
+    let query_params: std::collections::HashMap<String, String> = request
+        .uri()
+        .query()
+        .and_then(|q| serde_urlencoded::from_str(q).ok())
+        .unwrap_or_default();
+
+    let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
+    let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
+    let generated_password = query_params
+        .get("generated_password")
+        .cloned()
+        .filter(|s| !s.is_empty());
+
+    #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+    struct UserListRow {
+        pub id: i64,
+        pub username: String,
+        pub role: String,
+        pub created_by_username: Option<String>,
+        pub expires_at: Option<String>,
+        pub created_at: String,
+        pub is_expired: bool,
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    let users: Vec<UserListRow> = sqlx::query_as(
+        r#"
+        SELECT 
+            u.id,
+            u.username,
+            u.role,
+            creator.username AS created_by_username,
+            u.expires_at,
+            u.created_at,
+            CASE WHEN u.expires_at IS NOT NULL AND u.expires_at < datetime('now') THEN 1 ELSE 0 END AS is_expired
+        FROM users u
+        LEFT JOIN users creator ON creator.id = u.created_by
+        ORDER BY u.created_at DESC
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut context = tera::Context::new();
+    context.insert("users", &users);
+    context.insert("user_role", &user.role);
+    context.insert("username", &user.username);
+    context.insert("flash_message", &flash_message);
+    context.insert("flash_kind", &flash_kind);
+    context.insert("generated_password", &generated_password);
+    context.insert("now", &now);
+
+    let html = state.templates.render("users.html", &context)?;
+    Ok(Html(html).into_response())
+}
+
+pub async fn create_user(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    let current_user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let current_user = match current_user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can create users
+    if !current_user.role_enum().can_manage_users() {
+        return Ok(Redirect::to("/stream").into_response());
+    }
+
+    let bytes = axum::body::to_bytes(request.into_body(), 4096)
+        .await
+        .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
+    let form: models::CreateUserForm = serde_urlencoded::from_bytes(&bytes)
+        .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
+
+    // Validate role
+    let role = models::UserRole::from_str(&form.role)
+        .ok_or_else(|| AppError::Validation("Invalid role".to_string()))?;
+
+    // Only superadmin can create admin or superadmin accounts
+    if (role == models::UserRole::Superadmin || role == models::UserRole::Admin)
+        && !current_user.role_enum().can_manage_superadmins()
+    {
+        return Ok(redirect_with_flash(
+            "/users",
+            "error",
+            "Only superadmin can create admin accounts.".to_string(),
+        ));
+    }
+
+    // Check if username already exists
+    let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE username = ?")
+        .bind(&form.username)
+        .fetch_optional(&state.db)
+        .await?;
+
+    if existing.is_some() {
+        return Ok(redirect_with_flash(
+            "/users",
+            "error",
+            format!("Username '{}' already exists.", form.username),
+        ));
+    }
+
+    // Generate password
+    let password = auth::generate_password();
+    let password_hash = auth::hash_password(&password)?;
+
+    // Parse expires_at if provided (for artist accounts)
+    let expires_at = if role == models::UserRole::Artist {
+        form.expires_at
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                // Convert date to datetime at end of day
+                format!("{}T23:59:59", s)
+            })
+    } else {
+        None
+    };
+
+    // Insert user
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, role, created_by, expires_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .bind(&form.username)
+    .bind(&password_hash)
+    .bind(role.as_str())
+    .bind(current_user.id)
+    .bind(&expires_at)
+    .execute(&state.db)
+    .await?;
+
+    // Redirect with generated password in query params (one-time display)
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("kind".to_string(), "success".to_string());
+    params.insert(
+        "msg".to_string(),
+        format!("User '{}' created.", form.username),
+    );
+    params.insert("generated_password".to_string(), password);
+    let qs = serde_urlencoded::to_string(params).unwrap_or_default();
+
+    Ok(Redirect::to(&format!("/users?{}", qs)).into_response())
+}
+
+pub async fn delete_user(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    let current_user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let current_user = match current_user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can delete users
+    if !current_user.role_enum().can_manage_users() {
+        return Ok(Redirect::to("/stream").into_response());
+    }
+
+    // Get the user to delete
+    let target_user: Option<models::User> = sqlx::query_as("SELECT * FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let target_user = match target_user {
+        Some(u) => u,
+        None => {
+            return Ok(redirect_with_flash(
+                "/users",
+                "error",
+                "User not found.".to_string(),
+            ))
+        }
+    };
+
+    // Cannot delete yourself
+    if target_user.id == current_user.id {
+        return Ok(redirect_with_flash(
+            "/users",
+            "error",
+            "Cannot delete your own account.".to_string(),
+        ));
+    }
+
+    // Only superadmin can delete admin or superadmin accounts
+    if (target_user.role_enum() == models::UserRole::Superadmin
+        || target_user.role_enum() == models::UserRole::Admin)
+        && !current_user.role_enum().can_manage_superadmins()
+    {
+        return Ok(redirect_with_flash(
+            "/users",
+            "error",
+            "Only superadmin can delete admin accounts.".to_string(),
+        ));
+    }
+
+    // Delete user (sessions will cascade)
+    sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(redirect_with_flash(
+        "/users",
+        "success",
+        format!("Deleted user '{}'.", target_user.username),
+    ))
+}
+
+// =====================
+// Change Password
+// =====================
+
+pub async fn change_password_page(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can change their password
+    if !user.role_enum().can_change_password() {
+        return Ok(Redirect::to("/stream").into_response());
+    }
+
+    let query_params: std::collections::HashMap<String, String> = request
+        .uri()
+        .query()
+        .and_then(|q| serde_urlencoded::from_str(q).ok())
+        .unwrap_or_default();
+
+    let flash_message = query_params.get("msg").cloned().filter(|s| !s.is_empty());
+    let flash_kind = query_params.get("kind").cloned().filter(|s| !s.is_empty());
+
+    let mut context = tera::Context::new();
+    context.insert("user_role", &user.role);
+    context.insert("username", &user.username);
+    context.insert("flash_message", &flash_message);
+    context.insert("flash_kind", &flash_kind);
+
+    let html = state.templates.render("change_password.html", &context)?;
+    Ok(Html(html).into_response())
+}
+
+pub async fn change_password(
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<Response> {
+    let token = get_session_token(&request);
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+
+    let user = match user {
+        Some(u) => u,
+        None => return Ok(Redirect::to("/login").into_response()),
+    };
+
+    // Only admin/superadmin can change their password
+    if !user.role_enum().can_change_password() {
+        return Ok(Redirect::to("/stream").into_response());
+    }
+
+    let bytes = axum::body::to_bytes(request.into_body(), 4096)
+        .await
+        .map_err(|e| AppError::Validation(format!("Failed to read body: {}", e)))?;
+    let form: models::ChangePasswordForm = serde_urlencoded::from_bytes(&bytes)
+        .map_err(|e| AppError::Validation(format!("Failed to parse form: {}", e)))?;
+
+    // Verify current password
+    if !auth::verify_password(&form.current_password, &user.password_hash) {
+        return Ok(redirect_with_flash(
+            "/change-password",
+            "error",
+            "Current password is incorrect.".to_string(),
+        ));
+    }
+
+    // Check new password confirmation
+    if form.new_password != form.confirm_password {
+        return Ok(redirect_with_flash(
+            "/change-password",
+            "error",
+            "New passwords do not match.".to_string(),
+        ));
+    }
+
+    // Validate new password length
+    if form.new_password.len() < 8 {
+        return Ok(redirect_with_flash(
+            "/change-password",
+            "error",
+            "New password must be at least 8 characters.".to_string(),
+        ));
+    }
+
+    // Hash and update password
+    let new_hash = auth::hash_password(&form.new_password)?;
+
+    sqlx::query("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(&new_hash)
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(redirect_with_flash(
+        "/change-password",
+        "success",
+        "Password changed successfully.".to_string(),
     ))
 }

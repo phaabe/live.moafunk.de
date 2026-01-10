@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream - Moafunk Admin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background: #000;
+            color: #eee;
+            min-height: 100vh;
+        }
+        
+        .nav {
+            background: #000;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #ffec44;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .brand-logo {
+            width: 26px;
+            height: 26px;
+            object-fit: contain;
+            flex: 0 0 auto;
+        }
+        
+        .nav h1 {
+            font-size: 1.4em;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        
+        .nav-links a {
+            color: #aaa;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .nav-links a:hover,
+        .nav-links a.active {
+            color: #ffec44;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+
+        .placeholder {
+            background: #0f0f23;
+            border-radius: 4px;
+            padding: 60px 40px;
+            text-align: center;
+            margin-top: 40px;
+        }
+
+        .placeholder h2 {
+            color: #ffec44;
+            margin-bottom: 20px;
+            font-size: 2em;
+        }
+
+        .placeholder p {
+            color: #888;
+            font-size: 1.1em;
+            line-height: 1.6;
+        }
+
+        .user-info {
+            color: #666;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <div class="brand">
+            <img src="/assets/brand/moafunk.png" alt="Moafunk" class="brand-logo">
+            <h1>Moafunk Admin</h1>
+        </div>
+        <div class="nav-links">
+            <a href="/stream" class="active">Stream</a>
+            {% if user_role == "admin" or user_role == "superadmin" %}
+            <a href="/artists">Artists</a>
+            <a href="/shows">Shows</a>
+            <a href="/users">Users</a>
+            {% endif %}
+            {% if user_role == "admin" or user_role == "superadmin" %}
+            <a href="/change-password">Change Password</a>
+            {% endif %}
+            <a href="/logout">Logout</a>
+            <span class="user-info">({{ username }})</span>
+        </div>
+    </nav>
+    
+    <div class="container">
+        <div class="placeholder">
+            <h2>🎵 Stream</h2>
+            <p>This is the stream page placeholder.<br>
+            Stream functionality will be implemented here.</p>
+        </div>
+    </div>
+</body>
+</html>
