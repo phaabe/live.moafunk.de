@@ -8,7 +8,11 @@ pub struct Config {
     pub port: u16,
 
     pub secret_key: String,
-    pub admin_password_hash: String,
+    
+    // Superadmin credentials (seeded on first run if no users exist)
+    #[serde(default = "default_superadmin_username")]
+    pub superadmin_username: String,
+    pub superadmin_password_hash: String,
 
     #[serde(default = "default_database_url")]
     pub database_url: String,
@@ -43,6 +47,10 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     8000
+}
+
+fn default_superadmin_username() -> String {
+    "superadmin".to_string()
 }
 
 fn default_database_url() -> String {

@@ -54,6 +54,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Run migrations
     db::run_migrations(&db).await?;
+    
+    // Seed superadmin if no users exist
+    db::seed_superadmin(&db, &config).await?;
 
     // Initialize templates
     let mut templates = tera::Tera::new("templates/**/*")?;
@@ -159,10 +162,40 @@ async fn main() -> anyhow::Result<()> {
             "/shows/:id/download/:package",
             get(handlers::download::download_show_package),
         )
+        // Stream page (accessible to all roles)
+        .route("/stream", get(handlers::admin::stream_page))
+        // User management (admin/superadmin only)
+        .route("/users", get(handlers::admin::users_list))
+        .route("/users", post(handlers::admin::create_user))
+        .route("/users/:id/delete", post(handlers::admin::delete_user))
+        // Change password (admin/superadmin only)
+        .route("/change-password", get(handlers::admin::change_password_page))
+        .route("/change-password", post(handlers::admin::change_password))
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes()))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
+
+    // Spawn background task to clean up expired user accounts (runs weekly)
+    let cleanup_db = state.db.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 60 * 60)); // 1 week
+        loop {
+            interval.tick().await;
+            tracing::info!("Running expired user cleanup...");
+            match sqlx::query("DELETE FROM users WHERE expires_at IS NOT NULL AND expires_at < datetime('now')")
+                .execute(&cleanup_db)
+                .await
+            {
+                Ok(result) => {
+                    if result.rows_affected() > 0 {
+                        tracing::info!("Cleaned up {} expired user accounts", result.rows_affected());
+                    }
+                }
+                Err(e) => tracing::error!("Failed to clean up expired users: {}", e),
+            }
+        }
+    });
 
     let addr = format!("{}:{}", config.host, config.port);
     tracing::info!("Starting server on {}", addr);

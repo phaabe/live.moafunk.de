@@ -1,4 +1,4 @@
-use crate::{auth, AppState, Result};
+use crate::{auth, models, AppState, Result};
 use axum::{
     extract::State,
     http::{header, StatusCode},
@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct LoginForm {
+    username: String,
     password: String,
 }
 
@@ -25,30 +26,61 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     Form(form): Form<LoginForm>,
 ) -> Result<Response> {
-    if auth::verify_password(&form.password, &state.config.admin_password_hash) {
-        let token = auth::create_session(&state).await?;
-
-        let cookie = format!(
-            "session={}; HttpOnly; Secure; SameSite=Strict; Max-Age={}; Path=/",
-            token,
-            60 * 60 * 24 * 7 // 7 days
-        );
-
-        Ok((
-            StatusCode::SEE_OTHER,
-            [
-                (header::SET_COOKIE, cookie),
-                (header::LOCATION, "/artists".to_string()),
-            ],
-        )
-            .into_response())
-    } else {
+    // Look up user by username
+    let user: Option<models::User> = sqlx::query_as("SELECT * FROM users WHERE username = ?")
+        .bind(&form.username)
+        .fetch_optional(&state.db)
+        .await?;
+    
+    let user = match user {
+        Some(u) => u,
+        None => {
+            let mut context = tera::Context::new();
+            context.insert("error", &Some("Invalid username or password".to_string()));
+            let html = state.templates.render("login.html", &context)?;
+            return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
+        }
+    };
+    
+    // Verify password
+    if !auth::verify_password(&form.password, &user.password_hash) {
         let mut context = tera::Context::new();
-        context.insert("error", &Some("Invalid password".to_string()));
-
+        context.insert("error", &Some("Invalid username or password".to_string()));
         let html = state.templates.render("login.html", &context)?;
-        Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response())
+        return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
     }
+    
+    // Check if account is expired
+    if user.is_expired() {
+        let mut context = tera::Context::new();
+        context.insert("error", &Some("Your account has expired. Please contact an administrator.".to_string()));
+        let html = state.templates.render("login.html", &context)?;
+        return Ok((StatusCode::UNAUTHORIZED, Html(html)).into_response());
+    }
+    
+    // Create session
+    let token = auth::create_session(&state, user.id).await?;
+    
+    // Determine redirect based on role
+    let redirect_url = match user.role_enum() {
+        models::UserRole::Artist => "/stream",
+        models::UserRole::Admin | models::UserRole::Superadmin => "/artists",
+    };
+    
+    let cookie = format!(
+        "session={}; HttpOnly; Secure; SameSite=Strict; Max-Age={}; Path=/",
+        token,
+        60 * 60 * 24 * 7 // 7 days
+    );
+
+    Ok((
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, cookie),
+            (header::LOCATION, redirect_url.to_string()),
+        ],
+    )
+        .into_response())
 }
 
 pub async fn logout(State(_state): State<Arc<AppState>>) -> Result<Response> {

@@ -7,6 +7,14 @@ use axum::{
 use std::io::Write;
 use std::sync::Arc;
 
+/// Helper to check if user has admin access
+fn require_admin(user: Option<&models::User>) -> Result<()> {
+    match user {
+        Some(u) if u.role_enum().can_access_admin() => Ok(()),
+        _ => Err(AppError::Unauthorized),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShowPackage {
     Recording,
@@ -134,9 +142,8 @@ pub async fn download_artist(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = auth::get_session_from_cookies(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Err(AppError::Unauthorized);
-    }
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    require_admin(user.as_ref())?;
 
     let (artist, show) = fetch_artist_and_show(&state, artist_id).await?;
     let artist_dir = sanitize_filename(&artist.name);
@@ -316,9 +323,8 @@ pub async fn download_show_package(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = auth::get_session_from_cookies(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Err(AppError::Unauthorized);
-    }
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    require_admin(user.as_ref())?;
 
     let pkg = ShowPackage::parse(&package)
         .ok_or_else(|| AppError::Validation("Invalid download package".to_string()))?;
@@ -657,9 +663,8 @@ pub async fn download_show(
     request: Request<axum::body::Body>,
 ) -> Result<Response> {
     let token = auth::get_session_from_cookies(&request);
-    if !auth::is_authenticated(&state, token.as_deref()).await {
-        return Err(AppError::Unauthorized);
-    }
+    let user = auth::get_current_user(&state, token.as_deref()).await;
+    require_admin(user.as_ref())?;
 
     // Legacy endpoint: default to all-data.
     download_show_impl(state, show_id, ShowPackage::AllData).await

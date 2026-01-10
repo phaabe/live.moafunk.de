@@ -1,3 +1,4 @@
+use crate::config::Config;
 use sqlx::Row;
 use sqlx::SqlitePool;
 
@@ -162,12 +163,36 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Users table for role-based authentication
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'artist',
+            created_by INTEGER,
+            expires_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT,
+            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Migration: add user_id column to existing sessions table if missing
+    add_column_if_missing(pool, "sessions", "user_id", "INTEGER").await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            expires_at TEXT NOT NULL
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         "#,
     )
@@ -211,5 +236,32 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .await?;
 
     tracing::info!("Database migrations completed");
+    Ok(())
+}
+
+/// Seed the superadmin user if no users exist
+pub async fn seed_superadmin(pool: &SqlitePool, config: &Config) -> Result<(), sqlx::Error> {
+    // Check if any users exist
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(pool)
+        .await?;
+
+    if count == 0 {
+        tracing::info!(
+            "No users found, seeding superadmin user: {}",
+            config.superadmin_username
+        );
+
+        sqlx::query(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'superadmin')",
+        )
+        .bind(&config.superadmin_username)
+        .bind(&config.superadmin_password_hash)
+        .execute(pool)
+        .await?;
+
+        tracing::info!("Superadmin user created successfully");
+    }
+
     Ok(())
 }
