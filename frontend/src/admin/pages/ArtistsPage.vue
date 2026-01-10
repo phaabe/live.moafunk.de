@@ -75,7 +75,7 @@ onMounted(loadArtists);
               Submitted
               <span v-if="sort === 'submitted'">{{ dir === 'asc' ? '↑' : '↓' }}</span>
             </th>
-            <th>Actions</th>
+            <th>Download</th>
           </tr>
         </thead>
         <tbody>
@@ -93,9 +93,7 @@ onMounted(loadArtists);
             <td class="text-muted">{{ artist.show_titles || '-' }}</td>
             <td class="text-muted">{{ new Date(artist.created_at).toLocaleDateString() }}</td>
             <td>
-              <router-link :to="`/artists/${artist.id}`" class="action-link">
-                View
-              </router-link>
+              <a :href="`/artists/${artist.id}/download`" class="dl-btn" title="Download Artist Package">📦</a>
             </td>
           </tr>
           <tr v-if="artists.length === 0">
@@ -138,11 +136,20 @@ onMounted(loadArtists);
   font-weight: var(--font-weight-medium);
 }
 
-.action-link {
-  color: var(--color-link);
+.dl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  font-size: 14px;
+  transition: all var(--transition-fast);
+  border: 1px solid #bbbbbb;
 }
 
-.action-link:hover {
-  color: var(--color-primary);
+.dl-btn:hover {
+  background-color: #bbbbbb;
 }
 </style>

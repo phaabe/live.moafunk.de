@@ -68,6 +68,23 @@ async function deleteUser(id: number, username: string) {
   }
 }
 
+// Check if current user can delete target user
+function canDeleteUser(targetUser: AdminUser): boolean {
+  const currentUser = authStore.user;
+  if (!currentUser) return false;
+  
+  // Can't delete yourself
+  if (targetUser.username === currentUser.username) return false;
+  
+  // Only superadmin can delete admins and superadmins
+  if (targetUser.role === 'superadmin' || targetUser.role === 'admin') {
+    return currentUser.role === 'superadmin';
+  }
+  
+  // Admin and superadmin can delete artists
+  return currentUser.role === 'admin' || currentUser.role === 'superadmin';
+}
+
 function closeCreateModal() {
   showCreateModal.value = false;
   createdPassword.value = null;
@@ -119,7 +136,7 @@ onMounted(loadUsers);
             </td>
             <td>
               <button
-                v-if="user.username !== authStore.user?.username"
+                v-if="canDeleteUser(user)"
                 class="action-link danger"
                 @click="deleteUser(user.id, user.username)"
               >
@@ -153,10 +170,11 @@ onMounted(loadUsers);
             </select>
           </div>
           <FormInput
+            v-if="newUser.role === 'artist'"
             v-model="newUser.expires_at"
-            label="Expires At (optional)"
-            type="text"
-            placeholder="YYYY-MM-DD"
+            label="Expires At"
+            type="date"
+            required
           />
         </form>
       </template>

@@ -22,31 +22,31 @@ const router = createRouter({
     },
     {
       path: '/',
-      redirect: '/artists',
+      redirect: '/stream',
     },
     {
       path: '/artists',
       name: 'artists',
       component: ArtistsPage,
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/artists/:id',
       name: 'artist-detail',
       component: ArtistDetailPage,
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/shows',
       name: 'shows',
       component: ShowsPage,
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/shows/:id',
       name: 'show-detail',
       component: ShowDetailPage,
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/stream',
@@ -87,12 +87,12 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   if (requiredRoles && authStore.user && !requiredRoles.includes(authStore.user.role)) {
-    next({ name: 'artists' }); // Redirect to default page if insufficient role
+    next({ name: 'stream' }); // Redirect to stream if insufficient role
     return;
   }
 
   if (to.name === 'login' && authStore.isAuthenticated) {
-    next({ name: 'artists' });
+    next({ name: 'stream' });
     return;
   }
 

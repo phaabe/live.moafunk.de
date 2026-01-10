@@ -804,9 +804,12 @@ pub async fn api_delete_user(
         .await?;
 
     if let Some(target) = target_user {
-        if target.role == "superadmin" && current_user.role != "superadmin" {
+        // Only superadmin can delete admin or superadmin users
+        if (target.role == "superadmin" || target.role == "admin")
+            && current_user.role != "superadmin"
+        {
             return Err(AppError::Forbidden(
-                "Only superadmins can delete superadmin users".to_string(),
+                "Only superadmins can delete admin users".to_string(),
             ));
         }
     }

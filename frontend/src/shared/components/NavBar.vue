@@ -13,10 +13,11 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { label: 'Artists', path: '/artists' },
-  { label: 'Shows', path: '/shows' },
   { label: 'Stream', path: '/stream' },
+  { label: 'Artists', path: '/artists', roles: ['admin', 'superadmin'] },
+  { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin'] },
   { label: 'Users', path: '/users', roles: ['admin', 'superadmin'] },
+  { label: 'Change Password', path: '/change-password', roles: ['admin', 'superadmin'] },
 ];
 
 const visibleNavItems = computed(() =>
@@ -84,6 +85,7 @@ function isActive(path: string): boolean {
 .logo {
   height: 32px;
   width: auto;
+  flex-shrink: 0;
 }
 
 .brand-text {

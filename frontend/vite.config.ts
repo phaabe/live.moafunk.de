@@ -30,6 +30,15 @@ export default defineConfig({
         target: 'ws://localhost:8000',
         ws: true,
       },
+      // Download routes (must not conflict with SPA hash routes)
+      '^/shows/\\d+/download': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '^/artists/\\d+/download': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
   resolve: {

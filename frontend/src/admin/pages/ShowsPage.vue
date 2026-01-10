@@ -86,7 +86,7 @@ onMounted(loadShows);
             <th>Date</th>
             <th>Status</th>
             <th>Artists</th>
-            <th>Actions</th>
+            <th>Downloads</th>
           </tr>
         </thead>
         <tbody>
@@ -105,9 +105,13 @@ onMounted(loadShows);
             <td class="text-muted">
               {{ show.artists.map((a) => a.name).join(', ') || '-' }}
             </td>
-            <td>
-              <router-link :to="`/shows/${show.id}`" class="action-link">Edit</router-link>
-              <button class="action-link danger" @click="deleteShow(show.id)">Delete</button>
+            <td class="download-cell">
+              <template v-if="show.artists.length > 0">
+                <a :href="`/shows/${show.id}/download/recording`" class="dl-btn recording" title="Recording Package">📼</a>
+                <a :href="`/shows/${show.id}/download/social-media`" class="dl-btn social" title="Social Media Package">📱</a>
+                <a :href="`/shows/${show.id}/download/all-data`" class="dl-btn all" title="All Material">📦</a>
+              </template>
+              <span v-else class="text-muted">-</span>
             </td>
           </tr>
           <tr v-if="shows.length === 0">
@@ -122,7 +126,7 @@ onMounted(loadShows);
     <BaseModal :open="showCreateModal" title="Create New Show" @close="showCreateModal = false">
       <form class="create-form" @submit.prevent="createShow">
         <FormInput v-model="newShow.title" label="Title" required />
-        <FormInput v-model="newShow.date" label="Date" type="text" placeholder="YYYY-MM-DD" required />
+        <FormInput v-model="newShow.date" label="Date" type="date" required />
         <FormInput v-model="newShow.description" label="Description" />
       </form>
       <template #footer>
@@ -141,23 +145,46 @@ onMounted(loadShows);
   font-weight: var(--font-weight-medium);
 }
 
-.action-link {
-  background: none;
-  border: none;
-  color: var(--color-link);
-  cursor: pointer;
-  font-family: var(--font-family);
-  font-size: inherit;
-  padding: 0;
-  margin-right: var(--spacing-md);
+.download-cell {
+  display: flex;
+  gap: var(--spacing-xs);
 }
 
-.action-link:hover {
-  color: var(--color-primary);
+.dl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  font-size: 14px;
+  transition: all var(--transition-fast);
+  border: 1px solid;
 }
 
-.action-link.danger:hover {
-  color: var(--color-error);
+.dl-btn.recording {
+  border-color: #00ff04;
+}
+
+.dl-btn.recording:hover {
+  background-color: #00ff04;
+}
+
+.dl-btn.social {
+  border-color: #ff00aa;
+}
+
+.dl-btn.social:hover {
+  background-color: #ff00aa;
+}
+
+.dl-btn.all {
+  border-color: #bbbbbb;
+}
+
+.dl-btn.all:hover {
+  background-color: #bbbbbb;
 }
 
 .create-form {

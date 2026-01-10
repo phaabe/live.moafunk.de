@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showsApi, type Show } from '../api';
 import { BaseButton, FormInput } from '@shared/components';
@@ -19,6 +19,9 @@ const editForm = ref({
   date: '',
   description: '',
 });
+
+// Check if show has artists for download availability
+const hasArtists = computed(() => show.value && show.value.artists.length > 0);
 
 async function loadShow() {
   const id = Number(route.params.id);
@@ -76,7 +79,7 @@ onMounted(loadShow);
       <div class="card">
         <form class="edit-form" @submit.prevent="saveShow">
           <FormInput v-model="editForm.title" label="Title" required />
-          <FormInput v-model="editForm.date" label="Date" placeholder="YYYY-MM-DD" required />
+          <FormInput v-model="editForm.date" label="Date" type="date" required />
           <FormInput v-model="editForm.description" label="Description" />
 
           <div class="form-actions">
@@ -98,6 +101,25 @@ onMounted(loadShow);
           </li>
         </ul>
         <p v-else class="text-muted">No artists assigned to this show</p>
+      </div>
+
+      <!-- Download Section -->
+      <div class="card" style="margin-top: var(--spacing-lg);">
+        <h2 class="section-title">Download Packages</h2>
+        <template v-if="hasArtists">
+          <div class="download-row">
+            <a :href="`/shows/${show.id}/download/recording`" class="download-btn recording">
+              📼 Recording Package
+            </a>
+            <a :href="`/shows/${show.id}/download/social-media`" class="download-btn social">
+              📱 Social Media Package
+            </a>
+            <a :href="`/shows/${show.id}/download/all-data`" class="download-btn all">
+              📦 All Material Package
+            </a>
+          </div>
+        </template>
+        <p v-else class="text-muted">Assign at least one artist to enable downloads.</p>
       </div>
     </template>
   </div>
@@ -145,5 +167,53 @@ onMounted(loadShow);
 
 .artist-list li:last-child {
   border-bottom: none;
+}
+
+.download-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+}
+
+.download-btn {
+  display: inline-block;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  border: 1px solid;
+  border-radius: var(--radius-md);
+  font-family: var(--font-family);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+  transition: all var(--transition-fast);
+}
+
+.download-btn.recording {
+  border-color: #00ff04;
+  color: #00ff04;
+}
+
+.download-btn.recording:hover {
+  background-color: #00ff04;
+  color: var(--color-bg);
+}
+
+.download-btn.social {
+  border-color: #ff00aa;
+  color: #ff00aa;
+}
+
+.download-btn.social:hover {
+  background-color: #ff00aa;
+  color: var(--color-bg);
+}
+
+.download-btn.all {
+  border-color: #bbbbbb;
+  color: #bbbbbb;
+}
+
+.download-btn.all:hover {
+  background-color: #bbbbbb;
+  color: var(--color-bg);
 }
 </style>
