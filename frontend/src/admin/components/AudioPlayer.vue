@@ -90,6 +90,16 @@ function initWaveSurfer(): void {
   });
 }
 
+function getBasePath(url: string): string {
+  // Extract the path without query params (presigned URL signature)
+  try {
+    const urlObj = new URL(url);
+    return urlObj.origin + urlObj.pathname;
+  } catch {
+    return url.split('?')[0];
+  }
+}
+
 function togglePlay(): void {
   if (wavesurfer) {
     if (!wavesurfer.isPlaying()) {
@@ -106,11 +116,21 @@ function handleGlobalPlay(event: Event): void {
   }
 }
 
-watch(() => props.src, () => {
-  initWaveSurfer();
+let lastBasePath = '';
+
+watch(() => props.src, (newSrc, oldSrc) => {
+  const newBasePath = getBasePath(newSrc);
+  const oldBasePath = oldSrc ? getBasePath(oldSrc) : '';
+  
+  // Only reinitialize if the actual file changed, not just the signature
+  if (newBasePath !== oldBasePath) {
+    lastBasePath = newBasePath;
+    initWaveSurfer();
+  }
 });
 
 onMounted(() => {
+  lastBasePath = getBasePath(props.src);
   globalAudioBus.addEventListener('audio-play', handleGlobalPlay);
   initWaveSurfer();
 });

@@ -254,7 +254,7 @@ export const showsApi = {
   delete: (id: number) => api.delete<void>(`/api/shows/${id}`),
 
   assignArtist: (showId: number, artistId: number) =>
-    api.post<void>(`/api/shows/${showId}/artists`, { artist_id: artistId }),
+    api.post<{ success: boolean; artist: AssignedArtist }>(`/api/shows/${showId}/artists`, { artist_id: artistId }),
 
   unassignArtist: (showId: number, artistId: number) =>
     api.delete<void>(`/api/shows/${showId}/artists/${artistId}`),

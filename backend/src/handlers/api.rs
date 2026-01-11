@@ -1166,7 +1166,50 @@ pub async fn api_show_assign_artist(
         .execute(&state.db)
         .await?;
 
-    Ok(Json(serde_json::json!({ "success": true })))
+    // Fetch the artist with file keys to return
+    let artist: ArtistWithFileKeys = sqlx::query_as(
+        "SELECT id, name, pronouns, pic_key, pic_cropped_key, pic_overlay_key, voice_message_key, track1_key, track2_key FROM artists WHERE id = ?"
+    )
+    .bind(req.artist_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Generate presigned URLs
+    let pic_url = if let Some(ref key) = artist.pic_cropped_key {
+        storage::get_presigned_url(&state, key, 3600).await.ok()
+    } else {
+        None
+    };
+    let voice_url = if let Some(ref key) = artist.voice_message_key {
+        storage::get_presigned_url(&state, key, 3600).await.ok()
+    } else {
+        None
+    };
+    let track1_url = if let Some(ref key) = artist.track1_key {
+        storage::get_presigned_url(&state, key, 3600).await.ok()
+    } else {
+        None
+    };
+    let track2_url = if let Some(ref key) = artist.track2_key {
+        storage::get_presigned_url(&state, key, 3600).await.ok()
+    } else {
+        None
+    };
+
+    let assigned_artist = AssignedArtistInfo {
+        id: artist.id,
+        name: artist.name,
+        pronouns: artist.pronouns,
+        pic_url,
+        voice_url,
+        track1_url,
+        track2_url,
+        has_pic: artist.pic_key.is_some(),
+    };
+
+    Ok(Json(
+        serde_json::json!({ "success": true, "artist": assigned_artist }),
+    ))
 }
 
 /// Unassign an artist from a show (from the show's perspective)

@@ -7,6 +7,10 @@ import ImageCropper from '../components/ImageCropper.vue';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import { useFlash } from '../composables/useFlash';
 
+defineOptions({
+  name: 'ArtistDetailPage'
+});
+
 const flash = useFlash();
 const route = useRoute();
 const router = useRouter();

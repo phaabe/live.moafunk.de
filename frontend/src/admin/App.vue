@@ -15,7 +15,11 @@ const showNav = computed(() => authStore.isAuthenticated && route.name !== 'logi
   <div class="admin-app">
     <NavBar v-if="showNav" />
     <main class="main-content">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <keep-alive :include="['ShowDetailPage', 'ArtistDetailPage']">
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
     </main>
     <FlashToast />
   </div>

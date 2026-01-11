@@ -6,6 +6,10 @@ import { BaseButton, BaseModal } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import { useFlash } from '../composables/useFlash';
 
+defineOptions({
+  name: 'ShowDetailPage'
+});
+
 const flash = useFlash();
 const route = useRoute();
 const router = useRouter();
@@ -99,12 +103,40 @@ async function saveDescription() {
 async function assignArtist() {
   if (!show.value || !selectedArtistId.value) return;
 
+  const artistIdToAssign = selectedArtistId.value;
+  
+  // Find the artist in available_artists before we remove it
+  const selectedAvailableArtist = show.value.available_artists.find(
+    a => a.id === artistIdToAssign
+  );
+  
+  if (!selectedAvailableArtist) {
+    flash.error('Artist not found in available list');
+    return;
+  }
+
   assigning.value = true;
   try {
-    await showsApi.assignArtist(show.value.id, selectedArtistId.value);
+    const response = await showsApi.assignArtist(show.value.id, artistIdToAssign);
+    
+    // Use response artist if available, otherwise construct from available_artists
+    const newArtist = response?.artist ?? {
+      id: selectedAvailableArtist.id,
+      name: selectedAvailableArtist.name,
+      pronouns: selectedAvailableArtist.pronouns,
+      has_pic: false,
+      // No audio URLs - they'll load on next page visit
+    };
+    
+    // Update local state surgically
+    show.value.artists = [...show.value.artists, newArtist];
+    show.value.available_artists = show.value.available_artists.filter(
+      a => a.id !== artistIdToAssign
+    );
+    show.value.artists_left = Math.max(0, show.value.artists_left - 1);
+    
     flash.success('Artist assigned to show');
     selectedArtistId.value = null;
-    await loadShow();
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to assign artist');
   } finally {
@@ -116,9 +148,28 @@ async function unassignArtist(artistId: number) {
   if (!show.value) return;
 
   try {
+    // Find artist before removing for the available_artists update
+    const removedArtist = show.value.artists.find(a => a.id === artistId);
+    
     await showsApi.unassignArtist(show.value.id, artistId);
+    
+    // Update local state surgically using spread for reactivity
+    show.value.artists = show.value.artists.filter(a => a.id !== artistId);
+    show.value.artists_left = Math.min(4, show.value.artists_left + 1);
+    
+    // Add back to available_artists if we have the info
+    if (removedArtist) {
+      const newAvailable = {
+        id: removedArtist.id,
+        name: removedArtist.name,
+        pronouns: removedArtist.pronouns
+      };
+      show.value.available_artists = [...show.value.available_artists, newAvailable].sort(
+        (a, b) => a.name.localeCompare(b.name)
+      );
+    }
+    
     flash.success('Artist removed from show');
-    await loadShow();
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to remove artist');
   }
