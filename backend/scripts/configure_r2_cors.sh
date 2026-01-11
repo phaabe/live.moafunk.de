@@ -15,8 +15,8 @@ set -euo pipefail
 BUCKET="${BUCKET:-unheard-artists-media}"
 ACCOUNT_ID="${ACCOUNT_ID:-4acacbddb37198e8eed490e4b7c752ee}"
 
-# Default allowed origins (localhost for dev, production domain)
-ORIGINS="${ORIGINS:-http://localhost:3000,http://localhost:8000,https://live.moafunk.de}"
+# Default allowed origins (localhost for dev, production domains)
+ORIGINS="${ORIGINS:-http://localhost:3000,http://localhost:8000,https://live.moafunk.de,https://admin.live.moafunk.de}"
 
 # Check wrangler is installed
 if ! command -v wrangler &> /dev/null; then
