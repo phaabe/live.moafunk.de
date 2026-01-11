@@ -219,6 +219,14 @@ async fn main() -> anyhow::Result<()> {
             "/api/shows/:id",
             axum::routing::delete(handlers::api::api_delete_show),
         )
+        .route(
+            "/api/shows/:id/artists",
+            post(handlers::api::api_show_assign_artist),
+        )
+        .route(
+            "/api/shows/:id/artists/:artist_id",
+            axum::routing::delete(handlers::api::api_show_unassign_artist),
+        )
         .route("/api/users", get(handlers::api::api_users_list))
         .route("/api/users", post(handlers::api::api_create_user))
         .route(

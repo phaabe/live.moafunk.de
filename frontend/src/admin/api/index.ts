@@ -217,10 +217,34 @@ export interface Show {
   artists: { id: number; name: string }[];
 }
 
+export interface AssignedArtist {
+  id: number;
+  name: string;
+  pronouns: string;
+  pic_url?: string;
+  voice_url?: string;
+  track1_url?: string;
+  track2_url?: string;
+  has_pic: boolean;
+}
+
+export interface ShowDetail {
+  id: number;
+  title: string;
+  date: string;
+  description?: string;
+  status: string;
+  created_at: string;
+  updated_at?: string;
+  artists: AssignedArtist[];
+  available_artists: { id: number; name: string; pronouns: string }[];
+  artists_left: number;
+}
+
 export const showsApi = {
   list: () => api.get<{ shows: Show[]; artists: Artist[] }>('/api/shows'),
 
-  get: (id: number) => api.get<Show>(`/api/shows/${id}`),
+  get: (id: number) => api.get<ShowDetail>(`/api/shows/${id}`),
 
   create: (data: Partial<Show>) => api.post<Show>('/api/shows', data),
 
@@ -228,6 +252,12 @@ export const showsApi = {
     api.put<Show>(`/api/shows/${id}`, data),
 
   delete: (id: number) => api.delete<void>(`/api/shows/${id}`),
+
+  assignArtist: (showId: number, artistId: number) =>
+    api.post<void>(`/api/shows/${showId}/artists`, { artist_id: artistId }),
+
+  unassignArtist: (showId: number, artistId: number) =>
+    api.delete<void>(`/api/shows/${showId}/artists/${artistId}`),
 };
 
 // Users API

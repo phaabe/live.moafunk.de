@@ -812,10 +812,44 @@ pub struct ShowListItem {
     artists: Vec<ArtistBrief>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ShowDetailResponse {
+    id: i64,
+    title: String,
+    date: String,
+    description: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: Option<String>,
+    artists: Vec<AssignedArtistInfo>,
+    available_artists: Vec<ArtistWithPronouns>,
+    artists_left: i32,
+}
+
+/// Rich artist info for show detail page (includes pic_url and audio URLs)
+#[derive(Debug, Serialize)]
+pub struct AssignedArtistInfo {
+    id: i64,
+    name: String,
+    pronouns: String,
+    pic_url: Option<String>,
+    voice_url: Option<String>,
+    track1_url: Option<String>,
+    track2_url: Option<String>,
+    has_pic: bool,
+}
+
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct ArtistBrief {
     id: i64,
     name: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ArtistWithPronouns {
+    id: i64,
+    name: String,
+    pronouns: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -871,6 +905,20 @@ pub async fn api_shows_list(
     }))
 }
 
+/// Helper struct to fetch artist with pic and audio keys
+#[derive(Debug, sqlx::FromRow)]
+struct ArtistWithFileKeys {
+    id: i64,
+    name: String,
+    pronouns: String,
+    pic_key: Option<String>,
+    pic_cropped_key: Option<String>,
+    pic_overlay_key: Option<String>,
+    voice_message_key: Option<String>,
+    track1_key: Option<String>,
+    track2_key: Option<String>,
+}
+
 pub async fn api_show_detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -885,24 +933,92 @@ pub async fn api_show_detail(
 
     let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    let artists: Vec<ArtistBrief> = sqlx::query_as(
+    // Get assigned artists with file keys for URL generation and audio availability
+    let assigned_artists_raw: Vec<ArtistWithFileKeys> = sqlx::query_as(
         r#"
-        SELECT a.id, a.name FROM artists a
+        SELECT a.id, a.name, a.pronouns, a.pic_key, a.pic_cropped_key, a.pic_overlay_key,
+               a.voice_message_key, a.track1_key, a.track2_key
+        FROM artists a
         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id
         WHERE asa.show_id = ?
+        ORDER BY a.name COLLATE NOCASE
         "#,
     )
     .bind(id)
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(ShowListItem {
+    // Generate presigned URLs for artist pictures and audio files
+    let mut artists = Vec::new();
+    for a in assigned_artists_raw {
+        let pic_key = a
+            .pic_overlay_key
+            .as_ref()
+            .or(a.pic_cropped_key.as_ref())
+            .or(a.pic_key.as_ref());
+        let pic_url = if let Some(key) = pic_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
+        let voice_url = if let Some(key) = &a.voice_message_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
+        let track1_url = if let Some(key) = &a.track1_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
+        let track2_url = if let Some(key) = &a.track2_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
+        artists.push(AssignedArtistInfo {
+            id: a.id,
+            name: a.name,
+            pronouns: a.pronouns,
+            has_pic: pic_key.is_some(),
+            pic_url,
+            voice_url,
+            track1_url,
+            track2_url,
+        });
+    }
+
+    // Calculate artists left (max 4)
+    let artists_left = (4 - artists.len() as i32).max(0);
+
+    // Get available artists (NOT assigned to ANY show - truly unassigned)
+    let available_artists: Vec<ArtistWithPronouns> = if artists_left > 0 {
+        sqlx::query_as(
+            r#"
+            SELECT a.id, a.name, a.pronouns FROM artists a
+            WHERE a.id NOT IN (
+                SELECT DISTINCT artist_id FROM artist_show_assignments
+            )
+            ORDER BY a.name COLLATE NOCASE
+            "#,
+        )
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        Vec::new()
+    };
+
+    Ok(Json(ShowDetailResponse {
         id: show.id,
         title: show.title,
         date: show.date,
         description: show.description,
         status: show.status,
+        created_at: show.created_at,
+        updated_at: show.updated_at,
         artists,
+        available_artists,
+        artists_left,
     }))
 }
 
@@ -1011,6 +1127,59 @@ pub async fn api_delete_show(
 
     sqlx::query("DELETE FROM shows WHERE id = ?")
         .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignArtistToShowRequest {
+    artist_id: i64,
+}
+
+/// Assign an artist to a show (from the show's perspective)
+pub async fn api_show_assign_artist(
+    State(state): State<Arc<AppState>>,
+    Path(show_id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<AssignArtistToShowRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Check current assignment count
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM artist_show_assignments WHERE show_id = ?")
+            .bind(show_id)
+            .fetch_one(&state.db)
+            .await?;
+
+    if count >= 4 {
+        return Err(AppError::BadRequest(
+            "Show already has 4 artists assigned".to_string(),
+        ));
+    }
+
+    sqlx::query("INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)")
+        .bind(req.artist_id)
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// Unassign an artist from a show (from the show's perspective)
+pub async fn api_show_unassign_artist(
+    State(state): State<Arc<AppState>>,
+    Path((show_id, artist_id)): Path<(i64, i64)>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    sqlx::query("DELETE FROM artist_show_assignments WHERE show_id = ? AND artist_id = ?")
+        .bind(show_id)
+        .bind(artist_id)
         .execute(&state.db)
         .await?;
 

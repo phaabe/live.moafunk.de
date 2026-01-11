@@ -7,6 +7,11 @@ const props = defineProps<{
   label?: string;
 }>();
 
+const globalAudioBus: EventTarget = typeof window !== 'undefined'
+  ? ((window as any).__audioPlayerBus ||= new EventTarget())
+  : new EventTarget();
+const playerId = `audio-player-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+
 const waveformContainer = ref<HTMLElement | null>(null);
 const isPlaying = ref(false);
 const currentTime = ref('0:00');
@@ -87,7 +92,17 @@ function initWaveSurfer(): void {
 
 function togglePlay(): void {
   if (wavesurfer) {
+    if (!wavesurfer.isPlaying()) {
+      globalAudioBus.dispatchEvent(new CustomEvent('audio-play', { detail: { id: playerId } }));
+    }
     wavesurfer.playPause();
+  }
+}
+
+function handleGlobalPlay(event: Event): void {
+  const detail = (event as CustomEvent<{ id: string }>).detail;
+  if (detail?.id !== playerId && wavesurfer?.isPlaying()) {
+    wavesurfer.pause();
   }
 }
 
@@ -96,10 +111,12 @@ watch(() => props.src, () => {
 });
 
 onMounted(() => {
+  globalAudioBus.addEventListener('audio-play', handleGlobalPlay);
   initWaveSurfer();
 });
 
 onUnmounted(() => {
+  globalAudioBus.removeEventListener('audio-play', handleGlobalPlay);
   if (wavesurfer) {
     wavesurfer.destroy();
     wavesurfer = null;
@@ -231,5 +248,31 @@ onUnmounted(() => {
 
 .download-btn:hover {
   color: #ffec44;
+}
+
+/* Mobile: compact mode - hide waveform, show only play button and duration */
+@media (max-width: 768px) {
+  .audio-player {
+    padding: var(--spacing-xs);
+    gap: var(--spacing-xs);
+  }
+
+  .play-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 12px;
+  }
+
+  .waveform-wrapper {
+    display: none;
+  }
+
+  .time-display {
+    font-size: 0.8em;
+  }
+
+  .download-btn {
+    display: none;
+  }
 }
 </style>
