@@ -17,7 +17,36 @@ set -euo pipefail
 #   UNHEARD_IMAGE=ghcr.io/phaabe/live.moafunk.de-backend UNHEARD_TAG=latest \
 #   ./backend/scripts/deploy_lightsail.sh
 
-REGION="${REGION:-$(aws configure get region 2>/dev/null || true)}"
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [options]
+
+Options:
+  --region <region>              AWS region
+  --static-ip <name>             Lightsail static IP name
+  --ip <addr>                    Override public IP (skip lookup)
+  --ssh-user <user>              SSH username (default: ubuntu)
+  --pem <path>                   Path to .pem key (required)
+  --remote-dir <path>            Remote deploy dir (default: /opt/unheard-backend)
+  --ghcr-user <user>             GHCR username
+  --ghcr-token <token>           GHCR token (or use --ghcr-token-file)
+  --ghcr-token-file <path>       File containing GHCR token
+  --env-file <path>              Upload local .env to server
+  --init-db                      Run scripts/db/init_sqlite.sh on server (backs up existing)
+  --db-path-remote <path>        Remote DB path (default: /app/data/unheard.db)
+  --unheard-image <image>        GHCR image (default: ghcr.io/phaabe/live.moafunk.de-backend)
+  --unheard-tag <tag>            Image tag (default: latest)
+  --setup-nginx                  Configure nginx reverse proxy
+  --nginx-domain <domain>        Domain for nginx/certbot
+  --certbot-email <email>        Email for certbot
+  --run-certbot <0|1>            Run certbot (default: 1)
+  --run-tests <0|1>              Run smoke tests (default: 1)
+  -h, --help                     Show this help
+EOF
+}
+
+# Defaults (overridable by env or CLI args)
+REGION="${REGION:-}"
 STATIC_IP="${STATIC_IP:-unheard-backend-ip}"
 IP="${IP:-}"
 SSH_USER="${SSH_USER:-ubuntu}"
@@ -31,6 +60,11 @@ GHCR_TOKEN_FILE="${GHCR_TOKEN_FILE:-}"
 # Optional: upload a local env file to the server as $REMOTE_DIR/.env
 ENV_FILE_PATH="${ENV_FILE_PATH:-}"
 
+# Optional: initialize the SQLite DB on the server before starting containers
+# Set INIT_DB=1 to run scripts/db/init_sqlite.sh (backs up existing DB first)
+INIT_DB="${INIT_DB:-0}"
+DB_PATH_REMOTE="${DB_PATH_REMOTE:-}"  # set after arg parsing to allow REMOTE_DIR override
+
 UNHEARD_IMAGE="${UNHEARD_IMAGE:-ghcr.io/phaabe/live.moafunk.de-backend}"
 UNHEARD_TAG="${UNHEARD_TAG:-latest}"
 
@@ -43,6 +77,43 @@ RUN_CERTBOT="${RUN_CERTBOT:-1}"
 
 # Optional: run post-deploy smoke tests.
 RUN_TESTS="${RUN_TESTS:-1}"
+
+# Parse CLI args
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --region) REGION="$2"; shift 2;;
+    --static-ip) STATIC_IP="$2"; shift 2;;
+    --ip) IP="$2"; shift 2;;
+    --ssh-user) SSH_USER="$2"; shift 2;;
+    --pem) PEM="$2"; shift 2;;
+    --remote-dir) REMOTE_DIR="$2"; shift 2;;
+    --ghcr-user) GHCR_USER="$2"; shift 2;;
+    --ghcr-token) GHCR_TOKEN="$2"; shift 2;;
+    --ghcr-token-file) GHCR_TOKEN_FILE="$2"; shift 2;;
+    --env-file) ENV_FILE_PATH="$2"; shift 2;;
+    --init-db) INIT_DB="1"; shift 1;;
+    --db-path-remote) DB_PATH_REMOTE="$2"; shift 2;;
+    --unheard-image) UNHEARD_IMAGE="$2"; shift 2;;
+    --unheard-tag) UNHEARD_TAG="$2"; shift 2;;
+    --setup-nginx) SETUP_NGINX="1"; shift 1;;
+    --nginx-domain) NGINX_DOMAIN="$2"; shift 2;;
+    --certbot-email) CERTBOT_EMAIL="$2"; shift 2;;
+    --run-certbot) RUN_CERTBOT="$2"; shift 2;;
+    --run-tests) RUN_TESTS="$2"; shift 2;;
+    -h|--help) usage; exit 0;;
+    *) echo "Unknown option: $1" >&2; usage; exit 1;;
+  esac
+done
+
+# Default DB path if not set explicitly
+if [[ -z "$DB_PATH_REMOTE" ]]; then
+  DB_PATH_REMOTE="$REMOTE_DIR/data/unheard.db"
+fi
+
+# Fill region from AWS config if still empty
+if [[ -z "$REGION" ]]; then
+  REGION=$(aws configure get region 2>/dev/null || true)
+fi
 
 if [[ -z "$PEM" ]]; then
   echo "PEM is not set. Set PEM to the path of your Lightsail .pem key."
@@ -116,9 +187,10 @@ TMP_REMOTE_ENV="/tmp/unheard-backend.env"
 echo "Uploading compose file..."
 scp -i "$PEM" -o StrictHostKeyChecking=accept-new "$LOCAL_COMPOSE_FILE" "$SSH_HOST:$TMP_REMOTE_COMPOSE" >/dev/null
 
-echo "Uploading backup and R2 scripts..."
+echo "Uploading backup, R2, and DB scripts..."
 scp -i "$PEM" -o StrictHostKeyChecking=accept-new -r "$REPO_ROOT/backend/scripts/backup" "$SSH_HOST:/tmp/scripts-backup" >/dev/null
 scp -i "$PEM" -o StrictHostKeyChecking=accept-new -r "$REPO_ROOT/backend/scripts/r2" "$SSH_HOST:/tmp/scripts-r2" >/dev/null
+scp -i "$PEM" -o StrictHostKeyChecking=accept-new -r "$REPO_ROOT/backend/scripts/db" "$SSH_HOST:/tmp/scripts-db" >/dev/null
 
 if [[ -n "$ENV_FILE_PATH" ]]; then
   if [[ ! -f "$ENV_FILE_PATH" ]]; then
@@ -143,7 +215,9 @@ ssh -i "$PEM" -o StrictHostKeyChecking=accept-new "$SSH_HOST" \
    GHCR_USER='${GHCR_USER}' \
    GHCR_TOKEN='${GHCR_TOKEN}' \
    UNHEARD_IMAGE='${UNHEARD_IMAGE}' \
-   UNHEARD_TAG='${UNHEARD_TAG}' \
+  UNHEARD_TAG='${UNHEARD_TAG}' \
+  INIT_DB='${INIT_DB}' \
+  DB_PATH_REMOTE='${DB_PATH_REMOTE}' \
    bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
@@ -230,6 +304,10 @@ if [[ -d /tmp/scripts-r2 ]]; then
   rm -rf "$REMOTE_DIR/scripts/r2"
   mv /tmp/scripts-r2 "$REMOTE_DIR/scripts/r2"
 fi
+if [[ -d /tmp/scripts-db ]]; then
+  rm -rf "$REMOTE_DIR/scripts/db"
+  mv /tmp/scripts-db "$REMOTE_DIR/scripts/db"
+fi
 chmod +x "$REMOTE_DIR/scripts/"*/*.sh 2>/dev/null || true
 
 if [[ "${HAS_ENV_UPLOAD:-}" == "1" ]]; then
@@ -268,6 +346,18 @@ sudo -E docker pull "${UNHEARD_IMAGE}:${UNHEARD_TAG}" >/dev/null
 
 $COMPOSE -f docker-compose.prod.yml pull
 $COMPOSE -f docker-compose.prod.yml down --remove-orphans || true
+
+# Optionally initialize the SQLite DB before starting containers
+if [[ "${INIT_DB}" == "1" ]]; then
+  if [[ -x "$REMOTE_DIR/scripts/db/init_sqlite.sh" ]]; then
+    echo "Initializing SQLite database at ${DB_PATH_REMOTE} (via sudo)..."
+    sudo DB_PATH="${DB_PATH_REMOTE}" "$REMOTE_DIR/scripts/db/init_sqlite.sh"
+  else
+    echo "INIT_DB=1 set but init_sqlite.sh not found" >&2
+    exit 1
+  fi
+fi
+
 $COMPOSE -f docker-compose.prod.yml up -d
 
 diagnose_backend() {
