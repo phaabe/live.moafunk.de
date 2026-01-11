@@ -79,6 +79,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "artists", "pic_cropped_key", "TEXT").await?;
     add_column_if_missing(pool, "artists", "pic_overlay_key", "TEXT").await?;
 
+    // Original audio file keys (stored separately from mp3 conversions)
+    add_column_if_missing(pool, "artists", "track1_original_key", "TEXT").await?;
+    add_column_if_missing(pool, "artists", "track2_original_key", "TEXT").await?;
+    add_column_if_missing(pool, "artists", "voice_original_key", "TEXT").await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shows (
@@ -228,12 +233,46 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             track1_key TEXT,
             track2_key TEXT,
             voice_key TEXT,
+            track1_original_key TEXT,
+            track2_original_key TEXT,
+            voice_original_key TEXT,
+            track1_conversion_status TEXT DEFAULT 'none',
+            track2_conversion_status TEXT DEFAULT 'none',
+            voice_conversion_status TEXT DEFAULT 'none',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             expires_at TEXT NOT NULL
         )
         "#,
     )
     .execute(pool)
+    .await?;
+
+    // Add original audio key columns for pending submissions if missing
+    add_column_if_missing(pool, "pending_submissions", "track1_original_key", "TEXT").await?;
+    add_column_if_missing(pool, "pending_submissions", "track2_original_key", "TEXT").await?;
+    add_column_if_missing(pool, "pending_submissions", "voice_original_key", "TEXT").await?;
+
+    // Add conversion status columns (none, pending, completed, failed)
+    add_column_if_missing(
+        pool,
+        "pending_submissions",
+        "track1_conversion_status",
+        "TEXT DEFAULT 'none'",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "pending_submissions",
+        "track2_conversion_status",
+        "TEXT DEFAULT 'none'",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "pending_submissions",
+        "voice_conversion_status",
+        "TEXT DEFAULT 'none'",
+    )
     .await?;
 
     // Clean up expired pending submissions (older than 1 hour)

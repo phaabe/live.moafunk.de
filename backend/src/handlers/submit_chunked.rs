@@ -5,7 +5,7 @@
 //! 2. POST /api/submit/file/:session_id?field=track1|track2|voice – upload one large file
 //! 3. POST /api/submit/finalize/:session_id – commit the submission
 
-use crate::{AppError, AppState, Result};
+use crate::{audio, AppError, AppState, Result};
 use axum::{
     extract::{Multipart, Path, Query, State},
     Json,
@@ -444,18 +444,32 @@ pub async fn submit_file(
     let (filename, data, content_type) =
         file_data.ok_or_else(|| AppError::Validation("No file provided".to_string()))?;
 
+    // Validate audio format is supported
+    if !audio::is_supported_audio_format(&filename) {
+        return Err(AppError::Validation(format!(
+            "Unsupported audio format. Supported formats: {}",
+            audio::SUPPORTED_AUDIO_EXTENSIONS.join(", ")
+        )));
+    }
+
     // Determine the storage key based on field type
-    let (db_column, desired_name) = match field_name {
+    let (db_column, db_original_column, db_status_column, desired_name) = match field_name {
         "track1" => (
             "track1_key",
+            "track1_original_key",
+            "track1_conversion_status",
             format!("{} - {}", artist_name.trim(), track1_name.trim()),
         ),
         "track2" => (
             "track2_key",
+            "track2_original_key",
+            "track2_conversion_status",
             format!("{} - {}", artist_name.trim(), track2_name.trim()),
         ),
         "voice" => (
             "voice_key",
+            "voice_original_key",
+            "voice_conversion_status",
             format!("{} - voice-message", artist_name.trim()),
         ),
         _ => {
@@ -466,7 +480,8 @@ pub async fn submit_file(
         }
     };
 
-    let key = storage::upload_file_to_pending_named(
+    // Upload original immediately, convert MP3 in background
+    let audio_result = storage::upload_audio_to_pending_async(
         &state,
         &session_id,
         field_name,
@@ -477,9 +492,23 @@ pub async fn submit_file(
     )
     .await?;
 
+    // Check if conversion is needed (non-MP3 files)
+    let is_already_mp3 = audio::is_mp3(&filename);
+    let initial_status = if is_already_mp3 {
+        "completed"
+    } else {
+        "pending"
+    };
+
     // Store waveform peaks JSON alongside the audio file if provided
     if let Some(peaks_json) = peaks_data {
-        let peaks_key = format!("{}.peaks.json", key.trim_end_matches(|c: char| c != '.').trim_end_matches('.'));
+        let peaks_key = format!(
+            "{}.peaks.json",
+            audio_result
+                .mp3_key
+                .trim_end_matches(|c: char| c != '.')
+                .trim_end_matches('.')
+        );
         storage::upload_file_to_pending(
             &state,
             &session_id,
@@ -492,21 +521,44 @@ pub async fn submit_file(
         tracing::debug!("Uploaded peaks for {} at {}", field_name, peaks_key);
     }
 
-    // Update pending_submissions with the file key
-    let update_sql = format!(
-        "UPDATE pending_submissions SET {} = ? WHERE session_id = ?",
-        db_column
-    );
-    sqlx::query(&update_sql)
-        .bind(&key)
-        .bind(&session_id)
-        .execute(&state.db)
-        .await?;
+    // Update pending_submissions with original key and conversion status
+    // The mp3_key will be set by the background conversion task when complete
+    // For already-MP3 files, we set the key immediately
+    let update_sql = if is_already_mp3 {
+        format!(
+            "UPDATE pending_submissions SET {} = ?, {} = ?, {} = ? WHERE session_id = ?",
+            db_column, db_original_column, db_status_column
+        )
+    } else {
+        format!(
+            "UPDATE pending_submissions SET {} = ?, {} = ? WHERE session_id = ?",
+            db_original_column, db_status_column
+        )
+    };
+
+    if is_already_mp3 {
+        sqlx::query(&update_sql)
+            .bind(&audio_result.mp3_key)
+            .bind(&audio_result.original_key)
+            .bind(initial_status)
+            .bind(&session_id)
+            .execute(&state.db)
+            .await?;
+    } else {
+        sqlx::query(&update_sql)
+            .bind(&audio_result.original_key)
+            .bind(initial_status)
+            .bind(&session_id)
+            .execute(&state.db)
+            .await?;
+    }
 
     tracing::info!(
-        "Chunked upload: file {} uploaded, session_id={}",
+        "Chunked upload: file {} uploaded, session_id={}, original_key={}, conversion_status={}",
         field_name,
-        session_id
+        session_id,
+        audio_result.original_key,
+        initial_status
     );
 
     Ok(Json(FileUploadResponse {
@@ -526,12 +578,14 @@ pub async fn submit_finalize(
 ) -> Result<Json<FinalizeResponse>> {
     tracing::info!("Chunked upload: finalize, session_id={}", session_id);
 
-    // Fetch the pending submission
+    // Fetch the pending submission - check original keys (uploaded immediately)
+    // NOT the mp3 keys (which may still be converting)
     let row = sqlx::query(
         r#"
         SELECT artist_name, pronouns, track1_name, track2_name, no_voice_message,
                instagram, soundcloud, bandcamp, spotify, other_social, upcoming_events, mentions,
-               pic_key, pic_cropped_key, pic_overlay_key, track1_key, track2_key, voice_key
+               pic_key, pic_cropped_key, pic_overlay_key,
+               track1_original_key, track2_original_key, voice_original_key
         FROM pending_submissions
         WHERE session_id = ? AND expires_at > datetime('now')
         "#,
@@ -559,37 +613,36 @@ pub async fn submit_finalize(
     let pic_key: Option<String> = sqlx::Row::get(&row, "pic_key");
     let pic_cropped_key: Option<String> = sqlx::Row::get(&row, "pic_cropped_key");
     let pic_overlay_key: Option<String> = sqlx::Row::get(&row, "pic_overlay_key");
-    let track1_key: Option<String> = sqlx::Row::get(&row, "track1_key");
-    let track2_key: Option<String> = sqlx::Row::get(&row, "track2_key");
-    let voice_key: Option<String> = sqlx::Row::get(&row, "voice_key");
+    let track1_original_key: Option<String> = sqlx::Row::get(&row, "track1_original_key");
+    let track2_original_key: Option<String> = sqlx::Row::get(&row, "track2_original_key");
+    let voice_original_key: Option<String> = sqlx::Row::get(&row, "voice_original_key");
 
-    // Validate required files
-    if track1_key.is_none() {
+    // Validate required files were uploaded (check original keys, not mp3 keys)
+    if track1_original_key.is_none() {
         return Err(AppError::Validation(
             "Track 1 not uploaded. Please upload track1 before finalizing.".to_string(),
         ));
     }
-    if track2_key.is_none() {
+    if track2_original_key.is_none() {
         return Err(AppError::Validation(
             "Track 2 not uploaded. Please upload track2 before finalizing.".to_string(),
         ));
     }
-    if !no_voice_message && voice_key.is_none() {
+    if !no_voice_message && voice_original_key.is_none() {
         return Err(AppError::Validation(
             "Voice message not uploaded. Please upload voice or check 'no voice message'."
                 .to_string(),
         ));
     }
 
-    // Insert artist record
+    // Insert artist record with 'processing' status - files will be moved in background
     let result = sqlx::query(
         r#"
         INSERT INTO artists (
             name, pronouns, track1_name, track2_name, no_voice_message,
             instagram, soundcloud, bandcamp, spotify, other_social,
-            upcoming_events, mentions, status,
-            pic_key, pic_cropped_key, pic_overlay_key, track1_key, track2_key, voice_message_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned', ?, ?, ?, ?, ?, ?)
+            upcoming_events, mentions, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing')
         "#,
     )
     .bind(&artist_name)
@@ -604,32 +657,265 @@ pub async fn submit_finalize(
     .bind(&other_social)
     .bind(&upcoming_events)
     .bind(&mentions)
-    .bind(&pic_key)
-    .bind(&pic_cropped_key)
-    .bind(&pic_overlay_key)
-    .bind(&track1_key)
-    .bind(&track2_key)
-    .bind(&voice_key)
     .execute(&state.db)
     .await?;
 
     let artist_id = result.last_insert_rowid();
 
-    // Delete the pending submission
-    sqlx::query("DELETE FROM pending_submissions WHERE session_id = ?")
-        .bind(&session_id)
-        .execute(&state.db)
-        .await?;
-
     tracing::info!(
-        "Chunked upload: finalized, artist_id={}, session_id={}",
+        "Chunked upload: created artist record, artist_id={}, session_id={}, starting background processing",
         artist_id,
         session_id
     );
 
+    // Spawn background task to wait for conversions and move files
+    let state_clone = state.clone();
+    let session_id_clone = session_id.clone();
+    let pic_key_clone = pic_key.clone();
+    let pic_cropped_key_clone = pic_cropped_key.clone();
+    let pic_overlay_key_clone = pic_overlay_key.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = finalize_artist_files_background(
+            &state_clone,
+            artist_id,
+            &session_id_clone,
+            pic_key_clone,
+            pic_cropped_key_clone,
+            pic_overlay_key_clone,
+        )
+        .await
+        {
+            tracing::error!(
+                "Background finalization failed for artist_id={}, session_id={}: {}",
+                artist_id,
+                session_id_clone,
+                e
+            );
+            // Update artist status to indicate failure
+            let _ = sqlx::query("UPDATE artists SET status = 'processing_failed' WHERE id = ?")
+                .bind(artist_id)
+                .execute(&state_clone.db)
+                .await;
+        }
+    });
+
+    // Return success immediately - user doesn't wait for conversions
     Ok(Json(FinalizeResponse {
         success: true,
         message: "Thank you for your submission! We'll be in touch soon.".to_string(),
         artist_id: Some(artist_id),
     }))
+}
+
+/// Background task to wait for audio conversions and move files from pending to artist folder.
+async fn finalize_artist_files_background(
+    state: &Arc<AppState>,
+    artist_id: i64,
+    session_id: &str,
+    pic_key: Option<String>,
+    pic_cropped_key: Option<String>,
+    pic_overlay_key: Option<String>,
+) -> Result<()> {
+    // Wait for audio conversions to complete (max 5 minutes)
+    let max_wait_seconds = 300;
+    let poll_interval_ms = 1000;
+    let mut waited_ms = 0;
+
+    loop {
+        let status_row = sqlx::query(
+            r#"
+            SELECT track1_conversion_status, track2_conversion_status, voice_conversion_status,
+                   track1_key, track2_key, voice_key,
+                   track1_original_key, track2_original_key, voice_original_key
+            FROM pending_submissions
+            WHERE session_id = ?
+            "#,
+        )
+        .bind(session_id)
+        .fetch_optional(&state.db)
+        .await?;
+
+        let status_row = match status_row {
+            Some(row) => row,
+            None => {
+                tracing::warn!(
+                    "Pending submission not found for session_id={}, artist_id={}",
+                    session_id,
+                    artist_id
+                );
+                return Ok(());
+            }
+        };
+
+        let track1_status: String = sqlx::Row::get(&status_row, "track1_conversion_status");
+        let track2_status: String = sqlx::Row::get(&status_row, "track2_conversion_status");
+        let voice_status: String = sqlx::Row::get(&status_row, "voice_conversion_status");
+
+        // Check for any failed conversions
+        if track1_status == "failed" || track2_status == "failed" || voice_status == "failed" {
+            tracing::error!(
+                "Audio conversion failed for artist_id={}, session_id={}",
+                artist_id,
+                session_id
+            );
+            return Err(AppError::Internal("Audio conversion failed".to_string()));
+        }
+
+        // Check if all conversions are complete (or "none" meaning no conversion needed)
+        let all_complete = (track1_status == "completed" || track1_status == "none")
+            && (track2_status == "completed" || track2_status == "none")
+            && (voice_status == "completed" || voice_status == "none");
+
+        if all_complete {
+            tracing::info!(
+                "All conversions complete for artist_id={}, session_id={}, waited {}ms",
+                artist_id,
+                session_id,
+                waited_ms
+            );
+
+            // Get the final keys
+            let track1_key: Option<String> = sqlx::Row::get(&status_row, "track1_key");
+            let track2_key: Option<String> = sqlx::Row::get(&status_row, "track2_key");
+            let voice_key: Option<String> = sqlx::Row::get(&status_row, "voice_key");
+            let track1_original_key: Option<String> =
+                sqlx::Row::get(&status_row, "track1_original_key");
+            let track2_original_key: Option<String> =
+                sqlx::Row::get(&status_row, "track2_original_key");
+            let voice_original_key: Option<String> =
+                sqlx::Row::get(&status_row, "voice_original_key");
+
+            // Move files from pending to final artist location
+            let final_pic_key = if let Some(key) = &pic_key {
+                Some(storage::move_pending_to_artist(state, key, artist_id, "pic").await?)
+            } else {
+                None
+            };
+
+            let final_pic_cropped_key = if let Some(key) = &pic_cropped_key {
+                Some(storage::move_pending_to_artist(state, key, artist_id, "pic_cropped").await?)
+            } else {
+                None
+            };
+
+            let final_pic_overlay_key = if let Some(key) = &pic_overlay_key {
+                Some(storage::move_pending_to_artist(state, key, artist_id, "pic_overlay").await?)
+            } else {
+                None
+            };
+
+            let final_track1_key = if let Some(key) = &track1_key {
+                Some(storage::move_pending_to_artist(state, key, artist_id, "track1").await?)
+            } else {
+                None
+            };
+
+            let final_track1_original_key = if let Some(key) = &track1_original_key {
+                Some(
+                    storage::move_pending_to_artist(state, key, artist_id, "track1_original")
+                        .await?,
+                )
+            } else {
+                None
+            };
+
+            let final_track2_key = if let Some(key) = &track2_key {
+                Some(storage::move_pending_to_artist(state, key, artist_id, "track2").await?)
+            } else {
+                None
+            };
+
+            let final_track2_original_key = if let Some(key) = &track2_original_key {
+                Some(
+                    storage::move_pending_to_artist(state, key, artist_id, "track2_original")
+                        .await?,
+                )
+            } else {
+                None
+            };
+
+            let final_voice_key = if let Some(key) = &voice_key {
+                Some(storage::move_pending_to_artist(state, key, artist_id, "voice").await?)
+            } else {
+                None
+            };
+
+            let final_voice_original_key = if let Some(key) = &voice_original_key {
+                Some(
+                    storage::move_pending_to_artist(state, key, artist_id, "voice_original")
+                        .await?,
+                )
+            } else {
+                None
+            };
+
+            // Update artist with final file keys and set status to 'unassigned'
+            sqlx::query(
+                r#"
+                UPDATE artists SET
+                    pic_key = ?,
+                    pic_cropped_key = ?,
+                    pic_overlay_key = ?,
+                    track1_key = ?,
+                    track2_key = ?,
+                    voice_message_key = ?,
+                    track1_original_key = ?,
+                    track2_original_key = ?,
+                    voice_original_key = ?,
+                    status = 'unassigned'
+                WHERE id = ?
+                "#,
+            )
+            .bind(&final_pic_key)
+            .bind(&final_pic_cropped_key)
+            .bind(&final_pic_overlay_key)
+            .bind(&final_track1_key)
+            .bind(&final_track2_key)
+            .bind(&final_voice_key)
+            .bind(&final_track1_original_key)
+            .bind(&final_track2_original_key)
+            .bind(&final_voice_original_key)
+            .bind(artist_id)
+            .execute(&state.db)
+            .await?;
+
+            // Delete the pending submission
+            sqlx::query("DELETE FROM pending_submissions WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&state.db)
+                .await?;
+
+            tracing::info!(
+                "Background finalization complete for artist_id={}, session_id={}",
+                artist_id,
+                session_id
+            );
+
+            return Ok(());
+        }
+
+        // Still waiting for conversions
+        if waited_ms >= max_wait_seconds * 1000 {
+            tracing::error!(
+                "Conversion timeout for artist_id={}, session_id={}, waited {}ms",
+                artist_id,
+                session_id,
+                waited_ms
+            );
+            return Err(AppError::Internal("Audio conversion timed out".to_string()));
+        }
+
+        tracing::debug!(
+            "Waiting for conversions: artist_id={}, track1={}, track2={}, voice={}, waited {}ms",
+            artist_id,
+            track1_status,
+            track2_status,
+            voice_status,
+            waited_ms
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms)).await;
+        waited_ms += poll_interval_ms as i32;
+    }
 }
