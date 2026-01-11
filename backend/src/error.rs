@@ -13,9 +13,6 @@ pub enum AppError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
-    #[error("Template error: {0}")]
-    Template(#[from] tera::Error),
-
     #[error("Storage error: {0}")]
     Storage(String),
 
@@ -52,13 +49,6 @@ impl IntoResponse for AppError {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Database error".to_string(),
-                )
-            }
-            AppError::Template(e) => {
-                tracing::error!("Template error: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Template error".to_string(),
                 )
             }
             AppError::Storage(msg) => {

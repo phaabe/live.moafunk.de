@@ -45,35 +45,11 @@ pub struct Show {
     pub recording_key: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArtistWithShows {
-    #[serde(flatten)]
-    pub artist: Artist,
-    pub shows: Vec<Show>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct SubmitResponse {
     pub success: bool,
     pub message: String,
     pub artist_id: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateShowForm {
-    pub title: String,
-    pub date: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AssignArtistForm {
-    pub artist_id: i64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AssignShowForm {
-    pub show_id: i64,
 }
 
 // User roles for the admin dashboard
@@ -156,18 +132,4 @@ impl User {
             false
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateUserForm {
-    pub username: String,
-    pub role: String,
-    pub expires_at: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ChangePasswordForm {
-    pub current_password: String,
-    pub new_password: String,
-    pub confirm_password: String,
 }

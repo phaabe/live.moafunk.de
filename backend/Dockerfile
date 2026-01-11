@@ -43,9 +43,6 @@ RUN apt-get update && apt-get install -y ca-certificates curl ffmpeg && rm -rf /
 # Copy binary from builder
 COPY --from=builder /app/target/release/unheard-backend /app/unheard-backend
 
-# Copy templates
-COPY backend/templates ./templates
-
 # Copy stamping assets (fonts/logos)
 COPY backend/assets ./assets
 

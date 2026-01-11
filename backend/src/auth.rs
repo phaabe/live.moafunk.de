@@ -33,18 +33,6 @@ pub fn hash_password(password: &str) -> Result<String> {
     Ok(hash.to_string())
 }
 
-/// Generate a random password for new user accounts
-pub fn generate_password() -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-    let mut rng = rand::thread_rng();
-    (0..16)
-        .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
-}
-
 pub fn generate_session_token() -> String {
     let mut rng = rand::thread_rng();
     let bytes: [u8; 32] = rng.gen();
