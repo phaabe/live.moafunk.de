@@ -1,3 +1,4 @@
+mod audio;
 mod auth;
 mod config;
 mod db;

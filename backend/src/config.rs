@@ -45,6 +45,12 @@ pub struct Config {
     pub overlay_font_path: Option<String>,
     pub artist_logo_dir: Option<String>,
     pub default_logo_path: Option<String>,
+
+    // FFmpeg MP3 conversion settings
+    #[serde(default = "default_ffmpeg_bitrate")]
+    pub ffmpeg_mp3_bitrate: String,
+    #[serde(default = "default_ffmpeg_sample_rate")]
+    pub ffmpeg_mp3_sample_rate: u32,
 }
 
 fn default_host() -> String {
@@ -64,7 +70,7 @@ fn default_database_url() -> String {
 }
 
 fn default_max_file_size() -> u64 {
-    100
+    180
 }
 
 fn default_max_upload_size() -> u64 {
@@ -81,6 +87,14 @@ fn default_rtmp_url() -> String {
 
 fn default_rtmp_stream_key() -> String {
     "stream-io".to_string()
+}
+
+fn default_ffmpeg_bitrate() -> String {
+    "320k".to_string()
+}
+
+fn default_ffmpeg_sample_rate() -> u32 {
+    44100
 }
 
 impl Config {

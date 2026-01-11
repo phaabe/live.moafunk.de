@@ -210,6 +210,21 @@ pub async fn download_artist(
             }
         }
 
+        // Include original voice message file if available
+        if let Some(key) = &artist.voice_original_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("bin");
+                let path = format!("{}/originals/voice_message_original.{}", artist_dir, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
         if let Some(key) = &artist.track1_key {
             if let Ok((data, _)) = storage::download_file(&state, key).await {
                 let ext = std::path::Path::new(key)
@@ -225,6 +240,25 @@ pub async fn download_artist(
             }
         }
 
+        // Include original track1 file if available
+        if let Some(key) = &artist.track1_original_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("bin");
+                let track_name = sanitize_filename(&artist.track1_name);
+                let path = format!(
+                    "{}/originals/track1_{}_original.{}",
+                    artist_dir, track_name, ext
+                );
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
         if let Some(key) = &artist.track2_key {
             if let Ok((data, _)) = storage::download_file(&state, key).await {
                 let ext = std::path::Path::new(key)
@@ -233,6 +267,25 @@ pub async fn download_artist(
                     .unwrap_or("mp3");
                 let track_name = sanitize_filename(&artist.track2_name);
                 let path = format!("{}/track2_{}.{}", artist_dir, track_name, ext);
+                zip.start_file(&path, options)
+                    .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                zip.write_all(&data)
+                    .map_err(|e| AppError::Internal(format!("ZIP write error: {}", e)))?;
+            }
+        }
+
+        // Include original track2 file if available
+        if let Some(key) = &artist.track2_original_key {
+            if let Ok((data, _)) = storage::download_file(&state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("bin");
+                let track_name = sanitize_filename(&artist.track2_name);
+                let path = format!(
+                    "{}/originals/track2_{}_original.{}",
+                    artist_dir, track_name, ext
+                );
                 zip.start_file(&path, options)
                     .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
                 zip.write_all(&data)
@@ -759,6 +812,23 @@ async fn download_show_impl(
                         }
                     }
 
+                    // Original voice message (for full artist package)
+                    if let Some(key) = &artist.voice_original_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("bin");
+                            let path =
+                                format!("{}/originals/voice_message_original.{}", artist_dir, ext);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+
                     // Tracks
                     if let Some(key) = &artist.track1_key {
                         if let Ok((data, _)) = storage::download_file(&state, key).await {
@@ -776,6 +846,26 @@ async fn download_show_impl(
                         }
                     }
 
+                    // Original track1 (for full artist package)
+                    if let Some(key) = &artist.track1_original_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("bin");
+                            let track_name = sanitize_filename(&artist.track1_name);
+                            let path = format!(
+                                "{}/originals/track1_{}_original.{}",
+                                artist_dir, track_name, ext
+                            );
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+
                     if let Some(key) = &artist.track2_key {
                         if let Ok((data, _)) = storage::download_file(&state, key).await {
                             let ext = std::path::Path::new(key)
@@ -784,6 +874,26 @@ async fn download_show_impl(
                                 .unwrap_or("mp3");
                             let track_name = sanitize_filename(&artist.track2_name);
                             let path = format!("{}/track2_{}.{}", artist_dir, track_name, ext);
+                            zip.start_file(&path, options)
+                                .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
+                            zip.write_all(&data).map_err(|e| {
+                                AppError::Internal(format!("ZIP write error: {}", e))
+                            })?;
+                        }
+                    }
+
+                    // Original track2 (for full artist package)
+                    if let Some(key) = &artist.track2_original_key {
+                        if let Ok((data, _)) = storage::download_file(&state, key).await {
+                            let ext = std::path::Path::new(key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("bin");
+                            let track_name = sanitize_filename(&artist.track2_name);
+                            let path = format!(
+                                "{}/originals/track2_{}_original.{}",
+                                artist_dir, track_name, ext
+                            );
                             zip.start_file(&path, options)
                                 .map_err(|e| AppError::Internal(format!("ZIP error: {}", e)))?;
                             zip.write_all(&data).map_err(|e| {

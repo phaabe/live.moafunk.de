@@ -1,4 +1,4 @@
-use crate::{AppError, AppState, Result};
+use crate::{audio, AppError, AppState, Result};
 use axum::{
     extract::{Multipart, State},
     Json,
@@ -259,6 +259,12 @@ pub async fn submit_form(
                     }
 
                     if !data.is_empty() {
+                        if !audio::is_supported_audio_format(&filename) {
+                            return Err(AppError::Validation(format!(
+                                "Voice message: Unsupported audio format. Supported formats: {}",
+                                audio::SUPPORTED_AUDIO_EXTENSIONS.join(", ")
+                            )));
+                        }
                         voice_message = Some((filename, data.to_vec(), content_type));
                     }
                 }
@@ -280,6 +286,13 @@ pub async fn submit_form(
                     return Err(AppError::UploadTooLarge(state.config.max_upload_size_mb));
                 }
 
+                if !audio::is_supported_audio_format(&filename) {
+                    return Err(AppError::Validation(format!(
+                        "Track 1: Unsupported audio format. Supported formats: {}",
+                        audio::SUPPORTED_AUDIO_EXTENSIONS.join(", ")
+                    )));
+                }
+
                 track1_file = Some((filename, data.to_vec(), content_type));
             }
             "track2-file" => {
@@ -297,6 +310,13 @@ pub async fn submit_form(
                 total_file_bytes = total_file_bytes.saturating_add(data.len() as u64);
                 if total_file_bytes > max_total_size {
                     return Err(AppError::UploadTooLarge(state.config.max_upload_size_mb));
+                }
+
+                if !audio::is_supported_audio_format(&filename) {
+                    return Err(AppError::Validation(format!(
+                        "Track 2: Unsupported audio format. Supported formats: {}",
+                        audio::SUPPORTED_AUDIO_EXTENSIONS.join(", ")
+                    )));
                 }
 
                 track2_file = Some((filename, data.to_vec(), content_type));
@@ -414,7 +434,7 @@ pub async fn submit_form(
 
     let (track1_filename, track1_data, track1_content_type) = track1_file.unwrap();
     let track1_desired_name = format!("{} - {}", artist_name.trim(), track1_name.trim());
-    let track1_key = storage::upload_file_named(
+    let track1_result = storage::upload_audio_with_conversion(
         &state,
         artist_id,
         "track1",
@@ -427,7 +447,7 @@ pub async fn submit_form(
 
     let (track2_filename, track2_data, track2_content_type) = track2_file.unwrap();
     let track2_desired_name = format!("{} - {}", artist_name.trim(), track2_name.trim());
-    let track2_key = storage::upload_file_named(
+    let track2_result = storage::upload_audio_with_conversion(
         &state,
         artist_id,
         "track2",
@@ -438,22 +458,21 @@ pub async fn submit_form(
     )
     .await?;
 
-    let voice_key = if let Some((filename, data, content_type)) = voice_message {
+    let (voice_key, voice_original_key) = if let Some((filename, data, content_type)) = voice_message {
         let voice_desired_name = format!("{} - voice-message", artist_name.trim());
-        Some(
-            storage::upload_file_named(
-                &state,
-                artist_id,
-                "voice",
-                &voice_desired_name,
-                &filename,
-                data,
-                &content_type,
-            )
-            .await?,
+        let voice_result = storage::upload_audio_with_conversion(
+            &state,
+            artist_id,
+            "voice",
+            &voice_desired_name,
+            &filename,
+            data,
+            &content_type,
         )
+        .await?;
+        (Some(voice_result.mp3_key), Some(voice_result.original_key))
     } else {
-        None
+        (None, None)
     };
 
     // Update artist with file keys
@@ -465,16 +484,22 @@ pub async fn submit_form(
             pic_overlay_key = ?,
             track1_key = ?,
             track2_key = ?,
-            voice_message_key = ?
+            voice_message_key = ?,
+            track1_original_key = ?,
+            track2_original_key = ?,
+            voice_original_key = ?
         WHERE id = ?
         "#,
     )
     .bind(&pic_key)
     .bind(&pic_cropped_key)
     .bind(&pic_overlay_key)
-    .bind(&track1_key)
-    .bind(&track2_key)
+    .bind(&track1_result.mp3_key)
+    .bind(&track2_result.mp3_key)
     .bind(&voice_key)
+    .bind(&track1_result.original_key)
+    .bind(&track2_result.original_key)
+    .bind(&voice_original_key)
     .bind(artist_id)
     .execute(&state.db)
     .await?;

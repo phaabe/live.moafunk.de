@@ -18,6 +18,11 @@ pub struct Artist {
     pub track2_name: String,
     pub track2_key: Option<String>,
 
+    // Original audio file keys (before mp3 conversion)
+    pub track1_original_key: Option<String>,
+    pub track2_original_key: Option<String>,
+    pub voice_original_key: Option<String>,
+
     pub instagram: Option<String>,
     pub soundcloud: Option<String>,
     pub bandcamp: Option<String>,
