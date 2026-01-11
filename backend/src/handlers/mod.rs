@@ -4,6 +4,7 @@ pub mod download;
 pub mod stream_ws;
 pub mod submit;
 pub mod submit_chunked;
+pub mod upload_recording_chunked;
 
 use axum::Json;
 use serde_json::{json, Value};

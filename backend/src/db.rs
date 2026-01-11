@@ -106,6 +106,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Add recording_key column for storing final show recording
     add_column_if_missing(pool, "shows", "recording_key", "TEXT").await?;
 
+    // Add recording_filename column to store original filename
+    add_column_if_missing(pool, "shows", "recording_filename", "TEXT").await?;
+
     // Normalize legacy datetime-local values (e.g. 2026-01-04T20:00) into YYYY-MM-DD.
     // We keep the column type as TEXT, but only store the date portion going forward.
     sqlx::query(
@@ -277,6 +280,47 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
     // Clean up expired pending submissions (older than 1 hour)
     sqlx::query("DELETE FROM pending_submissions WHERE expires_at < datetime('now')")
+        .execute(pool)
+        .await?;
+
+    // Pending recording uploads for chunked uploads (to bypass Cloudflare 100MB limit)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_recording_uploads (
+            session_id TEXT PRIMARY KEY,
+            show_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            total_size INTEGER NOT NULL,
+            total_chunks INTEGER NOT NULL,
+            peaks_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (show_id) REFERENCES shows(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Pending recording chunks (tracks which chunks have been uploaded)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_recording_chunks (
+            session_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            chunk_key TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (session_id, chunk_index),
+            FOREIGN KEY (session_id) REFERENCES pending_recording_uploads(session_id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Clean up expired pending recording uploads
+    sqlx::query("DELETE FROM pending_recording_uploads WHERE expires_at < datetime('now')")
         .execute(pool)
         .await?;
 

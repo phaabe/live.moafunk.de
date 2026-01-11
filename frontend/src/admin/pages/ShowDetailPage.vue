@@ -28,6 +28,8 @@ const saving = ref(false);
 const assigning = ref(false);
 const uploading = ref(false);
 const uploadDragOver = ref(false);
+const uploadingFilename = ref<string | null>(null);
+const uploadProgress = ref<{ phase: 'extracting' | 'uploading' | 'finalizing'; percent: number; chunkIndex?: number; totalChunks?: number } | null>(null);
 
 // Form data
 const dateForm = ref('');
@@ -37,6 +39,9 @@ const selectedArtistId = ref<number | null>(null);
 // Computed
 const hasArtists = computed(() => show.value && show.value.artists.length > 0);
 const artistsLeft = computed(() => show.value?.artists_left ?? 0);
+
+// Use recording filename from API
+const recordingFilename = computed(() => show.value?.recording_filename || null);
 
 // Cover refresh polling - uses cover_generated_at timestamp for reliable detection
 let coverRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -267,8 +272,12 @@ async function uploadFile(file: File) {
   if (!show.value) return;
   
   uploading.value = true;
+  uploadProgress.value = null;
+  uploadingFilename.value = file.name;
   try {
-    const result = await showsApi.uploadRecording(show.value.id, file);
+    const result = await showsApi.uploadRecording(show.value.id, file, (progress) => {
+      uploadProgress.value = progress;
+    });
     flash.success(`Recording "${file.name}" uploaded successfully`);
     // Update the show with the new recording URL and peaks URL
     if (show.value) {
@@ -283,6 +292,8 @@ async function uploadFile(file: File) {
     flash.error(e instanceof Error ? e.message : 'Failed to upload recording');
   } finally {
     uploading.value = false;
+    uploadProgress.value = null;
+    uploadingFilename.value = null;
   }
 }
 
@@ -468,6 +479,10 @@ onUnmounted(() => {
           
           <!-- Show player if recording exists -->
           <template v-if="show.recording_url">
+            <p v-if="recordingFilename" class="recording-filename">
+              <span class="filename-label">File:</span>
+              <code>{{ recordingFilename }}</code>
+            </p>
             <AudioPlayer :key="show.recording_url" :src="show.recording_url" />
             <div class="recording-actions">
               <BaseButton size="sm" variant="primary" :loading="uploading" @click="($refs.fileInput as HTMLInputElement)?.click()">
@@ -481,7 +496,7 @@ onUnmounted(() => {
           
           <!-- Show upload if no recording -->
           <template v-else>
-            <p class="upload-description">Upload the final show recording. File will be stored as <code>{{ show.date }}-{{ show.title }}</code></p>
+            <p class="upload-description">Upload the final show recording.</p>
             <div 
               class="upload-dropzone"
               :class="{ 'drag-over': uploadDragOver, 'uploading': uploading }"
@@ -492,7 +507,16 @@ onUnmounted(() => {
             >
               <div v-if="uploading" class="upload-status">
                 <div class="loading-spinner small"></div>
-                <span>Uploading...</span>
+                <div class="upload-status-text">
+                  <span class="upload-filename" v-if="uploadingFilename">{{ uploadingFilename }}</span>
+                  <span v-if="uploadProgress?.phase === 'extracting'">Extracting waveform...</span>
+                  <span v-else-if="uploadProgress?.phase === 'uploading' && uploadProgress.totalChunks && uploadProgress.totalChunks > 1">
+                    Uploading chunk {{ uploadProgress.chunkIndex }}/{{ uploadProgress.totalChunks }} ({{ uploadProgress.percent }}%)
+                  </span>
+                  <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0 }}%</span>
+                  <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
+                  <span v-else>Uploading...</span>
+                </div>
               </div>
               <div v-else class="upload-prompt">
                 <span class="upload-icon">📁</span>
@@ -745,6 +769,24 @@ onUnmounted(() => {
   display: none;
 }
 
+.recording-filename {
+  margin-bottom: var(--spacing-sm);
+  font-size: 0.9em;
+  color: var(--color-text-muted);
+}
+
+.recording-filename .filename-label {
+  margin-right: var(--spacing-xs);
+}
+
+.recording-filename code {
+  background: var(--color-background-muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  word-break: break-all;
+}
+
 .recording-actions {
   margin-top: var(--spacing-md);
   display: flex;
@@ -774,6 +816,22 @@ onUnmounted(() => {
   justify-content: center;
   gap: var(--spacing-sm);
   color: var(--color-text-muted);
+}
+
+.upload-status-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.upload-filename {
+  font-weight: 500;
+  color: var(--color-text);
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .loading-spinner.small {

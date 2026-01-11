@@ -274,6 +274,7 @@ export interface ShowDetail {
   cover_generated_at?: string;
   recording_url?: string;
   recording_peaks_url?: string;
+  recording_filename?: string;
 }
 
 export const showsApi = {
@@ -294,32 +295,121 @@ export const showsApi = {
   unassignArtist: (showId: number, artistId: number) =>
     api.delete<{ success: boolean }>(`/api/shows/${showId}/artists/${artistId}`),
 
-  uploadRecording: async (showId: number, file: File): Promise<{ success: boolean; key: string; recording_url?: string; recording_peaks_url?: string }> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    
+  uploadRecording: async (
+    showId: number,
+    file: File,
+    onProgress?: (progress: { phase: 'extracting' | 'uploading' | 'finalizing'; percent: number; chunkIndex?: number; totalChunks?: number }) => void
+  ): Promise<{ success: boolean; key: string; recording_url?: string; recording_peaks_url?: string }> => {
+    // Use chunked upload for files > 50MB to stay under Cloudflare's 100MB limit
+    const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks
+    const useChunked = file.size > CHUNK_SIZE;
+
     // Extract waveform peaks before upload
+    let peaksJson: string | undefined;
     try {
+      onProgress?.({ phase: 'extracting', percent: 0 });
       const { extractWaveformPeaksJson } = await import('../../pages/waveformExtractor');
-      const peaksJson = await extractWaveformPeaksJson(file);
-      formData.append('peaks', peaksJson);
+      peaksJson = await extractWaveformPeaksJson(file);
+      onProgress?.({ phase: 'extracting', percent: 100 });
     } catch (err) {
       console.warn('Failed to extract waveform peaks:', err);
       // Continue without peaks - not critical
     }
-    
-    const response = await fetch(`${API_BASE}/api/shows/${showId}/upload-recording`, {
+
+    if (!useChunked) {
+      // Small file: use single request upload
+      const formData = new FormData();
+      formData.append('file', file);
+      if (peaksJson) {
+        formData.append('peaks', peaksJson);
+      }
+
+      onProgress?.({ phase: 'uploading', percent: 0 });
+      const response = await fetch(`${API_BASE}/api/shows/${showId}/upload-recording`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+        throw new Error(error.error || 'Upload failed');
+      }
+
+      onProgress?.({ phase: 'uploading', percent: 100 });
+      return response.json();
+    }
+
+    // Large file: use chunked upload
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    // Step 1: Initialize upload
+    onProgress?.({ phase: 'uploading', percent: 0, chunkIndex: 0, totalChunks });
+    const initResponse = await fetch(`${API_BASE}/api/shows/${showId}/upload-recording/init`, {
       method: 'POST',
       credentials: 'include',
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        total_size: file.size,
+        total_chunks: totalChunks,
+        peaks: peaksJson,
+      }),
     });
-    
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
-      throw new Error(error.error || 'Upload failed');
+
+    if (!initResponse.ok) {
+      const error = await initResponse.json().catch(() => ({ error: 'Init failed' }));
+      throw new Error(error.error || error.message || 'Failed to initialize upload');
     }
-    
-    return response.json();
+
+    const { session_id } = await initResponse.json();
+
+    // Step 2: Upload chunks sequentially
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = file.slice(start, end);
+
+      const chunkFormData = new FormData();
+      chunkFormData.append('chunk', chunk);
+
+      const chunkResponse = await fetch(
+        `${API_BASE}/api/shows/${showId}/upload-recording/chunk/${session_id}?index=${i}`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          body: chunkFormData,
+        }
+      );
+
+      if (!chunkResponse.ok) {
+        const error = await chunkResponse.json().catch(() => ({ error: 'Chunk upload failed' }));
+        throw new Error(error.error || error.message || `Failed to upload chunk ${i + 1}/${totalChunks}`);
+      }
+
+      const percent = Math.round(((i + 1) / totalChunks) * 100);
+      onProgress?.({ phase: 'uploading', percent, chunkIndex: i + 1, totalChunks });
+    }
+
+    // Step 3: Finalize upload
+    onProgress?.({ phase: 'finalizing', percent: 0 });
+    const finalizeResponse = await fetch(
+      `${API_BASE}/api/shows/${showId}/upload-recording/finalize/${session_id}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }
+    );
+
+    if (!finalizeResponse.ok) {
+      const error = await finalizeResponse.json().catch(() => ({ error: 'Finalize failed' }));
+      throw new Error(error.error || error.message || 'Failed to finalize upload');
+    }
+
+    onProgress?.({ phase: 'finalizing', percent: 100 });
+    return finalizeResponse.json();
   },
 
   deleteRecording: (showId: number) =>

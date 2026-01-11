@@ -948,6 +948,7 @@ pub struct ShowDetailResponse {
     cover_generated_at: Option<String>,
     recording_url: Option<String>,
     recording_peaks_url: Option<String>,
+    recording_filename: Option<String>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -1403,6 +1404,7 @@ pub async fn api_show_detail(
         cover_generated_at: show.cover_generated_at,
         recording_url,
         recording_peaks_url,
+        recording_filename: show.recording_filename,
     }))
 }
 
@@ -2027,9 +2029,10 @@ pub async fn api_upload_show_recording(
         tracing::debug!("Uploaded recording peaks at {}", peaks_key);
     }
 
-    // Save recording_key in the database
-    sqlx::query("UPDATE shows SET recording_key = ? WHERE id = ?")
+    // Save recording_key and original filename in the database
+    sqlx::query("UPDATE shows SET recording_key = ?, recording_filename = ? WHERE id = ?")
         .bind(&key)
+        .bind(&filename)
         .bind(id)
         .execute(&state.db)
         .await?;
@@ -2094,8 +2097,8 @@ pub async fn api_delete_show_recording(
         .send()
         .await;
 
-    // Clear recording_key in the database
-    sqlx::query("UPDATE shows SET recording_key = NULL WHERE id = ?")
+    // Clear recording_key and recording_filename in the database
+    sqlx::query("UPDATE shows SET recording_key = NULL, recording_filename = NULL WHERE id = ?")
         .bind(id)
         .execute(&state.db)
         .await?;
@@ -2111,7 +2114,7 @@ pub async fn api_delete_show_recording(
 // Helpers
 // ============================================================================
 
-async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<models::User> {
+pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<models::User> {
     let token = auth::get_session_from_headers(headers);
     let user = auth::get_current_user(state, token.as_deref())
         .await
