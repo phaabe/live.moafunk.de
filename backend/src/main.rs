@@ -36,7 +36,6 @@ pub type CoverDebounceMap = Arc<RwLock<HashMap<i64, tokio::time::Instant>>>;
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub config: Config,
-    pub templates: tera::Tera,
     pub s3_client: aws_sdk_s3::Client,
     pub stream_state: SharedStreamState,
     /// Debounce tracker for show cover regeneration (show_id -> last_request_time)
@@ -106,30 +105,6 @@ async fn main() -> anyhow::Result<()> {
     // Seed superadmin if no users exist
     db::seed_superadmin(&db, &config).await?;
 
-    // Initialize templates
-    let mut templates = tera::Tera::new("templates/**/*")?;
-
-    // Register custom date filter
-    templates.register_filter(
-        "date",
-        |value: &tera::Value,
-         args: &std::collections::HashMap<String, tera::Value>|
-         -> tera::Result<tera::Value> {
-            let _format = args
-                .get("format")
-                .and_then(|v| v.as_str())
-                .unwrap_or("%Y-%m-%d %H:%M");
-
-            if let Some(s) = value.as_str() {
-                // Parse the datetime string and reformat it
-                // For now, just return the input as-is (you can add chrono parsing if needed)
-                Ok(tera::Value::String(s.to_string()))
-            } else {
-                Ok(value.clone())
-            }
-        },
-    );
-
     // Initialize S3 client for R2 (avoid aws-config to reduce dependencies/compile time)
     let s3_config = aws_sdk_s3::Config::builder()
         .endpoint_url(&config.r2_endpoint)
@@ -154,7 +129,6 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
-        templates,
         s3_client,
         stream_state,
         cover_debounce,
@@ -279,14 +253,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/users/:id/reset-password",
             post(handlers::api::api_reset_password),
         )
-        // Auth routes (template-based, kept for backwards compatibility)
-        .route("/login", get(handlers::auth::login_page))
-        .route("/login", post(handlers::auth::login))
-        .route("/logout", get(handlers::auth::logout))
-        // Admin routes
-        .route("/", get(handlers::admin::index))
-        .route("/artists", get(handlers::admin::artists_list))
-        .route("/artists/:id", get(handlers::admin::artist_detail))
+        // Download routes (needed by SPA)
         .route(
             "/artists/:id/download",
             get(handlers::download::download_artist),
@@ -303,26 +270,6 @@ async fn main() -> anyhow::Result<()> {
             "/artists/:id/download/pdf",
             get(handlers::download::download_artist_pdf),
         )
-        .route("/artists/:id/delete", post(handlers::admin::delete_artist))
-        .route("/artists/:id/assign", post(handlers::admin::assign_show))
-        .route(
-            "/artists/:id/unassign/:show_id",
-            post(handlers::admin::unassign_show),
-        )
-        .route("/shows", get(handlers::admin::shows_list))
-        .route("/shows", post(handlers::admin::create_show))
-        .route("/shows/:id", get(handlers::admin::show_detail))
-        .route("/shows/:id/delete", post(handlers::admin::delete_show))
-        .route("/shows/:id/assign", post(handlers::admin::assign_artist))
-        .route(
-            "/shows/:id/unassign/:artist_id",
-            post(handlers::admin::unassign_artist),
-        )
-        .route("/shows/:id/date", post(handlers::admin::update_show_date))
-        .route(
-            "/shows/:id/description",
-            post(handlers::admin::update_show_description),
-        )
         .route(
             "/shows/:id/download",
             get(handlers::download::download_show),
@@ -331,22 +278,10 @@ async fn main() -> anyhow::Result<()> {
             "/shows/:id/download/:package",
             get(handlers::download::download_show_package),
         )
-        // Stream page (accessible to all roles)
-        .route("/stream", get(handlers::admin::stream_page))
         // Stream WebSocket and API
         .route("/ws/stream", get(stream_ws_handler))
         .route("/api/stream/status", get(stream_status_handler))
         .route("/api/stream/stop", post(stream_stop_handler))
-        // User management (admin/superadmin only)
-        .route("/users", get(handlers::admin::users_list))
-        .route("/users", post(handlers::admin::create_user))
-        .route("/users/:id/delete", post(handlers::admin::delete_user))
-        // Change password (admin/superadmin only)
-        .route(
-            "/change-password",
-            get(handlers::admin::change_password_page),
-        )
-        .route("/change-password", post(handlers::admin::change_password))
         // Admin SPA fallback - serves index.html for client-side routing
         .fallback_service(admin_spa)
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes()))
