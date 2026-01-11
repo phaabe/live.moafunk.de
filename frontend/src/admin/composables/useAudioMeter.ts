@@ -1,4 +1,4 @@
-import { ref, onUnmounted, watch, type Ref, type ShallowRef } from 'vue';
+import { ref, onUnmounted, watch, type ShallowRef } from 'vue';
 
 export function useAudioMeter(mediaStream: ShallowRef<MediaStream | null>) {
   const level = ref(0);
@@ -20,7 +20,7 @@ export function useAudioMeter(mediaStream: ShallowRef<MediaStream | null>) {
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-      function updateMeter() {
+      const updateMeter = () => {
         if (!analyser) return;
 
         analyser.getByteFrequencyData(dataArray);
@@ -28,7 +28,7 @@ export function useAudioMeter(mediaStream: ShallowRef<MediaStream | null>) {
         level.value = Math.min(100, (average / 128) * 100);
 
         animationId = requestAnimationFrame(updateMeter);
-      }
+      };
 
       updateMeter();
       console.log('[AudioMeter] Started');
