@@ -152,4 +152,16 @@ onMounted(loadArtists);
 .dl-btn:hover {
   background-color: #bbbbbb;
 }
+
+/* Mobile breakpoint - hide Shows, Submitted, and Download columns */
+@media (max-width: 768px) {
+  .data-table th:nth-child(3),
+  .data-table th:nth-child(4),
+  .data-table th:nth-child(5),
+  .data-table td:nth-child(3),
+  .data-table td:nth-child(4),
+  .data-table td:nth-child(5) {
+    display: none;
+  }
+}
 </style>
