@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -171,14 +171,20 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Build CORS layer
+    // Build CORS layer (permissive for same-origin setup)
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
     // Build router
+    // Admin SPA static files with fallback for SPA routing
+    let admin_spa =
+        ServeDir::new("static/admin").not_found_service(ServeFile::new("static/admin/index.html"));
+
     let app = Router::new()
+        // Admin SPA assets (JS, CSS, etc.) - must come before catch-all
+        .nest_service("/assets", ServeDir::new("static/admin/assets"))
         // Static assets (brand)
         .nest_service("/assets/brand", ServeDir::new("assets/brand"))
         // Health check
@@ -341,6 +347,8 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::admin::change_password_page),
         )
         .route("/change-password", post(handlers::admin::change_password))
+        // Admin SPA fallback - serves index.html for client-side routing
+        .fallback_service(admin_spa)
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes()))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
