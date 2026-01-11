@@ -504,6 +504,9 @@ pub async fn submit_form(
     .execute(&state.db)
     .await?;
 
+    // Trigger backup workflow (fire-and-forget)
+    super::backup_trigger::trigger_backup_on_submission(&state.config, artist_id);
+
     Ok(Json(SubmitResponse {
         success: true,
         message: "Thank you for your submission! We'll be in touch soon.".to_string(),

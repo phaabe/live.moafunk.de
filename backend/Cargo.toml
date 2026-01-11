@@ -40,6 +40,12 @@ rand = "0.8"
 # S3/R2 storage
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 
+# HTTP client (for GitHub API dispatch)
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }

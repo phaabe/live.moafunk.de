@@ -51,6 +51,12 @@ pub struct Config {
     pub ffmpeg_mp3_bitrate: String,
     #[serde(default = "default_ffmpeg_sample_rate")]
     pub ffmpeg_mp3_sample_rate: u32,
+
+    // GitHub Actions backup trigger (optional)
+    // If set, a GitHub repository_dispatch event will be triggered after artist submission
+    pub github_dispatch_token: Option<String>,
+    #[serde(default = "default_github_repo")]
+    pub github_repo: String,
 }
 
 fn default_host() -> String {
@@ -95,6 +101,10 @@ fn default_ffmpeg_bitrate() -> String {
 
 fn default_ffmpeg_sample_rate() -> u32 {
     44100
+}
+
+fn default_github_repo() -> String {
+    "phaabe/live.moafunk.de".to_string()
 }
 
 impl Config {
