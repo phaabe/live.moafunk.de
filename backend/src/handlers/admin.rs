@@ -316,7 +316,7 @@ pub async fn delete_artist(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     // Ensure the artist exists (also gives a nicer error than deleting 0 rows).
@@ -377,7 +377,7 @@ pub async fn assign_show(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     let bytes = axum::body::to_bytes(request.into_body(), 1024)
@@ -459,7 +459,7 @@ pub async fn unassign_show(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     sqlx::query("DELETE FROM artist_show_assignments WHERE artist_id = ? AND show_id = ?")
@@ -616,7 +616,7 @@ pub async fn delete_show(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     let redirect_with_flash = |kind: &str, msg: String| {
@@ -658,7 +658,7 @@ pub async fn create_show(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     let bytes = axum::body::to_bytes(request.into_body(), 4096)
@@ -791,7 +791,7 @@ pub async fn assign_artist(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     let bytes = axum::body::to_bytes(request.into_body(), 1024)
@@ -873,7 +873,7 @@ pub async fn unassign_artist(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     sqlx::query("DELETE FROM artist_show_assignments WHERE artist_id = ? AND show_id = ?")
@@ -900,7 +900,7 @@ pub async fn update_show_date(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     #[derive(Debug, serde::Deserialize)]
@@ -944,7 +944,7 @@ pub async fn update_show_description(
     let token = get_session_token(&request);
     let user = auth::get_current_user(&state, token.as_deref()).await;
     if user.is_none() || !user.as_ref().unwrap().role_enum().can_access_admin() {
-        return Err(AppError::Unauthorized);
+        return Err(AppError::Unauthorized("Unauthorized".to_string()));
     }
 
     #[derive(Debug, serde::Deserialize)]

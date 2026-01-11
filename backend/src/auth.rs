@@ -68,7 +68,7 @@ pub async fn create_session(state: &Arc<AppState>, user_id: i64) -> Result<Strin
 /// Get the current user from a session token
 pub async fn get_current_user(state: &Arc<AppState>, token: Option<&str>) -> Option<models::User> {
     let token = token?;
-    
+
     let user: Option<models::User> = sqlx::query_as(
         r#"
         SELECT u.* FROM users u
@@ -80,13 +80,30 @@ pub async fn get_current_user(state: &Arc<AppState>, token: Option<&str>) -> Opt
     .fetch_optional(&state.db)
     .await
     .ok()?;
-    
+
     user
 }
 
 pub fn get_session_from_cookies<B>(request: &Request<B>) -> Option<String> {
     request
         .headers()
+        .get(COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .find_map(|cookie| {
+            let cookie = cookie.trim();
+            if cookie.starts_with(&format!("{}=", SESSION_COOKIE_NAME)) {
+                Some(cookie[SESSION_COOKIE_NAME.len() + 1..].to_string())
+            } else {
+                None
+            }
+        })
+}
+
+/// Get session token from HeaderMap (for use in handlers that receive headers directly)
+pub fn get_session_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
         .get(COOKIE)?
         .to_str()
         .ok()?

@@ -95,6 +95,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Add cover_generated_at column for tracking cover regeneration
+    add_column_if_missing(pool, "shows", "cover_generated_at", "TEXT").await?;
+
+    // Add recording_key column for storing final show recording
+    add_column_if_missing(pool, "shows", "recording_key", "TEXT").await?;
+
     // Normalize legacy datetime-local values (e.g. 2026-01-04T20:00) into YYYY-MM-DD.
     // We keep the column type as TEXT, but only store the date portion going forward.
     sqlx::query(

@@ -406,6 +406,7 @@ pub async fn submit_file(
     let max_size = state.config.max_file_size_bytes();
 
     let mut file_data: Option<(String, Vec<u8>, String)> = None;
+    let mut peaks_data: Option<String> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -429,7 +430,14 @@ pub async fn submit_file(
             }
 
             file_data = Some((filename, data.to_vec(), content_type));
-            break;
+        } else if name == "peaks" {
+            // Waveform peaks JSON from frontend
+            peaks_data = Some(
+                field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::Validation(format!("Failed to read peaks: {}", e)))?,
+            );
         }
     }
 
@@ -468,6 +476,21 @@ pub async fn submit_file(
         &content_type,
     )
     .await?;
+
+    // Store waveform peaks JSON alongside the audio file if provided
+    if let Some(peaks_json) = peaks_data {
+        let peaks_key = format!("{}.peaks.json", key.trim_end_matches(|c: char| c != '.').trim_end_matches('.'));
+        storage::upload_file_to_pending(
+            &state,
+            &session_id,
+            &format!("{}_peaks", field_name),
+            &format!("{}.peaks.json", desired_name),
+            peaks_json.into_bytes(),
+            "application/json",
+        )
+        .await?;
+        tracing::debug!("Uploaded peaks for {} at {}", field_name, peaks_key);
+    }
 
     // Update pending_submissions with the file key
     let update_sql = format!(
