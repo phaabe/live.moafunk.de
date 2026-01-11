@@ -3,6 +3,14 @@ name: FRONTEND - Build and Deploy
 on:
   push:
     branches: [main]
+    paths:
+      - frontend/**
+      - .github/workflows/frontend.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - frontend/**
+      - .github/workflows/frontend.yml
   workflow_dispatch:
 
 permissions:
@@ -11,7 +19,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: frontend-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -78,10 +86,13 @@ jobs:
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
         with:
           path: frontend/dist
 
   deploy:
+    # Only deploy on push to main, not on PRs
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
