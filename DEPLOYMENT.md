@@ -136,3 +136,165 @@ See `backend/.env.example` for required configuration:
 - R2/S3 credentials
 - Secret key
 - RTMP streaming settings
+
+---
+
+## Cloudflare R2 Storage
+
+### Bucket Setup
+
+Create three R2 buckets in Cloudflare dashboard:
+
+| Bucket | Purpose | Environment |
+|--------|---------|-------------|
+| `unheard-artists-dev` | Media storage | Development |
+| `unheard-artists-prod` | Media storage | Production |
+| `unheard-backups` | Database and R2 backups | All |
+
+### Environment Configuration
+
+Set `R2_BUCKET_NAME` per environment:
+
+```bash
+# Development (.env)
+R2_BUCKET_NAME=unheard-artists-dev
+
+# Production (.env)
+R2_BUCKET_NAME=unheard-artists-prod
+```
+
+### CORS Configuration
+
+Run for each bucket:
+
+```bash
+BUCKET=unheard-artists-dev ./backend/scripts/configure_r2_cors.sh
+BUCKET=unheard-artists-prod ./backend/scripts/configure_r2_cors.sh
+```
+
+---
+
+## Backup System
+
+### Overview
+
+Backups are triggered:
+- **On artist submission**: Database backup via GitHub Actions dispatch
+- **Weekly (Sunday 3am UTC)**: Full database + R2 backup via cron
+- **Manually**: Via GitHub Actions UI or CLI
+
+### Setup rclone on Lightsail
+
+After deploying, run on the Lightsail instance:
+
+```bash
+cd /opt/unheard-backend
+./scripts/backup/setup_rclone.sh
+```
+
+This configures rclone with two remotes:
+- `r2-prod`: Production R2 bucket
+- `r2-backup`: Backup R2 bucket
+
+### Enable Backup Trigger on Submission
+
+Add to production `.env`:
+
+```bash
+# GitHub Personal Access Token with 'repo' scope
+GITHUB_DISPATCH_TOKEN=ghp_xxxxxxxxxxxx
+GITHUB_REPO=phaabe/live.moafunk.de
+```
+
+### Manual Backup
+
+SSH into Lightsail:
+
+```bash
+cd /opt/unheard-backend
+
+# Database only
+./scripts/backup/backup-db.sh
+
+# R2 incremental sync
+./scripts/backup/backup-r2.sh
+
+# R2 full dated snapshot
+./scripts/backup/backup-r2.sh --full
+
+# Both
+./scripts/backup/backup-all.sh
+```
+
+Or via GitHub Actions:
+
+```bash
+# Database + incremental R2
+gh workflow run backup.yml
+
+# Full backup (dated R2 snapshot)
+gh workflow run backup.yml -f full_r2_backup=true
+```
+
+### Restore from Backup
+
+```bash
+cd /opt/unheard-backend
+
+# List available database backups
+./scripts/backup/restore-db.sh --list
+
+# Restore latest database
+./scripts/backup/restore-db.sh --latest
+
+# Restore specific database backup
+./scripts/backup/restore-db.sh unheard-db-2025-01-11_12-00-00.db.gz
+
+# List available R2 snapshots
+./scripts/backup/restore-r2.sh --list
+
+# Restore R2 from latest incremental
+./scripts/backup/restore-r2.sh --latest
+
+# Restore R2 from dated snapshot
+./scripts/backup/restore-r2.sh 2025-01-11
+```
+
+### Backup Retention
+
+- **Database**: 28 daily backups (4 weeks)
+- **R2 snapshots**: 2 weekly snapshots
+
+---
+
+## R2 Management Scripts
+
+Scripts for managing R2 storage directly:
+
+```bash
+cd /opt/unheard-backend
+
+# List all objects
+./scripts/r2/list.sh
+
+# List with prefix filter
+./scripts/r2/list.sh artists/
+
+# Delete specific objects
+./scripts/r2/delete.sh artists/123/pic.jpg
+
+# Delete by prefix
+./scripts/r2/delete.sh --prefix pending/
+
+# Move/rename object
+./scripts/r2/move.sh old/path.jpg new/path.jpg
+
+# Rename prefix (bulk)
+./scripts/r2/move.sh --prefix artists/old/ artists/new/
+
+# Check DB-R2 sync (find orphans and missing files)
+./scripts/r2/sync-check.sh
+
+# Delete orphaned R2 files (not in database)
+./scripts/r2/sync-check.sh --fix-orphans
+```

@@ -1,0 +1,108 @@
+name: BACKUP - Database and R2 Storage
+
+on:
+  # Weekly scheduled backup (Sunday 3am UTC)
+  schedule:
+    - cron: '0 3 * * 0'
+  
+  # Manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      full_r2_backup:
+        type: boolean
+        description: "Create dated R2 snapshot (vs incremental sync)"
+        default: false
+      backup_db:
+        type: boolean
+        description: "Backup database"
+        default: true
+      backup_r2:
+        type: boolean
+        description: "Backup R2 storage"
+        default: true
+
+  # Triggered by backend after artist submission
+  repository_dispatch:
+    types: [backup-on-submission]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false  # Don't cancel running backups
+
+env:
+  LIGHTSAIL_HOST: ${{ secrets.LIGHTSAIL_HOST }}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # R2 backup can take a while for large buckets
+
+    steps:
+      - name: Determine backup type
+        id: backup-type
+        run: |
+          # Default: DB only for submission triggers, full backup for cron/manual
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            echo "backup_db=true" >> $GITHUB_OUTPUT
+            echo "backup_r2=false" >> $GITHUB_OUTPUT
+            echo "full_r2=false" >> $GITHUB_OUTPUT
+            echo "trigger=artist-submission" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "backup_db=true" >> $GITHUB_OUTPUT
+            echo "backup_r2=true" >> $GITHUB_OUTPUT
+            echo "full_r2=true" >> $GITHUB_OUTPUT
+            echo "trigger=weekly-cron" >> $GITHUB_OUTPUT
+          else
+            echo "backup_db=${{ inputs.backup_db || 'true' }}" >> $GITHUB_OUTPUT
+            echo "backup_r2=${{ inputs.backup_r2 || 'true' }}" >> $GITHUB_OUTPUT
+            echo "full_r2=${{ inputs.full_r2_backup || 'false' }}" >> $GITHUB_OUTPUT
+            echo "trigger=manual" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log backup configuration
+        run: |
+          echo "Backup trigger: ${{ steps.backup-type.outputs.trigger }}"
+          echo "Backup DB: ${{ steps.backup-type.outputs.backup_db }}"
+          echo "Backup R2: ${{ steps.backup-type.outputs.backup_r2 }}"
+          echo "Full R2 snapshot: ${{ steps.backup-type.outputs.full_r2 }}"
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            echo "Artist ID: ${{ github.event.client_payload.artist_id }}"
+          fi
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.LIGHTSAIL_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$LIGHTSAIL_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Run database backup
+        if: steps.backup-type.outputs.backup_db == 'true'
+        run: |
+          echo "Running database backup on Lightsail..."
+          ssh -o StrictHostKeyChecking=no ubuntu@"$LIGHTSAIL_HOST" \
+            "cd ~/unheard-backend && ./scripts/backup/backup-db.sh"
+
+      - name: Run R2 backup
+        if: steps.backup-type.outputs.backup_r2 == 'true'
+        run: |
+          echo "Running R2 backup on Lightsail..."
+          FULL_FLAG=""
+          if [[ "${{ steps.backup-type.outputs.full_r2 }}" == "true" ]]; then
+            FULL_FLAG="--full"
+          fi
+          ssh -o StrictHostKeyChecking=no ubuntu@"$LIGHTSAIL_HOST" \
+            "cd ~/unheard-backend && ./scripts/backup/backup-r2.sh $FULL_FLAG"
+
+      - name: Backup summary
+        if: always()
+        run: |
+          echo "=== Backup Job Complete ==="
+          echo "Trigger: ${{ steps.backup-type.outputs.trigger }}"
+          echo "Status: ${{ job.status }}"
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            echo "Artist ID: ${{ github.event.client_payload.artist_id }}"
+          fi

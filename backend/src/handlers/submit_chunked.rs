@@ -886,6 +886,9 @@ async fn finalize_artist_files_background(
                 .execute(&state.db)
                 .await?;
 
+            // Trigger backup workflow (fire-and-forget)
+            super::backup_trigger::trigger_backup_on_submission(&state.config, artist_id);
+
             tracing::info!(
                 "Background finalization complete for artist_id={}, session_id={}",
                 artist_id,

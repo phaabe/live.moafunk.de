@@ -116,6 +116,10 @@ TMP_REMOTE_ENV="/tmp/unheard-backend.env"
 echo "Uploading compose file..."
 scp -i "$PEM" -o StrictHostKeyChecking=accept-new "$LOCAL_COMPOSE_FILE" "$SSH_HOST:$TMP_REMOTE_COMPOSE" >/dev/null
 
+echo "Uploading backup and R2 scripts..."
+scp -i "$PEM" -o StrictHostKeyChecking=accept-new -r "$REPO_ROOT/backend/scripts/backup" "$SSH_HOST:/tmp/scripts-backup" >/dev/null
+scp -i "$PEM" -o StrictHostKeyChecking=accept-new -r "$REPO_ROOT/backend/scripts/r2" "$SSH_HOST:/tmp/scripts-r2" >/dev/null
+
 if [[ -n "$ENV_FILE_PATH" ]]; then
   if [[ ! -f "$ENV_FILE_PATH" ]]; then
     echo "ENV_FILE_PATH is set but not found: $ENV_FILE_PATH"
@@ -148,10 +152,16 @@ export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 
 sudo apt-get update -y >/dev/null
-sudo apt-get install -y docker.io curl ca-certificates locales >/dev/null
+sudo apt-get install -y docker.io curl ca-certificates locales sqlite3 jq >/dev/null
 sudo locale-gen en_US.UTF-8 >/dev/null 2>&1 || true
 sudo update-locale LANG=en_US.UTF-8 >/dev/null 2>&1 || true
 sudo systemctl enable --now docker >/dev/null
+
+# Install rclone for R2 backups (if not already installed)
+if ! command -v rclone &> /dev/null; then
+  echo "Installing rclone..."
+  curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+fi
 
 # Ensure Docker Compose v2 is available.
 # Prefer the apt v2 plugin; otherwise install the v2 binary directly.
@@ -206,9 +216,21 @@ if [[ -z "$COMPOSE" ]]; then
 fi
 
 sudo mkdir -p "$REMOTE_DIR/data"
+sudo mkdir -p "$REMOTE_DIR/scripts"
 sudo chown -R "$SSH_USER":"$SSH_USER" "$REMOTE_DIR"
 
 mv "$TMP_REMOTE_COMPOSE" "$REMOTE_DIR/docker-compose.prod.yml"
+
+# Move backup and R2 scripts
+if [[ -d /tmp/scripts-backup ]]; then
+  rm -rf "$REMOTE_DIR/scripts/backup"
+  mv /tmp/scripts-backup "$REMOTE_DIR/scripts/backup"
+fi
+if [[ -d /tmp/scripts-r2 ]]; then
+  rm -rf "$REMOTE_DIR/scripts/r2"
+  mv /tmp/scripts-r2 "$REMOTE_DIR/scripts/r2"
+fi
+chmod +x "$REMOTE_DIR/scripts/"*/*.sh 2>/dev/null || true
 
 if [[ "${HAS_ENV_UPLOAD:-}" == "1" ]]; then
   mv "$TMP_REMOTE_ENV" "$REMOTE_DIR/.env"
