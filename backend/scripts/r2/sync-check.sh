@@ -3,6 +3,7 @@
 # Reports orphaned R2 objects (not in DB) and missing R2 objects (in DB but not in R2)
 #
 # Usage: ./sync-check.sh [--fix-orphans]
+#        ./sync-check.sh --env /path/to/.env [--fix-orphans]
 #
 # Environment variables:
 #   R2_BUCKET_NAME - Bucket name (default: from .env or 'unheard-artists-prod')
@@ -13,16 +14,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
+# Parse --env flag
+ENV_FILE="$BACKEND_DIR/.env"
+if [[ "${1:-}" == "--env" || "${1:-}" == "-e" ]]; then
+    ENV_FILE="${2:-}"
+    shift 2
+fi
+
 # Load .env if exists
-if [[ -f "$BACKEND_DIR/.env" ]]; then
+if [[ -f "$ENV_FILE" ]]; then
     set -a
-    source "$BACKEND_DIR/.env"
+    source "$ENV_FILE"
     set +a
 fi
 
 BUCKET="${R2_BUCKET_NAME:-unheard-artists-prod}"
 DB_PATH="${DATABASE_PATH:-$BACKEND_DIR/data/unheard.db}"
 FIX_ORPHANS="${1:-}"
+R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+RCLONE_REMOTE="r2-prod"
+
+# Export R2 credentials for AWS CLI
+export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+export AWS_DEFAULT_REGION="auto"
 
 TEMP_DIR="/tmp/r2-sync-check-$$"
 mkdir -p "$TEMP_DIR"
@@ -31,6 +46,15 @@ cleanup() {
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
+
+# Check for available tool
+USE_RCLONE=false
+USE_AWS=false
+if command -v rclone &> /dev/null && [[ -f "$HOME/.config/rclone/rclone.conf" ]]; then
+    USE_RCLONE=true
+elif command -v aws &> /dev/null; then
+    USE_AWS=true
+fi
 
 echo "=== R2 <-> Database Sync Check ==="
 echo "Bucket: $BUCKET"
@@ -75,7 +99,15 @@ echo "  Found $DB_COUNT keys in database"
 echo "Fetching keys from R2..."
 R2_KEYS_FILE="$TEMP_DIR/r2_keys.txt"
 
-wrangler r2 object list "$BUCKET" --json 2>/dev/null | jq -r '.[].key // empty' | sort -u > "$R2_KEYS_FILE"
+if $USE_RCLONE; then
+    rclone lsf "$RCLONE_REMOTE:$BUCKET" --files-only -R 2>/dev/null | sort -u > "$R2_KEYS_FILE"
+elif $USE_AWS; then
+    aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket "$BUCKET" --query 'Contents[].Key' --output text 2>/dev/null | tr '\t' '\n' | sort -u > "$R2_KEYS_FILE"
+else
+    echo "Error: Neither rclone nor aws CLI is available"
+    echo "Install rclone: curl https://rclone.org/install.sh | sudo bash"
+    exit 1
+fi
 
 R2_COUNT=$(wc -l < "$R2_KEYS_FILE" | tr -d ' ')
 echo "  Found $R2_COUNT objects in R2"
@@ -101,7 +133,14 @@ else
         echo "  Deleting orphaned objects..."
         DELETED=0
         while IFS= read -r key; do
-            if wrangler r2 object delete "$BUCKET/$key" 2>/dev/null; then
+            local deleted=false
+            if $USE_RCLONE; then
+                rclone delete "$RCLONE_REMOTE:$BUCKET/$key" 2>/dev/null && deleted=true
+            elif $USE_AWS; then
+                aws s3 rm "s3://$BUCKET/$key" --endpoint-url "$R2_ENDPOINT" 2>/dev/null && deleted=true
+            fi
+            
+            if $deleted; then
                 echo "    ✓ Deleted: $key"
                 ((DELETED++))
             else
