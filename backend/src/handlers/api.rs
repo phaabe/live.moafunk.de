@@ -15,6 +15,32 @@ use std::sync::Arc;
 
 const MAX_ARTISTS_PER_SHOW: i64 = 4;
 
+/// Derive the peaks JSON key from an audio file key.
+/// E.g. "pending/abc123/track1/Artist - Track.mp3" -> "pending/abc123/track1_peaks/Artist - Track.peaks.json"
+fn derive_peaks_key(audio_key: &str) -> String {
+    // The peaks file is stored with "_peaks" suffix on the field type and ".peaks.json" extension
+    // Original: pending/{session}/track1/{name}.{ext}
+    // Peaks:    pending/{session}/track1_peaks/{name}.peaks.json
+    if let Some(last_dot) = audio_key.rfind('.') {
+        let base = &audio_key[..last_dot];
+        // Replace the field type part (e.g., track1 -> track1_peaks)
+        // Find the last occurrence of track1/, track2/, or voice/
+        let key = if base.contains("/track1/") {
+            base.replacen("/track1/", "/track1_peaks/", 1)
+        } else if base.contains("/track2/") {
+            base.replacen("/track2/", "/track2_peaks/", 1)
+        } else if base.contains("/voice/") {
+            base.replacen("/voice/", "/voice_peaks/", 1)
+        } else {
+            // Fallback: just append _peaks to directory
+            base.to_string()
+        };
+        format!("{}.peaks.json", key)
+    } else {
+        format!("{}.peaks.json", audio_key)
+    }
+}
+
 // ============================================================================
 // Auth API
 // ============================================================================
@@ -351,15 +377,30 @@ pub async fn api_artist_detail(
         if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
             file_urls.insert("voice".to_string(), url);
         }
+        // Try to get peaks
+        let peaks_key = derive_peaks_key(key);
+        if let Ok(url) = storage::get_presigned_url(&state, &peaks_key, 3600).await {
+            file_urls.insert("voice_peaks".to_string(), url);
+        }
     }
     if let Some(key) = &artist.track1_key {
         if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
             file_urls.insert("track1".to_string(), url);
         }
+        // Try to get peaks
+        let peaks_key = derive_peaks_key(key);
+        if let Ok(url) = storage::get_presigned_url(&state, &peaks_key, 3600).await {
+            file_urls.insert("track1_peaks".to_string(), url);
+        }
     }
     if let Some(key) = &artist.track2_key {
         if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
             file_urls.insert("track2".to_string(), url);
+        }
+        // Try to get peaks
+        let peaks_key = derive_peaks_key(key);
+        if let Ok(url) = storage::get_presigned_url(&state, &peaks_key, 3600).await {
+            file_urls.insert("track2_peaks".to_string(), url);
         }
     }
 
@@ -652,6 +693,11 @@ pub async fn api_update_artist_audio(
     let mut track1_name: Option<String> = None;
     let mut track2_name: Option<String> = None;
 
+    // Peaks data
+    let mut voice_peaks: Option<String> = None;
+    let mut track1_peaks: Option<String> = None;
+    let mut track2_peaks: Option<String> = None;
+
     while let Some(field) = multipart
         .next_field()
         .await
@@ -677,6 +723,24 @@ pub async fn api_update_artist_audio(
                 if !value.is_empty() {
                     track2_name = Some(value);
                 }
+            }
+            "voice_peaks" => {
+                voice_peaks =
+                    Some(field.text().await.map_err(|e| {
+                        AppError::BadRequest(format!("Failed to read peaks: {}", e))
+                    })?);
+            }
+            "track1_peaks" => {
+                track1_peaks =
+                    Some(field.text().await.map_err(|e| {
+                        AppError::BadRequest(format!("Failed to read peaks: {}", e))
+                    })?);
+            }
+            "track2_peaks" => {
+                track2_peaks =
+                    Some(field.text().await.map_err(|e| {
+                        AppError::BadRequest(format!("Failed to read peaks: {}", e))
+                    })?);
             }
             "voice" => {
                 let filename = field.file_name().unwrap_or("voice.mp3").to_string();
@@ -749,6 +813,62 @@ pub async fn api_update_artist_audio(
             }
             _ => {}
         }
+    }
+
+    // Upload peaks files alongside audio files
+    if let (Some(ref key), Some(peaks_json)) = (&new_voice_key, voice_peaks) {
+        let peaks_key = format!(
+            "{}.peaks.json",
+            key.rsplit_once('.').map(|(base, _)| base).unwrap_or(key)
+        );
+        state
+            .s3_client
+            .put_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(&peaks_key)
+            .body(aws_sdk_s3::primitives::ByteStream::from(
+                peaks_json.into_bytes(),
+            ))
+            .content_type("application/json")
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to upload peaks: {}", e)))?;
+    }
+    if let (Some(ref key), Some(peaks_json)) = (&new_track1_key, track1_peaks) {
+        let peaks_key = format!(
+            "{}.peaks.json",
+            key.rsplit_once('.').map(|(base, _)| base).unwrap_or(key)
+        );
+        state
+            .s3_client
+            .put_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(&peaks_key)
+            .body(aws_sdk_s3::primitives::ByteStream::from(
+                peaks_json.into_bytes(),
+            ))
+            .content_type("application/json")
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to upload peaks: {}", e)))?;
+    }
+    if let (Some(ref key), Some(peaks_json)) = (&new_track2_key, track2_peaks) {
+        let peaks_key = format!(
+            "{}.peaks.json",
+            key.rsplit_once('.').map(|(base, _)| base).unwrap_or(key)
+        );
+        state
+            .s3_client
+            .put_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(&peaks_key)
+            .body(aws_sdk_s3::primitives::ByteStream::from(
+                peaks_json.into_bytes(),
+            ))
+            .content_type("application/json")
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to upload peaks: {}", e)))?;
     }
 
     // Build dynamic update query
@@ -824,6 +944,10 @@ pub struct ShowDetailResponse {
     artists: Vec<AssignedArtistInfo>,
     available_artists: Vec<ArtistWithPronouns>,
     artists_left: i32,
+    cover_url: Option<String>,
+    cover_generated_at: Option<String>,
+    recording_url: Option<String>,
+    recording_peaks_url: Option<String>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -836,6 +960,9 @@ pub struct AssignedArtistInfo {
     voice_url: Option<String>,
     track1_url: Option<String>,
     track2_url: Option<String>,
+    track1_peaks_url: Option<String>,
+    track2_peaks_url: Option<String>,
+    voice_peaks_url: Option<String>,
     has_pic: bool,
 }
 
@@ -919,6 +1046,201 @@ struct ArtistWithFileKeys {
     track2_key: Option<String>,
 }
 
+/// Debounce delay before regenerating show cover (5 seconds)
+const COVER_DEBOUNCE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Schedule debounced cover regeneration for a show.
+/// This spawns a background task that waits for COVER_DEBOUNCE_DELAY before
+/// actually regenerating. If another request comes in during that time,
+/// the timer resets.
+fn schedule_cover_regeneration(state: Arc<AppState>, show_id: i64) {
+    tokio::spawn(async move {
+        let request_time = tokio::time::Instant::now();
+
+        // Record this request time
+        {
+            let mut debounce = state.cover_debounce.write().await;
+            debounce.insert(show_id, request_time);
+        }
+
+        // Wait for debounce delay
+        tokio::time::sleep(COVER_DEBOUNCE_DELAY).await;
+
+        // Check if our request is still the latest one
+        let should_proceed = {
+            let debounce = state.cover_debounce.read().await;
+            debounce
+                .get(&show_id)
+                .map(|t| *t == request_time)
+                .unwrap_or(false)
+        };
+
+        if !should_proceed {
+            // A newer request came in, skip this one
+            tracing::debug!(
+                "Skipping cover regeneration for show {} - superseded by newer request",
+                show_id
+            );
+            return;
+        }
+
+        // Clean up debounce entry
+        {
+            let mut debounce = state.cover_debounce.write().await;
+            if debounce
+                .get(&show_id)
+                .map(|t| *t == request_time)
+                .unwrap_or(false)
+            {
+                debounce.remove(&show_id);
+            }
+        }
+
+        // Actually regenerate the cover
+        tracing::info!("Regenerating cover for show {}", show_id);
+        let _ = do_regenerate_show_cover(&state, show_id).await;
+    });
+}
+
+/// S3 key for the default cover template
+const DEFAULT_COVER_KEY: &str = "shows/_default/cover.png";
+
+/// Ensure the default cover exists in S3 (called at startup)
+pub async fn ensure_default_cover_exists(state: &Arc<AppState>) -> crate::Result<()> {
+    // Check if default cover already exists in S3
+    let exists = state
+        .s3_client
+        .head_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(DEFAULT_COVER_KEY)
+        .send()
+        .await
+        .is_ok();
+
+    if exists {
+        tracing::info!("Default cover already exists in S3");
+        return Ok(());
+    }
+
+    tracing::info!("Generating and uploading default cover to S3...");
+
+    // Generate cover with empty items (all black tiles)
+    let cover_data = crate::image_overlay::build_show_collage(state, Vec::new())
+        .await
+        .ok_or_else(|| crate::AppError::Internal("Failed to generate default cover".to_string()))?;
+
+    // Upload to S3 at default location
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(DEFAULT_COVER_KEY)
+        .body(aws_sdk_s3::primitives::ByteStream::from(cover_data.clone()))
+        .content_type("image/png")
+        .send()
+        .await
+        .map_err(|e| crate::AppError::Storage(format!("Failed to upload default cover: {}", e)))?;
+
+    // Also cache in memory
+    let _ = state.default_cover.set(cover_data);
+
+    tracing::info!("Default cover uploaded to S3: {}", DEFAULT_COVER_KEY);
+    Ok(())
+}
+
+/// Copy the default cover from S3 to a new show's location
+async fn copy_default_cover_to_show(state: &Arc<AppState>, show_id: i64) -> Option<String> {
+    let dest_key = format!("shows/{}/cover.png", show_id);
+    let source = format!("{}/{}", state.config.r2_bucket_name, DEFAULT_COVER_KEY);
+
+    // Use S3 copy operation (faster than download + upload)
+    let result = state
+        .s3_client
+        .copy_object()
+        .bucket(&state.config.r2_bucket_name)
+        .copy_source(&source)
+        .key(&dest_key)
+        .content_type("image/png")
+        .send()
+        .await;
+
+    if let Err(e) = result {
+        tracing::warn!("Failed to copy default cover for show {}: {}", show_id, e);
+        return None;
+    }
+
+    // Update cover_generated_at timestamp
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("UPDATE shows SET cover_generated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(show_id)
+        .execute(&state.db)
+        .await;
+
+    tracing::info!("Default cover copied to show {}: {}", show_id, dest_key);
+    Some(dest_key)
+}
+
+/// Actually performs the cover regeneration (called after debounce)
+async fn do_regenerate_show_cover(state: &Arc<AppState>, show_id: i64) -> Option<String> {
+    // Get assigned artists with their pic keys
+    let artists: Vec<ArtistWithFileKeys> = sqlx::query_as(
+        r#"
+        SELECT a.id, a.name, a.pronouns, a.pic_key, a.pic_cropped_key, a.pic_overlay_key,
+               a.voice_message_key, a.track1_key, a.track2_key
+        FROM artists a
+        INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id
+        WHERE asa.show_id = ?
+        ORDER BY a.name COLLATE NOCASE
+        LIMIT 4
+        "#,
+    )
+    .bind(show_id)
+    .fetch_all(&state.db)
+    .await
+    .ok()?;
+
+    // Collect artist images for collage (empty vec = all black tiles)
+    let mut collage_items: Vec<(String, Vec<u8>, String)> = Vec::new();
+    for artist in &artists {
+        let pic_key = artist
+            .pic_cropped_key
+            .as_ref()
+            .or(artist.pic_key.as_ref())
+            .or(artist.pic_overlay_key.as_ref());
+
+        if let Some(key) = pic_key {
+            if let Ok((data, _)) = storage::download_file(state, key).await {
+                let ext = std::path::Path::new(key)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("jpg")
+                    .to_string();
+                collage_items.push((artist.name.clone(), data, ext));
+            }
+        }
+    }
+
+    // Generate collage (works with 0-4 items, missing slots show as black)
+    let collage_png = crate::image_overlay::build_show_collage(state, collage_items).await?;
+
+    // Upload to S3
+    let key = storage::upload_show_cover(state, show_id, collage_png)
+        .await
+        .ok()?;
+
+    // Update cover_generated_at timestamp
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("UPDATE shows SET cover_generated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(show_id)
+        .execute(&state.db)
+        .await;
+
+    tracing::info!("Cover regenerated for show {}: {}", show_id, key);
+    Some(key)
+}
+
 pub async fn api_show_detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -976,6 +1298,31 @@ pub async fn api_show_detail(
         } else {
             None
         };
+        // Try to get peaks URLs (stored alongside audio files with .peaks.json suffix)
+        let track1_peaks_url = if let Some(key) = &a.track1_key {
+            let peaks_key = derive_peaks_key(key);
+            storage::get_presigned_url(&state, &peaks_key, 3600)
+                .await
+                .ok()
+        } else {
+            None
+        };
+        let track2_peaks_url = if let Some(key) = &a.track2_key {
+            let peaks_key = derive_peaks_key(key);
+            storage::get_presigned_url(&state, &peaks_key, 3600)
+                .await
+                .ok()
+        } else {
+            None
+        };
+        let voice_peaks_url = if let Some(key) = &a.voice_message_key {
+            let peaks_key = derive_peaks_key(key);
+            storage::get_presigned_url(&state, &peaks_key, 3600)
+                .await
+                .ok()
+        } else {
+            None
+        };
         artists.push(AssignedArtistInfo {
             id: a.id,
             name: a.name,
@@ -985,6 +1332,9 @@ pub async fn api_show_detail(
             voice_url,
             track1_url,
             track2_url,
+            track1_peaks_url,
+            track2_peaks_url,
+            voice_peaks_url,
         });
     }
 
@@ -1008,6 +1358,36 @@ pub async fn api_show_detail(
         Vec::new()
     };
 
+    // Only return cover URL if cover was actually generated
+    let cover_url = if show.cover_generated_at.is_some() {
+        let cover_key = format!("shows/{}/cover.png", id);
+        storage::get_presigned_url(&state, &cover_key, 3600)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
+    // Generate presigned URL for recording if it exists
+    let recording_url = if let Some(ref key) = show.recording_key {
+        storage::get_presigned_url(&state, key, 3600).await.ok()
+    } else {
+        None
+    };
+
+    // Generate presigned URL for recording peaks if they exist
+    let recording_peaks_url = if let Some(ref key) = show.recording_key {
+        let peaks_key = format!(
+            "{}.peaks.json",
+            key.rsplit_once('.').map(|(base, _)| base).unwrap_or(key)
+        );
+        storage::get_presigned_url(&state, &peaks_key, 3600)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
     Ok(Json(ShowDetailResponse {
         id: show.id,
         title: show.title,
@@ -1019,6 +1399,10 @@ pub async fn api_show_detail(
         artists,
         available_artists,
         artists_left,
+        cover_url,
+        cover_generated_at: show.cover_generated_at,
+        recording_url,
+        recording_peaks_url,
     }))
 }
 
@@ -1047,6 +1431,21 @@ pub async fn api_create_show(
 
     let show_id = result.last_insert_rowid();
 
+    // Copy default cover synchronously so it's ready when frontend loads
+    let cover_url = if let Some(key) = copy_default_cover_to_show(&state, show_id).await {
+        storage::get_presigned_url(&state, &key, 3600).await.ok()
+    } else {
+        None
+    };
+
+    // Fetch the cover_generated_at timestamp we just set
+    let cover_generated_at: Option<String> =
+        sqlx::query_scalar("SELECT cover_generated_at FROM shows WHERE id = ?")
+            .bind(show_id)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
+
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
@@ -1055,6 +1454,8 @@ pub async fn api_create_show(
             "date": req.date,
             "description": req.description,
             "status": "scheduled",
+            "cover_url": cover_url,
+            "cover_generated_at": cover_generated_at,
         })),
     ))
 }
@@ -1125,10 +1526,14 @@ pub async fn api_delete_show(
 ) -> Result<impl IntoResponse> {
     require_admin(&state, &headers).await?;
 
+    // Delete the show from database
     sqlx::query("DELETE FROM shows WHERE id = ?")
         .bind(id)
         .execute(&state.db)
         .await?;
+
+    // Delete cover from S3 (ignore errors - cover may not exist)
+    let _ = storage::delete_show_cover(&state, id).await;
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -1195,6 +1600,31 @@ pub async fn api_show_assign_artist(
     } else {
         None
     };
+    // Try to get peaks URLs
+    let track1_peaks_url = if let Some(ref key) = artist.track1_key {
+        let peaks_key = derive_peaks_key(key);
+        storage::get_presigned_url(&state, &peaks_key, 3600)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let track2_peaks_url = if let Some(ref key) = artist.track2_key {
+        let peaks_key = derive_peaks_key(key);
+        storage::get_presigned_url(&state, &peaks_key, 3600)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let voice_peaks_url = if let Some(ref key) = artist.voice_message_key {
+        let peaks_key = derive_peaks_key(key);
+        storage::get_presigned_url(&state, &peaks_key, 3600)
+            .await
+            .ok()
+    } else {
+        None
+    };
 
     let assigned_artist = AssignedArtistInfo {
         id: artist.id,
@@ -1204,8 +1634,14 @@ pub async fn api_show_assign_artist(
         voice_url,
         track1_url,
         track2_url,
+        track1_peaks_url,
+        track2_peaks_url,
+        voice_peaks_url,
         has_pic: artist.pic_key.is_some(),
     };
+
+    // Schedule debounced cover regeneration (async, non-blocking)
+    schedule_cover_regeneration(state, show_id);
 
     Ok(Json(
         serde_json::json!({ "success": true, "artist": assigned_artist }),
@@ -1225,6 +1661,9 @@ pub async fn api_show_unassign_artist(
         .bind(artist_id)
         .execute(&state.db)
         .await?;
+
+    // Schedule debounced cover regeneration (async, non-blocking)
+    schedule_cover_regeneration(state, show_id);
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -1495,6 +1934,177 @@ pub async fn api_reset_password(
         .await?;
 
     Ok(Json(ResetPasswordResponse { password }))
+}
+
+// ============================================================================
+// Show Recording Upload
+// ============================================================================
+
+pub async fn api_upload_show_recording(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Fetch show to get date and title
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    // Process uploaded file
+    let mut file_data: Option<(String, Vec<u8>, String)> = None;
+    let mut peaks_data: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart: {}", e)))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "file" {
+            let filename = field.file_name().unwrap_or("recording").to_string();
+            let content_type = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Failed to read file: {}", e)))?
+                .to_vec();
+            file_data = Some((filename, data, content_type));
+        } else if name == "peaks" {
+            peaks_data = Some(
+                field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Failed to read peaks: {}", e)))?,
+            );
+        }
+    }
+
+    let (filename, data, content_type) =
+        file_data.ok_or_else(|| AppError::BadRequest("No file provided".to_string()))?;
+
+    // Upload to recordings/DATE-TITLE.ext
+    let key = storage::upload_show_recording(
+        &state,
+        &show.date,
+        &show.title,
+        &filename,
+        data,
+        &content_type,
+    )
+    .await?;
+
+    // Store peaks JSON alongside the recording if provided
+    let mut recording_peaks_url: Option<String> = None;
+    if let Some(peaks_json) = peaks_data {
+        let peaks_key = format!(
+            "{}.peaks.json",
+            key.rsplit_once('.').map(|(base, _)| base).unwrap_or(&key)
+        );
+        state
+            .s3_client
+            .put_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(&peaks_key)
+            .body(aws_sdk_s3::primitives::ByteStream::from(
+                peaks_json.into_bytes(),
+            ))
+            .content_type("application/json")
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to upload peaks: {}", e)))?;
+
+        recording_peaks_url = storage::get_presigned_url(&state, &peaks_key, 3600)
+            .await
+            .ok();
+        tracing::debug!("Uploaded recording peaks at {}", peaks_key);
+    }
+
+    // Save recording_key in the database
+    sqlx::query("UPDATE shows SET recording_key = ? WHERE id = ?")
+        .bind(&key)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    // Generate presigned URL for the uploaded file
+    let recording_url = storage::get_presigned_url(&state, &key, 3600).await.ok();
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "key": key,
+        "recording_url": recording_url,
+        "recording_peaks_url": recording_peaks_url,
+    })))
+}
+
+// ============================================================================
+// Show Recording Delete
+// ============================================================================
+
+pub async fn api_delete_show_recording(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Fetch show to get recording_key
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    // Check if there's a recording to delete
+    let recording_key = show
+        .recording_key
+        .ok_or_else(|| AppError::BadRequest("No recording exists for this show".to_string()))?;
+
+    // Delete recording file from S3
+    state
+        .s3_client
+        .delete_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&recording_key)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to delete recording: {}", e)))?;
+
+    // Also try to delete peaks file if it exists
+    let peaks_key = format!(
+        "{}.peaks.json",
+        recording_key
+            .rsplit_once('.')
+            .map(|(base, _)| base)
+            .unwrap_or(&recording_key)
+    );
+    let _ = state
+        .s3_client
+        .delete_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&peaks_key)
+        .send()
+        .await;
+
+    // Clear recording_key in the database
+    sqlx::query("UPDATE shows SET recording_key = NULL WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    tracing::info!("Deleted recording for show {}: {}", id, recording_key);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+    })))
 }
 
 // ============================================================================

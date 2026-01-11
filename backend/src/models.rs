@@ -41,6 +41,8 @@ pub struct Show {
     pub status: String,
     pub created_at: String,
     pub updated_at: Option<String>,
+    pub cover_generated_at: Option<String>,
+    pub recording_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

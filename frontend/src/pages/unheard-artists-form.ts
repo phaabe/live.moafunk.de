@@ -1,5 +1,6 @@
 import Cropper from 'cropperjs';
 import 'cropperjs/dist/cropper.css';
+import { extractWaveformPeaksJson } from './waveformExtractor';
 
 const API_URL =
   window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
@@ -268,22 +269,38 @@ form.addEventListener('submit', async (e) => {
     const sessionId = initResult.session_id;
 
     // Step 2: Upload track files individually (each under 100MB)
-    const filesToUpload: Array<{ field: string; file: File; label: string }> = [
-      { field: 'track1', file: track1File, label: 'Track 1' },
-      { field: 'track2', file: track2File, label: 'Track 2' },
+    const filesToUpload: Array<{ field: string; file: File; label: string; extractPeaks?: boolean }> = [
+      { field: 'track1', file: track1File, label: 'Track 1', extractPeaks: true },
+      { field: 'track2', file: track2File, label: 'Track 2', extractPeaks: true },
     ];
     if (voiceFile && !noVoiceMessageCheckbox.checked) {
-      filesToUpload.push({ field: 'voice', file: voiceFile, label: 'Voice message' });
+      filesToUpload.push({ field: 'voice', file: voiceFile, label: 'Voice message', extractPeaks: true });
     }
 
     const totalFiles = filesToUpload.length;
     for (let i = 0; i < filesToUpload.length; i++) {
-      const { field, file, label } = filesToUpload[i];
+      const { field, file, label, extractPeaks } = filesToUpload[i];
       const baseProgress = 10 + (i / totalFiles) * 80;
-      updateProgress(baseProgress, `Uploading ${label}...`);
+
+      // Extract waveform peaks before upload (if audio file)
+      let peaksJson: string | null = null;
+      if (extractPeaks) {
+        updateProgress(baseProgress, `Analyzing ${label}...`);
+        try {
+          peaksJson = await extractWaveformPeaksJson(file);
+        } catch (err) {
+          console.warn(`Failed to extract waveform for ${label}:`, err);
+          // Continue without peaks - not critical
+        }
+      }
+
+      updateProgress(baseProgress + 2, `Uploading ${label}...`);
 
       const fileData = new FormData();
       fileData.set('file', file);
+      if (peaksJson) {
+        fileData.set('peaks', peaksJson);
+      }
 
       const fileResponse = await fetch(API_SUBMIT_FILE(sessionId, field), {
         method: 'POST',

@@ -189,9 +189,37 @@ export const artistsApi = {
     track2_name?: string;
   }): Promise<void> => {
     const formData = new FormData();
-    if (data.voice) formData.append('voice', data.voice);
-    if (data.track1) formData.append('track1', data.track1);
-    if (data.track2) formData.append('track2', data.track2);
+    
+    // Extract peaks for each audio file before upload
+    const { extractWaveformPeaksJson } = await import('../../pages/waveformExtractor');
+    
+    if (data.voice) {
+      formData.append('voice', data.voice);
+      try {
+        const peaksJson = await extractWaveformPeaksJson(data.voice);
+        formData.append('voice_peaks', peaksJson);
+      } catch (err) {
+        console.warn('Failed to extract voice peaks:', err);
+      }
+    }
+    if (data.track1) {
+      formData.append('track1', data.track1);
+      try {
+        const peaksJson = await extractWaveformPeaksJson(data.track1);
+        formData.append('track1_peaks', peaksJson);
+      } catch (err) {
+        console.warn('Failed to extract track1 peaks:', err);
+      }
+    }
+    if (data.track2) {
+      formData.append('track2', data.track2);
+      try {
+        const peaksJson = await extractWaveformPeaksJson(data.track2);
+        formData.append('track2_peaks', peaksJson);
+      } catch (err) {
+        console.warn('Failed to extract track2 peaks:', err);
+      }
+    }
     if (data.track1_name) formData.append('track1_name', data.track1_name);
     if (data.track2_name) formData.append('track2_name', data.track2_name);
     
@@ -225,6 +253,9 @@ export interface AssignedArtist {
   voice_url?: string;
   track1_url?: string;
   track2_url?: string;
+  track1_peaks_url?: string;
+  track2_peaks_url?: string;
+  voice_peaks_url?: string;
   has_pic: boolean;
 }
 
@@ -239,6 +270,10 @@ export interface ShowDetail {
   artists: AssignedArtist[];
   available_artists: { id: number; name: string; pronouns: string }[];
   artists_left: number;
+  cover_url?: string;
+  cover_generated_at?: string;
+  recording_url?: string;
+  recording_peaks_url?: string;
 }
 
 export const showsApi = {
@@ -257,7 +292,38 @@ export const showsApi = {
     api.post<{ success: boolean; artist: AssignedArtist }>(`/api/shows/${showId}/artists`, { artist_id: artistId }),
 
   unassignArtist: (showId: number, artistId: number) =>
-    api.delete<void>(`/api/shows/${showId}/artists/${artistId}`),
+    api.delete<{ success: boolean }>(`/api/shows/${showId}/artists/${artistId}`),
+
+  uploadRecording: async (showId: number, file: File): Promise<{ success: boolean; key: string; recording_url?: string; recording_peaks_url?: string }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    // Extract waveform peaks before upload
+    try {
+      const { extractWaveformPeaksJson } = await import('../../pages/waveformExtractor');
+      const peaksJson = await extractWaveformPeaksJson(file);
+      formData.append('peaks', peaksJson);
+    } catch (err) {
+      console.warn('Failed to extract waveform peaks:', err);
+      // Continue without peaks - not critical
+    }
+    
+    const response = await fetch(`${API_BASE}/api/shows/${showId}/upload-recording`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+      throw new Error(error.error || 'Upload failed');
+    }
+    
+    return response.json();
+  },
+
+  deleteRecording: (showId: number) =>
+    api.delete<{ success: boolean }>(`/api/shows/${showId}/recording`),
 };
 
 // Users API

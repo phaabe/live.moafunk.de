@@ -16,9 +16,11 @@ const waveformContainer = ref<HTMLElement | null>(null);
 const isPlaying = ref(false);
 const currentTime = ref('0:00');
 const duration = ref('0:00');
-const isLoading = ref(true);
+const isLoading = ref(false);
+const isInitialized = ref(false);
 
 let wavesurfer: WaveSurfer | null = null;
+let isDestroyed = false;
 
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -27,13 +29,26 @@ function formatTime(seconds: number): string {
 }
 
 function initWaveSurfer(): void {
-  if (!waveformContainer.value) return;
+  if (!waveformContainer.value || isDestroyed || isInitialized.value) return;
+  
+  if (!props.src) {
+    console.warn('AudioPlayer: No src provided');
+    return;
+  }
+
+  isLoading.value = true;
+  isInitialized.value = true;
 
   // Destroy existing instance
   if (wavesurfer) {
-    wavesurfer.destroy();
+    try {
+      wavesurfer.destroy();
+    } catch {
+      // Ignore errors during destroy
+    }
   }
 
+  // Use MediaElement backend for streaming (buffers progressively, doesn't download entire file)
   wavesurfer = WaveSurfer.create({
     container: waveformContainer.value,
     waveColor: '#666666',
@@ -44,7 +59,8 @@ function initWaveSurfer(): void {
     barRadius: 2,
     height: 48,
     normalize: true,
-    backend: 'WebAudio',
+    backend: 'MediaElement',
+    mediaControls: false,
   });
 
   wavesurfer.load(props.src);
@@ -54,44 +70,53 @@ function initWaveSurfer(): void {
   });
 
   wavesurfer.on('ready', () => {
+    if (isDestroyed) return;
     isLoading.value = false;
     if (wavesurfer) {
       duration.value = formatTime(wavesurfer.getDuration());
+      // Auto-play after lazy init
+      globalAudioBus.dispatchEvent(new CustomEvent('audio-play', { detail: { id: playerId } }));
+      wavesurfer.play();
     }
   });
 
   wavesurfer.on('audioprocess', () => {
+    if (isDestroyed) return;
     if (wavesurfer) {
       currentTime.value = formatTime(wavesurfer.getCurrentTime());
     }
   });
 
   wavesurfer.on('seeking', () => {
+    if (isDestroyed) return;
     if (wavesurfer) {
       currentTime.value = formatTime(wavesurfer.getCurrentTime());
     }
   });
 
   wavesurfer.on('play', () => {
+    if (isDestroyed) return;
     isPlaying.value = true;
   });
 
   wavesurfer.on('pause', () => {
+    if (isDestroyed) return;
     isPlaying.value = false;
   });
 
   wavesurfer.on('finish', () => {
+    if (isDestroyed) return;
     isPlaying.value = false;
   });
 
   wavesurfer.on('error', (err) => {
+    if (isDestroyed) return;
     console.error('WaveSurfer error:', err);
     isLoading.value = false;
   });
 }
 
 function getBasePath(url: string): string {
-  // Extract the path without query params (presigned URL signature)
   try {
     const urlObj = new URL(url);
     return urlObj.origin + urlObj.pathname;
@@ -101,6 +126,12 @@ function getBasePath(url: string): string {
 }
 
 function togglePlay(): void {
+  // Lazy init: only create wavesurfer when user clicks play
+  if (!isInitialized.value) {
+    initWaveSurfer();
+    return;
+  }
+  
   if (wavesurfer) {
     if (!wavesurfer.isPlaying()) {
       globalAudioBus.dispatchEvent(new CustomEvent('audio-play', { detail: { id: playerId } }));
@@ -116,29 +147,37 @@ function handleGlobalPlay(event: Event): void {
   }
 }
 
-let lastBasePath = '';
-
 watch(() => props.src, (newSrc, oldSrc) => {
   const newBasePath = getBasePath(newSrc);
   const oldBasePath = oldSrc ? getBasePath(oldSrc) : '';
   
-  // Only reinitialize if the actual file changed, not just the signature
   if (newBasePath !== oldBasePath) {
-    lastBasePath = newBasePath;
-    initWaveSurfer();
+    isInitialized.value = false;
+    isLoading.value = false;
+    if (wavesurfer) {
+      try {
+        wavesurfer.destroy();
+      } catch {
+        // Ignore errors
+      }
+      wavesurfer = null;
+    }
   }
 });
 
 onMounted(() => {
-  lastBasePath = getBasePath(props.src);
   globalAudioBus.addEventListener('audio-play', handleGlobalPlay);
-  initWaveSurfer();
 });
 
 onUnmounted(() => {
+  isDestroyed = true;
   globalAudioBus.removeEventListener('audio-play', handleGlobalPlay);
   if (wavesurfer) {
-    wavesurfer.destroy();
+    try {
+      wavesurfer.destroy();
+    } catch {
+      // Ignore errors during destroy
+    }
     wavesurfer = null;
   }
 });
@@ -158,7 +197,10 @@ onUnmounted(() => {
     </button>
     
     <div class="waveform-wrapper">
-      <div ref="waveformContainer" class="waveform"></div>
+      <div v-if="!isInitialized" class="waveform-placeholder" @click="togglePlay">
+        <div class="placeholder-bars"></div>
+      </div>
+      <div v-show="isInitialized" ref="waveformContainer" class="waveform"></div>
     </div>
     
     <div class="time-display">

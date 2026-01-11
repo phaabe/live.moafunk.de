@@ -17,7 +17,9 @@ use axum::{
     Router,
 };
 use sqlx::sqlite::SqlitePoolOptions;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -28,12 +30,19 @@ pub use error::{AppError, Result};
 
 use stream_bridge::SharedStreamState;
 
+/// Tracks pending cover regeneration requests with debounce
+pub type CoverDebounceMap = Arc<RwLock<HashMap<i64, tokio::time::Instant>>>;
+
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub config: Config,
     pub templates: tera::Tera,
     pub s3_client: aws_sdk_s3::Client,
     pub stream_state: SharedStreamState,
+    /// Debounce tracker for show cover regeneration (show_id -> last_request_time)
+    pub cover_debounce: CoverDebounceMap,
+    /// Cached default cover image (4 black tiles with UN/HEARD branding)
+    pub default_cover: tokio::sync::OnceCell<Vec<u8>>,
 }
 
 // Stream handler wrappers that extract stream_state from AppState
@@ -139,13 +148,28 @@ async fn main() -> anyhow::Result<()> {
     // Initialize stream state
     let stream_state = stream_bridge::new_shared_state();
 
+    // Initialize cover regeneration debounce tracker
+    let cover_debounce = Arc::new(RwLock::new(HashMap::new()));
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
         templates,
         s3_client,
         stream_state,
+        cover_debounce,
+        default_cover: tokio::sync::OnceCell::new(),
     });
+
+    // Pre-generate and upload default cover to S3 at startup
+    {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handlers::api::ensure_default_cover_exists(&state_clone).await {
+                tracing::warn!("Failed to generate default cover at startup: {}", e);
+            }
+        });
+    }
 
     // Build CORS layer
     let cors = CorsLayer::new()
@@ -226,6 +250,14 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/artists/:artist_id",
             axum::routing::delete(handlers::api::api_show_unassign_artist),
+        )
+        .route(
+            "/api/shows/:id/upload-recording",
+            post(handlers::api::api_upload_show_recording),
+        )
+        .route(
+            "/api/shows/:id/recording",
+            axum::routing::delete(handlers::api::api_delete_show_recording),
         )
         .route("/api/users", get(handlers::api::api_users_list))
         .route("/api/users", post(handlers::api::api_create_user))

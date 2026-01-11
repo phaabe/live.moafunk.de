@@ -326,3 +326,74 @@ pub async fn upload_file_to_pending_named(
 
     Ok(key)
 }
+
+/// Upload a show cover image to S3
+pub async fn upload_show_cover(
+    state: &Arc<AppState>,
+    show_id: i64,
+    data: Vec<u8>,
+) -> Result<String> {
+    let key = format!("shows/{}/cover.png", show_id);
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(ByteStream::from(data))
+        .content_type("image/png")
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload show cover: {}", e)))?;
+
+    Ok(key)
+}
+
+/// Delete a show cover image from S3
+pub async fn delete_show_cover(state: &Arc<AppState>, show_id: i64) -> Result<()> {
+    let key = format!("shows/{}/cover.png", show_id);
+
+    state
+        .s3_client
+        .delete_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to delete show cover: {}", e)))?;
+
+    Ok(())
+}
+
+/// Upload a show recording file to S3
+/// Stored under recordings/DATETIME-SHOWNAME.ext
+pub async fn upload_show_recording(
+    state: &Arc<AppState>,
+    date: &str,
+    show_title: &str,
+    original_filename: &str,
+    data: Vec<u8>,
+    content_type: &str,
+) -> Result<String> {
+    let ext = extract_ext(original_filename);
+    let safe_title = sanitize_object_name(show_title);
+    
+    let key = if ext.is_empty() {
+        format!("recordings/{}-{}", date, safe_title)
+    } else {
+        format!("recordings/{}-{}.{}", date, safe_title, ext)
+    };
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(ByteStream::from(data))
+        .content_type(content_type)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload show recording: {}", e)))?;
+
+    Ok(key)
+}
