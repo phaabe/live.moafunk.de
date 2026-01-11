@@ -5,11 +5,15 @@ on:
     branches: [main]
     paths:
       - backend/**
+      - frontend/src/admin/**
+      - frontend/package*.json
       - .github/workflows/backend.yml
   pull_request:
     branches: [main]
     paths:
       - backend/**
+      - frontend/src/admin/**
+      - frontend/package*.json
       - .github/workflows/backend.yml
   workflow_dispatch:
     inputs:
@@ -84,7 +88,7 @@ jobs:
         uses: docker/build-push-action@v6
         if: github.event_name != 'workflow_dispatch' || inputs.build == true
         with:
-          context: backend
+          context: .
           file: backend/Dockerfile
           platforms: linux/amd64
           push: true

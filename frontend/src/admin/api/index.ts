@@ -1,6 +1,6 @@
 // API client for admin panel
-
-const API_BASE = import.meta.env.DEV ? '' : 'https://admin.live.moafunk.de';
+// In production, admin panel is hosted at admin.live.moafunk.de (same origin as API)
+const API_BASE = '';
 
 interface ApiError {
   error: string;
