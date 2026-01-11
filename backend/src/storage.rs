@@ -298,7 +298,7 @@ pub async fn delete_show_cover(state: &Arc<AppState>, show_id: i64) -> Result<()
 }
 
 /// Upload a show recording file to S3
-/// Stored under recordings/DATETIME-SHOWNAME.ext
+/// Stored under recordings/original-filename with sanitization
 pub async fn upload_show_recording(
     state: &Arc<AppState>,
     date: &str,
@@ -307,14 +307,22 @@ pub async fn upload_show_recording(
     data: Vec<u8>,
     content_type: &str,
 ) -> Result<String> {
-    let ext = extract_ext(original_filename);
-    let safe_title = sanitize_object_name(show_title);
-
-    let key = if ext.is_empty() {
-        format!("recordings/{}-{}", date, safe_title)
+    // Sanitize the original filename while preserving extension
+    let safe_filename = sanitize_object_name(original_filename);
+    let safe_filename = if safe_filename.is_empty() {
+        // Fallback to date-title if filename sanitization results in empty string
+        let ext = extract_ext(original_filename);
+        let safe_title = sanitize_object_name(show_title);
+        if ext.is_empty() {
+            format!("{}-{}", date, safe_title)
+        } else {
+            format!("{}-{}.{}", date, safe_title, ext)
+        }
     } else {
-        format!("recordings/{}-{}.{}", date, safe_title, ext)
+        safe_filename
     };
+
+    let key = format!("recordings/{}", safe_filename);
 
     state
         .s3_client

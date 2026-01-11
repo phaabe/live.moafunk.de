@@ -236,6 +236,19 @@ async fn main() -> anyhow::Result<()> {
             "/api/shows/:id/upload-recording",
             post(handlers::api::api_upload_show_recording),
         )
+        // Chunked recording upload (for large files > 100MB to bypass Cloudflare limit)
+        .route(
+            "/api/shows/:id/upload-recording/init",
+            post(handlers::upload_recording_chunked::init_recording_upload),
+        )
+        .route(
+            "/api/shows/:id/upload-recording/chunk/:session_id",
+            post(handlers::upload_recording_chunked::upload_recording_chunk),
+        )
+        .route(
+            "/api/shows/:id/upload-recording/finalize/:session_id",
+            post(handlers::upload_recording_chunked::finalize_recording_upload),
+        )
         .route(
             "/api/shows/:id/recording",
             axum::routing::delete(handlers::api::api_delete_show_recording),
