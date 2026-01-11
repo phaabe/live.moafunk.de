@@ -1,23 +1,73 @@
 #!/bin/bash
 # Move/rename objects in R2 bucket (copy + delete)
-# Usage: ./move.sh <source-key> <dest-key>
-#        ./move.sh --prefix <old-prefix> <new-prefix>  # Bulk rename prefix
-#        ./move.sh --env /path/to/.env <source-key> <dest-key>
-#
-# Environment variables:
-#   R2_BUCKET_NAME - Bucket name (default: from .env or 'unheard-artists-prod')
-
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# Parse --env flag
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options] <source-key> <dest-key>
+       $(basename "$0") [options] --prefix <old-prefix> <new-prefix>
+
+Move or rename objects in an R2 bucket.
+
+Options:
+  -e, --env <path>      Path to .env file (default: backend/.env)
+  -b, --bucket <name>   Bucket name (overrides R2_BUCKET_NAME env var)
+  -h, --help            Show this help message
+
+Modes:
+  --prefix              Bulk rename all objects matching old-prefix to new-prefix
+
+Environment variables:
+  R2_BUCKET_NAME        Bucket name (default: 'unheard-artists-prod')
+  R2_ACCOUNT_ID         Cloudflare account ID
+  R2_ACCESS_KEY_ID      R2 access key
+  R2_SECRET_ACCESS_KEY  R2 secret key
+
+Examples:
+  $(basename "$0") old/path.mp3 new/path.mp3       # Rename single object
+  $(basename "$0") -b unheard-artists-dev a.mp3 b.mp3
+  $(basename "$0") --prefix shows/2024- shows/2025-  # Bulk rename prefix
+EOF
+    exit 0
+}
+
+# Parse arguments
 ENV_FILE="$BACKEND_DIR/.env"
-if [[ "${1:-}" == "--env" || "${1:-}" == "-e" ]]; then
-    ENV_FILE="${2:-}"
-    shift 2
-fi
+BUCKET_ARG=""
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -e|--env)
+            ENV_FILE="${2:-}"
+            shift 2
+            ;;
+        -b|--bucket)
+            BUCKET_ARG="${2:-}"
+            shift 2
+            ;;
+        -*)
+            if [[ "$1" != "--prefix" ]]; then
+                echo "Unknown option: $1" >&2
+                echo "Use --help for usage information" >&2
+                exit 1
+            fi
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${POSITIONAL_ARGS[@]:-}"
 
 # Load .env if exists
 if [[ -f "$ENV_FILE" ]]; then
@@ -26,7 +76,8 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a
 fi
 
-BUCKET="${R2_BUCKET_NAME:-unheard-artists-prod}"
+# Bucket priority: CLI arg > env var > default
+BUCKET="${BUCKET_ARG:-${R2_BUCKET_NAME:-unheard-artists-prod}}"
 R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 RCLONE_REMOTE="r2-prod"
 TEMP_DIR="/tmp/r2-move-$$"
@@ -105,8 +156,8 @@ move_object() {
 }
 
 if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <source-key> <dest-key>"
-    echo "       $0 --prefix <old-prefix> <new-prefix>"
+    echo "Error: Missing arguments" >&2
+    echo "Use --help for usage information" >&2
     exit 1
 fi
 

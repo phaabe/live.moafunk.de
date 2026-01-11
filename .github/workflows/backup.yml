@@ -3,8 +3,8 @@ name: BACKUP - Database and R2 Storage
 on:
   # Weekly scheduled backup (Sunday 3am UTC)
   schedule:
-    - cron: '0 3 * * 0'
-  
+    - cron: "0 3 * * 0"
+
   # Manual trigger from GitHub Actions UI
   workflow_dispatch:
     inputs:
@@ -30,7 +30,7 @@ permissions:
 
 concurrency:
   group: backup
-  cancel-in-progress: false  # Don't cancel running backups
+  cancel-in-progress: false # Don't cancel running backups
 
 env:
   LIGHTSAIL_HOST: ${{ secrets.LIGHTSAIL_HOST }}
@@ -38,7 +38,7 @@ env:
 jobs:
   backup:
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # R2 backup can take a while for large buckets
+    timeout-minutes: 60 # R2 backup can take a while for large buckets
 
     steps:
       - name: Determine backup type

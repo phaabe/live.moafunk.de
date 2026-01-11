@@ -458,22 +458,23 @@ pub async fn submit_form(
     )
     .await?;
 
-    let (voice_key, voice_original_key) = if let Some((filename, data, content_type)) = voice_message {
-        let voice_desired_name = format!("{} - voice-message", artist_name.trim());
-        let voice_result = storage::upload_audio_with_conversion(
-            &state,
-            artist_id,
-            "voice",
-            &voice_desired_name,
-            &filename,
-            data,
-            &content_type,
-        )
-        .await?;
-        (Some(voice_result.mp3_key), Some(voice_result.original_key))
-    } else {
-        (None, None)
-    };
+    let (voice_key, voice_original_key) =
+        if let Some((filename, data, content_type)) = voice_message {
+            let voice_desired_name = format!("{} - voice-message", artist_name.trim());
+            let voice_result = storage::upload_audio_with_conversion(
+                &state,
+                artist_id,
+                "voice",
+                &voice_desired_name,
+                &filename,
+                data,
+                &content_type,
+            )
+            .await?;
+            (Some(voice_result.mp3_key), Some(voice_result.original_key))
+        } else {
+            (None, None)
+        };
 
     // Update artist with file keys
     sqlx::query(

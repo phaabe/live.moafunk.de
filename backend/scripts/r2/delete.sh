@@ -1,24 +1,82 @@
 #!/bin/bash
 # Delete objects from R2 bucket
-# Usage: ./delete.sh <key> [key2] [key3] ...
-#        ./delete.sh --prefix <prefix>  # Delete all objects with prefix
-#        ./delete.sh --stdin            # Read keys from stdin (one per line)
-#        ./delete.sh --env /path/to/.env <key>
-#
-# Environment variables:
-#   R2_BUCKET_NAME - Bucket name (default: from .env or 'unheard-artists-prod')
-
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# Parse --env flag
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options] <key> [key2] [key3] ...
+       $(basename "$0") [options] --prefix <prefix>
+       $(basename "$0") [options] --stdin
+
+Delete objects from an R2 bucket.
+
+Options:
+  -e, --env <path>      Path to .env file (default: backend/.env)
+  -b, --bucket <name>   Bucket name (overrides R2_BUCKET_NAME env var)
+  -y, --yes             Skip confirmation prompt
+  -h, --help            Show this help message
+
+Modes:
+  --prefix <prefix>     Delete all objects with the given prefix
+  --stdin               Read keys from stdin (one per line)
+
+Environment variables:
+  R2_BUCKET_NAME        Bucket name (default: 'unheard-artists-prod')
+  R2_ACCOUNT_ID         Cloudflare account ID
+  R2_ACCESS_KEY_ID      R2 access key
+  R2_SECRET_ACCESS_KEY  R2 secret key
+
+Examples:
+  $(basename "$0") shows/file.mp3                    # Delete single object
+  $(basename "$0") -b unheard-artists-dev file.mp3   # Use specific bucket
+  $(basename "$0") --prefix shows/old-                # Delete by prefix
+  echo "file.mp3" | $(basename "$0") --stdin          # Delete from stdin
+EOF
+    exit 0
+}
+
+# Parse arguments
 ENV_FILE="$BACKEND_DIR/.env"
-if [[ "${1:-}" == "--env" || "${1:-}" == "-e" ]]; then
-    ENV_FILE="${2:-}"
-    shift 2
-fi
+BUCKET_ARG=""
+SKIP_CONFIRM=false
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -e|--env)
+            ENV_FILE="${2:-}"
+            shift 2
+            ;;
+        -b|--bucket)
+            BUCKET_ARG="${2:-}"
+            shift 2
+            ;;
+        -y|--yes)
+            SKIP_CONFIRM=true
+            shift
+            ;;
+        -*)
+            if [[ "$1" != "--prefix" && "$1" != "--stdin" ]]; then
+                echo "Unknown option: $1" >&2
+                echo "Use --help for usage information" >&2
+                exit 1
+            fi
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${POSITIONAL_ARGS[@]:-}"
 
 # Load .env if exists
 if [[ -f "$ENV_FILE" ]]; then
@@ -27,7 +85,8 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a
 fi
 
-BUCKET="${R2_BUCKET_NAME:-unheard-artists-prod}"
+# Bucket priority: CLI arg > env var > default
+BUCKET="${BUCKET_ARG:-${R2_BUCKET_NAME:-unheard-artists-prod}}"
 R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 RCLONE_REMOTE="r2-prod"
 
@@ -85,14 +144,16 @@ list_objects_with_prefix() {
 }
 
 if [[ $# -eq 0 ]]; then
-    echo "Usage: $0 <key> [key2] [key3] ..."
-    echo "       $0 --prefix <prefix>"
-    echo "       $0 --stdin"
+    echo "Error: No keys specified" >&2
+    echo "Use --help for usage information" >&2
     exit 1
 fi
 
 echo "Bucket: $BUCKET"
 echo "---"
+
+DELETED_KEYS=""
+FAILED_KEYS=""
 
 if [[ "$1" == "--prefix" ]]; then
     PREFIX="${2:-}"
@@ -117,8 +178,10 @@ if [[ "$1" == "--prefix" ]]; then
     while IFS= read -r key; do
         if delete_object "$key"; then
             ((COUNT++))
+            DELETED_KEYS+="$key\n"
         else
             ((FAILED++))
+            FAILED_KEYS+="$key\n"
         fi
     done <<< "$KEYS"
     
@@ -133,8 +196,10 @@ elif [[ "$1" == "--stdin" ]]; then
         [[ -z "$key" ]] && continue
         if delete_object "$key"; then
             ((COUNT++))
+            DELETED_KEYS+="$key\n"
         else
             ((FAILED++))
+            FAILED_KEYS+="$key\n"
         fi
     done
     
@@ -148,11 +213,23 @@ else
     for key in "$@"; do
         if delete_object "$key"; then
             ((COUNT++))
+            DELETED_KEYS+="$key\n"
         else
             ((FAILED++))
+            FAILED_KEYS+="$key\n"
         fi
     done
     
     echo "---"
     echo "Deleted: $COUNT, Failed: $FAILED"
+
+    if [[ $COUNT -gt 0 ]]; then
+        echo "Deleted keys:"
+        printf "%s" "$DELETED_KEYS"
+    fi
+
+    if [[ $FAILED -gt 0 ]]; then
+        echo "Failed keys:"
+        printf "%s" "$FAILED_KEYS"
+    fi
 fi

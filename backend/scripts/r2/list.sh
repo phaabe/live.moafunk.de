@@ -1,23 +1,71 @@
 #!/bin/bash
 # List objects in R2 bucket
-# Usage: ./list.sh [prefix] [--json]
-#        ./list.sh --env /path/to/.env [prefix] [--json]
-#
-# Environment variables:
-#   R2_BUCKET_NAME - Bucket name (default: from .env or 'unheard-artists-prod')
-#   R2_ACCOUNT_ID  - Cloudflare account ID
-
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# Parse --env flag
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options] [prefix]
+
+List objects in an R2 bucket.
+
+Options:
+  -e, --env <path>      Path to .env file (default: backend/.env)
+  -b, --bucket <name>   Bucket name (overrides R2_BUCKET_NAME env var)
+  --json                Output in JSON format
+  -h, --help            Show this help message
+
+Environment variables:
+  R2_BUCKET_NAME        Bucket name (default: 'unheard-artists-prod')
+  R2_ACCOUNT_ID         Cloudflare account ID
+  R2_ACCESS_KEY_ID      R2 access key
+  R2_SECRET_ACCESS_KEY  R2 secret key
+
+Examples:
+  $(basename "$0")                          # List all objects
+  $(basename "$0") shows/                   # List objects with prefix
+  $(basename "$0") -b unheard-artists-dev   # Use specific bucket
+  $(basename "$0") -e ./.env --json         # JSON output with custom env
+EOF
+    exit 0
+}
+
+# Parse arguments
 ENV_FILE="$BACKEND_DIR/.env"
-if [[ "${1:-}" == "--env" || "${1:-}" == "-e" ]]; then
-    ENV_FILE="${2:-}"
-    shift 2
-fi
+BUCKET_ARG=""
+PREFIX=""
+OUTPUT_FORMAT=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -e|--env)
+            ENV_FILE="${2:-}"
+            shift 2
+            ;;
+        -b|--bucket)
+            BUCKET_ARG="${2:-}"
+            shift 2
+            ;;
+        --json)
+            OUTPUT_FORMAT="--json"
+            shift
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+        *)
+            PREFIX="$1"
+            shift
+            ;;
+    esac
+done
 
 # Load .env if exists
 if [[ -f "$ENV_FILE" ]]; then
@@ -26,9 +74,8 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a
 fi
 
-BUCKET="${R2_BUCKET_NAME:-unheard-artists-prod}"
-PREFIX="${1:-}"
-OUTPUT_FORMAT="${2:-}"
+# Bucket priority: CLI arg > env var > default
+BUCKET="${BUCKET_ARG:-${R2_BUCKET_NAME:-unheard-artists-prod}}"
 
 echo "Listing objects in bucket: $BUCKET"
 [[ -n "$PREFIX" ]] && echo "Prefix filter: $PREFIX"
