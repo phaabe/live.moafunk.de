@@ -175,6 +175,19 @@ async fn main() -> anyhow::Result<()> {
             "/api/submit/file/:session_id",
             post(handlers::submit_chunked::submit_file),
         )
+        // Chunked file upload endpoints (for individual files >100MB)
+        .route(
+            "/api/submit/file-chunk/init/:session_id",
+            post(handlers::submit_chunked::submit_file_chunk_init),
+        )
+        .route(
+            "/api/submit/file-chunk/:session_id",
+            post(handlers::submit_chunked::submit_file_chunk),
+        )
+        .route(
+            "/api/submit/file-chunk/finalize/:session_id",
+            post(handlers::submit_chunked::submit_file_chunk_finalize),
+        )
         .route(
             "/api/submit/finalize/:session_id",
             post(handlers::submit_chunked::submit_finalize),

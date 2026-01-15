@@ -10,13 +10,20 @@ const API_URL =
 const API_SUBMIT_INIT = `${API_URL}/api/submit/init`;
 const API_SUBMIT_FILE = (sessionId: string, field: string) =>
   `${API_URL}/api/submit/file/${sessionId}?field=${field}`;
+const API_SUBMIT_FILE_CHUNK_INIT = (sessionId: string, field: string) =>
+  `${API_URL}/api/submit/file-chunk/init/${sessionId}?field=${field}`;
+const API_SUBMIT_FILE_CHUNK = (sessionId: string, field: string, index: number) =>
+  `${API_URL}/api/submit/file-chunk/${sessionId}?field=${field}&index=${index}`;
+const API_SUBMIT_FILE_CHUNK_FINALIZE = (sessionId: string, field: string) =>
+  `${API_URL}/api/submit/file-chunk/finalize/${sessionId}?field=${field}`;
 const API_SUBMIT_FINALIZE = (sessionId: string) =>
   `${API_URL}/api/submit/finalize/${sessionId}`;
 
-const MAX_SINGLE_FILE_SIZE_MB = 100;
-const MAX_TOTAL_UPLOAD_MB = 250;
+const MAX_SINGLE_FILE_SIZE_MB = 500; // Increased from 100MB to 500MB
+const MAX_TOTAL_UPLOAD_MB = 1500; // Increased from 250MB to 1500MB
 const MAX_SINGLE_FILE_SIZE_BYTES = MAX_SINGLE_FILE_SIZE_MB * 1024 * 1024;
 const MAX_TOTAL_UPLOAD_BYTES = MAX_TOTAL_UPLOAD_MB * 1024 * 1024;
+const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks to stay under Cloudflare's 100MB limit
 
 function getRequiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -281,6 +288,7 @@ form.addEventListener('submit', async (e) => {
     for (let i = 0; i < filesToUpload.length; i++) {
       const { field, file, label, extractPeaks } = filesToUpload[i];
       const baseProgress = 10 + (i / totalFiles) * 80;
+      const progressRange = 80 / totalFiles;
 
       // Extract waveform peaks before upload (if audio file)
       let peaksJson: string | null = null;
@@ -294,22 +302,89 @@ form.addEventListener('submit', async (e) => {
         }
       }
 
-      updateProgress(baseProgress + 2, `Uploading ${label}...`);
+      // Use chunked upload for files > 100MB to stay under Cloudflare limit
+      const useChunked = file.size > 100 * 1024 * 1024;
 
-      const fileData = new FormData();
-      fileData.set('file', file);
-      if (peaksJson) {
-        fileData.set('peaks', peaksJson);
-      }
+      if (!useChunked) {
+        // Small file: use single request upload
+        updateProgress(baseProgress + 2, `Uploading ${label}...`);
 
-      const fileResponse = await fetch(API_SUBMIT_FILE(sessionId, field), {
-        method: 'POST',
-        body: fileData,
-      });
+        const fileData = new FormData();
+        fileData.set('file', file);
+        if (peaksJson) {
+          fileData.set('peaks', peaksJson);
+        }
 
-      if (!fileResponse.ok) {
-        const errorText = await fileResponse.text();
-        throw new Error(errorText || `Failed to upload ${label}`);
+        const fileResponse = await fetch(API_SUBMIT_FILE(sessionId, field), {
+          method: 'POST',
+          body: fileData,
+        });
+
+        if (!fileResponse.ok) {
+          const errorText = await fileResponse.text();
+          throw new Error(errorText || `Failed to upload ${label}`);
+        }
+      } else {
+        // Large file: use chunked upload
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+        // Step 1: Initialize chunked upload for this file
+        updateProgress(baseProgress + 2, `Preparing ${label} upload...`);
+        const initChunkResponse = await fetch(API_SUBMIT_FILE_CHUNK_INIT(sessionId, field), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: file.name,
+            total_size: file.size,
+            total_chunks: totalChunks,
+            peaks: peaksJson,
+          }),
+        });
+
+        if (!initChunkResponse.ok) {
+          const errorText = await initChunkResponse.text();
+          throw new Error(errorText || `Failed to initialize ${label} upload`);
+        }
+
+        const initChunkResult = await initChunkResponse.json() as { file_session_id: string };
+        const fileSessionId = initChunkResult.file_session_id;
+
+        // Step 2: Upload chunks sequentially
+        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+          const start = chunkIndex * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunk = file.slice(start, end);
+
+          const chunkPercent = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+          updateProgress(
+            baseProgress + 2 + (progressRange - 4) * (chunkIndex / totalChunks),
+            `Uploading ${label}... ${chunkPercent}% (chunk ${chunkIndex + 1}/${totalChunks})`
+          );
+
+          const chunkFormData = new FormData();
+          chunkFormData.append('chunk', chunk);
+
+          const chunkResponse = await fetch(API_SUBMIT_FILE_CHUNK(fileSessionId, field, chunkIndex), {
+            method: 'POST',
+            body: chunkFormData,
+          });
+
+          if (!chunkResponse.ok) {
+            const errorText = await chunkResponse.text();
+            throw new Error(errorText || `Failed to upload ${label} chunk ${chunkIndex + 1}/${totalChunks}`);
+          }
+        }
+
+        // Step 3: Finalize chunked upload for this file
+        updateProgress(baseProgress + progressRange - 2, `Finalizing ${label}...`);
+        const finalizeChunkResponse = await fetch(API_SUBMIT_FILE_CHUNK_FINALIZE(fileSessionId, field), {
+          method: 'POST',
+        });
+
+        if (!finalizeChunkResponse.ok) {
+          const errorText = await finalizeChunkResponse.text();
+          throw new Error(errorText || `Failed to finalize ${label} upload`);
+        }
       }
     }
 
