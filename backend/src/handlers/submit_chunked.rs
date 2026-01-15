@@ -922,3 +922,362 @@ async fn finalize_artist_files_background(
         waited_ms += poll_interval_ms as i32;
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chunked file upload endpoints for large audio files (>100MB)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct FileChunkInitRequest {
+    pub filename: String,
+    pub total_size: u64,
+    pub total_chunks: u32,
+    pub peaks: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct FileChunkInitResponse {
+    pub success: bool,
+    pub file_session_id: String,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct FileChunkResponse {
+    pub success: bool,
+    pub index: u32,
+    pub received_bytes: usize,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct FileChunkFinalizeResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Initialize chunked upload for a single large file
+pub async fn submit_file_chunk_init(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Query(query): Query<FileQuery>,
+    Json(req): Json<FileChunkInitRequest>,
+) -> Result<Json<FileChunkInitResponse>> {
+    let field_name = &query.field;
+    tracing::info!(
+        "Chunked file upload init: session_id={}, field={}, filename={}, total_size={}, total_chunks={}",
+        session_id,
+        field_name,
+        req.filename,
+        req.total_size,
+        req.total_chunks
+    );
+
+    // Verify pending submission exists
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pending_submissions WHERE session_id = ? AND expires_at > datetime('now'))"
+    )
+    .bind(&session_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !exists {
+        return Err(AppError::NotFound(
+            "Session not found or expired".to_string(),
+        ));
+    }
+
+    // Validate field name
+    if !matches!(field_name.as_str(), "track1" | "track2" | "voice") {
+        return Err(AppError::Validation(format!(
+            "Invalid field: {}. Must be track1, track2, or voice.",
+            field_name
+        )));
+    }
+
+    // Generate file-specific session ID
+    let file_session_id = Uuid::new_v4().to_string();
+    let expires_at = chrono::Utc::now() + chrono::Duration::hours(2);
+
+    // Store pending chunked file upload metadata
+    sqlx::query(
+        r#"
+        INSERT INTO pending_file_uploads (
+            file_session_id, parent_session_id, field, filename, 
+            total_size, total_chunks, peaks_json, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&file_session_id)
+    .bind(&session_id)
+    .bind(field_name)
+    .bind(&req.filename)
+    .bind(req.total_size as i64)
+    .bind(req.total_chunks as i32)
+    .bind(&req.peaks)
+    .bind(expires_at.to_rfc3339())
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(FileChunkInitResponse {
+        success: true,
+        file_session_id,
+        message: format!("Chunked upload initialized. Send {} chunks.", req.total_chunks),
+    }))
+}
+
+/// Upload a single chunk
+pub async fn submit_file_chunk(
+    State(state): State<Arc<AppState>>,
+    Path(file_session_id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    mut multipart: Multipart,
+) -> Result<Json<FileChunkResponse>> {
+    // Extract chunk index and field from query params
+    let chunk_index: u32 = query.get("index")
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| AppError::Validation("Missing or invalid index parameter".to_string()))?;
+    
+    let field_name = query.get("field")
+        .ok_or_else(|| AppError::Validation("Missing field parameter".to_string()))?;
+    
+    tracing::info!(
+        "Chunked file upload chunk: file_session_id={}, field={}, index={}",
+        file_session_id,
+        field_name,
+        chunk_index
+    );
+
+    // Verify file session exists
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pending_file_uploads WHERE file_session_id = ? AND field = ? AND expires_at > datetime('now'))"
+    )
+    .bind(&file_session_id)
+    .bind(field_name)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !exists {
+        return Err(AppError::NotFound("File upload session not found or expired".to_string()));
+    }
+
+    // Get chunk data from multipart
+    let mut chunk_data: Option<Vec<u8>> = None;
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        AppError::Validation(format!("Failed to read chunk: {}", e))
+    })? {
+        if field.name().unwrap_or("") == "chunk" {
+            let data = field.bytes().await.map_err(|e| {
+                AppError::Validation(format!("Failed to read chunk data: {}", e))
+            })?;
+            chunk_data = Some(data.to_vec());
+            break;
+        }
+    }
+
+    let chunk_data = chunk_data.ok_or_else(|| {
+        AppError::Validation("No chunk data provided".to_string())
+    })?;
+
+    let received_bytes = chunk_data.len();
+
+    // Store chunk in S3 with temporary key
+    let chunk_key = format!("pending-file-chunks/{}/chunk-{:04}", file_session_id, chunk_index);
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&chunk_key)
+        .body(aws_sdk_s3::primitives::ByteStream::from(chunk_data))
+        .content_type("application/octet-stream")
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload chunk: {}", e)))?;
+
+    tracing::info!(
+        "Chunked file upload: chunk {} stored, {} bytes",
+        chunk_index,
+        received_bytes
+    );
+
+    Ok(Json(FileChunkResponse {
+        success: true,
+        index: chunk_index,
+        received_bytes,
+        message: format!("Chunk {} received ({} bytes)", chunk_index, received_bytes),
+    }))
+}
+
+/// Finalize chunked upload - assemble chunks and process
+pub async fn submit_file_chunk_finalize(
+    State(state): State<Arc<AppState>>,
+    Path(file_session_id): Path<String>,
+    Query(query): Query<FileQuery>,
+) -> Result<Json<FileChunkFinalizeResponse>> {
+    let field_name = &query.field;
+    
+    tracing::info!(
+        "Chunked file upload finalize: file_session_id={}, field={}",
+        file_session_id,
+        field_name
+    );
+
+    // Get upload metadata
+    let row = sqlx::query(
+        "SELECT parent_session_id, field, filename, total_chunks, peaks_json FROM pending_file_uploads WHERE file_session_id = ? AND expires_at > datetime('now')"
+    )
+    .bind(&file_session_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("File upload session not found or expired".to_string()))?;
+
+    let parent_session_id: String = sqlx::Row::get(&row, "parent_session_id");
+    let field_name: String = sqlx::Row::get(&row, "field");
+    let filename: String = sqlx::Row::get(&row, "filename");
+    let total_chunks: i32 = sqlx::Row::get(&row, "total_chunks");
+    let peaks_json: Option<String> = sqlx::Row::get(&row, "peaks_json");
+
+    // Assemble all chunks from S3
+    let mut assembled_data = Vec::new();
+    for i in 0..total_chunks {
+        let chunk_key = format!("pending-file-chunks/{}/chunk-{:04}", file_session_id, i);
+        
+        let get_result = state
+            .s3_client
+            .get_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(&chunk_key)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Storage(format!("Failed to fetch chunk {}: {}", i, e))
+            })?;
+
+        let chunk_bytes = get_result
+            .body
+            .collect()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to read chunk body: {}", e)))?
+            .into_bytes();
+
+        assembled_data.extend_from_slice(&chunk_bytes);
+    }
+
+    tracing::info!(
+        "Assembled {} chunks into {} bytes for file_session_id={}",
+        total_chunks,
+        assembled_data.len(),
+        file_session_id
+    );
+
+    // Now process the assembled file using existing submit_file logic
+    // Get parent session data
+    let parent_row = sqlx::query(
+        "SELECT artist_name, track1_name, track2_name FROM pending_submissions WHERE session_id = ?"
+    )
+    .bind(&parent_session_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Parent session not found".to_string()))?;
+
+    let artist_name: String = sqlx::Row::get(&parent_row, "artist_name");
+    let track1_name: String = sqlx::Row::get(&parent_row, "track1_name");
+    let track2_name: String = sqlx::Row::get(&parent_row, "track2_name");
+
+    // Validate audio format
+    if !audio::is_supported_audio_format(&filename) {
+        return Err(AppError::Validation(format!(
+            "Unsupported audio format. Supported formats: {}",
+            audio::SUPPORTED_AUDIO_EXTENSIONS.join(", ")
+        )));
+    }
+
+    // Determine storage details based on field
+    let (db_column, db_original_column, db_status_column, desired_name) = match field_name.as_str() {
+        "track1" => (
+            "track1_key",
+            "track1_original_key",
+            "track1_conversion_status",
+            format!("{} - {}", artist_name.trim(), track1_name.trim()),
+        ),
+        "track2" => (
+            "track2_key",
+            "track2_original_key",
+            "track2_conversion_status",
+            format!("{} - {}", artist_name.trim(), track2_name.trim()),
+        ),
+        "voice" => (
+            "voice_key",
+            "voice_original_key",
+            "voice_conversion_status",
+            format!("{} - voice-message", artist_name.trim()),
+        ),
+        _ => {
+            return Err(AppError::Validation(format!(
+                "Invalid field: {}",
+                field_name
+            )));
+        }
+    };
+
+    // Upload to storage
+    let content_type = "audio/mpeg".to_string(); // We'll detect properly if needed
+    let audio_result = storage::upload_audio_to_pending_async(
+        &state,
+        &parent_session_id,
+        &field_name,
+        &desired_name,
+        &filename,
+        assembled_data,
+        &content_type,
+    )
+    .await?;
+
+    // Update database
+    let is_already_mp3 = audio::is_mp3(&filename);
+    let initial_status = if is_already_mp3 { "completed" } else { "pending" };
+
+    let update_sql = format!(
+        "UPDATE pending_submissions SET {} = ?, {} = ?, {} = ?, peaks_json_{} = ? WHERE session_id = ?",
+        db_column, db_original_column, db_status_column, field_name
+    );
+
+    sqlx::query(&update_sql)
+        .bind(&audio_result.mp3_key)
+        .bind(&audio_result.original_key)
+        .bind(initial_status)
+        .bind(&peaks_json)
+        .bind(&parent_session_id)
+        .execute(&state.db)
+        .await?;
+
+    // Clean up chunks from S3
+    for i in 0..total_chunks {
+        let chunk_key = format!("pending-file-chunks/{}/chunk-{:04}", file_session_id, i);
+        let _ = state
+            .s3_client
+            .delete_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(&chunk_key)
+            .send()
+            .await;
+    }
+
+    // Delete file upload session
+    sqlx::query("DELETE FROM pending_file_uploads WHERE file_session_id = ?")
+        .bind(&file_session_id)
+        .execute(&state.db)
+        .await?;
+
+    tracing::info!(
+        "Chunked file upload finalized: field={}, file_session_id={}",
+        field_name,
+        file_session_id
+    );
+
+    Ok(Json(FileChunkFinalizeResponse {
+        success: true,
+        message: format!("{} uploaded successfully", field_name),
+    }))
+}

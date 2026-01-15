@@ -324,6 +324,36 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
+    // Pending file uploads for chunked submit form uploads (to bypass Cloudflare 100MB limit per file)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_file_uploads (
+            file_session_id TEXT PRIMARY KEY,
+            parent_session_id TEXT NOT NULL,
+            field TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            total_size INTEGER NOT NULL,
+            total_chunks INTEGER NOT NULL,
+            peaks_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (parent_session_id) REFERENCES pending_submissions(session_id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Add peaks_json columns to pending_submissions for each file type
+    add_column_if_missing(pool, "pending_submissions", "peaks_json_track1", "TEXT").await?;
+    add_column_if_missing(pool, "pending_submissions", "peaks_json_track2", "TEXT").await?;
+    add_column_if_missing(pool, "pending_submissions", "peaks_json_voice", "TEXT").await?;
+
+    // Clean up expired pending file uploads
+    sqlx::query("DELETE FROM pending_file_uploads WHERE expires_at < datetime('now')")
+        .execute(pool)
+        .await?;
+
     tracing::info!("Database migrations completed");
     Ok(())
 }
