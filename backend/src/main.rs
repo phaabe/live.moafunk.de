@@ -7,6 +7,7 @@ mod handlers;
 mod image_overlay;
 mod models;
 mod pdf;
+mod recording;
 mod storage;
 mod stream_bridge;
 
@@ -29,6 +30,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 pub use config::Config;
 pub use error::{AppError, Result};
 
+use recording::SharedRecordingManager;
 use stream_bridge::SharedStreamState;
 
 /// Tracks pending cover regeneration requests with debounce
@@ -39,6 +41,8 @@ pub struct AppState {
     pub config: Config,
     pub s3_client: aws_sdk_s3::Client,
     pub stream_state: SharedStreamState,
+    /// Recording session manager for show recordings
+    pub recording_manager: SharedRecordingManager,
     /// Debounce tracker for show cover regeneration (show_id -> last_request_time)
     pub cover_debounce: CoverDebounceMap,
     /// Cached default cover image (4 black tiles with UN/HEARD branding)
@@ -76,6 +80,71 @@ async fn stream_stop_handler(
         headers,
     )
     .await
+}
+
+// Recording handler wrappers that extract recording_manager from AppState
+async fn recording_start_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: axum::Json<handlers::recording::StartRecordingRequest>,
+) -> Result<impl IntoResponse> {
+    handlers::recording::start_recording(
+        State(state.clone()),
+        State(state.recording_manager.clone()),
+        State(state.stream_state.clone()),
+        headers,
+        body,
+    )
+    .await
+}
+
+async fn recording_status_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    handlers::recording::recording_status(State(state.recording_manager.clone())).await
+}
+
+async fn recording_marker_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: axum::Json<handlers::recording::AddMarkerRequest>,
+) -> Result<impl IntoResponse> {
+    handlers::recording::add_marker(
+        State(state.clone()),
+        State(state.recording_manager.clone()),
+        headers,
+        body,
+    )
+    .await
+}
+
+async fn recording_stop_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    handlers::recording::stop_recording(
+        State(state.clone()),
+        State(state.recording_manager.clone()),
+        State(state.stream_state.clone()),
+        headers,
+    )
+    .await
+}
+
+async fn list_recording_versions_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    path: axum::extract::Path<i64>,
+) -> Result<impl IntoResponse> {
+    handlers::recording::list_recording_versions(State(state), headers, path).await
+}
+
+// Recording finalize WebSocket handler wrapper
+async fn recording_finalize_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    query: Query<handlers::recording::FinalizeQuery>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    handlers::recording::finalize_ws_handler(ws, State(state), query, headers).await
 }
 
 #[tokio::main]
@@ -124,6 +193,10 @@ async fn main() -> anyhow::Result<()> {
     // Initialize stream state
     let stream_state = stream_bridge::new_shared_state();
 
+    // Initialize recording manager (temp files in ./data/recordings-temp)
+    let recording_temp_dir = std::path::PathBuf::from("./data/recordings-temp");
+    let recording_manager = recording::new_shared_manager(recording_temp_dir);
+
     // Initialize cover regeneration debounce tracker
     let cover_debounce = Arc::new(RwLock::new(HashMap::new()));
 
@@ -132,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         s3_client,
         stream_state,
+        recording_manager,
         cover_debounce,
         default_cover: tokio::sync::OnceCell::new(),
     });
@@ -230,6 +304,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/shows", post(handlers::api::api_create_show))
         .route("/api/shows/:id", get(handlers::api::api_show_detail))
         .route(
+            "/api/shows/:id/with-artists",
+            get(handlers::api::api_show_with_artists),
+        )
+        .route(
             "/api/shows/:id",
             axum::routing::put(handlers::api::api_update_show),
         )
@@ -309,6 +387,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws/stream", get(stream_ws_handler))
         .route("/api/stream/status", get(stream_status_handler))
         .route("/api/stream/stop", post(stream_stop_handler))
+        // Recording API for show recording with timecoded track markers
+        .route("/api/recording/start", post(recording_start_handler))
+        .route("/api/recording/status", get(recording_status_handler))
+        .route("/api/recording/marker", post(recording_marker_handler))
+        .route("/api/recording/stop", post(recording_stop_handler))
+        .route(
+            "/api/shows/:id/recordings",
+            get(list_recording_versions_handler),
+        )
+        // Recording finalize WebSocket for merging tracks with progress
+        .route("/ws/recording/finalize", get(recording_finalize_ws_handler))
         // Admin SPA fallback - serves index.html for client-side routing
         .fallback_service(admin_spa)
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes()))

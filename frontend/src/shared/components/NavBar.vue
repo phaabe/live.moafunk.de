@@ -17,6 +17,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: 'Stream', path: '/stream', category: 'Radio' },
+  { label: 'Recording', path: '/recording', roles: ['admin', 'superadmin'], category: 'Radio' },
   { label: 'Artists', path: '/artists', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Users', path: '/users', roles: ['admin', 'superadmin'], category: 'Configuration' },
@@ -70,19 +71,13 @@ watch(() => route.path, () => {
         <template v-for="(items, category) in groupedNavItems" :key="category">
           <div class="nav-group">
             <span class="nav-category">{{ category }}</span>
-            <router-link
-              v-for="item in items"
-              :key="item.path"
-              :to="item.path"
-              :class="['nav-link', { active: isActive(item.path) }]"
-            >
+            <router-link v-for="item in items" :key="item.path" :to="item.path"
+              :class="['nav-link', { active: isActive(item.path) }]">
               {{ item.label }}
             </router-link>
           </div>
-          <span 
-            v-if="Object.keys(groupedNavItems).indexOf(category) < Object.keys(groupedNavItems).length - 1" 
-            class="nav-delimiter"
-          >|</span>
+          <span v-if="Object.keys(groupedNavItems).indexOf(category) < Object.keys(groupedNavItems).length - 1"
+            class="nav-delimiter">|</span>
         </template>
       </div>
 
@@ -102,12 +97,8 @@ watch(() => route.path, () => {
       </div>
 
       <!-- Mobile hamburger button -->
-      <button 
-        class="hamburger mobile-only" 
-        :class="{ open: mobileMenuOpen }"
-        @click="toggleMobileMenu"
-        aria-label="Toggle menu"
-      >
+      <button class="hamburger mobile-only" :class="{ open: mobileMenuOpen }" @click="toggleMobileMenu"
+        aria-label="Toggle menu">
         <span class="hamburger-line"></span>
         <span class="hamburger-line"></span>
         <span class="hamburger-line"></span>
@@ -115,11 +106,7 @@ watch(() => route.path, () => {
     </div>
 
     <!-- Mobile menu overlay -->
-    <div 
-      v-if="mobileMenuOpen" 
-      class="mobile-menu-overlay"
-      @click="closeMobileMenu"
-    ></div>
+    <div v-if="mobileMenuOpen" class="mobile-menu-overlay" @click="closeMobileMenu"></div>
 
     <!-- Mobile menu -->
     <div class="mobile-menu" :class="{ open: mobileMenuOpen }">
@@ -132,13 +119,8 @@ watch(() => route.path, () => {
         <template v-for="(items, category) in groupedNavItems" :key="category">
           <div class="mobile-nav-group">
             <span class="mobile-nav-category">{{ category }}</span>
-            <router-link
-              v-for="item in items"
-              :key="item.path"
-              :to="item.path"
-              :class="['mobile-nav-link', { active: isActive(item.path) }]"
-              @click="closeMobileMenu"
-            >
+            <router-link v-for="item in items" :key="item.path" :to="item.path"
+              :class="['mobile-nav-link', { active: isActive(item.path) }]" @click="closeMobileMenu">
               {{ item.label }}
             </router-link>
           </div>

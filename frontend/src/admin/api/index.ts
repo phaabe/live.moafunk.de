@@ -14,10 +14,7 @@ class ApiClient {
     this.baseUrl = baseUrl;
   }
 
-  private async request<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
+  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
 
     const response = await fetch(url, {
@@ -133,9 +130,7 @@ export const artistsApi = {
     if (params?.sort) searchParams.set('sort', params.sort);
     if (params?.dir) searchParams.set('dir', params.dir);
     const query = searchParams.toString();
-    return api.get<{ artists: Artist[]; total: number }>(
-      `/api/artists${query ? `?${query}` : ''}`
-    );
+    return api.get<{ artists: Artist[]; total: number }>(`/api/artists${query ? `?${query}` : ''}`);
   },
 
   get: (id: number) => api.get<ArtistDetail>(`/api/artists/${id}`),
@@ -151,21 +146,27 @@ export const artistsApi = {
   unassignShow: (artistId: number, showId: number) =>
     api.delete<void>(`/api/artists/${artistId}/shows/${showId}`),
 
-  updateDetails: (id: number, data: {
-    mentions?: string;
-    upcoming_events?: string;
-    soundcloud?: string;
-    instagram?: string;
-    bandcamp?: string;
-    spotify?: string;
-    other_social?: string;
-  }) => api.put<void>(`/api/artists/${id}/details`, data),
+  updateDetails: (
+    id: number,
+    data: {
+      mentions?: string;
+      upcoming_events?: string;
+      soundcloud?: string;
+      instagram?: string;
+      bandcamp?: string;
+      spotify?: string;
+      other_social?: string;
+    }
+  ) => api.put<void>(`/api/artists/${id}/details`, data),
 
-  updatePicture: async (id: number, data: {
-    original: File;
-    cropped: Blob;
-    branded: Blob;
-  }): Promise<void> => {
+  updatePicture: async (
+    id: number,
+    data: {
+      original: File;
+      cropped: Blob;
+      branded: Blob;
+    }
+  ): Promise<void> => {
     const formData = new FormData();
     formData.append('original', data.original);
     formData.append('cropped', data.cropped, 'cropped.jpg');
@@ -181,18 +182,21 @@ export const artistsApi = {
     }
   },
 
-  updateAudio: async (id: number, data: {
-    voice?: File;
-    track1?: File;
-    track2?: File;
-    track1_name?: string;
-    track2_name?: string;
-  }): Promise<void> => {
+  updateAudio: async (
+    id: number,
+    data: {
+      voice?: File;
+      track1?: File;
+      track2?: File;
+      track1_name?: string;
+      track2_name?: string;
+    }
+  ): Promise<void> => {
     const formData = new FormData();
-    
+
     // Extract peaks for each audio file before upload
     const { extractWaveformPeaksJson } = await import('../../pages/waveformExtractor');
-    
+
     if (data.voice) {
       formData.append('voice', data.voice);
       try {
@@ -222,7 +226,7 @@ export const artistsApi = {
     }
     if (data.track1_name) formData.append('track1_name', data.track1_name);
     if (data.track2_name) formData.append('track2_name', data.track2_name);
-    
+
     const response = await fetch(`${API_BASE}/api/artists/${id}/audio`, {
       method: 'PUT',
       credentials: 'include',
@@ -284,13 +288,14 @@ export const showsApi = {
 
   create: (data: Partial<Show>) => api.post<Show>('/api/shows', data),
 
-  update: (id: number, data: Partial<Show>) =>
-    api.put<Show>(`/api/shows/${id}`, data),
+  update: (id: number, data: Partial<Show>) => api.put<Show>(`/api/shows/${id}`, data),
 
   delete: (id: number) => api.delete<void>(`/api/shows/${id}`),
 
   assignArtist: (showId: number, artistId: number) =>
-    api.post<{ success: boolean; artist: AssignedArtist }>(`/api/shows/${showId}/artists`, { artist_id: artistId }),
+    api.post<{ success: boolean; artist: AssignedArtist }>(`/api/shows/${showId}/artists`, {
+      artist_id: artistId,
+    }),
 
   unassignArtist: (showId: number, artistId: number) =>
     api.delete<{ success: boolean }>(`/api/shows/${showId}/artists/${artistId}`),
@@ -298,8 +303,18 @@ export const showsApi = {
   uploadRecording: async (
     showId: number,
     file: File,
-    onProgress?: (progress: { phase: 'extracting' | 'uploading' | 'finalizing'; percent: number; chunkIndex?: number; totalChunks?: number }) => void
-  ): Promise<{ success: boolean; key: string; recording_url?: string; recording_peaks_url?: string }> => {
+    onProgress?: (progress: {
+      phase: 'extracting' | 'uploading' | 'finalizing';
+      percent: number;
+      chunkIndex?: number;
+      totalChunks?: number;
+    }) => void
+  ): Promise<{
+    success: boolean;
+    key: string;
+    recording_url?: string;
+    recording_peaks_url?: string;
+  }> => {
     // Use chunked upload for files > 50MB to stay under Cloudflare's 100MB limit
     const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks
     const useChunked = file.size > CHUNK_SIZE;
@@ -384,7 +399,9 @@ export const showsApi = {
 
       if (!chunkResponse.ok) {
         const error = await chunkResponse.json().catch(() => ({ error: 'Chunk upload failed' }));
-        throw new Error(error.error || error.message || `Failed to upload chunk ${i + 1}/${totalChunks}`);
+        throw new Error(
+          error.error || error.message || `Failed to upload chunk ${i + 1}/${totalChunks}`
+        );
       }
 
       const percent = Math.round(((i + 1) / totalChunks) * 100);
@@ -456,4 +473,69 @@ export const streamApi = {
   status: () => api.get<StreamStatus>('/api/stream/status'),
 
   stop: () => api.post<void>('/api/stream/stop'),
+};
+
+// Recording API
+export interface RecordingArtist {
+  id: number;
+  name: string;
+  pronouns: string;
+  voice_url?: string;
+  track1_url?: string;
+  track1_name: string;
+  track2_url?: string;
+  track2_name: string;
+}
+
+export interface ShowWithArtists {
+  id: number;
+  title: string;
+  date: string;
+  description?: string;
+  status: string;
+  artists: RecordingArtist[];
+}
+
+export interface RecordingStatus {
+  is_recording: boolean;
+  show_id?: number;
+  started_at?: string;
+  elapsed_ms?: number;
+  marker_count?: number;
+}
+
+export interface RecordingVersionInfo {
+  id: number;
+  show_id: number;
+  version: string;
+  status: 'raw' | 'finalizing' | 'finalized' | 'failed';
+  duration_ms?: number;
+  marker_count: number;
+  created_at: string;
+  finalized_at?: string;
+  download_url?: string;
+  error_message?: string;
+}
+
+export const recordingApi = {
+  getShowWithArtists: (showId: number) =>
+    api.get<ShowWithArtists>(`/api/shows/${showId}/with-artists`),
+
+  start: (showId: number) =>
+    api.post<{ success: boolean; started_at: string }>('/api/recording/start', { show_id: showId }),
+
+  stop: () =>
+    api.post<{ success: boolean; raw_key: string; markers_key: string }>('/api/recording/stop'),
+
+  status: () => api.get<RecordingStatus>('/api/recording/status'),
+
+  addMarker: (data: {
+    artist_id: number;
+    track_type: 'voice' | 'track1' | 'track2';
+    track_key: string;
+    duration_ms: number;
+  }) => api.post<{ success: boolean }>('/api/recording/marker', data),
+
+  listRecordings: (showId: number) =>
+    api.get<{ recordings: RecordingVersionInfo[] }>(`/api/shows/${showId}/recordings`),
 };

@@ -2111,6 +2111,118 @@ pub async fn api_delete_show_recording(
 }
 
 // ============================================================================
+// Show with Artists for Recording Page
+// ============================================================================
+
+/// Artist info for recording page with track URLs
+#[derive(Debug, Serialize)]
+pub struct RecordingArtistInfo {
+    pub id: i64,
+    pub name: String,
+    pub pronouns: String,
+    pub voice_url: Option<String>,
+    pub track1_url: Option<String>,
+    pub track1_name: String,
+    pub track2_url: Option<String>,
+    pub track2_name: String,
+}
+
+/// Response for show with artists endpoint (for recording page)
+#[derive(Debug, Serialize)]
+pub struct ShowWithArtistsResponse {
+    pub id: i64,
+    pub title: String,
+    pub date: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub artists: Vec<RecordingArtistInfo>,
+}
+
+/// Helper struct to fetch artist data for recording
+#[derive(Debug, sqlx::FromRow)]
+struct RecordingArtistRow {
+    id: i64,
+    name: String,
+    pronouns: String,
+    voice_message_key: Option<String>,
+    track1_key: Option<String>,
+    track1_name: String,
+    track2_key: Option<String>,
+    track2_name: String,
+}
+
+/// GET /api/shows/:id/with-artists
+/// Returns show with assigned artists and their track URLs for the recording page
+pub async fn api_show_with_artists(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    // Get assigned artists with their track keys
+    let assigned_artists_raw: Vec<RecordingArtistRow> = sqlx::query_as(
+        r#"
+        SELECT a.id, a.name, a.pronouns, a.voice_message_key,
+               a.track1_key, a.track1_name, a.track2_key, a.track2_name
+        FROM artists a
+        INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id
+        WHERE asa.show_id = ?
+        ORDER BY a.name COLLATE NOCASE
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+
+    // Generate presigned URLs for audio files
+    let mut artists = Vec::new();
+    for a in assigned_artists_raw {
+        let voice_url = if let Some(key) = &a.voice_message_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
+        let track1_url = if let Some(key) = &a.track1_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
+        let track2_url = if let Some(key) = &a.track2_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
+        artists.push(RecordingArtistInfo {
+            id: a.id,
+            name: a.name,
+            pronouns: a.pronouns,
+            voice_url,
+            track1_url,
+            track1_name: a.track1_name,
+            track2_url,
+            track2_name: a.track2_name,
+        });
+    }
+
+    Ok(Json(ShowWithArtistsResponse {
+        id: show.id,
+        title: show.title,
+        date: show.date,
+        description: show.description,
+        status: show.status,
+        artists,
+    }))
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 

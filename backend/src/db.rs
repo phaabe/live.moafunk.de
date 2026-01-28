@@ -63,14 +63,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .await?;
 
     // Normalize legacy artist statuses (pending/approved/rejected) to the new model.
-    // Keep DB values consistent with the assignment table.
     sqlx::query(
         "UPDATE artists SET status = 'unassigned' WHERE status NOT IN ('assigned', 'unassigned')",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "UPDATE artists SET status = 'assigned' WHERE id IN (SELECT artist_id FROM artist_show_assignments)",
     )
     .execute(pool)
     .await?;
@@ -177,6 +171,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Keep artist.status consistent with assignment table (must run after table exists)
+    sqlx::query(
+        "UPDATE artists SET status = 'assigned' WHERE id IN (SELECT artist_id FROM artist_show_assignments)",
+    )
+    .execute(pool)
+    .await?;
+
     // Users table for role-based authentication
     sqlx::query(
         r#"
@@ -196,9 +197,6 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // Migration: add user_id column to existing sessions table if missing
-    add_column_if_missing(pool, "sessions", "user_id", "INTEGER").await?;
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
@@ -212,6 +210,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+
+    // Migration: add user_id column to existing sessions table if missing
+    add_column_if_missing(pool, "sessions", "user_id", "INTEGER").await?;
 
     // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)
     sqlx::query(
@@ -354,6 +355,41 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
+    // Recording versions table - tracks each recording session for a show
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS recording_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            show_id INTEGER NOT NULL,
+            version TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'raw',
+            duration_ms INTEGER,
+            marker_count INTEGER NOT NULL DEFAULT 0,
+            raw_key TEXT,
+            markers_key TEXT,
+            final_key TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT,
+            finalized_at TEXT,
+            FOREIGN KEY (show_id) REFERENCES shows(id) ON DELETE CASCADE,
+            UNIQUE (show_id, version)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Index for efficient lookups by show_id
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_recording_versions_show_id
+        ON recording_versions(show_id)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     tracing::info!("Database migrations completed");
     Ok(())
 }
@@ -382,5 +418,159 @@ pub async fn seed_superadmin(pool: &SqlitePool, config: &Config) -> Result<(), s
         tracing::info!("Superadmin user created successfully");
     }
 
+    Ok(())
+}
+
+// ============================================================================
+// Recording Versions CRUD
+// ============================================================================
+
+use crate::models::RecordingVersion;
+
+/// Create a new recording version entry
+pub async fn create_recording_version(
+    pool: &SqlitePool,
+    show_id: i64,
+    version: &str,
+    raw_key: &str,
+    markers_key: &str,
+    marker_count: i64,
+) -> Result<RecordingVersion, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>(
+        r#"
+        INSERT INTO recording_versions (show_id, version, raw_key, markers_key, marker_count)
+        VALUES (?, ?, ?, ?, ?)
+        RETURNING *
+        "#,
+    )
+    .bind(show_id)
+    .bind(version)
+    .bind(raw_key)
+    .bind(markers_key)
+    .bind(marker_count)
+    .fetch_one(pool)
+    .await
+}
+
+/// Get a recording version by show_id and version string
+pub async fn get_recording_version(
+    pool: &SqlitePool,
+    show_id: i64,
+    version: &str,
+) -> Result<Option<RecordingVersion>, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>(
+        "SELECT * FROM recording_versions WHERE show_id = ? AND version = ?",
+    )
+    .bind(show_id)
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Get a recording version by ID
+pub async fn get_recording_version_by_id(
+    pool: &SqlitePool,
+    id: i64,
+) -> Result<Option<RecordingVersion>, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>("SELECT * FROM recording_versions WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// List all recording versions for a show (ordered by created_at descending)
+pub async fn list_recording_versions(
+    pool: &SqlitePool,
+    show_id: i64,
+) -> Result<Vec<RecordingVersion>, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>(
+        "SELECT * FROM recording_versions WHERE show_id = ? ORDER BY created_at DESC",
+    )
+    .bind(show_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Get the latest recording version for a show
+pub async fn get_latest_recording_version(
+    pool: &SqlitePool,
+    show_id: i64,
+) -> Result<Option<RecordingVersion>, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>(
+        "SELECT * FROM recording_versions WHERE show_id = ? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(show_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Update recording version status
+pub async fn update_recording_version_status(
+    pool: &SqlitePool,
+    id: i64,
+    status: &str,
+    error_message: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE recording_versions
+        SET status = ?, error_message = ?, updated_at = datetime('now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(status)
+    .bind(error_message)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Mark a recording version as finalized
+pub async fn finalize_recording_version(
+    pool: &SqlitePool,
+    id: i64,
+    final_key: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE recording_versions
+        SET status = 'finalized', final_key = ?, finalized_at = datetime('now'), updated_at = datetime('now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(final_key)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Update recording version duration
+pub async fn update_recording_version_duration(
+    pool: &SqlitePool,
+    id: i64,
+    duration_ms: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE recording_versions
+        SET duration_ms = ?, updated_at = datetime('now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(duration_ms)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Delete a recording version
+pub async fn delete_recording_version(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM recording_versions WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }

@@ -139,3 +139,76 @@ impl User {
         }
     }
 }
+
+/// Status of a recording version in the finalize pipeline
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordingVersionStatus {
+    /// Raw recording saved, not yet finalized
+    Raw,
+    /// Finalize in progress
+    Finalizing,
+    /// Successfully finalized
+    Finalized,
+    /// Finalize failed
+    Failed,
+}
+
+impl RecordingVersionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RecordingVersionStatus::Raw => "raw",
+            RecordingVersionStatus::Finalizing => "finalizing",
+            RecordingVersionStatus::Finalized => "finalized",
+            RecordingVersionStatus::Failed => "failed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "raw" => Some(RecordingVersionStatus::Raw),
+            "finalizing" => Some(RecordingVersionStatus::Finalizing),
+            "finalized" => Some(RecordingVersionStatus::Finalized),
+            "failed" => Some(RecordingVersionStatus::Failed),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RecordingVersionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// A versioned recording for a show (each recording session creates a new version)
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct RecordingVersion {
+    pub id: i64,
+    pub show_id: i64,
+    /// Version identifier (timestamp string like "20260128-143052")
+    pub version: String,
+    /// Status: raw, finalizing, finalized, failed
+    pub status: String,
+    /// Duration in milliseconds (populated after recording stops)
+    pub duration_ms: Option<i64>,
+    /// Number of track markers in this recording
+    pub marker_count: i64,
+    /// R2 key for raw.webm file
+    pub raw_key: Option<String>,
+    /// R2 key for markers.json file
+    pub markers_key: Option<String>,
+    /// R2 key for final.mp3 file (after finalize)
+    pub final_key: Option<String>,
+    /// Error message if finalize failed
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+    pub finalized_at: Option<String>,
+}
+
+impl RecordingVersion {
+    pub fn status_enum(&self) -> RecordingVersionStatus {
+        RecordingVersionStatus::from_str(&self.status).unwrap_or(RecordingVersionStatus::Raw)
+    }
+}
