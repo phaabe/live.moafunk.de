@@ -2,9 +2,18 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue';
 import WaveSurfer from 'wavesurfer.js';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   src: string;
   label?: string;
+  showVolume?: boolean;
+  initialVolume?: number;
+}>(), {
+  showVolume: false,
+  initialVolume: 100,
+});
+
+const emit = defineEmits<{
+  (e: 'volumeChange', volume: number): void;
 }>();
 
 const globalAudioBus: EventTarget = typeof window !== 'undefined'
@@ -18,6 +27,7 @@ const currentTime = ref('0:00');
 const duration = ref('0:00');
 const isLoading = ref(false);
 const isInitialized = ref(false);
+const volume = ref(props.initialVolume);
 
 let wavesurfer: WaveSurfer | null = null;
 let isDestroyed = false;
@@ -30,7 +40,7 @@ function formatTime(seconds: number): string {
 
 function initWaveSurfer(): void {
   if (!waveformContainer.value || isDestroyed || isInitialized.value) return;
-  
+
   if (!props.src) {
     console.warn('AudioPlayer: No src provided');
     return;
@@ -74,6 +84,8 @@ function initWaveSurfer(): void {
     isLoading.value = false;
     if (wavesurfer) {
       duration.value = formatTime(wavesurfer.getDuration());
+      // Apply initial volume (0-200 maps to 0-2)
+      wavesurfer.setVolume(volume.value / 100);
       // Auto-play after lazy init
       globalAudioBus.dispatchEvent(new CustomEvent('audio-play', { detail: { id: playerId } }));
       wavesurfer.play();
@@ -131,7 +143,7 @@ function togglePlay(): void {
     initWaveSurfer();
     return;
   }
-  
+
   if (wavesurfer) {
     if (!wavesurfer.isPlaying()) {
       globalAudioBus.dispatchEvent(new CustomEvent('audio-play', { detail: { id: playerId } }));
@@ -147,10 +159,27 @@ function handleGlobalPlay(event: Event): void {
   }
 }
 
+function handleVolumeChange(event: Event): void {
+  const target = event.target as HTMLInputElement;
+  const newVolume = Number(target.value);
+  volume.value = newVolume;
+  if (wavesurfer) {
+    wavesurfer.setVolume(newVolume / 100);
+  }
+  emit('volumeChange', newVolume);
+}
+
+watch(() => props.initialVolume, (newVolume) => {
+  volume.value = newVolume;
+  if (wavesurfer) {
+    wavesurfer.setVolume(newVolume / 100);
+  }
+});
+
 watch(() => props.src, (newSrc, oldSrc) => {
   const newBasePath = getBasePath(newSrc);
   const oldBasePath = oldSrc ? getBasePath(oldSrc) : '';
-  
+
   if (newBasePath !== oldBasePath) {
     isInitialized.value = false;
     isLoading.value = false;
@@ -185,30 +214,31 @@ onUnmounted(() => {
 
 <template>
   <div class="audio-player">
-    <button 
-      class="play-btn" 
-      @click="togglePlay" 
-      :disabled="isLoading"
-      :aria-label="isPlaying ? 'Pause' : 'Play'"
-    >
+    <button class="play-btn" @click="togglePlay" :disabled="isLoading" :aria-label="isPlaying ? 'Pause' : 'Play'">
       <span v-if="isLoading" class="loading-icon">⏳</span>
       <span v-else-if="isPlaying" class="pause-icon">❚❚</span>
       <span v-else class="play-icon">▶</span>
     </button>
-    
+
     <div class="waveform-wrapper">
       <div v-if="!isInitialized" class="waveform-placeholder" @click="togglePlay">
         <div class="placeholder-bars"></div>
       </div>
       <div v-show="isInitialized" ref="waveformContainer" class="waveform"></div>
     </div>
-    
+
     <div class="time-display">
       <span class="current-time">{{ currentTime }}</span>
       <span class="separator">/</span>
       <span class="duration">{{ duration }}</span>
     </div>
-    
+
+    <div v-if="showVolume" class="volume-control">
+      <input type="range" min="0" max="200" :value="volume" @input="handleVolumeChange" class="volume-slider"
+        :title="`Volume: ${volume}%`" />
+      <span class="volume-label">{{ volume }}%</span>
+    </div>
+
     <a :href="src" download class="download-btn" title="Download">
       ⬇
     </a>
@@ -266,8 +296,15 @@ onUnmounted(() => {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .waveform-wrapper {
@@ -297,6 +334,61 @@ onUnmounted(() => {
 
 .separator {
   opacity: 0.5;
+}
+
+.volume-control {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  flex-shrink: 0;
+}
+
+.volume-slider {
+  width: 60px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--color-surface-alt);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.volume-slider::-webkit-slider-thumb:hover {
+  background: #ffec44;
+  transform: scale(1.2);
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  cursor: pointer;
+  border: none;
+}
+
+.volume-slider::-moz-range-thumb:hover {
+  background: #ffec44;
+}
+
+.volume-label {
+  font-size: 0.7em;
+  color: var(--color-text-muted);
+  min-width: 35px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .download-btn {
@@ -331,6 +423,10 @@ onUnmounted(() => {
 
   .time-display {
     font-size: 0.8em;
+  }
+
+  .volume-control {
+    display: none;
   }
 
   .download-btn {

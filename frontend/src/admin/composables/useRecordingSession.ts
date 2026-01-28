@@ -428,6 +428,8 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
       // Send marker for partial playback if recording
       if (isRecording.value && recordingStartTime.value && state.startTime && state.trackKey) {
         const offsetMs = state.startTime - recordingStartTime.value;
+        // Convert volume from 0-1 to 0-200 percentage
+        const volumePercent = Math.round(state.volume * 100);
         try {
           await recordingApi.addMarker({
             artist_id: artist.id,
@@ -435,6 +437,7 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
             track_key: state.trackKey,
             duration_ms: durationMs,
             offset_ms: Math.max(0, offsetMs),
+            volume: volumePercent,
           });
           markerCount.value++;
         } catch (e) {
@@ -484,12 +487,15 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
         try {
           // offset_ms is when the track started relative to recording start
           const offsetMs = playStartTime - recordingStartTime.value;
+          // Convert volume from 0-1 to 0-200 percentage
+          const volumePercent = Math.round(state.volume * 100);
           await recordingApi.addMarker({
             artist_id: artist.id,
             track_type: trackType,
             track_key: s3Key,
             duration_ms: durationMs,
             offset_ms: Math.max(0, offsetMs), // Ensure non-negative
+            volume: volumePercent,
           });
           markerCount.value++;
         } catch (e) {

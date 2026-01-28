@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { streamApi } from '../api';
 import { BaseButton } from '@shared/components';
+import AudioPlayer from '../components/AudioPlayer.vue';
 import { useFlash, useStreamSocket, useAudioCapture, useAudioMeter, useRecordingSession, useFinalizeProgress } from '../composables';
 
 const flash = useFlash();
@@ -350,8 +351,17 @@ onUnmounted(() => {
 
         <div v-else class="artists-grid">
           <div v-for="artist in recording.artists.value" :key="artist.id" class="artist-card">
-            <h3 class="artist-name">{{ artist.name }}</h3>
-            <div class="artist-pronouns">{{ artist.pronouns }}</div>
+            <div class="artist-header">
+              <img v-if="artist.pic_url" :src="artist.pic_url" :alt="artist.name" class="artist-thumb"
+                crossorigin="anonymous" />
+              <div v-else class="artist-thumb-placeholder"></div>
+              <div class="artist-info">
+                <router-link :to="`/artists/${artist.id}`" class="artist-name-link">
+                  {{ artist.name }}
+                </router-link>
+                <span class="artist-pronouns">{{ artist.pronouns }}</span>
+              </div>
+            </div>
 
             <div class="track-buttons">
               <!-- Voice Track -->
@@ -365,11 +375,13 @@ onUnmounted(() => {
                   <div v-if="recording.getTrackState(artist.id, 'voice_message').playing" class="progress-bar"
                     :style="{ width: `${recording.getTrackState(artist.id, 'voice_message').progress}%` }"></div>
                 </button>
-                <input v-if="artist.voice_url" type="range" min="0" max="100"
+                <input v-if="artist.voice_url" type="range" min="0" max="200"
                   :value="recording.getTrackState(artist.id, 'voice_message').volume * 100"
                   @input="recording.setTrackVolume(artist.id, 'voice_message', Number(($event.target as HTMLInputElement).value) / 100)"
                   class="track-volume-slider"
                   :title="`Volume: ${Math.round(recording.getTrackState(artist.id, 'voice_message').volume * 100)}%`" />
+                <span v-if="artist.voice_url" class="volume-label">{{ Math.round(recording.getTrackState(artist.id,
+                  'voice_message').volume * 100) }}%</span>
               </div>
 
               <!-- Track 1 -->
@@ -383,11 +395,13 @@ onUnmounted(() => {
                   <div v-if="recording.getTrackState(artist.id, 'track1').playing" class="progress-bar"
                     :style="{ width: `${recording.getTrackState(artist.id, 'track1').progress}%` }"></div>
                 </button>
-                <input v-if="artist.track1_url" type="range" min="0" max="100"
+                <input v-if="artist.track1_url" type="range" min="0" max="200"
                   :value="recording.getTrackState(artist.id, 'track1').volume * 100"
                   @input="recording.setTrackVolume(artist.id, 'track1', Number(($event.target as HTMLInputElement).value) / 100)"
                   class="track-volume-slider"
                   :title="`Volume: ${Math.round(recording.getTrackState(artist.id, 'track1').volume * 100)}%`" />
+                <span v-if="artist.track1_url" class="volume-label">{{ Math.round(recording.getTrackState(artist.id,
+                  'track1').volume * 100) }}%</span>
               </div>
 
               <!-- Track 2 -->
@@ -401,11 +415,13 @@ onUnmounted(() => {
                   <div v-if="recording.getTrackState(artist.id, 'track2').playing" class="progress-bar"
                     :style="{ width: `${recording.getTrackState(artist.id, 'track2').progress}%` }"></div>
                 </button>
-                <input v-if="artist.track2_url" type="range" min="0" max="100"
+                <input v-if="artist.track2_url" type="range" min="0" max="200"
                   :value="recording.getTrackState(artist.id, 'track2').volume * 100"
                   @input="recording.setTrackVolume(artist.id, 'track2', Number(($event.target as HTMLInputElement).value) / 100)"
                   class="track-volume-slider"
                   :title="`Volume: ${Math.round(recording.getTrackState(artist.id, 'track2').volume * 100)}%`" />
+                <span v-if="artist.track2_url" class="volume-label">{{ Math.round(recording.getTrackState(artist.id,
+                  'track2').volume * 100) }}%</span>
               </div>
             </div>
           </div>
@@ -480,9 +496,9 @@ onUnmounted(() => {
                   <span v-if="rec.finalized_at"> · {{ formatDate(rec.finalized_at) }}</span>
                 </span>
               </div>
-              <a v-if="rec.download_url" :href="rec.download_url" class="download-btn" target="_blank" @click.stop>
-                ⬇️ Download
-              </a>
+              <div v-if="rec.download_url" class="recording-player">
+                <AudioPlayer :src="rec.download_url" :show-volume="true" :initial-volume="100" />
+              </div>
             </div>
           </div>
         </div>
@@ -574,6 +590,10 @@ onUnmounted(() => {
 
 @media (max-width: 900px) {
   .recording-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .artists-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -886,29 +906,97 @@ onUnmounted(() => {
 
 .artists-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: var(--spacing-md);
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-lg);
 }
 
 .artist-card {
-  background: var(--color-surface-alt);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  padding: var(--spacing-md);
+  padding: var(--spacing-lg);
 }
 
-.artist-name {
-  font-size: 1rem;
-  font-weight: 600;
-  margin: 0 0 var(--spacing-xs);
-  color: var(--color-text);
+.artist-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-sm);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.artist-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  flex: 0 0 auto;
+}
+
+.artist-thumb-placeholder {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  flex: 0 0 auto;
+}
+
+.artist-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.artist-name-link {
+  color: var(--color-primary);
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 1.05em;
+}
+
+.artist-name-link:hover {
+  text-decoration: underline;
 }
 
 .artist-pronouns {
-  font-size: 0.75rem;
   color: var(--color-text-muted);
-  margin-bottom: var(--spacing-md);
+  font-size: 0.85em;
 }
 
+.audio-players {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.audio-row {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: var(--spacing-md);
+  align-items: center;
+}
+
+.audio-label {
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.audio-placeholder {
+  color: var(--color-text-muted);
+  font-size: 0.9em;
+}
+
+/* Legacy track button styles - kept for potential future use */
 .track-buttons {
   display: flex;
   flex-direction: column;
@@ -997,7 +1085,7 @@ onUnmounted(() => {
 
 /* Track Volume Slider */
 .track-volume-slider {
-  width: 50px;
+  width: 60px;
   height: 4px;
   -webkit-appearance: none;
   appearance: none;
@@ -1005,6 +1093,15 @@ onUnmounted(() => {
   border-radius: 2px;
   outline: none;
   cursor: pointer;
+  flex-shrink: 0;
+}
+
+.volume-label {
+  font-size: 0.7em;
+  color: var(--color-text-muted);
+  min-width: 35px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 
@@ -1277,6 +1374,13 @@ onUnmounted(() => {
 
 .recording-item.finalized {
   cursor: default;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacing-sm);
+}
+
+.recording-player {
+  width: 100%;
 }
 
 .recording-info {

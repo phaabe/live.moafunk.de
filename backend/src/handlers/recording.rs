@@ -43,6 +43,14 @@ pub struct AddMarkerRequest {
     pub duration_ms: u64,
     /// Offset from recording start when track started playing (in milliseconds)
     pub offset_ms: u64,
+    /// Volume level (0-200, where 100 is 100%). Defaults to 100.
+    #[serde(default = "default_volume")]
+    pub volume: u32,
+}
+
+/// Default volume is 100%
+fn default_volume() -> u32 {
+    100
 }
 
 /// Response for marker addition.
@@ -191,6 +199,7 @@ pub async fn add_marker(
             body.track_key,
             body.duration_ms,
             body.offset_ms,
+            body.volume,
         )
         .map_err(|e| match e {
             RecordingError::NotRecording => {
@@ -1022,12 +1031,19 @@ async fn build_and_run_ffmpeg(
 
             // Build filter for this track:
             // - atrim: trim to the actual played duration (handles early stops)
+            // - volume: apply volume adjustment (0-200% maps to 0.0-2.0)
             // - adelay: position at the correct offset in the recording
-            // Format: [1:a]atrim=0:5.5,adelay=5000|5000[a1]
+            // Format: [1:a]atrim=0:5.5,asetpts=PTS-STARTPTS,volume=1.5,adelay=5000|5000[a1]
             let duration_seconds = marker.duration_ms as f64 / 1000.0;
+            let volume_factor = marker.volume as f64 / 100.0;
             let delay_filter = format!(
-                "[{}:a]atrim=0:{:.3},asetpts=PTS-STARTPTS,adelay={}|{}[a{}]",
-                input_index, duration_seconds, marker.offset_ms, marker.offset_ms, input_index
+                "[{}:a]atrim=0:{:.3},asetpts=PTS-STARTPTS,volume={:.2},adelay={}|{}[a{}]",
+                input_index,
+                duration_seconds,
+                volume_factor,
+                marker.offset_ms,
+                marker.offset_ms,
+                input_index
             );
             filter_inputs.push(delay_filter);
             input_index += 1;

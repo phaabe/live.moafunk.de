@@ -26,6 +26,14 @@ pub struct TrackMarker {
     pub track_type: String,
     /// S3 key of the original (high-quality) track file
     pub track_key: String,
+    /// Volume level (0-200, where 100 is 100%)
+    #[serde(default = "default_volume")]
+    pub volume: u32,
+}
+
+/// Default volume is 100% (used for backwards compatibility with old markers)
+fn default_volume() -> u32 {
+    100
 }
 
 /// An active recording session for a show.
@@ -103,12 +111,14 @@ impl RecordingSession {
     /// * `track_type` - Type of track ("track1", "track2", or "voice_message")
     /// * `track_key` - S3 key of the original track file
     /// * `duration_ms` - Duration of the track in milliseconds
+    /// * `volume` - Volume level (0-200, where 100 is 100%)
     pub fn add_marker(
         &mut self,
         artist_id: i64,
         track_type: String,
         track_key: String,
         duration_ms: u64,
+        volume: u32,
     ) {
         let marker = TrackMarker {
             offset_ms: self.elapsed_ms(),
@@ -116,15 +126,17 @@ impl RecordingSession {
             artist_id,
             track_type: track_type.clone(),
             track_key: track_key.clone(),
+            volume,
         };
 
         tracing::info!(
-            "Added marker for show {}: artist={}, type={}, offset={}ms, duration={}ms",
+            "Added marker for show {}: artist={}, type={}, offset={}ms, duration={}ms, volume={}%",
             self.show_id,
             artist_id,
             track_type,
             marker.offset_ms,
-            duration_ms
+            duration_ms,
+            volume
         );
 
         self.markers.push(marker);
@@ -277,6 +289,7 @@ impl RecordingManager {
         track_type: String,
         track_key: String,
         duration_ms: u64,
+        volume: u32,
     ) -> Result<TrackMarker, RecordingError> {
         if let Some(ref mut session) = self.session {
             let offset_ms = session.elapsed_ms();
@@ -285,6 +298,7 @@ impl RecordingManager {
                 track_type.clone(),
                 track_key.clone(),
                 duration_ms,
+                volume,
             );
 
             // Return the marker that was just added
@@ -294,6 +308,7 @@ impl RecordingManager {
                 artist_id,
                 track_type,
                 track_key,
+                volume,
             })
         } else {
             Err(RecordingError::NotRecording)
@@ -310,6 +325,7 @@ impl RecordingManager {
         track_key: String,
         duration_ms: u64,
         offset_ms: u64,
+        volume: u32,
     ) -> Result<TrackMarker, RecordingError> {
         if let Some(ref mut session) = self.session {
             let marker = TrackMarker {
@@ -318,15 +334,17 @@ impl RecordingManager {
                 artist_id,
                 track_type: track_type.clone(),
                 track_key: track_key.clone(),
+                volume,
             };
 
             tracing::info!(
-                "Added marker for show {}: artist={}, type={}, offset={}ms, duration={}ms",
+                "Added marker for show {}: artist={}, type={}, offset={}ms, duration={}ms, volume={}%",
                 session.show_id,
                 artist_id,
                 track_type,
                 offset_ms,
-                duration_ms
+                duration_ms,
+                volume
             );
 
             session.markers.push(marker.clone());
