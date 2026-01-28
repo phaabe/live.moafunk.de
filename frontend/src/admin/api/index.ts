@@ -531,7 +531,7 @@ export const recordingApi = {
 
   addMarker: (data: {
     artist_id: number;
-    track_type: 'voice' | 'track1' | 'track2';
+    track_type: 'voice_message' | 'track1' | 'track2';
     track_key: string;
     duration_ms: number;
   }) => api.post<{ success: boolean }>('/api/recording/marker', data),

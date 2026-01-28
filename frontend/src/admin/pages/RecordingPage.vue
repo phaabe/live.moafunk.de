@@ -349,19 +349,19 @@ onUnmounted(() => {
               <!-- Voice Track -->
               <div class="track-row" :class="{ disabled: !artist.voice_url }">
                 <button class="track-btn voice-btn" :class="{
-                  playing: recording.getTrackState(artist.id, 'voice').playing,
+                  playing: recording.getTrackState(artist.id, 'voice_message').playing,
                   disabled: !artist.voice_url
-                }" :disabled="!artist.voice_url" @click="recording.toggleTrack(artist, 'voice')">
+                }" :disabled="!artist.voice_url" @click="recording.toggleTrack(artist, 'voice_message')">
                   <span class="track-icon">🎤</span>
                   <span class="track-label">Voice</span>
-                  <div v-if="recording.getTrackState(artist.id, 'voice').playing" class="progress-bar"
-                    :style="{ width: `${recording.getTrackState(artist.id, 'voice').progress}%` }"></div>
+                  <div v-if="recording.getTrackState(artist.id, 'voice_message').playing" class="progress-bar"
+                    :style="{ width: `${recording.getTrackState(artist.id, 'voice_message').progress}%` }"></div>
                 </button>
                 <input v-if="artist.voice_url" type="range" min="0" max="100"
-                  :value="recording.getTrackState(artist.id, 'voice').volume * 100"
-                  @input="recording.setTrackVolume(artist.id, 'voice', Number(($event.target as HTMLInputElement).value) / 100)"
+                  :value="recording.getTrackState(artist.id, 'voice_message').volume * 100"
+                  @input="recording.setTrackVolume(artist.id, 'voice_message', Number(($event.target as HTMLInputElement).value) / 100)"
                   class="track-volume-slider"
-                  :title="`Volume: ${Math.round(recording.getTrackState(artist.id, 'voice').volume * 100)}%`" />
+                  :title="`Volume: ${Math.round(recording.getTrackState(artist.id, 'voice_message').volume * 100)}%`" />
               </div>
 
               <!-- Track 1 -->

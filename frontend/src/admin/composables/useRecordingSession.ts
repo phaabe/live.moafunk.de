@@ -8,7 +8,7 @@ import {
   type RecordingVersionInfo,
 } from '../api';
 
-export type TrackType = 'voice' | 'track1' | 'track2';
+export type TrackType = 'voice_message' | 'track1' | 'track2';
 
 export interface TrackState {
   playing: boolean;
@@ -278,7 +278,7 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
   // Get track URL from artist
   function getTrackUrl(artist: RecordingArtist, trackType: TrackType): string | undefined {
     switch (trackType) {
-      case 'voice':
+      case 'voice_message':
         return artist.voice_url;
       case 'track1':
         return artist.track1_url;
@@ -290,7 +290,7 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
   // Get track name from artist
   function getTrackName(artist: RecordingArtist, trackType: TrackType): string {
     switch (trackType) {
-      case 'voice':
+      case 'voice_message':
         return 'Voice';
       case 'track1':
         return artist.track1_name || 'Track 1';
