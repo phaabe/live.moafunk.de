@@ -19,9 +19,28 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
   const isRecording = ref(false);
   const error = ref<string | null>(null);
 
+  // Volume control (0-2, where 1 is normal, 0 is muted, 2 is 2x gain)
+  const inputVolume = ref(1);
+
   // Use shallowRef for non-reactive objects
   const mediaStream = shallowRef<MediaStream | null>(null);
+  // The processed stream (with gain applied) for MediaRecorder
+  const processedStream = shallowRef<MediaStream | null>(null);
   let mediaRecorder: MediaRecorder | null = null;
+
+  // Audio processing
+  let audioContext: AudioContext | null = null;
+  let gainNode: GainNode | null = null;
+  let sourceNode: MediaStreamAudioSourceNode | null = null;
+  let destinationNode: MediaStreamAudioDestinationNode | null = null;
+
+  // Set input volume
+  function setInputVolume(volume: number): void {
+    inputVolume.value = Math.max(0, Math.min(2, volume));
+    if (gainNode) {
+      gainNode.gain.value = inputVolume.value;
+    }
+  }
 
   async function refreshDevices(): Promise<void> {
     try {
@@ -66,6 +85,9 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
         },
       });
 
+      // Set up audio processing chain with gain control
+      setupAudioProcessing(stream);
+
       mediaStream.value = stream;
       selectedDeviceId.value = deviceId;
       isCapturing.value = true;
@@ -78,6 +100,47 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
       onError?.(msg);
       return false;
     }
+  }
+
+  // Set up audio processing chain with gain node
+  function setupAudioProcessing(stream: MediaStream): void {
+    // Clean up previous audio context
+    cleanupAudioProcessing();
+
+    audioContext = new AudioContext({ sampleRate: 48000 });
+    sourceNode = audioContext.createMediaStreamSource(stream);
+    gainNode = audioContext.createGain();
+    destinationNode = audioContext.createMediaStreamDestination();
+
+    // Apply current volume
+    gainNode.gain.value = inputVolume.value;
+
+    // Connect: source -> gain -> destination
+    sourceNode.connect(gainNode);
+    gainNode.connect(destinationNode);
+
+    // Use the processed stream for recording
+    processedStream.value = destinationNode.stream;
+  }
+
+  // Clean up audio processing nodes
+  function cleanupAudioProcessing(): void {
+    if (sourceNode) {
+      sourceNode.disconnect();
+      sourceNode = null;
+    }
+    if (gainNode) {
+      gainNode.disconnect();
+      gainNode = null;
+    }
+    if (destinationNode) {
+      destinationNode = null;
+    }
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+    processedStream.value = null;
   }
 
   async function captureScreenAudio(): Promise<boolean> {
@@ -110,6 +173,10 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
 
       // Create audio-only stream
       const audioStream = new MediaStream(audioTracks);
+
+      // Set up audio processing chain with gain control
+      setupAudioProcessing(audioStream);
+
       mediaStream.value = audioStream;
       selectedDeviceId.value = 'screen';
       isCapturing.value = true;
@@ -128,7 +195,10 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
   }
 
   function startRecording(): boolean {
-    if (!mediaStream.value) {
+    // Use processed stream (with gain) if available, otherwise raw stream
+    const streamToRecord = processedStream.value || mediaStream.value;
+
+    if (!streamToRecord) {
       error.value = 'No audio source available';
       return false;
     }
@@ -138,7 +208,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
 
-      mediaRecorder = new MediaRecorder(mediaStream.value, {
+      mediaRecorder = new MediaRecorder(streamToRecord, {
         mimeType,
         audioBitsPerSecond: 192000,
       });
@@ -179,8 +249,32 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     console.log('[AudioCapture] Recording stopped');
   }
 
+  /**
+   * Restart the MediaRecorder to get a fresh WebM container with proper EBML header.
+   * Use this when starting a file recording to ensure the WebM is valid from the start.
+   * The stream continues uninterrupted.
+   */
+  function restartRecording(): boolean {
+    if (!mediaStream.value) {
+      error.value = 'No audio source available';
+      return false;
+    }
+
+    console.log('[AudioCapture] Restarting MediaRecorder for fresh WebM header');
+
+    // Stop current recorder if active
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+      mediaRecorder = null;
+    }
+
+    // Start a new recorder - this creates a new WebM container with proper header
+    return startRecording();
+  }
+
   function stopCapture(): void {
     stopRecording();
+    cleanupAudioProcessing();
 
     if (mediaStream.value) {
       mediaStream.value.getTracks().forEach((track) => track.stop());
@@ -203,11 +297,15 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     isRecording,
     error,
     mediaStream,
+    processedStream,
+    inputVolume,
+    setInputVolume,
     refreshDevices,
     captureDevice,
     captureScreenAudio,
     startRecording,
     stopRecording,
+    restartRecording,
     stopCapture,
   };
 }

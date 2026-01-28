@@ -8,6 +8,7 @@ const ArtistDetailPage = () => import('./pages/ArtistDetailPage.vue');
 const ShowsPage = () => import('./pages/ShowsPage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
 const StreamPage = () => import('./pages/StreamPage.vue');
+const RecordingPage = () => import('./pages/RecordingPage.vue');
 const UsersPage = () => import('./pages/UsersPage.vue');
 const UserEditPage = () => import('./pages/UserEditPage.vue');
 const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
@@ -54,6 +55,12 @@ const router = createRouter({
       name: 'stream',
       component: StreamPage,
       meta: { requiresAuth: true },
+    },
+    {
+      path: '/recording',
+      name: 'recording',
+      component: RecordingPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/users',

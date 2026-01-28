@@ -129,6 +129,159 @@ pub async fn convert_to_mp3(
     Ok(mp3_data)
 }
 
+/// Get the duration of an audio file in milliseconds using ffprobe.
+///
+/// Uses ffprobe to extract the duration from the audio file's metadata or by
+/// decoding if necessary.
+///
+/// # Arguments
+/// * `path` - Path to the audio file
+///
+/// # Returns
+/// * `Ok(u64)` - Duration in milliseconds
+/// * `Err(AppError)` - If ffprobe fails or duration cannot be parsed
+pub async fn get_duration<P: AsRef<Path>>(path: P) -> Result<u64> {
+    let path = path.as_ref();
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| AppError::Internal("Invalid path encoding".to_string()))?;
+
+    // First try: Get duration from format header (fast, works for most files)
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            path_str,
+        ])
+        .output()
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!("Failed to run ffprobe (is it installed?): {}", e))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!("ffprobe failed for {}: {}", path.display(), stderr);
+        return Err(AppError::Internal(format!(
+            "Failed to get audio duration: {}",
+            stderr.lines().last().unwrap_or("Unknown error")
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let duration_str = stdout.trim();
+
+    // If format duration is available, use it
+    if !duration_str.is_empty() && duration_str != "N/A" {
+        if let Ok(duration_secs) = duration_str.parse::<f64>() {
+            let duration_ms = (duration_secs * 1000.0).round() as u64;
+            tracing::debug!(
+                "Audio duration for {} (from format): {} ms ({:.2} s)",
+                path.display(),
+                duration_ms,
+                duration_secs
+            );
+            return Ok(duration_ms);
+        }
+    }
+
+    // Fallback: For streaming WebM files without duration header,
+    // get the last packet timestamp (slower but works for all valid files)
+    tracing::debug!(
+        "Duration not in format header for {}, scanning packets...",
+        path.display()
+    );
+
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "quiet",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "packet=pts_time",
+            "-of",
+            "csv=p=0",
+            path_str,
+        ])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to run ffprobe packet scan: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(AppError::Internal(format!(
+            "Failed to scan packets for duration: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Get the last valid timestamp from packet scan
+    let last_pts = stdout
+        .lines()
+        .filter_map(|line| line.trim().parse::<f64>().ok())
+        .last();
+
+    match last_pts {
+        Some(duration_secs) => {
+            // Add a small buffer for the last packet's duration (~20ms for Opus)
+            let duration_ms = ((duration_secs + 0.02) * 1000.0).round() as u64;
+            tracing::debug!(
+                "Audio duration for {} (from packets): {} ms ({:.2} s)",
+                path.display(),
+                duration_ms,
+                duration_secs
+            );
+            Ok(duration_ms)
+        }
+        None => Err(AppError::Internal(format!(
+            "Could not determine duration - file may be empty or corrupted ({})",
+            path.display()
+        ))),
+    }
+}
+
+/// Get the duration of audio data from raw bytes using ffprobe.
+///
+/// Creates a temporary file, probes it, and cleans up.
+///
+/// # Arguments
+/// * `data` - The raw audio file bytes
+/// * `filename_hint` - A filename hint for determining the format (extension)
+///
+/// # Returns
+/// * `Ok(u64)` - Duration in milliseconds
+/// * `Err(AppError)` - If ffprobe fails or duration cannot be parsed
+pub async fn get_duration_from_bytes(data: &[u8], filename_hint: &str) -> Result<u64> {
+    let temp_dir = std::env::temp_dir();
+    let unique_id = uuid::Uuid::new_v4().to_string();
+
+    let ext = Path::new(filename_hint)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+
+    let temp_path = temp_dir.join(format!("audio_probe_{}.{}", unique_id, ext));
+
+    // Write data to temp file
+    tokio::fs::write(&temp_path, data)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to write temp file: {}", e)))?;
+
+    // Get duration
+    let result = get_duration(&temp_path).await;
+
+    // Clean up
+    let _ = tokio::fs::remove_file(&temp_path).await;
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
