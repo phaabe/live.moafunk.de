@@ -15,6 +15,8 @@ export interface TrackState {
   progress: number;
   volume: number; // 0-1
   audio: HTMLAudioElement | null;
+  startTime: number | null; // When playback started (for marker offset calculation)
+  trackKey: string | null; // S3 key of the track being played
 }
 
 export interface UseRecordingSessionOptions {
@@ -34,6 +36,11 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
   const selectedShow = ref<ShowWithArtists | null>(null);
   const loadingShows = ref(false);
   const loadingShowDetails = ref(false);
+
+  // Track preloading
+  const preloadingTracks = ref(false);
+  const preloadProgress = ref(0); // 0-100
+  const preloadedTracks = ref<Set<string>>(new Set()); // URLs that have been preloaded
 
   // Recording state
   const isRecording = ref(false);
@@ -130,6 +137,8 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
       selectedShow.value = await recordingApi.getShowWithArtists(showId);
       // Initialize track states for all artists
       initializeTrackStates();
+      // Preload all tracks in background
+      preloadAllTracks();
     } catch (e) {
       onError?.(e instanceof Error ? e.message : 'Failed to load show details');
       selectedShow.value = null;
@@ -138,29 +147,89 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
     }
   }
 
+  // Preload all artist tracks into browser cache
+  async function preloadAllTracks(): Promise<void> {
+    if (!selectedShow.value) return;
+
+    // Collect all track URLs
+    const trackUrls: string[] = [];
+    for (const artist of selectedShow.value.artists) {
+      if (artist.voice_url) trackUrls.push(artist.voice_url);
+      if (artist.track1_url) trackUrls.push(artist.track1_url);
+      if (artist.track2_url) trackUrls.push(artist.track2_url);
+    }
+
+    if (trackUrls.length === 0) return;
+
+    preloadingTracks.value = true;
+    preloadProgress.value = 0;
+    preloadedTracks.value.clear();
+
+    let loaded = 0;
+
+    // Preload tracks in parallel (but limit concurrency to avoid overwhelming the browser)
+    const concurrency = 3;
+    const chunks: string[][] = [];
+    for (let i = 0; i < trackUrls.length; i += concurrency) {
+      chunks.push(trackUrls.slice(i, i + concurrency));
+    }
+
+    for (const chunk of chunks) {
+      await Promise.all(
+        chunk.map(async (url) => {
+          try {
+            // Use fetch with cache to preload the audio file
+            const response = await fetch(url, { cache: 'force-cache' });
+            if (response.ok) {
+              // Read the response to ensure it's fully downloaded
+              await response.arrayBuffer();
+              preloadedTracks.value.add(url);
+            }
+          } catch (e) {
+            console.warn('Failed to preload track:', url, e);
+          } finally {
+            loaded++;
+            preloadProgress.value = Math.round((loaded / trackUrls.length) * 100);
+          }
+        })
+      );
+    }
+
+    preloadingTracks.value = false;
+    console.log(
+      `[RecordingSession] Preloaded ${preloadedTracks.value.size}/${trackUrls.length} tracks`
+    );
+  }
+
   // Initialize track states for current show's artists
   function initializeTrackStates(): void {
     trackStates.value.clear();
     if (!selectedShow.value) return;
 
     for (const artist of selectedShow.value.artists) {
-      trackStates.value.set(`${artist.id}-voice`, {
+      trackStates.value.set(`${artist.id}-voice_message`, {
         playing: false,
         progress: 0,
         volume: 1,
         audio: null,
+        startTime: null,
+        trackKey: null,
       });
       trackStates.value.set(`${artist.id}-track1`, {
         playing: false,
         progress: 0,
         volume: 1,
         audio: null,
+        startTime: null,
+        trackKey: null,
       });
       trackStates.value.set(`${artist.id}-track2`, {
         playing: false,
         progress: 0,
         volume: 1,
         audio: null,
+        startTime: null,
+        trackKey: null,
       });
     }
   }
@@ -270,12 +339,12 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
     }
   }
 
-  // Track key helper
+  // Track key helper (for local state management)
   function getTrackKey(artistId: number, trackType: TrackType): string {
     return `${artistId}-${trackType}`;
   }
 
-  // Get track URL from artist
+  // Get track URL from artist (for playback)
   function getTrackUrl(artist: RecordingArtist, trackType: TrackType): string | undefined {
     switch (trackType) {
       case 'voice_message':
@@ -284,6 +353,18 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
         return artist.track1_url;
       case 'track2':
         return artist.track2_url;
+    }
+  }
+
+  // Get track S3 key from artist (for marker/finalize)
+  function getTrackS3Key(artist: RecordingArtist, trackType: TrackType): string | undefined {
+    switch (trackType) {
+      case 'voice_message':
+        return artist.voice_key;
+      case 'track1':
+        return artist.track1_key;
+      case 'track2':
+        return artist.track2_key;
     }
   }
 
@@ -302,7 +383,16 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
   // Get track state
   function getTrackState(artistId: number, trackType: TrackType): TrackState {
     const key = getTrackKey(artistId, trackType);
-    return trackStates.value.get(key) ?? { playing: false, progress: 0, volume: 1, audio: null };
+    return (
+      trackStates.value.get(key) ?? {
+        playing: false,
+        progress: 0,
+        volume: 1,
+        audio: null,
+        startTime: null,
+        trackKey: null,
+      }
+    );
   }
 
   // Set track volume
@@ -321,6 +411,7 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
   async function toggleTrack(artist: RecordingArtist, trackType: TrackType): Promise<void> {
     const key = getTrackKey(artist.id, trackType);
     const url = getTrackUrl(artist, trackType);
+    const s3Key = getTrackS3Key(artist, trackType);
 
     if (!url) {
       onError?.('Track not available');
@@ -330,12 +421,34 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
     const state = trackStates.value.get(key);
     if (!state) return;
 
-    // If already playing, stop it
+    // If already playing, stop it and send marker for partial playback
     if (state.playing && state.audio) {
+      const durationMs = state.startTime ? Date.now() - state.startTime : 0;
+
+      // Send marker for partial playback if recording
+      if (isRecording.value && recordingStartTime.value && state.startTime && state.trackKey) {
+        const offsetMs = state.startTime - recordingStartTime.value;
+        try {
+          await recordingApi.addMarker({
+            artist_id: artist.id,
+            track_type: trackType,
+            track_key: state.trackKey,
+            duration_ms: durationMs,
+            offset_ms: Math.max(0, offsetMs),
+          });
+          markerCount.value++;
+        } catch (e) {
+          console.error('Failed to add marker for stopped track:', e);
+        }
+      }
+
       state.audio.pause();
       state.audio.currentTime = 0;
       state.playing = false;
       state.progress = 0;
+      state.startTime = null;
+      state.trackKey = null;
+      state.audio = null;
       return;
     }
 
@@ -345,8 +458,10 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
     state.audio = audio;
     state.playing = true;
 
-    // Track playback time for marker
+    // Track playback time for marker - store in state for manual stop
     const playStartTime = Date.now();
+    state.startTime = playStartTime;
+    state.trackKey = s3Key || null;
 
     audio.ontimeupdate = () => {
       if (audio.duration) {
@@ -358,19 +473,21 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
       const durationMs = Date.now() - playStartTime;
       state.playing = false;
       state.progress = 0;
+      state.startTime = null;
+      state.trackKey = null;
       state.audio = null;
 
       onTrackEnded?.(artist.id, trackType, durationMs);
 
       // Add marker if recording - calculate offset from when track STARTED playing
-      if (isRecording.value && recordingStartTime.value) {
+      if (isRecording.value && recordingStartTime.value && s3Key) {
         try {
           // offset_ms is when the track started relative to recording start
           const offsetMs = playStartTime - recordingStartTime.value;
           await recordingApi.addMarker({
             artist_id: artist.id,
             track_type: trackType,
-            track_key: key,
+            track_key: s3Key,
             duration_ms: durationMs,
             offset_ms: Math.max(0, offsetMs), // Ensure non-negative
           });
@@ -385,6 +502,8 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
       onError?.('Failed to play track');
       state.playing = false;
       state.progress = 0;
+      state.startTime = null;
+      state.trackKey = null;
       state.audio = null;
     };
 
@@ -450,6 +569,11 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
     finalizedRecordings,
     finalizingRecordings,
 
+    // Track preloading
+    preloadingTracks,
+    preloadProgress,
+    preloadedTracks,
+
     // Track state
     trackStates,
 
@@ -457,6 +581,7 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
     loadShows,
     loadShowDetails,
     loadRecordings,
+    preloadAllTracks,
     startRecording,
     stopRecording,
     checkRecordingStatus,

@@ -2121,9 +2121,12 @@ pub struct RecordingArtistInfo {
     pub name: String,
     pub pronouns: String,
     pub voice_url: Option<String>,
+    pub voice_key: Option<String>,
     pub track1_url: Option<String>,
+    pub track1_key: Option<String>,
     pub track1_name: String,
     pub track2_url: Option<String>,
+    pub track2_key: Option<String>,
     pub track2_name: String,
 }
 
@@ -2205,9 +2208,12 @@ pub async fn api_show_with_artists(
             name: a.name,
             pronouns: a.pronouns,
             voice_url,
+            voice_key: a.voice_message_key.clone(),
             track1_url,
+            track1_key: a.track1_key.clone(),
             track1_name: a.track1_name,
             track2_url,
+            track2_key: a.track2_key.clone(),
             track2_name: a.track2_name,
         });
     }

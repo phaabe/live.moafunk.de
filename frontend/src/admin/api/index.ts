@@ -481,9 +481,12 @@ export interface RecordingArtist {
   name: string;
   pronouns: string;
   voice_url?: string;
+  voice_key?: string;
   track1_url?: string;
+  track1_key?: string;
   track1_name: string;
   track2_url?: string;
+  track2_key?: string;
   track2_name: string;
 }
 

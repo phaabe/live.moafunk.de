@@ -328,7 +328,15 @@ onUnmounted(() => {
 
       <!-- Right Panel: Artist Track Grid -->
       <div class="tracks-panel card">
-        <h2>Artist Tracks</h2>
+        <h2>
+          Artist Tracks
+          <span v-if="recording.preloadingTracks.value" class="preload-indicator">
+            Loading tracks... {{ recording.preloadProgress.value }}%
+          </span>
+          <span v-else-if="recording.preloadedTracks.value.size > 0" class="preload-complete">
+            ✓ {{ recording.preloadedTracks.value.size }} tracks cached
+          </span>
+        </h2>
 
         <div v-if="recording.loadingShowDetails.value" class="loading">Loading artists...</div>
 
@@ -834,6 +842,37 @@ onUnmounted(() => {
 /* Tracks Panel */
 .tracks-panel {
   min-height: 400px;
+}
+
+.tracks-panel h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.preload-indicator {
+  font-size: 0.75rem;
+  font-weight: normal;
+  color: var(--color-warning);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.preload-complete {
+  font-size: 0.75rem;
+  font-weight: normal;
+  color: var(--color-success);
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .loading,

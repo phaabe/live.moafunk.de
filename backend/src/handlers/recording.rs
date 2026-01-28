@@ -1020,11 +1020,14 @@ async fn build_and_run_ffmpeg(
             args.push("-i".to_string());
             args.push(track_path.to_string_lossy().to_string());
 
-            // Build adelay filter for this track: adelay=offset_ms|offset_ms (stereo)
-            // [1:a]adelay=5000|5000[a1]
+            // Build filter for this track:
+            // - atrim: trim to the actual played duration (handles early stops)
+            // - adelay: position at the correct offset in the recording
+            // Format: [1:a]atrim=0:5.5,adelay=5000|5000[a1]
+            let duration_seconds = marker.duration_ms as f64 / 1000.0;
             let delay_filter = format!(
-                "[{}:a]adelay={}|{}[a{}]",
-                input_index, marker.offset_ms, marker.offset_ms, input_index
+                "[{}:a]atrim=0:{:.3},asetpts=PTS-STARTPTS,adelay={}|{}[a{}]",
+                input_index, duration_seconds, marker.offset_ms, marker.offset_ms, input_index
             );
             filter_inputs.push(delay_filter);
             input_index += 1;
