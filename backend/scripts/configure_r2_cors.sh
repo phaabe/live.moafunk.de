@@ -12,11 +12,12 @@ set -euo pipefail
 # Or with custom bucket/origins:
 #   BUCKET=my-bucket ORIGINS="https://example.com,http://localhost:5173" ./backend/scripts/configure_r2_cors.sh
 
-BUCKET="${BUCKET:-unheard-artists-media}"
+BUCKET="${BUCKET:-unheard-artists-dev}"
 ACCOUNT_ID="${ACCOUNT_ID:-4acacbddb37198e8eed490e4b7c752ee}"
 
 # Default allowed origins (localhost for dev, production domains)
-ORIGINS="${ORIGINS:-http://localhost:3000,http://localhost:8000,https://live.moafunk.de,https://admin.live.moafunk.de}"
+# Includes port 5173 for Vite default dev server
+ORIGINS="${ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8000,https://live.moafunk.de,https://admin.live.moafunk.de}"
 
 # Check wrangler is installed
 if ! command -v wrangler &> /dev/null; then

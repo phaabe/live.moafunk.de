@@ -480,10 +480,14 @@ export interface RecordingArtist {
   id: number;
   name: string;
   pronouns: string;
+  pic_url?: string;
   voice_url?: string;
+  voice_key?: string;
   track1_url?: string;
+  track1_key?: string;
   track1_name: string;
   track2_url?: string;
+  track2_key?: string;
   track2_name: string;
 }
 
@@ -534,6 +538,8 @@ export const recordingApi = {
     track_type: 'voice_message' | 'track1' | 'track2';
     track_key: string;
     duration_ms: number;
+    offset_ms: number;
+    volume: number;
   }) => api.post<{ success: boolean }>('/api/recording/marker', data),
 
   listRecordings: (showId: number) =>

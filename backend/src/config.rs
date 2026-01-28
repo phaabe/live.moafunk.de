@@ -84,7 +84,7 @@ fn default_max_upload_size() -> u64 {
 }
 
 fn default_bucket_name() -> String {
-    "unheard-artists".to_string()
+    "unheard-artists-dev".to_string()
 }
 
 fn default_rtmp_url() -> String {

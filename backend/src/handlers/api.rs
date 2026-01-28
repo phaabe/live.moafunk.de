@@ -2120,10 +2120,14 @@ pub struct RecordingArtistInfo {
     pub id: i64,
     pub name: String,
     pub pronouns: String,
+    pub pic_url: Option<String>,
     pub voice_url: Option<String>,
+    pub voice_key: Option<String>,
     pub track1_url: Option<String>,
+    pub track1_key: Option<String>,
     pub track1_name: String,
     pub track2_url: Option<String>,
+    pub track2_key: Option<String>,
     pub track2_name: String,
 }
 
@@ -2144,6 +2148,7 @@ struct RecordingArtistRow {
     id: i64,
     name: String,
     pronouns: String,
+    pic_key: Option<String>,
     voice_message_key: Option<String>,
     track1_key: Option<String>,
     track1_name: String,
@@ -2170,7 +2175,7 @@ pub async fn api_show_with_artists(
     // Get assigned artists with their track keys
     let assigned_artists_raw: Vec<RecordingArtistRow> = sqlx::query_as(
         r#"
-        SELECT a.id, a.name, a.pronouns, a.voice_message_key,
+        SELECT a.id, a.name, a.pronouns, a.pic_key, a.voice_message_key,
                a.track1_key, a.track1_name, a.track2_key, a.track2_name
         FROM artists a
         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id
@@ -2182,9 +2187,14 @@ pub async fn api_show_with_artists(
     .fetch_all(&state.db)
     .await?;
 
-    // Generate presigned URLs for audio files
+    // Generate presigned URLs for audio files and profile picture
     let mut artists = Vec::new();
     for a in assigned_artists_raw {
+        let pic_url = if let Some(key) = &a.pic_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
         let voice_url = if let Some(key) = &a.voice_message_key {
             storage::get_presigned_url(&state, key, 3600).await.ok()
         } else {
@@ -2204,10 +2214,14 @@ pub async fn api_show_with_artists(
             id: a.id,
             name: a.name,
             pronouns: a.pronouns,
+            pic_url,
             voice_url,
+            voice_key: a.voice_message_key.clone(),
             track1_url,
+            track1_key: a.track1_key.clone(),
             track1_name: a.track1_name,
             track2_url,
+            track2_key: a.track2_key.clone(),
             track2_name: a.track2_name,
         });
     }

@@ -176,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
     db::seed_superadmin(&db, &config).await?;
 
     // Initialize S3 client for R2 (avoid aws-config to reduce dependencies/compile time)
+    // R2 requires path-style addressing (not virtual-hosted style)
     let s3_config = aws_sdk_s3::Config::builder()
         .endpoint_url(&config.r2_endpoint)
         .credentials_provider(aws_sdk_s3::config::Credentials::new(
@@ -186,6 +187,7 @@ async fn main() -> anyhow::Result<()> {
             "r2",
         ))
         .region(aws_sdk_s3::config::Region::new("auto"))
+        .force_path_style(true)
         .build();
 
     let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
