@@ -88,7 +88,7 @@ fn help_text() -> String {
         "Required env vars for --upload:",
         "  R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY",
         "Optional:",
-        "  R2_BUCKET_NAME (default: unheard-artists)",
+        "  R2_BUCKET_NAME (default: unheard-artists-dev)",
     ]
     .join("\n")
 }
@@ -248,9 +248,10 @@ async fn build_r2_client() -> Result<(aws_sdk_s3::Client, String), String> {
     let secret_access_key = env::var("R2_SECRET_ACCESS_KEY")
         .map_err(|_| "Missing env var R2_SECRET_ACCESS_KEY".to_string())?;
 
-    let bucket = env::var("R2_BUCKET_NAME").unwrap_or_else(|_| "unheard-artists".to_string());
+    let bucket = env::var("R2_BUCKET_NAME").unwrap_or_else(|_| "unheard-artists-dev".to_string());
     let endpoint_url = format!("https://{}.r2.cloudflarestorage.com", account_id);
 
+    // R2 requires path-style addressing (not virtual-hosted style)
     let conf = aws_sdk_s3::Config::builder()
         .endpoint_url(endpoint_url)
         .credentials_provider(Credentials::new(
@@ -261,6 +262,7 @@ async fn build_r2_client() -> Result<(aws_sdk_s3::Client, String), String> {
             "r2",
         ))
         .region(aws_sdk_s3::config::Region::new("auto"))
+        .force_path_style(true)
         .build();
 
     Ok((aws_sdk_s3::Client::from_conf(conf), bucket))

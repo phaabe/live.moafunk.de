@@ -300,6 +300,42 @@ impl RecordingManager {
         }
     }
 
+    /// Add a track marker with an explicit offset (for when frontend calculates the offset).
+    ///
+    /// Returns an error if no recording is active.
+    pub fn add_marker_with_offset(
+        &mut self,
+        artist_id: i64,
+        track_type: String,
+        track_key: String,
+        duration_ms: u64,
+        offset_ms: u64,
+    ) -> Result<TrackMarker, RecordingError> {
+        if let Some(ref mut session) = self.session {
+            let marker = TrackMarker {
+                offset_ms,
+                duration_ms,
+                artist_id,
+                track_type: track_type.clone(),
+                track_key: track_key.clone(),
+            };
+
+            tracing::info!(
+                "Added marker for show {}: artist={}, type={}, offset={}ms, duration={}ms",
+                session.show_id,
+                artist_id,
+                track_type,
+                offset_ms,
+                duration_ms
+            );
+
+            session.markers.push(marker.clone());
+            Ok(marker)
+        } else {
+            Err(RecordingError::NotRecording)
+        }
+    }
+
     /// Write audio chunk to the current recording.
     ///
     /// This is called from the stream handler to tee audio data.

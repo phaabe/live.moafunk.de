@@ -362,14 +362,17 @@ export function useRecordingSession(options: UseRecordingSessionOptions = {}) {
 
       onTrackEnded?.(artist.id, trackType, durationMs);
 
-      // Add end marker if recording
-      if (isRecording.value) {
+      // Add marker if recording - calculate offset from when track STARTED playing
+      if (isRecording.value && recordingStartTime.value) {
         try {
+          // offset_ms is when the track started relative to recording start
+          const offsetMs = playStartTime - recordingStartTime.value;
           await recordingApi.addMarker({
             artist_id: artist.id,
             track_type: trackType,
             track_key: key,
             duration_ms: durationMs,
+            offset_ms: Math.max(0, offsetMs), // Ensure non-negative
           });
           markerCount.value++;
         } catch (e) {

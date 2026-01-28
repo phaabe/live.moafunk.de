@@ -534,6 +534,7 @@ export const recordingApi = {
     track_type: 'voice_message' | 'track1' | 'track2';
     track_key: string;
     duration_ms: number;
+    offset_ms: number;
   }) => api.post<{ success: boolean }>('/api/recording/marker', data),
 
   listRecordings: (showId: number) =>

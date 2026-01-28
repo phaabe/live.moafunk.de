@@ -41,6 +41,8 @@ pub struct AddMarkerRequest {
     pub track_key: String,
     /// Duration of the track in milliseconds
     pub duration_ms: u64,
+    /// Offset from recording start when track started playing (in milliseconds)
+    pub offset_ms: u64,
 }
 
 /// Response for marker addition.
@@ -183,11 +185,12 @@ pub async fn add_marker(
     // Add the marker
     let mut manager = recording_manager.lock().await;
     let marker = manager
-        .add_marker(
+        .add_marker_with_offset(
             body.artist_id,
             body.track_type,
             body.track_key,
             body.duration_ms,
+            body.offset_ms,
         )
         .map_err(|e| match e {
             RecordingError::NotRecording => {
