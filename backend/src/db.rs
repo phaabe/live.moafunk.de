@@ -103,6 +103,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Add recording_filename column to store original filename
     add_column_if_missing(pool, "shows", "recording_filename", "TEXT").await?;
 
+    // Add instagram_posted_at column to track when show was posted to Instagram
+    add_column_if_missing(pool, "shows", "instagram_posted_at", "TEXT").await?;
+
     // Normalize legacy datetime-local values (e.g. 2026-01-04T20:00) into YYYY-MM-DD.
     // We keep the column type as TEXT, but only store the date portion going forward.
     sqlx::query(

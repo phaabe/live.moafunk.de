@@ -39,6 +39,12 @@ pub enum AppError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Configuration error: {0}")]
+    Config(String),
+
+    #[error("External service error: {0}")]
+    External(String),
 }
 
 impl IntoResponse for AppError {
@@ -77,6 +83,14 @@ impl IntoResponse for AppError {
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
+            }
+            AppError::Config(msg) => {
+                tracing::error!("Configuration error: {}", msg);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("Configuration error: {}", msg))
+            }
+            AppError::External(msg) => {
+                tracing::error!("External service error: {}", msg);
+                (StatusCode::BAD_GATEWAY, msg.clone())
             }
         };
 

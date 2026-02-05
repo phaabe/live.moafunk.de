@@ -949,6 +949,7 @@ pub struct ShowDetailResponse {
     recording_url: Option<String>,
     recording_peaks_url: Option<String>,
     recording_filename: Option<String>,
+    instagram_posted_at: Option<String>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -1405,6 +1406,7 @@ pub async fn api_show_detail(
         recording_url,
         recording_peaks_url,
         recording_filename: show.recording_filename,
+        instagram_posted_at: show.instagram_posted_at,
     }))
 }
 
@@ -2108,6 +2110,74 @@ pub async fn api_delete_show_recording(
     Ok(Json(serde_json::json!({
         "success": true,
     })))
+}
+
+// ============================================================================
+// Instagram Post
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct InstagramPostRequest {
+    /// If true, post even if already posted before
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InstagramPostResponse {
+    success: bool,
+    media_id: Option<String>,
+    error: Option<String>,
+    already_posted: bool,
+}
+
+pub async fn api_post_show_to_instagram(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<InstagramPostRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Fetch show
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    // Check if already posted (unless force=true)
+    if show.instagram_posted_at.is_some() && !req.force {
+        return Ok(Json(InstagramPostResponse {
+            success: false,
+            media_id: None,
+            error: Some(
+                "This show was already posted to Instagram. Use force=true to post again."
+                    .to_string(),
+            ),
+            already_posted: true,
+        }));
+    }
+
+    // Post to Instagram
+    let result = crate::instagram::post_show_to_instagram(&state, &show).await?;
+
+    if result.success {
+        // Update instagram_posted_at timestamp
+        sqlx::query("UPDATE shows SET instagram_posted_at = datetime('now') WHERE id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+
+        tracing::info!("Posted show {} to Instagram: {:?}", id, result.media_id);
+    }
+
+    Ok(Json(InstagramPostResponse {
+        success: result.success,
+        media_id: result.media_id,
+        error: result.error,
+        already_posted: false,
+    }))
 }
 
 // ============================================================================

@@ -5,6 +5,7 @@ mod db;
 mod error;
 mod handlers;
 mod image_overlay;
+mod instagram;
 mod models;
 mod pdf;
 mod recording;
@@ -345,6 +346,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/recording",
             axum::routing::delete(handlers::api::api_delete_show_recording),
+        )
+        .route(
+            "/api/shows/:id/instagram",
+            post(handlers::api::api_post_show_to_instagram),
         )
         .route("/api/users", get(handlers::api::api_users_list))
         .route("/api/users", post(handlers::api::api_create_user))
