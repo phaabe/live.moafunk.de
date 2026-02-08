@@ -113,6 +113,8 @@ export interface ArtistDetail {
   upcoming_events?: string;
   music_description?: string;
   ai_bio?: string;
+  instagram_caption?: string;
+  instagram_posted_at?: string;
   soundcloud?: string;
   instagram?: string;
   bandcamp?: string;
@@ -164,6 +166,25 @@ export const artistsApi = {
 
   generateBio: (id: number) =>
     api.post<{ success: boolean; ai_bio: string }>(`/api/artists/${id}/generate-bio`),
+
+  generateInstagramCaption: (id: number) =>
+    api.post<{ success: boolean; instagram_caption: string }>(
+      `/api/artists/${id}/generate-instagram-caption`
+    ),
+
+  updateInstagramCaption: (id: number, instagram_caption: string) =>
+    api.put<{ success: boolean; instagram_caption: string }>(
+      `/api/artists/${id}/instagram-caption`,
+      { instagram_caption }
+    ),
+
+  postToInstagram: (id: number, force = false) =>
+    api.post<{
+      success: boolean;
+      media_id?: string;
+      error?: string;
+      already_posted: boolean;
+    }>(`/api/artists/${id}/instagram`, { force }),
 
   updatePicture: async (
     id: number,

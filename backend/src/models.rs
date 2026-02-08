@@ -34,6 +34,8 @@ pub struct Artist {
 
     pub music_description: Option<String>,
     pub ai_bio: Option<String>,
+    pub instagram_caption: Option<String>,
+    pub instagram_posted_at: Option<String>,
 
     pub status: String,
     pub created_at: String,

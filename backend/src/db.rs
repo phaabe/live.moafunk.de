@@ -81,6 +81,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Music description (required on new submissions) and AI-generated bio
     add_column_if_missing(pool, "artists", "music_description", "TEXT").await?;
     add_column_if_missing(pool, "artists", "ai_bio", "TEXT").await?;
+    add_column_if_missing(pool, "artists", "instagram_caption", "TEXT").await?;
+    add_column_if_missing(pool, "artists", "instagram_posted_at", "TEXT").await?;
 
     sqlx::query(
         r#"

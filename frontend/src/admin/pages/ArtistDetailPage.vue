@@ -42,6 +42,13 @@ const detailsForm = ref({
 });
 
 const generatingBio = ref(false);
+const generatingCaption = ref(false);
+const showInstagramModal = ref(false);
+const postingToInstagram = ref(false);
+const showInstagramConfirmModal = ref(false);
+const editingCaption = ref(false);
+const editedCaption = ref('');
+const savingCaption = ref(false);
 
 const audioForm = ref({
   voice: null as File | null,
@@ -204,6 +211,88 @@ async function generateBio() {
     flash.error(e instanceof Error ? e.message : 'Failed to generate bio');
   } finally {
     generatingBio.value = false;
+  }
+}
+
+// Instagram Caption generation
+async function generateInstagramCaption() {
+  if (!artist.value) return;
+  generatingCaption.value = true;
+  try {
+    const result = await artistsApi.generateInstagramCaption(artist.value.id);
+    if (result.instagram_caption && artist.value) {
+      artist.value.instagram_caption = result.instagram_caption;
+      // Also update ai_bio if it was generated as a side effect
+      await loadArtist();
+    }
+    flash.success('Instagram caption generated successfully');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to generate caption');
+  } finally {
+    generatingCaption.value = false;
+  }
+}
+
+async function openInstagramPreview() {
+  showInstagramModal.value = true;
+  // Auto-generate caption if none exists
+  if (!artist.value?.instagram_caption) {
+    await generateInstagramCaption();
+  }
+}
+
+function startEditCaption() {
+  editedCaption.value = artist.value?.instagram_caption || '';
+  editingCaption.value = true;
+}
+
+function cancelEditCaption() {
+  editingCaption.value = false;
+}
+
+async function confirmEditCaption() {
+  if (!artist.value) return;
+  savingCaption.value = true;
+  try {
+    const result = await artistsApi.updateInstagramCaption(artist.value.id, editedCaption.value);
+    if (result.instagram_caption !== undefined) {
+      artist.value.instagram_caption = result.instagram_caption;
+    }
+    editingCaption.value = false;
+    flash.success('Caption updated');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to save caption');
+  } finally {
+    savingCaption.value = false;
+  }
+}
+
+async function postToInstagram(force = false) {
+  if (!artist.value) return;
+
+  // If already posted and not forcing, show confirmation modal
+  if (artist.value.instagram_posted_at && !force) {
+    showInstagramConfirmModal.value = true;
+    return;
+  }
+
+  postingToInstagram.value = true;
+  showInstagramConfirmModal.value = false;
+
+  try {
+    const result = await artistsApi.postToInstagram(artist.value.id, force);
+
+    if (result.success) {
+      flash.success('Posted to Instagram successfully!');
+      showInstagramModal.value = false;
+      await loadArtist();
+    } else {
+      flash.error(result.error || 'Failed to post to Instagram');
+    }
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to post to Instagram');
+  } finally {
+    postingToInstagram.value = false;
   }
 }
 
@@ -432,6 +521,22 @@ onMounted(loadArtist);
                 </button>
               </div>
 
+              <!-- Instagram -->
+              <div class="details-section">
+                <h3 class="subsection-title">📸 Instagram</h3>
+                <button class="generate-bio-btn instagram-preview-btn"
+                  :disabled="!artist.music_description || artist.shows.length === 0" @click="openInstagramPreview">
+                  📸 Instagram Preview
+                </button>
+                <span v-if="artist.instagram_posted_at" class="instagram-posted-badge">
+                  ✅ Posted {{ new Date(artist.instagram_posted_at).toLocaleString() }}
+                </span>
+                <p v-if="artist.shows.length === 0" class="text-muted"
+                  style="font-size: var(--font-size-sm); margin-top: var(--spacing-xs);">
+                  Assign artist to a show first
+                </p>
+              </div>
+
               <!-- Social Links -->
               <h3 class="subsection-title">🔗 Social Links</h3>
               <dl class="detail-list">
@@ -616,6 +721,59 @@ onMounted(loadArtist);
         <BaseButton variant="ghost" @click="showDeleteModal = false">Cancel</BaseButton>
         <BaseButton variant="danger" :loading="deleting" @click="deleteArtist">
           Delete
+        </BaseButton>
+      </template>
+    </BaseModal>
+
+    <!-- Instagram Preview Modal -->
+    <BaseModal :open="showInstagramModal" title="📸 Instagram Preview" size="lg"
+      @close="showInstagramModal = false; editingCaption = false">
+      <div class="ig-preview-layout">
+        <div class="ig-preview-image">
+          <img v-if="artist?.file_urls.pic" :src="artist.file_urls.pic" alt="Artist image" class="ig-preview-img"
+            crossorigin="anonymous" />
+          <div v-else class="ig-preview-placeholder">No image</div>
+        </div>
+        <div class="ig-preview-caption">
+          <div v-if="generatingCaption" class="ig-preview-loading">Generating caption...</div>
+          <template v-else-if="editingCaption">
+            <textarea v-model="editedCaption" class="ig-caption-edit" rows="16"></textarea>
+          </template>
+          <pre v-else-if="artist?.instagram_caption" class="ig-caption-text">{{ artist.instagram_caption }}</pre>
+          <p v-else class="text-muted">No caption generated yet</p>
+        </div>
+      </div>
+      <template #footer>
+        <template v-if="editingCaption">
+          <BaseButton variant="ghost" @click="cancelEditCaption">Cancel</BaseButton>
+          <BaseButton variant="primary" :loading="savingCaption" @click="confirmEditCaption">
+            ✅ Confirm
+          </BaseButton>
+        </template>
+        <template v-else>
+          <BaseButton variant="ghost" :loading="generatingCaption" @click="generateInstagramCaption">
+            🔄 Regenerate
+          </BaseButton>
+          <BaseButton variant="ghost" :disabled="!artist?.instagram_caption" @click="startEditCaption">
+            ✏️ Edit
+          </BaseButton>
+          <BaseButton variant="primary" :loading="postingToInstagram"
+            :disabled="!artist?.instagram_caption || !artist?.file_urls.pic" @click="postToInstagram()">
+            📤 Publish
+          </BaseButton>
+        </template>
+      </template>
+    </BaseModal>
+
+    <!-- Instagram Re-post Confirmation Modal -->
+    <BaseModal :open="showInstagramConfirmModal" title="Post to Instagram Again?"
+      @close="showInstagramConfirmModal = false">
+      <p>This artist was already posted to Instagram.</p>
+      <p class="text-muted">Do you want to post again? This will create a duplicate post.</p>
+      <template #footer>
+        <BaseButton variant="ghost" @click="showInstagramConfirmModal = false">Cancel</BaseButton>
+        <BaseButton variant="primary" :loading="postingToInstagram" @click="postToInstagram(true)">
+          Post Again
         </BaseButton>
       </template>
     </BaseModal>
@@ -976,6 +1134,106 @@ onMounted(loadArtist);
 .generate-bio-btn:hover:not(:disabled) {
   background: var(--color-primary);
   color: var(--color-on-primary, #fff);
+}
+
+.instagram-preview-btn {
+  background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888) !important;
+  color: #fff !important;
+  border: none !important;
+}
+
+.instagram-preview-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.instagram-posted-badge {
+  display: inline-block;
+  margin-left: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-success, #22c55e);
+}
+
+.ig-preview-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  min-height: 300px;
+}
+
+.ig-preview-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ig-preview-img {
+  width: 100%;
+  max-height: 400px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+
+.ig-preview-placeholder {
+  width: 100%;
+  height: 300px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-hover);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+}
+
+.ig-preview-caption {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  max-height: 400px;
+}
+
+.ig-preview-loading {
+  color: var(--color-text-muted);
+  font-style: italic;
+  padding: var(--spacing-md);
+}
+
+.ig-caption-text {
+  color: var(--color-text);
+  line-height: 1.6;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+  padding: var(--spacing-sm);
+  background: var(--color-surface-hover);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid #e1306c;
+}
+
+.ig-caption-edit {
+  width: 100%;
+  min-height: 200px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-sm);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.ig-caption-edit:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+@media (max-width: 768px) {
+  .ig-preview-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 .generate-bio-btn:disabled {

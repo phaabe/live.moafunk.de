@@ -293,6 +293,18 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::api::api_generate_artist_bio),
         )
         .route(
+            "/api/artists/:id/generate-instagram-caption",
+            post(handlers::api::api_generate_instagram_caption),
+        )
+        .route(
+            "/api/artists/:id/instagram-caption",
+            axum::routing::put(handlers::api::api_update_instagram_caption),
+        )
+        .route(
+            "/api/artists/:id/instagram",
+            post(handlers::api::api_post_artist_to_instagram),
+        )
+        .route(
             "/api/artists/:id/picture",
             axum::routing::put(handlers::api::api_update_artist_picture),
         )

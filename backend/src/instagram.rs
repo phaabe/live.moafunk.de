@@ -449,3 +449,41 @@ pub async fn post_show_to_instagram(
     // Post to Instagram
     client.post_image(&cover_url, &caption).await
 }
+
+/// Post an artist's image to Instagram with their generated caption
+///
+/// Uses the artist's overlay (branded) image and the pre-generated caption
+/// stored in `artists.instagram_caption`.
+pub async fn post_artist_to_instagram(
+    state: &Arc<AppState>,
+    artist: &crate::models::Artist,
+) -> Result<InstagramPostResult> {
+    let client = InstagramClient::from_config(&state.config)?;
+
+    // Require a stored caption
+    let caption = artist.instagram_caption.as_deref().ok_or_else(|| {
+        AppError::Validation("Artist has no Instagram caption. Generate one first.".to_string())
+    })?;
+
+    // Use overlay → cropped → original pic, in order of preference
+    let pic_key = artist
+        .pic_overlay_key
+        .as_ref()
+        .or(artist.pic_cropped_key.as_ref())
+        .or(artist.pic_key.as_ref())
+        .ok_or_else(|| {
+            AppError::Validation("Artist has no profile picture to post.".to_string())
+        })?;
+
+    // Generate presigned URL (1 hour validity)
+    let image_url = storage::get_presigned_url(state, pic_key, 3600).await?;
+
+    tracing::info!(
+        "Posting artist {} (id={}) to Instagram with key: {}",
+        artist.name,
+        artist.id,
+        pic_key
+    );
+
+    client.post_image(&image_url, caption).await
+}
