@@ -279,6 +279,7 @@ export interface ShowDetail {
   recording_url?: string;
   recording_peaks_url?: string;
   recording_filename?: string;
+  instagram_posted_at?: string;
 }
 
 export const showsApi = {
@@ -431,6 +432,14 @@ export const showsApi = {
 
   deleteRecording: (showId: number) =>
     api.delete<{ success: boolean }>(`/api/shows/${showId}/recording`),
+
+  postToInstagram: (showId: number, force = false) =>
+    api.post<{
+      success: boolean;
+      media_id?: string;
+      error?: string;
+      already_posted: boolean;
+    }>(`/api/shows/${showId}/instagram`, { force }),
 };
 
 // Users API

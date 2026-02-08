@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const GRAPH_API_VERSION: &str = "v24.0";
-const GRAPH_API_BASE: &str = "https://graph.facebook.com";
+const GRAPH_API_BASE: &str = "https://graph.instagram.com";
 
 /// Instagram API error response
 #[derive(Debug, Deserialize)]
@@ -150,9 +150,8 @@ impl InstagramClient {
         Ok(container.id)
     }
 
-    /// Check the status of a media container (for async video uploads)
+    /// Check the status of a media container
     /// Returns the status code: EXPIRED, ERROR, FINISHED, IN_PROGRESS, PUBLISHED
-    #[allow(dead_code)]
     async fn check_container_status(&self, container_id: &str) -> Result<String> {
         let url = format!("{}/{}/{}", GRAPH_API_BASE, GRAPH_API_VERSION, container_id);
 
@@ -244,7 +243,8 @@ impl InstagramClient {
     ///
     /// This is the main entry point for posting. It:
     /// 1. Creates a media container with the image URL and caption
-    /// 2. Publishes the container to the feed
+    /// 2. Polls until the container is ready
+    /// 3. Publishes the container to the feed
     pub async fn post_image(&self, image_url: &str, caption: &str) -> Result<InstagramPostResult> {
         tracing::info!("Creating Instagram container for image: {}", image_url);
 
@@ -261,10 +261,54 @@ impl InstagramClient {
             }
         };
 
-        tracing::info!("Created container: {}, publishing...", container_id);
+        tracing::info!(
+            "Created container: {}, waiting for processing...",
+            container_id
+        );
 
-        // Step 2: Publish container
-        // For images, the container is ready immediately. For videos, we'd need to poll status.
+        // Step 2: Poll until container is ready (max 30 attempts, ~60s)
+        const MAX_POLL_ATTEMPTS: u32 = 30;
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+        for attempt in 1..=MAX_POLL_ATTEMPTS {
+            let status = self.check_container_status(&container_id).await?;
+            tracing::info!(
+                "Container {} status: {} (attempt {}/{})",
+                container_id,
+                status,
+                attempt,
+                MAX_POLL_ATTEMPTS
+            );
+
+            match status.as_str() {
+                "FINISHED" => break,
+                "ERROR" | "EXPIRED" => {
+                    return Ok(InstagramPostResult {
+                        success: false,
+                        media_id: None,
+                        error: Some(format!(
+                            "Instagram container processing failed with status: {}",
+                            status
+                        )),
+                    });
+                }
+                "IN_PROGRESS" | _ => {
+                    if attempt == MAX_POLL_ATTEMPTS {
+                        return Ok(InstagramPostResult {
+                            success: false,
+                            media_id: None,
+                            error: Some(
+                                "Instagram container processing timed out after 60s".to_string(),
+                            ),
+                        });
+                    }
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                }
+            }
+        }
+
+        // Step 3: Publish container
+        tracing::info!("Container {} ready, publishing...", container_id);
         let media_id = match self.publish_container(&container_id).await {
             Ok(id) => id,
             Err(e) => {
