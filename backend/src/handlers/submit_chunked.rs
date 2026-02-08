@@ -137,6 +137,7 @@ pub async fn submit_init(
 
     let mut artist_name = String::new();
     let mut pronouns = String::new();
+    let mut music_description = String::new();
     let mut track1_name = String::new();
     let mut track2_name = String::new();
     let mut no_voice_message = false;
@@ -171,6 +172,11 @@ pub async fn submit_init(
                     .text()
                     .await
                     .map_err(|e| AppError::Validation(format!("Failed to read pronouns: {}", e)))?;
+            }
+            "music-description" => {
+                music_description = field.text().await.map_err(|e| {
+                    AppError::Validation(format!("Failed to read music description: {}", e))
+                })?;
             }
             "track1-name" => {
                 track1_name = field.text().await.map_err(|e| {
@@ -262,6 +268,11 @@ pub async fn submit_init(
     if pronouns.is_empty() {
         return Err(AppError::Validation("Pronouns are required".to_string()));
     }
+    if music_description.is_empty() {
+        return Err(AppError::Validation(
+            "Music description is required".to_string(),
+        ));
+    }
     if track1_name.is_empty() {
         return Err(AppError::Validation("Track 1 name is required".to_string()));
     }
@@ -339,8 +350,8 @@ pub async fn submit_init(
         INSERT INTO pending_submissions (
             session_id, artist_name, pronouns, track1_name, track2_name, no_voice_message,
             instagram, soundcloud, bandcamp, spotify, other_social, upcoming_events, mentions,
-            pic_key, pic_cropped_key, pic_overlay_key, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            music_description, pic_key, pic_cropped_key, pic_overlay_key, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&session_id)
@@ -356,6 +367,7 @@ pub async fn submit_init(
     .bind(&other_social)
     .bind(&upcoming_events)
     .bind(&mentions)
+    .bind(&music_description)
     .bind(&pic_key)
     .bind(&pic_cropped_key)
     .bind(&pic_overlay_key)
@@ -584,7 +596,7 @@ pub async fn submit_finalize(
         r#"
         SELECT artist_name, pronouns, track1_name, track2_name, no_voice_message,
                instagram, soundcloud, bandcamp, spotify, other_social, upcoming_events, mentions,
-               pic_key, pic_cropped_key, pic_overlay_key,
+               music_description, pic_key, pic_cropped_key, pic_overlay_key,
                track1_original_key, track2_original_key, voice_original_key
         FROM pending_submissions
         WHERE session_id = ? AND expires_at > datetime('now')
@@ -610,6 +622,7 @@ pub async fn submit_finalize(
     let other_social: Option<String> = sqlx::Row::get(&row, "other_social");
     let upcoming_events: Option<String> = sqlx::Row::get(&row, "upcoming_events");
     let mentions: Option<String> = sqlx::Row::get(&row, "mentions");
+    let music_description: Option<String> = sqlx::Row::get(&row, "music_description");
     let pic_key: Option<String> = sqlx::Row::get(&row, "pic_key");
     let pic_cropped_key: Option<String> = sqlx::Row::get(&row, "pic_cropped_key");
     let pic_overlay_key: Option<String> = sqlx::Row::get(&row, "pic_overlay_key");
@@ -641,8 +654,8 @@ pub async fn submit_finalize(
         INSERT INTO artists (
             name, pronouns, track1_name, track2_name, no_voice_message,
             instagram, soundcloud, bandcamp, spotify, other_social,
-            upcoming_events, mentions, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing')
+            upcoming_events, mentions, music_description, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing')
         "#,
     )
     .bind(&artist_name)
@@ -657,6 +670,7 @@ pub async fn submit_finalize(
     .bind(&other_social)
     .bind(&upcoming_events)
     .bind(&mentions)
+    .bind(&music_description)
     .execute(&state.db)
     .await?;
 
@@ -1022,7 +1036,10 @@ pub async fn submit_file_chunk_init(
     Ok(Json(FileChunkInitResponse {
         success: true,
         file_session_id,
-        message: format!("Chunked upload initialized. Send {} chunks.", req.total_chunks),
+        message: format!(
+            "Chunked upload initialized. Send {} chunks.",
+            req.total_chunks
+        ),
     }))
 }
 
@@ -1034,13 +1051,15 @@ pub async fn submit_file_chunk(
     mut multipart: Multipart,
 ) -> Result<Json<FileChunkResponse>> {
     // Extract chunk index and field from query params
-    let chunk_index: u32 = query.get("index")
+    let chunk_index: u32 = query
+        .get("index")
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| AppError::Validation("Missing or invalid index parameter".to_string()))?;
-    
-    let field_name = query.get("field")
+
+    let field_name = query
+        .get("field")
         .ok_or_else(|| AppError::Validation("Missing field parameter".to_string()))?;
-    
+
     tracing::info!(
         "Chunked file upload chunk: file_session_id={}, field={}, index={}",
         file_session_id,
@@ -1058,31 +1077,38 @@ pub async fn submit_file_chunk(
     .await?;
 
     if !exists {
-        return Err(AppError::NotFound("File upload session not found or expired".to_string()));
+        return Err(AppError::NotFound(
+            "File upload session not found or expired".to_string(),
+        ));
     }
 
     // Get chunk data from multipart
     let mut chunk_data: Option<Vec<u8>> = None;
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
-        AppError::Validation(format!("Failed to read chunk: {}", e))
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation(format!("Failed to read chunk: {}", e)))?
+    {
         if field.name().unwrap_or("") == "chunk" {
-            let data = field.bytes().await.map_err(|e| {
-                AppError::Validation(format!("Failed to read chunk data: {}", e))
-            })?;
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::Validation(format!("Failed to read chunk data: {}", e)))?;
             chunk_data = Some(data.to_vec());
             break;
         }
     }
 
-    let chunk_data = chunk_data.ok_or_else(|| {
-        AppError::Validation("No chunk data provided".to_string())
-    })?;
+    let chunk_data =
+        chunk_data.ok_or_else(|| AppError::Validation("No chunk data provided".to_string()))?;
 
     let received_bytes = chunk_data.len();
 
     // Store chunk in S3 with temporary key
-    let chunk_key = format!("pending-file-chunks/{}/chunk-{:04}", file_session_id, chunk_index);
+    let chunk_key = format!(
+        "pending-file-chunks/{}/chunk-{:04}",
+        file_session_id, chunk_index
+    );
 
     state
         .s3_client
@@ -1116,7 +1142,7 @@ pub async fn submit_file_chunk_finalize(
     Query(query): Query<FileQuery>,
 ) -> Result<Json<FileChunkFinalizeResponse>> {
     let field_name = &query.field;
-    
+
     tracing::info!(
         "Chunked file upload finalize: file_session_id={}, field={}",
         file_session_id,
@@ -1142,7 +1168,7 @@ pub async fn submit_file_chunk_finalize(
     let mut assembled_data = Vec::new();
     for i in 0..total_chunks {
         let chunk_key = format!("pending-file-chunks/{}/chunk-{:04}", file_session_id, i);
-        
+
         let get_result = state
             .s3_client
             .get_object()
@@ -1150,9 +1176,7 @@ pub async fn submit_file_chunk_finalize(
             .key(&chunk_key)
             .send()
             .await
-            .map_err(|e| {
-                AppError::Storage(format!("Failed to fetch chunk {}: {}", i, e))
-            })?;
+            .map_err(|e| AppError::Storage(format!("Failed to fetch chunk {}: {}", i, e)))?;
 
         let chunk_bytes = get_result
             .body
@@ -1194,7 +1218,8 @@ pub async fn submit_file_chunk_finalize(
     }
 
     // Determine storage details based on field
-    let (db_column, db_original_column, db_status_column, desired_name) = match field_name.as_str() {
+    let (db_column, db_original_column, db_status_column, desired_name) = match field_name.as_str()
+    {
         "track1" => (
             "track1_key",
             "track1_original_key",
@@ -1236,7 +1261,11 @@ pub async fn submit_file_chunk_finalize(
 
     // Update database
     let is_already_mp3 = audio::is_mp3(&filename);
-    let initial_status = if is_already_mp3 { "completed" } else { "pending" };
+    let initial_status = if is_already_mp3 {
+        "completed"
+    } else {
+        "pending"
+    };
 
     let update_sql = format!(
         "UPDATE pending_submissions SET {} = ?, {} = ?, {} = ?, peaks_json_{} = ? WHERE session_id = ?",

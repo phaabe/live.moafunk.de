@@ -78,6 +78,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "artists", "track2_original_key", "TEXT").await?;
     add_column_if_missing(pool, "artists", "voice_original_key", "TEXT").await?;
 
+    // Music description (required on new submissions) and AI-generated bio
+    add_column_if_missing(pool, "artists", "music_description", "TEXT").await?;
+    add_column_if_missing(pool, "artists", "ai_bio", "TEXT").await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shows (
@@ -253,6 +257,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+
+    // Music description for pending submissions
+    add_column_if_missing(pool, "pending_submissions", "music_description", "TEXT").await?;
 
     // Add original audio key columns for pending submissions if missing
     add_column_if_missing(pool, "pending_submissions", "track1_original_key", "TEXT").await?;

@@ -322,6 +322,8 @@ pub struct ArtistDetailResponse {
     created_at: String,
     mentions: Option<String>,
     upcoming_events: Option<String>,
+    music_description: Option<String>,
+    ai_bio: Option<String>,
     soundcloud: Option<String>,
     instagram: Option<String>,
     bandcamp: Option<String>,
@@ -444,6 +446,8 @@ pub async fn api_artist_detail(
         created_at: artist.created_at,
         mentions: artist.mentions,
         upcoming_events: artist.upcoming_events,
+        music_description: artist.music_description,
+        ai_bio: artist.ai_bio,
         soundcloud: artist.soundcloud,
         instagram: artist.instagram,
         bandcamp: artist.bandcamp,
@@ -526,6 +530,7 @@ pub async fn api_unassign_artist_from_show(
 pub struct UpdateArtistDetailsRequest {
     mentions: Option<String>,
     upcoming_events: Option<String>,
+    music_description: Option<String>,
     soundcloud: Option<String>,
     instagram: Option<String>,
     bandcamp: Option<String>,
@@ -546,6 +551,7 @@ pub async fn api_update_artist_details(
         UPDATE artists SET
             mentions = ?,
             upcoming_events = ?,
+            music_description = ?,
             soundcloud = ?,
             instagram = ?,
             bandcamp = ?,
@@ -557,6 +563,7 @@ pub async fn api_update_artist_details(
     )
     .bind(&req.mentions)
     .bind(&req.upcoming_events)
+    .bind(&req.music_description)
     .bind(&req.soundcloud)
     .bind(&req.instagram)
     .bind(&req.bandcamp)
@@ -567,6 +574,45 @@ pub async fn api_update_artist_details(
     .await?;
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Artist AI Bio Generation
+// ============================================================================
+
+pub async fn api_generate_artist_bio(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let music_description = artist.music_description.ok_or_else(|| {
+        AppError::Validation("Artist has no music description to generate bio from".to_string())
+    })?;
+
+    let bio = crate::ai::generate_artist_bio(
+        &state.config,
+        &artist.name,
+        &artist.pronouns,
+        &music_description,
+    )
+    .await?;
+
+    sqlx::query("UPDATE artists SET ai_bio = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(&bio)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true, "ai_bio": bio })))
 }
 
 pub async fn api_update_artist_picture(

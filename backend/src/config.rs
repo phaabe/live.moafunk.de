@@ -66,6 +66,9 @@ pub struct Config {
     // Facebook App credentials for token refresh
     pub facebook_app_id: Option<String>,
     pub facebook_app_secret: Option<String>,
+
+    // OpenAI API settings (optional - for AI-generated artist bios)
+    pub openai_api_key: Option<String>,
 }
 
 fn default_host() -> String {

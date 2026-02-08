@@ -111,6 +111,8 @@ export interface ArtistDetail {
   created_at: string;
   mentions?: string;
   upcoming_events?: string;
+  music_description?: string;
+  ai_bio?: string;
   soundcloud?: string;
   instagram?: string;
   bandcamp?: string;
@@ -151,6 +153,7 @@ export const artistsApi = {
     data: {
       mentions?: string;
       upcoming_events?: string;
+      music_description?: string;
       soundcloud?: string;
       instagram?: string;
       bandcamp?: string;
@@ -158,6 +161,9 @@ export const artistsApi = {
       other_social?: string;
     }
   ) => api.put<void>(`/api/artists/${id}/details`, data),
+
+  generateBio: (id: number) =>
+    api.post<{ success: boolean; ai_bio: string }>(`/api/artists/${id}/generate-bio`),
 
   updatePicture: async (
     id: number,

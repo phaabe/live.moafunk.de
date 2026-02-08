@@ -16,8 +16,7 @@ const API_SUBMIT_FILE_CHUNK = (sessionId: string, field: string, index: number) 
   `${API_URL}/api/submit/file-chunk/${sessionId}?field=${field}&index=${index}`;
 const API_SUBMIT_FILE_CHUNK_FINALIZE = (sessionId: string, field: string) =>
   `${API_URL}/api/submit/file-chunk/finalize/${sessionId}?field=${field}`;
-const API_SUBMIT_FINALIZE = (sessionId: string) =>
-  `${API_URL}/api/submit/finalize/${sessionId}`;
+const API_SUBMIT_FINALIZE = (sessionId: string) => `${API_URL}/api/submit/finalize/${sessionId}`;
 
 const MAX_SINGLE_FILE_SIZE_MB = 500; // Increased from 100MB to 500MB
 const MAX_TOTAL_UPLOAD_MB = 1500; // Increased from 250MB to 1500MB
@@ -235,13 +234,25 @@ form.addEventListener('submit', async (e) => {
     // Text fields
     initData.set('artist-name', (document.getElementById('artist-name') as HTMLInputElement).value);
     initData.set('pronouns', (document.getElementById('pronouns') as HTMLInputElement).value);
+    initData.set(
+      'music-description',
+      (document.getElementById('music-description') as HTMLTextAreaElement).value
+    );
     initData.set('track1-name', (document.getElementById('track1-name') as HTMLInputElement).value);
     initData.set('track2-name', (document.getElementById('track2-name') as HTMLInputElement).value);
     if (noVoiceMessageCheckbox.checked) {
       initData.set('no-voice-message', 'on');
     }
     // Optional text fields
-    const optionalFields = ['instagram', 'soundcloud', 'bandcamp', 'spotify', 'other-social', 'upcoming-events', 'mentions'];
+    const optionalFields = [
+      'instagram',
+      'soundcloud',
+      'bandcamp',
+      'spotify',
+      'other-social',
+      'upcoming-events',
+      'mentions',
+    ];
     for (const fieldId of optionalFields) {
       const el = document.getElementById(fieldId) as HTMLInputElement | HTMLTextAreaElement | null;
       if (el && el.value) {
@@ -272,16 +283,26 @@ form.addEventListener('submit', async (e) => {
       throw new Error(errorText || 'Failed to initialize submission');
     }
 
-    const initResult = await initResponse.json() as { session_id: string };
+    const initResult = (await initResponse.json()) as { session_id: string };
     const sessionId = initResult.session_id;
 
     // Step 2: Upload track files individually (each under 100MB)
-    const filesToUpload: Array<{ field: string; file: File; label: string; extractPeaks?: boolean }> = [
+    const filesToUpload: Array<{
+      field: string;
+      file: File;
+      label: string;
+      extractPeaks?: boolean;
+    }> = [
       { field: 'track1', file: track1File, label: 'Track 1', extractPeaks: true },
       { field: 'track2', file: track2File, label: 'Track 2', extractPeaks: true },
     ];
     if (voiceFile && !noVoiceMessageCheckbox.checked) {
-      filesToUpload.push({ field: 'voice', file: voiceFile, label: 'Voice message', extractPeaks: true });
+      filesToUpload.push({
+        field: 'voice',
+        file: voiceFile,
+        label: 'Voice message',
+        extractPeaks: true,
+      });
     }
 
     const totalFiles = filesToUpload.length;
@@ -346,7 +367,7 @@ form.addEventListener('submit', async (e) => {
           throw new Error(errorText || `Failed to initialize ${label} upload`);
         }
 
-        const initChunkResult = await initChunkResponse.json() as { file_session_id: string };
+        const initChunkResult = (await initChunkResponse.json()) as { file_session_id: string };
         const fileSessionId = initChunkResult.file_session_id;
 
         // Step 2: Upload chunks sequentially
@@ -364,22 +385,30 @@ form.addEventListener('submit', async (e) => {
           const chunkFormData = new FormData();
           chunkFormData.append('chunk', chunk);
 
-          const chunkResponse = await fetch(API_SUBMIT_FILE_CHUNK(fileSessionId, field, chunkIndex), {
-            method: 'POST',
-            body: chunkFormData,
-          });
+          const chunkResponse = await fetch(
+            API_SUBMIT_FILE_CHUNK(fileSessionId, field, chunkIndex),
+            {
+              method: 'POST',
+              body: chunkFormData,
+            }
+          );
 
           if (!chunkResponse.ok) {
             const errorText = await chunkResponse.text();
-            throw new Error(errorText || `Failed to upload ${label} chunk ${chunkIndex + 1}/${totalChunks}`);
+            throw new Error(
+              errorText || `Failed to upload ${label} chunk ${chunkIndex + 1}/${totalChunks}`
+            );
           }
         }
 
         // Step 3: Finalize chunked upload for this file
         updateProgress(baseProgress + progressRange - 2, `Finalizing ${label}...`);
-        const finalizeChunkResponse = await fetch(API_SUBMIT_FILE_CHUNK_FINALIZE(fileSessionId, field), {
-          method: 'POST',
-        });
+        const finalizeChunkResponse = await fetch(
+          API_SUBMIT_FILE_CHUNK_FINALIZE(fileSessionId, field),
+          {
+            method: 'POST',
+          }
+        );
 
         if (!finalizeChunkResponse.ok) {
           const errorText = await finalizeChunkResponse.text();
@@ -400,7 +429,7 @@ form.addEventListener('submit', async (e) => {
       throw new Error(errorText || 'Failed to finalize submission');
     }
 
-    const result = await finalizeResponse.json() as { message?: string };
+    const result = (await finalizeResponse.json()) as { message?: string };
     const message = result.message || "Thank you for your submission! We'll be in touch soon.";
 
     updateProgress(100, 'Upload complete!');
@@ -534,7 +563,7 @@ async function drawOverlayOnCanvas(canvas: HTMLCanvasElement): Promise<void> {
     ctx.fillText(
       (leftHeard.textContent || '').trim(),
       toCanvasX(heardRect.left),
-      toCanvasY(heardRect.top),
+      toCanvasY(heardRect.top)
     );
   }
 

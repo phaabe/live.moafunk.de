@@ -32,6 +32,9 @@ pub struct Artist {
     pub upcoming_events: Option<String>,
     pub mentions: Option<String>,
 
+    pub music_description: Option<String>,
+    pub ai_bio: Option<String>,
+
     pub status: String,
     pub created_at: String,
     pub updated_at: Option<String>,

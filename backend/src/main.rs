@@ -1,3 +1,4 @@
+mod ai;
 mod audio;
 mod auth;
 mod config;
@@ -286,6 +287,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/artists/:id/details",
             axum::routing::put(handlers::api::api_update_artist_details),
+        )
+        .route(
+            "/api/artists/:id/generate-bio",
+            post(handlers::api::api_generate_artist_bio),
         )
         .route(
             "/api/artists/:id/picture",

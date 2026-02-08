@@ -91,6 +91,7 @@ pub async fn submit_form(
 
     let mut artist_name = String::new();
     let mut pronouns = String::new();
+    let mut music_description = String::new();
     let mut track1_name = String::new();
     let mut track2_name = String::new();
     let mut no_voice_message = false;
@@ -135,6 +136,11 @@ pub async fn submit_form(
                     .text()
                     .await
                     .map_err(|e| AppError::Validation(format!("Failed to read pronouns: {}", e)))?;
+            }
+            "music-description" => {
+                music_description = field.text().await.map_err(|e| {
+                    AppError::Validation(format!("Failed to read music description: {}", e))
+                })?;
             }
             "track1-name" => {
                 track1_name = field.text().await.map_err(|e| {
@@ -332,6 +338,11 @@ pub async fn submit_form(
     if pronouns.is_empty() {
         return Err(AppError::Validation("Pronouns are required".to_string()));
     }
+    if music_description.is_empty() {
+        return Err(AppError::Validation(
+            "Music description is required".to_string(),
+        ));
+    }
     if track1_name.is_empty() {
         return Err(AppError::Validation("Track 1 name is required".to_string()));
     }
@@ -356,8 +367,8 @@ pub async fn submit_form(
         INSERT INTO artists (
             name, pronouns, track1_name, track2_name, no_voice_message,
             instagram, soundcloud, bandcamp, spotify, other_social,
-            upcoming_events, mentions, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned')
+            upcoming_events, mentions, music_description, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned')
         "#,
     )
     .bind(&artist_name)
@@ -372,6 +383,7 @@ pub async fn submit_form(
     .bind(&other_social)
     .bind(&upcoming_events)
     .bind(&mentions)
+    .bind(&music_description)
     .execute(&state.db)
     .await?;
 
