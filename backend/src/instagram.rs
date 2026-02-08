@@ -418,6 +418,34 @@ pub async fn post_show_to_instagram(
         }
     }
 
+    // Fetch assigned artists and append their Instagram profiles
+    let artists: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT a.name, a.instagram FROM artists a \
+         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
+         WHERE asa.show_id = ? \
+         ORDER BY a.name",
+    )
+    .bind(show.id)
+    .fetch_all(&state.db)
+    .await?;
+
+    if !artists.is_empty() {
+        caption.push_str("\n💛\n\n");
+        for (name, instagram) in &artists {
+            if let Some(ig) = instagram {
+                if !ig.is_empty() {
+                    // Extract @handle from URL like https://instagram.com/handle
+                    let handle = ig.trim_end_matches('/').rsplit('/').next().unwrap_or(ig);
+                    caption.push_str(&format!("@{}\n", handle));
+                } else {
+                    caption.push_str(&format!("{}\n", name));
+                }
+            } else {
+                caption.push_str(&format!("{}\n", name));
+            }
+        }
+    }
+
     // Post to Instagram
     client.post_image(&cover_url, &caption).await
 }
