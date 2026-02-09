@@ -114,12 +114,10 @@ jobs:
         with:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
-            # CI/deploy secrets
             b97681cf-bf60-49d5-9186-b3e701004d75 > LIGHTSAIL_SSH_KEY
             429acaa6-d722-4882-b072-b3e701003070 > LIGHTSAIL_IP
             780bf50d-98fd-4bd4-b470-b3e701001e63 > GHCR_DEPLOY_TOKEN
             41363d58-f866-4c70-b8e6-b3e70100636b > GHCR_USERNAME
-            # Runtime secrets (for .env generation)
             eeda2f4a-6fb9-470d-a909-b3ec01488545 > SECRET_KEY
             a30cd3c6-2724-44ed-95d3-b3ec0148acdc > SUPERADMIN_PASSWORD_HASH
             9559957d-a86d-4a08-8a4a-b3ec0148d511 > R2_ACCOUNT_ID
