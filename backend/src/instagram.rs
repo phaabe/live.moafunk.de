@@ -237,6 +237,375 @@ impl InstagramClient {
         Ok(publish_resp.id)
     }
 
+    // ────────────────────────────────────────────────────────────────────────
+    // Carousel API methods
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Create a carousel image item container.
+    ///
+    /// `is_carousel_item=true` tells Instagram this is a child of a carousel,
+    /// not a standalone post. No caption is set on individual items.
+    async fn create_carousel_image_item(&self, image_url: &str) -> Result<String> {
+        let url = format!(
+            "{}/{}/{}/media",
+            GRAPH_API_BASE, GRAPH_API_VERSION, self.business_account_id
+        );
+
+        let params = [
+            ("image_url", image_url),
+            ("is_carousel_item", "true"),
+            ("access_token", &self.access_token),
+        ];
+
+        let response = self
+            .http
+            .post(&url)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::External(format!("Failed to create carousel image item: {}", e))
+            })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|e| {
+            AppError::External(format!("Failed to read carousel image response: {}", e))
+        })?;
+
+        if !status.is_success() {
+            if let Ok(error_resp) = serde_json::from_str::<InstagramErrorResponse>(&body) {
+                return Err(AppError::External(format!(
+                    "Instagram carousel image error: {} (code: {:?})",
+                    error_resp.error.message, error_resp.error.code
+                )));
+            }
+            return Err(AppError::External(format!(
+                "Instagram carousel image error: {} - {}",
+                status, body
+            )));
+        }
+
+        let container: CreateContainerResponse = serde_json::from_str(&body).map_err(|e| {
+            AppError::External(format!(
+                "Failed to parse carousel image response: {} - {}",
+                e, body
+            ))
+        })?;
+
+        tracing::info!("Created carousel image item: {}", container.id);
+        Ok(container.id)
+    }
+
+    /// Create a carousel video item container.
+    ///
+    /// Videos require `media_type=VIDEO` and use `video_url` instead of `image_url`.
+    /// Instagram will process the video asynchronously — poll with `check_container_status`.
+    async fn create_carousel_video_item(&self, video_url: &str) -> Result<String> {
+        let url = format!(
+            "{}/{}/{}/media",
+            GRAPH_API_BASE, GRAPH_API_VERSION, self.business_account_id
+        );
+
+        let params = [
+            ("media_type", "VIDEO"),
+            ("video_url", video_url),
+            ("is_carousel_item", "true"),
+            ("access_token", &self.access_token),
+        ];
+
+        let response = self
+            .http
+            .post(&url)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::External(format!("Failed to create carousel video item: {}", e))
+            })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|e| {
+            AppError::External(format!("Failed to read carousel video response: {}", e))
+        })?;
+
+        if !status.is_success() {
+            if let Ok(error_resp) = serde_json::from_str::<InstagramErrorResponse>(&body) {
+                return Err(AppError::External(format!(
+                    "Instagram carousel video error: {} (code: {:?})",
+                    error_resp.error.message, error_resp.error.code
+                )));
+            }
+            return Err(AppError::External(format!(
+                "Instagram carousel video error: {} - {}",
+                status, body
+            )));
+        }
+
+        let container: CreateContainerResponse = serde_json::from_str(&body).map_err(|e| {
+            AppError::External(format!(
+                "Failed to parse carousel video response: {} - {}",
+                e, body
+            ))
+        })?;
+
+        tracing::info!("Created carousel video item: {}", container.id);
+        Ok(container.id)
+    }
+
+    /// Create a carousel container that groups child items together.
+    ///
+    /// `children` is a comma-separated list of container IDs.
+    /// The `caption` applies to the entire carousel post.
+    async fn create_carousel_container(
+        &self,
+        children_ids: &[String],
+        caption: &str,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/{}/{}/media",
+            GRAPH_API_BASE, GRAPH_API_VERSION, self.business_account_id
+        );
+
+        let children_csv = children_ids.join(",");
+
+        let params = [
+            ("media_type", "CAROUSEL"),
+            ("children", &children_csv),
+            ("caption", caption),
+            ("access_token", &self.access_token),
+        ];
+
+        let response = self
+            .http
+            .post(&url)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::External(format!("Failed to create carousel container: {}", e))
+            })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|e| {
+            AppError::External(format!("Failed to read carousel container response: {}", e))
+        })?;
+
+        if !status.is_success() {
+            if let Ok(error_resp) = serde_json::from_str::<InstagramErrorResponse>(&body) {
+                return Err(AppError::External(format!(
+                    "Instagram carousel container error: {} (code: {:?})",
+                    error_resp.error.message, error_resp.error.code
+                )));
+            }
+            return Err(AppError::External(format!(
+                "Instagram carousel container error: {} - {}",
+                status, body
+            )));
+        }
+
+        let container: CreateContainerResponse = serde_json::from_str(&body).map_err(|e| {
+            AppError::External(format!(
+                "Failed to parse carousel container response: {} - {}",
+                e, body
+            ))
+        })?;
+
+        tracing::info!("Created carousel container: {}", container.id);
+        Ok(container.id)
+    }
+
+    /// Wait for a container to reach FINISHED status.
+    ///
+    /// Videos take longer to process, so this uses a configurable timeout.
+    async fn poll_container_until_ready(
+        &self,
+        container_id: &str,
+        label: &str,
+        max_attempts: u32,
+        poll_interval: std::time::Duration,
+    ) -> Result<()> {
+        for attempt in 1..=max_attempts {
+            let status = self.check_container_status(container_id).await?;
+            tracing::info!(
+                "{} container {} status: {} (attempt {}/{})",
+                label,
+                container_id,
+                status,
+                attempt,
+                max_attempts
+            );
+
+            match status.as_str() {
+                "FINISHED" => return Ok(()),
+                "ERROR" | "EXPIRED" => {
+                    return Err(AppError::External(format!(
+                        "{} container processing failed with status: {}",
+                        label, status
+                    )));
+                }
+                _ => {
+                    if attempt == max_attempts {
+                        return Err(AppError::External(format!(
+                            "{} container processing timed out after {} attempts",
+                            label, max_attempts
+                        )));
+                    }
+                    tokio::time::sleep(poll_interval).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Post a carousel (multi-slide album) to Instagram.
+    ///
+    /// Orchestrates the full flow:
+    /// 1. Create an image item container for the profile picture
+    /// 2. Create video item containers for each track preview
+    /// 3. Poll all children until they are processed
+    /// 4. Create the parent carousel container with caption
+    /// 5. Poll the carousel container
+    /// 6. Publish
+    pub async fn post_carousel(
+        &self,
+        image_url: &str,
+        video_urls: &[String],
+        caption: &str,
+    ) -> Result<InstagramPostResult> {
+        tracing::info!(
+            "Creating Instagram carousel: 1 image + {} videos",
+            video_urls.len()
+        );
+
+        // Step 1: Create the image child item
+        let image_item_id = match self.create_carousel_image_item(image_url).await {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(InstagramPostResult {
+                    success: false,
+                    media_id: None,
+                    error: Some(format!("Failed to create image slide: {}", e)),
+                });
+            }
+        };
+
+        // Step 2: Create video child items
+        let mut video_item_ids = Vec::new();
+        for (i, video_url) in video_urls.iter().enumerate() {
+            match self.create_carousel_video_item(video_url).await {
+                Ok(id) => video_item_ids.push(id),
+                Err(e) => {
+                    return Ok(InstagramPostResult {
+                        success: false,
+                        media_id: None,
+                        error: Some(format!("Failed to create video slide {}: {}", i + 1, e)),
+                    });
+                }
+            }
+        }
+
+        // Step 3: Poll all children until FINISHED
+        // Image containers are fast (~5s), video containers can take 60-120s
+        const IMAGE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+        const VIDEO_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+        const IMAGE_MAX_ATTEMPTS: u32 = 30; // ~60s
+        const VIDEO_MAX_ATTEMPTS: u32 = 60; // ~180s
+
+        // Poll image item
+        if let Err(e) = self
+            .poll_container_until_ready(
+                &image_item_id,
+                "Image",
+                IMAGE_MAX_ATTEMPTS,
+                IMAGE_POLL_INTERVAL,
+            )
+            .await
+        {
+            return Ok(InstagramPostResult {
+                success: false,
+                media_id: None,
+                error: Some(format!("Image slide processing failed: {}", e)),
+            });
+        }
+
+        // Poll video items in sequence (Instagram may throttle parallel polling)
+        for (i, vid_id) in video_item_ids.iter().enumerate() {
+            if let Err(e) = self
+                .poll_container_until_ready(
+                    vid_id,
+                    &format!("Video {}", i + 1),
+                    VIDEO_MAX_ATTEMPTS,
+                    VIDEO_POLL_INTERVAL,
+                )
+                .await
+            {
+                return Ok(InstagramPostResult {
+                    success: false,
+                    media_id: None,
+                    error: Some(format!("Video slide {} processing failed: {}", i + 1, e)),
+                });
+            }
+        }
+
+        // Step 4: Create carousel container
+        let mut children_ids = vec![image_item_id];
+        children_ids.extend(video_item_ids);
+
+        let carousel_id = match self.create_carousel_container(&children_ids, caption).await {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(InstagramPostResult {
+                    success: false,
+                    media_id: None,
+                    error: Some(format!("Failed to create carousel: {}", e)),
+                });
+            }
+        };
+
+        // Step 5: Poll carousel container
+        if let Err(e) = self
+            .poll_container_until_ready(
+                &carousel_id,
+                "Carousel",
+                IMAGE_MAX_ATTEMPTS,
+                IMAGE_POLL_INTERVAL,
+            )
+            .await
+        {
+            return Ok(InstagramPostResult {
+                success: false,
+                media_id: None,
+                error: Some(format!("Carousel processing failed: {}", e)),
+            });
+        }
+
+        // Step 6: Publish
+        tracing::info!("Carousel {} ready, publishing...", carousel_id);
+        let media_id = match self.publish_container(&carousel_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(InstagramPostResult {
+                    success: false,
+                    media_id: None,
+                    error: Some(format!("Failed to publish carousel: {}", e)),
+                });
+            }
+        };
+
+        tracing::info!("Successfully published carousel to Instagram: {}", media_id);
+
+        Ok(InstagramPostResult {
+            success: true,
+            media_id: Some(media_id),
+            error: None,
+        })
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Single image posting
+    // ────────────────────────────────────────────────────────────────────────
+
     /// Post an image to Instagram feed
     ///
     /// This is the main entry point for posting. It:
@@ -450,8 +819,11 @@ pub async fn post_show_to_instagram(
 
 /// Post an artist's image to Instagram with their generated caption
 ///
-/// Uses the artist's overlay (branded) image and the pre-generated caption
-/// stored in `artists.instagram_caption`.
+/// If the artist has track audio + peaks data, posts a 3-slide carousel:
+/// - Slide 1: Artist profile image
+/// - Slides 2–3: 30-second track preview videos with animated waveform
+///
+/// Falls back to a single-image post if tracks or peaks are unavailable.
 pub async fn post_artist_to_instagram(
     state: &Arc<AppState>,
     artist: &crate::models::Artist,
@@ -473,7 +845,7 @@ pub async fn post_artist_to_instagram(
             AppError::Validation("Artist has no profile picture to post.".to_string())
         })?;
 
-    // Generate presigned URL (1 hour validity)
+    // Generate presigned URL for profile image (1 hour validity)
     let image_url = storage::get_presigned_url(state, pic_key, 3600).await?;
 
     tracing::info!(
@@ -483,5 +855,154 @@ pub async fn post_artist_to_instagram(
         pic_key
     );
 
-    client.post_image(&image_url, caption).await
+    // Attempt carousel with track preview videos
+    let track_keys: Vec<(&str, &str)> = [
+        (artist.track1_key.as_deref(), "track1"),
+        (artist.track2_key.as_deref(), "track2"),
+    ]
+    .iter()
+    .filter_map(|(key, label)| key.map(|k| (k, *label)))
+    .collect();
+
+    if track_keys.is_empty() {
+        tracing::info!("No tracks available — posting single image");
+        return client.post_image(&image_url, caption).await;
+    }
+
+    // Build video data for each track
+    // Note: peaks_key is no longer used for waveform rendering (audiowaveform
+    // reads the MP3 directly) but we keep the tuple shape for API compatibility.
+    let video_data: Vec<(String, String, String)> = track_keys
+        .iter()
+        .map(|(track_key, label)| {
+            let peaks_key = derive_peaks_key(track_key);
+            (track_key.to_string(), peaks_key, label.to_string())
+        })
+        .collect();
+
+    if video_data.is_empty() {
+        tracing::info!("No tracks available — posting single image");
+        return client.post_image(&image_url, caption).await;
+    }
+
+    // Generate preview videos and upload to R2
+    tracing::info!(
+        "Generating {} track preview video(s) for carousel",
+        video_data.len()
+    );
+
+    let mut video_r2_keys: Vec<String> = Vec::new();
+    let mut video_presigned_urls: Vec<String> = Vec::new();
+
+    for (track_key, peaks_key, label) in &video_data {
+        tracing::info!("Generating preview video for {}", label);
+
+        let mp4_bytes = match crate::video::generate_track_preview_video(
+            state, pic_key, track_key, peaks_key, 30,
+        )
+        .await
+        {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!("Failed to generate {} preview video: {}", label, e);
+                // Clean up any already-uploaded videos
+                cleanup_temp_videos(state, &video_r2_keys).await;
+                // Fall back to single image
+                tracing::info!("Falling back to single image post");
+                return client.post_image(&image_url, caption).await;
+            }
+        };
+
+        // Upload video to R2 under a temporary path
+        let video_key = format!("artists/{}/instagram-preview-{}.mp4", artist.id, label);
+
+        if let Err(e) = upload_raw(state, &video_key, mp4_bytes, "video/mp4").await {
+            tracing::error!("Failed to upload {} video to R2: {}", label, e);
+            cleanup_temp_videos(state, &video_r2_keys).await;
+            return client.post_image(&image_url, caption).await;
+        }
+
+        video_r2_keys.push(video_key.clone());
+
+        match storage::get_presigned_url(state, &video_key, 3600).await {
+            Ok(url) => video_presigned_urls.push(url),
+            Err(e) => {
+                tracing::error!("Failed to get presigned URL for {}: {}", label, e);
+                cleanup_temp_videos(state, &video_r2_keys).await;
+                return client.post_image(&image_url, caption).await;
+            }
+        }
+    }
+
+    // Post carousel
+    tracing::info!(
+        "Posting carousel: 1 image + {} video(s)",
+        video_presigned_urls.len()
+    );
+
+    let result = client
+        .post_carousel(&image_url, &video_presigned_urls, caption)
+        .await;
+
+    // Clean up temp video files from R2 regardless of outcome
+    cleanup_temp_videos(state, &video_r2_keys).await;
+
+    result
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Derive the peaks JSON key from an audio file key.
+///
+/// Peaks are stored alongside the audio file with `.peaks.json` extension:
+///   `artists/5/track1/ursi murps.mp3` → `artists/5/track1/ursi murps.peaks.json`
+fn derive_peaks_key(audio_key: &str) -> String {
+    if let Some((base, _ext)) = audio_key.rsplit_once('.') {
+        format!("{}.peaks.json", base)
+    } else {
+        format!("{}.peaks.json", audio_key)
+    }
+}
+
+/// Upload raw bytes directly to R2 with a specific key and content type.
+async fn upload_raw(
+    state: &Arc<AppState>,
+    key: &str,
+    data: Vec<u8>,
+    content_type: &str,
+) -> Result<()> {
+    use aws_sdk_s3::primitives::ByteStream;
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(key)
+        .body(ByteStream::from(data))
+        .content_type(content_type)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload video to R2: {}", e)))?;
+
+    Ok(())
+}
+
+/// Delete temporary video files from R2.
+async fn cleanup_temp_videos(state: &Arc<AppState>, keys: &[String]) {
+    for key in keys {
+        tracing::info!("Cleaning up temp video: {}", key);
+        let result = state
+            .s3_client
+            .delete_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(key)
+            .send()
+            .await;
+
+        if let Err(e) = result {
+            tracing::warn!("Failed to delete temp video {}: {}", key, e);
+        }
+    }
 }
