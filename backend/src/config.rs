@@ -60,9 +60,9 @@ pub struct Config {
 
     // Instagram API settings (optional - for automatic posting to Instagram)
     // Access token from Meta/Facebook Developer Console
-    pub instagram_access_token: Option<String>,
+    pub instagram_access_token_dev: Option<String>,
     // Instagram Business Account ID (found in Meta Business Suite or Graph API Explorer)
-    pub instagram_business_account_id: Option<String>,
+    pub instagram_business_account_id_dev: Option<String>,
     // Facebook App credentials for token refresh
     pub facebook_app_id: Option<String>,
     pub facebook_app_secret: Option<String>,
