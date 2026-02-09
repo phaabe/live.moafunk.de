@@ -3,7 +3,7 @@
 # Usage: ./backup-db.sh [--local-only]
 #
 # Environment variables:
-#   DATABASE_PATH    - SQLite database path (default: /app/data/unheard.db)
+#   DATABASE_PATH    - SQLite database path (default: /opt/unheard-backend/data/unheard.db)
 #   BACKUP_BUCKET    - R2 backup bucket name (default: unheard-backups)
 #   BACKUP_RETENTION - Number of backups to keep (default: 28 = 4 weeks daily)
 #   RCLONE_REMOTE    - rclone remote name for backup bucket (default: r2-backup)
@@ -20,7 +20,7 @@ if [[ -f "$BACKEND_DIR/.env" ]]; then
     set +a
 fi
 
-DB_PATH="${DATABASE_PATH:-/app/data/unheard.db}"
+DB_PATH="${DATABASE_PATH:-/opt/unheard-backend/data/unheard.db}"
 BACKUP_BUCKET="${BACKUP_BUCKET:-unheard-backups}"
 BACKUP_RETENTION="${BACKUP_RETENTION:-28}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-r2-backup}"
