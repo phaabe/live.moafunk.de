@@ -176,6 +176,11 @@ jobs:
             echo ""
             echo "# OpenAI"
             echo "OPENAI_API_KEY=${{ steps.bitwarden-secrets.outputs.OPENAI_API_KEY }}"
+            echo ""
+            echo "# Backup settings"
+            echo "BACKUP_BUCKET=unheard-backups"
+            echo "BACKUP_RETENTION=28"
+            echo "RCLONE_REMOTE=r2-backup"
           } >> /tmp/production.env
 
       - name: Setup SSH key

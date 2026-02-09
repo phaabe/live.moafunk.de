@@ -3,7 +3,7 @@
 # Usage: ./backup-db.sh [--local-only]
 #
 # Environment variables:
-#   DATABASE_PATH    - SQLite database path (default: /opt/unheard-backend/data/unheard.db)
+#   DATABASE_PATH    - SQLite database path (default: derived from script location, e.g. /opt/unheard-backend/data/unheard.db)
 #   BACKUP_BUCKET    - R2 backup bucket name (default: unheard-backups)
 #   BACKUP_RETENTION - Number of backups to keep (default: 28 = 4 weeks daily)
 #   RCLONE_REMOTE    - rclone remote name for backup bucket (default: r2-backup)
@@ -13,14 +13,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# Load .env if exists
+# Resolve DB path BEFORE sourcing .env (which contains container paths like /app/...)
+# The host DB lives at $BACKEND_DIR/data/unheard.db (e.g. /opt/unheard-backend/data/unheard.db)
+DB_PATH="${DATABASE_PATH:-$BACKEND_DIR/data/unheard.db}"
+
+# Load .env for non-path settings (BACKUP_BUCKET, RCLONE_REMOTE, etc.)
+# Preserve DATABASE_PATH so .env container paths don't overwrite the host path
+_SAVED_DB_PATH="$DB_PATH"
 if [[ -f "$BACKEND_DIR/.env" ]]; then
     set -a
     source "$BACKEND_DIR/.env"
     set +a
 fi
-
-DB_PATH="${DATABASE_PATH:-/opt/unheard-backend/data/unheard.db}"
+DB_PATH="$_SAVED_DB_PATH"
 BACKUP_BUCKET="${BACKUP_BUCKET:-unheard-backups}"
 BACKUP_RETENTION="${BACKUP_RETENTION:-28}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-r2-backup}"
