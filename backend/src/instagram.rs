@@ -74,18 +74,16 @@ pub struct InstagramClient {
 impl InstagramClient {
     /// Create a new Instagram client from config
     pub fn from_config(config: &crate::Config) -> Result<Self> {
-        let access_token = config
-            .instagram_access_token
-            .clone()
-            .ok_or_else(|| AppError::Config("INSTAGRAM_ACCESS_TOKEN not configured".to_string()))?;
+        let access_token = config.instagram_access_token_dev.clone().ok_or_else(|| {
+            AppError::Config("INSTAGRAM_ACCESS_TOKEN_DEV not configured".to_string())
+        })?;
 
-        let business_account_id =
-            config
-                .instagram_business_account_id
-                .clone()
-                .ok_or_else(|| {
-                    AppError::Config("INSTAGRAM_BUSINESS_ACCOUNT_ID not configured".to_string())
-                })?;
+        let business_account_id = config
+            .instagram_business_account_id_dev
+            .clone()
+            .ok_or_else(|| {
+                AppError::Config("INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV not configured".to_string())
+            })?;
 
         Ok(Self {
             http: reqwest::Client::new(),
