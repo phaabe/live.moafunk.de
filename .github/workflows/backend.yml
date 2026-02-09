@@ -108,24 +108,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Get secrets from Bitwarden
+        uses: bitwarden/sm-action@v2
+        id: bitwarden-secrets
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            b97681cf-bf60-49d5-9186-b3e701004d75 > LIGHTSAIL_SSH_KEY
+            429acaa6-d722-4882-b072-b3e701003070 > LIGHTSAIL_IP
+            780bf50d-98fd-4bd4-b470-b3e701001e63 > GHCR_DEPLOY_TOKEN
+            41363d58-f866-4c70-b8e6-b3e70100636b > GHCR_USERNAME
+
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.LIGHTSAIL_SSH_KEY }}" > ~/.ssh/lightsail.pem
+          echo "${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_SSH_KEY }}" > ~/.ssh/lightsail.pem
           chmod 600 ~/.ssh/lightsail.pem
           # Add host key to known_hosts to avoid interactive prompt
-          ssh-keyscan -H ${{ secrets.LIGHTSAIL_IP }} >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H ${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_IP }} >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy to Lightsail
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
-          GHCR_USER: ${{ secrets.GHCR_DEPLOY_USER || github.repository_owner }}
+          GHCR_TOKEN: ${{ steps.bitwarden-secrets.outputs.GHCR_DEPLOY_TOKEN }}
+          GHCR_USER: ${{ steps.bitwarden-secrets.outputs.GHCR_USERNAME || github.repository_owner }}
         run: |
           # Write GHCR token to temp file
           echo "$GHCR_TOKEN" > /tmp/ghcr-token.key
 
           # Run deploy script (skips nginx setup since already configured)
-          IP="${{ secrets.LIGHTSAIL_IP }}" \
+          IP="${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_IP }}" \
           PEM=~/.ssh/lightsail.pem \
           GHCR_USER="$GHCR_USER" \
           GHCR_TOKEN_FILE=/tmp/ghcr-token.key \
