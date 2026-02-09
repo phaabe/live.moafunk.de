@@ -33,7 +33,7 @@ Options:
   --ghcr-token-file <path>       File containing GHCR token
   --env-file <path>              Upload local .env to server
   --init-db                      Run scripts/db/init_sqlite.sh on server (backs up existing)
-  --db-path-remote <path>        Remote DB path (default: /app/data/unheard.db)
+  --db-path-remote <path>        Remote DB path (default: /opt/unheard-backend/data/unheard.db)
   --unheard-image <image>        GHCR image (default: ghcr.io/phaabe/live.moafunk.de-backend)
   --unheard-tag <tag>            Image tag (default: latest)
   --setup-nginx                  Configure nginx reverse proxy
