@@ -152,7 +152,7 @@ jobs:
             echo "R2_ACCOUNT_ID=${{ steps.bitwarden-secrets.outputs.R2_ACCOUNT_ID }}"
             echo "R2_ACCESS_KEY_ID=${{ steps.bitwarden-secrets.outputs.R2_ACCESS_KEY_ID }}"
             echo "R2_SECRET_ACCESS_KEY=${{ steps.bitwarden-secrets.outputs.R2_SECRET_ACCESS_KEY }}"
-            echo "R2_BUCKET_NAME=unheard-artists-dev"
+            echo "R2_BUCKET_NAME=unheard-artists-prod"
             echo ""
             echo "# Instagram API (DEV)"
             echo "INSTAGRAM_ACCESS_TOKEN_DEV=${{ steps.bitwarden-secrets.outputs.INSTAGRAM_ACCESS_TOKEN_DEV }}"
@@ -211,6 +211,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # Need HEAD~1 for git diff
 
       - name: Check if scripts changed
         id: changes
