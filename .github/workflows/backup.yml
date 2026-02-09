@@ -94,7 +94,7 @@ jobs:
         run: |
           echo "Running database backup on Lightsail..."
           ssh -o StrictHostKeyChecking=no ubuntu@"$LIGHTSAIL_HOST" \
-            "cd ~/unheard-backend && ./scripts/backup/backup-db.sh"
+            "cd /opt/unheard-backend && ./scripts/backup/backup-db.sh"
 
       - name: Run R2 backup
         if: steps.backup-type.outputs.backup_r2 == 'true'
@@ -107,7 +107,7 @@ jobs:
             FULL_FLAG="--full"
           fi
           ssh -o StrictHostKeyChecking=no ubuntu@"$LIGHTSAIL_HOST" \
-            "cd ~/unheard-backend && ./scripts/backup/backup-r2.sh $FULL_FLAG"
+            "cd /opt/unheard-backend && ./scripts/backup/backup-r2.sh $FULL_FLAG"
 
       - name: Backup summary
         if: always()
