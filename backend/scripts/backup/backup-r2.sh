@@ -3,7 +3,6 @@
 # Usage: ./backup-r2.sh [--full]
 #
 # Environment variables:
-#   R2_BUCKET_NAME   - Source bucket name (default: unheard-artists-prod)
 #   BACKUP_BUCKET    - Destination backup bucket (default: unheard-backups)
 #   BACKUP_RETENTION - Number of full snapshots to keep (default: 2)
 #   RCLONE_REMOTE    - rclone remote for backup bucket (default: r2-backup)
@@ -21,7 +20,8 @@ if [[ -f "$BACKEND_DIR/.env" ]]; then
     set +a
 fi
 
-SOURCE_BUCKET="${R2_BUCKET_NAME:-unheard-artists-prod}"
+# Always back up production — never use R2_BUCKET_NAME from .env (which may be dev)
+SOURCE_BUCKET="unheard-artists-prod"
 BACKUP_BUCKET="${BACKUP_BUCKET:-unheard-backups}"
 BACKUP_RETENTION="${BACKUP_RETENTION:-2}"
 RCLONE_SOURCE="${RCLONE_SOURCE:-r2-prod}"

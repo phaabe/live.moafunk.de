@@ -5,7 +5,6 @@
 #        ./restore-r2.sh --latest           # Restore from r2-latest
 #
 # Environment variables:
-#   R2_BUCKET_NAME - Target bucket name (default: unheard-artists-prod)
 #   BACKUP_BUCKET  - Source backup bucket (default: unheard-backups)
 #   RCLONE_SOURCE  - rclone remote for target bucket (default: r2-prod)
 #   RCLONE_REMOTE  - rclone remote for backup bucket (default: r2-backup)
@@ -22,7 +21,8 @@ if [[ -f "$BACKEND_DIR/.env" ]]; then
     set +a
 fi
 
-TARGET_BUCKET="${R2_BUCKET_NAME:-unheard-artists-prod}"
+# Always restore to production — never use R2_BUCKET_NAME from .env (which may be dev)
+TARGET_BUCKET="unheard-artists-prod"
 BACKUP_BUCKET="${BACKUP_BUCKET:-unheard-backups}"
 RCLONE_TARGET="${RCLONE_SOURCE:-r2-prod}"
 RCLONE_BACKUP="${RCLONE_REMOTE:-r2-backup}"

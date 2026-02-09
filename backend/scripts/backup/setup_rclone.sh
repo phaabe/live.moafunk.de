@@ -78,6 +78,7 @@ access_key_id = ${R2_ACCESS_KEY_ID}
 secret_access_key = ${R2_SECRET_ACCESS_KEY}
 endpoint = ${R2_ENDPOINT}
 acl = private
+no_check_bucket = true
 
 # R2 Backup bucket remote (uses same credentials)
 [r2-backup]
@@ -87,6 +88,7 @@ access_key_id = ${R2_ACCESS_KEY_ID}
 secret_access_key = ${R2_SECRET_ACCESS_KEY}
 endpoint = ${R2_ENDPOINT}
 acl = private
+no_check_bucket = true
 EOF
 
 chmod 600 "$RCLONE_CONFIG"

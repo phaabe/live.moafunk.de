@@ -8,13 +8,6 @@ on:
       - frontend/src/admin/**
       - frontend/package*.json
       - .github/workflows/backend.yml
-  pull_request:
-    branches: [main]
-    paths:
-      - backend/**
-      - frontend/src/admin/**
-      - frontend/package*.json
-      - .github/workflows/backend.yml
   workflow_dispatch:
     inputs:
       deploy:
@@ -91,8 +84,8 @@ jobs:
           context: .
           file: backend/Dockerfile
           platforms: linux/amd64
-          # Only push on main branch, not on PRs
-          push: ${{ github.event_name != 'pull_request' }}
+          # Always push — workflow only runs on main or manual dispatch
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -208,3 +201,69 @@ jobs:
           SETUP_NGINX=0 \
           RUN_TESTS="${{ github.event_name == 'workflow_dispatch' && inputs.run_tests == false && '0' || '1' }}" \
           ./backend/scripts/deploy_lightsail.sh
+
+  sync-scripts:
+    # Sync backup/r2/db scripts to Lightsail without a full deploy.
+    # Runs on push to main when only scripts changed, or always during full deploy.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if scripts changed
+        id: changes
+        run: |
+          if git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -q '^backend/scripts/'; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get secrets from Bitwarden
+        if: steps.changes.outputs.changed == 'true'
+        uses: bitwarden/sm-action@v2
+        id: bitwarden-secrets
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            b97681cf-bf60-49d5-9186-b3e701004d75 > LIGHTSAIL_SSH_KEY
+            429acaa6-d722-4882-b072-b3e701003070 > LIGHTSAIL_IP
+
+      - name: Upload scripts to Lightsail
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_SSH_KEY }}" > ~/.ssh/lightsail.pem
+          chmod 600 ~/.ssh/lightsail.pem
+          ssh-keyscan -H ${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_IP }} >> ~/.ssh/known_hosts 2>/dev/null
+
+          SSH_HOST="ubuntu@${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_IP }}"
+          PEM=~/.ssh/lightsail.pem
+          REMOTE_DIR=/opt/unheard-backend
+
+          echo "Uploading scripts to Lightsail..."
+          for dir in backup r2 db config; do
+            if [[ -d "backend/scripts/$dir" ]]; then
+              # Create matching dir in /tmp so scp copies only contents
+              ssh -i "$PEM" -o StrictHostKeyChecking=no "$SSH_HOST" "mkdir -p /tmp/scripts-upload/$dir"
+              scp -i "$PEM" -o StrictHostKeyChecking=no backend/scripts/$dir/* "$SSH_HOST:/tmp/scripts-upload/$dir/"
+            fi
+          done
+
+          ssh -i "$PEM" -o StrictHostKeyChecking=no "$SSH_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          REMOTE_DIR=/opt/unheard-backend
+          sudo mkdir -p "$REMOTE_DIR/scripts"
+          for dir in backup r2 db config; do
+            if [[ -d "/tmp/scripts-upload/$dir" ]]; then
+              sudo rm -rf "$REMOTE_DIR/scripts/$dir"
+              sudo mkdir -p "$REMOTE_DIR/scripts/$dir"
+              sudo mv /tmp/scripts-upload/$dir/* "$REMOTE_DIR/scripts/$dir/"
+            fi
+          done
+          rm -rf /tmp/scripts-upload
+          sudo chmod -R +x "$REMOTE_DIR/scripts/"*/*.sh 2>/dev/null || true
+          echo "Scripts synced successfully"
+          REMOTE

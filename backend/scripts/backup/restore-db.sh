@@ -5,7 +5,7 @@
 #        ./restore-db.sh --latest         # Restore most recent backup
 #
 # Environment variables:
-#   DATABASE_PATH - SQLite database path (default: /opt/unheard-backend/data/unheard.db)
+#   DATABASE_PATH - SQLite database path (default: derived from script location)
 #   BACKUP_BUCKET - R2 backup bucket name (default: unheard-backups)
 #   RCLONE_REMOTE - rclone remote name (default: r2-backup)
 
@@ -14,14 +14,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# Load .env if exists
+# Resolve DB path BEFORE sourcing .env (which contains container paths like /app/...)
+DB_PATH="${DATABASE_PATH:-$BACKEND_DIR/data/unheard.db}"
+
+# Load .env for non-path settings (BACKUP_BUCKET, RCLONE_REMOTE, etc.)
+_SAVED_DB_PATH="$DB_PATH"
 if [[ -f "$BACKEND_DIR/.env" ]]; then
     set -a
     source "$BACKEND_DIR/.env"
     set +a
 fi
-
-DB_PATH="${DATABASE_PATH:-/opt/unheard-backend/data/unheard.db}"
+DB_PATH="$_SAVED_DB_PATH"
 BACKUP_BUCKET="${BACKUP_BUCKET:-unheard-backups}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-r2-backup}"
 
