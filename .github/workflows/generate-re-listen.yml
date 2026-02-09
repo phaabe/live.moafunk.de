@@ -25,6 +25,15 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Get secrets from Bitwarden
+        uses: bitwarden/sm-action@v2
+        id: bitwarden-secrets
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            0ede7c60-027a-45af-99ae-b3ec013f22a7 > SOUNDCLOUD_CLIENT_ID
+            fb23eb6e-139b-45be-a95a-b3ec013f2eac > SOUNDCLOUD_CLIENT_SECRET
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -33,8 +42,8 @@ jobs:
       - name: Run script with secrets
         run: |
           uv run scripts/generate_relisten.py \
-            --client-id "${{ secrets.SOUNDCLOUD_CLIENT_ID }}" \
-            --client-secret "${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}"
+            --client-id "${{ steps.bitwarden-secrets.outputs.SOUNDCLOUD_CLIENT_ID }}" \
+            --client-secret "${{ steps.bitwarden-secrets.outputs.SOUNDCLOUD_CLIENT_SECRET }}"
 
       - name: Generate re-listen.html
         run: node scripts/generate-html.js
