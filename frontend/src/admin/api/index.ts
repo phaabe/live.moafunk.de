@@ -111,6 +111,10 @@ export interface ArtistDetail {
   created_at: string;
   mentions?: string;
   upcoming_events?: string;
+  music_description?: string;
+  ai_bio?: string;
+  instagram_caption?: string;
+  instagram_posted_at?: string;
   soundcloud?: string;
   instagram?: string;
   bandcamp?: string;
@@ -151,6 +155,7 @@ export const artistsApi = {
     data: {
       mentions?: string;
       upcoming_events?: string;
+      music_description?: string;
       soundcloud?: string;
       instagram?: string;
       bandcamp?: string;
@@ -158,6 +163,28 @@ export const artistsApi = {
       other_social?: string;
     }
   ) => api.put<void>(`/api/artists/${id}/details`, data),
+
+  generateBio: (id: number) =>
+    api.post<{ success: boolean; ai_bio: string }>(`/api/artists/${id}/generate-bio`),
+
+  generateInstagramCaption: (id: number) =>
+    api.post<{ success: boolean; instagram_caption: string }>(
+      `/api/artists/${id}/generate-instagram-caption`
+    ),
+
+  updateInstagramCaption: (id: number, instagram_caption: string) =>
+    api.put<{ success: boolean; instagram_caption: string }>(
+      `/api/artists/${id}/instagram-caption`,
+      { instagram_caption }
+    ),
+
+  postToInstagram: (id: number, force = false) =>
+    api.post<{
+      success: boolean;
+      media_id?: string;
+      error?: string;
+      already_posted: boolean;
+    }>(`/api/artists/${id}/instagram`, { force }),
 
   updatePicture: async (
     id: number,
@@ -279,6 +306,7 @@ export interface ShowDetail {
   recording_url?: string;
   recording_peaks_url?: string;
   recording_filename?: string;
+  instagram_posted_at?: string;
 }
 
 export const showsApi = {
@@ -431,6 +459,14 @@ export const showsApi = {
 
   deleteRecording: (showId: number) =>
     api.delete<{ success: boolean }>(`/api/shows/${showId}/recording`),
+
+  postToInstagram: (showId: number, force = false) =>
+    api.post<{
+      success: boolean;
+      media_id?: string;
+      error?: string;
+      already_posted: boolean;
+    }>(`/api/shows/${showId}/instagram`, { force }),
 };
 
 // Users API

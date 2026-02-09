@@ -22,6 +22,8 @@ const error = ref<string | null>(null);
 const showDeleteModal = ref(false);
 const deleting = ref(false);
 const deletingRecording = ref(false);
+const postingToInstagram = ref(false);
+const showInstagramConfirmModal = ref(false);
 const editingDate = ref(false);
 const editingDescription = ref(false);
 const saving = ref(false);
@@ -55,30 +57,30 @@ function scheduleCoverRefresh() {
   if (coverRefreshTimer) {
     clearTimeout(coverRefreshTimer);
   }
-  
+
   // Record when we made the change - cover must be generated AFTER this time
   const changeTime = new Date().toISOString();
   coverPollCount = 0;
-  
+
   // Start polling after initial delay
   coverRefreshTimer = setTimeout(() => pollForCover(changeTime), COVER_INITIAL_DELAY);
 }
 
 async function pollForCover(changeTime: string) {
   if (!show.value) return;
-  
+
   coverPollCount++;
-  
+
   try {
     const updated = await showsApi.get(show.value.id);
-    
+
     // Check if cover was generated AFTER our change
     const coverTime = updated.cover_generated_at;
     const coverIsNewer = coverTime && coverTime > changeTime;
-    
+
     // Also detect if cover was deleted (no artists with pics)
     const coverDeleted = !updated.cover_url && show.value.cover_url;
-    
+
     if (coverIsNewer || coverDeleted) {
       if (show.value) {
         show.value.cover_url = updated.cover_url;
@@ -86,7 +88,7 @@ async function pollForCover(changeTime: string) {
       }
       return; // Done - cover updated
     }
-    
+
     // Cover hasn't been regenerated yet, poll again if under limit
     if (coverPollCount < COVER_MAX_POLLS) {
       coverRefreshTimer = setTimeout(() => pollForCover(changeTime), COVER_POLL_INTERVAL);
@@ -122,7 +124,7 @@ function startEditDate() {
 
 async function saveDate() {
   if (!show.value) return;
-  
+
   saving.value = true;
   try {
     await showsApi.update(show.value.id, { date: dateForm.value });
@@ -146,7 +148,7 @@ function startEditDescription() {
 
 async function saveDescription() {
   if (!show.value) return;
-  
+
   saving.value = true;
   try {
     await showsApi.update(show.value.id, { description: descriptionForm.value });
@@ -165,12 +167,12 @@ async function assignArtist() {
   if (!show.value || !selectedArtistId.value) return;
 
   const artistIdToAssign = selectedArtistId.value;
-  
+
   // Find the artist in available_artists before we remove it
   const selectedAvailableArtist = show.value.available_artists.find(
     a => a.id === artistIdToAssign
   );
-  
+
   if (!selectedAvailableArtist) {
     flash.error('Artist not found in available list');
     return;
@@ -179,7 +181,7 @@ async function assignArtist() {
   assigning.value = true;
   try {
     const response = await showsApi.assignArtist(show.value.id, artistIdToAssign);
-    
+
     // Use response artist if available, otherwise construct from available_artists
     const newArtist = response?.artist ?? {
       id: selectedAvailableArtist.id,
@@ -188,17 +190,17 @@ async function assignArtist() {
       has_pic: false,
       // No audio URLs - they'll load on next page visit
     };
-    
+
     // Update local state surgically
     show.value.artists = [...show.value.artists, newArtist];
     show.value.available_artists = show.value.available_artists.filter(
       a => a.id !== artistIdToAssign
     );
     show.value.artists_left = Math.max(0, show.value.artists_left - 1);
-    
+
     // Schedule cover refresh after backend debounce completes
     scheduleCoverRefresh();
-    
+
     flash.success('Artist assigned to show');
     selectedArtistId.value = null;
   } catch (e) {
@@ -214,13 +216,13 @@ async function unassignArtist(artistId: number) {
   try {
     // Find artist before removing for the available_artists update
     const removedArtist = show.value.artists.find(a => a.id === artistId);
-    
+
     await showsApi.unassignArtist(show.value.id, artistId);
-    
+
     // Update local state surgically using spread for reactivity
     show.value.artists = show.value.artists.filter(a => a.id !== artistId);
     show.value.artists_left = Math.min(4, show.value.artists_left + 1);
-    
+
     // Add back to available_artists if we have the info
     if (removedArtist) {
       const newAvailable = {
@@ -232,13 +234,43 @@ async function unassignArtist(artistId: number) {
         (a, b) => a.name.localeCompare(b.name)
       );
     }
-    
+
     // Schedule cover refresh after backend debounce completes
     scheduleCoverRefresh();
-    
+
     flash.success('Artist removed from show');
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to remove artist');
+  }
+}
+
+// Instagram posting
+async function postToInstagram(force = false) {
+  if (!show.value) return;
+
+  // If already posted and not forcing, show confirmation modal
+  if (show.value.instagram_posted_at && !force) {
+    showInstagramConfirmModal.value = true;
+    return;
+  }
+
+  postingToInstagram.value = true;
+  showInstagramConfirmModal.value = false;
+
+  try {
+    const result = await showsApi.postToInstagram(show.value.id, force);
+
+    if (result.success) {
+      flash.success('Posted to Instagram successfully!');
+      // Reload show to get updated instagram_posted_at timestamp
+      await loadShow();
+    } else {
+      flash.error(result.error || 'Failed to post to Instagram');
+    }
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to post to Instagram');
+  } finally {
+    postingToInstagram.value = false;
   }
 }
 
@@ -270,7 +302,7 @@ function handleFileSelect(e: Event) {
 
 async function uploadFile(file: File) {
   if (!show.value) return;
-  
+
   uploading.value = true;
   uploadProgress.value = null;
   uploadingFilename.value = file.name;
@@ -299,9 +331,9 @@ async function uploadFile(file: File) {
 
 async function deleteRecording() {
   if (!show.value || !show.value.recording_url) return;
-  
+
   if (!confirm('Are you sure you want to delete this recording?')) return;
-  
+
   deletingRecording.value = true;
   try {
     await showsApi.deleteRecording(show.value.id);
@@ -371,7 +403,7 @@ onUnmounted(() => {
               <div class="info-value">
                 <span :class="['status-badge', show.status]">{{ show.status }}</span>
               </div>
-              
+
               <div class="info-label">Date</div>
               <div class="info-value">{{ show.date }}</div>
             </div>
@@ -400,7 +432,7 @@ onUnmounted(() => {
             <template v-if="!editingDescription">
               <div v-if="show.description" class="description-view">{{ show.description }}</div>
               <p v-else class="empty-state">No description.</p>
-              
+
               <div class="edit-toggle-container">
                 <button type="button" class="btn-edit" @click="startEditDescription">
                   Edit Description
@@ -409,12 +441,8 @@ onUnmounted(() => {
             </template>
 
             <div v-else class="edit-panel">
-              <textarea 
-                v-model="descriptionForm" 
-                class="text-field" 
-                rows="4" 
-                placeholder="Brief description..."
-              ></textarea>
+              <textarea v-model="descriptionForm" class="text-field" rows="4"
+                placeholder="Brief description..."></textarea>
               <div class="edit-actions">
                 <BaseButton variant="ghost" size="sm" @click="editingDescription = false">
                   Cancel
@@ -432,6 +460,12 @@ onUnmounted(() => {
           <h2 class="section-title">Cover</h2>
           <div v-if="show.cover_url" class="show-cover-preview">
             <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
+            <div class="cover-actions">
+              <BaseButton variant="primary" size="sm" :loading="postingToInstagram" @click="postToInstagram(false)">
+                <span v-if="show.instagram_posted_at">Posted to Instagram ✓</span>
+                <span v-else>Post to Instagram</span>
+              </BaseButton>
+            </div>
           </div>
           <p v-else class="empty-state">Cover appears after artists are assigned and processed.</p>
         </div>
@@ -470,13 +504,8 @@ onUnmounted(() => {
         <!-- Final Recording Section -->
         <div class="card">
           <h2 class="section-title">Final Recording</h2>
-          <input 
-            ref="fileInput"
-            type="file" 
-            class="upload-input" 
-            @change="handleFileSelect"
-          />
-          
+          <input ref="fileInput" type="file" class="upload-input" @change="handleFileSelect" />
+
           <!-- Show player if recording exists -->
           <template v-if="show.recording_url">
             <p v-if="recordingFilename" class="recording-filename">
@@ -485,7 +514,8 @@ onUnmounted(() => {
             </p>
             <AudioPlayer :key="show.recording_url" :src="show.recording_url" />
             <div class="recording-actions">
-              <BaseButton size="sm" variant="primary" :loading="uploading" @click="($refs.fileInput as HTMLInputElement)?.click()">
+              <BaseButton size="sm" variant="primary" :loading="uploading"
+                @click="($refs.fileInput as HTMLInputElement)?.click()">
                 Replace File
               </BaseButton>
               <BaseButton size="sm" variant="danger" :loading="deletingRecording" @click="deleteRecording">
@@ -493,27 +523,25 @@ onUnmounted(() => {
               </BaseButton>
             </div>
           </template>
-          
+
           <!-- Show upload if no recording -->
           <template v-else>
             <p class="upload-description">Upload the final show recording.</p>
-            <div 
-              class="upload-dropzone"
-              :class="{ 'drag-over': uploadDragOver, 'uploading': uploading }"
-              @dragover="handleDragOver"
-              @dragleave="handleDragLeave"
-              @drop="handleDrop"
-              @click="($refs.fileInput as HTMLInputElement)?.click()"
-            >
+            <div class="upload-dropzone" :class="{ 'drag-over': uploadDragOver, 'uploading': uploading }"
+              @dragover="handleDragOver" @dragleave="handleDragLeave" @drop="handleDrop"
+              @click="($refs.fileInput as HTMLInputElement)?.click()">
               <div v-if="uploading" class="upload-status">
                 <div class="loading-spinner small"></div>
                 <div class="upload-status-text">
                   <span class="upload-filename" v-if="uploadingFilename">{{ uploadingFilename }}</span>
                   <span v-if="uploadProgress?.phase === 'extracting'">Extracting waveform...</span>
-                  <span v-else-if="uploadProgress?.phase === 'uploading' && uploadProgress.totalChunks && uploadProgress.totalChunks > 1">
-                    Uploading chunk {{ uploadProgress.chunkIndex }}/{{ uploadProgress.totalChunks }} ({{ uploadProgress.percent }}%)
+                  <span
+                    v-else-if="uploadProgress?.phase === 'uploading' && uploadProgress.totalChunks && uploadProgress.totalChunks > 1">
+                    Uploading chunk {{ uploadProgress.chunkIndex }}/{{ uploadProgress.totalChunks }} ({{
+                    uploadProgress.percent }}%)
                   </span>
-                  <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0 }}%</span>
+                  <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
+                    }}%</span>
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>
@@ -557,13 +585,8 @@ onUnmounted(() => {
         <div v-if="show.artists.length > 0" class="artists-list">
           <div v-for="artist in show.artists" :key="artist.id" class="artist-card">
             <div class="artist-header">
-              <img 
-                v-if="artist.pic_url" 
-                :src="artist.pic_url" 
-                :alt="artist.name" 
-                class="artist-thumb"
-                crossorigin="anonymous"
-              />
+              <img v-if="artist.pic_url" :src="artist.pic_url" :alt="artist.name" class="artist-thumb"
+                crossorigin="anonymous" />
               <div v-else class="artist-thumb-placeholder"></div>
               <div class="artist-info">
                 <router-link :to="`/artists/${artist.id}`" class="artist-name">
@@ -575,32 +598,16 @@ onUnmounted(() => {
                 Remove
               </button>
             </div>
-            
+
             <div class="download-btns">
-              <a 
-                v-if="artist.voice_url || artist.track1_url || artist.track2_url"
-                :href="`/artists/${artist.id}/download/audio`" 
-                class="tbl-dl-btn audio" 
-                title="Download Audio"
-              >AUD</a>
-              <a 
-                v-if="artist.has_pic"
-                :href="`/artists/${artist.id}/download/images`" 
-                class="tbl-dl-btn images" 
-                title="Download Images"
-              >IMG</a>
-              <a 
-                :href="`/artists/${artist.id}/download/pdf`" 
-                class="tbl-dl-btn pdf" 
-                title="Download Handout"
-              >PDF</a>
-              <a 
-                :href="`/artists/${artist.id}/download`" 
-                class="tbl-dl-btn all" 
-                title="Download Full Profile"
-              >ALL</a>
+              <a v-if="artist.voice_url || artist.track1_url || artist.track2_url"
+                :href="`/artists/${artist.id}/download/audio`" class="tbl-dl-btn audio" title="Download Audio">AUD</a>
+              <a v-if="artist.has_pic" :href="`/artists/${artist.id}/download/images`" class="tbl-dl-btn images"
+                title="Download Images">IMG</a>
+              <a :href="`/artists/${artist.id}/download/pdf`" class="tbl-dl-btn pdf" title="Download Handout">PDF</a>
+              <a :href="`/artists/${artist.id}/download`" class="tbl-dl-btn all" title="Download Full Profile">ALL</a>
             </div>
-            
+
             <div class="audio-players">
               <div class="audio-row">
                 <span class="audio-label">Voice Memo</span>
@@ -616,7 +623,7 @@ onUnmounted(() => {
                 <AudioPlayer :src="artist.track2_url" />
               </div>
             </div>
-            
+
             <div class="artist-card-footer">
               <button class="remove-btn remove-btn-mobile" @click="unassignArtist(artist.id)">
                 Remove
@@ -668,6 +675,19 @@ onUnmounted(() => {
         <BaseButton variant="ghost" @click="showDeleteModal = false">Cancel</BaseButton>
         <BaseButton variant="danger" :loading="deleting" @click="deleteShow">
           Delete
+        </BaseButton>
+      </template>
+    </BaseModal>
+
+    <!-- Instagram Re-post Confirmation Modal -->
+    <BaseModal :open="showInstagramConfirmModal" title="Post to Instagram Again?"
+      @close="showInstagramConfirmModal = false">
+      <p>This show was already posted to Instagram.</p>
+      <p class="text-muted">Do you want to post it again? This will create a duplicate post.</p>
+      <template #footer>
+        <BaseButton variant="ghost" @click="showInstagramConfirmModal = false">Cancel</BaseButton>
+        <BaseButton variant="primary" :loading="postingToInstagram" @click="postToInstagram(true)">
+          Post Again
         </BaseButton>
       </template>
     </BaseModal>
@@ -794,7 +814,7 @@ onUnmounted(() => {
   gap: var(--spacing-sm);
 }
 
-.recording-actions > * {
+.recording-actions>* {
   flex: 1;
 }
 
@@ -946,6 +966,12 @@ onUnmounted(() => {
   height: auto;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
+}
+
+.cover-actions {
+  margin-top: var(--spacing-md);
+  display: flex;
+  gap: var(--spacing-sm);
 }
 
 .assign-form {

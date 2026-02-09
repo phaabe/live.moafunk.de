@@ -32,6 +32,11 @@ pub struct Artist {
     pub upcoming_events: Option<String>,
     pub mentions: Option<String>,
 
+    pub music_description: Option<String>,
+    pub ai_bio: Option<String>,
+    pub instagram_caption: Option<String>,
+    pub instagram_posted_at: Option<String>,
+
     pub status: String,
     pub created_at: String,
     pub updated_at: Option<String>,
@@ -49,6 +54,7 @@ pub struct Show {
     pub cover_generated_at: Option<String>,
     pub recording_key: Option<String>,
     pub recording_filename: Option<String>,
+    pub instagram_posted_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

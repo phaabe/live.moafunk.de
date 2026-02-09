@@ -33,12 +33,22 @@ const saving = ref(false);
 const detailsForm = ref({
   mentions: '',
   upcoming_events: '',
+  music_description: '',
   soundcloud: '',
   instagram: '',
   bandcamp: '',
   spotify: '',
   other_social: '',
 });
+
+const generatingBio = ref(false);
+const generatingCaption = ref(false);
+const showInstagramModal = ref(false);
+const postingToInstagram = ref(false);
+const showInstagramConfirmModal = ref(false);
+const editingCaption = ref(false);
+const editedCaption = ref('');
+const savingCaption = ref(false);
 
 const audioForm = ref({
   voice: null as File | null,
@@ -60,6 +70,7 @@ async function loadArtist() {
       detailsForm.value = {
         mentions: artist.value.mentions || '',
         upcoming_events: artist.value.upcoming_events || '',
+        music_description: artist.value.music_description || '',
         soundcloud: artist.value.soundcloud || '',
         instagram: artist.value.instagram || '',
         bandcamp: artist.value.bandcamp || '',
@@ -135,7 +146,7 @@ function cancelEditPicture() {
 
 async function savePicture(data: { original: File; cropped: Blob; branded: Blob }) {
   if (!artist.value) return;
-  
+
   saving.value = true;
   try {
     await artistsApi.updatePicture(artist.value.id, data);
@@ -155,6 +166,7 @@ function startEditDetails() {
     detailsForm.value = {
       mentions: artist.value.mentions || '',
       upcoming_events: artist.value.upcoming_events || '',
+      music_description: artist.value.music_description || '',
       soundcloud: artist.value.soundcloud || '',
       instagram: artist.value.instagram || '',
       bandcamp: artist.value.bandcamp || '',
@@ -171,7 +183,7 @@ function cancelEditDetails() {
 
 async function saveDetails() {
   if (!artist.value) return;
-  
+
   saving.value = true;
   try {
     await artistsApi.updateDetails(artist.value.id, detailsForm.value);
@@ -182,6 +194,105 @@ async function saveDetails() {
     flash.error(e instanceof Error ? e.message : 'Failed to update details');
   } finally {
     saving.value = false;
+  }
+}
+
+// AI Bio generation
+async function generateBio() {
+  if (!artist.value) return;
+  generatingBio.value = true;
+  try {
+    const result = await artistsApi.generateBio(artist.value.id);
+    if (result.ai_bio && artist.value) {
+      artist.value.ai_bio = result.ai_bio;
+    }
+    flash.success('AI bio generated successfully');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to generate bio');
+  } finally {
+    generatingBio.value = false;
+  }
+}
+
+// Instagram Caption generation
+async function generateInstagramCaption() {
+  if (!artist.value) return;
+  generatingCaption.value = true;
+  try {
+    const result = await artistsApi.generateInstagramCaption(artist.value.id);
+    if (result.instagram_caption && artist.value) {
+      artist.value.instagram_caption = result.instagram_caption;
+      // Also update ai_bio if it was generated as a side effect
+      await loadArtist();
+    }
+    flash.success('Instagram caption generated successfully');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to generate caption');
+  } finally {
+    generatingCaption.value = false;
+  }
+}
+
+async function openInstagramPreview() {
+  showInstagramModal.value = true;
+  // Auto-generate caption if none exists
+  if (!artist.value?.instagram_caption) {
+    await generateInstagramCaption();
+  }
+}
+
+function startEditCaption() {
+  editedCaption.value = artist.value?.instagram_caption || '';
+  editingCaption.value = true;
+}
+
+function cancelEditCaption() {
+  editingCaption.value = false;
+}
+
+async function confirmEditCaption() {
+  if (!artist.value) return;
+  savingCaption.value = true;
+  try {
+    const result = await artistsApi.updateInstagramCaption(artist.value.id, editedCaption.value);
+    if (result.instagram_caption !== undefined) {
+      artist.value.instagram_caption = result.instagram_caption;
+    }
+    editingCaption.value = false;
+    flash.success('Caption updated');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to save caption');
+  } finally {
+    savingCaption.value = false;
+  }
+}
+
+async function postToInstagram(force = false) {
+  if (!artist.value) return;
+
+  // If already posted and not forcing, show confirmation modal
+  if (artist.value.instagram_posted_at && !force) {
+    showInstagramConfirmModal.value = true;
+    return;
+  }
+
+  postingToInstagram.value = true;
+  showInstagramConfirmModal.value = false;
+
+  try {
+    const result = await artistsApi.postToInstagram(artist.value.id, force);
+
+    if (result.success) {
+      flash.success('Posted to Instagram successfully!');
+      showInstagramModal.value = false;
+      await loadArtist();
+    } else {
+      flash.error(result.error || 'Failed to post to Instagram');
+    }
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to post to Instagram');
+  } finally {
+    postingToInstagram.value = false;
   }
 }
 
@@ -220,7 +331,7 @@ function onAudioFileChange(field: 'voice' | 'track1' | 'track2', event: Event) {
 
 async function saveAudio() {
   if (!artist.value) return;
-  
+
   saving.value = true;
   try {
     await artistsApi.updateAudio(artist.value.id, {
@@ -271,7 +382,7 @@ onMounted(loadArtist);
           <!-- Assign to Show -->
           <div class="card assign-card">
             <h2 class="section-title">Show Assignment</h2>
-            
+
             <!-- Already assigned - show current assignment -->
             <template v-if="artist.shows.length > 0">
               <div class="current-assignment">
@@ -289,7 +400,7 @@ onMounted(loadArtist);
                 </div>
               </div>
             </template>
-            
+
             <!-- Not assigned - show assignment form -->
             <template v-else>
               <div v-if="artist.available_shows.length > 0" class="assign-form">
@@ -299,12 +410,7 @@ onMounted(loadArtist);
                     {{ show.title }} ({{ formatDate(show.date) }}) - {{ show.artists_left }} slot(s) left
                   </option>
                 </select>
-                <BaseButton 
-                  variant="primary" 
-                  :disabled="!selectedShowId" 
-                  :loading="assigning"
-                  @click="assignShow"
-                >
+                <BaseButton variant="primary" :disabled="!selectedShowId" :loading="assigning" @click="assignShow">
                   Assign
                 </BaseButton>
               </div>
@@ -326,34 +432,44 @@ onMounted(loadArtist);
                   <label class="form-label">💬 Mentions</label>
                   <textarea v-model="detailsForm.mentions" class="form-textarea" rows="3"></textarea>
                 </div>
-                
+
                 <div class="form-group">
                   <label class="form-label">🎤 Upcoming Events</label>
                   <textarea v-model="detailsForm.upcoming_events" class="form-textarea" rows="3"></textarea>
                 </div>
 
+                <div class="form-group">
+                  <label class="form-label">🎵 Music Description</label>
+                  <textarea v-model="detailsForm.music_description" class="form-textarea" rows="3"
+                    placeholder="How does the artist describe their music?"></textarea>
+                </div>
+
                 <h3 class="subsection-title">🔗 Social Links</h3>
-                
+
                 <div class="form-group">
                   <label class="form-label">SoundCloud</label>
-                  <input v-model="detailsForm.soundcloud" type="url" class="form-input" placeholder="https://soundcloud.com/..." />
+                  <input v-model="detailsForm.soundcloud" type="url" class="form-input"
+                    placeholder="https://soundcloud.com/..." />
                 </div>
-                
+
                 <div class="form-group">
                   <label class="form-label">Instagram</label>
-                  <input v-model="detailsForm.instagram" type="url" class="form-input" placeholder="https://instagram.com/..." />
+                  <input v-model="detailsForm.instagram" type="url" class="form-input"
+                    placeholder="https://instagram.com/..." />
                 </div>
-                
+
                 <div class="form-group">
                   <label class="form-label">Bandcamp</label>
-                  <input v-model="detailsForm.bandcamp" type="url" class="form-input" placeholder="https://bandcamp.com/..." />
+                  <input v-model="detailsForm.bandcamp" type="url" class="form-input"
+                    placeholder="https://bandcamp.com/..." />
                 </div>
-                
+
                 <div class="form-group">
                   <label class="form-label">Spotify</label>
-                  <input v-model="detailsForm.spotify" type="url" class="form-input" placeholder="https://open.spotify.com/..." />
+                  <input v-model="detailsForm.spotify" type="url" class="form-input"
+                    placeholder="https://open.spotify.com/..." />
                 </div>
-                
+
                 <div class="form-group">
                   <label class="form-label">Other</label>
                   <input v-model="detailsForm.other_social" type="text" class="form-input" />
@@ -381,6 +497,44 @@ onMounted(loadArtist);
                 <h3 class="subsection-title">🎤 Upcoming Events</h3>
                 <p v-if="artist.upcoming_events" class="upcoming-events-text">{{ artist.upcoming_events }}</p>
                 <p v-else class="text-muted">No upcoming events listed</p>
+              </div>
+
+              <!-- Music Description -->
+              <div class="details-section">
+                <h3 class="subsection-title">🎵 Music Description</h3>
+                <p v-if="artist.music_description" class="mentions-text">{{ artist.music_description }}</p>
+                <p v-else class="text-muted">No music description provided</p>
+              </div>
+
+              <!-- AI-Generated Bio -->
+              <div class="details-section">
+                <h3 class="subsection-title">🤖 AI Bio (for Instagram)</h3>
+                <div v-if="artist.ai_bio" class="ai-bio-card">
+                  <p class="ai-bio-text">{{ artist.ai_bio }}</p>
+                </div>
+                <p v-else class="text-muted">No AI bio generated yet</p>
+                <button class="generate-bio-btn" :disabled="generatingBio || !artist.music_description"
+                  @click="generateBio">
+                  <template v-if="generatingBio">Generating...</template>
+                  <template v-else-if="artist.ai_bio">🔄 Regenerate Bio</template>
+                  <template v-else>✨ Generate Bio</template>
+                </button>
+              </div>
+
+              <!-- Instagram -->
+              <div class="details-section">
+                <h3 class="subsection-title">📸 Instagram</h3>
+                <button class="generate-bio-btn instagram-preview-btn"
+                  :disabled="!artist.music_description || artist.shows.length === 0" @click="openInstagramPreview">
+                  📸 Instagram Preview
+                </button>
+                <span v-if="artist.instagram_posted_at" class="instagram-posted-badge">
+                  ✅ Posted {{ new Date(artist.instagram_posted_at).toLocaleString() }}
+                </span>
+                <p v-if="artist.shows.length === 0" class="text-muted"
+                  style="font-size: var(--font-size-sm); margin-top: var(--spacing-xs);">
+                  Assign artist to a show first
+                </p>
               </div>
 
               <!-- Social Links -->
@@ -430,20 +584,17 @@ onMounted(loadArtist);
             <h2 class="section-title">Profile Picture</h2>
             <button v-if="!editingPicture" class="edit-btn" @click="startEditPicture" title="Edit">edit</button>
           </div>
-          
+
           <!-- Edit Mode -->
           <template v-if="editingPicture">
-            <ImageCropper 
-              :artist-name="artist.name"
-              @cancel="cancelEditPicture"
-              @save="savePicture"
-            />
+            <ImageCropper :artist-name="artist.name" @cancel="cancelEditPicture" @save="savePicture" />
           </template>
-          
+
           <!-- View Mode -->
           <template v-else>
             <div class="profile-picture-container">
-              <img v-if="artist.file_urls.pic" :src="artist.file_urls.pic" alt="Artist picture" class="profile-picture" crossorigin="anonymous" />
+              <img v-if="artist.file_urls.pic" :src="artist.file_urls.pic" alt="Artist picture" class="profile-picture"
+                crossorigin="anonymous" />
               <p v-else class="text-muted">No picture uploaded</p>
             </div>
           </template>
@@ -456,106 +607,85 @@ onMounted(loadArtist);
           <h2 class="section-title">Audio Files</h2>
           <button v-if="!editingAudio" class="edit-btn" @click="startEditAudio" title="Edit">edit</button>
         </div>
-          
-          <!-- Edit Mode -->
-          <template v-if="editingAudio">
-            <div class="edit-form">
-              <div class="form-group">
-                <label class="form-label">Voice Message</label>
-                <input 
-                  type="file" 
-                  accept="audio/*" 
-                  @change="(e) => onAudioFileChange('voice', e)"
-                  class="file-input"
-                />
-                <span v-if="audioForm.voice" class="file-selected">{{ audioForm.voice.name }}</span>
-                <span v-else-if="artist.file_urls.voice" class="text-muted">Current file will be kept</span>
-              </div>
-              
-              <div class="form-group">
-                <label class="form-label">Track 1 Name</label>
-                <input v-model="audioForm.track1_name" type="text" class="form-input" placeholder="Track name" />
-              </div>
-              
-              <div class="form-group">
-                <label class="form-label">Track 1 File</label>
-                <input 
-                  type="file" 
-                  accept="audio/*" 
-                  @change="(e) => onAudioFileChange('track1', e)"
-                  class="file-input"
-                />
-                <span v-if="audioForm.track1" class="file-selected">{{ audioForm.track1.name }}</span>
-                <span v-else-if="artist.file_urls.track1" class="text-muted">Current file will be kept</span>
-              </div>
-              
-              <div class="form-group">
-                <label class="form-label">Track 2 Name</label>
-                <input v-model="audioForm.track2_name" type="text" class="form-input" placeholder="Track name" />
-              </div>
-              
-              <div class="form-group">
-                <label class="form-label">Track 2 File</label>
-                <input 
-                  type="file" 
-                  accept="audio/*" 
-                  @change="(e) => onAudioFileChange('track2', e)"
-                  class="file-input"
-                />
-                <span v-if="audioForm.track2" class="file-selected">{{ audioForm.track2.name }}</span>
-                <span v-else-if="artist.file_urls.track2" class="text-muted">Current file will be kept</span>
-              </div>
 
-              <div class="edit-actions">
-                <BaseButton variant="ghost" size="sm" @click="cancelEditAudio">Cancel</BaseButton>
-                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveAudio">
-                  Save
-                </BaseButton>
-              </div>
+        <!-- Edit Mode -->
+        <template v-if="editingAudio">
+          <div class="edit-form">
+            <div class="form-group">
+              <label class="form-label">Voice Message</label>
+              <input type="file" accept="audio/*" @change="(e) => onAudioFileChange('voice', e)" class="file-input" />
+              <span v-if="audioForm.voice" class="file-selected">{{ audioForm.voice.name }}</span>
+              <span v-else-if="artist.file_urls.voice" class="text-muted">Current file will be kept</span>
             </div>
-          </template>
-          
-          <!-- View Mode -->
-          <template v-else>
-            <div class="file-list">
-              <div v-if="artist.file_urls.voice" class="file-item">
-                <span class="file-label">Voice Message</span>
-                <AudioPlayer :src="artist.file_urls.voice" />
-              </div>
-              
-              <div v-if="artist.file_urls.track1" class="file-item">
-                <span class="file-label">{{ artist.track1_name || 'Track 1' }}</span>
-                <AudioPlayer :src="artist.file_urls.track1" />
-              </div>
-              
-              <div v-if="artist.file_urls.track2" class="file-item">
-                <span class="file-label">{{ artist.track2_name || 'Track 2' }}</span>
-                <AudioPlayer :src="artist.file_urls.track2" />
-              </div>
-              
-              <p v-if="!artist.file_urls.voice && !artist.file_urls.track1 && !artist.file_urls.track2" class="text-muted">
-                No audio files uploaded
-              </p>
+
+            <div class="form-group">
+              <label class="form-label">Track 1 Name</label>
+              <input v-model="audioForm.track1_name" type="text" class="form-input" placeholder="Track name" />
             </div>
-          </template>
-        </div>
+
+            <div class="form-group">
+              <label class="form-label">Track 1 File</label>
+              <input type="file" accept="audio/*" @change="(e) => onAudioFileChange('track1', e)" class="file-input" />
+              <span v-if="audioForm.track1" class="file-selected">{{ audioForm.track1.name }}</span>
+              <span v-else-if="artist.file_urls.track1" class="text-muted">Current file will be kept</span>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Track 2 Name</label>
+              <input v-model="audioForm.track2_name" type="text" class="form-input" placeholder="Track name" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Track 2 File</label>
+              <input type="file" accept="audio/*" @change="(e) => onAudioFileChange('track2', e)" class="file-input" />
+              <span v-if="audioForm.track2" class="file-selected">{{ audioForm.track2.name }}</span>
+              <span v-else-if="artist.file_urls.track2" class="text-muted">Current file will be kept</span>
+            </div>
+
+            <div class="edit-actions">
+              <BaseButton variant="ghost" size="sm" @click="cancelEditAudio">Cancel</BaseButton>
+              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveAudio">
+                Save
+              </BaseButton>
+            </div>
+          </div>
+        </template>
+
+        <!-- View Mode -->
+        <template v-else>
+          <div class="file-list">
+            <div v-if="artist.file_urls.voice" class="file-item">
+              <span class="file-label">Voice Message</span>
+              <AudioPlayer :src="artist.file_urls.voice" />
+            </div>
+
+            <div v-if="artist.file_urls.track1" class="file-item">
+              <span class="file-label">{{ artist.track1_name || 'Track 1' }}</span>
+              <AudioPlayer :src="artist.file_urls.track1" />
+            </div>
+
+            <div v-if="artist.file_urls.track2" class="file-item">
+              <span class="file-label">{{ artist.track2_name || 'Track 2' }}</span>
+              <AudioPlayer :src="artist.file_urls.track2" />
+            </div>
+
+            <p v-if="!artist.file_urls.voice && !artist.file_urls.track1 && !artist.file_urls.track2"
+              class="text-muted">
+              No audio files uploaded
+            </p>
+          </div>
+        </template>
+      </div>
 
       <!-- Downloads -->
       <div class="card downloads-section">
         <h2 class="section-title">📥 Downloads</h2>
         <div class="download-buttons-grid">
-          <a 
-            v-if="artist.file_urls.voice || artist.file_urls.track1 || artist.file_urls.track2"
-            :href="`/artists/${artist.id}/download/audio`" 
-            class="dl-btn audio"
-          >
+          <a v-if="artist.file_urls.voice || artist.file_urls.track1 || artist.file_urls.track2"
+            :href="`/artists/${artist.id}/download/audio`" class="dl-btn audio">
             Download Audio
           </a>
-          <a 
-            v-if="artist.file_urls.pic"
-            :href="`/artists/${artist.id}/download/images`" 
-            class="dl-btn images"
-          >
+          <a v-if="artist.file_urls.pic" :href="`/artists/${artist.id}/download/images`" class="dl-btn images">
             Download Images
           </a>
           <a :href="`/artists/${artist.id}/download/pdf`" class="dl-btn pdf">
@@ -591,6 +721,59 @@ onMounted(loadArtist);
         <BaseButton variant="ghost" @click="showDeleteModal = false">Cancel</BaseButton>
         <BaseButton variant="danger" :loading="deleting" @click="deleteArtist">
           Delete
+        </BaseButton>
+      </template>
+    </BaseModal>
+
+    <!-- Instagram Preview Modal -->
+    <BaseModal :open="showInstagramModal" title="📸 Instagram Preview" size="lg"
+      @close="showInstagramModal = false; editingCaption = false">
+      <div class="ig-preview-layout">
+        <div class="ig-preview-image">
+          <img v-if="artist?.file_urls.pic" :src="artist.file_urls.pic" alt="Artist image" class="ig-preview-img"
+            crossorigin="anonymous" />
+          <div v-else class="ig-preview-placeholder">No image</div>
+        </div>
+        <div class="ig-preview-caption">
+          <div v-if="generatingCaption" class="ig-preview-loading">Generating caption...</div>
+          <template v-else-if="editingCaption">
+            <textarea v-model="editedCaption" class="ig-caption-edit" rows="16"></textarea>
+          </template>
+          <pre v-else-if="artist?.instagram_caption" class="ig-caption-text">{{ artist.instagram_caption }}</pre>
+          <p v-else class="text-muted">No caption generated yet</p>
+        </div>
+      </div>
+      <template #footer>
+        <template v-if="editingCaption">
+          <BaseButton variant="ghost" @click="cancelEditCaption">Cancel</BaseButton>
+          <BaseButton variant="primary" :loading="savingCaption" @click="confirmEditCaption">
+            ✅ Confirm
+          </BaseButton>
+        </template>
+        <template v-else>
+          <BaseButton variant="ghost" :loading="generatingCaption" @click="generateInstagramCaption">
+            🔄 Regenerate
+          </BaseButton>
+          <BaseButton variant="ghost" :disabled="!artist?.instagram_caption" @click="startEditCaption">
+            ✏️ Edit
+          </BaseButton>
+          <BaseButton variant="primary" :loading="postingToInstagram"
+            :disabled="!artist?.instagram_caption || !artist?.file_urls.pic" @click="postToInstagram()">
+            📤 Publish
+          </BaseButton>
+        </template>
+      </template>
+    </BaseModal>
+
+    <!-- Instagram Re-post Confirmation Modal -->
+    <BaseModal :open="showInstagramConfirmModal" title="Post to Instagram Again?"
+      @close="showInstagramConfirmModal = false">
+      <p>This artist was already posted to Instagram.</p>
+      <p class="text-muted">Do you want to post again? This will create a duplicate post.</p>
+      <template #footer>
+        <BaseButton variant="ghost" @click="showInstagramConfirmModal = false">Cancel</BaseButton>
+        <BaseButton variant="primary" :loading="postingToInstagram" @click="postToInstagram(true)">
+          Post Again
         </BaseButton>
       </template>
     </BaseModal>
@@ -923,6 +1106,141 @@ onMounted(loadArtist);
   line-height: 1.6;
 }
 
+.ai-bio-card {
+  background: var(--color-surface-hover);
+  border-left: 3px solid var(--color-primary);
+  padding: var(--spacing-md);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--spacing-sm);
+}
+
+.ai-bio-text {
+  color: var(--color-text);
+  line-height: 1.6;
+  font-style: italic;
+}
+
+.generate-bio-btn {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  transition: background 0.2s;
+}
+
+.generate-bio-btn:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: var(--color-on-primary, #fff);
+}
+
+.instagram-preview-btn {
+  background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888) !important;
+  color: #fff !important;
+  border: none !important;
+}
+
+.instagram-preview-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.instagram-posted-badge {
+  display: inline-block;
+  margin-left: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-success, #22c55e);
+}
+
+.ig-preview-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  min-height: 300px;
+}
+
+.ig-preview-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ig-preview-img {
+  width: 100%;
+  max-height: 400px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+
+.ig-preview-placeholder {
+  width: 100%;
+  height: 300px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-hover);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+}
+
+.ig-preview-caption {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  max-height: 400px;
+}
+
+.ig-preview-loading {
+  color: var(--color-text-muted);
+  font-style: italic;
+  padding: var(--spacing-md);
+}
+
+.ig-caption-text {
+  color: var(--color-text);
+  line-height: 1.6;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+  padding: var(--spacing-sm);
+  background: var(--color-surface-hover);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid #e1306c;
+}
+
+.ig-caption-edit {
+  width: 100%;
+  min-height: 200px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-sm);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.ig-caption-edit:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+@media (max-width: 768px) {
+  .ig-preview-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.generate-bio-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .file-list {
   display: flex;
   flex-direction: column;
@@ -1094,11 +1412,11 @@ onMounted(loadArtist);
   .download-buttons-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .profile-picture {
     max-height: 350px;
   }
-  
+
   .assign-form {
     flex-direction: column;
     align-items: stretch;
@@ -1107,16 +1425,16 @@ onMounted(loadArtist);
   .select-input {
     width: 100%;
   }
-  
+
   .detail-list {
     grid-template-columns: 1fr;
     gap: var(--spacing-xs);
   }
-  
+
   .detail-list dt {
     margin-top: var(--spacing-sm);
   }
-  
+
   .detail-list dd {
     margin-bottom: var(--spacing-xs);
   }

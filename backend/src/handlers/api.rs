@@ -322,6 +322,10 @@ pub struct ArtistDetailResponse {
     created_at: String,
     mentions: Option<String>,
     upcoming_events: Option<String>,
+    music_description: Option<String>,
+    ai_bio: Option<String>,
+    instagram_caption: Option<String>,
+    instagram_posted_at: Option<String>,
     soundcloud: Option<String>,
     instagram: Option<String>,
     bandcamp: Option<String>,
@@ -444,6 +448,10 @@ pub async fn api_artist_detail(
         created_at: artist.created_at,
         mentions: artist.mentions,
         upcoming_events: artist.upcoming_events,
+        music_description: artist.music_description,
+        ai_bio: artist.ai_bio,
+        instagram_caption: artist.instagram_caption,
+        instagram_posted_at: artist.instagram_posted_at,
         soundcloud: artist.soundcloud,
         instagram: artist.instagram,
         bandcamp: artist.bandcamp,
@@ -526,6 +534,7 @@ pub async fn api_unassign_artist_from_show(
 pub struct UpdateArtistDetailsRequest {
     mentions: Option<String>,
     upcoming_events: Option<String>,
+    music_description: Option<String>,
     soundcloud: Option<String>,
     instagram: Option<String>,
     bandcamp: Option<String>,
@@ -546,6 +555,7 @@ pub async fn api_update_artist_details(
         UPDATE artists SET
             mentions = ?,
             upcoming_events = ?,
+            music_description = ?,
             soundcloud = ?,
             instagram = ?,
             bandcamp = ?,
@@ -557,6 +567,7 @@ pub async fn api_update_artist_details(
     )
     .bind(&req.mentions)
     .bind(&req.upcoming_events)
+    .bind(&req.music_description)
     .bind(&req.soundcloud)
     .bind(&req.instagram)
     .bind(&req.bandcamp)
@@ -567,6 +578,249 @@ pub async fn api_update_artist_details(
     .await?;
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Artist AI Bio Generation
+// ============================================================================
+
+pub async fn api_generate_artist_bio(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let music_description = artist.music_description.ok_or_else(|| {
+        AppError::Validation("Artist has no music description to generate bio from".to_string())
+    })?;
+
+    let bio = crate::ai::generate_artist_bio(
+        &state.config,
+        &artist.name,
+        &artist.pronouns,
+        &music_description,
+        artist.mentions.as_deref(),
+    )
+    .await?;
+
+    sqlx::query("UPDATE artists SET ai_bio = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(&bio)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true, "ai_bio": bio })))
+}
+
+// ============================================================================
+// Artist Instagram Caption Generation
+// ============================================================================
+
+pub async fn api_generate_instagram_caption(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let music_description = artist.music_description.as_deref().ok_or_else(|| {
+        AppError::Validation("Artist has no music description to generate caption from".to_string())
+    })?;
+
+    // Fetch the most recent assigned show for context
+    let show: Option<models::Show> = sqlx::query_as(
+        r#"
+        SELECT s.* FROM shows s
+        INNER JOIN artist_show_assignments asa ON s.id = asa.show_id
+        WHERE asa.artist_id = ?
+        ORDER BY s.date DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let show = show.ok_or_else(|| {
+        AppError::Validation(
+            "Artist is not assigned to any show. Assign to a show first.".to_string(),
+        )
+    })?;
+
+    // Generate (or reuse) the AI artist bio
+    let ai_bio = if let Some(ref bio) = artist.ai_bio {
+        bio.clone()
+    } else {
+        let bio = crate::ai::generate_artist_bio(
+            &state.config,
+            &artist.name,
+            &artist.pronouns,
+            music_description,
+            artist.mentions.as_deref(),
+        )
+        .await?;
+        // Store it for reuse
+        sqlx::query("UPDATE artists SET ai_bio = ? WHERE id = ?")
+            .bind(&bio)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+        bio
+    };
+
+    // Generate the show-context paragraph
+    let show_bio = crate::ai::generate_artist_instagram_caption(
+        &state.config,
+        &artist.name,
+        &artist.pronouns,
+        music_description,
+        &show.title,
+        &artist.track1_name,
+        &artist.track2_name,
+    )
+    .await?;
+
+    // Assemble the full caption
+    let mut caption = format!("UNHEARD Guest: {}\n\n{}", artist.name, show_bio);
+
+    // Add AI artist bio
+    caption.push_str(&format!("\n\n{}", ai_bio));
+
+    // Add track listing
+    caption.push_str(&format!(
+        "\n\nTrack 1: \"{}\"\nTrack 2: \"{}\"",
+        artist.track1_name, artist.track2_name
+    ));
+
+    // Add soundcloud line if present
+    if let Some(ref sc) = artist.soundcloud {
+        if !sc.is_empty() {
+            caption.push_str("\n\nSoundcloud link in Bio.");
+        }
+    }
+
+    // Add Instagram @handle if present
+    if let Some(ref ig) = artist.instagram {
+        if !ig.is_empty() {
+            let handle = ig.trim_end_matches('/').rsplit('/').next().unwrap_or(ig);
+            let handle = handle.trim_start_matches('@');
+            caption.push_str(&format!("\n\n@{}", handle));
+        }
+    }
+
+    // Store the generated caption
+    sqlx::query(
+        "UPDATE artists SET instagram_caption = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&caption)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+
+    tracing::info!(
+        "Generated Instagram caption for artist {} ({} chars)",
+        artist.name,
+        caption.len()
+    );
+
+    Ok(Json(
+        serde_json::json!({ "success": true, "instagram_caption": caption }),
+    ))
+}
+
+// ============================================================================
+// Artist Instagram Caption Update
+// ============================================================================
+
+pub async fn api_update_instagram_caption(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<serde_json::Value>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let caption = req["instagram_caption"]
+        .as_str()
+        .ok_or_else(|| AppError::BadRequest("instagram_caption is required".to_string()))?;
+
+    sqlx::query(
+        "UPDATE artists SET instagram_caption = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(caption)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(
+        serde_json::json!({ "success": true, "instagram_caption": caption }),
+    ))
+}
+
+// ============================================================================
+// Artist Instagram Posting
+// ============================================================================
+
+pub async fn api_post_artist_to_instagram(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<InstagramPostRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    // Check if already posted (unless force=true)
+    if artist.instagram_posted_at.is_some() && !req.force {
+        return Ok(Json(InstagramPostResponse {
+            success: false,
+            media_id: None,
+            error: Some(
+                "This artist was already posted to Instagram. Use force=true to post again."
+                    .to_string(),
+            ),
+            already_posted: true,
+        }));
+    }
+
+    // Post to Instagram
+    let result = crate::instagram::post_artist_to_instagram(&state, &artist).await?;
+
+    if result.success {
+        // Update instagram_posted_at timestamp
+        sqlx::query("UPDATE artists SET instagram_posted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+
+        tracing::info!("Posted artist {} to Instagram: {:?}", id, result.media_id);
+    }
+
+    Ok(Json(InstagramPostResponse {
+        success: result.success,
+        media_id: result.media_id,
+        error: result.error,
+        already_posted: false,
+    }))
 }
 
 pub async fn api_update_artist_picture(
@@ -949,6 +1203,7 @@ pub struct ShowDetailResponse {
     recording_url: Option<String>,
     recording_peaks_url: Option<String>,
     recording_filename: Option<String>,
+    instagram_posted_at: Option<String>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -1405,6 +1660,7 @@ pub async fn api_show_detail(
         recording_url,
         recording_peaks_url,
         recording_filename: show.recording_filename,
+        instagram_posted_at: show.instagram_posted_at,
     }))
 }
 
@@ -2108,6 +2364,74 @@ pub async fn api_delete_show_recording(
     Ok(Json(serde_json::json!({
         "success": true,
     })))
+}
+
+// ============================================================================
+// Instagram Post
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct InstagramPostRequest {
+    /// If true, post even if already posted before
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InstagramPostResponse {
+    success: bool,
+    media_id: Option<String>,
+    error: Option<String>,
+    already_posted: bool,
+}
+
+pub async fn api_post_show_to_instagram(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<InstagramPostRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Fetch show
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    // Check if already posted (unless force=true)
+    if show.instagram_posted_at.is_some() && !req.force {
+        return Ok(Json(InstagramPostResponse {
+            success: false,
+            media_id: None,
+            error: Some(
+                "This show was already posted to Instagram. Use force=true to post again."
+                    .to_string(),
+            ),
+            already_posted: true,
+        }));
+    }
+
+    // Post to Instagram
+    let result = crate::instagram::post_show_to_instagram(&state, &show).await?;
+
+    if result.success {
+        // Update instagram_posted_at timestamp
+        sqlx::query("UPDATE shows SET instagram_posted_at = datetime('now') WHERE id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+
+        tracing::info!("Posted show {} to Instagram: {:?}", id, result.media_id);
+    }
+
+    Ok(Json(InstagramPostResponse {
+        success: result.success,
+        media_id: result.media_id,
+        error: result.error,
+        already_posted: false,
+    }))
 }
 
 // ============================================================================
