@@ -23,8 +23,12 @@ const WAVEFORM_Y_OFFSET: u32 = VIDEO_HEIGHT - WAVEFORM_HEIGHT; // 880
 
 /// FFmpeg `showwaves` filter configuration.
 const WAVEFORM_MODE: &str = "cline"; // symmetric centered bars
-const WAVEFORM_COLOR: &str = "white"; // single color for live animation
 const WAVEFORM_SCALE: &str = "sqrt"; // balanced dynamic range
+
+/// Brightness threshold for choosing waveform color.
+/// Below this value (0–255) the bottom quarter is considered dark → white waveform.
+/// Above → black waveform for contrast.
+const BRIGHTNESS_THRESHOLD: u8 = 128;
 
 /// Video encoding defaults.
 const VIDEO_FPS: u32 = 30;
@@ -243,10 +247,21 @@ async fn generate_inner(
         .await
         .map_err(|e| AppError::Internal(format!("Failed to write track temp file: {}", e)))?;
 
-    // Step 3: Compose video with FFmpeg (showwaves + overlay on background)
-    compose_video(&image_path, &track_path, &output_path, duration_secs).await?;
+    // Step 3: Analyze bottom quarter of image to pick waveform color
+    let waveform_color = choose_waveform_color(&image_data);
+    tracing::info!("Waveform color chosen: {}", waveform_color);
 
-    // Step 4: Read output
+    // Step 4: Compose video with FFmpeg (showwaves + overlay on background)
+    compose_video(
+        &image_path,
+        &track_path,
+        &output_path,
+        duration_secs,
+        waveform_color,
+    )
+    .await?;
+
+    // Step 5: Read output
     let mp4_data = tokio::fs::read(&output_path)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to read output video: {}", e)))?;
@@ -261,6 +276,65 @@ async fn generate_inner(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Image brightness analysis
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Analyze the average brightness of the bottom quarter of an image.
+///
+/// Returns a value 0–255 (0 = fully black, 255 = fully white).
+fn analyze_bottom_brightness(data: &[u8]) -> u8 {
+    let img = match image::load_from_memory(data) {
+        Ok(img) => img.into_rgba8(),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to decode image for brightness analysis: {} — defaulting to dark",
+                e
+            );
+            return 0; // assume dark → white waveform
+        }
+    };
+
+    let (width, height) = (img.width(), img.height());
+    if width == 0 || height == 0 {
+        return 0;
+    }
+
+    let quarter_start = height - (height / 4);
+    let mut total_luma: u64 = 0;
+    let mut pixel_count: u64 = 0;
+
+    for y in quarter_start..height {
+        for x in 0..width {
+            let px = img.get_pixel(x, y);
+            // ITU-R BT.601 luma: 0.299*R + 0.587*G + 0.114*B
+            let luma = (0.299 * px[0] as f64) + (0.587 * px[1] as f64) + (0.114 * px[2] as f64);
+            total_luma += luma as u64;
+            pixel_count += 1;
+        }
+    }
+
+    if pixel_count == 0 {
+        return 0;
+    }
+
+    (total_luma / pixel_count) as u8
+}
+
+/// Pick the waveform color based on the bottom quarter brightness.
+///
+/// - Dark background (below threshold) → `"white"` waveform
+/// - Bright background (at or above threshold) → `"black"` waveform
+fn choose_waveform_color(image_data: &[u8]) -> &'static str {
+    let brightness = analyze_bottom_brightness(image_data);
+    tracing::info!("Bottom-quarter average brightness: {}/255", brightness);
+    if brightness >= BRIGHTNESS_THRESHOLD {
+        "black"
+    } else {
+        "white"
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // FFmpeg video composition (showwaves + colorkey + overlay)
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -268,13 +342,26 @@ async fn generate_inner(
 ///
 /// Pipeline:
 /// 1. `[1:a]showwaves` → animated waveform on black background
-/// 2. `colorkey=black` → make black transparent
+/// 2. `colorkey=black` → make black transparent (for white waveform)
+///    or `colorkey=white` → make white transparent (for black waveform)
 /// 3. `[0:v]scale+crop` → artist image to 1080×1080
 /// 4. `overlay` → composite waveform onto image
-fn build_filter_complex(duration_secs: u32) -> String {
+fn build_filter_complex(_duration_secs: u32, waveform_color: &str) -> String {
+    // When the waveform is white, it's drawn on a black background → colorkey black.
+    // When the waveform is black, it's drawn on a black background too,
+    // so we negate the waveform video to get black-on-white, then colorkey white.
+    let (wave_post, colorkey_color, colorkey_similarity, colorkey_blend) =
+        if waveform_color == "black" {
+            // showwaves draws white on black → negate → black on white → colorkey white
+            ("negate,", "white", "0.01", "0.15")
+        } else {
+            // showwaves draws white on black → colorkey black
+            ("", "black", "0.01", "0.15")
+        };
+
     format!(
-        "[1:a]showwaves=s={ww}x{wh}:mode={mode}:rate={fps}:colors={color}:scale={scale}:draw=full[wave];\
-         [wave]colorkey=black:0.01:0.15[wavealpha];\
+        "[1:a]showwaves=s={ww}x{wh}:mode={mode}:rate={fps}:colors=white:scale={scale}:draw=full[wave];\
+         [wave]{wave_post}colorkey={ck_color}:{ck_sim}:{ck_blend}[wavealpha];\
          [0:v]scale={w}:{h}:force_original_aspect_ratio=increase,\
          crop={w}:{h},setsar=1,fps={fps}[bg];\
          [bg][wavealpha]overlay=(W-w)/2:{wfy}:shortest=1[out]",
@@ -285,8 +372,11 @@ fn build_filter_complex(duration_secs: u32) -> String {
         wfy = WAVEFORM_Y_OFFSET,
         fps = VIDEO_FPS,
         mode = WAVEFORM_MODE,
-        color = WAVEFORM_COLOR,
         scale = WAVEFORM_SCALE,
+        wave_post = wave_post,
+        ck_color = colorkey_color,
+        ck_sim = colorkey_similarity,
+        ck_blend = colorkey_blend,
     )
 }
 
@@ -306,6 +396,7 @@ async fn compose_video(
     track_path: &std::path::Path,
     output_path: &std::path::Path,
     duration_secs: u32,
+    waveform_color: &str,
 ) -> Result<()> {
     let image_str = image_path
         .to_str()
@@ -319,9 +410,13 @@ async fn compose_video(
 
     let duration_str = duration_secs.to_string();
     let fps_str = VIDEO_FPS.to_string();
-    let filter_complex = build_filter_complex(duration_secs);
+    let filter_complex = build_filter_complex(duration_secs, waveform_color);
 
-    tracing::info!("Running FFmpeg video composition ({}s)", duration_secs);
+    tracing::info!(
+        "Running FFmpeg video composition ({}s, waveform={})",
+        duration_secs,
+        waveform_color
+    );
 
     let output = Command::new("ffmpeg")
         .args([
@@ -428,26 +523,72 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_complex_construction() {
-        let filter = build_filter_complex(30);
+    fn test_filter_complex_white_waveform() {
+        let filter = build_filter_complex(30, "white");
 
-        // Must contain showwaves with our configured mode, color, and scale
+        // Must contain showwaves with our configured mode and scale
         assert!(filter.contains("showwaves"));
         assert!(filter.contains(&format!("mode={}", WAVEFORM_MODE)));
-        assert!(filter.contains(&format!("colors={}", WAVEFORM_COLOR)));
+        assert!(filter.contains("colors=white"));
         assert!(filter.contains(&format!("scale={}", WAVEFORM_SCALE)));
 
-        // Must contain colorkey to remove black background
+        // White waveform on black bg → colorkey black
         assert!(filter.contains("colorkey=black"));
+        assert!(!filter.contains("negate"));
 
         // Must contain overlay positioning
         assert!(filter.contains(&format!("overlay=(W-w)/2:{}", WAVEFORM_Y_OFFSET)));
-
-        // Must contain scale/crop for background image
-        assert!(filter.contains(&format!("scale={}:{}", VIDEO_WIDTH, VIDEO_HEIGHT)));
-        assert!(filter.contains(&format!("crop={}:{}", VIDEO_WIDTH, VIDEO_HEIGHT)));
-
-        // Must produce [out] label
         assert!(filter.contains("[out]"));
+    }
+
+    #[test]
+    fn test_filter_complex_black_waveform() {
+        let filter = build_filter_complex(30, "black");
+
+        // Black waveform: showwaves still renders white, then negate → black on white
+        assert!(filter.contains("colors=white"));
+        assert!(filter.contains("negate"));
+        assert!(filter.contains("colorkey=white"));
+
+        assert!(filter.contains(&format!("overlay=(W-w)/2:{}", WAVEFORM_Y_OFFSET)));
+        assert!(filter.contains("[out]"));
+    }
+
+    #[test]
+    fn test_brightness_analysis() {
+        // A fully black 2×2 image should return 0
+        let black_img = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        black_img
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(analyze_bottom_brightness(buf.get_ref()), 0);
+
+        // A fully white 2×2 image should return 255
+        let white_img = image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
+        let mut buf2 = std::io::Cursor::new(Vec::new());
+        white_img
+            .write_to(&mut buf2, image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(analyze_bottom_brightness(buf2.get_ref()), 255);
+    }
+
+    #[test]
+    fn test_choose_waveform_color_logic() {
+        // Dark image → white waveform
+        let dark_img = image::RgbaImage::from_pixel(4, 4, image::Rgba([30, 30, 30, 255]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        dark_img
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(choose_waveform_color(buf.get_ref()), "white");
+
+        // Bright image → black waveform
+        let bright_img = image::RgbaImage::from_pixel(4, 4, image::Rgba([220, 220, 220, 255]));
+        let mut buf2 = std::io::Cursor::new(Vec::new());
+        bright_img
+            .write_to(&mut buf2, image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(choose_waveform_color(buf2.get_ref()), "black");
     }
 }

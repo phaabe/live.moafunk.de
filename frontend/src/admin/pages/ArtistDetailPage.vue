@@ -694,6 +694,42 @@ onMounted(loadArtist);
         </template>
       </div>
 
+      <!-- Preview Videos -->
+      <div class="card preview-videos-card">
+        <div class="card-header">
+          <h2 class="section-title">🎬 Preview Videos</h2>
+          <BaseButton variant="primary" size="sm" :loading="regeneratingVideos"
+            :disabled="!artist.file_urls.pic || (!artist.file_urls.track1 && !artist.file_urls.track2)"
+            @click="regenerateVideos">
+            {{ artist.file_urls.track1_video || artist.file_urls.track2_video ? '🔄 Regenerate' : '🎬 Generate' }}
+            Videos
+          </BaseButton>
+        </div>
+
+        <div v-if="artist.file_urls.track1_video || artist.file_urls.track2_video" class="preview-videos-grid">
+          <div v-if="artist.file_urls.track1_video" class="preview-video-item">
+            <span class="file-label">{{ artist.track1_name || 'Track 1' }}</span>
+            <video :src="artist.file_urls.track1_video" controls muted playsinline preload="metadata"
+              class="preview-video" />
+          </div>
+          <div v-if="artist.file_urls.track2_video" class="preview-video-item">
+            <span class="file-label">{{ artist.track2_name || 'Track 2' }}</span>
+            <video :src="artist.file_urls.track2_video" controls muted playsinline preload="metadata"
+              class="preview-video" />
+          </div>
+        </div>
+
+        <p v-else class="text-muted">
+          No preview videos generated yet.
+          <template v-if="artist.file_urls.pic && (artist.file_urls.track1 || artist.file_urls.track2)">
+            Click "Generate Videos" to create them.
+          </template>
+          <template v-else>
+            Upload a profile picture and at least one track first.
+          </template>
+        </p>
+      </div>
+
       <!-- Downloads -->
       <div class="card downloads-section">
         <h2 class="section-title">📥 Downloads</h2>
@@ -752,8 +788,8 @@ onMounted(loadArtist);
             <div class="ig-carousel-slide">
               <!-- Slide 0: Artist image -->
               <template v-if="carouselIndex === 0">
-                <img v-if="artist?.file_urls.pic" :src="artist.file_urls.pic" alt="Artist image"
-                  class="ig-preview-img" crossorigin="anonymous" />
+                <img v-if="artist?.file_urls.pic" :src="artist.file_urls.pic" alt="Artist image" class="ig-preview-img"
+                  crossorigin="anonymous" />
                 <div v-else class="ig-preview-placeholder">No image</div>
               </template>
               <!-- Slide 1: Track 1 video -->
@@ -776,8 +812,8 @@ onMounted(loadArtist);
               @click="carouselIndex++">&rsaquo;</button>
             <!-- Dots -->
             <div class="ig-carousel-dots">
-              <button v-for="i in 3" :key="i" class="ig-carousel-dot"
-                :class="{ active: carouselIndex === i - 1 }" @click="carouselIndex = i - 1">
+              <button v-for="i in 3" :key="i" class="ig-carousel-dot" :class="{ active: carouselIndex === i - 1 }"
+                @click="carouselIndex = i - 1">
                 <span v-if="i === 1">🖼️</span>
                 <span v-else-if="i === 2">🎵1</span>
                 <span v-else>🎵2</span>
@@ -1104,6 +1140,30 @@ onMounted(loadArtist);
 
 .audio-files-card {
   margin-top: var(--spacing-lg);
+}
+
+.preview-videos-card {
+  margin-top: var(--spacing-lg);
+}
+
+.preview-videos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--spacing-lg);
+  margin-top: var(--spacing-md);
+}
+
+.preview-video-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.preview-video {
+  width: 100%;
+  max-width: 400px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
 }
 
 .downloads-section {
