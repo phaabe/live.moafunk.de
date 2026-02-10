@@ -3,7 +3,7 @@
 //! These endpoints mirror the functionality of the template-based handlers
 //! but return JSON responses for the Vue 3 admin panel.
 
-use crate::{auth, models, storage, AppError, AppState, Result};
+use crate::{auth, models, storage, video, AppError, AppState, Result};
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
@@ -16,26 +16,11 @@ use std::sync::Arc;
 const MAX_ARTISTS_PER_SHOW: i64 = 4;
 
 /// Derive the peaks JSON key from an audio file key.
-/// E.g. "pending/abc123/track1/Artist - Track.mp3" -> "pending/abc123/track1_peaks/Artist - Track.peaks.json"
+/// Peaks are stored alongside the audio file with `.peaks.json` extension:
+///   `artists/5/track1/ursi murps.mp3` → `artists/5/track1/ursi murps.peaks.json`
 fn derive_peaks_key(audio_key: &str) -> String {
-    // The peaks file is stored with "_peaks" suffix on the field type and ".peaks.json" extension
-    // Original: pending/{session}/track1/{name}.{ext}
-    // Peaks:    pending/{session}/track1_peaks/{name}.peaks.json
-    if let Some(last_dot) = audio_key.rfind('.') {
-        let base = &audio_key[..last_dot];
-        // Replace the field type part (e.g., track1 -> track1_peaks)
-        // Find the last occurrence of track1/, track2/, or voice/
-        let key = if base.contains("/track1/") {
-            base.replacen("/track1/", "/track1_peaks/", 1)
-        } else if base.contains("/track2/") {
-            base.replacen("/track2/", "/track2_peaks/", 1)
-        } else if base.contains("/voice/") {
-            base.replacen("/voice/", "/voice_peaks/", 1)
-        } else {
-            // Fallback: just append _peaks to directory
-            base.to_string()
-        };
-        format!("{}.peaks.json", key)
+    if let Some((base, _ext)) = audio_key.rsplit_once('.') {
+        format!("{}.peaks.json", base)
     } else {
         format!("{}.peaks.json", audio_key)
     }
@@ -407,6 +392,16 @@ pub async fn api_artist_detail(
             file_urls.insert("track2_peaks".to_string(), url);
         }
     }
+    if let Some(key) = &artist.track1_video_key {
+        if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
+            file_urls.insert("track1_video".to_string(), url);
+        }
+    }
+    if let Some(key) = &artist.track2_video_key {
+        if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
+            file_urls.insert("track2_video".to_string(), url);
+        }
+    }
 
     // Get available shows for assignment
     let available_shows: Vec<AvailableShow> = sqlx::query_as(
@@ -486,6 +481,49 @@ pub async fn api_delete_artist(
         .await?;
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// Manually regenerate waveform preview videos for an artist.
+/// Runs synchronously so the admin can confirm success before previewing.
+pub async fn api_generate_artist_videos(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Validate artist exists and has required assets
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Artist {id} not found")))?;
+
+    let has_image = artist.pic_overlay_key.is_some()
+        || artist.pic_cropped_key.is_some()
+        || artist.pic_key.is_some();
+    let has_tracks = artist.track1_key.is_some() || artist.track2_key.is_some();
+
+    if !has_image || !has_tracks {
+        return Err(AppError::BadRequest(
+            "Artist must have a picture and at least one track to generate videos".to_string(),
+        ));
+    }
+
+    // Run synchronously — admin waits for completion
+    video::generate_and_store_artist_videos(state.clone(), id).await?;
+
+    // Reload artist to get new video keys
+    let updated: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "track1_video_key": updated.track1_video_key,
+        "track2_video_key": updated.track2_video_key,
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -803,7 +841,7 @@ pub async fn api_post_artist_to_instagram(
     }
 
     // Post to Instagram
-    let result = crate::instagram::post_artist_to_instagram(&state, &artist).await?;
+    let result = crate::instagram::post_artist_to_instagram(&state, &artist, &req.account).await?;
 
     if result.success {
         // Update instagram_posted_at timestamp
@@ -812,7 +850,12 @@ pub async fn api_post_artist_to_instagram(
             .execute(&state.db)
             .await?;
 
-        tracing::info!("Posted artist {} to Instagram: {:?}", id, result.media_id);
+        tracing::info!(
+            "Posted artist {} to Instagram (account={}): {:?}",
+            id,
+            req.account,
+            result.media_id
+        );
     }
 
     Ok(Json(InstagramPostResponse {
@@ -921,6 +964,17 @@ pub async fn api_update_artist_picture(
         .bind(id)
         .execute(&state.db)
         .await?;
+
+        // Regenerate waveform preview videos with the new picture
+        let video_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = video::generate_and_store_artist_videos(video_state, id).await {
+                tracing::error!(
+                    artist_id = id,
+                    "Video regeneration after picture update failed: {e:#}"
+                );
+            }
+        });
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
@@ -1167,6 +1221,19 @@ pub async fn api_update_artist_audio(
         }
 
         query.bind(id).execute(&state.db).await?;
+
+        // Regenerate waveform preview videos if tracks changed
+        if new_track1_key.is_some() || new_track2_key.is_some() {
+            let video_state = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = video::generate_and_store_artist_videos(video_state, id).await {
+                    tracing::error!(
+                        artist_id = id,
+                        "Video regeneration after audio update failed: {e:#}"
+                    );
+                }
+            });
+        }
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
@@ -2375,6 +2442,13 @@ pub struct InstagramPostRequest {
     /// If true, post even if already posted before
     #[serde(default)]
     force: bool,
+    /// Instagram account to post to: "dev" (moafunk_tester) or "prod" (moafunk_radio)
+    #[serde(default = "default_instagram_account")]
+    account: String,
+}
+
+fn default_instagram_account() -> String {
+    "dev".to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -2414,7 +2488,7 @@ pub async fn api_post_show_to_instagram(
     }
 
     // Post to Instagram
-    let result = crate::instagram::post_show_to_instagram(&state, &show).await?;
+    let result = crate::instagram::post_show_to_instagram(&state, &show, &req.account).await?;
 
     if result.success {
         // Update instagram_posted_at timestamp
@@ -2423,7 +2497,12 @@ pub async fn api_post_show_to_instagram(
             .execute(&state.db)
             .await?;
 
-        tracing::info!("Posted show {} to Instagram: {:?}", id, result.media_id);
+        tracing::info!(
+            "Posted show {} to Instagram (account={}): {:?}",
+            id,
+            req.account,
+            result.media_id
+        );
     }
 
     Ok(Json(InstagramPostResponse {

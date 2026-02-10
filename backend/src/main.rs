@@ -12,6 +12,7 @@ mod pdf;
 mod recording;
 mod storage;
 mod stream_bridge;
+mod video;
 
 use axum::{
     extract::{DefaultBodyLimit, Query, State, WebSocketUpgrade},
@@ -291,6 +292,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/artists/:id/generate-bio",
             post(handlers::api::api_generate_artist_bio),
+        )
+        .route(
+            "/api/artists/:id/generate-videos",
+            post(handlers::api::api_generate_artist_videos),
         )
         .route(
             "/api/artists/:id/generate-instagram-caption",

@@ -59,10 +59,12 @@ pub struct Config {
     pub github_repo: String,
 
     // Instagram API settings (optional - for automatic posting to Instagram)
-    // Access token from Meta/Facebook Developer Console
+    // Dev account (moafunk_tester)
     pub instagram_access_token_dev: Option<String>,
-    // Instagram Business Account ID (found in Meta Business Suite or Graph API Explorer)
     pub instagram_business_account_id_dev: Option<String>,
+    // Prod account (moafunk_radio)
+    pub instagram_access_token_prod: Option<String>,
+    pub instagram_business_account_id_prod: Option<String>,
     // Facebook App credentials for token refresh
     pub facebook_app_id: Option<String>,
     pub facebook_app_secret: Option<String>,

@@ -23,6 +23,10 @@ pub struct Artist {
     pub track2_original_key: Option<String>,
     pub voice_original_key: Option<String>,
 
+    // Pre-generated waveform preview video keys (MP4 in R2)
+    pub track1_video_key: Option<String>,
+    pub track2_video_key: Option<String>,
+
     pub instagram: Option<String>,
     pub soundcloud: Option<String>,
     pub bandcamp: Option<String>,

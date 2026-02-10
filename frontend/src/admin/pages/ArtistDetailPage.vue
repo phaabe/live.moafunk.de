@@ -46,9 +46,12 @@ const generatingCaption = ref(false);
 const showInstagramModal = ref(false);
 const postingToInstagram = ref(false);
 const showInstagramConfirmModal = ref(false);
+const igAccount = ref<'dev' | 'prod'>('dev');
 const editingCaption = ref(false);
 const editedCaption = ref('');
 const savingCaption = ref(false);
+const carouselIndex = ref(0);
+const regeneratingVideos = ref(false);
 
 const audioForm = ref({
   voice: null as File | null,
@@ -235,6 +238,7 @@ async function generateInstagramCaption() {
 
 async function openInstagramPreview() {
   showInstagramModal.value = true;
+  carouselIndex.value = 0;
   // Auto-generate caption if none exists
   if (!artist.value?.instagram_caption) {
     await generateInstagramCaption();
@@ -280,7 +284,7 @@ async function postToInstagram(force = false) {
   showInstagramConfirmModal.value = false;
 
   try {
-    const result = await artistsApi.postToInstagram(artist.value.id, force);
+    const result = await artistsApi.postToInstagram(artist.value.id, force, igAccount.value);
 
     if (result.success) {
       flash.success('Posted to Instagram successfully!');
@@ -293,6 +297,20 @@ async function postToInstagram(force = false) {
     flash.error(e instanceof Error ? e.message : 'Failed to post to Instagram');
   } finally {
     postingToInstagram.value = false;
+  }
+}
+
+async function regenerateVideos() {
+  if (!artist.value) return;
+  regeneratingVideos.value = true;
+  try {
+    await artistsApi.generateVideos(artist.value.id);
+    flash.success('Videos regenerated successfully');
+    await loadArtist();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to regenerate videos');
+  } finally {
+    regeneratingVideos.value = false;
   }
 }
 
@@ -677,6 +695,42 @@ onMounted(loadArtist);
         </template>
       </div>
 
+      <!-- Preview Videos -->
+      <div class="card preview-videos-card">
+        <div class="card-header">
+          <h2 class="section-title">🎬 Preview Videos</h2>
+          <BaseButton variant="primary" size="sm" :loading="regeneratingVideos"
+            :disabled="!artist.file_urls.pic || (!artist.file_urls.track1 && !artist.file_urls.track2)"
+            @click="regenerateVideos">
+            {{ artist.file_urls.track1_video || artist.file_urls.track2_video ? '🔄 Regenerate' : '🎬 Generate' }}
+            Videos
+          </BaseButton>
+        </div>
+
+        <div v-if="artist.file_urls.track1_video || artist.file_urls.track2_video" class="preview-videos-grid">
+          <div v-if="artist.file_urls.track1_video" class="preview-video-item">
+            <span class="file-label">{{ artist.track1_name || 'Track 1' }}</span>
+            <video :src="artist.file_urls.track1_video" controls muted playsinline preload="metadata"
+              class="preview-video" />
+          </div>
+          <div v-if="artist.file_urls.track2_video" class="preview-video-item">
+            <span class="file-label">{{ artist.track2_name || 'Track 2' }}</span>
+            <video :src="artist.file_urls.track2_video" controls muted playsinline preload="metadata"
+              class="preview-video" />
+          </div>
+        </div>
+
+        <p v-else class="text-muted">
+          No preview videos generated yet.
+          <template v-if="artist.file_urls.pic && (artist.file_urls.track1 || artist.file_urls.track2)">
+            Click "Generate Videos" to create them.
+          </template>
+          <template v-else>
+            Upload a profile picture and at least one track first.
+          </template>
+        </p>
+      </div>
+
       <!-- Downloads -->
       <div class="card downloads-section">
         <h2 class="section-title">📥 Downloads</h2>
@@ -729,10 +783,52 @@ onMounted(loadArtist);
     <BaseModal :open="showInstagramModal" title="📸 Instagram Preview" size="lg"
       @close="showInstagramModal = false; editingCaption = false">
       <div class="ig-preview-layout">
-        <div class="ig-preview-image">
-          <img v-if="artist?.file_urls.pic" :src="artist.file_urls.pic" alt="Artist image" class="ig-preview-img"
-            crossorigin="anonymous" />
-          <div v-else class="ig-preview-placeholder">No image</div>
+        <div class="ig-preview-media">
+          <!-- Carousel -->
+          <div class="ig-carousel">
+            <div class="ig-carousel-slide">
+              <!-- Slide 0: Artist image -->
+              <template v-if="carouselIndex === 0">
+                <img v-if="artist?.file_urls.pic" :src="artist.file_urls.pic" alt="Artist image" class="ig-preview-img"
+                  crossorigin="anonymous" />
+                <div v-else class="ig-preview-placeholder">No image</div>
+              </template>
+              <!-- Slide 1: Track 1 video -->
+              <template v-else-if="carouselIndex === 1">
+                <video v-if="artist?.file_urls.track1_video" :src="artist.file_urls.track1_video"
+                  class="ig-preview-video" controls autoplay muted loop />
+                <div v-else class="ig-preview-placeholder">Track 1 video not generated yet</div>
+              </template>
+              <!-- Slide 2: Track 2 video -->
+              <template v-else-if="carouselIndex === 2">
+                <video v-if="artist?.file_urls.track2_video" :src="artist.file_urls.track2_video"
+                  class="ig-preview-video" controls autoplay muted loop />
+                <div v-else class="ig-preview-placeholder">Track 2 video not generated yet</div>
+              </template>
+            </div>
+            <!-- Navigation arrows -->
+            <button v-if="carouselIndex > 0" class="ig-carousel-arrow ig-carousel-prev"
+              @click="carouselIndex--">&lsaquo;</button>
+            <button v-if="carouselIndex < 2" class="ig-carousel-arrow ig-carousel-next"
+              @click="carouselIndex++">&rsaquo;</button>
+            <!-- Dots -->
+            <div class="ig-carousel-dots">
+              <button v-for="i in 3" :key="i" class="ig-carousel-dot" :class="{ active: carouselIndex === i - 1 }"
+                @click="carouselIndex = i - 1">
+                <span v-if="i === 1">🖼️</span>
+                <span v-else-if="i === 2">🎵1</span>
+                <span v-else>🎵2</span>
+              </button>
+            </div>
+          </div>
+          <!-- Regenerate button -->
+          <div class="ig-video-actions">
+            <BaseButton variant="ghost" size="sm" :loading="regeneratingVideos"
+              :disabled="!artist?.file_urls.pic || (!artist?.file_urls.track1 && !artist?.file_urls.track2)"
+              @click="regenerateVideos">
+              🔄 Regenerate Videos
+            </BaseButton>
+          </div>
         </div>
         <div class="ig-preview-caption">
           <div v-if="generatingCaption" class="ig-preview-loading">Generating caption...</div>
@@ -757,6 +853,12 @@ onMounted(loadArtist);
           <BaseButton variant="ghost" :disabled="!artist?.instagram_caption" @click="startEditCaption">
             ✏️ Edit
           </BaseButton>
+          <div class="ig-account-selector">
+            <select v-model="igAccount" class="ig-account-select">
+              <option value="dev">🧪 moafunk_tester</option>
+              <option value="prod">📡 moafunk_radio</option>
+            </select>
+          </div>
           <BaseButton variant="primary" :loading="postingToInstagram"
             :disabled="!artist?.instagram_caption || !artist?.file_urls.pic" @click="postToInstagram()">
             📤 Publish
@@ -1047,6 +1149,30 @@ onMounted(loadArtist);
   margin-top: var(--spacing-lg);
 }
 
+.preview-videos-card {
+  margin-top: var(--spacing-lg);
+}
+
+.preview-videos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--spacing-lg);
+  margin-top: var(--spacing-md);
+}
+
+.preview-video-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.preview-video {
+  width: 100%;
+  max-width: 400px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+}
+
 .downloads-section {
   margin-top: var(--spacing-lg);
 }
@@ -1160,10 +1286,13 @@ onMounted(loadArtist);
   min-height: 300px;
 }
 
-.ig-preview-image {
+.ig-preview-image,
+.ig-preview-media {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--spacing-sm);
 }
 
 .ig-preview-img {
@@ -1171,6 +1300,83 @@ onMounted(loadArtist);
   max-height: 400px;
   object-fit: contain;
   border-radius: var(--radius-sm);
+}
+
+.ig-preview-video {
+  width: 100%;
+  max-height: 400px;
+  border-radius: var(--radius-sm);
+  background: #000;
+}
+
+.ig-carousel {
+  position: relative;
+  width: 100%;
+}
+
+.ig-carousel-slide {
+  min-height: 300px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ig-carousel-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  border: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  transition: background 0.2s;
+}
+
+.ig-carousel-arrow:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.ig-carousel-prev {
+  left: 8px;
+}
+
+.ig-carousel-next {
+  right: 8px;
+}
+
+.ig-carousel-dots {
+  display: flex;
+  justify-content: center;
+  gap: var(--spacing-xs, 4px);
+  margin-top: var(--spacing-sm);
+}
+
+.ig-carousel-dot {
+  background: none;
+  border: 2px solid var(--color-border, #555);
+  border-radius: var(--radius-sm, 4px);
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.ig-carousel-dot.active {
+  opacity: 1;
+  border-color: var(--color-primary, #e1306c);
+}
+
+.ig-video-actions {
+  text-align: center;
 }
 
 .ig-preview-placeholder {
@@ -1226,6 +1432,26 @@ onMounted(loadArtist);
 }
 
 .ig-caption-edit:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.ig-account-selector {
+  display: flex;
+  align-items: center;
+}
+
+.ig-account-select {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.ig-account-select:focus {
   outline: none;
   border-color: var(--color-primary);
 }

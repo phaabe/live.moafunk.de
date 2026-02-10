@@ -5,7 +5,7 @@
 //! 2. POST /api/submit/file/:session_id?field=track1|track2|voice – upload one large file
 //! 3. POST /api/submit/finalize/:session_id – commit the submission
 
-use crate::{audio, AppError, AppState, Result};
+use crate::{audio, video, AppError, AppState, Result};
 use axum::{
     extract::{Multipart, Path, Query, State},
     Json,
@@ -17,6 +17,36 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::storage;
+
+/// Derive the peaks JSON key from an audio file key.
+/// E.g. "artists/7/track1/name.mp3" → "artists/7/track1/name.peaks.json"
+fn derive_peaks_key_from_audio(audio_key: &str) -> String {
+    if let Some((base, _ext)) = audio_key.rsplit_once('.') {
+        format!("{}.peaks.json", base)
+    } else {
+        format!("{}.peaks.json", audio_key)
+    }
+}
+
+/// Upload peaks JSON data directly to R2 at the given key.
+/// Silently logs and continues on failure (peaks are non-critical).
+async fn upload_peaks_to_r2(state: &Arc<AppState>, key: &str, peaks_json: &str) {
+    use aws_sdk_s3::primitives::ByteStream;
+
+    match state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(key)
+        .body(ByteStream::from(peaks_json.as_bytes().to_vec()))
+        .content_type("application/json")
+        .send()
+        .await
+    {
+        Ok(_) => tracing::debug!("Uploaded peaks to R2: {}", key),
+        Err(e) => tracing::warn!("Failed to upload peaks to R2 at {}: {}", key, e),
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers (duplicated from submit.rs for now; consider extracting to a shared module)
@@ -513,7 +543,8 @@ pub async fn submit_file(
     };
 
     // Store waveform peaks JSON alongside the audio file if provided
-    if let Some(peaks_json) = peaks_data {
+    // Save to both R2 (pending location) and DB column for finalization
+    let peaks_for_db: Option<String> = if let Some(peaks_json) = peaks_data {
         let peaks_key = format!(
             "{}.peaks.json",
             audio_result
@@ -526,11 +557,27 @@ pub async fn submit_file(
             &session_id,
             &format!("{}_peaks", field_name),
             &format!("{}.peaks.json", desired_name),
-            peaks_json.into_bytes(),
+            peaks_json.as_bytes().to_vec(),
             "application/json",
         )
         .await?;
         tracing::debug!("Uploaded peaks for {} at {}", field_name, peaks_key);
+        Some(peaks_json)
+    } else {
+        None
+    };
+
+    // Also save peaks JSON to the DB column so finalize can upload to final location
+    if let Some(ref peaks_json) = peaks_for_db {
+        let peaks_db_sql = format!(
+            "UPDATE pending_submissions SET peaks_json_{} = ? WHERE session_id = ?",
+            field_name
+        );
+        sqlx::query(&peaks_db_sql)
+            .bind(peaks_json)
+            .bind(&session_id)
+            .execute(&state.db)
+            .await?;
     }
 
     // Update pending_submissions with original key and conversion status
@@ -741,7 +788,8 @@ async fn finalize_artist_files_background(
             r#"
             SELECT track1_conversion_status, track2_conversion_status, voice_conversion_status,
                    track1_key, track2_key, voice_key,
-                   track1_original_key, track2_original_key, voice_original_key
+                   track1_original_key, track2_original_key, voice_original_key,
+                   peaks_json_track1, peaks_json_track2, peaks_json_voice
             FROM pending_submissions
             WHERE session_id = ?
             "#,
@@ -800,6 +848,13 @@ async fn finalize_artist_files_background(
             let voice_original_key: Option<String> =
                 sqlx::Row::get(&status_row, "voice_original_key");
 
+            // Get peaks JSON from DB (stored during upload, may not exist in R2)
+            let peaks_json_track1: Option<String> =
+                sqlx::Row::get(&status_row, "peaks_json_track1");
+            let peaks_json_track2: Option<String> =
+                sqlx::Row::get(&status_row, "peaks_json_track2");
+            let peaks_json_voice: Option<String> = sqlx::Row::get(&status_row, "peaks_json_voice");
+
             // Move files from pending to final artist location
             let final_pic_key = if let Some(key) = &pic_key {
                 Some(storage::move_pending_to_artist(state, key, artist_id, "pic").await?)
@@ -825,6 +880,13 @@ async fn finalize_artist_files_background(
                 None
             };
 
+            // Upload track1 peaks JSON from DB to R2 alongside the final track
+            if let (Some(ref final_key), Some(peaks_json)) = (&final_track1_key, &peaks_json_track1)
+            {
+                let peaks_r2_key = derive_peaks_key_from_audio(final_key);
+                upload_peaks_to_r2(state, &peaks_r2_key, peaks_json).await;
+            }
+
             let final_track1_original_key = if let Some(key) = &track1_original_key {
                 Some(
                     storage::move_pending_to_artist(state, key, artist_id, "track1_original")
@@ -840,6 +902,13 @@ async fn finalize_artist_files_background(
                 None
             };
 
+            // Upload track2 peaks JSON from DB to R2 alongside the final track
+            if let (Some(ref final_key), Some(peaks_json)) = (&final_track2_key, &peaks_json_track2)
+            {
+                let peaks_r2_key = derive_peaks_key_from_audio(final_key);
+                upload_peaks_to_r2(state, &peaks_r2_key, peaks_json).await;
+            }
+
             let final_track2_original_key = if let Some(key) = &track2_original_key {
                 Some(
                     storage::move_pending_to_artist(state, key, artist_id, "track2_original")
@@ -854,6 +923,12 @@ async fn finalize_artist_files_background(
             } else {
                 None
             };
+
+            // Upload voice peaks JSON from DB to R2 alongside the final track
+            if let (Some(ref final_key), Some(peaks_json)) = (&final_voice_key, &peaks_json_voice) {
+                let peaks_r2_key = derive_peaks_key_from_audio(final_key);
+                upload_peaks_to_r2(state, &peaks_r2_key, peaks_json).await;
+            }
 
             let final_voice_original_key = if let Some(key) = &voice_original_key {
                 Some(
@@ -899,6 +974,16 @@ async fn finalize_artist_files_background(
                 .bind(session_id)
                 .execute(&state.db)
                 .await?;
+
+            // Generate waveform preview videos in the background (fire-and-forget)
+            let video_state = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    video::generate_and_store_artist_videos(video_state, artist_id).await
+                {
+                    tracing::error!(artist_id, "Background video generation failed: {e:#}");
+                }
+            });
 
             // Trigger backup workflow (fire-and-forget)
             super::backup_trigger::trigger_backup_on_submission(&state.config, artist_id);
