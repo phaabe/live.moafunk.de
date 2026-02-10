@@ -84,6 +84,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "artists", "instagram_caption", "TEXT").await?;
     add_column_if_missing(pool, "artists", "instagram_posted_at", "TEXT").await?;
 
+    // Pre-generated waveform preview video keys (MP4 in R2)
+    add_column_if_missing(pool, "artists", "track1_video_key", "TEXT").await?;
+    add_column_if_missing(pool, "artists", "track2_video_key", "TEXT").await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shows (

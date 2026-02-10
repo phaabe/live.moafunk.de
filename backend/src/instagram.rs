@@ -870,8 +870,6 @@ pub async fn post_artist_to_instagram(
     }
 
     // Build video data for each track
-    // Note: peaks_key is no longer used for waveform rendering (audiowaveform
-    // reads the MP3 directly) but we keep the tuple shape for API compatibility.
     let video_data: Vec<(String, String, String)> = track_keys
         .iter()
         .map(|(track_key, label)| {
@@ -885,17 +883,45 @@ pub async fn post_artist_to_instagram(
         return client.post_image(&image_url, caption).await;
     }
 
-    // Generate preview videos and upload to R2
+    // Get presigned URLs for track preview videos.
+    // Prefer pre-generated videos stored in R2 (track1_video_key / track2_video_key).
+    // Fall back to on-demand generation if a pre-generated video is missing.
     tracing::info!(
-        "Generating {} track preview video(s) for carousel",
+        "Preparing {} track preview video(s) for carousel",
         video_data.len()
     );
 
-    let mut video_r2_keys: Vec<String> = Vec::new();
     let mut video_presigned_urls: Vec<String> = Vec::new();
+    let mut temp_video_keys: Vec<String> = Vec::new();
+
+    // Map label to pre-generated video key
+    let pre_generated: std::collections::HashMap<&str, Option<&String>> = [
+        ("track1", artist.track1_video_key.as_ref()),
+        ("track2", artist.track2_video_key.as_ref()),
+    ]
+    .into_iter()
+    .collect();
 
     for (track_key, peaks_key, label) in &video_data {
-        tracing::info!("Generating preview video for {}", label);
+        // Check for pre-generated video first
+        if let Some(Some(video_key)) = pre_generated.get(label.as_str()) {
+            tracing::info!("Using pre-generated video for {}: {}", label, video_key);
+            match storage::get_presigned_url(state, video_key, 3600).await {
+                Ok(url) => {
+                    video_presigned_urls.push(url);
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Pre-generated video key {} exists but presigned URL failed: {}. Falling back to on-demand.",
+                        video_key, e
+                    );
+                }
+            }
+        }
+
+        // Fallback: generate on-demand
+        tracing::info!("Generating preview video on-demand for {}", label);
 
         let mp4_bytes = match crate::video::generate_track_preview_video(
             state, pic_key, track_key, peaks_key, 30,
@@ -905,30 +931,28 @@ pub async fn post_artist_to_instagram(
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::error!("Failed to generate {} preview video: {}", label, e);
-                // Clean up any already-uploaded videos
-                cleanup_temp_videos(state, &video_r2_keys).await;
-                // Fall back to single image
+                cleanup_temp_videos(state, &temp_video_keys).await;
                 tracing::info!("Falling back to single image post");
                 return client.post_image(&image_url, caption).await;
             }
         };
 
-        // Upload video to R2 under a temporary path
-        let video_key = format!("artists/{}/instagram-preview-{}.mp4", artist.id, label);
+        // Upload to a temporary R2 path
+        let temp_key = format!("artists/{}/instagram-preview-{}.mp4", artist.id, label);
 
-        if let Err(e) = upload_raw(state, &video_key, mp4_bytes, "video/mp4").await {
+        if let Err(e) = upload_raw(state, &temp_key, mp4_bytes, "video/mp4").await {
             tracing::error!("Failed to upload {} video to R2: {}", label, e);
-            cleanup_temp_videos(state, &video_r2_keys).await;
+            cleanup_temp_videos(state, &temp_video_keys).await;
             return client.post_image(&image_url, caption).await;
         }
 
-        video_r2_keys.push(video_key.clone());
+        temp_video_keys.push(temp_key.clone());
 
-        match storage::get_presigned_url(state, &video_key, 3600).await {
+        match storage::get_presigned_url(state, &temp_key, 3600).await {
             Ok(url) => video_presigned_urls.push(url),
             Err(e) => {
                 tracing::error!("Failed to get presigned URL for {}: {}", label, e);
-                cleanup_temp_videos(state, &video_r2_keys).await;
+                cleanup_temp_videos(state, &temp_video_keys).await;
                 return client.post_image(&image_url, caption).await;
             }
         }
@@ -944,8 +968,10 @@ pub async fn post_artist_to_instagram(
         .post_carousel(&image_url, &video_presigned_urls, caption)
         .await;
 
-    // Clean up temp video files from R2 regardless of outcome
-    cleanup_temp_videos(state, &video_r2_keys).await;
+    // Clean up only temp (on-demand) video files — pre-generated videos stay in R2
+    if !temp_video_keys.is_empty() {
+        cleanup_temp_videos(state, &temp_video_keys).await;
+    }
 
     result
 }

@@ -37,8 +37,9 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Install runtime dependencies (including FFmpeg for audio streaming)
-RUN apt-get update && apt-get install -y ca-certificates curl ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies (FFmpeg for video composition via showwaves filter)
+RUN apt-get update && apt-get install -y ca-certificates curl ffmpeg && \
+  rm -rf /var/lib/apt/lists/*
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/unheard-backend /app/unheard-backend

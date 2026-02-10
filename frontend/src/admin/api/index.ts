@@ -186,6 +186,13 @@ export const artistsApi = {
       already_posted: boolean;
     }>(`/api/artists/${id}/instagram`, { force }),
 
+  generateVideos: (id: number) =>
+    api.post<{
+      success: boolean;
+      track1_video_key?: string | null;
+      track2_video_key?: string | null;
+    }>(`/api/artists/${id}/generate-videos`),
+
   updatePicture: async (
     id: number,
     data: {

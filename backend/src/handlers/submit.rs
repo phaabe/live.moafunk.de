@@ -1,4 +1,4 @@
-use crate::{audio, AppError, AppState, Result};
+use crate::{audio, video, AppError, AppState, Result};
 use axum::{
     extract::{Multipart, State},
     Json,
@@ -516,6 +516,14 @@ pub async fn submit_form(
     .bind(artist_id)
     .execute(&state.db)
     .await?;
+
+    // Generate waveform preview videos in the background (fire-and-forget)
+    let video_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = video::generate_and_store_artist_videos(video_state, artist_id).await {
+            tracing::error!(artist_id, "Background video generation failed: {e:#}");
+        }
+    });
 
     // Trigger backup workflow (fire-and-forget)
     super::backup_trigger::trigger_backup_on_submission(&state.config, artist_id);
