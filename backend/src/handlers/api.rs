@@ -288,6 +288,8 @@ pub struct ShowBrief {
     id: i64,
     title: String,
     date: String,
+    cover_url: Option<String>,
+    cover_generated_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -455,14 +457,27 @@ pub async fn api_artist_detail(
         track1_name: artist.track1_name,
         track2_name: artist.track2_name,
         file_urls,
-        shows: shows
-            .into_iter()
-            .map(|s| ShowBrief {
-                id: s.id,
-                title: s.title,
-                date: s.date,
-            })
-            .collect(),
+        shows: {
+            let mut show_briefs = Vec::new();
+            for s in shows {
+                let cover_url = if s.cover_generated_at.is_some() {
+                    let cover_key = format!("shows/{}/cover.png", s.id);
+                    storage::get_presigned_url(&state, &cover_key, 3600)
+                        .await
+                        .ok()
+                } else {
+                    None
+                };
+                show_briefs.push(ShowBrief {
+                    id: s.id,
+                    title: s.title,
+                    date: s.date,
+                    cover_url,
+                    cover_generated_at: s.cover_generated_at,
+                });
+            }
+            show_briefs
+        },
         available_shows,
     }))
 }
@@ -545,6 +560,9 @@ pub async fn api_assign_artist_to_show(
         .execute(&state.db)
         .await?;
 
+    // Regenerate show cover image with the new artist
+    schedule_cover_regeneration(state, req.show_id);
+
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -560,6 +578,9 @@ pub async fn api_unassign_artist_from_show(
         .bind(show_id)
         .execute(&state.db)
         .await?;
+
+    // Regenerate show cover image without the removed artist
+    schedule_cover_regeneration(state, show_id);
 
     Ok(Json(serde_json::json!({ "success": true })))
 }

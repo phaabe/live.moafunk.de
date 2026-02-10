@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onActivated, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { artistsApi, type ArtistDetail } from '../api';
+import { artistsApi, showsApi, type ArtistDetail } from '../api';
 import { BaseButton, BaseModal } from '@shared/components';
 import ImageCropper from '../components/ImageCropper.vue';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import { useFlash } from '../composables/useFlash';
+import { useDataInvalidation } from '../composables/useDataInvalidation';
 
 defineOptions({
   name: 'ArtistDetailPage'
@@ -14,6 +15,7 @@ defineOptions({
 const flash = useFlash();
 const route = useRoute();
 const router = useRouter();
+const { invalidate, consume } = useDataInvalidation();
 
 const artist = ref<ArtistDetail | null>(null);
 const loading = ref(true);
@@ -106,15 +108,62 @@ async function deleteArtist() {
   }
 }
 
+// Cover refresh polling - polls show detail until cover_generated_at updates
+let coverRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let coverPollCount = 0;
+const COVER_INITIAL_DELAY = 6000; // Wait for 5s backend debounce + 1s buffer
+const COVER_POLL_INTERVAL = 2000;
+const COVER_MAX_POLLS = 10;
+
+function scheduleCoverRefresh(showId: number) {
+  if (coverRefreshTimer) clearTimeout(coverRefreshTimer);
+  const changeTime = new Date().toISOString();
+  coverPollCount = 0;
+  coverRefreshTimer = setTimeout(() => pollForCover(showId, changeTime), COVER_INITIAL_DELAY);
+}
+
+async function pollForCover(showId: number, changeTime: string) {
+  if (!artist.value) return;
+  coverPollCount++;
+
+  try {
+    const showDetail = await showsApi.get(showId);
+    const coverIsNewer = showDetail.cover_generated_at && showDetail.cover_generated_at > changeTime;
+
+    if (coverIsNewer) {
+      // Reload artist to get updated cover_url with fresh presigned URL
+      await loadArtist();
+      return;
+    }
+
+    if (coverPollCount < COVER_MAX_POLLS) {
+      coverRefreshTimer = setTimeout(() => pollForCover(showId, changeTime), COVER_POLL_INTERVAL);
+    }
+  } catch {
+    // Ignore polling errors
+  }
+}
+
 async function assignShow() {
   if (!artist.value || !selectedShowId.value) return;
 
+  const showId = selectedShowId.value;
   assigning.value = true;
   try {
-    await artistsApi.assignShow(artist.value.id, selectedShowId.value);
+    await artistsApi.assignShow(artist.value.id, showId);
     flash.success('Artist assigned to show');
     selectedShowId.value = null;
+    // Mark the show dirty so ShowDetailPage reloads its artist list
+    invalidate('shows', showId);
+    // Invalidate other artists on this show so their cached covers refresh
+    try {
+      const showDetail = await showsApi.get(showId);
+      for (const a of showDetail.artists) {
+        if (a.id !== artist.value!.id) invalidate('artists', a.id);
+      }
+    } catch { /* best-effort */ }
     await loadArtist();
+    scheduleCoverRefresh(showId);
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to assign show');
   } finally {
@@ -128,7 +177,17 @@ async function unassignShow(showId: number) {
   try {
     await artistsApi.unassignShow(artist.value.id, showId);
     flash.success('Artist unassigned from show');
+    // Mark the show dirty so ShowDetailPage reloads its artist list
+    invalidate('shows', showId);
+    // Invalidate other artists on this show so their cached covers refresh
+    try {
+      const showDetail = await showsApi.get(showId);
+      for (const a of showDetail.artists) {
+        invalidate('artists', a.id);
+      }
+    } catch { /* best-effort */ }
     await loadArtist();
+    // No need to poll - the show is no longer displayed here
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to unassign show');
   }
@@ -370,6 +429,17 @@ async function saveAudio() {
 }
 
 onMounted(loadArtist);
+
+onActivated(() => {
+  const id = Number(route.params.id);
+  if (consume('artists', id)) {
+    loadArtist();
+  }
+});
+
+onBeforeUnmount(() => {
+  if (coverRefreshTimer) clearTimeout(coverRefreshTimer);
+});
 </script>
 
 <template>
@@ -416,6 +486,10 @@ onMounted(loadArtist);
                     ✕ Unassign
                   </button>
                 </div>
+                <div v-if="artist.shows[0].cover_url" class="show-cover-preview">
+                  <img :src="artist.shows[0].cover_url" alt="Show Cover" class="show-cover-img" />
+                </div>
+                <p v-else class="text-muted cover-hint">Cover generates after assignment is processed.</p>
               </div>
             </template>
 
@@ -1560,6 +1634,22 @@ onMounted(loadArtist);
   color: var(--color-error);
   border-color: var(--color-error);
   background-color: rgba(var(--color-error-rgb, 220, 53, 69), 0.1);
+}
+
+.show-cover-preview {
+  margin-top: var(--spacing-md);
+}
+
+.show-cover-img {
+  width: 100%;
+  max-width: 300px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+}
+
+.cover-hint {
+  margin-top: var(--spacing-sm);
+  font-size: var(--font-size-sm);
 }
 
 .assign-form {
