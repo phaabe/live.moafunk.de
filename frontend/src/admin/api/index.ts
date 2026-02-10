@@ -123,7 +123,13 @@ export interface ArtistDetail {
   track1_name: string;
   track2_name: string;
   file_urls: Record<string, string>;
-  shows: { id: number; title: string; date: string }[];
+  shows: {
+    id: number;
+    title: string;
+    date: string;
+    cover_url?: string;
+    cover_generated_at?: string;
+  }[];
   available_shows: AvailableShow[];
 }
 

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onActivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showsApi, type ShowDetail } from '../api';
 import { BaseButton, BaseModal } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import { useFlash } from '../composables/useFlash';
+import { useDataInvalidation } from '../composables/useDataInvalidation';
 
 defineOptions({
   name: 'ShowDetailPage'
@@ -13,6 +14,7 @@ defineOptions({
 const flash = useFlash();
 const route = useRoute();
 const router = useRouter();
+const { invalidate, consume } = useDataInvalidation();
 
 const show = ref<ShowDetail | null>(null);
 const loading = ref(true);
@@ -201,6 +203,11 @@ async function assignArtist() {
     // Schedule cover refresh after backend debounce completes
     scheduleCoverRefresh();
 
+    // Mark all artists on this show dirty so their ArtistDetailPages reload (cover changed)
+    for (const a of show.value.artists) {
+      invalidate('artists', a.id);
+    }
+
     flash.success('Artist assigned to show');
     selectedArtistId.value = null;
   } catch (e) {
@@ -237,6 +244,15 @@ async function unassignArtist(artistId: number) {
 
     // Schedule cover refresh after backend debounce completes
     scheduleCoverRefresh();
+
+    // Mark all remaining artists dirty so their ArtistDetailPages reload (cover changed)
+    if (show.value) {
+      for (const a of show.value.artists) {
+        invalidate('artists', a.id);
+      }
+    }
+    // Also mark the removed artist dirty
+    invalidate('artists', artistId);
 
     flash.success('Artist removed from show');
   } catch (e) {
@@ -372,6 +388,13 @@ function formatDateTime(dateStr: string): string {
 }
 
 onMounted(loadShow);
+
+onActivated(() => {
+  const id = Number(route.params.id);
+  if (consume('shows', id)) {
+    loadShow();
+  }
+});
 
 onUnmounted(() => {
   if (coverRefreshTimer) {
@@ -538,10 +561,10 @@ onUnmounted(() => {
                   <span
                     v-else-if="uploadProgress?.phase === 'uploading' && uploadProgress.totalChunks && uploadProgress.totalChunks > 1">
                     Uploading chunk {{ uploadProgress.chunkIndex }}/{{ uploadProgress.totalChunks }} ({{
-                    uploadProgress.percent }}%)
+                      uploadProgress.percent }}%)
                   </span>
                   <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
-                    }}%</span>
+                  }}%</span>
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>
