@@ -493,12 +493,11 @@ pub async fn api_generate_artist_videos(
     require_admin(&state, &headers).await?;
 
     // Validate artist exists and has required assets
-    let artist: models::Artist =
-        sqlx::query_as("SELECT * FROM artists WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("Artist {id} not found")))?;
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Artist {id} not found")))?;
 
     let has_image = artist.pic_overlay_key.is_some()
         || artist.pic_cropped_key.is_some()
@@ -515,11 +514,10 @@ pub async fn api_generate_artist_videos(
     video::generate_and_store_artist_videos(state.clone(), id).await?;
 
     // Reload artist to get new video keys
-    let updated: models::Artist =
-        sqlx::query_as("SELECT * FROM artists WHERE id = ?")
-            .bind(id)
-            .fetch_one(&state.db)
-            .await?;
+    let updated: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -843,7 +841,7 @@ pub async fn api_post_artist_to_instagram(
     }
 
     // Post to Instagram
-    let result = crate::instagram::post_artist_to_instagram(&state, &artist).await?;
+    let result = crate::instagram::post_artist_to_instagram(&state, &artist, &req.account).await?;
 
     if result.success {
         // Update instagram_posted_at timestamp
@@ -852,7 +850,12 @@ pub async fn api_post_artist_to_instagram(
             .execute(&state.db)
             .await?;
 
-        tracing::info!("Posted artist {} to Instagram: {:?}", id, result.media_id);
+        tracing::info!(
+            "Posted artist {} to Instagram (account={}): {:?}",
+            id,
+            req.account,
+            result.media_id
+        );
     }
 
     Ok(Json(InstagramPostResponse {
@@ -966,7 +969,10 @@ pub async fn api_update_artist_picture(
         let video_state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = video::generate_and_store_artist_videos(video_state, id).await {
-                tracing::error!(artist_id = id, "Video regeneration after picture update failed: {e:#}");
+                tracing::error!(
+                    artist_id = id,
+                    "Video regeneration after picture update failed: {e:#}"
+                );
             }
         });
     }
@@ -1221,7 +1227,10 @@ pub async fn api_update_artist_audio(
             let video_state = state.clone();
             tokio::spawn(async move {
                 if let Err(e) = video::generate_and_store_artist_videos(video_state, id).await {
-                    tracing::error!(artist_id = id, "Video regeneration after audio update failed: {e:#}");
+                    tracing::error!(
+                        artist_id = id,
+                        "Video regeneration after audio update failed: {e:#}"
+                    );
                 }
             });
         }
@@ -2433,6 +2442,13 @@ pub struct InstagramPostRequest {
     /// If true, post even if already posted before
     #[serde(default)]
     force: bool,
+    /// Instagram account to post to: "dev" (moafunk_tester) or "prod" (moafunk_radio)
+    #[serde(default = "default_instagram_account")]
+    account: String,
+}
+
+fn default_instagram_account() -> String {
+    "dev".to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -2472,7 +2488,7 @@ pub async fn api_post_show_to_instagram(
     }
 
     // Post to Instagram
-    let result = crate::instagram::post_show_to_instagram(&state, &show).await?;
+    let result = crate::instagram::post_show_to_instagram(&state, &show, &req.account).await?;
 
     if result.success {
         // Update instagram_posted_at timestamp
@@ -2481,7 +2497,12 @@ pub async fn api_post_show_to_instagram(
             .execute(&state.db)
             .await?;
 
-        tracing::info!("Posted show {} to Instagram: {:?}", id, result.media_id);
+        tracing::info!(
+            "Posted show {} to Instagram (account={}): {:?}",
+            id,
+            req.account,
+            result.media_id
+        );
     }
 
     Ok(Json(InstagramPostResponse {

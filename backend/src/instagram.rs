@@ -72,18 +72,51 @@ pub struct InstagramClient {
 }
 
 impl InstagramClient {
-    /// Create a new Instagram client from config
-    pub fn from_config(config: &crate::Config) -> Result<Self> {
-        let access_token = config.instagram_access_token_dev.clone().ok_or_else(|| {
-            AppError::Config("INSTAGRAM_ACCESS_TOKEN_DEV not configured".to_string())
-        })?;
+    /// Create a new Instagram client from config for the specified account.
+    ///
+    /// `account` should be `"dev"` (moafunk_tester) or `"prod"` (moafunk_radio).
+    /// Defaults to `"dev"` if not specified or unrecognised.
+    pub fn from_config(config: &crate::Config, account: &str) -> Result<Self> {
+        let (access_token, business_account_id) = match account {
+            "prod" => {
+                let token = config.instagram_access_token_prod.clone().ok_or_else(|| {
+                    AppError::Config("INSTAGRAM_ACCESS_TOKEN_PROD not configured".to_string())
+                })?;
+                let id = config
+                    .instagram_business_account_id_prod
+                    .clone()
+                    .ok_or_else(|| {
+                        AppError::Config(
+                            "INSTAGRAM_BUSINESS_ACCOUNT_ID_PROD not configured".to_string(),
+                        )
+                    })?;
+                (token, id)
+            }
+            _ => {
+                let token = config.instagram_access_token_dev.clone().ok_or_else(|| {
+                    AppError::Config("INSTAGRAM_ACCESS_TOKEN_DEV not configured".to_string())
+                })?;
+                let id = config
+                    .instagram_business_account_id_dev
+                    .clone()
+                    .ok_or_else(|| {
+                        AppError::Config(
+                            "INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV not configured".to_string(),
+                        )
+                    })?;
+                (token, id)
+            }
+        };
 
-        let business_account_id = config
-            .instagram_business_account_id_dev
-            .clone()
-            .ok_or_else(|| {
-                AppError::Config("INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV not configured".to_string())
-            })?;
+        tracing::info!(
+            "Using Instagram account: {} ({})",
+            if account == "prod" {
+                "moafunk_radio"
+            } else {
+                "moafunk_tester"
+            },
+            account
+        );
 
         Ok(Self {
             http: reqwest::Client::new(),
@@ -759,9 +792,10 @@ pub async fn refresh_access_token(
 pub async fn post_show_to_instagram(
     state: &Arc<AppState>,
     show: &crate::models::Show,
+    account: &str,
 ) -> Result<InstagramPostResult> {
     // Check if Instagram is configured
-    let client = InstagramClient::from_config(&state.config)?;
+    let client = InstagramClient::from_config(&state.config, account)?;
 
     // Check if cover exists
     if show.cover_generated_at.is_none() {
@@ -827,8 +861,9 @@ pub async fn post_show_to_instagram(
 pub async fn post_artist_to_instagram(
     state: &Arc<AppState>,
     artist: &crate::models::Artist,
+    account: &str,
 ) -> Result<InstagramPostResult> {
-    let client = InstagramClient::from_config(&state.config)?;
+    let client = InstagramClient::from_config(&state.config, account)?;
 
     // Require a stored caption
     let caption = artist.instagram_caption.as_deref().ok_or_else(|| {

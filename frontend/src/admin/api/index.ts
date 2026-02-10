@@ -178,13 +178,13 @@ export const artistsApi = {
       { instagram_caption }
     ),
 
-  postToInstagram: (id: number, force = false) =>
+  postToInstagram: (id: number, force = false, account = 'dev') =>
     api.post<{
       success: boolean;
       media_id?: string;
       error?: string;
       already_posted: boolean;
-    }>(`/api/artists/${id}/instagram`, { force }),
+    }>(`/api/artists/${id}/instagram`, { force, account }),
 
   generateVideos: (id: number) =>
     api.post<{
@@ -467,13 +467,13 @@ export const showsApi = {
   deleteRecording: (showId: number) =>
     api.delete<{ success: boolean }>(`/api/shows/${showId}/recording`),
 
-  postToInstagram: (showId: number, force = false) =>
+  postToInstagram: (showId: number, force = false, account = 'dev') =>
     api.post<{
       success: boolean;
       media_id?: string;
       error?: string;
       already_posted: boolean;
-    }>(`/api/shows/${showId}/instagram`, { force }),
+    }>(`/api/shows/${showId}/instagram`, { force, account }),
 };
 
 // Users API

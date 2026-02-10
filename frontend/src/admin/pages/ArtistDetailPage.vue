@@ -46,6 +46,7 @@ const generatingCaption = ref(false);
 const showInstagramModal = ref(false);
 const postingToInstagram = ref(false);
 const showInstagramConfirmModal = ref(false);
+const igAccount = ref<'dev' | 'prod'>('dev');
 const editingCaption = ref(false);
 const editedCaption = ref('');
 const savingCaption = ref(false);
@@ -283,7 +284,7 @@ async function postToInstagram(force = false) {
   showInstagramConfirmModal.value = false;
 
   try {
-    const result = await artistsApi.postToInstagram(artist.value.id, force);
+    const result = await artistsApi.postToInstagram(artist.value.id, force, igAccount.value);
 
     if (result.success) {
       flash.success('Posted to Instagram successfully!');
@@ -852,6 +853,12 @@ onMounted(loadArtist);
           <BaseButton variant="ghost" :disabled="!artist?.instagram_caption" @click="startEditCaption">
             ✏️ Edit
           </BaseButton>
+          <div class="ig-account-selector">
+            <select v-model="igAccount" class="ig-account-select">
+              <option value="dev">🧪 moafunk_tester</option>
+              <option value="prod">📡 moafunk_radio</option>
+            </select>
+          </div>
           <BaseButton variant="primary" :loading="postingToInstagram"
             :disabled="!artist?.instagram_caption || !artist?.file_urls.pic" @click="postToInstagram()">
             📤 Publish
@@ -1425,6 +1432,26 @@ onMounted(loadArtist);
 }
 
 .ig-caption-edit:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.ig-account-selector {
+  display: flex;
+  align-items: center;
+}
+
+.ig-account-select {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.ig-account-select:focus {
   outline: none;
   border-color: var(--color-primary);
 }
