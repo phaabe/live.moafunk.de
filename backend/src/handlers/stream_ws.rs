@@ -3,12 +3,12 @@
 use crate::auth::get_current_user;
 use crate::stream_bridge::SharedStreamState;
 use crate::{AppState, Result};
+use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ pub struct StreamQuery {
 }
 
 /// WebSocket upgrade handler for streaming.
-/// 
+///
 /// Authentication is done via session cookie.
 /// If another user is streaming, the connection is rejected unless `?force=true`.
 pub async fn stream_ws_handler(
@@ -90,9 +90,14 @@ async fn handle_stream_socket(
     let rtmp_destination = state.config.rtmp_destination();
     {
         let mut stream = stream_state.lock().await;
-        if let Err(e) = stream.start_stream(username.clone(), &rtmp_destination).await {
+        if let Err(e) = stream
+            .start_stream(username.clone(), &rtmp_destination)
+            .await
+        {
             tracing::error!("Failed to start stream: {}", e);
-            let _ = sender.send(Message::Text(format!("error: {}", e).into())).await;
+            let _ = sender
+                .send(Message::Text(format!("error: {}", e).into()))
+                .await;
             let _ = sender.close().await;
             return;
         }
@@ -108,6 +113,9 @@ async fn handle_stream_socket(
 
     tracing::info!("Stream started for user '{}'", username);
 
+    // Notify admin via Telegram (fire-and-forget)
+    crate::telegram_notify::notify_stream_start(&state, &username);
+
     // Process incoming messages (audio chunks)
     while let Some(msg) = receiver.next().await {
         match msg {
@@ -115,7 +123,9 @@ async fn handle_stream_socket(
                 let mut stream = stream_state.lock().await;
                 if let Err(e) = stream.write_chunk(&data).await {
                     tracing::error!("Failed to write audio chunk: {}", e);
-                    let _ = sender.send(Message::Text(format!("error: {}", e).into())).await;
+                    let _ = sender
+                        .send(Message::Text(format!("error: {}", e).into()))
+                        .await;
                     break;
                 }
             }
@@ -152,12 +162,13 @@ async fn handle_stream_socket(
     }
 
     tracing::info!("Stream ended for user '{}'", username);
+
+    // Notify admin via Telegram (fire-and-forget)
+    crate::telegram_notify::notify_stream_stop(&state, &username);
 }
 
 /// Get current stream status.
-pub async fn stream_status(
-    State(stream_state): State<SharedStreamState>,
-) -> impl IntoResponse {
+pub async fn stream_status(State(stream_state): State<SharedStreamState>) -> impl IntoResponse {
     let stream = stream_state.lock().await;
     let status = stream.get_status();
     axum::Json(status)
@@ -194,10 +205,20 @@ pub async fn stream_stop(
     if stream.is_active() {
         if let Err(e) = stream.stop_stream().await {
             tracing::error!("Failed to stop stream: {}", e);
-            return Ok((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to stop: {}", e)).into_response());
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to stop: {}", e),
+            )
+                .into_response());
         }
-        Ok(axum::Json(serde_json::json!({"success": true, "message": "Stream stopped"})).into_response())
+        Ok(
+            axum::Json(serde_json::json!({"success": true, "message": "Stream stopped"}))
+                .into_response(),
+        )
     } else {
-        Ok(axum::Json(serde_json::json!({"success": true, "message": "No active stream"})).into_response())
+        Ok(
+            axum::Json(serde_json::json!({"success": true, "message": "No active stream"}))
+                .into_response(),
+        )
     }
 }

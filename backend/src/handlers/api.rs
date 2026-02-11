@@ -650,31 +650,7 @@ pub async fn api_generate_artist_bio(
 ) -> Result<impl IntoResponse> {
     require_admin(&state, &headers).await?;
 
-    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?;
-
-    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
-
-    let music_description = artist.music_description.ok_or_else(|| {
-        AppError::Validation("Artist has no music description to generate bio from".to_string())
-    })?;
-
-    let bio = crate::ai::generate_artist_bio(
-        &state.config,
-        &artist.name,
-        &artist.pronouns,
-        &music_description,
-        artist.mentions.as_deref(),
-    )
-    .await?;
-
-    sqlx::query("UPDATE artists SET ai_bio = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(&bio)
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    let bio = crate::ai::generate_and_store_artist_bio(&state, id).await?;
 
     Ok(Json(serde_json::json!({ "success": true, "ai_bio": bio })))
 }
@@ -690,111 +666,7 @@ pub async fn api_generate_instagram_caption(
 ) -> Result<impl IntoResponse> {
     require_admin(&state, &headers).await?;
 
-    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
-
-    let music_description = artist.music_description.as_deref().ok_or_else(|| {
-        AppError::Validation("Artist has no music description to generate caption from".to_string())
-    })?;
-
-    // Fetch the most recent assigned show for context
-    let show: Option<models::Show> = sqlx::query_as(
-        r#"
-        SELECT s.* FROM shows s
-        INNER JOIN artist_show_assignments asa ON s.id = asa.show_id
-        WHERE asa.artist_id = ?
-        ORDER BY s.date DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let show = show.ok_or_else(|| {
-        AppError::Validation(
-            "Artist is not assigned to any show. Assign to a show first.".to_string(),
-        )
-    })?;
-
-    // Generate (or reuse) the AI artist bio
-    let ai_bio = if let Some(ref bio) = artist.ai_bio {
-        bio.clone()
-    } else {
-        let bio = crate::ai::generate_artist_bio(
-            &state.config,
-            &artist.name,
-            &artist.pronouns,
-            music_description,
-            artist.mentions.as_deref(),
-        )
-        .await?;
-        // Store it for reuse
-        sqlx::query("UPDATE artists SET ai_bio = ? WHERE id = ?")
-            .bind(&bio)
-            .bind(id)
-            .execute(&state.db)
-            .await?;
-        bio
-    };
-
-    // Generate the show-context paragraph
-    let show_bio = crate::ai::generate_artist_instagram_caption(
-        &state.config,
-        &artist.name,
-        &artist.pronouns,
-        music_description,
-        &show.title,
-        &artist.track1_name,
-        &artist.track2_name,
-    )
-    .await?;
-
-    // Assemble the full caption
-    let mut caption = format!("UNHEARD Guest: {}\n\n{}", artist.name, show_bio);
-
-    // Add AI artist bio
-    caption.push_str(&format!("\n\n{}", ai_bio));
-
-    // Add track listing
-    caption.push_str(&format!(
-        "\n\nTrack 1: \"{}\"\nTrack 2: \"{}\"",
-        artist.track1_name, artist.track2_name
-    ));
-
-    // Add soundcloud line if present
-    if let Some(ref sc) = artist.soundcloud {
-        if !sc.is_empty() {
-            caption.push_str("\n\nSoundcloud link in Bio.");
-        }
-    }
-
-    // Add Instagram @handle if present
-    if let Some(ref ig) = artist.instagram {
-        if !ig.is_empty() {
-            let handle = ig.trim_end_matches('/').rsplit('/').next().unwrap_or(ig);
-            let handle = handle.trim_start_matches('@');
-            caption.push_str(&format!("\n\n@{}", handle));
-        }
-    }
-
-    // Store the generated caption
-    sqlx::query(
-        "UPDATE artists SET instagram_caption = ?, updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(&caption)
-    .bind(id)
-    .execute(&state.db)
-    .await?;
-
-    tracing::info!(
-        "Generated Instagram caption for artist {} ({} chars)",
-        artist.name,
-        caption.len()
-    );
+    let caption = crate::ai::generate_and_store_instagram_caption(&state, id).await?;
 
     Ok(Json(
         serde_json::json!({ "success": true, "instagram_caption": caption }),

@@ -1,5 +1,6 @@
-use crate::{AppError, Config, Result};
+use crate::{models, AppError, AppState, Config, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// OpenAI Chat Completions request/response types
 #[derive(Debug, Serialize)]
@@ -197,5 +198,155 @@ pub async fn generate_artist_instagram_caption(
         "Instagram intro generated successfully ({} chars)",
         caption.len()
     );
+    Ok(caption)
+}
+
+// ============================================================================
+// Service-layer functions (shared by API handlers + Telegram bot)
+// ============================================================================
+
+/// Generate an AI bio for an artist and persist it to the database.
+///
+/// Returns the generated bio text. Reusable from both HTTP handlers and
+/// Telegram command handlers.
+pub async fn generate_and_store_artist_bio(
+    state: &Arc<AppState>,
+    artist_id: i64,
+) -> Result<String> {
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(artist_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Artist {artist_id} not found")))?;
+
+    let music_description = artist.music_description.ok_or_else(|| {
+        AppError::Validation("Artist has no music description to generate bio from".to_string())
+    })?;
+
+    let bio = generate_artist_bio(
+        &state.config,
+        &artist.name,
+        &artist.pronouns,
+        &music_description,
+        artist.mentions.as_deref(),
+    )
+    .await?;
+
+    sqlx::query("UPDATE artists SET ai_bio = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(&bio)
+        .bind(artist_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(bio)
+}
+
+/// Generate (or reuse) an AI bio, generate a show-intro paragraph, assemble
+/// the full Instagram caption, and persist it to the database.
+///
+/// Returns the full caption text. Reusable from both HTTP handlers and
+/// Telegram command handlers.
+pub async fn generate_and_store_instagram_caption(
+    state: &Arc<AppState>,
+    artist_id: i64,
+) -> Result<String> {
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(artist_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Artist {artist_id} not found")))?;
+
+    let music_description = artist.music_description.as_deref().ok_or_else(|| {
+        AppError::Validation("Artist has no music description to generate caption from".to_string())
+    })?;
+
+    // Fetch the most recent assigned show for context
+    let show: models::Show = sqlx::query_as(
+        r#"
+        SELECT s.* FROM shows s
+        INNER JOIN artist_show_assignments asa ON s.id = asa.show_id
+        WHERE asa.artist_id = ?
+        ORDER BY s.date DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(artist_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| {
+        AppError::Validation(
+            "Artist is not assigned to any show. Assign to a show first.".to_string(),
+        )
+    })?;
+
+    // Generate (or reuse) the AI artist bio
+    let ai_bio = if let Some(ref bio) = artist.ai_bio {
+        bio.clone()
+    } else {
+        let bio = generate_artist_bio(
+            &state.config,
+            &artist.name,
+            &artist.pronouns,
+            music_description,
+            artist.mentions.as_deref(),
+        )
+        .await?;
+        sqlx::query("UPDATE artists SET ai_bio = ? WHERE id = ?")
+            .bind(&bio)
+            .bind(artist_id)
+            .execute(&state.db)
+            .await?;
+        bio
+    };
+
+    // Generate the show-context paragraph
+    let show_bio = generate_artist_instagram_caption(
+        &state.config,
+        &artist.name,
+        &artist.pronouns,
+        music_description,
+        &show.title,
+        &artist.track1_name,
+        &artist.track2_name,
+    )
+    .await?;
+
+    // Assemble the full caption
+    let mut caption = format!("UNHEARD Guest: {}\n\n{}", artist.name, show_bio);
+    caption.push_str(&format!("\n\n{}", ai_bio));
+    caption.push_str(&format!(
+        "\n\nTrack 1: \"{}\"\nTrack 2: \"{}\"",
+        artist.track1_name, artist.track2_name
+    ));
+
+    if let Some(ref sc) = artist.soundcloud {
+        if !sc.is_empty() {
+            caption.push_str("\n\nSoundcloud link in Bio.");
+        }
+    }
+
+    if let Some(ref ig) = artist.instagram {
+        if !ig.is_empty() {
+            let handle = ig.trim_end_matches('/').rsplit('/').next().unwrap_or(ig);
+            let handle = handle.trim_start_matches('@');
+            caption.push_str(&format!("\n\n@{}", handle));
+        }
+    }
+
+    // Store the generated caption
+    sqlx::query(
+        "UPDATE artists SET instagram_caption = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&caption)
+    .bind(artist_id)
+    .execute(&state.db)
+    .await?;
+
+    tracing::info!(
+        "Generated Instagram caption for artist {} ({} chars)",
+        artist.name,
+        caption.len()
+    );
+
     Ok(caption)
 }

@@ -762,6 +762,10 @@ pub async fn submit_finalize(
     });
 
     // Return success immediately - user doesn't wait for conversions
+
+    // Notify admin via Telegram (fire-and-forget)
+    crate::telegram_notify::notify_artist_submission(&state, artist_id, &artist_name);
+
     Ok(Json(FinalizeResponse {
         success: true,
         message: "Thank you for your submission! We'll be in touch soon.".to_string(),
