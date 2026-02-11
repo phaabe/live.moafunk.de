@@ -123,6 +123,8 @@ jobs:
             57ca8c3f-ada3-4902-88d2-b3e80090c176 > FACEBOOK_APP_ID
             5e2f46de-e289-41d5-85fd-b3e800909ec5 > FACEBOOK_APP_SECRET
             782620cd-7d54-4cef-95b5-b3eb01660ff9 > OPENAI_API_KEY
+            2470e0a8-7e96-4113-9931-b3ed0180cf59 > TELEGRAM_BOT_TOKEN
+            3d3c982b-6933-4c23-bb11-b3ee000687d6 > TELEGRAM_ADMIN_CHAT_ID
 
       - name: Generate production .env file
         run: |
@@ -167,6 +169,11 @@ jobs:
             echo ""
             echo "# OpenAI"
             echo "OPENAI_API_KEY=${{ steps.bitwarden-secrets.outputs.OPENAI_API_KEY }}"
+            echo ""
+            echo "# Telegram bot"
+            echo "TELEGRAM_BOT_TOKEN=${{ steps.bitwarden-secrets.outputs.TELEGRAM_BOT_TOKEN }}"
+            echo "TELEGRAM_ADMIN_CHAT_ID=${{ steps.bitwarden-secrets.outputs.TELEGRAM_ADMIN_CHAT_ID }}"
+            echo "TELEGRAM_INSTAGRAM_ACCOUNT=prod"
             echo ""
             echo "# Backup settings"
             echo "BACKUP_BUCKET=unheard-backups"
