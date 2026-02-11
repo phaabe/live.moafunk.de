@@ -61,6 +61,25 @@ Optional environment variables (ZIP artist image stamping):
 	- Path to a `.ttf` font file used to render the artist name.
 	- If unset, the server tries a few common system font paths.
 
+Optional environment variables (Telegram bot):
+- `TELEGRAM_BOT_TOKEN` — BotFather token. If unset, the bot is disabled entirely.
+- `TELEGRAM_ADMIN_CHAT_ID` — Numeric chat ID that is allowed to issue commands and receives notifications. Use a negative value for group chats.
+- `TELEGRAM_INSTAGRAM_ACCOUNT` — `dev` or `prod` (default: `prod`). Controls which Instagram account is used by `/post_instagram`.
+
+#### How to get the Telegram tokens
+
+1. **Bot token** — Open Telegram, search for [@BotFather](https://t.me/BotFather), send `/newbot`, follow the prompts to pick a name and username. BotFather replies with a token like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`. That is your `TELEGRAM_BOT_TOKEN`.
+
+2. **Admin chat ID** (DM) — Send a `/start` message to your new bot, then open:
+   ```
+   https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
+   ```
+   Look for `"chat":{"id": 123456789, ...}` — that number is your `TELEGRAM_ADMIN_CHAT_ID`.
+
+3. **Admin chat ID** (group) — Add the bot to your group, send a `/start` message in the group, then check `getUpdates` the same way. Group chat IDs are negative (e.g. `-1001234567890`). Make sure to **disable privacy mode** via BotFather (`/mybots` → Bot Settings → Group Privacy → Turn off) so the bot can see commands in the group.
+
+4. **Instagram account** — No token needed. `TELEGRAM_INSTAGRAM_ACCOUNT` is just a label (`dev` or `prod`) that tells the backend which configured Instagram account to post to. Defaults to `prod` if unset.
+
 ### 4. Local Development
 
 ```bash
@@ -146,6 +165,36 @@ sudo certbot --nginx -d admin.live.moafunk.de
 sudo systemctl reload nginx
 ```
 
+## Telegram Bot
+
+The backend optionally runs a Telegram bot (via [teloxide](https://docs.rs/teloxide)) alongside the HTTP server. It is fully disabled when `TELEGRAM_BOT_TOKEN` is not set.
+
+The bot uses long-polling and restricts all commands to the single `TELEGRAM_ADMIN_CHAT_ID`.
+
+### Push Notifications
+
+The bot sends fire-and-forget messages when:
+- 🎤 A new artist is submitted (via the public form)
+- 📡 A stream starts or stops
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | List all commands |
+| `/artists` | List unassigned artists with readiness indicators |
+| `/shows` | List upcoming shows with artist counts |
+| `/artist <id>` | Detailed artist view (tracks, socials, bio/video/caption status) |
+| `/show <id>` | Show details with assigned artists |
+| `/generate_bio <id>` | Generate AI bio + Instagram caption for an artist |
+| `/generate_videos <id>` | Generate track preview videos for an artist |
+| `/preview_instagram <id>` | Preview caption text + profile image in chat |
+| `/edit_caption <id> <text>` | Update an artist's Instagram caption |
+| `/post_instagram <id>` | Publish artist post to Instagram |
+| `/post_show_instagram <id>` | Publish show cover to Instagram |
+| `/stream_status` | Check if stream is active and who is streaming |
+| `/stats` | Summary: total artists, unassigned, upcoming shows, stream |
+
 ## API Endpoints
 
 ### Public
@@ -183,6 +232,8 @@ backend/
 │   ├── models.rs         # Data models
 │   ├── storage.rs        # R2 helpers
 │   ├── auth.rs           # Authentication
+│   ├── telegram.rs       # Telegram bot commands & dispatcher
+│   ├── telegram_notify.rs # Fire-and-forget notifications
 │   ├── handlers/
 │   │   ├── mod.rs
 │   │   ├── submit.rs     # Form submission
