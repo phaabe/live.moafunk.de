@@ -12,6 +12,8 @@ mod pdf;
 mod recording;
 mod storage;
 mod stream_bridge;
+mod telegram;
+mod telegram_notify;
 mod video;
 
 use axum::{
@@ -50,6 +52,8 @@ pub struct AppState {
     pub cover_debounce: CoverDebounceMap,
     /// Cached default cover image (4 black tiles with UN/HEARD branding)
     pub default_cover: tokio::sync::OnceCell<Vec<u8>>,
+    /// Telegram bot instance (None if TELEGRAM_BOT_TOKEN not set)
+    pub telegram_bot: Option<teloxide::Bot>,
 }
 
 // Stream handler wrappers that extract stream_state from AppState
@@ -205,6 +209,12 @@ async fn main() -> anyhow::Result<()> {
     // Initialize cover regeneration debounce tracker
     let cover_debounce = Arc::new(RwLock::new(HashMap::new()));
 
+    // Initialize Telegram bot (if configured)
+    let telegram_bot = config.telegram_bot_token.as_ref().map(|token| {
+        tracing::info!("Telegram bot configured");
+        teloxide::Bot::new(token)
+    });
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
@@ -213,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
         recording_manager,
         cover_debounce,
         default_cover: tokio::sync::OnceCell::new(),
+        telegram_bot,
     });
 
     // Pre-generate and upload default cover to S3 at startup
@@ -462,6 +473,9 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = format!("{}:{}", config.host, config.port);
     tracing::info!("Starting server on {}", addr);
+
+    // Spawn Telegram bot (long-polling, runs alongside HTTP server)
+    tokio::spawn(telegram::run(state.clone()));
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;

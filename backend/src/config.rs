@@ -71,6 +71,12 @@ pub struct Config {
 
     // OpenAI API settings (optional - for AI-generated artist bios)
     pub openai_api_key: Option<String>,
+
+    // Telegram Bot settings (optional - for admin notifications and control)
+    pub telegram_bot_token: Option<String>,
+    pub telegram_admin_chat_id: Option<i64>,
+    pub telegram_topic_id: Option<i32>,
+    pub telegram_instagram_account: Option<String>,
 }
 
 fn default_host() -> String {
@@ -159,5 +165,9 @@ impl Config {
 
     pub fn rtmp_destination(&self) -> String {
         format!("{}/{}", self.rtmp_url, self.rtmp_stream_key)
+    }
+
+    pub fn telegram_instagram_account(&self) -> &str {
+        self.telegram_instagram_account.as_deref().unwrap_or("prod")
     }
 }

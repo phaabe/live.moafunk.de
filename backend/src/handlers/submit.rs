@@ -528,6 +528,9 @@ pub async fn submit_form(
     // Trigger backup workflow (fire-and-forget)
     super::backup_trigger::trigger_backup_on_submission(&state.config, artist_id);
 
+    // Notify admin via Telegram (fire-and-forget)
+    crate::telegram_notify::notify_artist_submission(&state, artist_id, &artist_name);
+
     Ok(Json(SubmitResponse {
         success: true,
         message: "Thank you for your submission! We'll be in touch soon.".to_string(),
