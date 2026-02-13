@@ -525,6 +525,19 @@ pub async fn submit_form(
         }
     });
 
+    // Generate AI artist bio in the background (fire-and-forget)
+    let ai_state = state.clone();
+    tokio::spawn(async move {
+        match crate::ai::generate_and_store_artist_bio(&ai_state, artist_id).await {
+            Ok(bio) => tracing::info!(
+                artist_id,
+                len = bio.len(),
+                "AI bio auto-generated on submission"
+            ),
+            Err(e) => tracing::error!(artist_id, "Background AI bio generation failed: {e:#}"),
+        }
+    });
+
     // Trigger backup workflow (fire-and-forget)
     super::backup_trigger::trigger_backup_on_submission(&state.config, artist_id);
 

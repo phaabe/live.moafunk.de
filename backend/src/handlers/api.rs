@@ -636,6 +636,25 @@ pub async fn api_update_artist_details(
     .execute(&state.db)
     .await?;
 
+    // Auto-generate AI bio when music_description is provided
+    if req
+        .music_description
+        .as_ref()
+        .is_some_and(|d| !d.is_empty())
+    {
+        let ai_state = state.clone();
+        tokio::spawn(async move {
+            match crate::ai::generate_and_store_artist_bio(&ai_state, id).await {
+                Ok(bio) => tracing::info!(
+                    id,
+                    len = bio.len(),
+                    "AI bio auto-generated on details update"
+                ),
+                Err(e) => tracing::error!(id, "Background AI bio generation failed: {e:#}"),
+            }
+        });
+    }
+
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
