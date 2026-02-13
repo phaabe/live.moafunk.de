@@ -1,15 +1,25 @@
 //! GitHub Actions backup trigger
 //!
-//! Triggers a `repository_dispatch` event to run backup workflow after artist submission.
-//! This is fire-and-forget - submission success is not dependent on backup trigger success.
+//! Triggers a `repository_dispatch` event to run backup workflow after artist changes.
+//! This is fire-and-forget - the originating operation is not dependent on backup trigger success.
 
 use crate::config::Config;
 
-/// Trigger a GitHub Actions backup workflow via repository_dispatch
+/// Trigger a GitHub Actions backup workflow after an artist submission.
+///
+/// Convenience wrapper around [`trigger_backup`] with trigger `"artist-submission"`.
+pub fn trigger_backup_on_submission(config: &Config, artist_id: i64) {
+    trigger_backup(config, artist_id, "artist-submission");
+}
+
+/// Trigger a GitHub Actions backup workflow via repository_dispatch.
 ///
 /// This is non-blocking and failure-tolerant - we don't want backup trigger failures
-/// to affect the user's submission experience.
-pub fn trigger_backup_on_submission(config: &Config, artist_id: i64) {
+/// to affect the user experience.
+///
+/// `trigger` is a short label describing what caused the backup (e.g.
+/// `"artist-submission"`, `"profile-picture-update"`, `"profile-audio-update"`).
+pub fn trigger_backup(config: &Config, artist_id: i64, trigger: &str) {
     // Only trigger if GitHub dispatch token is configured
     let Some(token) = &config.github_dispatch_token else {
         tracing::debug!("GitHub dispatch token not configured, skipping backup trigger");
@@ -20,15 +30,17 @@ pub fn trigger_backup_on_submission(config: &Config, artist_id: i64) {
     let url = format!("https://api.github.com/repos/{}/dispatches", repo);
 
     tracing::info!(
-        "Triggering backup workflow for artist_id={} via {}",
+        "Triggering backup workflow for artist_id={} (trigger={}) via {}",
         artist_id,
+        trigger,
         url
     );
 
     // Spawn a detached task so we don't block the response
     let token = token.clone();
+    let trigger = trigger.to_owned();
     tokio::spawn(async move {
-        match send_dispatch_event(&url, &token, artist_id).await {
+        match send_dispatch_event(&url, &token, artist_id, &trigger).await {
             Ok(()) => {
                 tracing::info!(
                     "Successfully triggered backup workflow for artist_id={}",
@@ -46,14 +58,19 @@ pub fn trigger_backup_on_submission(config: &Config, artist_id: i64) {
     });
 }
 
-async fn send_dispatch_event(url: &str, token: &str, artist_id: i64) -> Result<(), String> {
+async fn send_dispatch_event(
+    url: &str,
+    token: &str,
+    artist_id: i64,
+    trigger: &str,
+) -> Result<(), String> {
     let client = reqwest::Client::new();
 
     let payload = serde_json::json!({
         "event_type": "backup-on-submission",
         "client_payload": {
             "artist_id": artist_id,
-            "trigger": "artist-submission"
+            "trigger": trigger
         }
     });
 
