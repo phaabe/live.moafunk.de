@@ -77,6 +77,10 @@ pub struct Config {
     pub telegram_admin_chat_id: Option<i64>,
     pub telegram_topic_id: Option<i32>,
     pub telegram_instagram_account: Option<String>,
+
+    // Admin panel base URL (used in Telegram notifications to link to artist profiles)
+    #[serde(default = "default_admin_base_url")]
+    pub admin_base_url: String,
 }
 
 fn default_host() -> String {
@@ -125,6 +129,10 @@ fn default_ffmpeg_sample_rate() -> u32 {
 
 fn default_github_repo() -> String {
     "phaabe/live.moafunk.de".to_string()
+}
+
+fn default_admin_base_url() -> String {
+    "https://admin.live.moafunk.de".to_string()
 }
 
 impl Config {
