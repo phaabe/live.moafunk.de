@@ -887,6 +887,9 @@ pub async fn api_update_artist_picture(
                 );
             }
         });
+
+        // Trigger backup workflow (fire-and-forget)
+        super::backup_trigger::trigger_backup(&state.config, id, "profile-picture-update");
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
@@ -1146,6 +1149,9 @@ pub async fn api_update_artist_audio(
                 }
             });
         }
+
+        // Trigger backup workflow (fire-and-forget)
+        super::backup_trigger::trigger_backup(&state.config, id, "profile-audio-update");
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
