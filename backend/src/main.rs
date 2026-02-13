@@ -211,7 +211,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize Telegram bot (if configured)
     let telegram_bot = config.telegram_bot_token.as_ref().map(|token| {
-        tracing::info!("Telegram bot configured");
+        tracing::info!(
+            chat_id = ?config.telegram_admin_chat_id,
+            topic_id = ?config.telegram_topic_id,
+            "Telegram bot configured"
+        );
         teloxide::Bot::new(token)
     });
 

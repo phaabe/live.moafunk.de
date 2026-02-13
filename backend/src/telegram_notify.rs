@@ -84,9 +84,9 @@ fn build_artist_caption(artist: &models::Artist, profile_url: &str) -> String {
 
     // Header: name + pronouns
     parts.push(format!(
-        "🎤 <b>{}</b> ({})",
+        "🎤 <b>New artist submitted: {} (ID: {})</b>",
         html_escape(&artist.name),
-        html_escape(&artist.pronouns)
+        artist.id
     ));
 
     // Track names
