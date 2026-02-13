@@ -735,6 +735,7 @@ pub async fn submit_finalize(
     let pic_key_clone = pic_key.clone();
     let pic_cropped_key_clone = pic_cropped_key.clone();
     let pic_overlay_key_clone = pic_overlay_key.clone();
+    let artist_name_clone = artist_name.clone();
 
     tokio::spawn(async move {
         if let Err(e) = finalize_artist_files_background(
@@ -758,13 +759,24 @@ pub async fn submit_finalize(
                 .bind(artist_id)
                 .execute(&state_clone.db)
                 .await;
+
+            // Still notify admin so they know a submission came in (simple fallback)
+            crate::telegram_notify::notify_artist_submission(
+                &state_clone,
+                artist_id,
+                &artist_name_clone,
+            );
+        } else {
+            // Notify admin via Telegram with rich preview (files are now final)
+            crate::telegram_notify::notify_artist_submission(
+                &state_clone,
+                artist_id,
+                &artist_name_clone,
+            );
         }
     });
 
     // Return success immediately - user doesn't wait for conversions
-
-    // Notify admin via Telegram (fire-and-forget)
-    crate::telegram_notify::notify_artist_submission(&state, artist_id, &artist_name);
 
     Ok(Json(FinalizeResponse {
         success: true,
@@ -993,8 +1005,14 @@ async fn finalize_artist_files_background(
             let ai_state = state.clone();
             tokio::spawn(async move {
                 match crate::ai::generate_and_store_artist_bio(&ai_state, artist_id).await {
-                    Ok(bio) => tracing::info!(artist_id, len = bio.len(), "AI bio auto-generated on submission"),
-                    Err(e) => tracing::error!(artist_id, "Background AI bio generation failed: {e:#}"),
+                    Ok(bio) => tracing::info!(
+                        artist_id,
+                        len = bio.len(),
+                        "AI bio auto-generated on submission"
+                    ),
+                    Err(e) => {
+                        tracing::error!(artist_id, "Background AI bio generation failed: {e:#}")
+                    }
                 }
             });
 
@@ -1006,6 +1024,8 @@ async fn finalize_artist_files_background(
                 artist_id,
                 session_id
             );
+
+            // NOTE: Telegram notification is sent by the caller after this returns Ok(())
 
             return Ok(());
         }
