@@ -5,7 +5,7 @@
 
 use crate::{ai, auth, models, storage, telegram_notify, video, AppError, AppState, Result};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
@@ -1253,6 +1253,10 @@ pub struct ShowDetailResponse {
     recording_peaks_url: Option<String>,
     recording_filename: Option<String>,
     instagram_posted_at: Option<String>,
+    soundcloud_track_id: Option<String>,
+    soundcloud_url: Option<String>,
+    soundcloud_uploaded_at: Option<String>,
+    soundcloud_public: Option<bool>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -1711,6 +1715,10 @@ pub async fn api_show_detail(
         recording_peaks_url,
         recording_filename: show.recording_filename,
         instagram_posted_at: show.instagram_posted_at,
+        soundcloud_track_id: show.soundcloud_track_id,
+        soundcloud_url: show.soundcloud_url,
+        soundcloud_uploaded_at: show.soundcloud_uploaded_at,
+        soundcloud_public: show.soundcloud_public,
     }))
 }
 
@@ -2364,6 +2372,41 @@ pub async fn api_upload_show_recording(
         .execute(&state.db)
         .await?;
 
+    // Auto-upload to SoundCloud in background (fire-and-forget)
+    if crate::soundcloud::has_token(&state).await {
+        let sc_state = state.clone();
+        let sc_show_id = id;
+        tokio::spawn(async move {
+            tracing::info!(
+                show_id = sc_show_id,
+                "Auto-uploading recording to SoundCloud"
+            );
+            match crate::soundcloud::upload_track(&sc_state, sc_show_id).await {
+                Ok(result) if result.success => {
+                    tracing::info!(
+                        show_id = sc_show_id,
+                        track_id = ?result.track_id,
+                        "SoundCloud auto-upload succeeded"
+                    );
+                }
+                Ok(result) => {
+                    tracing::warn!(
+                        show_id = sc_show_id,
+                        error = ?result.error,
+                        "SoundCloud auto-upload failed"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        show_id = sc_show_id,
+                        error = %e,
+                        "SoundCloud auto-upload error"
+                    );
+                }
+            }
+        });
+    }
+
     // Generate presigned URL for the uploaded file
     let recording_url = storage::get_presigned_url(&state, &key, 3600).await.ok();
 
@@ -2641,6 +2684,108 @@ pub async fn api_show_with_artists(
         status: show.status,
         artists,
     }))
+}
+
+// ============================================================================
+// SoundCloud Upload
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct SoundCloudPrivacyRequest {
+    public: bool,
+}
+
+/// GET /api/soundcloud/status
+/// Returns SoundCloud configuration and authorization status.
+pub async fn api_soundcloud_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+    let status = crate::soundcloud::get_status(&state).await;
+    Ok(Json(status))
+}
+
+/// GET /api/soundcloud/auth
+/// Redirects the admin to SoundCloud's OAuth authorization page.
+pub async fn api_soundcloud_auth(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+    let url = crate::soundcloud::get_auth_url(&state)?;
+    Ok(axum::response::Redirect::temporary(&url))
+}
+
+/// GET /api/soundcloud/callback?code=xxx
+/// OAuth callback — exchanges the code for an access token and stores it.
+#[derive(Debug, Deserialize)]
+pub struct SoundCloudCallbackQuery {
+    code: String,
+}
+
+pub async fn api_soundcloud_callback(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<SoundCloudCallbackQuery>,
+) -> impl IntoResponse {
+    match crate::soundcloud::exchange_code(&state, &query.code).await {
+        Ok(_) => axum::response::Html(
+            r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
+            <h2>✅ SoundCloud Connected</h2>
+            <p>You can close this tab and return to the admin panel.</p>
+            <script>setTimeout(()=>window.close(),3000)</script>
+            </body></html>"#
+                .to_string(),
+        ),
+        Err(e) => axum::response::Html(format!(
+            r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
+            <h2>❌ SoundCloud Authorization Failed</h2>
+            <p>{}</p>
+            </body></html>"#,
+            e
+        )),
+    }
+}
+
+/// POST /api/shows/:id/soundcloud/upload
+/// Manually trigger (or re-trigger) SoundCloud upload for a show's recording.
+pub async fn api_upload_to_soundcloud(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    if !crate::soundcloud::is_configured(&state) {
+        return Err(AppError::BadRequest(
+            "SoundCloud is not configured".to_string(),
+        ));
+    }
+
+    let result = crate::soundcloud::upload_track(&state, id).await?;
+
+    Ok(Json(result))
+}
+
+/// POST /api/shows/:id/soundcloud/privacy
+/// Toggle a SoundCloud track between public and private.
+pub async fn api_set_soundcloud_privacy(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<SoundCloudPrivacyRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    if !crate::soundcloud::is_configured(&state) {
+        return Err(AppError::BadRequest(
+            "SoundCloud is not configured".to_string(),
+        ));
+    }
+
+    let result = crate::soundcloud::set_track_privacy(&state, id, req.public).await?;
+
+    Ok(Json(result))
 }
 
 // ============================================================================

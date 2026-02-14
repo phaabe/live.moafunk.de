@@ -431,6 +431,40 @@ pub async fn finalize_recording_upload(
     // Generate presigned URL for the uploaded file
     let recording_url = storage::get_presigned_url(&state, &key, 3600).await.ok();
 
+    // Auto-upload to SoundCloud in background (fire-and-forget)
+    if crate::soundcloud::has_token(&state).await {
+        let sc_state = state.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                show_id = show_id,
+                "Auto-uploading chunked recording to SoundCloud"
+            );
+            match crate::soundcloud::upload_track(&sc_state, show_id).await {
+                Ok(result) if result.success => {
+                    tracing::info!(
+                        show_id = show_id,
+                        track_id = ?result.track_id,
+                        "SoundCloud auto-upload succeeded"
+                    );
+                }
+                Ok(result) => {
+                    tracing::warn!(
+                        show_id = show_id,
+                        error = ?result.error,
+                        "SoundCloud auto-upload failed"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        show_id = show_id,
+                        error = %e,
+                        "SoundCloud auto-upload error"
+                    );
+                }
+            }
+        });
+    }
+
     tracing::info!("Chunked recording upload: finalized, key={}", key);
 
     Ok(Json(FinalizeResponse {

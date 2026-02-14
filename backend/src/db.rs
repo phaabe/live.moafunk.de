@@ -119,6 +119,25 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Add ai_bio column for AI-generated show bio (combined from assigned artists' bios)
     add_column_if_missing(pool, "shows", "ai_bio", "TEXT").await?;
 
+    // SoundCloud integration columns
+    add_column_if_missing(pool, "shows", "soundcloud_track_id", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "soundcloud_url", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "soundcloud_uploaded_at", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "soundcloud_public", "INTEGER DEFAULT 0").await?;
+
+    // App settings table for storing OAuth tokens and other key-value config
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Normalize legacy datetime-local values (e.g. 2026-01-04T20:00) into YYYY-MM-DD.
     // We keep the column type as TEXT, but only store the date portion going forward.
     sqlx::query(

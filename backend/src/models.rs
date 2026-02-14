@@ -60,6 +60,10 @@ pub struct Show {
     pub recording_filename: Option<String>,
     pub instagram_posted_at: Option<String>,
     pub ai_bio: Option<String>,
+    pub soundcloud_track_id: Option<String>,
+    pub soundcloud_url: Option<String>,
+    pub soundcloud_uploaded_at: Option<String>,
+    pub soundcloud_public: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

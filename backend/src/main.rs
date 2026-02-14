@@ -10,6 +10,7 @@ mod instagram;
 mod models;
 mod pdf;
 mod recording;
+mod soundcloud;
 mod storage;
 mod stream_bridge;
 mod telegram;
@@ -401,6 +402,26 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/instagram",
             post(handlers::api::api_post_show_to_instagram),
+        )
+        .route(
+            "/api/shows/:id/soundcloud/upload",
+            post(handlers::api::api_upload_to_soundcloud),
+        )
+        .route(
+            "/api/shows/:id/soundcloud/privacy",
+            post(handlers::api::api_set_soundcloud_privacy),
+        )
+        .route(
+            "/api/soundcloud/status",
+            get(handlers::api::api_soundcloud_status),
+        )
+        .route(
+            "/api/soundcloud/auth",
+            get(handlers::api::api_soundcloud_auth),
+        )
+        .route(
+            "/api/soundcloud/callback",
+            get(handlers::api::api_soundcloud_callback),
         )
         .route("/api/users", get(handlers::api::api_users_list))
         .route("/api/users", post(handlers::api::api_create_user))
