@@ -52,6 +52,7 @@ teloxide = { version = "0.13", features = ["macros"] }
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 uuid = { version = "1", features = ["v4"] }
 dotenvy = "0.15"
 envy = "0.4"

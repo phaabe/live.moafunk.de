@@ -3,7 +3,7 @@ use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::{MessageId, ParseMode, ThreadId};
 
-use crate::{models, storage, AppState};
+use crate::{instagram, models, storage, AppState};
 
 /// HTML-escape user-provided text so it doesn't break Telegram's HTML parser.
 fn html_escape(s: &str) -> String {
@@ -57,6 +57,7 @@ async fn send_photo_raw(
     caption: &str,
     parse_mode: &str,
     thread_id: Option<i32>,
+    reply_markup: Option<&str>,
 ) -> Result<i64, String> {
     let photo_part = reqwest::multipart::Part::bytes(photo_bytes)
         .file_name(filename)
@@ -71,6 +72,10 @@ async fn send_photo_raw(
 
     if let Some(tid) = thread_id {
         form = form.text("message_thread_id", tid.to_string());
+    }
+
+    if let Some(markup) = reply_markup {
+        form = form.text("reply_markup", markup.to_owned());
     }
 
     let url = format!("https://api.telegram.org/bot{token}/sendPhoto");
@@ -345,6 +350,7 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
             &caption,
             "HTML",
             state.config.telegram_topic_id,
+            None,
         )
         .await
         {
@@ -627,6 +633,7 @@ async fn send_show_update_notification(
                             &caption,
                             "HTML",
                             state.config.telegram_topic_id,
+                            None,
                         )
                         .await
                         {
@@ -818,6 +825,38 @@ pub fn notify_soundcloud_upload(state: &Arc<AppState>, show_id: i64, title: &str
     });
 }
 
+/// Notify admin that a show was published to Instagram.
+///
+/// Includes the show title and a permalink to the Instagram post.
+/// Spawns a detached tokio task so the caller is never blocked.
+pub fn notify_instagram_published(
+    state: &Arc<AppState>,
+    show_id: i64,
+    title: &str,
+    permalink: Option<&str>,
+) {
+    let state = state.clone();
+    let title = title.to_owned();
+    let permalink = permalink.map(|s| s.to_owned());
+    tokio::spawn(async move {
+        let link_line = match permalink {
+            Some(ref url) => format!("\n\n<a href=\"{}\">View on Instagram</a>", html_escape(url)),
+            None => String::new(),
+        };
+        notify_html(
+            &state,
+            &format!(
+                "📸 Published to Instagram\n\n\
+                 <b>{}</b> (show #{}){}",
+                html_escape(&title),
+                show_id,
+                link_line,
+            ),
+        )
+        .await;
+    });
+}
+
 /// Notify admin that a live stream has started.
 ///
 /// Spawns a detached tokio task so the caller is never blocked.
@@ -838,4 +877,96 @@ pub fn notify_stream_stop(state: &Arc<AppState>, username: &str) {
     tokio::spawn(async move {
         notify(&state, &format!("📡 Stream ended ({user})")).await;
     });
+}
+
+/// Send an Instagram post preview for a show to the admin Telegram chat.
+///
+/// Sends the show cover image with the exact Instagram caption and inline
+/// keyboard buttons for publishing or editing. This is the approval step
+/// before posting to Instagram.
+///
+/// Returns `Ok(())` on success, or an error string on failure.
+pub async fn send_show_instagram_preview(
+    state: &Arc<AppState>,
+    show_id: i64,
+) -> Result<(), String> {
+    if state.telegram_bot.is_none() {
+        return Err("Telegram bot not configured".to_string());
+    }
+
+    let chat_id = state
+        .config
+        .telegram_admin_chat_id
+        .ok_or("Telegram admin chat ID not configured")?;
+
+    let token = state
+        .config
+        .telegram_bot_token
+        .as_deref()
+        .ok_or("Telegram bot token not configured")?;
+
+    // Fetch show from DB
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| format!("DB query failed: {e}"))?
+        .ok_or_else(|| format!("Show {show_id} not found"))?;
+
+    if show.cover_generated_at.is_none() {
+        return Err("Show has no cover image. Assign artists first.".to_string());
+    }
+
+    // Build the exact Instagram caption
+    let caption = instagram::build_show_caption(state, &show)
+        .await
+        .map_err(|e| format!("Failed to build caption: {e}"))?;
+
+    // Download cover image from R2
+    let cover_key = format!("shows/{}/cover.png", show.id);
+    let cover_url = storage::get_presigned_url(state, &cover_key, 3600)
+        .await
+        .map_err(|e| format!("Presigned URL failed: {e}"))?;
+    let photo_bytes = download_file_bytes(&cover_url).await?;
+
+    // Build inline keyboard: [Publish] [Edit]
+    let reply_markup = serde_json::json!({
+        "inline_keyboard": [[
+            {
+                "text": "📸 Publish to Instagram",
+                "callback_data": format!("ig_publish:{show_id}")
+            },
+            {
+                "text": "✏️ Edit",
+                "callback_data": format!("ig_edit:{show_id}")
+            }
+        ]]
+    });
+    let markup_json =
+        serde_json::to_string(&reply_markup).map_err(|e| format!("JSON serialize failed: {e}"))?;
+
+    // Send photo with caption and inline keyboard
+    let filename = format!("show_{}_cover.png", show.id);
+    send_photo_raw(
+        token,
+        chat_id,
+        photo_bytes,
+        filename,
+        &caption,
+        "", // no parse_mode — caption is plain text (Instagram format)
+        state.config.telegram_topic_id,
+        Some(&markup_json),
+    )
+    .await?;
+
+    // Update telegram_preview_sent_at
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("UPDATE shows SET telegram_preview_sent_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(show_id)
+        .execute(&state.db)
+        .await;
+
+    tracing::info!("Instagram preview sent to Telegram for show {show_id}");
+    Ok(())
 }

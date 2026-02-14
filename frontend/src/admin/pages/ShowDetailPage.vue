@@ -26,6 +26,9 @@ const deleting = ref(false);
 const deletingRecording = ref(false);
 const postingToInstagram = ref(false);
 const showInstagramConfirmModal = ref(false);
+const showInstagramModal = ref(false);
+const igAccount = ref<'dev' | 'prod'>('dev');
+const sendingTelegramPreview = ref(false);
 const uploadingToSoundCloud = ref(false);
 const togglingSoundCloudPrivacy = ref(false);
 const scStatus = ref<SoundCloudStatus | null>(null);
@@ -345,7 +348,11 @@ async function unassignArtist(artistId: number) {
   }
 }
 
-// Instagram posting
+// Instagram preview & posting
+function openInstagramPreview() {
+  showInstagramModal.value = true;
+}
+
 async function postToInstagram(force = false) {
   if (!show.value) return;
 
@@ -359,10 +366,11 @@ async function postToInstagram(force = false) {
   showInstagramConfirmModal.value = false;
 
   try {
-    const result = await showsApi.postToInstagram(show.value.id, force);
+    const result = await showsApi.postToInstagram(show.value.id, force, igAccount.value);
 
     if (result.success) {
       flash.success('Posted to Instagram successfully!');
+      showInstagramModal.value = false;
       // Reload show to get updated instagram_posted_at timestamp
       await loadShow();
     } else {
@@ -372,6 +380,24 @@ async function postToInstagram(force = false) {
     flash.error(e instanceof Error ? e.message : 'Failed to post to Instagram');
   } finally {
     postingToInstagram.value = false;
+  }
+}
+
+// Telegram preview
+async function sendTelegramPreview() {
+  if (!show.value) return;
+  sendingTelegramPreview.value = true;
+  try {
+    const result = await showsApi.sendTelegramPreview(show.value.id);
+    if (result.success) {
+      flash.success('Preview sent to Telegram!');
+    } else {
+      flash.error(result.error || 'Failed to send Telegram preview');
+    }
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to send Telegram preview');
+  } finally {
+    sendingTelegramPreview.value = false;
   }
 }
 
@@ -684,9 +710,12 @@ onUnmounted(() => {
           <div v-if="show.cover_url" class="show-cover-preview">
             <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
             <div class="cover-actions">
-              <BaseButton variant="primary" size="sm" :loading="postingToInstagram" @click="postToInstagram(false)">
-                <span v-if="show.instagram_posted_at">Posted to Instagram ✓</span>
-                <span v-else>Post to Instagram</span>
+              <BaseButton variant="primary" size="sm" @click="openInstagramPreview">
+                <span v-if="show.instagram_posted_at">📸 Posted to Instagram ✓</span>
+                <span v-else>📸 Instagram Preview</span>
+              </BaseButton>
+              <BaseButton variant="secondary" size="sm" :loading="sendingTelegramPreview" @click="sendTelegramPreview">
+                📱 Preview on Telegram
               </BaseButton>
             </div>
           </div>
@@ -932,6 +961,37 @@ onUnmounted(() => {
         <BaseButton variant="ghost" @click="showDeleteModal = false">Cancel</BaseButton>
         <BaseButton variant="danger" :loading="deleting" @click="deleteShow">
           Delete
+        </BaseButton>
+      </template>
+    </BaseModal>
+
+    <!-- Instagram Preview Modal -->
+    <BaseModal :open="showInstagramModal" title="📸 Instagram Preview" size="lg"
+      @close="showInstagramModal = false">
+      <div class="ig-preview-layout">
+        <div class="ig-preview-media">
+          <img v-if="show?.cover_url" :src="show.cover_url" alt="Show cover" class="ig-preview-img" />
+          <div v-else class="ig-preview-placeholder">No cover</div>
+        </div>
+        <div class="ig-preview-caption">
+          <div v-if="regeneratingBio" class="ig-preview-loading">Generating bio...</div>
+          <pre v-else-if="show?.ai_bio" class="ig-caption-text">{{ show.ai_bio }}</pre>
+          <p v-else class="text-muted">No AI bio generated yet</p>
+        </div>
+      </div>
+      <template #footer>
+        <BaseButton variant="ghost" :loading="regeneratingBio" @click="regenerateShowBio">
+          🔄 Regenerate
+        </BaseButton>
+        <div class="ig-account-selector">
+          <select v-model="igAccount" class="ig-account-select">
+            <option value="dev">🧪 moafunk_tester</option>
+            <option value="prod">📡 moafunk_radio</option>
+          </select>
+        </div>
+        <BaseButton variant="primary" :loading="postingToInstagram"
+          :disabled="!show?.ai_bio || !show?.cover_url" @click="postToInstagram()">
+          📤 Publish
         </BaseButton>
       </template>
     </BaseModal>
@@ -1716,6 +1776,93 @@ onUnmounted(() => {
   }
 
   .download-upload-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Instagram Preview Modal */
+.ig-preview-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  min-height: 300px;
+}
+
+.ig-preview-media {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+}
+
+.ig-preview-img {
+  width: 100%;
+  max-height: 400px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+
+.ig-preview-placeholder {
+  width: 100%;
+  height: 300px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-hover);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+}
+
+.ig-preview-caption {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  max-height: 400px;
+}
+
+.ig-preview-loading {
+  color: var(--color-text-muted);
+  font-style: italic;
+  padding: var(--spacing-md);
+}
+
+.ig-caption-text {
+  color: var(--color-text);
+  line-height: 1.6;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+  padding: var(--spacing-sm);
+  background: var(--color-surface-hover);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid #e1306c;
+}
+
+.ig-account-selector {
+  display: flex;
+  align-items: center;
+}
+
+.ig-account-select {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.ig-account-select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+@media (max-width: 768px) {
+  .ig-preview-layout {
     grid-template-columns: 1fr;
   }
 }

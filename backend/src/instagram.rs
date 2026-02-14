@@ -61,6 +61,7 @@ pub struct TokenRefreshResponse {
 pub struct InstagramPostResult {
     pub success: bool,
     pub media_id: Option<String>,
+    pub permalink: Option<String>,
     pub error: Option<String>,
 }
 
@@ -219,6 +220,42 @@ impl InstagramClient {
         Ok(status_resp
             .status_code
             .unwrap_or_else(|| "UNKNOWN".to_string()))
+    }
+
+    /// Fetch the permalink for a published media post.
+    ///
+    /// After publishing, the `media_id` returned by the API can be used
+    /// to look up the direct post URL via `GET /{media_id}?fields=permalink`.
+    async fn fetch_permalink(&self, media_id: &str) -> Option<String> {
+        let url = format!(
+            "{}/{}/{}?fields=permalink&access_token={}",
+            GRAPH_API_BASE, GRAPH_API_VERSION, media_id, self.access_token
+        );
+
+        #[derive(Deserialize)]
+        struct PermalinkResponse {
+            permalink: Option<String>,
+        }
+
+        match self.http.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<PermalinkResponse>().await {
+                    Ok(pr) => pr.permalink,
+                    Err(e) => {
+                        tracing::warn!("Failed to parse permalink response: {e}");
+                        None
+                    }
+                }
+            }
+            Ok(resp) => {
+                tracing::warn!("Permalink fetch returned {}", resp.status());
+                None
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch permalink: {e}");
+                None
+            }
+        }
     }
 
     /// Publish a media container to Instagram feed
@@ -518,6 +555,7 @@ impl InstagramClient {
                 return Ok(InstagramPostResult {
                     success: false,
                     media_id: None,
+                    permalink: None,
                     error: Some(format!("Failed to create image slide: {}", e)),
                 });
             }
@@ -532,6 +570,7 @@ impl InstagramClient {
                     return Ok(InstagramPostResult {
                         success: false,
                         media_id: None,
+                        permalink: None,
                         error: Some(format!("Failed to create video slide {}: {}", i + 1, e)),
                     });
                 }
@@ -558,6 +597,7 @@ impl InstagramClient {
             return Ok(InstagramPostResult {
                 success: false,
                 media_id: None,
+                permalink: None,
                 error: Some(format!("Image slide processing failed: {}", e)),
             });
         }
@@ -576,6 +616,7 @@ impl InstagramClient {
                 return Ok(InstagramPostResult {
                     success: false,
                     media_id: None,
+                    permalink: None,
                     error: Some(format!("Video slide {} processing failed: {}", i + 1, e)),
                 });
             }
@@ -591,6 +632,7 @@ impl InstagramClient {
                 return Ok(InstagramPostResult {
                     success: false,
                     media_id: None,
+                    permalink: None,
                     error: Some(format!("Failed to create carousel: {}", e)),
                 });
             }
@@ -609,28 +651,61 @@ impl InstagramClient {
             return Ok(InstagramPostResult {
                 success: false,
                 media_id: None,
+                permalink: None,
                 error: Some(format!("Carousel processing failed: {}", e)),
             });
         }
 
-        // Step 6: Publish
-        tracing::info!("Carousel {} ready, publishing...", carousel_id);
-        let media_id = match self.publish_container(&carousel_id).await {
-            Ok(id) => id,
-            Err(e) => {
-                return Ok(InstagramPostResult {
-                    success: false,
-                    media_id: None,
-                    error: Some(format!("Failed to publish carousel: {}", e)),
-                });
+        // Step 6: Publish (with retry for transient 9007 errors)
+        const MAX_CAROUSEL_PUBLISH_RETRIES: u32 = 3;
+        const CAROUSEL_PUBLISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let mut media_id = String::new();
+        for publish_attempt in 1..=MAX_CAROUSEL_PUBLISH_RETRIES {
+            tracing::info!(
+                "Carousel {} ready, publishing (attempt {}/{})...",
+                carousel_id,
+                publish_attempt,
+                MAX_CAROUSEL_PUBLISH_RETRIES
+            );
+            match self.publish_container(&carousel_id).await {
+                Ok(id) => {
+                    media_id = id;
+                    break;
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if publish_attempt < MAX_CAROUSEL_PUBLISH_RETRIES && err_str.contains("9007") {
+                        tracing::warn!(
+                            "Carousel publish attempt {} failed with 9007, retrying in {}s...",
+                            publish_attempt,
+                            CAROUSEL_PUBLISH_RETRY_DELAY.as_secs()
+                        );
+                        tokio::time::sleep(CAROUSEL_PUBLISH_RETRY_DELAY).await;
+                    } else {
+                        return Ok(InstagramPostResult {
+                            success: false,
+                            media_id: None,
+                            permalink: None,
+                            error: Some(format!("Failed to publish carousel: {}", err_str)),
+                        });
+                    }
+                }
             }
-        };
+        }
 
         tracing::info!("Successfully published carousel to Instagram: {}", media_id);
+
+        // Fetch the permalink for the published carousel
+        let permalink = self.fetch_permalink(&media_id).await;
+        if let Some(ref url) = permalink {
+            tracing::info!("Instagram carousel permalink: {}", url);
+        }
 
         Ok(InstagramPostResult {
             success: true,
             media_id: Some(media_id),
+            permalink,
             error: None,
         })
     }
@@ -656,6 +731,7 @@ impl InstagramClient {
                 return Ok(InstagramPostResult {
                     success: false,
                     media_id: None,
+                    permalink: None,
                     error: Some(e.to_string()),
                 });
             }
@@ -686,6 +762,7 @@ impl InstagramClient {
                     return Ok(InstagramPostResult {
                         success: false,
                         media_id: None,
+                        permalink: None,
                         error: Some(format!(
                             "Instagram container processing failed with status: {}",
                             status
@@ -697,6 +774,7 @@ impl InstagramClient {
                         return Ok(InstagramPostResult {
                             success: false,
                             media_id: None,
+                            permalink: None,
                             error: Some(
                                 "Instagram container processing timed out after 60s".to_string(),
                             ),
@@ -707,25 +785,59 @@ impl InstagramClient {
             }
         }
 
-        // Step 3: Publish container
-        tracing::info!("Container {} ready, publishing...", container_id);
-        let media_id = match self.publish_container(&container_id).await {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::error!("Failed to publish Instagram container: {}", e);
-                return Ok(InstagramPostResult {
-                    success: false,
-                    media_id: None,
-                    error: Some(e.to_string()),
-                });
+        // Step 3: Publish container (with retry for transient 9007 errors)
+        // Instagram sometimes reports FINISHED but the media isn't propagated
+        // to the publish endpoint yet, causing "Media ID is not available" (9007).
+        const MAX_PUBLISH_RETRIES: u32 = 3;
+        const PUBLISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let mut media_id = String::new();
+        for publish_attempt in 1..=MAX_PUBLISH_RETRIES {
+            tracing::info!(
+                "Container {} ready, publishing (attempt {}/{})...",
+                container_id,
+                publish_attempt,
+                MAX_PUBLISH_RETRIES
+            );
+            match self.publish_container(&container_id).await {
+                Ok(id) => {
+                    media_id = id;
+                    break;
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if publish_attempt < MAX_PUBLISH_RETRIES && err_str.contains("9007") {
+                        tracing::warn!(
+                            "Publish attempt {} failed with 9007, retrying in {}s...",
+                            publish_attempt,
+                            PUBLISH_RETRY_DELAY.as_secs()
+                        );
+                        tokio::time::sleep(PUBLISH_RETRY_DELAY).await;
+                    } else {
+                        tracing::error!("Failed to publish Instagram container: {}", e);
+                        return Ok(InstagramPostResult {
+                            success: false,
+                            media_id: None,
+                            permalink: None,
+                            error: Some(err_str),
+                        });
+                    }
+                }
             }
-        };
+        }
 
         tracing::info!("Successfully published to Instagram: {}", media_id);
+
+        // Fetch the permalink for the published post
+        let permalink = self.fetch_permalink(&media_id).await;
+        if let Some(ref url) = permalink {
+            tracing::info!("Instagram post permalink: {}", url);
+        }
 
         Ok(InstagramPostResult {
             success: true,
             media_id: Some(media_id),
+            permalink,
             error: None,
         })
     }
@@ -802,6 +914,7 @@ pub async fn post_show_to_instagram(
         return Ok(InstagramPostResult {
             success: false,
             media_id: None,
+            permalink: None,
             error: Some("Show has no cover image. Assign artists first.".to_string()),
         });
     }
@@ -810,16 +923,33 @@ pub async fn post_show_to_instagram(
     let cover_key = format!("shows/{}/cover.png", show.id);
     let cover_url = storage::get_presigned_url(state, &cover_key, 3600).await?;
 
-    // Build caption
-    let mut caption = format!("{} - {}", show.title, show.date);
-    if let Some(ref desc) = show.description {
-        if !desc.is_empty() {
+    // Build caption using the shared builder
+    let caption = build_show_caption(state, show).await?;
+
+    // Post to Instagram
+    client.post_image(&cover_url, &caption).await
+}
+
+/// Build the Instagram caption for a show.
+///
+/// Format: `{title}\n\n{ai_bio}\n\n💛\n\n@handle1\n@handle2`
+///
+/// This is the single source of truth for show caption formatting,
+/// used by both `post_show_to_instagram` and the Telegram preview.
+pub async fn build_show_caption(
+    state: &Arc<AppState>,
+    show: &crate::models::Show,
+) -> Result<String> {
+    let mut caption = show.title.clone();
+
+    if let Some(ref bio) = show.ai_bio {
+        if !bio.is_empty() {
             caption.push_str("\n\n");
-            caption.push_str(desc);
+            caption.push_str(bio);
         }
     }
 
-    // Fetch assigned artists and append their Instagram profiles
+    // Fetch assigned artists and append their Instagram handles
     let artists: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT a.name, a.instagram FROM artists a \
          INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
@@ -831,24 +961,19 @@ pub async fn post_show_to_instagram(
     .await?;
 
     if !artists.is_empty() {
-        caption.push_str("\n💛\n\n");
-        for (name, instagram) in &artists {
+        caption.push_str("\n\n💛\n\n");
+        for (_name, instagram) in &artists {
             if let Some(ig) = instagram {
                 if !ig.is_empty() {
                     // Extract @handle from URL like https://instagram.com/handle
                     let handle = ig.trim_end_matches('/').rsplit('/').next().unwrap_or(ig);
                     caption.push_str(&format!("@{}\n", handle));
-                } else {
-                    caption.push_str(&format!("{}\n", name));
                 }
-            } else {
-                caption.push_str(&format!("{}\n", name));
             }
         }
     }
 
-    // Post to Instagram
-    client.post_image(&cover_url, &caption).await
+    Ok(caption)
 }
 
 /// Post an artist's image to Instagram with their generated caption

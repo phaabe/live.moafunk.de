@@ -489,6 +489,9 @@ export const showsApi = {
       already_posted: boolean;
     }>(`/api/shows/${showId}/instagram`, { force, account }),
 
+  sendTelegramPreview: (showId: number) =>
+    api.post<{ success: boolean; error?: string }>(`/api/shows/${showId}/telegram-preview`),
+
   uploadToSoundCloud: (showId: number) =>
     api.post<{
       success: boolean;

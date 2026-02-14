@@ -46,6 +46,9 @@ pub type CoverDebounceMap = Arc<RwLock<HashMap<i64, tokio::time::Instant>>>;
 pub type PendingShowNotifications =
     Arc<tokio::sync::Mutex<HashMap<i64, tokio::task::JoinHandle<()>>>>;
 
+/// Active Telegram edit sessions keyed by chat_id (only one edit at a time per chat)
+pub type TelegramEditSessions = Arc<tokio::sync::Mutex<HashMap<i64, models::TelegramEditSession>>>;
+
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub config: Config,
@@ -61,6 +64,8 @@ pub struct AppState {
     pub telegram_bot: Option<teloxide::Bot>,
     /// Pending show update notifications (debounced to avoid spam)
     pub pending_show_notifications: PendingShowNotifications,
+    /// Active Telegram edit sessions (chat_id -> session)
+    pub telegram_edit_sessions: TelegramEditSessions,
 }
 
 // Stream handler wrappers that extract stream_state from AppState
@@ -229,6 +234,10 @@ async fn main() -> anyhow::Result<()> {
     // Initialize pending show notifications tracker (for debouncing)
     let pending_show_notifications = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
+    // Initialize Telegram edit sessions tracker
+    let telegram_edit_sessions: TelegramEditSessions =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
@@ -239,6 +248,7 @@ async fn main() -> anyhow::Result<()> {
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot,
         pending_show_notifications,
+        telegram_edit_sessions,
     });
 
     // Pre-generate and upload default cover to S3 at startup
@@ -404,6 +414,10 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::api::api_post_show_to_instagram),
         )
         .route(
+            "/api/shows/:id/telegram-preview",
+            post(handlers::api::api_send_telegram_preview),
+        )
+        .route(
             "/api/shows/:id/soundcloud/upload",
             post(handlers::api::api_upload_to_soundcloud),
         )
@@ -515,6 +529,67 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn Telegram bot (long-polling, runs alongside HTTP server)
     tokio::spawn(telegram::run(state.clone()));
+
+    // Spawn scheduled show preview task (sends Telegram preview at 19:00 Berlin time)
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            use chrono::Timelike;
+
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+
+                // Only run if Telegram is configured
+                if state.telegram_bot.is_none() {
+                    continue;
+                }
+
+                let berlin_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Berlin);
+
+                // Trigger at 19:00 Berlin time
+                if berlin_now.hour() != 19 || berlin_now.minute() != 0 {
+                    continue;
+                }
+
+                let today = berlin_now.format("%Y-%m-%d").to_string();
+                tracing::info!("Show preview scheduler: checking for shows on {today}");
+
+                // Find shows today with covers that haven't been previewed today
+                let shows: Vec<crate::models::Show> = match sqlx::query_as(
+                    "SELECT * FROM shows WHERE date = ? AND cover_generated_at IS NOT NULL \
+                     AND (telegram_preview_sent_at IS NULL OR telegram_preview_sent_at < ?)",
+                )
+                .bind(&today)
+                .bind(&format!("{today}T00:00:00"))
+                .fetch_all(&state.db)
+                .await
+                {
+                    Ok(shows) => shows,
+                    Err(e) => {
+                        tracing::error!("Show preview scheduler DB query failed: {e}");
+                        continue;
+                    }
+                };
+
+                for show in &shows {
+                    tracing::info!(
+                        "Sending scheduled Telegram preview for show {} ('{}')",
+                        show.id,
+                        show.title
+                    );
+                    if let Err(e) =
+                        crate::telegram_notify::send_show_instagram_preview(&state, show.id).await
+                    {
+                        tracing::warn!(
+                            "Scheduled Telegram preview failed for show {}: {e}",
+                            show.id
+                        );
+                    }
+                }
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;

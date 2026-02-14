@@ -116,8 +116,14 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Add instagram_posted_at column to track when show was posted to Instagram
     add_column_if_missing(pool, "shows", "instagram_posted_at", "TEXT").await?;
 
+    // Store the permalink URL of the published Instagram post
+    add_column_if_missing(pool, "shows", "instagram_post_url", "TEXT").await?;
+
     // Add ai_bio column for AI-generated show bio (combined from assigned artists' bios)
     add_column_if_missing(pool, "shows", "ai_bio", "TEXT").await?;
+
+    // Telegram preview tracking
+    add_column_if_missing(pool, "shows", "telegram_preview_sent_at", "TEXT").await?;
 
     // SoundCloud integration columns
     add_column_if_missing(pool, "shows", "soundcloud_track_id", "TEXT").await?;
