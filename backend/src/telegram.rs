@@ -6,12 +6,12 @@
 //! The bot runs as a long-polling task alongside the HTTP server.
 //! It is disabled (no-op) when `TELEGRAM_BOT_TOKEN` is not set.
 
-use crate::{ai, instagram, models, storage, video, AppError, AppState};
+use crate::{ai, instagram, models, storage, telegram_notify, video, AppError, AppState};
 use std::sync::Arc;
 use teloxide::{
     dispatching::Dispatcher,
     prelude::*,
-    types::{InputFile, MessageId, ThreadId},
+    types::{CallbackQuery, InputFile, MaybeInaccessibleMessage, MessageId, ThreadId},
     utils::command::BotCommands,
 };
 
@@ -51,6 +51,8 @@ pub enum Command {
     PostInstagram(i64),
     #[command(description = "<show_id> — publish show cover to Instagram")]
     PostShowInstagram(i64),
+    #[command(description = "<show_id> — preview show IG post on Telegram")]
+    PreviewShowInstagram(i64),
     #[command(description = "is the stream live?")]
     StreamStatus,
     #[command(description = "artists, shows & stream summary")]
@@ -72,15 +74,19 @@ pub async fn run(state: Arc<AppState>) {
 
     tracing::info!("Starting Telegram bot (long-polling)");
 
-    let handler = Update::filter_message()
-        .branch(dptree::entry().filter_command::<Command>().endpoint(answer))
+    let handler = dptree::entry()
+        .branch(Update::filter_callback_query().endpoint(handle_callback_query))
         .branch(
-            // Catch-all: silently ignore non-command messages (no "Unhandled update" warnings)
-            dptree::entry().endpoint(
-                |_bot: Bot, _msg: Message, _state: Arc<AppState>| async move {
-                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                },
-            ),
+            Update::filter_message()
+                .branch(dptree::entry().filter_command::<Command>().endpoint(answer))
+                .branch(
+                    // Catch-all: silently ignore non-command messages (no "Unhandled update" warnings)
+                    dptree::entry().endpoint(
+                        |_bot: Bot, _msg: Message, _state: Arc<AppState>| async move {
+                            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                        },
+                    ),
+                ),
         );
 
     Dispatcher::builder(bot, handler)
@@ -196,6 +202,23 @@ async fn handle_command(
                 &cmd_post_show_instagram(state, id).await?,
             )
             .await?;
+        }
+        Command::PreviewShowInstagram(id) => {
+            send_msg(bot, chat_id, thread_id, "📱 Sending show preview…").await?;
+            match telegram_notify::send_show_instagram_preview(state, id).await {
+                Ok(()) => {
+                    send_msg(
+                        bot,
+                        chat_id,
+                        thread_id,
+                        "✅ Preview sent with publish/edit buttons.",
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    send_msg(bot, chat_id, thread_id, &format!("❌ Preview failed: {e}")).await?;
+                }
+            }
         }
         Command::StreamStatus => {
             send_text(bot, chat_id, thread_id, &cmd_stream_status(state).await?).await?;
@@ -700,4 +723,92 @@ async fn cmd_stats(state: &Arc<AppState>) -> crate::Result<String> {
          {stream_text}",
         total.0, unassigned.0, upcoming.0
     ))
+}
+
+// ============================================================================
+// Callback query handler (inline keyboard buttons)
+// ============================================================================
+
+/// Handle inline keyboard button presses (callback queries).
+///
+/// Dispatches based on callback_data prefix:
+/// - `ig_publish:{show_id}` — publish show to Instagram
+/// - `ig_edit:{show_id}` — edit mode (placeholder)
+async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: Arc<AppState>) -> HandlerResult {
+    let data = match q.data.as_deref() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+
+    // Auth: only respond to callbacks from the admin chat
+    if let Some(admin_id) = state.config.telegram_admin_chat_id {
+        if let Some(ref msg) = q.message {
+            if msg.chat().id.0 != admin_id {
+                bot.answer_callback_query(&q.id)
+                    .text("⛔ Unauthorized")
+                    .await?;
+                return Ok(());
+            }
+        }
+    }
+
+    if let Some(id_str) = data.strip_prefix("ig_publish:") {
+        let show_id: i64 = match id_str.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                bot.answer_callback_query(&q.id)
+                    .text("❌ Invalid show ID")
+                    .await?;
+                return Ok(());
+            }
+        };
+
+        // Acknowledge the button press
+        bot.answer_callback_query(&q.id)
+            .text("📸 Publishing to Instagram…")
+            .await?;
+
+        // Fetch show and publish
+        let result = cmd_post_show_instagram(&state, show_id).await;
+
+        // Update the message caption to show the result
+        if let Some(MaybeInaccessibleMessage::Regular(msg)) = q.message {
+            let status_text = match &result {
+                Ok(text) => text.clone(),
+                Err(e) => format!("❌ Error: {e}"),
+            };
+
+            // Remove inline keyboard
+            let _ = bot.edit_message_reply_markup(msg.chat.id, msg.id).await;
+
+            // Append status to caption
+            if let Some(current_caption) = msg.caption() {
+                let new_caption = format!("{current_caption}\n\n{status_text}");
+                let _ = bot
+                    .edit_message_caption(msg.chat.id, msg.id)
+                    .caption(new_caption)
+                    .await;
+            }
+        }
+    } else if let Some(id_str) = data.strip_prefix("ig_edit:") {
+        let _show_id: i64 = match id_str.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                bot.answer_callback_query(&q.id)
+                    .text("❌ Invalid show ID")
+                    .await?;
+                return Ok(());
+            }
+        };
+
+        bot.answer_callback_query(&q.id)
+            .text("✏️ Edit mode coming soon")
+            .await?;
+    } else {
+        bot.answer_callback_query(&q.id)
+            .text("Unknown action")
+            .await?;
+    }
+
+    Ok(())
 }

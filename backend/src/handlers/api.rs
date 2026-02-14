@@ -2579,6 +2579,41 @@ pub async fn api_post_show_to_instagram(
 }
 
 // ============================================================================
+// Telegram Preview
+// ============================================================================
+
+/// Send an Instagram post preview to Telegram with inline Publish/Edit buttons.
+pub async fn api_send_telegram_preview(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Validate show exists and has a cover
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    if show.cover_generated_at.is_none() {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Show has no cover image. Assign artists first."
+        })));
+    }
+
+    match crate::telegram_notify::send_show_instagram_preview(&state, id).await {
+        Ok(()) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) => Ok(Json(serde_json::json!({
+            "success": false,
+            "error": e
+        }))),
+    }
+}
+
+// ============================================================================
 // Show with Artists for Recording Page
 // ============================================================================
 

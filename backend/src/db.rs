@@ -119,6 +119,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Add ai_bio column for AI-generated show bio (combined from assigned artists' bios)
     add_column_if_missing(pool, "shows", "ai_bio", "TEXT").await?;
 
+    // Telegram preview tracking
+    add_column_if_missing(pool, "shows", "telegram_preview_sent_at", "TEXT").await?;
+
     // SoundCloud integration columns
     add_column_if_missing(pool, "shows", "soundcloud_track_id", "TEXT").await?;
     add_column_if_missing(pool, "shows", "soundcloud_url", "TEXT").await?;

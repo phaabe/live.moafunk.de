@@ -64,6 +64,7 @@ pub struct Show {
     pub soundcloud_url: Option<String>,
     pub soundcloud_uploaded_at: Option<String>,
     pub soundcloud_public: Option<bool>,
+    pub telegram_preview_sent_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
