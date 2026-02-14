@@ -794,6 +794,30 @@ pub fn notify_artist_submission(state: &Arc<AppState>, artist_id: i64, artist_na
     });
 }
 
+/// Notify admin that a SoundCloud upload succeeded.
+///
+/// Includes the track title and a link to the SoundCloud URL.
+/// Spawns a detached tokio task so the caller is never blocked.
+pub fn notify_soundcloud_upload(state: &Arc<AppState>, show_id: i64, title: &str, track_url: &str) {
+    let state = state.clone();
+    let title = title.to_owned();
+    let track_url = track_url.to_owned();
+    tokio::spawn(async move {
+        notify_html(
+            &state,
+            &format!(
+                "☁️ SoundCloud upload complete\n\n\
+                 <b>{}</b> (show #{})\n\n\
+                 <a href=\"{}\">Open on SoundCloud</a>",
+                html_escape(&title),
+                show_id,
+                html_escape(&track_url),
+            ),
+        )
+        .await;
+    });
+}
+
 /// Notify admin that a live stream has started.
 ///
 /// Spawns a detached tokio task so the caller is never blocked.
