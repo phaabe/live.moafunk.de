@@ -3,7 +3,7 @@
 //! These endpoints mirror the functionality of the template-based handlers
 //! but return JSON responses for the Vue 3 admin panel.
 
-use crate::{ai, auth, models, storage, video, AppError, AppState, Result};
+use crate::{ai, auth, models, storage, telegram_notify, video, AppError, AppState, Result};
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
@@ -554,6 +554,13 @@ pub async fn api_assign_artist_to_show(
 ) -> Result<impl IntoResponse> {
     require_admin(&state, &headers).await?;
 
+    // Fetch artist name for notification
+    let artist_name: String = sqlx::query_scalar("SELECT name FROM artists WHERE id = ?")
+        .bind(artist_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Artist {artist_id} not found")))?;
+
     sqlx::query("INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)")
         .bind(artist_id)
         .bind(req.show_id)
@@ -563,7 +570,7 @@ pub async fn api_assign_artist_to_show(
     // Regenerate show cover image with the new artist
     let state_for_bio = state.clone();
     let show_id = req.show_id;
-    schedule_cover_regeneration(state, req.show_id);
+    schedule_cover_regeneration(state.clone(), req.show_id);
 
     // Generate AI show bio from assigned artists' bios (background)
     tokio::spawn(async move {
@@ -571,6 +578,14 @@ pub async fn api_assign_artist_to_show(
             tracing::error!("Failed to generate show bio for show {}: {}", show_id, e);
         }
     });
+
+    // Schedule Telegram notification (30-second debounced)
+    telegram_notify::schedule_show_update_notification(
+        &state,
+        req.show_id,
+        artist_name,
+        telegram_notify::ShowUpdateAction::Added,
+    );
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -582,6 +597,13 @@ pub async fn api_unassign_artist_from_show(
 ) -> Result<impl IntoResponse> {
     require_admin(&state, &headers).await?;
 
+    // Fetch artist name for notification
+    let artist_name: String = sqlx::query_scalar("SELECT name FROM artists WHERE id = ?")
+        .bind(artist_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Artist {artist_id} not found")))?;
+
     sqlx::query("DELETE FROM artist_show_assignments WHERE artist_id = ? AND show_id = ?")
         .bind(artist_id)
         .bind(show_id)
@@ -590,7 +612,7 @@ pub async fn api_unassign_artist_from_show(
 
     // Regenerate show cover image without the removed artist
     let state_for_bio = state.clone();
-    schedule_cover_regeneration(state, show_id);
+    schedule_cover_regeneration(state.clone(), show_id);
 
     // Regenerate AI show bio from remaining artists' bios (background)
     tokio::spawn(async move {
@@ -598,6 +620,14 @@ pub async fn api_unassign_artist_from_show(
             tracing::error!("Failed to generate show bio for show {}: {}", show_id, e);
         }
     });
+
+    // Schedule Telegram notification (30-second debounced)
+    telegram_notify::schedule_show_update_notification(
+        &state,
+        show_id,
+        artist_name,
+        telegram_notify::ShowUpdateAction::Removed,
+    );
 
     Ok(Json(serde_json::json!({ "success": true })))
 }

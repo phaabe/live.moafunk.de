@@ -41,6 +41,10 @@ use stream_bridge::SharedStreamState;
 /// Tracks pending cover regeneration requests with debounce
 pub type CoverDebounceMap = Arc<RwLock<HashMap<i64, tokio::time::Instant>>>;
 
+/// Tracks pending show update notifications with debounce (show_id -> task handle)
+pub type PendingShowNotifications =
+    Arc<tokio::sync::Mutex<HashMap<i64, tokio::task::JoinHandle<()>>>>;
+
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub config: Config,
@@ -54,6 +58,8 @@ pub struct AppState {
     pub default_cover: tokio::sync::OnceCell<Vec<u8>>,
     /// Telegram bot instance (None if TELEGRAM_BOT_TOKEN not set)
     pub telegram_bot: Option<teloxide::Bot>,
+    /// Pending show update notifications (debounced to avoid spam)
+    pub pending_show_notifications: PendingShowNotifications,
 }
 
 // Stream handler wrappers that extract stream_state from AppState
@@ -219,6 +225,9 @@ async fn main() -> anyhow::Result<()> {
         teloxide::Bot::new(token)
     });
 
+    // Initialize pending show notifications tracker (for debouncing)
+    let pending_show_notifications = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
@@ -228,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
         cover_debounce,
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot,
+        pending_show_notifications,
     });
 
     // Pre-generate and upload default cover to S3 at startup

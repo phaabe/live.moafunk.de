@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use teloxide::prelude::*;
-use teloxide::types::{InputFile, MessageId, ParseMode, ReplyParameters, ThreadId};
+use teloxide::types::{MessageId, ParseMode, ThreadId};
 
 use crate::{models, storage, AppState};
 
@@ -12,20 +12,142 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// Download a file from a presigned URL into memory and wrap it as an `InputFile`.
-///
-/// `InputFile::url()` is not implemented in teloxide-core 0.10.x's multipart
-/// serializer, so we fetch the bytes ourselves and use `InputFile::memory()`.
-async fn download_input_file(presigned_url: &str, filename: String) -> Result<InputFile, String> {
-    let bytes = reqwest::get(presigned_url)
+/// Download a file from a presigned URL into memory.
+async fn download_file_bytes(presigned_url: &str) -> Result<Vec<u8>, String> {
+    reqwest::get(presigned_url)
         .await
         .map_err(|e| format!("HTTP download failed: {e}"))?
         .error_for_status()
         .map_err(|e| format!("HTTP status error: {e}"))?
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read bytes: {e}"))?;
-    Ok(InputFile::memory(bytes).file_name(filename))
+        .map_err(|e| format!("Failed to read bytes: {e}"))
+        .map(|b| b.to_vec())
+}
+
+// ---------------------------------------------------------------------------
+// Raw Telegram API helpers (bypass teloxide multipart serializer)
+// ---------------------------------------------------------------------------
+//
+// teloxide-core 0.10.x's multipart `PartSerializer` does not implement
+// `serialize_newtype_struct`, so any request that carries an `InputFile`
+// (which forces multipart encoding) **and** a `ThreadId` (a newtype) will
+// panic with "not implemented".  Text-only requests (`send_message`) use
+// JSON and are fine — only `send_photo` / `send_audio` are affected.
+//
+// The helpers below call the Telegram Bot API directly via reqwest multipart
+// to work around this limitation.
+
+/// Response envelope from the Telegram Bot API.
+#[derive(serde::Deserialize)]
+struct TgResponse {
+    ok: bool,
+    description: Option<String>,
+    result: Option<serde_json::Value>,
+}
+
+/// Send a photo via the Telegram Bot API using raw reqwest multipart.
+///
+/// Returns the `message_id` of the sent message on success.
+async fn send_photo_raw(
+    token: &str,
+    chat_id: i64,
+    photo_bytes: Vec<u8>,
+    filename: String,
+    caption: &str,
+    parse_mode: &str,
+    thread_id: Option<i32>,
+) -> Result<i64, String> {
+    let photo_part = reqwest::multipart::Part::bytes(photo_bytes)
+        .file_name(filename)
+        .mime_str("image/png")
+        .map_err(|e| format!("mime error: {e}"))?;
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .text("caption", caption.to_owned())
+        .text("parse_mode", parse_mode.to_owned())
+        .part("photo", photo_part);
+
+    if let Some(tid) = thread_id {
+        form = form.text("message_thread_id", tid.to_string());
+    }
+
+    let url = format!("https://api.telegram.org/bot{token}/sendPhoto");
+    let resp: TgResponse = reqwest::Client::new()
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("sendPhoto request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("sendPhoto response parse failed: {e}"))?;
+
+    if !resp.ok {
+        return Err(format!(
+            "sendPhoto API error: {}",
+            resp.description.unwrap_or_default()
+        ));
+    }
+    let msg_id = resp
+        .result
+        .and_then(|v| v.get("message_id").and_then(|m| m.as_i64()))
+        .unwrap_or(0);
+    Ok(msg_id)
+}
+
+/// Send an audio file via the Telegram Bot API using raw reqwest multipart.
+async fn send_audio_raw(
+    token: &str,
+    chat_id: i64,
+    audio_bytes: Vec<u8>,
+    filename: String,
+    title: &str,
+    performer: &str,
+    thread_id: Option<i32>,
+    reply_to_message_id: Option<i32>,
+) -> Result<(), String> {
+    let audio_part = reqwest::multipart::Part::bytes(audio_bytes)
+        .file_name(filename)
+        .mime_str("audio/mpeg")
+        .map_err(|e| format!("mime error: {e}"))?;
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .text("title", title.to_owned())
+        .text("performer", performer.to_owned())
+        .part("audio", audio_part);
+
+    if let Some(tid) = thread_id {
+        form = form.text("message_thread_id", tid.to_string());
+    }
+    if let Some(rid) = reply_to_message_id {
+        // Telegram expects reply_parameters as JSON
+        form = form.text(
+            "reply_parameters",
+            serde_json::json!({ "message_id": rid }).to_string(),
+        );
+    }
+
+    let url = format!("https://api.telegram.org/bot{token}/sendAudio");
+    let resp: TgResponse = reqwest::Client::new()
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("sendAudio request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("sendAudio response parse failed: {e}"))?;
+
+    if !resp.ok {
+        return Err(format!(
+            "sendAudio API error: {}",
+            resp.description.unwrap_or_default()
+        ));
+    }
+    Ok(())
 }
 
 /// Send a text message to the configured admin Telegram chat.
@@ -197,6 +319,11 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
     let chat = ChatId(chat_id);
 
     // --- Photo message ---
+    let token = state
+        .config
+        .telegram_bot_token
+        .as_deref()
+        .unwrap_or_default();
     let photo_msg_id = if let Some(ref pic_key) = artist
         .pic_overlay_key
         .as_ref()
@@ -207,19 +334,21 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
             .await
             .map_err(|e| format!("Presigned URL for photo failed: {e}"))?;
 
-        // Extract a filename from the key for Telegram
         let filename = pic_key.rsplit('/').next().unwrap_or("photo.jpg").to_owned();
-        let input_file = download_input_file(&url_str, filename).await?;
+        let photo_bytes = download_file_bytes(&url_str).await?;
 
-        let mut req = bot
-            .send_photo(chat, input_file)
-            .caption(caption)
-            .parse_mode(ParseMode::Html);
-        if let Some(tid) = state.config.telegram_topic_id {
-            req = req.message_thread_id(ThreadId(MessageId(tid)));
-        }
-        match req.await {
-            Ok(msg) => Some(msg.id),
+        match send_photo_raw(
+            token,
+            chat_id,
+            photo_bytes,
+            filename,
+            &caption,
+            "HTML",
+            state.config.telegram_topic_id,
+        )
+        .await
+        {
+            Ok(msg_id) => Some(MessageId(msg_id as i32)),
             Err(e) => {
                 tracing::warn!("Failed to send artist photo: {e}");
                 return Err(format!("send_photo failed: {e}"));
@@ -241,14 +370,14 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
     };
 
     // Helper closure to send an audio file as a reply to the photo message
-    let send_audio = |bot: teloxide::Bot,
-                      chat: ChatId,
-                      key: String,
-                      title: String,
-                      performer: String,
-                      reply_to: Option<MessageId>,
-                      topic_id: Option<i32>,
-                      state: Arc<AppState>| async move {
+    let send_audio_fn = |token: String,
+                         chat_id: i64,
+                         key: String,
+                         title: String,
+                         performer: String,
+                         reply_to: Option<MessageId>,
+                         topic_id: Option<i32>,
+                         state: Arc<AppState>| async move {
         let url_str = match storage::get_presigned_url(&state, &key, 3600).await {
             Ok(u) => u,
             Err(e) => {
@@ -258,25 +387,26 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
         };
 
         let filename = key.rsplit('/').next().unwrap_or("audio.mp3").to_owned();
-        let input_file = match download_input_file(&url_str, filename).await {
-            Ok(f) => f,
+        let audio_bytes = match download_file_bytes(&url_str).await {
+            Ok(b) => b,
             Err(e) => {
                 tracing::warn!("Download audio {key} failed: {e}");
                 return;
             }
         };
 
-        let mut req = bot
-            .send_audio(chat, input_file)
-            .title(title)
-            .performer(performer);
-        if let Some(tid) = topic_id {
-            req = req.message_thread_id(ThreadId(MessageId(tid)));
-        }
-        if let Some(msg_id) = reply_to {
-            req = req.reply_parameters(ReplyParameters::new(msg_id));
-        }
-        if let Err(e) = req.await {
+        if let Err(e) = send_audio_raw(
+            &token,
+            chat_id,
+            audio_bytes,
+            filename,
+            &title,
+            &performer,
+            topic_id,
+            reply_to.map(|m| m.0),
+        )
+        .await
+        {
             tracing::warn!("Failed to send audio {key}: {e}");
         }
     };
@@ -285,9 +415,9 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
 
     // Voice mail
     if let Some(ref voice_key) = artist.voice_message_key {
-        send_audio(
-            bot.clone(),
-            chat,
+        send_audio_fn(
+            token.to_owned(),
+            chat_id,
             voice_key.clone(),
             format!("{} – voice message", artist.name),
             artist.name.clone(),
@@ -300,9 +430,9 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
 
     // Track 1
     if let Some(ref key) = artist.track1_key {
-        send_audio(
-            bot.clone(),
-            chat,
+        send_audio_fn(
+            token.to_owned(),
+            chat_id,
             key.clone(),
             artist.track1_name.clone(),
             artist.name.clone(),
@@ -315,9 +445,9 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
 
     // Track 2
     if let Some(ref key) = artist.track2_key {
-        send_audio(
-            bot.clone(),
-            chat,
+        send_audio_fn(
+            token.to_owned(),
+            chat_id,
             key.clone(),
             artist.track2_name.clone(),
             artist.name.clone(),
@@ -329,6 +459,315 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Show update notification
+// ---------------------------------------------------------------------------
+
+/// Context for a show update notification
+#[derive(Debug, Clone)]
+pub struct ShowUpdateContext {
+    pub show_id: i64,
+    pub artist_name: String,
+    pub action: ShowUpdateAction,
+}
+
+/// Action taken on a show's artist roster
+#[derive(Debug, Clone, Copy)]
+pub enum ShowUpdateAction {
+    Added,
+    Removed,
+}
+
+impl ShowUpdateAction {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ShowUpdateAction::Added => "added",
+            ShowUpdateAction::Removed => "removed",
+        }
+    }
+}
+
+/// Fetch a show and all its currently assigned artists from the database.
+///
+/// Returns `Err` if the show doesn't exist or DB query fails.
+async fn fetch_show_with_artists(
+    state: &Arc<AppState>,
+    show_id: i64,
+) -> Result<(models::Show, Vec<models::Artist>), String> {
+    // Fetch show
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| format!("DB query for show failed: {e}"))?
+        .ok_or_else(|| format!("Show {show_id} not found"))?;
+
+    // Fetch assigned artists
+    let artists: Vec<models::Artist> = sqlx::query_as(
+        "SELECT a.* FROM artists a \
+         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
+         WHERE asa.show_id = ? \
+         ORDER BY a.name",
+    )
+    .bind(show_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("DB query for artists failed: {e}"))?;
+
+    Ok((show, artists))
+}
+
+/// Build the HTML caption for a show update notification.
+fn build_show_update_caption(
+    show: &models::Show,
+    artists: &[models::Artist],
+    context: &ShowUpdateContext,
+    show_url: &str,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // Header: show title + action emoji
+    let action_emoji = match context.action {
+        ShowUpdateAction::Added => "➕",
+        ShowUpdateAction::Removed => "➖",
+    };
+    parts.push(format!(
+        "🎪 <b>Show updated: {}</b>",
+        html_escape(&show.title),
+    ));
+
+    // Action line
+    parts.push(format!(
+        "{action_emoji} <b>{}</b> was {}",
+        html_escape(&context.artist_name),
+        context.action.as_str()
+    ));
+
+    // Current artists list
+    if artists.is_empty() {
+        parts.push("🎤 No artists assigned yet.".to_string());
+    } else {
+        let artist_list: Vec<String> = artists
+            .iter()
+            .map(|a| format!("• {}", html_escape(&a.name)))
+            .collect();
+        parts.push(format!(
+            "🎤 <b>Current Artists:</b>\n{}",
+            artist_list.join("\n")
+        ));
+    }
+
+    // Show link
+    parts.push(format!("🔗 <a href=\"{show_url}\">Open show page</a>"));
+
+    parts.join("\n\n")
+}
+
+/// Send a show update notification to the admin Telegram chat.
+///
+/// Sends the show cover image (if available) with an HTML caption describing
+/// the artist assignment change and listing all currently assigned artists.
+///
+/// Returns `Err` if any critical step fails (DB query, presigned URL for cover).
+async fn send_show_update_notification(
+    state: &Arc<AppState>,
+    context: ShowUpdateContext,
+) -> Result<(), String> {
+    let (Some(bot), Some(chat_id)) = (&state.telegram_bot, state.config.telegram_admin_chat_id)
+    else {
+        tracing::info!(
+            "Telegram bot not configured, skipping show update notification for show {}",
+            context.show_id
+        );
+        return Ok(()); // Not configured — silently skip
+    };
+
+    tracing::debug!(
+        "Telegram bot configured, proceeding with show update notification (show_id={}, chat_id={})",
+        context.show_id,
+        chat_id
+    );
+
+    // Fetch show and assigned artists
+    let (show, artists) = fetch_show_with_artists(state, context.show_id).await?;
+
+    // Build show URL
+    let base = state.config.admin_base_url.trim_end_matches('/');
+    let show_url = format!("{base}/#/shows/{}", context.show_id);
+    let caption = build_show_update_caption(&show, &artists, &context, &show_url);
+
+    let chat = ChatId(chat_id);
+
+    // Send photo with caption if show has a cover
+    let cover_key = show.cover_generated_at.and_then(|_| {
+        // Cover exists if cover_generated_at is set
+        Some(format!("shows/{}/cover.png", show.id))
+    });
+
+    let token = state
+        .config
+        .telegram_bot_token
+        .as_deref()
+        .unwrap_or_default();
+
+    if let Some(ref key) = cover_key {
+        // Try to send photo, fall back to text if it fails
+        match storage::get_presigned_url(state, key, 3600).await {
+            Ok(url_str) => {
+                let filename = format!("show_{}_cover.png", show.id);
+                match download_file_bytes(&url_str).await {
+                    Ok(photo_bytes) => {
+                        match send_photo_raw(
+                            token,
+                            chat_id,
+                            photo_bytes,
+                            filename,
+                            &caption,
+                            "HTML",
+                            state.config.telegram_topic_id,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                tracing::info!(
+                                    "Show update notification sent with cover image for show {}",
+                                    context.show_id
+                                );
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to send show update photo, falling back to text: {e}"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to download cover image, falling back to text: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to get presigned URL for cover, falling back to text: {e}");
+            }
+        }
+    } else {
+        tracing::debug!(
+            "Show {} has no cover, sending text-only notification",
+            context.show_id
+        );
+    }
+
+    // Send text-only HTML message (fallback or no cover)
+    let mut req = bot.send_message(chat, &caption).parse_mode(ParseMode::Html);
+    if let Some(tid) = state.config.telegram_topic_id {
+        req = req.message_thread_id(ThreadId(MessageId(tid)));
+    }
+    match req.await {
+        Ok(_) => {
+            tracing::info!(
+                "Show update notification sent (text-only) for show {}",
+                context.show_id
+            );
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!("Failed to send show update text message: {e}");
+            Err(format!("send_message failed: {e}"))
+        }
+    }
+}
+
+/// Schedule a show update notification with 30-second debouncing.
+///
+/// If a notification is already pending for this show, it will be canceled
+/// and replaced with the new one. This ensures that rapid artist assignment
+/// changes result in only a single notification with the final state.
+///
+/// Spawns a detached tokio task so the caller is never blocked.
+pub fn schedule_show_update_notification(
+    state: &Arc<AppState>,
+    show_id: i64,
+    artist_name: String,
+    action: ShowUpdateAction,
+) {
+    tracing::info!(
+        "Scheduling Telegram show update notification: show_id={}, artist='{}', action={:?}",
+        show_id,
+        artist_name,
+        action
+    );
+
+    let state = state.clone();
+    tokio::spawn(async move {
+        // Cancel any pending notification for this show
+        {
+            let mut pending = state.pending_show_notifications.lock().await;
+            if let Some(handle) = pending.remove(&show_id) {
+                handle.abort();
+                tracing::info!("Canceled pending show update notification for show {} (replaced with new notification)", show_id);
+            }
+        }
+
+        // Spawn new delayed notification task
+        let state_for_task = state.clone();
+        let context = ShowUpdateContext {
+            show_id,
+            artist_name: artist_name.clone(),
+            action,
+        };
+
+        let notification_task = tokio::spawn(async move {
+            // Wait 30 seconds for debouncing
+            tracing::info!(
+                "Waiting 30 seconds before sending show update notification (show_id={}, artist='{}')",
+                show_id,
+                artist_name
+            );
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+
+            tracing::info!(
+                "Sending Telegram show update notification (show_id={}, artist='{}')",
+                show_id,
+                artist_name
+            );
+
+            // Send the notification
+            if let Err(e) = send_show_update_notification(&state_for_task, context).await {
+                tracing::warn!(
+                    "Telegram show update notification failed for show {}: {}",
+                    show_id,
+                    e
+                );
+            } else {
+                tracing::info!(
+                    "Telegram show update notification sent successfully for show {}",
+                    show_id
+                );
+            }
+
+            // Remove self from pending map
+            state_for_task
+                .pending_show_notifications
+                .lock()
+                .await
+                .remove(&show_id);
+        });
+
+        // Store the task handle
+        state
+            .pending_show_notifications
+            .lock()
+            .await
+            .insert(show_id, notification_task);
+
+        tracing::info!(
+            "Show update notification task scheduled for show {} (will send in 30s)",
+            show_id
+        );
+    });
 }
 
 /// Notify admin about a new artist submission.
