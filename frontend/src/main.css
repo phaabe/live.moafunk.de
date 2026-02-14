@@ -78,3 +78,28 @@ a {
 .links {
   font-size: 15pt;
 }
+
+/* Mobile styles */
+@media (max-width: 768px) {
+  body {
+    font-size: 14pt;
+  }
+
+  .logo {
+    width: 150px;
+  }
+
+  .links {
+    font-size: 12pt;
+  }
+
+  .btn {
+    width: 1.5em;
+    height: 8em;
+    border-width: 4em 0 4em 8em;
+  }
+
+  .btn-pause {
+    border-width: 0 0 0 4em;
+  }
+}
