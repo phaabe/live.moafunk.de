@@ -59,6 +59,7 @@ pub struct Show {
     pub recording_key: Option<String>,
     pub recording_filename: Option<String>,
     pub instagram_posted_at: Option<String>,
+    pub ai_bio: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

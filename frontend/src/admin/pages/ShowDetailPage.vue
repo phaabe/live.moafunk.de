@@ -28,7 +28,9 @@ const postingToInstagram = ref(false);
 const showInstagramConfirmModal = ref(false);
 const editingDate = ref(false);
 const editingDescription = ref(false);
+const editingAiBio = ref(false);
 const saving = ref(false);
+const regeneratingBio = ref(false);
 const assigning = ref(false);
 const uploading = ref(false);
 const uploadDragOver = ref(false);
@@ -38,6 +40,7 @@ const uploadProgress = ref<{ phase: 'extracting' | 'uploading' | 'finalizing'; p
 // Form data
 const dateForm = ref('');
 const descriptionForm = ref('');
+const aiBioForm = ref('');
 const selectedArtistId = ref<number | null>(null);
 
 // Computed
@@ -53,6 +56,40 @@ let coverPollCount = 0;
 const COVER_INITIAL_DELAY = 6000; // Wait for 5s backend debounce + 1s buffer
 const COVER_POLL_INTERVAL = 2000; // Then poll every 2s
 const COVER_MAX_POLLS = 10; // Max 10 poll attempts (total ~26s max wait)
+
+// AI bio refresh polling - similar pattern but for show bio generation
+let bioRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let bioPollCount = 0;
+const BIO_INITIAL_DELAY = 3000; // AI generation is faster than cover
+const BIO_POLL_INTERVAL = 2000;
+const BIO_MAX_POLLS = 10;
+
+function scheduleBioRefresh() {
+  if (bioRefreshTimer) {
+    clearTimeout(bioRefreshTimer);
+  }
+  bioPollCount = 0;
+  bioRefreshTimer = setTimeout(() => pollForBio(), BIO_INITIAL_DELAY);
+}
+
+async function pollForBio() {
+  if (!show.value) return;
+  bioPollCount++;
+
+  try {
+    const updated = await showsApi.get(show.value.id);
+    // Check if bio changed (including cleared to undefined/null)
+    if (updated.ai_bio !== show.value.ai_bio) {
+      show.value.ai_bio = updated.ai_bio;
+      return;
+    }
+    if (bioPollCount < BIO_MAX_POLLS) {
+      bioRefreshTimer = setTimeout(() => pollForBio(), BIO_POLL_INTERVAL);
+    }
+  } catch {
+    // Ignore errors during bio refresh
+  }
+}
 
 function scheduleCoverRefresh() {
   // Cancel any pending refresh
@@ -164,6 +201,45 @@ async function saveDescription() {
   }
 }
 
+// AI Bio editing & regeneration
+function startEditAiBio() {
+  if (show.value) {
+    aiBioForm.value = show.value.ai_bio || '';
+  }
+  editingAiBio.value = true;
+}
+
+async function saveAiBio() {
+  if (!show.value) return;
+
+  saving.value = true;
+  try {
+    await showsApi.update(show.value.id, { ai_bio: aiBioForm.value } as Partial<any>);
+    flash.success('AI bio updated');
+    editingAiBio.value = false;
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to update AI bio');
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function regenerateShowBio() {
+  if (!show.value) return;
+
+  regeneratingBio.value = true;
+  try {
+    const result = await showsApi.regenerateBio(show.value.id);
+    show.value.ai_bio = result.ai_bio ?? undefined;
+    flash.success('AI bio regenerated');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to regenerate AI bio');
+  } finally {
+    regeneratingBio.value = false;
+  }
+}
+
 // Artist assignment
 async function assignArtist() {
   if (!show.value || !selectedArtistId.value) return;
@@ -202,6 +278,9 @@ async function assignArtist() {
 
     // Schedule cover refresh after backend debounce completes
     scheduleCoverRefresh();
+
+    // Schedule AI bio refresh
+    scheduleBioRefresh();
 
     // Mark all artists on this show dirty so their ArtistDetailPages reload (cover changed)
     for (const a of show.value.artists) {
@@ -244,6 +323,9 @@ async function unassignArtist(artistId: number) {
 
     // Schedule cover refresh after backend debounce completes
     scheduleCoverRefresh();
+
+    // Schedule AI bio refresh
+    scheduleBioRefresh();
 
     // Mark all remaining artists dirty so their ArtistDetailPages reload (cover changed)
     if (show.value) {
@@ -400,6 +482,9 @@ onUnmounted(() => {
   if (coverRefreshTimer) {
     clearTimeout(coverRefreshTimer);
   }
+  if (bioRefreshTimer) {
+    clearTimeout(bioRefreshTimer);
+  }
 });
 </script>
 
@@ -472,6 +557,38 @@ onUnmounted(() => {
                 </BaseButton>
                 <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDescription">
                   Save Description
+                </BaseButton>
+              </div>
+            </div>
+
+            <div class="section-divider"></div>
+
+            <h3 class="subsection-title">AI Show Bio</h3>
+            <template v-if="!editingAiBio">
+              <div v-if="show.ai_bio" class="description-view">{{ show.ai_bio }}</div>
+              <p v-else class="empty-state">AI bio will be generated when artists are assigned.</p>
+
+              <div class="edit-toggle-container">
+                <div class="button-row">
+                  <button type="button" class="btn-edit" @click="startEditAiBio" v-if="show.ai_bio">
+                    Edit AI Bio
+                  </button>
+                  <BaseButton variant="primary" size="sm" :loading="regeneratingBio" @click="regenerateShowBio" :disabled="!hasArtists">
+                    Regenerate
+                  </BaseButton>
+                </div>
+              </div>
+            </template>
+
+            <div v-else class="edit-panel">
+              <textarea v-model="aiBioForm" class="text-field" rows="8"
+                placeholder="AI-generated show bio..."></textarea>
+              <div class="edit-actions">
+                <BaseButton variant="ghost" size="sm" @click="editingAiBio = false">
+                  Cancel
+                </BaseButton>
+                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveAiBio">
+                  Save AI Bio
                 </BaseButton>
               </div>
             </div>
@@ -941,6 +1058,13 @@ onUnmounted(() => {
 .btn-edit:hover {
   background: var(--color-primary);
   color: var(--color-bg);
+}
+
+.button-row {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .edit-panel {

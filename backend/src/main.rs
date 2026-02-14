@@ -364,6 +364,10 @@ async fn main() -> anyhow::Result<()> {
             axum::routing::delete(handlers::api::api_show_unassign_artist),
         )
         .route(
+            "/api/shows/:id/regenerate-bio",
+            post(handlers::api::api_regenerate_show_bio),
+        )
+        .route(
             "/api/shows/:id/upload-recording",
             post(handlers::api::api_upload_show_recording),
         )

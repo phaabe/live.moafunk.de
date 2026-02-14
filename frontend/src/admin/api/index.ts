@@ -308,6 +308,7 @@ export interface ShowDetail {
   title: string;
   date: string;
   description?: string;
+  ai_bio?: string;
   status: string;
   created_at: string;
   updated_at?: string;
@@ -340,6 +341,9 @@ export const showsApi = {
 
   unassignArtist: (showId: number, artistId: number) =>
     api.delete<{ success: boolean }>(`/api/shows/${showId}/artists/${artistId}`),
+
+  regenerateBio: (showId: number) =>
+    api.post<{ success: boolean; ai_bio: string | null }>(`/api/shows/${showId}/regenerate-bio`),
 
   uploadRecording: async (
     showId: number,
