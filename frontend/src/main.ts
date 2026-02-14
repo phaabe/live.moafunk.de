@@ -57,7 +57,7 @@ function createFlyingEmoji(x: number, y: number) {
 const logo = document.querySelector('.logo') as HTMLElement;
 if (logo) {
   logo.style.cursor = 'pointer';
-  logo.addEventListener('click', (e) => {
+  logo.addEventListener('click', (_e) => {
     const rect = logo.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
