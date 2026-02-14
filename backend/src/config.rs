@@ -72,6 +72,14 @@ pub struct Config {
     // OpenAI API settings (optional - for AI-generated artist bios)
     pub openai_api_key: Option<String>,
 
+    // SoundCloud API settings (optional - for automatic upload of show recordings)
+    pub soundcloud_client_id: Option<String>,
+    pub soundcloud_client_secret: Option<String>,
+    pub soundcloud_access_token: Option<String>,
+    /// OAuth redirect URI (defaults to http://localhost:8000/api/soundcloud/callback)
+    #[serde(default = "default_soundcloud_redirect_uri")]
+    pub soundcloud_redirect_uri: String,
+
     // Telegram Bot settings (optional - for admin notifications and control)
     pub telegram_bot_token: Option<String>,
     pub telegram_admin_chat_id: Option<i64>,
@@ -139,6 +147,10 @@ fn default_telegram_topic_id() -> Option<i32> {
 
 fn default_admin_base_url() -> String {
     "https://admin.live.moafunk.de".to_string()
+}
+
+fn default_soundcloud_redirect_uri() -> String {
+    "http://localhost:8000/api/soundcloud/callback".to_string()
 }
 
 impl Config {

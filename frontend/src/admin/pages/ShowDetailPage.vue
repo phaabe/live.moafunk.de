@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { showsApi, type ShowDetail } from '../api';
+import { showsApi, soundcloudApi, type ShowDetail, type SoundCloudStatus } from '../api';
 import { BaseButton, BaseModal } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import { useFlash } from '../composables/useFlash';
@@ -26,6 +26,9 @@ const deleting = ref(false);
 const deletingRecording = ref(false);
 const postingToInstagram = ref(false);
 const showInstagramConfirmModal = ref(false);
+const uploadingToSoundCloud = ref(false);
+const togglingSoundCloudPrivacy = ref(false);
+const scStatus = ref<SoundCloudStatus | null>(null);
 const editingDate = ref(false);
 const editingDescription = ref(false);
 const editingAiBio = ref(false);
@@ -372,6 +375,83 @@ async function postToInstagram(force = false) {
   }
 }
 
+// SoundCloud upload
+async function uploadToSoundCloud() {
+  if (!show.value) return;
+
+  // Check authorization first
+  if (scStatus.value && !scStatus.value.authorized && scStatus.value.auth_url) {
+    window.open(scStatus.value.auth_url, '_blank', 'width=600,height=700');
+    flash.success('Complete SoundCloud authorization in the opened window, then try again.');
+    return;
+  }
+
+  uploadingToSoundCloud.value = true;
+  try {
+    const result = await showsApi.uploadToSoundCloud(show.value.id);
+    if (result.success) {
+      flash.success('Uploaded to SoundCloud successfully!');
+      await loadShow();
+    } else {
+      flash.error(result.error || 'Failed to upload to SoundCloud');
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '';
+    if (msg.includes('not authorized')) {
+      // Refresh status and offer connect
+      try { scStatus.value = await soundcloudApi.getStatus(); } catch {}
+      if (scStatus.value?.auth_url) {
+        window.open(scStatus.value.auth_url, '_blank', 'width=600,height=700');
+        flash.success('Complete SoundCloud authorization in the opened window, then try again.');
+      } else {
+        flash.error('SoundCloud not authorized. Set SOUNDCLOUD_CLIENT_ID in .env first.');
+      }
+    } else {
+      flash.error(msg || 'Failed to upload to SoundCloud');
+    }
+  } finally {
+    uploadingToSoundCloud.value = false;
+  }
+}
+
+// SoundCloud privacy toggle
+async function toggleSoundCloudPrivacy() {
+  if (!show.value || !show.value.soundcloud_track_id) return;
+
+  const makePublic = !show.value.soundcloud_public;
+  togglingSoundCloudPrivacy.value = true;
+  try {
+    const result = await showsApi.setSoundCloudPrivacy(show.value.id, makePublic);
+    if (result.success) {
+      flash.success(`SoundCloud track is now ${makePublic ? 'public' : 'private'}`);
+      await loadShow();
+    } else {
+      flash.error(result.error || 'Failed to update SoundCloud privacy');
+    }
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to update SoundCloud privacy');
+  } finally {
+    togglingSoundCloudPrivacy.value = false;
+  }
+}
+
+// SoundCloud connect (opens OAuth authorization window)
+function connectSoundCloud() {
+  if (scStatus.value?.auth_url) {
+    window.open(scStatus.value.auth_url, '_blank', 'width=600,height=700');
+    flash.success('Complete SoundCloud authorization in the opened window, then try again.');
+  }
+}
+
+// Load SoundCloud status (non-blocking)
+async function loadSoundCloudStatus() {
+  try {
+    scStatus.value = await soundcloudApi.getStatus();
+  } catch {
+    // Ignore — SC status is optional
+  }
+}
+
 // Upload recording
 function handleDragOver(e: DragEvent) {
   e.preventDefault();
@@ -469,7 +549,10 @@ function formatDateTime(dateStr: string): string {
   return new Date(dateStr).toLocaleString();
 }
 
-onMounted(loadShow);
+onMounted(() => {
+  loadShow();
+  loadSoundCloudStatus();
+});
 
 onActivated(() => {
   const id = Number(route.params.id);
@@ -661,6 +744,40 @@ onUnmounted(() => {
               <BaseButton size="sm" variant="danger" :loading="deletingRecording" @click="deleteRecording">
                 Delete File
               </BaseButton>
+            </div>
+
+            <!-- SoundCloud Section -->
+            <div class="soundcloud-section">
+              <template v-if="show.soundcloud_url">
+                <div class="soundcloud-status">
+                  <span class="soundcloud-label">☁️ SoundCloud</span>
+                  <a :href="show.soundcloud_url" target="_blank" rel="noopener" class="soundcloud-link">
+                    {{ show.soundcloud_public ? '🔓 Public' : '🔒 Private' }}
+                  </a>
+                  <span v-if="show.soundcloud_uploaded_at" class="text-muted soundcloud-timestamp">
+                    Uploaded {{ show.soundcloud_uploaded_at }}
+                  </span>
+                </div>
+                <div class="soundcloud-actions">
+                  <BaseButton size="sm" :variant="show.soundcloud_public ? 'ghost' : 'success'"
+                    :loading="togglingSoundCloudPrivacy" @click="toggleSoundCloudPrivacy">
+                    {{ show.soundcloud_public ? 'Make Private' : 'Make Public' }}
+                  </BaseButton>
+                  <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
+                    Re-upload
+                  </BaseButton>
+                </div>
+              </template>
+              <template v-else-if="scStatus && scStatus.configured && !scStatus.authorized">
+                <BaseButton size="sm" variant="ghost" @click="connectSoundCloud">
+                  🔗 Connect SoundCloud
+                </BaseButton>
+              </template>
+              <template v-else>
+                <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
+                  ☁️ Upload to SoundCloud
+                </BaseButton>
+              </template>
             </div>
           </template>
 
@@ -956,6 +1073,37 @@ onUnmounted(() => {
 
 .recording-actions>* {
   flex: 1;
+}
+
+.soundcloud-section {
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--color-border);
+}
+
+.soundcloud-status {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+  margin-bottom: var(--spacing-sm);
+}
+
+.soundcloud-label {
+  font-weight: 600;
+}
+
+.soundcloud-link {
+  color: var(--color-primary);
+}
+
+.soundcloud-timestamp {
+  font-size: var(--font-size-sm);
+}
+
+.soundcloud-actions {
+  display: flex;
+  gap: var(--spacing-sm);
 }
 
 .upload-prompt {

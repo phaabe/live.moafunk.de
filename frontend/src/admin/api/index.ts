@@ -321,6 +321,10 @@ export interface ShowDetail {
   recording_peaks_url?: string;
   recording_filename?: string;
   instagram_posted_at?: string;
+  soundcloud_track_id?: string;
+  soundcloud_url?: string;
+  soundcloud_uploaded_at?: string;
+  soundcloud_public?: boolean;
 }
 
 export const showsApi = {
@@ -484,6 +488,33 @@ export const showsApi = {
       error?: string;
       already_posted: boolean;
     }>(`/api/shows/${showId}/instagram`, { force, account }),
+
+  uploadToSoundCloud: (showId: number) =>
+    api.post<{
+      success: boolean;
+      track_id?: string;
+      track_url?: string;
+      error?: string;
+    }>(`/api/shows/${showId}/soundcloud/upload`),
+
+  setSoundCloudPrivacy: (showId: number, isPublic: boolean) =>
+    api.post<{
+      success: boolean;
+      track_id?: string;
+      track_url?: string;
+      error?: string;
+    }>(`/api/shows/${showId}/soundcloud/privacy`, { public: isPublic }),
+};
+
+// SoundCloud API
+export interface SoundCloudStatus {
+  configured: boolean;
+  authorized: boolean;
+  auth_url?: string;
+}
+
+export const soundcloudApi = {
+  getStatus: () => api.get<SoundCloudStatus>('/api/soundcloud/status'),
 };
 
 // Users API
