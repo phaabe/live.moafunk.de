@@ -350,3 +350,171 @@ pub async fn generate_and_store_instagram_caption(
 
     Ok(caption)
 }
+
+// ============================================================================
+// Show bio generation (combined from assigned artists' bios)
+// ============================================================================
+
+const SHOW_BIO_PROMPT: &str = "You write short, engaging show descriptions for a radio show \
+called UNHEARD by Moafunk Radio.\n\n\
+You will be given the show title, the individual bios of the artists \
+performing on this show (up to 4 artists), and optionally a show description \
+that provides context about the show concept or theme.\n\n\
+Write a show description following this EXACT structure:\n\
+1. Opening paragraph: List all artists briefly (e.g., 'Tonight features Artist1, Artist2, Artist3, and Artist4.')\n\
+2. Main body: Introduce each artist one by one with a dedicated sentence highlighting their sound/style based on their bio\n\
+3. Closing: End with one or two catchy phrases that capture the vibe of the lineup\n\n\
+If a show description is provided, integrate its theme/concept naturally into the bio, \
+especially in the opening or closing.\n\n\
+STRICT rules:\n\
+- Do NOT use hashtags or emojis\n\
+- Do NOT mention specific dates or times\n\
+- Do NOT repeat the show title — it will already be displayed above\n\
+- Do NOT use words like 'talented', 'amazing', 'incredible', or generic compliments\n\
+- Each artist must get their own sentence with specific details from their bio\n\
+- Include a paragraph break (blank line) between the opening and the detailed artist introductions\n\
+- Reads like a music blog preview, not a press release\n\
+- Output ONLY the show description, nothing else.";
+
+/// Generate a combined show bio from individual artist bios.
+pub async fn generate_show_bio(
+    config: &Config,
+    artists: &[(String, String)],
+    show_title: &str,
+    show_description: Option<&str>,
+) -> Result<String> {
+    let api_key = config
+        .openai_api_key
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("OPENAI_API_KEY is not configured".to_string()))?;
+
+    let bios_text = artists
+        .iter()
+        .map(|(name, bio)| format!("{} bio:\n{}", name, bio))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let user_content = if let Some(desc) = show_description {
+        format!(
+            "Show title: {}\nShow description: {}\n\n{}",
+            show_title, desc, bios_text
+        )
+    } else {
+        format!("Show title: {}\n\n{}", show_title, bios_text)
+    };
+
+    tracing::info!(
+        "Calling OpenAI API for show bio generation (show: {}, {} artist bios)",
+        show_title,
+        artists.len()
+    );
+    let bio = call_openai(api_key, SHOW_BIO_PROMPT, &user_content, 0.7, 300).await?;
+    tracing::info!("Show bio generated successfully ({} chars)", bio.len());
+    Ok(bio)
+}
+
+/// Generate an AI show bio from all assigned artists' bios and persist it.
+///
+/// If no artists are assigned to the show, clears the show's `ai_bio` to NULL.
+/// Artists missing an `ai_bio` will have one generated first (if they have a
+/// music_description), so the show bio always reflects the full lineup.
+pub async fn generate_and_store_show_bio(
+    state: &Arc<AppState>,
+    show_id: i64,
+) -> Result<Option<String>> {
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Show {show_id} not found")))?;
+
+    // Fetch all assigned artists (full rows so we can generate missing bios)
+    let artists: Vec<models::Artist> = sqlx::query_as(
+        r#"
+        SELECT a.* FROM artists a
+        INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id
+        WHERE asa.show_id = ?
+        ORDER BY a.name ASC
+        "#,
+    )
+    .bind(show_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    if artists.is_empty() {
+        // No artists assigned — clear the show bio
+        sqlx::query("UPDATE shows SET ai_bio = NULL, updated_at = datetime('now') WHERE id = ?")
+            .bind(show_id)
+            .execute(&state.db)
+            .await?;
+        tracing::info!("Cleared ai_bio for show {} (no artists assigned)", show_id);
+        return Ok(None);
+    }
+
+    // Generate individual artist bios for any artists missing one
+    let mut artist_data: Vec<(String, String)> = Vec::new();
+    for artist in &artists {
+        if let Some(ref bio) = artist.ai_bio {
+            artist_data.push((artist.name.clone(), bio.clone()));
+        } else if artist.music_description.is_some() {
+            // Artist has no ai_bio but has a music_description — generate one now
+            tracing::info!(
+                "Generating missing ai_bio for artist {} (id={}) before show bio",
+                artist.name,
+                artist.id
+            );
+            match generate_and_store_artist_bio(state, artist.id).await {
+                Ok(bio) => artist_data.push((artist.name.clone(), bio)),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to generate ai_bio for artist {}: {}, skipping",
+                        artist.name,
+                        e
+                    );
+                }
+            }
+        } else {
+            tracing::debug!(
+                "Skipping artist {} (id={}) — no ai_bio or music_description",
+                artist.name,
+                artist.id
+            );
+        }
+    }
+
+    if artist_data.is_empty() {
+        // No usable bios — clear the show bio
+        sqlx::query("UPDATE shows SET ai_bio = NULL, updated_at = datetime('now') WHERE id = ?")
+            .bind(show_id)
+            .execute(&state.db)
+            .await?;
+        tracing::info!(
+            "Cleared ai_bio for show {} (no artist bios available)",
+            show_id
+        );
+        return Ok(None);
+    }
+
+    let bio = generate_show_bio(
+        &state.config,
+        &artist_data,
+        &show.title,
+        show.description.as_deref(),
+    )
+    .await?;
+
+    sqlx::query("UPDATE shows SET ai_bio = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(&bio)
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+
+    tracing::info!(
+        "Generated and stored show bio for show {} ({} chars, from {} artist bios)",
+        show.title,
+        bio.len(),
+        artist_data.len()
+    );
+
+    Ok(Some(bio))
+}

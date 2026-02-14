@@ -3,7 +3,7 @@
 //! These endpoints mirror the functionality of the template-based handlers
 //! but return JSON responses for the Vue 3 admin panel.
 
-use crate::{auth, models, storage, video, AppError, AppState, Result};
+use crate::{ai, auth, models, storage, video, AppError, AppState, Result};
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
@@ -561,7 +561,16 @@ pub async fn api_assign_artist_to_show(
         .await?;
 
     // Regenerate show cover image with the new artist
+    let state_for_bio = state.clone();
+    let show_id = req.show_id;
     schedule_cover_regeneration(state, req.show_id);
+
+    // Generate AI show bio from assigned artists' bios (background)
+    tokio::spawn(async move {
+        if let Err(e) = ai::generate_and_store_show_bio(&state_for_bio, show_id).await {
+            tracing::error!("Failed to generate show bio for show {}: {}", show_id, e);
+        }
+    });
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -580,7 +589,15 @@ pub async fn api_unassign_artist_from_show(
         .await?;
 
     // Regenerate show cover image without the removed artist
+    let state_for_bio = state.clone();
     schedule_cover_regeneration(state, show_id);
+
+    // Regenerate AI show bio from remaining artists' bios (background)
+    tokio::spawn(async move {
+        if let Err(e) = ai::generate_and_store_show_bio(&state_for_bio, show_id).await {
+            tracing::error!("Failed to generate show bio for show {}: {}", show_id, e);
+        }
+    });
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -670,6 +687,22 @@ pub async fn api_generate_artist_bio(
     require_admin(&state, &headers).await?;
 
     let bio = crate::ai::generate_and_store_artist_bio(&state, id).await?;
+
+    Ok(Json(serde_json::json!({ "success": true, "ai_bio": bio })))
+}
+
+// ============================================================================
+// Show AI Bio Regeneration
+// ============================================================================
+
+pub async fn api_regenerate_show_bio(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let bio = crate::ai::generate_and_store_show_bio(&state, id).await?;
 
     Ok(Json(serde_json::json!({ "success": true, "ai_bio": bio })))
 }
@@ -1177,6 +1210,7 @@ pub struct ShowDetailResponse {
     title: String,
     date: String,
     description: Option<String>,
+    ai_bio: Option<String>,
     status: String,
     created_at: String,
     updated_at: Option<String>,
@@ -1634,6 +1668,7 @@ pub async fn api_show_detail(
         title: show.title,
         date: show.date,
         description: show.description,
+        ai_bio: show.ai_bio,
         status: show.status,
         created_at: show.created_at,
         updated_at: show.updated_at,
@@ -1708,6 +1743,7 @@ pub struct UpdateShowRequest {
     title: Option<String>,
     date: Option<String>,
     description: Option<String>,
+    ai_bio: Option<String>,
 }
 
 pub async fn api_update_show(
@@ -1733,6 +1769,10 @@ pub async fn api_update_show(
     if let Some(description) = &req.description {
         updates.push("description = ?");
         binds.push(description.clone());
+    }
+    if let Some(ai_bio) = &req.ai_bio {
+        updates.push("ai_bio = ?");
+        binds.push(ai_bio.clone());
     }
 
     if updates.is_empty() {
@@ -1884,7 +1924,15 @@ pub async fn api_show_assign_artist(
     };
 
     // Schedule debounced cover regeneration (async, non-blocking)
+    let state_for_bio = state.clone();
     schedule_cover_regeneration(state, show_id);
+
+    // Generate AI show bio from assigned artists' bios (background)
+    tokio::spawn(async move {
+        if let Err(e) = ai::generate_and_store_show_bio(&state_for_bio, show_id).await {
+            tracing::error!("Failed to generate show bio for show {}: {}", show_id, e);
+        }
+    });
 
     Ok(Json(
         serde_json::json!({ "success": true, "artist": assigned_artist }),
@@ -1906,7 +1954,15 @@ pub async fn api_show_unassign_artist(
         .await?;
 
     // Schedule debounced cover regeneration (async, non-blocking)
+    let state_for_bio = state.clone();
     schedule_cover_regeneration(state, show_id);
+
+    // Regenerate AI show bio from remaining artists' bios (background)
+    tokio::spawn(async move {
+        if let Err(e) = ai::generate_and_store_show_bio(&state_for_bio, show_id).await {
+            tracing::error!("Failed to generate show bio for show {}: {}", show_id, e);
+        }
+    });
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
