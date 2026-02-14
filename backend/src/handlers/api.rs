@@ -2388,6 +2388,24 @@ pub async fn api_upload_show_recording(
                         track_id = ?result.track_id,
                         "SoundCloud auto-upload succeeded"
                     );
+                    // Notify admin via Telegram
+                    if let Some(ref url) = result.track_url {
+                        let title = match sqlx::query_as::<_, crate::models::Show>(
+                            "SELECT * FROM shows WHERE id = ?",
+                        )
+                        .bind(sc_show_id)
+                        .fetch_one(&sc_state.db)
+                        .await
+                        {
+                            Ok(show) => crate::soundcloud::build_title(&sc_state, &show)
+                                .await
+                                .unwrap_or_else(|_| format!("Show #{sc_show_id}")),
+                            Err(_) => format!("Show #{sc_show_id}"),
+                        };
+                        telegram_notify::notify_soundcloud_upload(
+                            &sc_state, sc_show_id, &title, url,
+                        );
+                    }
                 }
                 Ok(result) => {
                     tracing::warn!(
@@ -2763,6 +2781,23 @@ pub async fn api_upload_to_soundcloud(
     }
 
     let result = crate::soundcloud::upload_track(&state, id).await?;
+
+    // Notify admin via Telegram on success
+    if result.success {
+        if let Some(ref url) = result.track_url {
+            let title = crate::soundcloud::build_title(
+                &state,
+                &sqlx::query_as::<_, crate::models::Show>("SELECT * FROM shows WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&state.db)
+                    .await
+                    .map_err(|e| AppError::Database(e))?,
+            )
+            .await
+            .unwrap_or_else(|_| format!("Show #{id}"));
+            telegram_notify::notify_soundcloud_upload(&state, id, &title, url);
+        }
+    }
 
     Ok(Json(result))
 }
