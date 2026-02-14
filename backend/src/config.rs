@@ -75,6 +75,7 @@ pub struct Config {
     // Telegram Bot settings (optional - for admin notifications and control)
     pub telegram_bot_token: Option<String>,
     pub telegram_admin_chat_id: Option<i64>,
+    #[serde(default = "default_telegram_topic_id")]
     pub telegram_topic_id: Option<i32>,
     pub telegram_instagram_account: Option<String>,
 
@@ -129,6 +130,11 @@ fn default_ffmpeg_sample_rate() -> u32 {
 
 fn default_github_repo() -> String {
     "phaabe/live.moafunk.de".to_string()
+}
+
+fn default_telegram_topic_id() -> Option<i32> {
+    // Moafunk Telegram channel topic ID "MoafunkBot" (see topic info for Id)
+    Some(26)
 }
 
 fn default_admin_base_url() -> String {
