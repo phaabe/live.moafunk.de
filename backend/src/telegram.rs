@@ -10,8 +10,12 @@ use crate::{ai, instagram, models, storage, telegram_notify, video, AppError, Ap
 use std::sync::Arc;
 use teloxide::{
     dispatching::Dispatcher,
+    net::Download,
     prelude::*,
-    types::{CallbackQuery, InputFile, MaybeInaccessibleMessage, MessageId, ThreadId},
+    types::{
+        CallbackQuery, ForceReply, InputFile, InputMedia, InputMediaPhoto,
+        MaybeInaccessibleMessage, MessageId, ThreadId,
+    },
     utils::command::BotCommands,
 };
 
@@ -80,12 +84,8 @@ pub async fn run(state: Arc<AppState>) {
             Update::filter_message()
                 .branch(dptree::entry().filter_command::<Command>().endpoint(answer))
                 .branch(
-                    // Catch-all: silently ignore non-command messages (no "Unhandled update" warnings)
-                    dptree::entry().endpoint(
-                        |_bot: Bot, _msg: Message, _state: Arc<AppState>| async move {
-                            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                        },
-                    ),
+                    // Catch-all: handle edit session replies, ignore everything else
+                    dptree::entry().endpoint(handle_non_command_message),
                 ),
         );
 
@@ -652,11 +652,26 @@ async fn cmd_post_show_instagram(state: &Arc<AppState>, id: i64) -> crate::Resul
     let result = instagram::post_show_to_instagram(state, &show, account).await?;
 
     if result.success {
+        // Update instagram_posted_at and permalink in DB
+        let _ = sqlx::query(
+            "UPDATE shows SET instagram_posted_at = datetime('now'), instagram_post_url = ? WHERE id = ?",
+        )
+        .bind(&result.permalink)
+        .bind(id)
+        .execute(&state.db)
+        .await;
+
+        let link_info = result
+            .permalink
+            .as_deref()
+            .map(|url| format!("\n🔗 {url}"))
+            .unwrap_or_default();
         Ok(format!(
-            "✅ Published {} to Instagram ({})\nMedia ID: {}",
+            "✅ Published {} to Instagram ({})\nMedia ID: {}{}",
             show.title,
             account,
-            result.media_id.unwrap_or_default()
+            result.media_id.unwrap_or_default(),
+            link_info,
         ))
     } else {
         Ok(format!(
@@ -768,6 +783,17 @@ async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: Arc<AppState>)
             .text("📸 Publishing to Instagram…")
             .await?;
 
+        // Immediately remove buttons and show "please wait" to prevent double-clicks
+        if let Some(MaybeInaccessibleMessage::Regular(ref msg)) = q.message {
+            let _ = bot.edit_message_reply_markup(msg.chat.id, msg.id).await;
+            if let Some(current_caption) = msg.caption() {
+                let _ = bot
+                    .edit_message_caption(msg.chat.id, msg.id)
+                    .caption(format!("{current_caption}\n\n⏳ Publishing to Instagram…"))
+                    .await;
+            }
+        }
+
         // Fetch show and publish
         let result = cmd_post_show_instagram(&state, show_id).await;
 
@@ -778,12 +804,13 @@ async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: Arc<AppState>)
                 Err(e) => format!("❌ Error: {e}"),
             };
 
-            // Remove inline keyboard
-            let _ = bot.edit_message_reply_markup(msg.chat.id, msg.id).await;
-
-            // Append status to caption
+            // Replace "Publishing…" with final status
             if let Some(current_caption) = msg.caption() {
-                let new_caption = format!("{current_caption}\n\n{status_text}");
+                // Remove the temporary "⏳ Publishing…" line if present
+                let base_caption = current_caption
+                    .trim_end_matches("\n\n⏳ Publishing to Instagram…")
+                    .to_string();
+                let new_caption = format!("{base_caption}\n\n{status_text}");
                 let _ = bot
                     .edit_message_caption(msg.chat.id, msg.id)
                     .caption(new_caption)
@@ -791,7 +818,7 @@ async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: Arc<AppState>)
             }
         }
     } else if let Some(id_str) = data.strip_prefix("ig_edit:") {
-        let _show_id: i64 = match id_str.parse() {
+        let show_id: i64 = match id_str.parse() {
             Ok(id) => id,
             Err(_) => {
                 bot.answer_callback_query(&q.id)
@@ -801,13 +828,310 @@ async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: Arc<AppState>)
             }
         };
 
-        bot.answer_callback_query(&q.id)
-            .text("✏️ Edit mode coming soon")
-            .await?;
+        // Show edit sub-menu: Caption / Image / Cancel
+        bot.answer_callback_query(&q.id).await?;
+
+        if let Some(MaybeInaccessibleMessage::Regular(msg)) = q.message {
+            let edit_keyboard = serde_json::json!({
+                "inline_keyboard": [[
+                    { "text": "📝 Caption", "callback_data": format!("ig_edit_caption:{show_id}") },
+                    { "text": "🖼️ Image", "callback_data": format!("ig_edit_image:{show_id}") },
+                    { "text": "❌ Cancel", "callback_data": format!("ig_edit_cancel:{show_id}") }
+                ]]
+            });
+
+            let _ = bot
+                .edit_message_reply_markup(msg.chat.id, msg.id)
+                .reply_markup(serde_json::from_value(edit_keyboard).unwrap())
+                .await;
+        }
+    } else if let Some(id_str) = data.strip_prefix("ig_edit_caption:") {
+        handle_edit_caption_callback(&bot, &q, &state, id_str).await?;
+    } else if let Some(id_str) = data.strip_prefix("ig_edit_image:") {
+        handle_edit_image_callback(&bot, &q, &state, id_str).await?;
+    } else if let Some(id_str) = data.strip_prefix("ig_edit_cancel:") {
+        handle_edit_cancel_callback(&bot, &q, &state, id_str).await?;
     } else {
         bot.answer_callback_query(&q.id)
             .text("Unknown action")
             .await?;
+    }
+
+    Ok(())
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Edit mode handlers
+// ────────────────────────────────────────────────────────────────────────
+
+/// Build the standard Publish / Edit inline keyboard for a show preview.
+fn preview_keyboard(show_id: i64) -> teloxide::types::InlineKeyboardMarkup {
+    serde_json::from_value(serde_json::json!({
+        "inline_keyboard": [[
+            { "text": "📸 Publish to Instagram", "callback_data": format!("ig_publish:{show_id}") },
+            { "text": "✏️ Edit", "callback_data": format!("ig_edit:{show_id}") }
+        ]]
+    }))
+    .unwrap()
+}
+
+/// Handle "📝 Caption" button — start a caption edit session.
+async fn handle_edit_caption_callback(
+    bot: &Bot,
+    q: &CallbackQuery,
+    state: &Arc<AppState>,
+    id_str: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let show_id: i64 = id_str.parse().map_err(|_| "invalid show ID")?;
+    bot.answer_callback_query(&q.id).await?;
+
+    if let Some(MaybeInaccessibleMessage::Regular(msg)) = &q.message {
+        let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+            .bind(show_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| format!("Show {show_id} not found"))?;
+
+        // Store edit session
+        {
+            let mut sessions = state.telegram_edit_sessions.lock().await;
+            sessions.insert(
+                msg.chat.id.0,
+                models::TelegramEditSession {
+                    show_id,
+                    preview_chat_id: msg.chat.id.0,
+                    preview_message_id: msg.id.0,
+                    field: models::TelegramEditField::Caption,
+                },
+            );
+        }
+
+        // Send ForceReply prompt
+        let prompt = format!(
+            "📝 Reply to this message with the new caption for *{}*.",
+            show.title
+        );
+        let mut req = bot.send_message(msg.chat.id, &prompt);
+        req = req.reply_markup(teloxide::types::ReplyMarkup::ForceReply(ForceReply::new()));
+        if let Some(tid) = state.config.telegram_topic_id {
+            req = req.message_thread_id(ThreadId(teloxide::types::MessageId(tid)));
+        }
+        req.await?;
+    }
+    Ok(())
+}
+
+/// Handle "🖼️ Image" button — start an image edit session.
+async fn handle_edit_image_callback(
+    bot: &Bot,
+    q: &CallbackQuery,
+    state: &Arc<AppState>,
+    id_str: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let show_id: i64 = id_str.parse().map_err(|_| "invalid show ID")?;
+    bot.answer_callback_query(&q.id).await?;
+
+    if let Some(MaybeInaccessibleMessage::Regular(msg)) = &q.message {
+        let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+            .bind(show_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| format!("Show {show_id} not found"))?;
+
+        // Store edit session
+        {
+            let mut sessions = state.telegram_edit_sessions.lock().await;
+            sessions.insert(
+                msg.chat.id.0,
+                models::TelegramEditSession {
+                    show_id,
+                    preview_chat_id: msg.chat.id.0,
+                    preview_message_id: msg.id.0,
+                    field: models::TelegramEditField::Image,
+                },
+            );
+        }
+
+        // Send ForceReply prompt
+        let prompt = format!(
+            "🖼️ Reply to this message with the new cover image for *{}*.",
+            show.title
+        );
+        let mut req = bot.send_message(msg.chat.id, &prompt);
+        req = req.reply_markup(teloxide::types::ReplyMarkup::ForceReply(ForceReply::new()));
+        if let Some(tid) = state.config.telegram_topic_id {
+            req = req.message_thread_id(ThreadId(teloxide::types::MessageId(tid)));
+        }
+        req.await?;
+    }
+    Ok(())
+}
+
+/// Handle "❌ Cancel" button — clear session, restore original keyboard.
+async fn handle_edit_cancel_callback(
+    bot: &Bot,
+    q: &CallbackQuery,
+    state: &Arc<AppState>,
+    id_str: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let show_id: i64 = id_str.parse().map_err(|_| "invalid show ID")?;
+    bot.answer_callback_query(&q.id)
+        .text("✅ Edit cancelled")
+        .await?;
+
+    // Clear any pending session for this chat
+    if let Some(MaybeInaccessibleMessage::Regular(msg)) = &q.message {
+        {
+            let mut sessions = state.telegram_edit_sessions.lock().await;
+            sessions.remove(&msg.chat.id.0);
+        }
+        // Restore Publish/Edit keyboard
+        let _ = bot
+            .edit_message_reply_markup(msg.chat.id, msg.id)
+            .reply_markup(preview_keyboard(show_id))
+            .await;
+    }
+    Ok(())
+}
+
+/// Handle non-command messages: check for active edit sessions.
+///
+/// If an edit session is active for this chat, the message is treated as
+/// the new caption (text) or new image (photo). Otherwise, silently ignored.
+async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>) -> HandlerResult {
+    let chat_id = msg.chat.id.0;
+
+    // Check for active edit session
+    let session = {
+        let sessions = state.telegram_edit_sessions.lock().await;
+        sessions.get(&chat_id).cloned()
+    };
+
+    let session = match session {
+        Some(s) => s,
+        None => return Ok(()), // No active session — silently ignore
+    };
+
+    match session.field {
+        models::TelegramEditField::Caption => {
+            let new_caption = match msg.text() {
+                Some(text) => text.to_string(),
+                None => {
+                    let mut req = bot.send_message(
+                        msg.chat.id,
+                        "❌ Please send a text message for the caption.",
+                    );
+                    if let Some(tid) = state.config.telegram_topic_id {
+                        req = req.message_thread_id(ThreadId(MessageId(tid)));
+                    }
+                    req.await?;
+                    return Ok(());
+                }
+            };
+
+            // Update show.ai_bio in DB
+            let _ = sqlx::query("UPDATE shows SET ai_bio = ? WHERE id = ?")
+                .bind(&new_caption)
+                .bind(session.show_id)
+                .execute(&state.db)
+                .await;
+
+            // Re-fetch show and rebuild full caption
+            let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+                .bind(session.show_id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| format!("Show {} not found", session.show_id))?;
+
+            let full_caption = instagram::build_show_caption(&state, &show)
+                .await
+                .map_err(|e| format!("Failed to build caption: {e}"))?;
+
+            // Update preview message caption
+            let preview_chat = ChatId(session.preview_chat_id);
+            let preview_msg = MessageId(session.preview_message_id);
+            let _ = bot
+                .edit_message_caption(preview_chat, preview_msg)
+                .caption(&full_caption)
+                .reply_markup(preview_keyboard(session.show_id))
+                .await;
+
+            // Clear session
+            {
+                let mut sessions = state.telegram_edit_sessions.lock().await;
+                sessions.remove(&chat_id);
+            }
+
+            let mut req = bot.send_message(msg.chat.id, "✅ Caption updated.");
+            if let Some(tid) = state.config.telegram_topic_id {
+                req = req.message_thread_id(ThreadId(MessageId(tid)));
+            }
+            req.await?;
+        }
+        models::TelegramEditField::Image => {
+            // Get the largest photo from the message
+            let photo = match msg.photo() {
+                Some(photos) => photos.last().unwrap(), // last = largest resolution
+                None => {
+                    let mut req = bot.send_message(msg.chat.id, "❌ Please send a photo.");
+                    if let Some(tid) = state.config.telegram_topic_id {
+                        req = req.message_thread_id(ThreadId(MessageId(tid)));
+                    }
+                    req.await?;
+                    return Ok(());
+                }
+            };
+
+            // Download the photo from Telegram
+            let file = bot.get_file(&photo.file.id).await?;
+            let mut photo_bytes: Vec<u8> = Vec::new();
+            bot.download_file(&file.path, &mut photo_bytes).await?;
+
+            // Upload to R2 as the show cover
+            storage::upload_show_cover(&state, session.show_id, photo_bytes.clone()).await?;
+
+            // Update cover_generated_at in DB
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = sqlx::query("UPDATE shows SET cover_generated_at = ? WHERE id = ?")
+                .bind(&now)
+                .bind(session.show_id)
+                .execute(&state.db)
+                .await;
+
+            // Rebuild caption for the preview
+            let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+                .bind(session.show_id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| format!("Show {} not found", session.show_id))?;
+
+            let full_caption = instagram::build_show_caption(&state, &show)
+                .await
+                .map_err(|e| format!("Failed to build caption: {e}"))?;
+
+            // Update the preview message with the new image using editMessageMedia
+            let preview_chat = ChatId(session.preview_chat_id);
+            let preview_msg = MessageId(session.preview_message_id);
+            let new_media = InputMedia::Photo(
+                InputMediaPhoto::new(InputFile::memory(photo_bytes)).caption(&full_caption),
+            );
+            let _ = bot
+                .edit_message_media(preview_chat, preview_msg, new_media)
+                .reply_markup(preview_keyboard(session.show_id))
+                .await;
+
+            // Clear session
+            {
+                let mut sessions = state.telegram_edit_sessions.lock().await;
+                sessions.remove(&chat_id);
+            }
+
+            let mut req = bot.send_message(msg.chat.id, "✅ Cover image updated.");
+            if let Some(tid) = state.config.telegram_topic_id {
+                req = req.message_thread_id(ThreadId(MessageId(tid)));
+            }
+            req.await?;
+        }
     }
 
     Ok(())

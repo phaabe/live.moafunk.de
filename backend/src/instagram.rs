@@ -61,6 +61,7 @@ pub struct TokenRefreshResponse {
 pub struct InstagramPostResult {
     pub success: bool,
     pub media_id: Option<String>,
+    pub permalink: Option<String>,
     pub error: Option<String>,
 }
 
@@ -219,6 +220,42 @@ impl InstagramClient {
         Ok(status_resp
             .status_code
             .unwrap_or_else(|| "UNKNOWN".to_string()))
+    }
+
+    /// Fetch the permalink for a published media post.
+    ///
+    /// After publishing, the `media_id` returned by the API can be used
+    /// to look up the direct post URL via `GET /{media_id}?fields=permalink`.
+    async fn fetch_permalink(&self, media_id: &str) -> Option<String> {
+        let url = format!(
+            "{}/{}/{}?fields=permalink&access_token={}",
+            GRAPH_API_BASE, GRAPH_API_VERSION, media_id, self.access_token
+        );
+
+        #[derive(Deserialize)]
+        struct PermalinkResponse {
+            permalink: Option<String>,
+        }
+
+        match self.http.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<PermalinkResponse>().await {
+                    Ok(pr) => pr.permalink,
+                    Err(e) => {
+                        tracing::warn!("Failed to parse permalink response: {e}");
+                        None
+                    }
+                }
+            }
+            Ok(resp) => {
+                tracing::warn!("Permalink fetch returned {}", resp.status());
+                None
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch permalink: {e}");
+                None
+            }
+        }
     }
 
     /// Publish a media container to Instagram feed
@@ -518,6 +555,7 @@ impl InstagramClient {
                 return Ok(InstagramPostResult {
                     success: false,
                     media_id: None,
+                    permalink: None,
                     error: Some(format!("Failed to create image slide: {}", e)),
                 });
             }
@@ -532,6 +570,7 @@ impl InstagramClient {
                     return Ok(InstagramPostResult {
                         success: false,
                         media_id: None,
+                        permalink: None,
                         error: Some(format!("Failed to create video slide {}: {}", i + 1, e)),
                     });
                 }
@@ -558,6 +597,7 @@ impl InstagramClient {
             return Ok(InstagramPostResult {
                 success: false,
                 media_id: None,
+                permalink: None,
                 error: Some(format!("Image slide processing failed: {}", e)),
             });
         }
@@ -576,6 +616,7 @@ impl InstagramClient {
                 return Ok(InstagramPostResult {
                     success: false,
                     media_id: None,
+                    permalink: None,
                     error: Some(format!("Video slide {} processing failed: {}", i + 1, e)),
                 });
             }
@@ -591,6 +632,7 @@ impl InstagramClient {
                 return Ok(InstagramPostResult {
                     success: false,
                     media_id: None,
+                    permalink: None,
                     error: Some(format!("Failed to create carousel: {}", e)),
                 });
             }
@@ -609,6 +651,7 @@ impl InstagramClient {
             return Ok(InstagramPostResult {
                 success: false,
                 media_id: None,
+                permalink: None,
                 error: Some(format!("Carousel processing failed: {}", e)),
             });
         }
@@ -643,6 +686,7 @@ impl InstagramClient {
                         return Ok(InstagramPostResult {
                             success: false,
                             media_id: None,
+                            permalink: None,
                             error: Some(format!("Failed to publish carousel: {}", err_str)),
                         });
                     }
@@ -652,9 +696,16 @@ impl InstagramClient {
 
         tracing::info!("Successfully published carousel to Instagram: {}", media_id);
 
+        // Fetch the permalink for the published carousel
+        let permalink = self.fetch_permalink(&media_id).await;
+        if let Some(ref url) = permalink {
+            tracing::info!("Instagram carousel permalink: {}", url);
+        }
+
         Ok(InstagramPostResult {
             success: true,
             media_id: Some(media_id),
+            permalink,
             error: None,
         })
     }
@@ -680,6 +731,7 @@ impl InstagramClient {
                 return Ok(InstagramPostResult {
                     success: false,
                     media_id: None,
+                    permalink: None,
                     error: Some(e.to_string()),
                 });
             }
@@ -710,6 +762,7 @@ impl InstagramClient {
                     return Ok(InstagramPostResult {
                         success: false,
                         media_id: None,
+                        permalink: None,
                         error: Some(format!(
                             "Instagram container processing failed with status: {}",
                             status
@@ -721,6 +774,7 @@ impl InstagramClient {
                         return Ok(InstagramPostResult {
                             success: false,
                             media_id: None,
+                            permalink: None,
                             error: Some(
                                 "Instagram container processing timed out after 60s".to_string(),
                             ),
@@ -764,6 +818,7 @@ impl InstagramClient {
                         return Ok(InstagramPostResult {
                             success: false,
                             media_id: None,
+                            permalink: None,
                             error: Some(err_str),
                         });
                     }
@@ -773,9 +828,16 @@ impl InstagramClient {
 
         tracing::info!("Successfully published to Instagram: {}", media_id);
 
+        // Fetch the permalink for the published post
+        let permalink = self.fetch_permalink(&media_id).await;
+        if let Some(ref url) = permalink {
+            tracing::info!("Instagram post permalink: {}", url);
+        }
+
         Ok(InstagramPostResult {
             success: true,
             media_id: Some(media_id),
+            permalink,
             error: None,
         })
     }
@@ -852,6 +914,7 @@ pub async fn post_show_to_instagram(
         return Ok(InstagramPostResult {
             success: false,
             media_id: None,
+            permalink: None,
             error: Some("Show has no cover image. Assign artists first.".to_string()),
         });
     }

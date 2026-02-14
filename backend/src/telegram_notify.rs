@@ -825,6 +825,38 @@ pub fn notify_soundcloud_upload(state: &Arc<AppState>, show_id: i64, title: &str
     });
 }
 
+/// Notify admin that a show was published to Instagram.
+///
+/// Includes the show title and a permalink to the Instagram post.
+/// Spawns a detached tokio task so the caller is never blocked.
+pub fn notify_instagram_published(
+    state: &Arc<AppState>,
+    show_id: i64,
+    title: &str,
+    permalink: Option<&str>,
+) {
+    let state = state.clone();
+    let title = title.to_owned();
+    let permalink = permalink.map(|s| s.to_owned());
+    tokio::spawn(async move {
+        let link_line = match permalink {
+            Some(ref url) => format!("\n\n<a href=\"{}\">View on Instagram</a>", html_escape(url)),
+            None => String::new(),
+        };
+        notify_html(
+            &state,
+            &format!(
+                "📸 Published to Instagram\n\n\
+                 <b>{}</b> (show #{}){}",
+                html_escape(&title),
+                show_id,
+                link_line,
+            ),
+        )
+        .await;
+    });
+}
+
 /// Notify admin that a live stream has started.
 ///
 /// Spawns a detached tokio task so the caller is never blocked.

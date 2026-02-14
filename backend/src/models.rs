@@ -1,6 +1,25 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+/// What field is being edited in a Telegram Instagram preview session.
+#[derive(Debug, Clone)]
+pub enum TelegramEditField {
+    Caption,
+    Image,
+}
+
+/// In-memory session tracking an active edit on a Telegram preview message.
+#[derive(Debug, Clone)]
+pub struct TelegramEditSession {
+    pub show_id: i64,
+    /// Chat ID where the preview message lives
+    pub preview_chat_id: i64,
+    /// Message ID of the preview message (photo + caption)
+    pub preview_message_id: i32,
+    /// Which field the user is editing
+    pub field: TelegramEditField,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Artist {
     pub id: i64,
@@ -59,6 +78,7 @@ pub struct Show {
     pub recording_key: Option<String>,
     pub recording_filename: Option<String>,
     pub instagram_posted_at: Option<String>,
+    pub instagram_post_url: Option<String>,
     pub ai_bio: Option<String>,
     pub soundcloud_track_id: Option<String>,
     pub soundcloud_url: Option<String>,

@@ -807,6 +807,7 @@ pub async fn api_post_artist_to_instagram(
         return Ok(Json(InstagramPostResponse {
             success: false,
             media_id: None,
+            permalink: None,
             error: Some(
                 "This artist was already posted to Instagram. Use force=true to post again."
                     .to_string(),
@@ -836,6 +837,7 @@ pub async fn api_post_artist_to_instagram(
     Ok(Json(InstagramPostResponse {
         success: result.success,
         media_id: result.media_id,
+        permalink: result.permalink,
         error: result.error,
         already_posted: false,
     }))
@@ -1253,6 +1255,7 @@ pub struct ShowDetailResponse {
     recording_peaks_url: Option<String>,
     recording_filename: Option<String>,
     instagram_posted_at: Option<String>,
+    instagram_post_url: Option<String>,
     soundcloud_track_id: Option<String>,
     soundcloud_url: Option<String>,
     soundcloud_uploaded_at: Option<String>,
@@ -1715,6 +1718,7 @@ pub async fn api_show_detail(
         recording_peaks_url,
         recording_filename: show.recording_filename,
         instagram_posted_at: show.instagram_posted_at,
+        instagram_post_url: show.instagram_post_url,
         soundcloud_track_id: show.soundcloud_track_id,
         soundcloud_url: show.soundcloud_url,
         soundcloud_uploaded_at: show.soundcloud_uploaded_at,
@@ -2520,6 +2524,7 @@ fn default_instagram_account() -> String {
 pub struct InstagramPostResponse {
     success: bool,
     media_id: Option<String>,
+    permalink: Option<String>,
     error: Option<String>,
     already_posted: bool,
 }
@@ -2544,6 +2549,7 @@ pub async fn api_post_show_to_instagram(
         return Ok(Json(InstagramPostResponse {
             success: false,
             media_id: None,
+            permalink: None,
             error: Some(
                 "This show was already posted to Instagram. Use force=true to post again."
                     .to_string(),
@@ -2556,8 +2562,9 @@ pub async fn api_post_show_to_instagram(
     let result = crate::instagram::post_show_to_instagram(&state, &show, &req.account).await?;
 
     if result.success {
-        // Update instagram_posted_at timestamp
-        sqlx::query("UPDATE shows SET instagram_posted_at = datetime('now') WHERE id = ?")
+        // Update instagram_posted_at timestamp and store permalink
+        sqlx::query("UPDATE shows SET instagram_posted_at = datetime('now'), instagram_post_url = ? WHERE id = ?")
+            .bind(&result.permalink)
             .bind(id)
             .execute(&state.db)
             .await?;
@@ -2568,11 +2575,20 @@ pub async fn api_post_show_to_instagram(
             req.account,
             result.media_id
         );
+
+        // Notify via Telegram
+        crate::telegram_notify::notify_instagram_published(
+            &state,
+            show.id,
+            &show.title,
+            result.permalink.as_deref(),
+        );
     }
 
     Ok(Json(InstagramPostResponse {
         success: result.success,
         media_id: result.media_id,
+        permalink: result.permalink,
         error: result.error,
         already_posted: false,
     }))

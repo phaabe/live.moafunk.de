@@ -46,6 +46,9 @@ pub type CoverDebounceMap = Arc<RwLock<HashMap<i64, tokio::time::Instant>>>;
 pub type PendingShowNotifications =
     Arc<tokio::sync::Mutex<HashMap<i64, tokio::task::JoinHandle<()>>>>;
 
+/// Active Telegram edit sessions keyed by chat_id (only one edit at a time per chat)
+pub type TelegramEditSessions = Arc<tokio::sync::Mutex<HashMap<i64, models::TelegramEditSession>>>;
+
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub config: Config,
@@ -61,6 +64,8 @@ pub struct AppState {
     pub telegram_bot: Option<teloxide::Bot>,
     /// Pending show update notifications (debounced to avoid spam)
     pub pending_show_notifications: PendingShowNotifications,
+    /// Active Telegram edit sessions (chat_id -> session)
+    pub telegram_edit_sessions: TelegramEditSessions,
 }
 
 // Stream handler wrappers that extract stream_state from AppState
@@ -229,6 +234,10 @@ async fn main() -> anyhow::Result<()> {
     // Initialize pending show notifications tracker (for debouncing)
     let pending_show_notifications = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
+    // Initialize Telegram edit sessions tracker
+    let telegram_edit_sessions: TelegramEditSessions =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
@@ -239,6 +248,7 @@ async fn main() -> anyhow::Result<()> {
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot,
         pending_show_notifications,
+        telegram_edit_sessions,
     });
 
     // Pre-generate and upload default cover to S3 at startup
