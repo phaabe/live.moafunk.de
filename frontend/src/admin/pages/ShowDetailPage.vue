@@ -795,6 +795,9 @@ onUnmounted(() => {
                   <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
                     Re-upload
                   </BaseButton>
+                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost" @click="connectSoundCloud">
+                    🔗 Reconnect
+                  </BaseButton>
                 </div>
               </template>
               <template v-else-if="scStatus && scStatus.configured && !scStatus.authorized">
@@ -803,9 +806,14 @@ onUnmounted(() => {
                 </BaseButton>
               </template>
               <template v-else>
-                <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
-                  ☁️ Upload to SoundCloud
-                </BaseButton>
+                <div class="soundcloud-actions">
+                  <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
+                    ☁️ Upload to SoundCloud
+                  </BaseButton>
+                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost" @click="connectSoundCloud">
+                    🔗 Reconnect
+                  </BaseButton>
+                </div>
               </template>
             </div>
           </template>

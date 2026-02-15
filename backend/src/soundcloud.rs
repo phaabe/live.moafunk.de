@@ -523,7 +523,8 @@ pub struct SoundCloudStatus {
 pub async fn get_status(state: &Arc<AppState>) -> SoundCloudStatus {
     let configured = is_configured(state);
     let authorized = has_token(state).await;
-    let auth_url = if configured && !authorized {
+    // Always provide auth_url when configured, so the admin can reconnect
+    let auth_url = if configured {
         get_auth_url(state).ok()
     } else {
         None
