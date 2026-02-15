@@ -521,6 +521,7 @@ export interface SoundCloudStatus {
 
 export const soundcloudApi = {
   getStatus: () => api.get<SoundCloudStatus>('/api/soundcloud/status'),
+  disconnect: () => api.post<{ success: boolean }>('/api/soundcloud/disconnect'),
 };
 
 // Users API

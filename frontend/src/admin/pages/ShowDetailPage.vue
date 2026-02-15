@@ -469,6 +469,21 @@ function connectSoundCloud() {
   }
 }
 
+// SoundCloud disconnect (clear stale token, then reconnect)
+async function disconnectAndReconnectSoundCloud() {
+  try {
+    await soundcloudApi.disconnect();
+    scStatus.value = await soundcloudApi.getStatus();
+    flash.success('SoundCloud token cleared.');
+    if (scStatus.value?.auth_url) {
+      window.open(scStatus.value.auth_url, '_blank', 'width=600,height=700');
+      flash.success('Complete SoundCloud authorization in the opened window, then try again.');
+    }
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to disconnect SoundCloud');
+  }
+}
+
 // Load SoundCloud status (non-blocking)
 async function loadSoundCloudStatus() {
   try {
@@ -795,7 +810,7 @@ onUnmounted(() => {
                   <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
                     Re-upload
                   </BaseButton>
-                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost" @click="connectSoundCloud">
+                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost" @click="disconnectAndReconnectSoundCloud">
                     🔗 Reconnect
                   </BaseButton>
                 </div>
@@ -810,7 +825,7 @@ onUnmounted(() => {
                   <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
                     ☁️ Upload to SoundCloud
                   </BaseButton>
-                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost" @click="connectSoundCloud">
+                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost" @click="disconnectAndReconnectSoundCloud">
                     🔗 Reconnect
                   </BaseButton>
                 </div>

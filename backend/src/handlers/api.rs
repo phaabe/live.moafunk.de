@@ -2910,6 +2910,17 @@ pub async fn api_set_soundcloud_privacy(
     Ok(Json(result))
 }
 
+/// POST /api/soundcloud/disconnect
+/// Clear the stored SoundCloud OAuth token, forcing re-authorization.
+pub async fn api_soundcloud_disconnect(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+    crate::soundcloud::delete_stored_token(&state).await?;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
