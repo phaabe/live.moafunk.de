@@ -12,6 +12,19 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Telegram limits captions on media messages to 1024 characters.
+/// Truncate at the last whitespace boundary before the limit and append "…".
+pub fn truncate_caption(caption: &str, limit: usize) -> String {
+    if caption.len() <= limit {
+        return caption.to_owned();
+    }
+    // Find last whitespace before the limit (leave room for "…")
+    let truncate_at = caption[..limit - 1]
+        .rfind(char::is_whitespace)
+        .unwrap_or(limit - 1);
+    format!("{}…", &caption[..truncate_at])
+}
+
 /// Download a file from a presigned URL into memory.
 async fn download_file_bytes(presigned_url: &str) -> Result<Vec<u8>, String> {
     reqwest::get(presigned_url)
@@ -1210,10 +1223,11 @@ pub async fn send_show_instagram_preview(
         return Err("Show has no cover image. Assign artists first.".to_string());
     }
 
-    // Build the exact Instagram caption
-    let caption = instagram::build_show_caption(state, &show)
+    // Build the exact Instagram caption (truncated for Telegram's 1024-char limit)
+    let full_caption = instagram::build_show_caption(state, &show)
         .await
         .map_err(|e| format!("Failed to build caption: {e}"))?;
+    let caption = truncate_caption(&full_caption, 1024);
 
     // Download cover image from R2
     let cover_key = format!("shows/{}/cover.png", show.id);
@@ -1389,11 +1403,12 @@ pub async fn send_artist_instagram_preview(
         .as_deref()
         .ok_or("Telegram bot token not configured")?;
 
-    // Require an instagram_caption
-    let caption = artist
+    // Require an instagram_caption (truncated for Telegram's 1024-char limit)
+    let full_caption = artist
         .instagram_caption
         .as_deref()
         .ok_or("Artist has no Instagram caption. Generate one first.")?;
+    let caption = truncate_caption(full_caption, 1024);
 
     // Select best available photo: overlay → cropped → original
     let pic_key = artist
@@ -1421,7 +1436,7 @@ pub async fn send_artist_instagram_preview(
         chat_id,
         photo_bytes,
         filename,
-        caption,
+        &caption,
         "", // no parse_mode — caption is plain text (Instagram format)
         state.config.telegram_topic_id,
         Some(&markup_json),
