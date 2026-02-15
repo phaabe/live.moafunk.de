@@ -88,6 +88,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "artists", "track1_video_key", "TEXT").await?;
     add_column_if_missing(pool, "artists", "track2_video_key", "TEXT").await?;
 
+    // Telegram artist preview tracking
+    add_column_if_missing(pool, "artists", "telegram_preview_message_id", "INTEGER").await?;
+    add_column_if_missing(pool, "artists", "telegram_video1_message_id", "INTEGER").await?;
+    add_column_if_missing(pool, "artists", "telegram_video2_message_id", "INTEGER").await?;
+    add_column_if_missing(pool, "artists", "telegram_artist_preview_sent_at", "TEXT").await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shows (
@@ -169,6 +175,15 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "#,
     )
     .execute(pool)
+    .await?;
+
+    // Sort order for artist posting schedule
+    add_column_if_missing(
+        pool,
+        "artist_show_assignments",
+        "sort_order",
+        "INTEGER DEFAULT 0",
+    )
     .await?;
 
     // Enforce: a show can have at most 4 assigned artists.
@@ -616,5 +631,27 @@ pub async fn delete_recording_version(pool: &SqlitePool, id: i64) -> Result<(), 
         .bind(id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+// ============================================================================
+// Artist Sort Order
+// ============================================================================
+
+/// Update the sort_order of an artist within a show assignment.
+pub async fn set_artist_sort_order(
+    pool: &SqlitePool,
+    show_id: i64,
+    artist_id: i64,
+    new_order: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE artist_show_assignments SET sort_order = ? WHERE show_id = ? AND artist_id = ?",
+    )
+    .bind(new_order)
+    .bind(show_id)
+    .bind(artist_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }

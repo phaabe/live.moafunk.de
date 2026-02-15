@@ -473,7 +473,7 @@ async fn cmd_show(state: &Arc<AppState>, id: i64) -> crate::Result<String> {
     let artists: Vec<models::Artist> = sqlx::query_as(
         "SELECT a.* FROM artists a \
          INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
-         WHERE asa.show_id = ? ORDER BY a.name",
+         WHERE asa.show_id = ? ORDER BY asa.sort_order, a.name COLLATE NOCASE",
     )
     .bind(id)
     .fetch_all(&state.db)
@@ -660,6 +660,11 @@ async fn cmd_post_show_instagram(state: &Arc<AppState>, id: i64) -> crate::Resul
         .bind(id)
         .execute(&state.db)
         .await;
+
+        // Prompt for artist post order after successful publish
+        if let Err(e) = telegram_notify::send_sort_order_prompt(state, id).await {
+            tracing::warn!("Failed to send sort order prompt for show {id}: {e}");
+        }
 
         let link_info = result
             .permalink
@@ -851,6 +856,21 @@ async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: Arc<AppState>)
         handle_edit_image_callback(&bot, &q, &state, id_str).await?;
     } else if let Some(id_str) = data.strip_prefix("ig_edit_cancel:") {
         handle_edit_cancel_callback(&bot, &q, &state, id_str).await?;
+
+    // ── Artist Instagram preview callbacks ──
+    } else if let Some(id_str) = data.strip_prefix("aig_pub:") {
+        handle_aig_pub(&bot, &q, &state, id_str).await?;
+    } else if let Some(id_str) = data.strip_prefix("aig_cap:") {
+        handle_aig_cap(&bot, &q, &state, id_str).await?;
+    } else if let Some(id_str) = data.strip_prefix("aig_img:") {
+        handle_aig_img(&bot, &q, &state, id_str).await?;
+    } else if let Some(rest) = data.strip_prefix("aig_vid:") {
+        handle_aig_vid(&bot, &q, &state, rest).await?;
+    } else if let Some(rest) = data.strip_prefix("aig_sort:") {
+        handle_aig_sort(&bot, &q, &state, rest).await?;
+    } else if data.starts_with("aig_sort_noop:") {
+        // No-op: clicking the artist name label does nothing
+        bot.answer_callback_query(&q.id).await?;
     } else {
         bot.answer_callback_query(&q.id)
             .text("Unknown action")
@@ -899,9 +919,12 @@ async fn handle_edit_caption_callback(
                 msg.chat.id.0,
                 models::TelegramEditSession {
                     show_id,
+                    artist_id: None,
                     preview_chat_id: msg.chat.id.0,
                     preview_message_id: msg.id.0,
                     field: models::TelegramEditField::Caption,
+                    track_number: None,
+                    video_msg_id: None,
                 },
             );
         }
@@ -945,9 +968,12 @@ async fn handle_edit_image_callback(
                 msg.chat.id.0,
                 models::TelegramEditSession {
                     show_id,
+                    artist_id: None,
                     preview_chat_id: msg.chat.id.0,
                     preview_message_id: msg.id.0,
                     field: models::TelegramEditField::Image,
+                    track_number: None,
+                    video_msg_id: None,
                 },
             );
         }
@@ -994,6 +1020,416 @@ async fn handle_edit_cancel_callback(
     Ok(())
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Artist Instagram preview callback handlers (aig_*)
+// ────────────────────────────────────────────────────────────────────────
+
+/// Handle "📤 Publish" button — post artist to Instagram.
+async fn handle_aig_pub(
+    bot: &Bot,
+    q: &CallbackQuery,
+    state: &Arc<AppState>,
+    id_str: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let artist_id: i64 = id_str.parse().map_err(|_| "invalid artist ID")?;
+
+    bot.answer_callback_query(&q.id)
+        .text("📤 Publishing to Instagram…")
+        .await?;
+
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(artist_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| format!("Artist {artist_id} not found"))?;
+
+    // Remove buttons and show progress
+    let token = state.config.telegram_bot_token.as_deref().unwrap_or_default();
+    let chat_id = state.config.telegram_admin_chat_id.unwrap_or_default();
+
+    if let Some(preview_msg_id) = artist.telegram_preview_message_id {
+        let caption = artist.instagram_caption.as_deref().unwrap_or("");
+        let progress_caption = format!("{caption}\n\n⏳ Publishing to Instagram…");
+        let _ = telegram_notify::edit_message_caption_raw(
+            token, chat_id, preview_msg_id, &progress_caption, "", None,
+        )
+        .await;
+    }
+
+    // Publish
+    let account = state.config.telegram_instagram_account();
+    let result = instagram::post_artist_to_instagram(state, &artist, account).await;
+
+    match result {
+        Ok(ref post_result) if post_result.success => {
+            // Update DB
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = sqlx::query("UPDATE artists SET instagram_posted_at = ? WHERE id = ?")
+                .bind(&now)
+                .bind(artist_id)
+                .execute(&state.db)
+                .await;
+
+            // Update caption to show success
+            if let Some(preview_msg_id) = artist.telegram_preview_message_id {
+                let caption = artist.instagram_caption.as_deref().unwrap_or("");
+                let success_caption = format!("{caption}\n\n✅ Published to Instagram!");
+                let _ = telegram_notify::edit_message_caption_raw(
+                    token, chat_id, preview_msg_id, &success_caption, "", None,
+                )
+                .await;
+            }
+        }
+        Ok(ref post_result) => {
+            let err_msg = post_result.error.as_deref().unwrap_or("Unknown error");
+            tracing::error!("Instagram post failed for artist {artist_id}: {err_msg}");
+            // Restore buttons with error
+            if let Some(preview_msg_id) = artist.telegram_preview_message_id {
+                let caption = artist.instagram_caption.as_deref().unwrap_or("");
+                let error_caption = format!("{caption}\n\n❌ Error: {err_msg}");
+                let markup = telegram_notify::build_artist_preview_keyboard(
+                    artist_id,
+                    artist.track1_video_key.is_some(),
+                    artist.track2_video_key.is_some(),
+                );
+                let _ = telegram_notify::edit_message_caption_raw(
+                    token, chat_id, preview_msg_id, &error_caption, "", Some(&markup),
+                )
+                .await;
+            }
+        }
+        Err(e) => {
+            tracing::error!("Instagram post error for artist {artist_id}: {e}");
+            // Restore buttons with error
+            if let Some(preview_msg_id) = artist.telegram_preview_message_id {
+                let caption = artist.instagram_caption.as_deref().unwrap_or("");
+                let error_caption = format!("{caption}\n\n❌ Error: {e}");
+                let markup = telegram_notify::build_artist_preview_keyboard(
+                    artist_id,
+                    artist.track1_video_key.is_some(),
+                    artist.track2_video_key.is_some(),
+                );
+                let _ = telegram_notify::edit_message_caption_raw(
+                    token, chat_id, preview_msg_id, &error_caption, "", Some(&markup),
+                )
+                .await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle "✏️ Caption" button — start an artist caption edit session.
+async fn handle_aig_cap(
+    bot: &Bot,
+    q: &CallbackQuery,
+    state: &Arc<AppState>,
+    id_str: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let artist_id: i64 = id_str.parse().map_err(|_| "invalid artist ID")?;
+    bot.answer_callback_query(&q.id).await?;
+
+    if let Some(MaybeInaccessibleMessage::Regular(msg)) = &q.message {
+        // Load artist name for the prompt
+        let name: String = sqlx::query_scalar("SELECT name FROM artists WHERE id = ?")
+            .bind(artist_id)
+            .fetch_optional(&state.db)
+            .await?
+            .unwrap_or_else(|| format!("Artist {artist_id}"));
+
+        // Store edit session
+        {
+            let mut sessions = state.telegram_edit_sessions.lock().await;
+            sessions.insert(
+                msg.chat.id.0,
+                models::TelegramEditSession {
+                    show_id: 0,
+                    artist_id: Some(artist_id),
+                    preview_chat_id: msg.chat.id.0,
+                    preview_message_id: msg.id.0,
+                    field: models::TelegramEditField::Caption,
+                    track_number: None,
+                    video_msg_id: None,
+                },
+            );
+        }
+
+        // Send ForceReply prompt
+        let prompt = format!("📝 Reply with the new caption for *{name}*.");
+        let mut req = bot.send_message(msg.chat.id, &prompt);
+        req = req.reply_markup(teloxide::types::ReplyMarkup::ForceReply(ForceReply::new()));
+        if let Some(tid) = state.config.telegram_topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(tid)));
+        }
+        req.await?;
+    }
+
+    Ok(())
+}
+
+/// Handle "🖼 Image" button — start an artist image replacement session.
+async fn handle_aig_img(
+    bot: &Bot,
+    q: &CallbackQuery,
+    state: &Arc<AppState>,
+    id_str: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let artist_id: i64 = id_str.parse().map_err(|_| "invalid artist ID")?;
+    bot.answer_callback_query(&q.id).await?;
+
+    if let Some(MaybeInaccessibleMessage::Regular(msg)) = &q.message {
+        let name: String = sqlx::query_scalar("SELECT name FROM artists WHERE id = ?")
+            .bind(artist_id)
+            .fetch_optional(&state.db)
+            .await?
+            .unwrap_or_else(|| format!("Artist {artist_id}"));
+
+        // Store edit session
+        {
+            let mut sessions = state.telegram_edit_sessions.lock().await;
+            sessions.insert(
+                msg.chat.id.0,
+                models::TelegramEditSession {
+                    show_id: 0,
+                    artist_id: Some(artist_id),
+                    preview_chat_id: msg.chat.id.0,
+                    preview_message_id: msg.id.0,
+                    field: models::TelegramEditField::Image,
+                    track_number: None,
+                    video_msg_id: None,
+                },
+            );
+        }
+
+        // Send ForceReply prompt
+        let prompt = format!("🖼 Reply with a new photo for *{name}*.");
+        let mut req = bot.send_message(msg.chat.id, &prompt);
+        req = req.reply_markup(teloxide::types::ReplyMarkup::ForceReply(ForceReply::new()));
+        if let Some(tid) = state.config.telegram_topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(tid)));
+        }
+        req.await?;
+    }
+
+    Ok(())
+}
+
+/// Handle "🎬 Video N" button — start a timecode session for video regeneration.
+///
+/// `rest` format: `{artist_id}:{track_number}` e.g. `42:1`
+async fn handle_aig_vid(
+    bot: &Bot,
+    q: &CallbackQuery,
+    state: &Arc<AppState>,
+    rest: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let parts: Vec<&str> = rest.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        bot.answer_callback_query(&q.id)
+            .text("❌ Invalid callback data")
+            .await?;
+        return Ok(());
+    }
+    let artist_id: i64 = parts[0].parse().map_err(|_| "invalid artist ID")?;
+    let track_num: u8 = parts[1].parse().map_err(|_| "invalid track number")?;
+
+    if track_num != 1 && track_num != 2 {
+        bot.answer_callback_query(&q.id)
+            .text("❌ Invalid track number")
+            .await?;
+        return Ok(());
+    }
+
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(artist_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| format!("Artist {artist_id} not found"))?;
+
+    let vid_msg_id = if track_num == 1 {
+        artist.telegram_video1_message_id
+    } else {
+        artist.telegram_video2_message_id
+    };
+
+    if vid_msg_id.is_none() {
+        bot.answer_callback_query(&q.id)
+            .text("❌ No video message found for this track")
+            .await?;
+        return Ok(());
+    }
+
+    bot.answer_callback_query(&q.id).await?;
+
+    if let Some(MaybeInaccessibleMessage::Regular(msg)) = &q.message {
+        // Store edit session
+        {
+            let mut sessions = state.telegram_edit_sessions.lock().await;
+            sessions.insert(
+                msg.chat.id.0,
+                models::TelegramEditSession {
+                    show_id: 0,
+                    artist_id: Some(artist_id),
+                    preview_chat_id: msg.chat.id.0,
+                    preview_message_id: msg.id.0,
+                    field: models::TelegramEditField::Timecode,
+                    track_number: Some(track_num),
+                    video_msg_id: vid_msg_id,
+                },
+            );
+        }
+
+        // Send ForceReply prompt
+        let prompt = format!(
+            "🎬 Reply with a start timecode for track {track_num} (e.g. `1:30` or `90` for seconds, `0` for beginning)."
+        );
+        let mut req = bot.send_message(msg.chat.id, &prompt);
+        req = req.reply_markup(teloxide::types::ReplyMarkup::ForceReply(ForceReply::new()));
+        if let Some(tid) = state.config.telegram_topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(tid)));
+        }
+        req.await?;
+    }
+
+    Ok(())
+}
+
+/// Parse a timecode string into seconds.
+///
+/// Supports formats:
+/// - `"1:30"` → 90
+/// - `"0:45"` → 45
+/// - `"90"` → 90
+/// - `"0"` → 0
+pub fn parse_timecode(input: &str) -> Result<u32, String> {
+    let input = input.trim();
+    if let Some((min_str, sec_str)) = input.split_once(':') {
+        let minutes: u32 = min_str
+            .parse()
+            .map_err(|_| format!("Invalid minutes: '{min_str}'"))?;
+        let seconds: u32 = sec_str
+            .parse()
+            .map_err(|_| format!("Invalid seconds: '{sec_str}'"))?;
+        if seconds >= 60 {
+            return Err(format!("Seconds must be 0-59, got {seconds}"));
+        }
+        Ok(minutes * 60 + seconds)
+    } else {
+        input
+            .parse::<u32>()
+            .map_err(|_| format!("Invalid timecode: '{input}'. Use M:SS or plain seconds."))
+    }
+}
+
+/// Handle ⬆️/⬇️ sort order reorder callback.
+///
+/// Callback data format: `aig_sort:{show_id}:{artist_id}:{direction}`
+/// where direction is "up" or "down".
+async fn handle_aig_sort(
+    bot: &Bot,
+    q: &CallbackQuery,
+    state: &Arc<AppState>,
+    rest: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let parts: Vec<&str> = rest.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        bot.answer_callback_query(&q.id)
+            .text("❌ Invalid sort callback data")
+            .await?;
+        return Ok(());
+    }
+    let show_id: i64 = parts[0].parse().map_err(|_| "invalid show ID")?;
+    let artist_id: i64 = parts[1].parse().map_err(|_| "invalid artist ID")?;
+    let direction = parts[2]; // "up" or "down"
+
+    // Fetch all artists for this show in current sort order
+    let artists: Vec<models::Artist> = sqlx::query_as(
+        "SELECT a.* FROM artists a \
+         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
+         WHERE asa.show_id = ? ORDER BY asa.sort_order, a.name COLLATE NOCASE",
+    )
+    .bind(show_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    // Find position of the target artist
+    let pos = match artists.iter().position(|a| a.id == artist_id) {
+        Some(p) => p,
+        None => {
+            bot.answer_callback_query(&q.id)
+                .text("❌ Artist not found in show")
+                .await?;
+            return Ok(());
+        }
+    };
+
+    // Determine swap target
+    let swap_pos = match direction {
+        "up" if pos > 0 => pos - 1,
+        "down" if pos < artists.len() - 1 => pos + 1,
+        _ => {
+            bot.answer_callback_query(&q.id)
+                .text("⚠️ Can't move further")
+                .await?;
+            return Ok(());
+        }
+    };
+
+    // Swap sort_order values
+    let current_order = pos as i32;
+    let swap_order = swap_pos as i32;
+    crate::db::set_artist_sort_order(&state.db, show_id, artists[pos].id, swap_order).await?;
+    crate::db::set_artist_sort_order(&state.db, show_id, artists[swap_pos].id, current_order)
+        .await?;
+
+    // Re-fetch for the updated order
+    let artists: Vec<models::Artist> = sqlx::query_as(
+        "SELECT a.* FROM artists a \
+         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
+         WHERE asa.show_id = ? ORDER BY asa.sort_order, a.name COLLATE NOCASE",
+    )
+    .bind(show_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let artist_pairs: Vec<(i64, String)> = artists.iter().map(|a| (a.id, a.name.clone())).collect();
+    let keyboard = telegram_notify::build_sort_order_keyboard(show_id, &artist_pairs);
+
+    // Fetch show title for the message text
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| format!("Show {show_id} not found"))?;
+
+    let text = format!(
+        "📋 Set artist post order for {}\n\n\
+         Day 1 after show → first artist, Day 2 → second, etc.",
+        show.title
+    );
+
+    // Edit the sort order message in-place
+    if let Some(MaybeInaccessibleMessage::Regular(msg)) = &q.message {
+        let token = state
+            .config
+            .telegram_bot_token
+            .as_deref()
+            .ok_or("Telegram bot token not configured")?;
+        let _ = telegram_notify::edit_message_text_raw(
+            token,
+            msg.chat.id.0,
+            msg.id.0 as i64,
+            &text,
+            Some(&keyboard),
+        )
+        .await;
+    }
+
+    bot.answer_callback_query(&q.id).text("✅ Reordered").await?;
+    Ok(())
+}
+
 /// Handle non-command messages: check for active edit sessions.
 ///
 /// If an edit session is active for this chat, the message is treated as
@@ -1008,7 +1444,10 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
     };
 
     let session = match session {
-        Some(s) => s,
+        Some(s) => {
+            tracing::info!("Edit session found for chat {chat_id}: field={:?}, artist_id={:?}", s.field, s.artist_id);
+            s
+        }
         None => return Ok(()), // No active session — silently ignore
     };
 
@@ -1029,32 +1468,68 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                 }
             };
 
-            // Update show.ai_bio in DB
-            let _ = sqlx::query("UPDATE shows SET ai_bio = ? WHERE id = ?")
+            if let Some(artist_id) = session.artist_id {
+                // ── Artist-level caption edit ──
+                let _ = sqlx::query(
+                    "UPDATE artists SET instagram_caption = ?, updated_at = datetime('now') WHERE id = ?",
+                )
                 .bind(&new_caption)
-                .bind(session.show_id)
+                .bind(artist_id)
                 .execute(&state.db)
                 .await;
 
-            // Re-fetch show and rebuild full caption
-            let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-                .bind(session.show_id)
-                .fetch_optional(&state.db)
-                .await?
-                .ok_or_else(|| format!("Show {} not found", session.show_id))?;
+                // Rebuild keyboard from artist
+                let artist: models::Artist =
+                    sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+                        .bind(artist_id)
+                        .fetch_optional(&state.db)
+                        .await?
+                        .ok_or_else(|| format!("Artist {artist_id} not found"))?;
 
-            let full_caption = instagram::build_show_caption(&state, &show)
-                .await
-                .map_err(|e| format!("Failed to build caption: {e}"))?;
+                let markup = telegram_notify::build_artist_preview_keyboard(
+                    artist_id,
+                    artist.track1_video_key.is_some(),
+                    artist.track2_video_key.is_some(),
+                );
 
-            // Update preview message caption
-            let preview_chat = ChatId(session.preview_chat_id);
-            let preview_msg = MessageId(session.preview_message_id);
-            let _ = bot
-                .edit_message_caption(preview_chat, preview_msg)
-                .caption(&full_caption)
-                .reply_markup(preview_keyboard(session.show_id))
-                .await;
+                // Update preview message caption via raw API
+                if let Some(token) = state.config.telegram_bot_token.as_deref() {
+                    let _ = telegram_notify::edit_message_caption_raw(
+                        token,
+                        session.preview_chat_id,
+                        session.preview_message_id as i64,
+                        &new_caption,
+                        "",
+                        Some(&markup),
+                    )
+                    .await;
+                }
+            } else {
+                // ── Show-level caption edit ──
+                let _ = sqlx::query("UPDATE shows SET ai_bio = ? WHERE id = ?")
+                    .bind(&new_caption)
+                    .bind(session.show_id)
+                    .execute(&state.db)
+                    .await;
+
+                let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+                    .bind(session.show_id)
+                    .fetch_optional(&state.db)
+                    .await?
+                    .ok_or_else(|| format!("Show {} not found", session.show_id))?;
+
+                let full_caption = instagram::build_show_caption(&state, &show)
+                    .await
+                    .map_err(|e| format!("Failed to build caption: {e}"))?;
+
+                let preview_chat = ChatId(session.preview_chat_id);
+                let preview_msg = MessageId(session.preview_message_id);
+                let _ = bot
+                    .edit_message_caption(preview_chat, preview_msg)
+                    .caption(&full_caption)
+                    .reply_markup(preview_keyboard(session.show_id))
+                    .await;
+            }
 
             // Clear session
             {
@@ -1087,38 +1562,94 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
             let mut photo_bytes: Vec<u8> = Vec::new();
             bot.download_file(&file.path, &mut photo_bytes).await?;
 
-            // Upload to R2 as the show cover
-            storage::upload_show_cover(&state, session.show_id, photo_bytes.clone()).await?;
+            if let Some(artist_id) = session.artist_id {
+                // ── Artist-level image replacement ──
+                let key = format!("artists/{artist_id}/overlay/telegram_upload.jpg");
 
-            // Update cover_generated_at in DB
-            let now = chrono::Utc::now().to_rfc3339();
-            let _ = sqlx::query("UPDATE shows SET cover_generated_at = ? WHERE id = ?")
-                .bind(&now)
-                .bind(session.show_id)
+                state
+                    .s3_client
+                    .put_object()
+                    .bucket(&state.config.r2_bucket_name)
+                    .key(&key)
+                    .body(aws_sdk_s3::primitives::ByteStream::from(photo_bytes.clone()))
+                    .content_type("image/jpeg")
+                    .send()
+                    .await
+                    .map_err(|e| format!("R2 upload failed: {e}"))?;
+
+                let _ = sqlx::query(
+                    "UPDATE artists SET pic_overlay_key = ?, updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(&key)
+                .bind(artist_id)
                 .execute(&state.db)
                 .await;
 
-            // Rebuild caption for the preview
-            let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-                .bind(session.show_id)
-                .fetch_optional(&state.db)
-                .await?
-                .ok_or_else(|| format!("Show {} not found", session.show_id))?;
+                // Rebuild keyboard
+                let artist: models::Artist =
+                    sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+                        .bind(artist_id)
+                        .fetch_optional(&state.db)
+                        .await?
+                        .ok_or_else(|| format!("Artist {artist_id} not found"))?;
 
-            let full_caption = instagram::build_show_caption(&state, &show)
-                .await
-                .map_err(|e| format!("Failed to build caption: {e}"))?;
+                let markup = telegram_notify::build_artist_preview_keyboard(
+                    artist_id,
+                    artist.track1_video_key.is_some(),
+                    artist.track2_video_key.is_some(),
+                );
 
-            // Update the preview message with the new image using editMessageMedia
-            let preview_chat = ChatId(session.preview_chat_id);
-            let preview_msg = MessageId(session.preview_message_id);
-            let new_media = InputMedia::Photo(
-                InputMediaPhoto::new(InputFile::memory(photo_bytes)).caption(&full_caption),
-            );
-            let _ = bot
-                .edit_message_media(preview_chat, preview_msg, new_media)
-                .reply_markup(preview_keyboard(session.show_id))
-                .await;
+                let caption = artist
+                    .instagram_caption
+                    .as_deref()
+                    .unwrap_or("(no caption)");
+
+                // Edit the preview message with the new photo
+                if let Some(token) = state.config.telegram_bot_token.as_deref() {
+                    let _ = telegram_notify::edit_message_media_raw(
+                        token,
+                        session.preview_chat_id,
+                        session.preview_message_id as i64,
+                        photo_bytes,
+                        "artist_preview.jpg".to_string(),
+                        "photo",
+                        caption,
+                        "",
+                        Some(&markup),
+                    )
+                    .await;
+                }
+            } else {
+                // ── Show-level image replacement ──
+                storage::upload_show_cover(&state, session.show_id, photo_bytes.clone()).await?;
+
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = sqlx::query("UPDATE shows SET cover_generated_at = ? WHERE id = ?")
+                    .bind(&now)
+                    .bind(session.show_id)
+                    .execute(&state.db)
+                    .await;
+
+                let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+                    .bind(session.show_id)
+                    .fetch_optional(&state.db)
+                    .await?
+                    .ok_or_else(|| format!("Show {} not found", session.show_id))?;
+
+                let full_caption = instagram::build_show_caption(&state, &show)
+                    .await
+                    .map_err(|e| format!("Failed to build caption: {e}"))?;
+
+                let preview_chat = ChatId(session.preview_chat_id);
+                let preview_msg = MessageId(session.preview_message_id);
+                let new_media = InputMedia::Photo(
+                    InputMediaPhoto::new(InputFile::memory(photo_bytes)).caption(&full_caption),
+                );
+                let _ = bot
+                    .edit_message_media(preview_chat, preview_msg, new_media)
+                    .reply_markup(preview_keyboard(session.show_id))
+                    .await;
+            }
 
             // Clear session
             {
@@ -1126,7 +1657,185 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                 sessions.remove(&chat_id);
             }
 
-            let mut req = bot.send_message(msg.chat.id, "✅ Cover image updated.");
+            let mut req = bot.send_message(msg.chat.id, "✅ Image updated.");
+            if let Some(tid) = state.config.telegram_topic_id {
+                req = req.message_thread_id(ThreadId(MessageId(tid)));
+            }
+            req.await?;
+        }
+        models::TelegramEditField::Timecode => {
+            tracing::info!("Timecode edit session active for chat {chat_id}, artist_id={:?}", session.artist_id);
+            let input = match msg.text() {
+                Some(text) => text.to_string(),
+                None => {
+                    let mut req = bot.send_message(
+                        msg.chat.id,
+                        "❌ Please send a timecode (e.g. 1:30 or 90).",
+                    );
+                    if let Some(tid) = state.config.telegram_topic_id {
+                        req = req.message_thread_id(ThreadId(MessageId(tid)));
+                    }
+                    req.await?;
+                    return Ok(());
+                }
+            };
+
+            let offset_secs = match parse_timecode(&input) {
+                Ok(secs) => {
+                    tracing::info!("Parsed timecode '{input}' → {secs} seconds");
+                    secs
+                }
+                Err(err_msg) => {
+                    // Re-insert session so user can try again
+                    let mut req = bot.send_message(
+                        msg.chat.id,
+                        format!("❌ {err_msg}"),
+                    );
+                    if let Some(tid) = state.config.telegram_topic_id {
+                        req = req.message_thread_id(ThreadId(MessageId(tid)));
+                    }
+                    req.await?;
+                    return Ok(());
+                    // Session stays in the map (wasn't removed yet)
+                }
+            };
+
+            let artist_id = match session.artist_id {
+                Some(id) => id,
+                None => {
+                    let mut sessions = state.telegram_edit_sessions.lock().await;
+                    sessions.remove(&chat_id);
+                    return Ok(());
+                }
+            };
+
+            let track_num = session.track_number.unwrap_or(1);
+            let video_msg_id = session.video_msg_id;
+
+            // Remove session before processing (may take a while)
+            {
+                let mut sessions = state.telegram_edit_sessions.lock().await;
+                sessions.remove(&chat_id);
+            }
+
+            // Send "generating" message
+            let timecode_display = if offset_secs >= 60 {
+                format!("{}:{:02}", offset_secs / 60, offset_secs % 60)
+            } else {
+                format!("0:{:02}", offset_secs)
+            };
+            let mut req = bot.send_message(
+                msg.chat.id,
+                format!("⏳ Regenerating video from {timecode_display}..."),
+            );
+            if let Some(tid) = state.config.telegram_topic_id {
+                req = req.message_thread_id(ThreadId(MessageId(tid)));
+            }
+            req.await?;
+
+            // Run the heavy video work inside a closure that returns Result
+            // so we can report errors to the user instead of silently failing
+            let result: Result<String, String> = async {
+                // Load artist to get image and track keys
+                let artist: models::Artist =
+                    sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+                        .bind(artist_id)
+                        .fetch_optional(&state.db)
+                        .await
+                        .map_err(|e| format!("DB error: {e}"))?
+                        .ok_or_else(|| format!("Artist {artist_id} not found"))?;
+
+                let image_key = artist
+                    .pic_overlay_key
+                    .as_ref()
+                    .or(artist.pic_cropped_key.as_ref())
+                    .or(artist.pic_key.as_ref())
+                    .ok_or_else(|| format!("Artist {artist_id} has no image"))?;
+
+                let track_key = if track_num == 1 {
+                    artist.track1_key.as_ref()
+                } else {
+                    artist.track2_key.as_ref()
+                }
+                .ok_or_else(|| format!("Artist {artist_id} has no track {track_num}"))?;
+
+                tracing::info!(
+                    "Generating video for artist {artist_id} track {track_num} offset={offset_secs}s image={image_key} track={track_key}"
+                );
+
+                // Generate video with new offset
+                let video_bytes = video::generate_track_preview_video(
+                    &state,
+                    image_key,
+                    track_key,
+                    "",
+                    30,
+                    offset_secs,
+                )
+                .await
+                .map_err(|e| format!("Video generation failed: {e}"))?;
+
+                tracing::info!("Video generated: {} bytes", video_bytes.len());
+
+                // Upload to R2 (overwrite existing video)
+                let video_r2_key = format!("artists/{artist_id}/track{track_num}_video/preview.mp4");
+                state
+                    .s3_client
+                    .put_object()
+                    .bucket(&state.config.r2_bucket_name)
+                    .key(&video_r2_key)
+                    .body(aws_sdk_s3::primitives::ByteStream::from(video_bytes.clone()))
+                    .content_type("video/mp4")
+                    .send()
+                    .await
+                    .map_err(|e| format!("R2 upload failed: {e}"))?;
+
+                // Edit the video message in-place if we have the message ID
+                if let (Some(token), Some(vid_mid)) =
+                    (state.config.telegram_bot_token.as_deref(), video_msg_id)
+                {
+                    let track_name = if track_num == 1 {
+                        &artist.track1_name
+                    } else {
+                        &artist.track2_name
+                    };
+                    let caption = format!("🎵 Track {track_num}: {track_name}");
+                    match telegram_notify::edit_message_media_raw(
+                        token,
+                        session.preview_chat_id,
+                        vid_mid,
+                        video_bytes,
+                        "preview.mp4".to_string(),
+                        "video",
+                        &caption,
+                        "",
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(_) => tracing::info!("Video message {vid_mid} replaced in chat {}", session.preview_chat_id),
+                        Err(e) => {
+                            tracing::error!("Failed to replace video message: {e}");
+                            return Err(format!("Video generated & uploaded, but failed to replace message: {e}"));
+                        }
+                    }
+                } else {
+                    tracing::warn!("No bot token or video_msg_id — cannot replace video message in chat");
+                }
+
+                Ok(format!("✅ Video {track_num} regenerated from {timecode_display}"))
+            }
+            .await;
+
+            let reply_text = match result {
+                Ok(msg_text) => msg_text,
+                Err(err) => {
+                    tracing::error!("Timecode video regeneration failed: {err}");
+                    format!("❌ {err}")
+                }
+            };
+
+            let mut req = bot.send_message(msg.chat.id, &reply_text);
             if let Some(tid) = state.config.telegram_topic_id {
                 req = req.message_thread_id(ThreadId(MessageId(tid)));
             }

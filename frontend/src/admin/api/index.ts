@@ -199,6 +199,9 @@ export const artistsApi = {
       track2_video_key?: string | null;
     }>(`/api/artists/${id}/generate-videos`),
 
+  sendTelegramPreview: (id: number) =>
+    api.post<{ success: boolean }>(`/api/artists/${id}/telegram-preview`),
+
   updatePicture: async (
     id: number,
     data: {

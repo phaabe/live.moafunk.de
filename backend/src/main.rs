@@ -10,6 +10,7 @@ mod instagram;
 mod models;
 mod pdf;
 mod recording;
+mod scheduler;
 mod soundcloud;
 mod storage;
 mod stream_bridge;
@@ -346,6 +347,10 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::api::api_post_artist_to_instagram),
         )
         .route(
+            "/api/artists/:id/telegram-preview",
+            post(handlers::api::api_send_artist_telegram_preview),
+        )
+        .route(
             "/api/artists/:id/picture",
             axum::routing::put(handlers::api::api_update_artist_picture),
         )
@@ -587,6 +592,44 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
                 }
+            }
+        });
+    }
+
+    // Spawn artist preview scheduler (sends Telegram artist previews at 16:00 Berlin time)
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            use chrono::Timelike;
+
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut last_check_date = String::new();
+
+            loop {
+                interval.tick().await;
+
+                // Only run if Telegram is configured
+                if state.telegram_bot.is_none() {
+                    continue;
+                }
+
+                let berlin_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Berlin);
+
+                // Trigger at 16:00 Berlin time
+                if berlin_now.hour() != 16 || berlin_now.minute() != 0 {
+                    continue;
+                }
+
+                let today = berlin_now.format("%Y-%m-%d").to_string();
+
+                // Only run once per day
+                if today == last_check_date {
+                    continue;
+                }
+                last_check_date = today;
+
+                tracing::info!("Artist preview scheduler: running daily check");
+                scheduler::check_artist_preview_schedule(state.clone()).await;
             }
         });
     }
