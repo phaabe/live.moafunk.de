@@ -48,7 +48,11 @@ Think music journalist, not motivational poster.
 
 If additional context notes are provided, use any relevant music-related or 
 artist-related information from them to enrich the bio. Ignore anything 
-that is purely logistical or unrelated to the artist's music/identity.";
+that is purely logistical or unrelated to the artist's music/identity.
+
+IMPORTANT: The final bio text MUST be under 800 characters (including spaces). \
+This is a hard limit — if a draft is too long, shorten it. \
+Prioritise being concise over being exhaustive.";
 
 const INSTAGRAM_POST_PROMPT: &str =
     "You write short, catchy Instagram intro paragraphs for artists \
@@ -374,6 +378,8 @@ STRICT rules:\n\
 - Each artist must get their own sentence with specific details from their bio\n\
 - Include a paragraph break (blank line) between the opening and the detailed artist introductions\n\
 - Reads like a music blog preview, not a press release\n\
+- The TOTAL output MUST be under 900 characters (including spaces). \
+This is a hard limit — shorten if needed. Prioritise being concise over exhaustive.\n\
 - Output ONLY the show description, nothing else.";
 
 /// Generate a combined show bio from individual artist bios.

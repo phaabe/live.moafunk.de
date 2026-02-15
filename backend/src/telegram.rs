@@ -792,9 +792,13 @@ async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: Arc<AppState>)
         if let Some(MaybeInaccessibleMessage::Regular(ref msg)) = q.message {
             let _ = bot.edit_message_reply_markup(msg.chat.id, msg.id).await;
             if let Some(current_caption) = msg.caption() {
+                let progress = telegram_notify::truncate_caption(
+                    &format!("{current_caption}\n\n⏳ Publishing to Instagram…"),
+                    1024,
+                );
                 let _ = bot
                     .edit_message_caption(msg.chat.id, msg.id)
-                    .caption(format!("{current_caption}\n\n⏳ Publishing to Instagram…"))
+                    .caption(progress)
                     .await;
             }
         }
@@ -815,7 +819,10 @@ async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: Arc<AppState>)
                 let base_caption = current_caption
                     .trim_end_matches("\n\n⏳ Publishing to Instagram…")
                     .to_string();
-                let new_caption = format!("{base_caption}\n\n{status_text}");
+                let new_caption = telegram_notify::truncate_caption(
+                    &format!("{base_caption}\n\n{status_text}"),
+                    1024,
+                );
                 let _ = bot
                     .edit_message_caption(msg.chat.id, msg.id)
                     .caption(new_caption)
@@ -1049,7 +1056,10 @@ async fn handle_aig_pub(
 
     if let Some(preview_msg_id) = artist.telegram_preview_message_id {
         let caption = artist.instagram_caption.as_deref().unwrap_or("");
-        let progress_caption = format!("{caption}\n\n⏳ Publishing to Instagram…");
+        let progress_caption = telegram_notify::truncate_caption(
+            &format!("{caption}\n\n⏳ Publishing to Instagram…"),
+            1024,
+        );
         let _ = telegram_notify::edit_message_caption_raw(
             token, chat_id, preview_msg_id, &progress_caption, "", None,
         )
@@ -1073,7 +1083,10 @@ async fn handle_aig_pub(
             // Update caption to show success
             if let Some(preview_msg_id) = artist.telegram_preview_message_id {
                 let caption = artist.instagram_caption.as_deref().unwrap_or("");
-                let success_caption = format!("{caption}\n\n✅ Published to Instagram!");
+                let success_caption = telegram_notify::truncate_caption(
+                    &format!("{caption}\n\n✅ Published to Instagram!"),
+                    1024,
+                );
                 let _ = telegram_notify::edit_message_caption_raw(
                     token, chat_id, preview_msg_id, &success_caption, "", None,
                 )
@@ -1086,7 +1099,10 @@ async fn handle_aig_pub(
             // Restore buttons with error
             if let Some(preview_msg_id) = artist.telegram_preview_message_id {
                 let caption = artist.instagram_caption.as_deref().unwrap_or("");
-                let error_caption = format!("{caption}\n\n❌ Error: {err_msg}");
+                let error_caption = telegram_notify::truncate_caption(
+                    &format!("{caption}\n\n❌ Error: {err_msg}"),
+                    1024,
+                );
                 let markup = telegram_notify::build_artist_preview_keyboard(
                     artist_id,
                     artist.track1_video_key.is_some(),
@@ -1103,7 +1119,10 @@ async fn handle_aig_pub(
             // Restore buttons with error
             if let Some(preview_msg_id) = artist.telegram_preview_message_id {
                 let caption = artist.instagram_caption.as_deref().unwrap_or("");
-                let error_caption = format!("{caption}\n\n❌ Error: {e}");
+                let error_caption = telegram_notify::truncate_caption(
+                    &format!("{caption}\n\n❌ Error: {e}"),
+                    1024,
+                );
                 let markup = telegram_notify::build_artist_preview_keyboard(
                     artist_id,
                     artist.track1_video_key.is_some(),
@@ -1494,11 +1513,12 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
 
                 // Update preview message caption via raw API
                 if let Some(token) = state.config.telegram_bot_token.as_deref() {
+                    let truncated = telegram_notify::truncate_caption(&new_caption, 1024);
                     let _ = telegram_notify::edit_message_caption_raw(
                         token,
                         session.preview_chat_id,
                         session.preview_message_id as i64,
-                        &new_caption,
+                        &truncated,
                         "",
                         Some(&markup),
                     )
@@ -1522,11 +1542,12 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                     .await
                     .map_err(|e| format!("Failed to build caption: {e}"))?;
 
+                let truncated = telegram_notify::truncate_caption(&full_caption, 1024);
                 let preview_chat = ChatId(session.preview_chat_id);
                 let preview_msg = MessageId(session.preview_message_id);
                 let _ = bot
                     .edit_message_caption(preview_chat, preview_msg)
-                    .caption(&full_caption)
+                    .caption(&truncated)
                     .reply_markup(preview_keyboard(session.show_id))
                     .await;
             }
@@ -1603,6 +1624,7 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                     .instagram_caption
                     .as_deref()
                     .unwrap_or("(no caption)");
+                let truncated = telegram_notify::truncate_caption(caption, 1024);
 
                 // Edit the preview message with the new photo
                 if let Some(token) = state.config.telegram_bot_token.as_deref() {
@@ -1613,7 +1635,7 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                         photo_bytes,
                         "artist_preview.jpg".to_string(),
                         "photo",
-                        caption,
+                        &truncated,
                         "",
                         Some(&markup),
                     )
@@ -1639,11 +1661,12 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                 let full_caption = instagram::build_show_caption(&state, &show)
                     .await
                     .map_err(|e| format!("Failed to build caption: {e}"))?;
+                let truncated = telegram_notify::truncate_caption(&full_caption, 1024);
 
                 let preview_chat = ChatId(session.preview_chat_id);
                 let preview_msg = MessageId(session.preview_message_id);
                 let new_media = InputMedia::Photo(
-                    InputMediaPhoto::new(InputFile::memory(photo_bytes)).caption(&full_caption),
+                    InputMediaPhoto::new(InputFile::memory(photo_bytes)).caption(&truncated),
                 );
                 let _ = bot
                     .edit_message_media(preview_chat, preview_msg, new_media)
