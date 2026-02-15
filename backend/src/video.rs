@@ -59,6 +59,7 @@ pub async fn generate_track_preview_video(
     track_key: &str,
     _peaks_key: &str,
     duration_secs: u32,
+    start_offset_secs: u32,
 ) -> Result<Vec<u8>> {
     let duration = if duration_secs == 0 {
         VIDEO_DURATION_SECS
@@ -73,7 +74,7 @@ pub async fn generate_track_preview_video(
         .map_err(|e| AppError::Internal(format!("Failed to create temp dir: {}", e)))?;
 
     // Ensure cleanup even on error
-    let result = generate_inner(state, artist_image_key, track_key, duration, &temp_dir).await;
+    let result = generate_inner(state, artist_image_key, track_key, duration, start_offset_secs, &temp_dir).await;
 
     // Clean up temp directory
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;
@@ -135,7 +136,7 @@ pub async fn generate_and_store_artist_videos(state: Arc<AppState>, artist_id: i
             artist_id
         );
 
-        match generate_track_preview_video(&state, &image_key, track_key, "", VIDEO_DURATION_SECS)
+        match generate_track_preview_video(&state, &image_key, track_key, "", VIDEO_DURATION_SECS, 0)
             .await
         {
             Ok(mp4_bytes) => {
@@ -206,6 +207,7 @@ async fn generate_inner(
     artist_image_key: &str,
     track_key: &str,
     duration_secs: u32,
+    start_offset_secs: u32,
     temp_dir: &std::path::Path,
 ) -> Result<Vec<u8>> {
     tracing::info!(
@@ -257,6 +259,7 @@ async fn generate_inner(
         &track_path,
         &output_path,
         duration_secs,
+        start_offset_secs,
         waveform_color,
     )
     .await?;
@@ -396,6 +399,7 @@ async fn compose_video(
     track_path: &std::path::Path,
     output_path: &std::path::Path,
     duration_secs: u32,
+    start_offset_secs: u32,
     waveform_color: &str,
 ) -> Result<()> {
     let image_str = image_path
@@ -419,55 +423,65 @@ async fn compose_video(
     );
 
     let output = Command::new("ffmpeg")
-        .args([
-            // Input 0: artist image, looped
-            "-loop",
-            "1",
-            "-framerate",
-            &fps_str,
-            "-i",
-            image_str,
-            // Input 1: audio track (first N seconds)
-            "-t",
-            &duration_str,
-            "-i",
-            track_str,
-            // Duration limit
-            "-t",
-            &duration_str,
-            // Filter
-            "-filter_complex",
-            &filter_complex,
-            // Map outputs
-            "-map",
-            "[out]",
-            "-map",
-            "1:a",
-            // Video codec
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            &fps_str,
-            // Audio codec
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-ar",
-            "44100",
+        .args({
+            let mut a = vec![
+                // Input 0: artist image, looped
+                "-loop".to_string(),
+                "1".to_string(),
+                "-framerate".to_string(),
+                fps_str.clone(),
+                "-i".to_string(),
+                image_str.to_string(),
+            ];
+            // Input seeking: skip into the audio before decoding
+            if start_offset_secs > 0 {
+                a.push("-ss".to_string());
+                a.push(start_offset_secs.to_string());
+            }
+            a.extend([
+                // Input 1: audio track (first N seconds from offset)
+                "-t".to_string(),
+                duration_str.clone(),
+                "-i".to_string(),
+                track_str.to_string(),
+                // Duration limit
+                "-t".to_string(),
+                duration_str.clone(),
+                // Filter
+                "-filter_complex".to_string(),
+                filter_complex,
+                // Map outputs
+                "-map".to_string(),
+                "[out]".to_string(),
+                "-map".to_string(),
+                "1:a".to_string(),
+                // Video codec
+                "-c:v".to_string(),
+                "libx264".to_string(),
+                "-preset".to_string(),
+                "medium".to_string(),
+                "-crf".to_string(),
+                "23".to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+                "-r".to_string(),
+                fps_str,
+                // Audio codec
+                "-c:a".to_string(),
+                "aac".to_string(),
+            "-b:a".to_string(),
+            "192k".to_string(),
+            "-ar".to_string(),
+            "44100".to_string(),
             // Web/Instagram compatibility
-            "-movflags",
-            "+faststart",
+            "-movflags".to_string(),
+            "+faststart".to_string(),
             // Overwrite
-            "-y",
-            output_str,
-        ])
+            "-y".to_string(),
+            output_str.to_string(),
+            ]);
+            a
+        })
         .output()
         .await
         .map_err(|e| {

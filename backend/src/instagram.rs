@@ -1084,7 +1084,7 @@ pub async fn post_artist_to_instagram(
         tracing::info!("Generating preview video on-demand for {}", label);
 
         let mp4_bytes = match crate::video::generate_track_preview_video(
-            state, pic_key, track_key, peaks_key, 30,
+            state, pic_key, track_key, peaks_key, 30, 0,
         )
         .await
         {

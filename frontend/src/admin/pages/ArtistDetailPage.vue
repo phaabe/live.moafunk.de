@@ -47,6 +47,7 @@ const generatingBio = ref(false);
 const generatingCaption = ref(false);
 const showInstagramModal = ref(false);
 const postingToInstagram = ref(false);
+const sendingTelegramPreview = ref(false);
 const showInstagramConfirmModal = ref(false);
 const igAccount = ref<'dev' | 'prod'>('dev');
 const editingCaption = ref(false);
@@ -356,6 +357,19 @@ async function postToInstagram(force = false) {
     flash.error(e instanceof Error ? e.message : 'Failed to post to Instagram');
   } finally {
     postingToInstagram.value = false;
+  }
+}
+
+async function sendTelegramPreview() {
+  if (!artist.value) return;
+  sendingTelegramPreview.value = true;
+  try {
+    await artistsApi.sendTelegramPreview(artist.value.id);
+    flash.success('Preview sent to Telegram');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to send Telegram preview');
+  } finally {
+    sendingTelegramPreview.value = false;
   }
 }
 
@@ -933,6 +947,10 @@ onBeforeUnmount(() => {
               <option value="prod">📡 moafunk_radio</option>
             </select>
           </div>
+          <BaseButton variant="ghost" :loading="sendingTelegramPreview"
+            :disabled="!artist?.instagram_caption || !artist?.file_urls.pic" @click="sendTelegramPreview()">
+            📱 Preview on Telegram
+          </BaseButton>
           <BaseButton variant="primary" :loading="postingToInstagram"
             :disabled="!artist?.instagram_caption || !artist?.file_urls.pic" @click="postToInstagram()">
             📤 Publish

@@ -102,6 +102,62 @@ async fn send_photo_raw(
     Ok(msg_id)
 }
 
+/// Send a video via the Telegram Bot API using raw reqwest multipart.
+///
+/// Returns the `message_id` of the sent message on success.
+pub async fn send_video_raw(
+    token: &str,
+    chat_id: i64,
+    video_bytes: Vec<u8>,
+    filename: String,
+    caption: &str,
+    parse_mode: &str,
+    thread_id: Option<i32>,
+    reply_markup: Option<&str>,
+) -> Result<i64, String> {
+    let video_part = reqwest::multipart::Part::bytes(video_bytes)
+        .file_name(filename)
+        .mime_str("video/mp4")
+        .map_err(|e| format!("mime error: {e}"))?;
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .text("caption", caption.to_owned())
+        .text("parse_mode", parse_mode.to_owned())
+        .part("video", video_part);
+
+    if let Some(tid) = thread_id {
+        form = form.text("message_thread_id", tid.to_string());
+    }
+
+    if let Some(markup) = reply_markup {
+        form = form.text("reply_markup", markup.to_owned());
+    }
+
+    let url = format!("https://api.telegram.org/bot{token}/sendVideo");
+    let resp: TgResponse = reqwest::Client::new()
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("sendVideo request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("sendVideo response parse failed: {e}"))?;
+
+    if !resp.ok {
+        return Err(format!(
+            "sendVideo API error: {}",
+            resp.description.unwrap_or_default()
+        ));
+    }
+    let msg_id = resp
+        .result
+        .and_then(|v| v.get("message_id").and_then(|m| m.as_i64()))
+        .unwrap_or(0);
+    Ok(msg_id)
+}
+
 /// Send an audio file via the Telegram Bot API using raw reqwest multipart.
 async fn send_audio_raw(
     token: &str,
@@ -149,6 +205,243 @@ async fn send_audio_raw(
     if !resp.ok {
         return Err(format!(
             "sendAudio API error: {}",
+            resp.description.unwrap_or_default()
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Raw Telegram edit helpers
+// ---------------------------------------------------------------------------
+
+/// Edit the caption of an existing message.
+pub async fn edit_message_caption_raw(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    caption: &str,
+    parse_mode: &str,
+    reply_markup: Option<&str>,
+) -> Result<(), String> {
+    let mut body = serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "caption": caption,
+        "parse_mode": parse_mode,
+    });
+
+    if let Some(markup) = reply_markup {
+        let markup_val: serde_json::Value =
+            serde_json::from_str(markup).map_err(|e| format!("reply_markup JSON parse: {e}"))?;
+        body["reply_markup"] = markup_val;
+    }
+
+    let url = format!("https://api.telegram.org/bot{token}/editMessageCaption");
+    let resp: TgResponse = reqwest::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("editMessageCaption request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("editMessageCaption response parse failed: {e}"))?;
+
+    if !resp.ok {
+        return Err(format!(
+            "editMessageCaption API error: {}",
+            resp.description.unwrap_or_default()
+        ));
+    }
+    Ok(())
+}
+
+/// Edit the media (photo or video) of an existing message.
+///
+/// `media_type` should be `"photo"` or `"video"`.
+pub async fn edit_message_media_raw(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    media_bytes: Vec<u8>,
+    filename: String,
+    media_type: &str,
+    caption: &str,
+    parse_mode: &str,
+    reply_markup: Option<&str>,
+) -> Result<(), String> {
+    let mime = match media_type {
+        "video" => "video/mp4",
+        _ => "image/png",
+    };
+
+    let file_part = reqwest::multipart::Part::bytes(media_bytes)
+        .file_name(filename)
+        .mime_str(mime)
+        .map_err(|e| format!("mime error: {e}"))?;
+
+    let media_json = serde_json::json!({
+        "type": media_type,
+        "media": "attach://file",
+        "caption": caption,
+        "parse_mode": parse_mode,
+    });
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .text("message_id", message_id.to_string())
+        .text("media", media_json.to_string())
+        .part("file", file_part);
+
+    if let Some(markup) = reply_markup {
+        form = form.text("reply_markup", markup.to_owned());
+    }
+
+    let url = format!("https://api.telegram.org/bot{token}/editMessageMedia");
+    let resp: TgResponse = reqwest::Client::new()
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("editMessageMedia request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("editMessageMedia response parse failed: {e}"))?;
+
+    if !resp.ok {
+        return Err(format!(
+            "editMessageMedia API error: {}",
+            resp.description.unwrap_or_default()
+        ));
+    }
+    Ok(())
+}
+
+/// Edit (or remove) the reply markup (inline keyboard) of an existing message.
+///
+/// Pass `None` to remove all buttons.
+pub async fn edit_message_reply_markup_raw(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    reply_markup: Option<&str>,
+) -> Result<(), String> {
+    let mut body = serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+    });
+
+    if let Some(markup) = reply_markup {
+        let markup_val: serde_json::Value =
+            serde_json::from_str(markup).map_err(|e| format!("reply_markup JSON parse: {e}"))?;
+        body["reply_markup"] = markup_val;
+    }
+
+    let url = format!("https://api.telegram.org/bot{token}/editMessageReplyMarkup");
+    let resp: TgResponse = reqwest::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("editMessageReplyMarkup request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("editMessageReplyMarkup response parse failed: {e}"))?;
+
+    if !resp.ok {
+        return Err(format!(
+            "editMessageReplyMarkup API error: {}",
+            resp.description.unwrap_or_default()
+        ));
+    }
+    Ok(())
+}
+
+/// Send a text message via the Telegram Bot API using raw JSON POST.
+///
+/// Returns the sent message ID on success.
+pub async fn send_message_raw(
+    token: &str,
+    chat_id: i64,
+    text: &str,
+    thread_id: Option<i32>,
+    reply_markup: Option<&str>,
+) -> Result<i64, String> {
+    let mut body = serde_json::json!({
+        "chat_id": chat_id,
+        "text": text,
+    });
+
+    if let Some(tid) = thread_id {
+        body["message_thread_id"] = serde_json::json!(tid);
+    }
+
+    if let Some(markup) = reply_markup {
+        let markup_val: serde_json::Value =
+            serde_json::from_str(markup).map_err(|e| format!("reply_markup JSON parse: {e}"))?;
+        body["reply_markup"] = markup_val;
+    }
+
+    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let resp: TgResponse = reqwest::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("sendMessage request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("sendMessage response parse failed: {e}"))?;
+
+    if !resp.ok {
+        return Err(format!(
+            "sendMessage API error: {}",
+            resp.description.unwrap_or_default()
+        ));
+    }
+
+    let msg_id = resp
+        .result
+        .and_then(|r| r.get("message_id").and_then(|v| v.as_i64()))
+        .ok_or("sendMessage: missing message_id in response")?;
+    Ok(msg_id)
+}
+
+/// Edit the text and/or reply markup of an existing text message.
+pub async fn edit_message_text_raw(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    text: &str,
+    reply_markup: Option<&str>,
+) -> Result<(), String> {
+    let mut body = serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+    });
+
+    if let Some(markup) = reply_markup {
+        let markup_val: serde_json::Value =
+            serde_json::from_str(markup).map_err(|e| format!("reply_markup JSON parse: {e}"))?;
+        body["reply_markup"] = markup_val;
+    }
+
+    let url = format!("https://api.telegram.org/bot{token}/editMessageText");
+    let resp: TgResponse = reqwest::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("editMessageText request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("editMessageText response parse failed: {e}"))?;
+
+    if !resp.ok {
+        return Err(format!(
+            "editMessageText API error: {}",
             resp.description.unwrap_or_default()
         ));
     }
@@ -968,5 +1261,337 @@ pub async fn send_show_instagram_preview(
         .await;
 
     tracing::info!("Instagram preview sent to Telegram for show {show_id}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Artist Instagram preview
+// ---------------------------------------------------------------------------
+
+/// Build the inline keyboard for an artist Instagram preview message.
+///
+/// Row 1: [📤 Publish]
+/// Row 2: [✏️ Caption] [🖼 Image]
+/// Row 3 (conditional): [🎬 Video 1] [🎬 Video 2]
+pub fn build_artist_preview_keyboard(artist_id: i64, has_track1: bool, has_track2: bool) -> String {
+    let mut rows = vec![
+        // Row 1: Publish
+        serde_json::json!([
+            { "text": "📤 Publish", "callback_data": format!("aig_pub:{artist_id}") }
+        ]),
+        // Row 2: Edit caption / image
+        serde_json::json!([
+            { "text": "✏️ Caption", "callback_data": format!("aig_cap:{artist_id}") },
+            { "text": "🖼 Image", "callback_data": format!("aig_img:{artist_id}") }
+        ]),
+    ];
+
+    // Row 3: Video regeneration buttons (only for tracks that exist)
+    let mut video_row = Vec::new();
+    if has_track1 {
+        video_row.push(serde_json::json!(
+            { "text": "🎬 Video 1", "callback_data": format!("aig_vid:{artist_id}:1") }
+        ));
+    }
+    if has_track2 {
+        video_row.push(serde_json::json!(
+            { "text": "🎬 Video 2", "callback_data": format!("aig_vid:{artist_id}:2") }
+        ));
+    }
+    if !video_row.is_empty() {
+        rows.push(serde_json::json!(video_row));
+    }
+
+    let markup = serde_json::json!({ "inline_keyboard": rows });
+    serde_json::to_string(&markup).unwrap_or_default()
+}
+
+/// Download a track preview video from R2 and send it as a Telegram message.
+///
+/// Returns the sent message_id on success. Logs and returns None on failure.
+async fn send_track_video(
+    token: &str,
+    chat_id: i64,
+    thread_id: Option<i32>,
+    state: &Arc<AppState>,
+    video_key: &str,
+    track_number: u8,
+    track_name: &str,
+) -> Option<i64> {
+    let url_str = match storage::get_presigned_url(state, video_key, 3600).await {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!("Presigned URL for track {track_number} video failed: {e}");
+            return None;
+        }
+    };
+
+    let video_bytes = match download_file_bytes(&url_str).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("Download track {track_number} video failed: {e}");
+            return None;
+        }
+    };
+
+    let filename = video_key
+        .rsplit('/')
+        .next()
+        .unwrap_or("video.mp4")
+        .to_owned();
+    let caption = format!("🎵 Track {track_number}: {track_name}");
+
+    match send_video_raw(
+        token,
+        chat_id,
+        video_bytes,
+        filename,
+        &caption,
+        "",
+        thread_id,
+        None,
+    )
+    .await
+    {
+        Ok(msg_id) => Some(msg_id),
+        Err(e) => {
+            tracing::warn!("sendVideo for track {track_number} failed: {e}");
+            None
+        }
+    }
+}
+
+/// Send an artist's Instagram preview to the admin Telegram chat.
+///
+/// Sends:
+/// 1. The artist's photo (overlay → cropped → original) with Instagram caption
+///    and inline keyboard buttons (Publish, Edit Caption, Replace Image, Regen Videos).
+/// 2. Track 1 preview video (if track1_video_key exists) as a separate reply.
+/// 3. Track 2 preview video (if track2_video_key exists) as a separate reply.
+///
+/// Stores message IDs in the artists table for later in-place editing.
+pub async fn send_artist_instagram_preview(
+    state: &Arc<AppState>,
+    artist: &models::Artist,
+) -> Result<(), String> {
+    if state.telegram_bot.is_none() {
+        return Err("Telegram bot not configured".to_string());
+    }
+
+    let chat_id = state
+        .config
+        .telegram_admin_chat_id
+        .ok_or("Telegram admin chat ID not configured")?;
+
+    let token = state
+        .config
+        .telegram_bot_token
+        .as_deref()
+        .ok_or("Telegram bot token not configured")?;
+
+    // Require an instagram_caption
+    let caption = artist
+        .instagram_caption
+        .as_deref()
+        .ok_or("Artist has no Instagram caption. Generate one first.")?;
+
+    // Select best available photo: overlay → cropped → original
+    let pic_key = artist
+        .pic_overlay_key
+        .as_ref()
+        .or(artist.pic_cropped_key.as_ref())
+        .or(artist.pic_key.as_ref())
+        .ok_or("Artist has no photo")?;
+
+    // Download photo from R2
+    let pic_url = storage::get_presigned_url(state, pic_key, 3600)
+        .await
+        .map_err(|e| format!("Presigned URL for artist photo failed: {e}"))?;
+    let photo_bytes = download_file_bytes(&pic_url).await?;
+
+    // Build inline keyboard
+    let has_track1 = artist.track1_video_key.is_some();
+    let has_track2 = artist.track2_video_key.is_some();
+    let markup_json = build_artist_preview_keyboard(artist.id, has_track1, has_track2);
+
+    // Send photo with caption and inline keyboard
+    let filename = format!("artist_{}_preview.png", artist.id);
+    let preview_msg_id = send_photo_raw(
+        token,
+        chat_id,
+        photo_bytes,
+        filename,
+        caption,
+        "", // no parse_mode — caption is plain text (Instagram format)
+        state.config.telegram_topic_id,
+        Some(&markup_json),
+    )
+    .await?;
+
+    // Store the photo message ID
+    let _ = sqlx::query("UPDATE artists SET telegram_preview_message_id = ? WHERE id = ?")
+        .bind(preview_msg_id)
+        .bind(artist.id)
+        .execute(&state.db)
+        .await;
+
+    // Send track 1 video if available
+    if let Some(ref video_key) = artist.track1_video_key {
+        if let Some(vid_msg_id) = send_track_video(
+            token,
+            chat_id,
+            state.config.telegram_topic_id,
+            state,
+            video_key,
+            1,
+            &artist.track1_name,
+        )
+        .await
+        {
+            let _ = sqlx::query("UPDATE artists SET telegram_video1_message_id = ? WHERE id = ?")
+                .bind(vid_msg_id)
+                .bind(artist.id)
+                .execute(&state.db)
+                .await;
+        }
+    }
+
+    // Send track 2 video if available
+    if let Some(ref video_key) = artist.track2_video_key {
+        if let Some(vid_msg_id) = send_track_video(
+            token,
+            chat_id,
+            state.config.telegram_topic_id,
+            state,
+            video_key,
+            2,
+            &artist.track2_name,
+        )
+        .await
+        {
+            let _ = sqlx::query("UPDATE artists SET telegram_video2_message_id = ? WHERE id = ?")
+                .bind(vid_msg_id)
+                .bind(artist.id)
+                .execute(&state.db)
+                .await;
+        }
+    }
+
+    // Update timestamp
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("UPDATE artists SET telegram_artist_preview_sent_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(artist.id)
+        .execute(&state.db)
+        .await;
+
+    tracing::info!(
+        "Artist Instagram preview sent to Telegram for artist {} ({})",
+        artist.id,
+        artist.name
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Sort order prompt
+// ---------------------------------------------------------------------------
+
+/// Build the inline keyboard JSON for the artist sort order prompt.
+///
+/// Each artist gets a row: [⬆️] [Name (#N)] [⬇️]
+/// First artist has no ⬆️, last artist has no ⬇️.
+pub fn build_sort_order_keyboard(
+    show_id: i64,
+    artists: &[(i64, String)], // (artist_id, name)
+) -> String {
+    let len = artists.len();
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+
+    for (i, (artist_id, name)) in artists.iter().enumerate() {
+        let mut row = Vec::new();
+
+        if i > 0 {
+            row.push(serde_json::json!({
+                "text": "⬆️",
+                "callback_data": format!("aig_sort:{show_id}:{artist_id}:up")
+            }));
+        }
+
+        row.push(serde_json::json!({
+            "text": format!("{} (#{pos})", name, pos = i + 1),
+            "callback_data": format!("aig_sort_noop:{show_id}:{artist_id}")
+        }));
+
+        if i < len - 1 {
+            row.push(serde_json::json!({
+                "text": "⬇️",
+                "callback_data": format!("aig_sort:{show_id}:{artist_id}:down")
+            }));
+        }
+
+        rows.push(serde_json::json!(row));
+    }
+
+    let markup = serde_json::json!({ "inline_keyboard": rows });
+    serde_json::to_string(&markup).unwrap_or_default()
+}
+
+/// Send (or edit) a sort-order prompt message for artist post scheduling.
+///
+/// Lists artists with ⬆️/⬇️ buttons. Day 1 after show → first artist, etc.
+pub async fn send_sort_order_prompt(state: &Arc<AppState>, show_id: i64) -> Result<(), String> {
+    let chat_id = state
+        .config
+        .telegram_admin_chat_id
+        .ok_or("Telegram admin chat ID not configured")?;
+    let token = state
+        .config
+        .telegram_bot_token
+        .as_deref()
+        .ok_or("Telegram bot token not configured")?;
+
+    // Fetch the show title
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| format!("DB error: {e}"))?
+        .ok_or_else(|| format!("Show {show_id} not found"))?;
+
+    // Fetch assigned artists in sort order
+    let artists: Vec<models::Artist> = sqlx::query_as(
+        "SELECT a.* FROM artists a \
+         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
+         WHERE asa.show_id = ? ORDER BY asa.sort_order, a.name COLLATE NOCASE",
+    )
+    .bind(show_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("DB error: {e}"))?;
+
+    if artists.is_empty() {
+        return Ok(()); // No artists assigned — nothing to prompt
+    }
+
+    let artist_pairs: Vec<(i64, String)> = artists.iter().map(|a| (a.id, a.name.clone())).collect();
+
+    let keyboard = build_sort_order_keyboard(show_id, &artist_pairs);
+
+    let text = format!(
+        "📋 Set artist post order for {}\n\n\
+         Day 1 after show → first artist, Day 2 → second, etc.",
+        show.title
+    );
+
+    let _ = send_message_raw(
+        token,
+        chat_id,
+        &text,
+        state.config.telegram_topic_id,
+        Some(&keyboard),
+    )
+    .await?;
+
     Ok(())
 }

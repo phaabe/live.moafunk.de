@@ -561,11 +561,15 @@ pub async fn api_assign_artist_to_show(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Artist {artist_id} not found")))?;
 
-    sqlx::query("INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)")
-        .bind(artist_id)
-        .bind(req.show_id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id, sort_order) \
+         VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM artist_show_assignments WHERE show_id = ?))",
+    )
+    .bind(artist_id)
+    .bind(req.show_id)
+    .bind(req.show_id)
+    .execute(&state.db)
+    .await?;
 
     // Regenerate show cover image with the new artist
     let state_for_bio = state.clone();
@@ -841,6 +845,34 @@ pub async fn api_post_artist_to_instagram(
         error: result.error,
         already_posted: false,
     }))
+}
+
+/// POST /api/artists/:id/telegram-preview — Send artist preview to Telegram
+pub async fn api_send_artist_telegram_preview(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    // Require instagram_caption
+    if artist.instagram_caption.is_none() {
+        return Err(AppError::BadRequest(
+            "Artist has no Instagram caption. Generate one first.".to_string(),
+        ));
+    }
+
+    crate::telegram_notify::send_artist_instagram_preview(&state, &artist)
+        .await
+        .map_err(|e| AppError::Internal(format!("Telegram preview failed: {e}")))?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 pub async fn api_update_artist_picture(
@@ -1503,7 +1535,7 @@ async fn do_regenerate_show_cover(state: &Arc<AppState>, show_id: i64) -> Option
         FROM artists a
         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id
         WHERE asa.show_id = ?
-        ORDER BY a.name COLLATE NOCASE
+        ORDER BY asa.sort_order, a.name COLLATE NOCASE
         LIMIT 4
         "#,
     )
@@ -1575,7 +1607,7 @@ pub async fn api_show_detail(
         FROM artists a
         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id
         WHERE asa.show_id = ?
-        ORDER BY a.name COLLATE NOCASE
+        ORDER BY asa.sort_order, a.name COLLATE NOCASE
         "#,
     )
     .bind(id)
@@ -1890,11 +1922,15 @@ pub async fn api_show_assign_artist(
         ));
     }
 
-    sqlx::query("INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id) VALUES (?, ?)")
-        .bind(req.artist_id)
-        .bind(show_id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO artist_show_assignments (artist_id, show_id, sort_order) \
+         VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM artist_show_assignments WHERE show_id = ?))",
+    )
+    .bind(req.artist_id)
+    .bind(show_id)
+    .bind(show_id)
+    .execute(&state.db)
+    .await?;
 
     // Fetch the artist with file keys to return
     let artist: ArtistWithFileKeys = sqlx::query_as(
@@ -2699,7 +2735,7 @@ pub async fn api_show_with_artists(
         FROM artists a
         INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id
         WHERE asa.show_id = ?
-        ORDER BY a.name COLLATE NOCASE
+        ORDER BY asa.sort_order, a.name COLLATE NOCASE
         "#,
     )
     .bind(id)

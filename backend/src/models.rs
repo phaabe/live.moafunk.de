@@ -6,18 +6,25 @@ use sqlx::FromRow;
 pub enum TelegramEditField {
     Caption,
     Image,
+    Timecode,
 }
 
 /// In-memory session tracking an active edit on a Telegram preview message.
 #[derive(Debug, Clone)]
 pub struct TelegramEditSession {
     pub show_id: i64,
+    /// Optional artist ID (for artist-level previews)
+    pub artist_id: Option<i64>,
     /// Chat ID where the preview message lives
     pub preview_chat_id: i64,
     /// Message ID of the preview message (photo + caption)
     pub preview_message_id: i32,
     /// Which field the user is editing
     pub field: TelegramEditField,
+    /// Track number (1 or 2) for Timecode sessions
+    pub track_number: Option<u8>,
+    /// Message ID of the video message being re-generated
+    pub video_msg_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -59,6 +66,12 @@ pub struct Artist {
     pub ai_bio: Option<String>,
     pub instagram_caption: Option<String>,
     pub instagram_posted_at: Option<String>,
+
+    // Telegram artist preview tracking
+    pub telegram_preview_message_id: Option<i64>,
+    pub telegram_video1_message_id: Option<i64>,
+    pub telegram_video2_message_id: Option<i64>,
+    pub telegram_artist_preview_sent_at: Option<String>,
 
     pub status: String,
     pub created_at: String,
