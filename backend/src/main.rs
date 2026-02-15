@@ -442,6 +442,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/soundcloud/callback",
             get(handlers::api::api_soundcloud_callback),
         )
+        .route(
+            "/api/soundcloud/disconnect",
+            post(handlers::api::api_soundcloud_disconnect),
+        )
         .route("/api/users", get(handlers::api::api_users_list))
         .route("/api/users", post(handlers::api::api_create_user))
         .route(

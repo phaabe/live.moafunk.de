@@ -93,6 +93,16 @@ pub async fn store_token(state: &Arc<AppState>, token: &str) -> Result<()> {
     Ok(())
 }
 
+/// Delete the stored SoundCloud access token from the database.
+/// This forces re-authorization on the next upload attempt.
+pub async fn delete_stored_token(state: &Arc<AppState>) -> Result<()> {
+    sqlx::query("DELETE FROM app_settings WHERE key = 'soundcloud_access_token'")
+        .execute(&state.db)
+        .await?;
+    tracing::info!("Deleted stored SoundCloud access token from database");
+    Ok(())
+}
+
 /// Check if SoundCloud integration is configured (has client_id for auth flow, or a static token)
 pub fn is_configured(state: &Arc<AppState>) -> bool {
     state.config.soundcloud_access_token.is_some() || state.config.soundcloud_client_id.is_some()

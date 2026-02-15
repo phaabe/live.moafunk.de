@@ -125,6 +125,8 @@ jobs:
             782620cd-7d54-4cef-95b5-b3eb01660ff9 > OPENAI_API_KEY
             2470e0a8-7e96-4113-9931-b3ed0180cf59 > TELEGRAM_BOT_TOKEN
             3d3c982b-6933-4c23-bb11-b3ee000687d6 > TELEGRAM_ADMIN_CHAT_ID
+            0ede7c60-027a-45af-99ae-b3ec013f22a7 > SOUNDCLOUD_CLIENT_ID
+            fb23eb6e-139b-45be-a95a-b3ec013f2eac > SOUNDCLOUD_CLIENT_SECRET
 
       - name: Generate production .env file
         run: |
@@ -174,6 +176,11 @@ jobs:
             echo "TELEGRAM_BOT_TOKEN=${{ steps.bitwarden-secrets.outputs.TELEGRAM_BOT_TOKEN }}"
             echo "TELEGRAM_ADMIN_CHAT_ID=${{ steps.bitwarden-secrets.outputs.TELEGRAM_ADMIN_CHAT_ID }}"
             echo "TELEGRAM_INSTAGRAM_ACCOUNT=prod"
+            echo ""
+            echo "# SoundCloud"
+            echo "SOUNDCLOUD_CLIENT_ID=${{ steps.bitwarden-secrets.outputs.SOUNDCLOUD_CLIENT_ID }}"
+            echo "SOUNDCLOUD_CLIENT_SECRET=${{ steps.bitwarden-secrets.outputs.SOUNDCLOUD_CLIENT_SECRET }}"
+            echo "SOUNDCLOUD_REDIRECT_URI=https://admin.live.moafunk.de/api/soundcloud/callback"
             echo ""
             echo "# Backup settings"
             echo "BACKUP_BUCKET=unheard-backups"
