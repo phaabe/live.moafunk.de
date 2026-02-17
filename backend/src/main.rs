@@ -546,6 +546,8 @@ async fn main() -> anyhow::Result<()> {
             use chrono::Timelike;
 
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut last_check_date = String::new();
+
             loop {
                 interval.tick().await;
 
@@ -556,12 +558,21 @@ async fn main() -> anyhow::Result<()> {
 
                 let berlin_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Berlin);
 
-                // Trigger at 19:00 Berlin time
-                if berlin_now.hour() != 19 || berlin_now.minute() != 0 {
+                // Trigger during the first 5 minutes of 19:00 (19:00-19:04) Berlin time
+                if berlin_now.hour() != 19 || berlin_now.minute() >= 5 {
                     continue;
                 }
 
                 let today = berlin_now.format("%Y-%m-%d").to_string();
+
+                // Only run once per day (skip if already processed today)
+                if today == last_check_date {
+                    continue;
+                }
+
+                // Mark as processed BEFORE running to prevent double-execution
+                last_check_date = today.clone();
+
                 tracing::info!("Show preview scheduler: checking for shows on {today}");
 
                 // Find shows today with covers that haven't been previewed today
@@ -619,20 +630,24 @@ async fn main() -> anyhow::Result<()> {
 
                 let berlin_now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Berlin);
 
-                // Trigger at 16:00 Berlin time
-                if berlin_now.hour() != 16 || berlin_now.minute() != 0 {
+                // Trigger during the first 5 minutes of the configured hour (default 16:00-16:04) Berlin time
+                if berlin_now.hour() != state.config.telegram_artist_preview_hour
+                    || berlin_now.minute() >= 5
+                {
                     continue;
                 }
 
                 let today = berlin_now.format("%Y-%m-%d").to_string();
 
-                // Only run once per day
+                // Only run once per day (skip if already processed today)
                 if today == last_check_date {
                     continue;
                 }
-                last_check_date = today;
 
-                tracing::info!("Artist preview scheduler: running daily check");
+                // Mark as processed BEFORE running to prevent double-execution
+                last_check_date = today.clone();
+
+                tracing::info!("Artist preview scheduler: running daily check for {today}");
                 scheduler::check_artist_preview_schedule(state.clone()).await;
             }
         });

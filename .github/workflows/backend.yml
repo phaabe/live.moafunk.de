@@ -176,6 +176,7 @@ jobs:
             echo "TELEGRAM_BOT_TOKEN=${{ steps.bitwarden-secrets.outputs.TELEGRAM_BOT_TOKEN }}"
             echo "TELEGRAM_ADMIN_CHAT_ID=${{ steps.bitwarden-secrets.outputs.TELEGRAM_ADMIN_CHAT_ID }}"
             echo "TELEGRAM_INSTAGRAM_ACCOUNT=prod"
+            echo "TELEGRAM_ARTIST_PREVIEW_HOUR=16"
             echo ""
             echo "# SoundCloud"
             echo "SOUNDCLOUD_CLIENT_ID=${{ steps.bitwarden-secrets.outputs.SOUNDCLOUD_CLIENT_ID }}"

@@ -86,6 +86,9 @@ pub struct Config {
     #[serde(default = "default_telegram_topic_id")]
     pub telegram_topic_id: Option<i32>,
     pub telegram_instagram_account: Option<String>,
+    /// Hour of day (0-23) in Berlin time when artist Instagram previews should be sent
+    #[serde(default = "default_telegram_artist_preview_hour")]
+    pub telegram_artist_preview_hour: u32,
 
     // Admin panel base URL (used in Telegram notifications to link to artist profiles)
     #[serde(default = "default_admin_base_url")]
@@ -143,6 +146,10 @@ fn default_github_repo() -> String {
 fn default_telegram_topic_id() -> Option<i32> {
     // Moafunk Telegram channel topic ID "MoafunkBot" (see topic info for Id)
     Some(26)
+}
+
+fn default_telegram_artist_preview_hour() -> u32 {
+    16 // 4:00 PM Berlin time
 }
 
 fn default_admin_base_url() -> String {
