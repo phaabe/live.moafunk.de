@@ -111,6 +111,8 @@ export interface OverlayFilterParams {
   saturate: number;
   hueRotate: number;
   grayscale: number;
+  sepia: number;
+  blur: number;
 }
 
 export interface OverlayParams {

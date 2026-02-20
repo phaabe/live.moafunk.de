@@ -104,6 +104,8 @@ export function getDefaultOverlayParams(): OverlayParams {
       saturate: 0.85,
       hueRotate: 0,
       grayscale: 0,
+      sepia: 0,
+      blur: 0,
     },
   };
 }
@@ -119,6 +121,8 @@ export function buildFilterString(filter: OverlayFilterParams): string {
   if (filter.saturate !== 1) parts.push(`saturate(${filter.saturate})`);
   if (filter.hueRotate !== 0) parts.push(`hue-rotate(${filter.hueRotate}deg)`);
   if (filter.grayscale !== 0) parts.push(`grayscale(${filter.grayscale})`);
+  if (filter.sepia !== 0) parts.push(`sepia(${filter.sepia})`);
+  if (filter.blur !== 0) parts.push(`blur(${filter.blur}px)`);
   return parts.length > 0 ? parts.join(' ') : 'none';
 }
 

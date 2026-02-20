@@ -151,12 +151,34 @@ interface FilterField {
   step: number;
 }
 
-const filterFields: FilterField[] = [
-  { key: 'brightness', label: 'Brightness', min: 0, max: 2, step: 0.01 },
-  { key: 'contrast', label: 'Contrast', min: 0, max: 2, step: 0.01 },
-  { key: 'saturate', label: 'Saturate', min: 0, max: 2, step: 0.01 },
-  { key: 'hueRotate', label: 'Hue Rotate', min: 0, max: 360, step: 1 },
-  { key: 'grayscale', label: 'Grayscale', min: 0, max: 1, step: 0.01 },
+interface FilterGroup {
+  label: string;
+  fields: FilterField[];
+}
+
+const filterGroups: FilterGroup[] = [
+  {
+    label: 'Tone',
+    fields: [
+      { key: 'brightness', label: 'Bright', min: 0, max: 2, step: 0.01 },
+      { key: 'contrast', label: 'Contrast', min: 0, max: 2, step: 0.01 },
+    ],
+  },
+  {
+    label: 'Color',
+    fields: [
+      { key: 'saturate', label: 'Saturate', min: 0, max: 2, step: 0.01 },
+      { key: 'hueRotate', label: 'Hue', min: 0, max: 360, step: 1 },
+      { key: 'grayscale', label: 'Gray', min: 0, max: 1, step: 0.01 },
+      { key: 'sepia', label: 'Sepia', min: 0, max: 1, step: 0.01 },
+    ],
+  },
+  {
+    label: 'Effects',
+    fields: [
+      { key: 'blur', label: 'Blur', min: 0, max: 10, step: 0.1 },
+    ],
+  },
 ];
 
 // We track which element sections have the "type" field (text vs logo)
@@ -166,6 +188,66 @@ const elementSections = computed(() => [
   { key: 'logo' as const, label: 'Logo', isText: false, hasColor: false },
   { key: 'artistName' as const, label: `Artist Name`, isText: true, hasColor: true },
 ]);
+
+// ---------------------------------------------------------------------------
+// Image filter presets (inspired by popular Instagram / CSS filter recipes)
+// ---------------------------------------------------------------------------
+
+interface ImageFilterPreset {
+  name: string;
+  filter: OverlayFilterParams;
+}
+
+const imageFilterPresets: ImageFilterPreset[] = [
+  {
+    name: 'Normal',
+    filter: { brightness: 1, contrast: 1, saturate: 1, hueRotate: 0, grayscale: 0, sepia: 0, blur: 0 },
+  },
+  {
+    name: 'Clarendon',
+    filter: { brightness: 1.25, contrast: 1.25, saturate: 1, hueRotate: 5, grayscale: 0, sepia: 0.15, blur: 0 },
+  },
+  {
+    name: 'Gingham',
+    filter: { brightness: 1.1, contrast: 1.1, saturate: 1, hueRotate: 0, grayscale: 0, sepia: 0, blur: 0 },
+  },
+  {
+    name: 'Moon',
+    filter: { brightness: 1.4, contrast: 0.95, saturate: 0, hueRotate: 0, grayscale: 0, sepia: 0.35, blur: 0 },
+  },
+  {
+    name: 'Inkwell',
+    filter: { brightness: 1.25, contrast: 0.85, saturate: 1, hueRotate: 0, grayscale: 1, sepia: 0, blur: 0 },
+  },
+  {
+    name: 'Lo-Fi',
+    filter: { brightness: 1, contrast: 1.5, saturate: 1.1, hueRotate: 0, grayscale: 0, sepia: 0, blur: 0 },
+  },
+  {
+    name: '1977',
+    filter: { brightness: 1, contrast: 1, saturate: 1.4, hueRotate: -30, grayscale: 0, sepia: 0.5, blur: 0 },
+  },
+  {
+    name: 'Nashville',
+    filter: { brightness: 0.9, contrast: 1.5, saturate: 1, hueRotate: -15, grayscale: 0, sepia: 0.25, blur: 0 },
+  },
+  {
+    name: 'Valencia',
+    filter: { brightness: 1.1, contrast: 1.1, saturate: 1, hueRotate: 0, grayscale: 0, sepia: 0.25, blur: 0 },
+  },
+  {
+    name: 'Walden',
+    filter: { brightness: 1.25, contrast: 0.8, saturate: 1.4, hueRotate: 0, grayscale: 0, sepia: 0.35, blur: 0 },
+  },
+  {
+    name: 'Willow',
+    filter: { brightness: 1.2, contrast: 0.85, saturate: 0.05, hueRotate: 0, grayscale: 0, sepia: 0.2, blur: 0 },
+  },
+];
+
+function applyImageFilter(preset: ImageFilterPreset): void {
+  emit('update:modelValue', { ...props.modelValue, filter: { ...preset.filter } });
+}
 </script>
 
 <template>
@@ -362,16 +444,26 @@ const elementSections = computed(() => [
 
       <Transition name="accordion">
         <div v-if="activeSection === 'filter'" class="section-body">
-          <div v-for="field in filterFields" :key="field.key" class="control-row">
-            <label class="control-label">{{ field.label }}</label>
-            <input type="range" class="control-slider" :min="field.min" :max="field.max" :step="field.step"
-              :value="modelValue.filter[field.key]"
-              @input="updateFilter(field.key, Number(($event.target as HTMLInputElement).value))" />
-            <input type="number" class="control-number" :min="field.min" :max="field.max" :step="field.step"
-              :value="modelValue.filter[field.key]"
-              @input="updateFilter(field.key, Number(($event.target as HTMLInputElement).value))" />
-            <button class="btn-reset" :title="`Reset to ${defaults.filter[field.key]}`"
-              @click="updateFilter(field.key, defaults.filter[field.key])">↩</button>
+          <!-- Quick filter presets -->
+          <div class="image-filter-presets">
+            <button v-for="preset in imageFilterPresets" :key="preset.name" class="image-filter-chip"
+              :class="{ active: JSON.stringify(modelValue.filter) === JSON.stringify(preset.filter) }"
+              @click="applyImageFilter(preset)">{{ preset.name }}</button>
+          </div>
+
+          <div v-for="group in filterGroups" :key="group.label" class="filter-group">
+            <div class="filter-group-label">{{ group.label }}</div>
+            <div v-for="field in group.fields" :key="field.key" class="control-row">
+              <label class="control-label">{{ field.label }}</label>
+              <input type="range" class="control-slider" :min="field.min" :max="field.max" :step="field.step"
+                :value="modelValue.filter[field.key]"
+                @input="updateFilter(field.key, Number(($event.target as HTMLInputElement).value))" />
+              <input type="number" class="control-number" :min="field.min" :max="field.max" :step="field.step"
+                :value="modelValue.filter[field.key]"
+                @input="updateFilter(field.key, Number(($event.target as HTMLInputElement).value))" />
+              <button class="btn-reset" :title="`Reset to ${defaults.filter[field.key]}`"
+                @click="updateFilter(field.key, defaults.filter[field.key])">↩</button>
+            </div>
           </div>
         </div>
       </Transition>
@@ -469,6 +561,61 @@ const elementSections = computed(() => [
 .accordion-enter-to,
 .accordion-leave-from {
   opacity: 1;
+}
+
+/* --- Filter Groups --- */
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-group+.filter-group {
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px solid var(--color-border);
+}
+
+.filter-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 1px;
+}
+
+/* --- Image Filter Preset Chips --- */
+.image-filter-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 2px;
+}
+
+.image-filter-chip {
+  padding: 2px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: none;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.image-filter-chip:hover {
+  color: var(--color-text);
+  border-color: var(--color-text-muted);
+}
+
+.image-filter-chip.active {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
 /* --- Element Tab Bar --- */
