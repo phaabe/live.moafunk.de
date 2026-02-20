@@ -688,7 +688,15 @@ onBeforeUnmount(() => {
         <div class="card profile-picture-card">
           <div class="card-header">
             <h2 class="section-title">Profile Picture</h2>
-            <button v-if="!editingPicture" class="edit-btn" @click="startEditPicture" title="Edit">edit</button>
+            <div class="card-header-actions">
+              <router-link
+                v-if="!editingPicture"
+                :to="`/overlay-editor/${artist.id}`"
+                class="edit-btn"
+                title="Edit Overlay"
+              >overlay</router-link>
+              <button v-if="!editingPicture" class="edit-btn" @click="startEditPicture" title="Edit">edit</button>
+            </div>
           </div>
 
           <!-- Edit Mode -->

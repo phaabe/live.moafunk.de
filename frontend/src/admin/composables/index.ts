@@ -19,3 +19,13 @@ export {
   type FinalizeProgressMessage,
   type UseFinalizeProgressOptions,
 } from './useFinalizeProgress';
+export {
+  getDefaultOverlayParams,
+  buildFilterString,
+  drawOverlayOnCanvas,
+  drawOverlayFromDOM,
+  applyFilterToCanvas,
+  renderPreview,
+  moafunkLogoPromise,
+  shoikaFontsPromise,
+} from './useOverlayRenderer';

@@ -87,6 +87,53 @@ export const authApi = {
   me: () => api.get<User>('/api/auth/me'),
 };
 
+// Overlay types
+export interface OverlayElementParams {
+  visible: boolean;
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+  fontWeight?: string;
+  fontStyle?: string;
+}
+
+export interface OverlayFilterParams {
+  brightness: number;
+  contrast: number;
+  saturate: number;
+  hueRotate: number;
+  grayscale: number;
+}
+
+export interface OverlayParams {
+  un: OverlayElementParams;
+  heard: OverlayElementParams;
+  logo: OverlayElementParams;
+  artistName: OverlayElementParams;
+  filter: OverlayFilterParams;
+}
+
+export interface OverlayImage {
+  key: string;
+  url: string;
+  last_modified: string;
+  size: number;
+}
+
+export interface OverlayListResponse {
+  overlays: OverlayImage[];
+  active_key: string | null;
+}
+
+export interface OverlayPreset {
+  id: number;
+  name: string;
+  params: OverlayParams;
+  created_at: string;
+  updated_at: string;
+}
+
 // Artists API
 export interface Artist {
   id: number;
@@ -202,6 +249,20 @@ export const artistsApi = {
   sendTelegramPreview: (id: number) =>
     api.post<{ success: boolean }>(`/api/artists/${id}/telegram-preview`),
 
+  /** Fetch an artist image as a same-origin blob (avoids R2 CORS issues). */
+  getImageBlob: async (
+    id: number,
+    type: 'original' | 'cropped' | 'overlay' = 'original'
+  ): Promise<Blob> => {
+    const response = await fetch(`${API_BASE}/api/artists/${id}/image-proxy?type=${type}`, {
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.status}`);
+    }
+    return response.blob();
+  },
+
   updatePicture: async (
     id: number,
     data: {
@@ -224,6 +285,26 @@ export const artistsApi = {
       throw new Error(error.error || 'Upload failed');
     }
   },
+
+  listOverlays: (id: number) => api.get<OverlayListResponse>(`/api/artists/${id}/overlays`),
+
+  saveOverlay: async (id: number, blob: Blob): Promise<{ key: string; url: string }> => {
+    const formData = new FormData();
+    formData.append('image', blob, 'overlay.jpg');
+    const response = await fetch(`${API_BASE}/api/artists/${id}/overlays`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+      throw new Error(error.error || 'Upload failed');
+    }
+    return response.json();
+  },
+
+  setActiveOverlay: (id: number, key: string) =>
+    api.put<void>(`/api/artists/${id}/overlays/active`, { key }),
 
   updateAudio: async (
     id: number,
@@ -635,4 +716,17 @@ export const recordingApi = {
 
   listRecordings: (showId: number) =>
     api.get<{ recordings: RecordingVersionInfo[] }>(`/api/shows/${showId}/recordings`),
+};
+
+// Overlay Presets API
+export const presetsApi = {
+  list: () => api.get<{ presets: OverlayPreset[] }>('/api/overlay-presets'),
+
+  create: (name: string, params: OverlayParams) =>
+    api.post<OverlayPreset>('/api/overlay-presets', { name, params }),
+
+  update: (id: number, data: { name?: string; params?: OverlayParams }) =>
+    api.put<OverlayPreset>(`/api/overlay-presets/${id}`, data),
+
+  delete: (id: number) => api.delete<void>(`/api/overlay-presets/${id}`),
 };

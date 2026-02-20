@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import Cropper from 'cropperjs';
 import 'cropperjs/dist/cropper.css';
+import { drawOverlayFromDOM, applyFilterToCanvas, getDefaultOverlayParams } from '../composables/useOverlayRenderer';
 
 const props = defineProps<{
   artistName: string;
@@ -22,8 +23,10 @@ const fileInput = ref<HTMLInputElement | null>(null);
 let cropper: Cropper | null = null;
 let originalFile: File | null = null;
 let objectUrl: string | null = null;
-let moafunkLogoImg: HTMLImageElement | null = null;
 let cropBlobUpdateTimer: number | null = null;
+
+// Default filter params for the fixed overlay layout
+const defaultFilter = getDefaultOverlayParams().filter;
 
 // Cropped blobs
 const croppedBlob = ref<Blob | null>(null);
@@ -31,38 +34,7 @@ const brandedBlob = ref<Blob | null>(null);
 const saving = ref(false);
 const hasImage = ref(false);
 
-// Load logo
-const moafunkLogoPromise = new Promise<HTMLImageElement | null>((resolve) => {
-  const img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.onload = () => {
-    moafunkLogoImg = img;
-    resolve(img);
-  };
-  img.onerror = () => resolve(null);
-  img.src = '/moafunk.png';
-});
-
-// Load fonts
-const shoikaFontsPromise = Promise.all([
-  new FontFace('Shoika', "url('/Shoika-font/Shoika%20Bold%20Italic.ttf')", {
-    weight: '600',
-    style: 'italic',
-  }).load(),
-  new FontFace('Shoika', "url('/Shoika-font/Shoika%20Regular%20Italic.ttf')", {
-    weight: '400',
-    style: 'italic',
-  }).load(),
-  new FontFace('Shoika', "url('/Shoika-font/Shoika%20Bold.ttf')", {
-    weight: '700',
-    style: 'normal',
-  }).load(),
-])
-  .then((fonts) => {
-    fonts.forEach((font) => document.fonts.add(font));
-    return fonts;
-  })
-  .catch(() => null);
+// Font & logo loading are handled by useOverlayRenderer (singleton promises)
 
 function fitOverlayName(): void {
   if (!overlayName.value || overlayName.value.clientWidth <= 0) return;
@@ -145,109 +117,7 @@ function setCropBoxPadding(paddingFraction = 0.05): void {
   cropper.setCropBoxData({ left, top, width: cropSide, height: cropSide });
 }
 
-async function drawOverlayOnCanvas(canvas: HTMLCanvasElement): Promise<void> {
-  const ctx = canvas.getContext('2d');
-  if (!ctx || !cropperWrapper.value || !overlayRoot.value) return;
-
-  const size = canvas.width;
-  ctx.filter = 'none';
-
-  await Promise.all([moafunkLogoPromise, shoikaFontsPromise]);
-  if (document.fonts?.ready) {
-    try {
-      await document.fonts.ready;
-    } catch {
-      // ignore
-    }
-  }
-
-  const viewBox =
-    cropperWrapper.value.querySelector<HTMLElement>('.cropper-view-box') ||
-    cropperWrapper.value.querySelector<HTMLElement>('.cropper-crop-box');
-  if (!viewBox) return;
-
-  const viewRect = viewBox.getBoundingClientRect();
-  if (viewRect.width <= 0 || viewRect.height <= 0) return;
-
-  const scale = size / viewRect.width;
-  const toCanvasX = (px: number) => (px - viewRect.left) * scale;
-  const toCanvasY = (px: number) => (px - viewRect.top) * scale;
-  const toCanvasLen = (px: number) => px * scale;
-
-  const leftUn = overlayRoot.value.querySelector<HTMLElement>('.uploader-overlay-left .un');
-  const leftHeard = overlayRoot.value.querySelector<HTMLElement>('.uploader-overlay-left .heard');
-  if (leftUn && leftHeard) {
-    const unRect = leftUn.getBoundingClientRect();
-    const heardRect = leftHeard.getBoundingClientRect();
-    const unStyle = getComputedStyle(leftUn);
-    const heardStyle = getComputedStyle(leftHeard);
-
-    const unFontPx = parseFloat(unStyle.fontSize) || 16;
-    const heardFontPx = parseFloat(heardStyle.fontSize) || 16;
-
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-
-    ctx.font = `${unStyle.fontStyle} ${unStyle.fontWeight} ${toCanvasLen(unFontPx)}px Shoika, sans-serif`;
-    ctx.fillStyle = unStyle.color || '#ffec44';
-    ctx.fillText((leftUn.textContent || '').trim(), toCanvasX(unRect.left), toCanvasY(unRect.top));
-
-    ctx.font = `${heardStyle.fontStyle} ${heardStyle.fontWeight} ${toCanvasLen(heardFontPx)}px Shoika, sans-serif`;
-    ctx.fillStyle = heardStyle.color || '#ffffff';
-    ctx.fillText(
-      (leftHeard.textContent || '').trim(),
-      toCanvasX(heardRect.left),
-      toCanvasY(heardRect.top),
-    );
-  }
-
-  const logoEl = overlayRoot.value.querySelector<HTMLImageElement>('img.uploader-overlay-logo');
-  if (logoEl && moafunkLogoImg) {
-    const logoRect = logoEl.getBoundingClientRect();
-
-    const boxX = toCanvasX(logoRect.left);
-    const boxY = toCanvasY(logoRect.top);
-    const boxW = toCanvasLen(logoRect.width);
-    const boxH = toCanvasLen(logoRect.height);
-
-    const srcW = moafunkLogoImg.naturalWidth || moafunkLogoImg.width || 1;
-    const srcH = moafunkLogoImg.naturalHeight || moafunkLogoImg.height || 1;
-    const srcAspect = srcW / srcH;
-    const boxAspect = boxW / boxH;
-
-    let drawW = boxW;
-    let drawH = boxH;
-    if (srcAspect >= boxAspect) {
-      drawW = boxW;
-      drawH = boxW / srcAspect;
-    } else {
-      drawH = boxH;
-      drawW = boxH * srcAspect;
-    }
-
-    const drawX = boxX + (boxW - drawW) / 2;
-    const drawY = boxY + (boxH - drawH) / 2;
-    ctx.drawImage(moafunkLogoImg, drawX, drawY, drawW, drawH);
-  }
-
-  if (overlayName.value) {
-    const nameText = (overlayName.value.textContent || '').trim();
-    if (nameText) {
-      const nameRect = overlayName.value.getBoundingClientRect();
-      const nameStyle = getComputedStyle(overlayName.value);
-      const nameFontPx = parseFloat(nameStyle.fontSize) || 16;
-
-      ctx.fillStyle = nameStyle.color || '#ffffff';
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'center';
-      ctx.font = `${nameStyle.fontStyle} ${nameStyle.fontWeight} ${toCanvasLen(nameFontPx)}px Shoika, sans-serif`;
-
-      const centerX = toCanvasX(nameRect.left + nameRect.width / 2);
-      const centerY = toCanvasY(nameRect.top + nameRect.height / 2);
-      ctx.fillText(nameText, centerX, centerY);
-    }
-  }
-}
+// drawOverlayOnCanvas is now delegated to drawOverlayFromDOM from useOverlayRenderer
 
 async function updateCroppedBlob(): Promise<void> {
   if (!cropper) return;
@@ -264,28 +134,8 @@ async function updateCroppedBlob(): Promise<void> {
   if (overlayRoot.value) overlayRoot.value.style.visibility = 'visible';
   if (!canvas) return;
 
-  // Apply filter
-  {
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      const filtered = document.createElement('canvas');
-      filtered.width = canvas.width;
-      filtered.height = canvas.height;
-      const fctx = filtered.getContext('2d');
-      if (fctx) {
-        fctx.filter = 'saturate(0.85) contrast(1.08)';
-        fctx.drawImage(canvas, 0, 0);
-
-        ctx.save();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.restore();
-
-        ctx.filter = 'none';
-        ctx.drawImage(filtered, 0, 0);
-      }
-    }
-  }
+  // Apply filter (using composable)
+  applyFilterToCanvas(canvas, defaultFilter);
 
   // Get cropped blob (without overlay)
   const croppedFilteredBlob = await new Promise<Blob | null>((resolve) => {
@@ -293,8 +143,10 @@ async function updateCroppedBlob(): Promise<void> {
   });
   if (croppedFilteredBlob) croppedBlob.value = croppedFilteredBlob;
 
-  // Draw overlay and get branded blob
-  await drawOverlayOnCanvas(canvas);
+  // Draw overlay and get branded blob (using composable DOM-based renderer)
+  if (cropperWrapper.value && overlayRoot.value) {
+    await drawOverlayFromDOM(canvas, cropperWrapper.value, overlayRoot.value, overlayName.value);
+  }
 
   const brandedBlobResult = await new Promise<Blob | null>((resolve) => {
     canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
