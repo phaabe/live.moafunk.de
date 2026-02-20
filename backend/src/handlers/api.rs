@@ -1058,25 +1058,39 @@ pub async fn api_create_overlay_preset(
     let params_str = serde_json::to_string(&req.params)
         .map_err(|e| AppError::BadRequest(format!("Invalid params JSON: {}", e)))?;
 
-    let result = sqlx::query(
-        "INSERT INTO overlay_presets (name, params) VALUES (?, ?)",
-    )
-    .bind(req.name.trim())
-    .bind(&params_str)
-    .execute(&state.db)
-    .await
-    .map_err(|e| match e {
-        sqlx::Error::Database(ref db_err) if db_err.message().contains("UNIQUE") => {
-            AppError::BadRequest("A preset with that name already exists".to_string())
-        }
-        other => AppError::Database(other),
-    })?;
+    let result = sqlx::query("INSERT INTO overlay_presets (name, params) VALUES (?, ?)")
+        .bind(req.name.trim())
+        .bind(&params_str)
+        .execute(&state.db)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(ref db_err) if db_err.message().contains("UNIQUE") => {
+                AppError::BadRequest("A preset with that name already exists".to_string())
+            }
+            other => AppError::Database(other),
+        })?;
 
     let id = result.last_insert_rowid();
+    let params_val: serde_json::Value =
+        serde_json::from_str(&params_str).unwrap_or(serde_json::Value::Null);
+
+    // Fetch created_at/updated_at from DB
+    let created: Option<models::OverlayPreset> =
+        sqlx::query_as("SELECT * FROM overlay_presets WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+    let ts = created.as_ref();
 
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({ "id": id, "name": req.name.trim() })),
+        Json(serde_json::json!({
+            "id": id,
+            "name": req.name.trim(),
+            "params": params_val,
+            "created_at": ts.map(|p| &p.created_at),
+            "updated_at": ts.map(|p| &p.updated_at),
+        })),
     ))
 }
 
@@ -1096,7 +1110,11 @@ pub async fn api_update_overlay_preset(
             .await?;
     let existing = existing.ok_or_else(|| AppError::NotFound("Preset not found".to_string()))?;
 
-    let new_name = req.name.as_deref().map(|n| n.trim()).unwrap_or(&existing.name);
+    let new_name = req
+        .name
+        .as_deref()
+        .map(|n| n.trim())
+        .unwrap_or(&existing.name);
     let new_params = match &req.params {
         Some(p) => serde_json::to_string(p)
             .map_err(|e| AppError::BadRequest(format!("Invalid params JSON: {}", e)))?,
@@ -1118,7 +1136,24 @@ pub async fn api_update_overlay_preset(
         other => AppError::Database(other),
     })?;
 
-    Ok(Json(serde_json::json!({ "success": true })))
+    // Return the full updated preset
+    let updated: Option<models::OverlayPreset> =
+        sqlx::query_as("SELECT * FROM overlay_presets WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+    let updated =
+        updated.ok_or_else(|| AppError::NotFound("Preset not found after update".to_string()))?;
+    let params_val: serde_json::Value =
+        serde_json::from_str(&updated.params).unwrap_or(serde_json::Value::Null);
+
+    Ok(Json(serde_json::json!({
+        "id": updated.id,
+        "name": updated.name,
+        "params": params_val,
+        "created_at": updated.created_at,
+        "updated_at": updated.updated_at,
+    })))
 }
 
 pub async fn api_delete_overlay_preset(
@@ -1151,10 +1186,7 @@ pub async fn api_artist_image_proxy(
     Path(id): Path<i64>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse> {
-    let image_type = params
-        .get("type")
-        .map(|s| s.as_str())
-        .unwrap_or("original");
+    let image_type = params.get("type").map(|s| s.as_str()).unwrap_or("original");
 
     let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
         .bind(id)
@@ -1174,7 +1206,8 @@ pub async fn api_artist_image_proxy(
         _ => artist.pic_key.clone(),
     };
 
-    let key = key.ok_or_else(|| AppError::NotFound("No image found for this artist".to_string()))?;
+    let key =
+        key.ok_or_else(|| AppError::NotFound("No image found for this artist".to_string()))?;
 
     let (data, content_type) = storage::download_file(&state, &key).await?;
 
@@ -1182,10 +1215,7 @@ pub async fn api_artist_image_proxy(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, content_type),
-            (
-                header::CACHE_CONTROL,
-                "private, max-age=300".to_string(),
-            ),
+            (header::CACHE_CONTROL, "private, max-age=300".to_string()),
         ],
         data,
     ))
@@ -1276,10 +1306,7 @@ pub async fn api_save_artist_overlay(
     {
         let field_name = field.name().unwrap_or("").to_string();
         if field_name == "image" {
-            content_type = field
-                .content_type()
-                .unwrap_or("image/jpeg")
-                .to_string();
+            content_type = field.content_type().unwrap_or("image/jpeg").to_string();
             let data = field
                 .bytes()
                 .await
