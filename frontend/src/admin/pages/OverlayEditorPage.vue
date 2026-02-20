@@ -229,6 +229,11 @@ watch(liveFilterString, (filterStr) => {
 // Live DOM overlay (positioned using params percentages)
 // ---------------------------------------------------------------------------
 
+function textShadowCss(el: { shadow?: { offsetX: number; offsetY: number; color: string } }): string {
+  if (!el.shadow) return 'none';
+  return `${el.shadow.offsetX}px ${el.shadow.offsetY}px 0px ${el.shadow.color}`;
+}
+
 const overlayUnStyle = computed(() => ({
   display: params.value.un.visible ? 'block' : 'none',
   left: `${params.value.un.x}%`,
@@ -237,6 +242,7 @@ const overlayUnStyle = computed(() => ({
   color: params.value.un.color,
   fontWeight: params.value.un.fontWeight ?? '600',
   fontStyle: params.value.un.fontStyle ?? 'italic',
+  textShadow: textShadowCss(params.value.un),
 }));
 
 const overlayHeardStyle = computed(() => ({
@@ -247,6 +253,7 @@ const overlayHeardStyle = computed(() => ({
   color: params.value.heard.color,
   fontWeight: params.value.heard.fontWeight ?? '400',
   fontStyle: params.value.heard.fontStyle ?? 'italic',
+  textShadow: textShadowCss(params.value.heard),
 }));
 
 const overlayLogoStyle = computed(() => ({
@@ -267,6 +274,7 @@ const overlayNameStyle = computed(() => ({
   fontWeight: params.value.artistName.fontWeight ?? '700',
   fontStyle: params.value.artistName.fontStyle ?? 'normal',
   transform: 'translate(-50%, -50%)',
+  textShadow: textShadowCss(params.value.artistName),
 }));
 
 const displayArtistName = computed(() =>
@@ -414,13 +422,8 @@ onUnmounted(() => {
       <h1 class="page-title">Overlay Editor</h1>
       <div class="artist-selector">
         <label for="artist-select">Artist</label>
-        <select
-          id="artist-select"
-          v-model="selectedArtistId"
-          class="form-input"
-          :disabled="artistsLoading"
-          @change="onArtistChange"
-        >
+        <select id="artist-select" v-model="selectedArtistId" class="form-input" :disabled="artistsLoading"
+          @change="onArtistChange">
           <option :value="null" disabled>Select an artist…</option>
           <option v-for="a in artists" :key="a.id" :value="a.id">
             {{ a.name }}
@@ -439,24 +442,14 @@ onUnmounted(() => {
       <div class="editor-canvas-panel">
         <div ref="cropperWrapper" class="cropper-wrapper">
           <div class="cropper-frame">
-            <img
-              ref="cropperImg"
-              alt="Original artist image"
-              crossorigin="anonymous"
-              @load="onImageLoad"
-            />
+            <img ref="cropperImg" alt="Original artist image" crossorigin="anonymous" @load="onImageLoad" />
 
             <!-- Live DOM overlay (positioned by params) -->
             <div ref="overlayEl" class="live-overlay" aria-hidden="true">
               <span class="live-overlay-un" :style="overlayUnStyle">UN</span>
               <span class="live-overlay-heard" :style="overlayHeardStyle">HEARD</span>
-              <img
-                class="live-overlay-logo overlay-logo"
-                src="/moafunk.png"
-                alt=""
-                crossorigin="anonymous"
-                :style="overlayLogoStyle"
-              />
+              <img class="live-overlay-logo overlay-logo" src="/moafunk.png" alt="" crossorigin="anonymous"
+                :style="overlayLogoStyle" />
               <span class="live-overlay-name" :style="overlayNameStyle">
                 {{ displayArtistName }}
               </span>
@@ -473,20 +466,10 @@ onUnmounted(() => {
 
         <!-- Action buttons -->
         <div v-if="imageLoaded" class="action-bar">
-          <button
-            type="button"
-            class="btn-secondary"
-            :disabled="previewing"
-            @click="openPreview"
-          >
+          <button type="button" class="btn-secondary" :disabled="previewing" @click="openPreview">
             {{ previewing ? 'Rendering…' : 'Preview' }}
           </button>
-          <button
-            type="button"
-            class="btn-primary"
-            :disabled="saving"
-            @click="saveToR2"
-          >
+          <button type="button" class="btn-primary" :disabled="saving" @click="saveToR2">
             {{ saving ? 'Saving…' : 'Save to R2' }}
           </button>
         </div>
@@ -506,22 +489,14 @@ onUnmounted(() => {
 
       <!-- Right: Controls panel -->
       <div class="editor-controls-panel">
-        <OverlayControls
-          v-model="params"
-          :artist-name="artist.name"
-        />
+        <OverlayControls v-model="params" :artist-name="artist.name" />
       </div>
     </div>
 
     <!-- Gallery section -->
     <div v-if="artist" class="gallery-section">
       <h2 class="section-title">Saved Overlays</h2>
-      <OverlayGallery
-        ref="galleryRef"
-        :artist-id="artist.id"
-        :active-key="activeKey"
-        @set-active="handleSetActive"
-      />
+      <OverlayGallery ref="galleryRef" :artist-id="artist.id" :active-key="activeKey" @set-active="handleSetActive" />
     </div>
 
     <!-- Preview modal -->
@@ -537,12 +512,7 @@ onUnmounted(() => {
           </div>
           <div class="preview-footer">
             <button type="button" class="btn-ghost" @click="closePreview">Close</button>
-            <button
-              type="button"
-              class="btn-primary"
-              :disabled="saving"
-              @click="saveToR2(); closePreview()"
-            >
+            <button type="button" class="btn-primary" :disabled="saving" @click="saveToR2(); closePreview()">
               {{ saving ? 'Saving…' : 'Save to R2' }}
             </button>
           </div>

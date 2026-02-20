@@ -10,7 +10,12 @@
  * Logo size is a percentage of the canvas width.
  */
 
-import type { OverlayParams, OverlayElementParams, OverlayFilterParams } from '../api';
+import type {
+  OverlayParams,
+  OverlayElementParams,
+  OverlayFilterParams,
+  OverlayShadowParams,
+} from '../api';
 import type Cropper from 'cropperjs';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +69,7 @@ export function getDefaultOverlayParams(): OverlayParams {
       color: '#ffec44',
       fontWeight: '600',
       fontStyle: 'italic',
+      shadow: { offsetX: 2, offsetY: 2, color: '#000000' },
     },
     heard: {
       visible: true,
@@ -73,6 +79,7 @@ export function getDefaultOverlayParams(): OverlayParams {
       color: '#ffffff',
       fontWeight: '400',
       fontStyle: 'italic',
+      shadow: { offsetX: 1, offsetY: 1, color: '#000000' },
     },
     logo: {
       visible: true,
@@ -89,6 +96,7 @@ export function getDefaultOverlayParams(): OverlayParams {
       color: '#ffffff',
       fontWeight: '700',
       fontStyle: 'normal',
+      shadow: { offsetX: 1, offsetY: 1, color: '#000000' },
     },
     filter: {
       brightness: 1,
@@ -196,6 +204,13 @@ function drawText(
   ctx.textAlign = align;
   ctx.textBaseline = baseline;
   ctx.font = `${fontStyle} ${fontWeight} ${el.size}px Shoika, sans-serif`;
+
+  // Draw shadow first (behind the main text)
+  if (el.shadow) {
+    ctx.fillStyle = el.shadow.color;
+    ctx.fillText(text, x + el.shadow.offsetX, y + el.shadow.offsetY);
+  }
+
   ctx.fillStyle = el.color;
   ctx.fillText(text, x, y);
 }
@@ -267,6 +282,13 @@ function drawArtistName(
   fontSize = Math.floor(low);
 
   ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px Shoika, sans-serif`;
+
+  // Draw shadow first (behind the main text)
+  if (el.shadow) {
+    ctx.fillStyle = el.shadow.color;
+    ctx.fillText(text, centerX + el.shadow.offsetX, centerY + el.shadow.offsetY);
+  }
+
   ctx.fillStyle = el.color;
   ctx.fillText(text, centerX, centerY);
 }

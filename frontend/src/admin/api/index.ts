@@ -88,6 +88,12 @@ export const authApi = {
 };
 
 // Overlay types
+export interface OverlayShadowParams {
+  offsetX: number;
+  offsetY: number;
+  color: string;
+}
+
 export interface OverlayElementParams {
   visible: boolean;
   x: number;
@@ -96,6 +102,7 @@ export interface OverlayElementParams {
   color: string;
   fontWeight?: string;
   fontStyle?: string;
+  shadow?: OverlayShadowParams;
 }
 
 export interface OverlayFilterParams {

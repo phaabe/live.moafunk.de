@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, toRaw } from 'vue';
-import type { OverlayParams, OverlayElementParams, OverlayFilterParams, OverlayPreset } from '../api';
+import type { OverlayParams, OverlayElementParams, OverlayFilterParams, OverlayPreset, OverlayShadowParams } from '../api';
 import { presetsApi } from '../api';
 import { getDefaultOverlayParams } from '../composables/useOverlayRenderer';
 
@@ -20,6 +20,12 @@ const emit = defineEmits<{
 function updateElement(key: keyof OverlayParams, field: keyof OverlayElementParams, value: unknown): void {
   const el = { ...(props.modelValue[key] as OverlayElementParams), [field]: value };
   emit('update:modelValue', { ...props.modelValue, [key]: el });
+}
+
+function updateShadow(key: keyof OverlayParams, field: keyof OverlayShadowParams, value: unknown): void {
+  const el = props.modelValue[key] as OverlayElementParams;
+  const shadow = { ...(el.shadow ?? { offsetX: 0, offsetY: 0, color: '#000000' }), [field]: value };
+  emit('update:modelValue', { ...props.modelValue, [key]: { ...el, shadow } });
 }
 
 function updateFilter(field: keyof OverlayFilterParams, value: number): void {
@@ -284,6 +290,40 @@ const elementSections = computed(() => [
             <option value="italic">Italic</option>
           </select>
         </div>
+
+        <!-- Shadow controls (text elements only) -->
+        <template v-if="section.isText">
+          <div class="control-divider">Shadow</div>
+          <div class="control-row">
+            <label class="control-label">X Offset</label>
+            <input type="range" class="control-slider" min="-10" max="10" step="0.5"
+              :value="(modelValue[section.key] as OverlayElementParams).shadow?.offsetX ?? 0"
+              @input="updateShadow(section.key, 'offsetX', Number(($event.target as HTMLInputElement).value))" />
+            <input type="number" class="control-number" min="-10" max="10" step="0.5"
+              :value="(modelValue[section.key] as OverlayElementParams).shadow?.offsetX ?? 0"
+              @input="updateShadow(section.key, 'offsetX', Number(($event.target as HTMLInputElement).value))" />
+            <span class="control-unit">px</span>
+          </div>
+          <div class="control-row">
+            <label class="control-label">Y Offset</label>
+            <input type="range" class="control-slider" min="-10" max="10" step="0.5"
+              :value="(modelValue[section.key] as OverlayElementParams).shadow?.offsetY ?? 0"
+              @input="updateShadow(section.key, 'offsetY', Number(($event.target as HTMLInputElement).value))" />
+            <input type="number" class="control-number" min="-10" max="10" step="0.5"
+              :value="(modelValue[section.key] as OverlayElementParams).shadow?.offsetY ?? 0"
+              @input="updateShadow(section.key, 'offsetY', Number(($event.target as HTMLInputElement).value))" />
+            <span class="control-unit">px</span>
+          </div>
+          <div class="control-row">
+            <label class="control-label">Shadow Color</label>
+            <input type="color" class="control-color"
+              :value="(modelValue[section.key] as OverlayElementParams).shadow?.color ?? '#000000'"
+              @input="updateShadow(section.key, 'color', ($event.target as HTMLInputElement).value)" />
+            <input type="text" class="control-color-text"
+              :value="(modelValue[section.key] as OverlayElementParams).shadow?.color ?? '#000000'"
+              @change="updateShadow(section.key, 'color', ($event.target as HTMLInputElement).value)" />
+          </div>
+        </template>
       </div>
     </div>
 
@@ -434,6 +474,16 @@ const elementSections = computed(() => [
   flex-shrink: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
+}
+
+.control-divider {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 6px 0 2px;
+  border-top: 1px solid var(--color-border);
+  margin-top: 4px;
 }
 
 .control-color {
