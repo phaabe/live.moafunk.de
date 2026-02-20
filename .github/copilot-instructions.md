@@ -74,6 +74,10 @@ docker compose up -d --build           # Local Docker
 - Server scripts in `scripts/{backup,db,r2}/` for DB backup/restore, R2 sync, rclone setup.
 - Manual workflow dispatch available with options: `init_db`, `setup_nginx`, custom image tag.
 
+## JSON Plans
+
+- plans should be created in "/Users/anton/git/copilot-agents/stacks/live-moafunk/.copilot-agents/plans/"
+
 ## Don't
 
 - Don't add Tera/template dependencies — migrating away from server-rendered templates.
