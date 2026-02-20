@@ -261,3 +261,14 @@ impl RecordingVersion {
         RecordingVersionStatus::from_str(&self.status).unwrap_or(RecordingVersionStatus::Raw)
     }
 }
+
+/// Overlay parameter preset (shared across all admin users)
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct OverlayPreset {
+    pub id: i64,
+    pub name: String,
+    /// JSON blob storing all overlay parameters (positions, sizes, colors, filters)
+    pub params: String,
+    pub created_at: String,
+    pub updated_at: String,
+}

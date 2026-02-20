@@ -1,7 +1,62 @@
 use crate::{audio, AppError, AppState, Result};
 use aws_sdk_s3::primitives::ByteStream;
+use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// An object returned from listing objects in R2/S3.
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageObject {
+    pub key: String,
+    pub last_modified: Option<String>,
+    pub size: i64,
+}
+
+/// List all objects in the bucket matching a given key prefix.
+pub async fn list_objects(state: &Arc<AppState>, prefix: &str) -> Result<Vec<StorageObject>> {
+    let mut objects = Vec::new();
+    let mut continuation_token: Option<String> = None;
+
+    loop {
+        let mut req = state
+            .s3_client
+            .list_objects_v2()
+            .bucket(&state.config.r2_bucket_name)
+            .prefix(prefix);
+
+        if let Some(token) = &continuation_token {
+            req = req.continuation_token(token);
+        }
+
+        let output = req
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to list objects: {}", e)))?;
+
+        for obj in output.contents() {
+            let key = obj.key().unwrap_or_default().to_string();
+            let last_modified =
+                obj.last_modified()
+                    .and_then(|t: &aws_sdk_s3::primitives::DateTime| {
+                        t.fmt(aws_sdk_s3::primitives::DateTimeFormat::DateTime).ok()
+                    });
+            let size = obj.size().unwrap_or(0);
+            objects.push(StorageObject {
+                key,
+                last_modified,
+                size,
+            });
+        }
+
+        if output.is_truncated() == Some(true) {
+            continuation_token = output.next_continuation_token().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+
+    Ok(objects)
+}
 
 fn sanitize_object_name(input: &str) -> String {
     let trimmed = input.trim();

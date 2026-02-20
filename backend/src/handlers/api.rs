@@ -364,6 +364,12 @@ pub async fn api_artist_detail(
             file_urls.insert("pic".to_string(), url);
         }
     }
+    // Expose the untouched original image separately (for overlay editor)
+    if let Some(key) = &artist.pic_key {
+        if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
+            file_urls.insert("pic_original".to_string(), url);
+        }
+    }
     if let Some(key) = &artist.voice_message_key {
         if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
             file_urls.insert("voice".to_string(), url);
@@ -988,6 +994,373 @@ pub async fn api_update_artist_picture(
         // Trigger backup workflow (fire-and-forget)
         super::backup_trigger::trigger_backup(&state.config, id, "profile-picture-update");
     }
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Overlay Presets API
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreatePresetRequest {
+    name: String,
+    params: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdatePresetRequest {
+    name: Option<String>,
+    params: Option<serde_json::Value>,
+}
+
+pub async fn api_list_overlay_presets(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let presets: Vec<models::OverlayPreset> =
+        sqlx::query_as("SELECT * FROM overlay_presets ORDER BY name ASC")
+            .fetch_all(&state.db)
+            .await?;
+
+    // Parse the params JSON string back into serde_json::Value for the response
+    let items: Vec<serde_json::Value> = presets
+        .iter()
+        .map(|p| {
+            let params_val: serde_json::Value =
+                serde_json::from_str(&p.params).unwrap_or(serde_json::Value::Null);
+            serde_json::json!({
+                "id": p.id,
+                "name": p.name,
+                "params": params_val,
+                "created_at": p.created_at,
+                "updated_at": p.updated_at,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "presets": items })))
+}
+
+pub async fn api_create_overlay_preset(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreatePresetRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    if req.name.trim().is_empty() {
+        return Err(AppError::BadRequest("Preset name is required".to_string()));
+    }
+
+    let params_str = serde_json::to_string(&req.params)
+        .map_err(|e| AppError::BadRequest(format!("Invalid params JSON: {}", e)))?;
+
+    let result = sqlx::query(
+        "INSERT INTO overlay_presets (name, params) VALUES (?, ?)",
+    )
+    .bind(req.name.trim())
+    .bind(&params_str)
+    .execute(&state.db)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::Database(ref db_err) if db_err.message().contains("UNIQUE") => {
+            AppError::BadRequest("A preset with that name already exists".to_string())
+        }
+        other => AppError::Database(other),
+    })?;
+
+    let id = result.last_insert_rowid();
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "id": id, "name": req.name.trim() })),
+    ))
+}
+
+pub async fn api_update_overlay_preset(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<UpdatePresetRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify preset exists
+    let existing: Option<models::OverlayPreset> =
+        sqlx::query_as("SELECT * FROM overlay_presets WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+    let existing = existing.ok_or_else(|| AppError::NotFound("Preset not found".to_string()))?;
+
+    let new_name = req.name.as_deref().map(|n| n.trim()).unwrap_or(&existing.name);
+    let new_params = match &req.params {
+        Some(p) => serde_json::to_string(p)
+            .map_err(|e| AppError::BadRequest(format!("Invalid params JSON: {}", e)))?,
+        None => existing.params.clone(),
+    };
+
+    sqlx::query(
+        "UPDATE overlay_presets SET name = ?, params = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(new_name)
+    .bind(&new_params)
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::Database(ref db_err) if db_err.message().contains("UNIQUE") => {
+            AppError::BadRequest("A preset with that name already exists".to_string())
+        }
+        other => AppError::Database(other),
+    })?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+pub async fn api_delete_overlay_preset(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let result = sqlx::query("DELETE FROM overlay_presets WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Preset not found".to_string()));
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Image Proxy (serves R2 images to avoid CORS issues with presigned URLs)
+// ============================================================================
+
+/// Proxy an artist image from R2 so the frontend can load it from same-origin.
+/// GET /api/artists/:id/image-proxy?type=original|cropped|overlay
+pub async fn api_artist_image_proxy(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse> {
+    let image_type = params
+        .get("type")
+        .map(|s| s.as_str())
+        .unwrap_or("original");
+
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let key = match image_type {
+        "original" => artist.pic_key.clone(),
+        "cropped" => artist.pic_cropped_key.clone().or(artist.pic_key.clone()),
+        "overlay" => artist
+            .pic_overlay_key
+            .clone()
+            .or(artist.pic_cropped_key.clone())
+            .or(artist.pic_key.clone()),
+        _ => artist.pic_key.clone(),
+    };
+
+    let key = key.ok_or_else(|| AppError::NotFound("No image found for this artist".to_string()))?;
+
+    let (data, content_type) = storage::download_file(&state, &key).await?;
+
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::CACHE_CONTROL,
+                "private, max-age=300".to_string(),
+            ),
+        ],
+        data,
+    ))
+}
+
+// ============================================================================
+// Overlay Gallery API
+// ============================================================================
+
+/// List all overlay images saved for an artist in R2 (pic_overlay/ prefix).
+pub async fn api_list_artist_overlays(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify artist exists
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    let artist = artist.ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let prefix = format!("artists/{}/pic_overlay/", id);
+    let objects = storage::list_objects(&state, &prefix).await?;
+
+    let mut items = Vec::new();
+    for obj in &objects {
+        let url = storage::get_presigned_url(&state, &obj.key, 3600)
+            .await
+            .unwrap_or_default();
+        items.push(serde_json::json!({
+            "key": obj.key,
+            "url": url,
+            "last_modified": obj.last_modified,
+            "size": obj.size,
+        }));
+    }
+
+    // Also include the legacy pic-overlay/ directory (used by the admin picture update)
+    let legacy_prefix = format!("artists/{}/pic-overlay/", id);
+    let legacy_objects = storage::list_objects(&state, &legacy_prefix).await?;
+    for obj in &legacy_objects {
+        let url = storage::get_presigned_url(&state, &obj.key, 3600)
+            .await
+            .unwrap_or_default();
+        items.push(serde_json::json!({
+            "key": obj.key,
+            "url": url,
+            "last_modified": obj.last_modified,
+            "size": obj.size,
+        }));
+    }
+
+    Ok(Json(serde_json::json!({
+        "artist_id": id,
+        "artist_name": artist.name,
+        "active_key": artist.pic_overlay_key,
+        "overlays": items,
+    })))
+}
+
+/// Save a new overlay image to R2 without updating the active overlay key.
+pub async fn api_save_artist_overlay(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify artist exists
+    let _artist: models::Artist =
+        sqlx::query_as::<_, models::Artist>("SELECT * FROM artists WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    let mut image_data: Option<Vec<u8>> = None;
+    let mut content_type = "image/jpeg".to_string();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name == "image" {
+            content_type = field
+                .content_type()
+                .unwrap_or("image/jpeg")
+                .to_string();
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Failed to read image data: {}", e)))?;
+            if !data.is_empty() {
+                image_data = Some(data.to_vec());
+            }
+        }
+    }
+
+    let data = image_data.ok_or_else(|| AppError::BadRequest("No image provided".to_string()))?;
+
+    // Generate a timestamped unique filename so older images are never replaced
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let uuid_short = &uuid::Uuid::new_v4().to_string()[..8];
+    let ext = if content_type.contains("png") {
+        "png"
+    } else {
+        "jpg"
+    };
+    let key = format!(
+        "artists/{}/pic_overlay/{}-{}.{}",
+        id, timestamp, uuid_short, ext
+    );
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(aws_sdk_s3::primitives::ByteStream::from(data))
+        .content_type(&content_type)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload overlay: {}", e)))?;
+
+    let url = storage::get_presigned_url(&state, &key, 3600).await?;
+
+    Ok(Json(serde_json::json!({
+        "key": key,
+        "url": url,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetActiveOverlayRequest {
+    key: String,
+}
+
+/// Set a specific overlay image as the active pic_overlay_key for the artist.
+pub async fn api_set_active_overlay(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<SetActiveOverlayRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify artist exists
+    let _artist: models::Artist =
+        sqlx::query_as::<_, models::Artist>("SELECT * FROM artists WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Artist not found".to_string()))?;
+
+    // Verify the key actually belongs to this artist (security check)
+    let expected_prefix = format!("artists/{}/", id);
+    if !req.key.starts_with(&expected_prefix) {
+        return Err(AppError::BadRequest(
+            "Invalid overlay key for this artist".to_string(),
+        ));
+    }
+
+    sqlx::query(
+        "UPDATE artists SET pic_overlay_key = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&req.key)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
