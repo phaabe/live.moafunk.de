@@ -572,6 +572,9 @@ onUnmounted(() => {
   grid-template-columns: 1fr 380px;
   gap: var(--spacing-lg);
   align-items: start;
+  justify-content: center;
+  max-width: calc(80vh + 380px + var(--spacing-lg));
+  margin: 0 auto;
 }
 
 @media (max-width: 1024px) {
@@ -584,11 +587,13 @@ onUnmounted(() => {
 .editor-canvas-panel {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--spacing-md);
 }
 
 .cropper-wrapper {
   width: 100%;
+  max-width: 80vh;
 }
 
 .cropper-frame {
