@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, toRaw } from 'vue';
 import type { OverlayParams, OverlayElementParams, OverlayFilterParams, OverlayPreset } from '../api';
 import { presetsApi } from '../api';
 import { getDefaultOverlayParams } from '../composables/useOverlayRenderer';
@@ -75,7 +75,10 @@ async function fetchPresets(): Promise<void> {
 
 function loadPreset(): void {
   if (!selectedPreset.value) return;
-  emit('update:modelValue', structuredClone(selectedPreset.value.params));
+  const raw = toRaw(selectedPreset.value.params);
+  // params may be a parsed object or a JSON string from the backend
+  const plain = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(JSON.stringify(raw));
+  emit('update:modelValue', plain);
 }
 
 async function saveAsNew(): Promise<void> {
@@ -83,7 +86,7 @@ async function saveAsNew(): Promise<void> {
   if (!name) return;
   presetSaving.value = true;
   try {
-    const created = await presetsApi.create(name, structuredClone(props.modelValue));
+    const created = await presetsApi.create(name, JSON.parse(JSON.stringify(toRaw(props.modelValue))));
     presets.value.push(created);
     selectedPresetId.value = created.id;
     newPresetName.value = '';
@@ -101,7 +104,7 @@ async function updateCurrent(): Promise<void> {
   presetSaving.value = true;
   try {
     const updated = await presetsApi.update(selectedPreset.value.id, {
-      params: structuredClone(props.modelValue),
+      params: JSON.parse(JSON.stringify(toRaw(props.modelValue))),
     });
     const idx = presets.value.findIndex((p) => p.id === updated.id);
     if (idx >= 0) presets.value[idx] = updated;
@@ -174,52 +177,29 @@ const elementSections = computed(() => [
 
       <div v-show="expandedSections.presets" class="section-body">
         <div class="preset-row">
-          <select
-            class="form-select"
-            :value="selectedPresetId ?? ''"
-            @change="selectedPresetId = ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null"
-          >
+          <select class="form-select" :value="selectedPresetId ?? ''"
+            @change="selectedPresetId = ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null">
             <option value="">— Select preset —</option>
             <option v-for="p in presets" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
-          <button
-            class="btn-sm btn-primary"
-            :disabled="!selectedPreset || presetLoading"
-            @click="loadPreset"
-          >Load</button>
+          <button class="btn-sm btn-primary" :disabled="!selectedPreset || presetLoading"
+            @click="loadPreset">Load</button>
         </div>
 
         <div class="preset-actions">
-          <button
-            class="btn-sm btn-ghost"
-            :disabled="!selectedPreset || presetSaving"
-            @click="updateCurrent"
-          >Update</button>
-          <button
-            class="btn-sm btn-ghost"
-            :disabled="!selectedPreset || presetSaving"
-            @click="deleteCurrent"
-          >Delete</button>
-          <button
-            class="btn-sm btn-ghost"
-            @click="showSaveInput = !showSaveInput"
-          >Save as…</button>
+          <button class="btn-sm btn-ghost" :disabled="!selectedPreset || presetSaving"
+            @click="updateCurrent">Update</button>
+          <button class="btn-sm btn-ghost" :disabled="!selectedPreset || presetSaving"
+            @click="deleteCurrent">Delete</button>
+          <button class="btn-sm btn-ghost" @click="showSaveInput = !showSaveInput">Save as…</button>
           <button class="btn-sm btn-ghost" @click="resetToDefaults">Defaults</button>
         </div>
 
         <div v-if="showSaveInput" class="preset-save-row">
-          <input
-            v-model="newPresetName"
-            type="text"
-            class="form-input"
-            placeholder="Preset name"
-            @keyup.enter="saveAsNew"
-          />
-          <button
-            class="btn-sm btn-primary"
-            :disabled="!newPresetName.trim() || presetSaving"
-            @click="saveAsNew"
-          >Save</button>
+          <input v-model="newPresetName" type="text" class="form-input" placeholder="Preset name"
+            @keyup.enter="saveAsNew" />
+          <button class="btn-sm btn-primary" :disabled="!newPresetName.trim() || presetSaving"
+            @click="saveAsNew">Save</button>
         </div>
       </div>
     </div>
@@ -230,11 +210,8 @@ const elementSections = computed(() => [
         <span class="section-chevron" :class="{ expanded: expandedSections[section.key] }">&#9654;</span>
         <span class="section-title">{{ section.label }}</span>
         <label class="visibility-toggle" @click.stop>
-          <input
-            type="checkbox"
-            :checked="(modelValue[section.key] as OverlayElementParams).visible"
-            @change="updateElement(section.key, 'visible', ($event.target as HTMLInputElement).checked)"
-          />
+          <input type="checkbox" :checked="(modelValue[section.key] as OverlayElementParams).visible"
+            @change="updateElement(section.key, 'visible', ($event.target as HTMLInputElement).checked)" />
           <span class="toggle-label">Visible</span>
         </label>
       </button>
@@ -243,92 +220,54 @@ const elementSections = computed(() => [
         <!-- X position -->
         <div class="control-row">
           <label class="control-label">X</label>
-          <input
-            type="range"
-            class="control-slider"
-            min="0" max="100" step="0.5"
+          <input type="range" class="control-slider" min="0" max="100" step="0.5"
             :value="(modelValue[section.key] as OverlayElementParams).x"
-            @input="updateElement(section.key, 'x', Number(($event.target as HTMLInputElement).value))"
-          />
-          <input
-            type="number"
-            class="control-number"
-            min="0" max="100" step="0.5"
+            @input="updateElement(section.key, 'x', Number(($event.target as HTMLInputElement).value))" />
+          <input type="number" class="control-number" min="0" max="100" step="0.5"
             :value="(modelValue[section.key] as OverlayElementParams).x"
-            @input="updateElement(section.key, 'x', Number(($event.target as HTMLInputElement).value))"
-          />
+            @input="updateElement(section.key, 'x', Number(($event.target as HTMLInputElement).value))" />
           <span class="control-unit">%</span>
         </div>
 
         <!-- Y position -->
         <div class="control-row">
           <label class="control-label">Y</label>
-          <input
-            type="range"
-            class="control-slider"
-            min="0" max="100" step="0.5"
+          <input type="range" class="control-slider" min="0" max="100" step="0.5"
             :value="(modelValue[section.key] as OverlayElementParams).y"
-            @input="updateElement(section.key, 'y', Number(($event.target as HTMLInputElement).value))"
-          />
-          <input
-            type="number"
-            class="control-number"
-            min="0" max="100" step="0.5"
+            @input="updateElement(section.key, 'y', Number(($event.target as HTMLInputElement).value))" />
+          <input type="number" class="control-number" min="0" max="100" step="0.5"
             :value="(modelValue[section.key] as OverlayElementParams).y"
-            @input="updateElement(section.key, 'y', Number(($event.target as HTMLInputElement).value))"
-          />
+            @input="updateElement(section.key, 'y', Number(($event.target as HTMLInputElement).value))" />
           <span class="control-unit">%</span>
         </div>
 
         <!-- Size -->
         <div class="control-row">
           <label class="control-label">Size</label>
-          <input
-            type="range"
-            class="control-slider"
-            :min="section.isText ? 8 : 5"
-            :max="section.isText ? 80 : 40"
-            :step="section.isText ? 1 : 0.5"
-            :value="(modelValue[section.key] as OverlayElementParams).size"
-            @input="updateElement(section.key, 'size', Number(($event.target as HTMLInputElement).value))"
-          />
-          <input
-            type="number"
-            class="control-number"
-            :min="section.isText ? 8 : 5"
-            :max="section.isText ? 80 : 40"
-            :step="section.isText ? 1 : 0.5"
-            :value="(modelValue[section.key] as OverlayElementParams).size"
-            @input="updateElement(section.key, 'size', Number(($event.target as HTMLInputElement).value))"
-          />
+          <input type="range" class="control-slider" :min="section.isText ? 8 : 5" :max="section.isText ? 80 : 40"
+            :step="section.isText ? 1 : 0.5" :value="(modelValue[section.key] as OverlayElementParams).size"
+            @input="updateElement(section.key, 'size', Number(($event.target as HTMLInputElement).value))" />
+          <input type="number" class="control-number" :min="section.isText ? 8 : 5" :max="section.isText ? 80 : 40"
+            :step="section.isText ? 1 : 0.5" :value="(modelValue[section.key] as OverlayElementParams).size"
+            @input="updateElement(section.key, 'size', Number(($event.target as HTMLInputElement).value))" />
           <span class="control-unit">{{ section.isText ? 'px' : '%' }}</span>
         </div>
 
         <!-- Color (text elements only) -->
         <div v-if="section.hasColor" class="control-row">
           <label class="control-label">Color</label>
-          <input
-            type="color"
-            class="control-color"
-            :value="(modelValue[section.key] as OverlayElementParams).color"
-            @input="updateElement(section.key, 'color', ($event.target as HTMLInputElement).value)"
-          />
-          <input
-            type="text"
-            class="control-color-text"
-            :value="(modelValue[section.key] as OverlayElementParams).color"
-            @change="updateElement(section.key, 'color', ($event.target as HTMLInputElement).value)"
-          />
+          <input type="color" class="control-color" :value="(modelValue[section.key] as OverlayElementParams).color"
+            @input="updateElement(section.key, 'color', ($event.target as HTMLInputElement).value)" />
+          <input type="text" class="control-color-text" :value="(modelValue[section.key] as OverlayElementParams).color"
+            @change="updateElement(section.key, 'color', ($event.target as HTMLInputElement).value)" />
         </div>
 
         <!-- Font Weight (text elements only) -->
         <div v-if="section.isText" class="control-row">
           <label class="control-label">Weight</label>
-          <select
-            class="form-select control-select"
+          <select class="form-select control-select"
             :value="(modelValue[section.key] as OverlayElementParams).fontWeight ?? '700'"
-            @change="updateElement(section.key, 'fontWeight', ($event.target as HTMLSelectElement).value)"
-          >
+            @change="updateElement(section.key, 'fontWeight', ($event.target as HTMLSelectElement).value)">
             <option value="400">Regular (400)</option>
             <option value="600">Semi-Bold (600)</option>
             <option value="700">Bold (700)</option>
@@ -338,11 +277,9 @@ const elementSections = computed(() => [
         <!-- Font Style (text elements only) -->
         <div v-if="section.isText" class="control-row">
           <label class="control-label">Style</label>
-          <select
-            class="form-select control-select"
+          <select class="form-select control-select"
             :value="(modelValue[section.key] as OverlayElementParams).fontStyle ?? 'normal'"
-            @change="updateElement(section.key, 'fontStyle', ($event.target as HTMLSelectElement).value)"
-          >
+            @change="updateElement(section.key, 'fontStyle', ($event.target as HTMLSelectElement).value)">
             <option value="normal">Normal</option>
             <option value="italic">Italic</option>
           </select>
@@ -360,29 +297,14 @@ const elementSections = computed(() => [
       <div v-show="expandedSections.filter" class="section-body">
         <div v-for="field in filterFields" :key="field.key" class="control-row">
           <label class="control-label">{{ field.label }}</label>
-          <input
-            type="range"
-            class="control-slider"
-            :min="field.min"
-            :max="field.max"
-            :step="field.step"
+          <input type="range" class="control-slider" :min="field.min" :max="field.max" :step="field.step"
             :value="modelValue.filter[field.key]"
-            @input="updateFilter(field.key, Number(($event.target as HTMLInputElement).value))"
-          />
-          <input
-            type="number"
-            class="control-number"
-            :min="field.min"
-            :max="field.max"
-            :step="field.step"
+            @input="updateFilter(field.key, Number(($event.target as HTMLInputElement).value))" />
+          <input type="number" class="control-number" :min="field.min" :max="field.max" :step="field.step"
             :value="modelValue.filter[field.key]"
-            @input="updateFilter(field.key, Number(($event.target as HTMLInputElement).value))"
-          />
-          <button
-            class="btn-reset"
-            :title="`Reset to ${defaults.filter[field.key]}`"
-            @click="updateFilter(field.key, defaults.filter[field.key])"
-          >↩</button>
+            @input="updateFilter(field.key, Number(($event.target as HTMLInputElement).value))" />
+          <button class="btn-reset" :title="`Reset to ${defaults.filter[field.key]}`"
+            @click="updateFilter(field.key, defaults.filter[field.key])">↩</button>
         </div>
       </div>
     </div>
