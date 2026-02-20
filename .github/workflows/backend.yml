@@ -26,6 +26,22 @@ on:
         type: boolean
         description: "Run post-deploy smoke tests"
         default: true
+      setup_nginx:
+        type: boolean
+        description: "Setup nginx reverse proxy + certbot SSL (first deploy only)"
+        default: false
+      init_db:
+        type: boolean
+        description: "Initialize fresh SQLite database (first deploy only)"
+        default: false
+      nginx_domain:
+        type: string
+        description: "Domain for nginx/certbot"
+        default: "admin.live.moafunk.de"
+      certbot_email:
+        type: string
+        description: "Email for Let's Encrypt certbot"
+        default: "phaabe@gmail.com"
 
 permissions:
   contents: read
@@ -217,7 +233,10 @@ jobs:
           ENV_FILE_PATH=/tmp/production.env \
           UNHEARD_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" \
           UNHEARD_TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}" \
-          SETUP_NGINX=0 \
+          SETUP_NGINX="${{ github.event_name == 'workflow_dispatch' && inputs.setup_nginx && '1' || '0' }}" \
+          NGINX_DOMAIN="${{ inputs.nginx_domain || 'admin.live.moafunk.de' }}" \
+          CERTBOT_EMAIL="${{ inputs.certbot_email || 'phaabe@gmail.com' }}" \
+          INIT_DB="${{ github.event_name == 'workflow_dispatch' && inputs.init_db && '1' || '0' }}" \
           RUN_TESTS="${{ github.event_name == 'workflow_dispatch' && inputs.run_tests == false && '0' || '1' }}" \
           ./backend/scripts/deploy_lightsail.sh
 
