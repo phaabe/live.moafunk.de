@@ -57,7 +57,7 @@ function canEditRole(targetRole: string): boolean {
   const currentUser = authStore.user;
   if (!currentUser) return false;
 
-  const roleLevel = { artist: 1, admin: 2, superadmin: 3 };
+  const roleLevel = { host: 1, admin: 2, superadmin: 3 };
   const currentLevel = roleLevel[currentUser.role as keyof typeof roleLevel] || 0;
   const targetLevel = roleLevel[targetRole as keyof typeof roleLevel] || 0;
 
@@ -69,9 +69,9 @@ const availableRoles = computed(() => {
   const currentUser = authStore.user;
   if (!currentUser) return [];
 
-  const roles = ['artist', 'admin', 'superadmin'];
+  const roles = ['host', 'admin', 'superadmin'];
   return roles.filter(role => {
-    const roleLevel = { artist: 1, admin: 2, superadmin: 3 };
+    const roleLevel = { host: 1, admin: 2, superadmin: 3 };
     const currentLevel = roleLevel[currentUser.role as keyof typeof roleLevel] || 0;
     const targetLevel = roleLevel[role as keyof typeof roleLevel] || 0;
     return currentLevel > targetLevel;
@@ -90,7 +90,7 @@ function canDeleteUser(): boolean {
     return currentUser.role === 'superadmin';
   }
 
-  // Admin and superadmin can delete artists
+  // Admin and superadmin can delete hosts
   return currentUser.role === 'admin' || currentUser.role === 'superadmin';
 }
 
@@ -124,8 +124,8 @@ async function loadUser() {
     } else {
       editForm.value.expires_at = '';
     }
-    // Load unlinked artists if role is artist
-    if (user.value.role === 'artist' || editForm.value.role === 'artist') {
+    // Load unlinked artists if role is host
+    if (user.value.role === 'host' || editForm.value.role === 'host') {
       loadUnlinkedArtists(user.value.linked_artist_id ?? undefined);
     }
   } catch (e) {
@@ -144,10 +144,10 @@ async function saveChanges() {
   try {
     await usersApi.update(user.value.id, {
       role: editForm.value.role,
-      expires_at: editForm.value.role === 'artist' && editForm.value.expires_at
+      expires_at: editForm.value.role === 'host' && editForm.value.expires_at
         ? editForm.value.expires_at
         : undefined,
-      artist_id: editForm.value.role === 'artist' ? (editForm.value.artist_id ?? null) : null,
+      artist_id: editForm.value.role === 'host' ? (editForm.value.artist_id ?? null) : null,
     });
     flash.success('User updated successfully');
     await loadUser();
@@ -158,11 +158,11 @@ async function saveChanges() {
   }
 }
 
-// Reload unlinked artists when role changes to artist
+// Reload unlinked artists when role changes to host
 watch(() => editForm.value.role, (role) => {
-  if (role === 'artist' && unlinkedArtists.value.length === 0) {
+  if (role === 'host' && unlinkedArtists.value.length === 0) {
     loadUnlinkedArtists(user.value?.linked_artist_id ?? undefined);
-  } else if (role !== 'artist') {
+  } else if (role !== 'host') {
     editForm.value.artist_id = undefined;
   }
 });
@@ -245,18 +245,18 @@ onMounted(loadUser);
           </p>
         </div>
 
-        <FormInput v-if="editForm.role === 'artist'" v-model="editForm.expires_at" label="Expires At" type="date"
+        <FormInput v-if="editForm.role === 'host'" v-model="editForm.expires_at" label="Expires At" type="date"
           required />
 
-        <div v-if="editForm.role === 'artist'" class="form-group">
-          <label class="label">Link to Artist</label>
+        <div v-if="editForm.role === 'host'" class="form-group">
+          <label class="label">Link to UNHEARD Artist</label>
           <select v-model="editForm.artist_id" class="select-input" :disabled="loadingArtists">
             <option :value="undefined">— None —</option>
             <option v-for="artist in unlinkedArtists" :key="artist.id" :value="artist.id">
               {{ artist.name }}
             </option>
           </select>
-          <p class="help-text">Link this user to an artist profile so they can manage their show.</p>
+          <p class="help-text">Link this host to an UNHEARD artist profile so they can manage their show.</p>
         </div>
 
         <div class="form-actions">

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { useArtistFlow } from '@admin/composables';
+import { useHostFlow } from '@admin/composables';
 
 const router = useRouter();
-const flow = useArtistFlow();
+const flow = useHostFlow();
 
 const confirming = ref(false);
 const confirmError = ref<string | null>(null);

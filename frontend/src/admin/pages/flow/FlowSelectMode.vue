@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
-import { useArtistFlow } from '@admin/composables';
+import { useHostFlow } from '@admin/composables';
 
 const router = useRouter();
-const flow = useArtistFlow();
+const flow = useHostFlow();
 
 function selectPrerecorded() {
   flow.selectMode('prerecorded');

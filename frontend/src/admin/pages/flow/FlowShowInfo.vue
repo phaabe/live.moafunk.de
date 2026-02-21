@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { useArtistFlow } from '@admin/composables';
+import { useHostFlow } from '@admin/composables';
 
 const router = useRouter();
-const flow = useArtistFlow();
+const flow = useHostFlow();
 
 const show = computed(() => flow.show.value);
 

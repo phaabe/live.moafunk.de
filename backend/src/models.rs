@@ -110,6 +110,7 @@ pub struct Show {
     pub prerecorded_key: Option<String>,
     pub prerecorded_filename: Option<String>,
     pub prerecorded_confirmed_at: Option<String>,
+    pub host_user_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,7 +126,7 @@ pub struct SubmitResponse {
 pub enum UserRole {
     Superadmin,
     Admin,
-    Artist,
+    Host,
 }
 
 impl UserRole {
@@ -133,7 +134,7 @@ impl UserRole {
         match self {
             UserRole::Superadmin => "superadmin",
             UserRole::Admin => "admin",
-            UserRole::Artist => "artist",
+            UserRole::Host => "host",
         }
     }
 
@@ -141,7 +142,7 @@ impl UserRole {
         match s.to_lowercase().as_str() {
             "superadmin" => Some(UserRole::Superadmin),
             "admin" => Some(UserRole::Admin),
-            "artist" => Some(UserRole::Artist),
+            "host" => Some(UserRole::Host),
             _ => None,
         }
     }
@@ -165,7 +166,7 @@ impl UserRole {
     pub fn can_change_password(&self) -> bool {
         matches!(
             self,
-            UserRole::Superadmin | UserRole::Admin | UserRole::Artist
+            UserRole::Superadmin | UserRole::Admin | UserRole::Host
         )
     }
 }
@@ -190,7 +191,7 @@ pub struct User {
 
 impl User {
     pub fn role_enum(&self) -> UserRole {
-        UserRole::from_str(&self.role).unwrap_or(UserRole::Artist)
+        UserRole::from_str(&self.role).unwrap_or(UserRole::Host)
     }
 
     pub fn is_expired(&self) -> bool {

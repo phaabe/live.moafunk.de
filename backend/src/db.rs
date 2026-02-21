@@ -173,6 +173,15 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .await?;
 
+    // Host user assigned to external/brunchtime shows (1:1 relationship)
+    add_column_if_missing(
+        pool,
+        "shows",
+        "host_user_id",
+        "INTEGER REFERENCES users(id)",
+    )
+    .await?;
+
     // App settings table for storing OAuth tokens and other key-value config
     sqlx::query(
         r#"
@@ -277,7 +286,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'artist',
+            role TEXT NOT NULL DEFAULT 'host',
             created_by INTEGER,
             expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -508,6 +517,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "TEXT NOT NULL DEFAULT 'artist'",
     )
     .await?;
+
+    // Migrate user role 'artist' → 'host' (idempotent)
+    sqlx::query("UPDATE users SET role = 'host' WHERE role = 'artist'")
+        .execute(pool)
+        .await?;
 
     tracing::info!("Database migrations completed");
     Ok(())

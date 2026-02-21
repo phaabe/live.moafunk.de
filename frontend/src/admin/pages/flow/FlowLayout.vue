@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { useAuthStore } from '@admin/stores/auth';
-import { useArtistFlow, type FlowStep } from '@admin/composables';
+import { useHostFlow, type FlowStep } from '@admin/composables';
 
 const router = useRouter();
-const authStore = useAuthStore();
-const flow = useArtistFlow();
+const flow = useHostFlow();
 
 // Steps shown in the progress indicator (not-assigned and live are special)
 const progressSteps: { key: FlowStep; label: string }[] = [
@@ -32,11 +30,6 @@ onMounted(async () => {
   }
 });
 
-async function handleLogout() {
-  await authStore.logout();
-  router.push('/login');
-}
-
 function navigateToStep(step: FlowStep) {
   if (flow.canNavigateTo(step)) {
     flow.goToStep(step);
@@ -47,19 +40,6 @@ function navigateToStep(step: FlowStep) {
 
 <template>
   <div class="flow-layout">
-    <!-- Header -->
-    <header class="flow-header">
-      <div class="flow-header-inner">
-        <div class="flow-brand">
-          <img src="/assets/brand/moafunk.png" alt="Moafunk" class="flow-logo" />
-        </div>
-        <div class="flow-user">
-          <span class="flow-username">{{ authStore.user?.username }}</span>
-          <button class="flow-logout" @click="handleLogout">Logout</button>
-        </div>
-      </div>
-    </header>
-
     <!-- Progress bar -->
     <div v-if="showProgressBar" class="flow-progress">
       <div class="flow-progress-inner">
@@ -102,60 +82,6 @@ function navigateToStep(step: FlowStep) {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-}
-
-/* Header */
-.flow-header {
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
-}
-
-.flow-header-inner {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: var(--spacing-md) var(--spacing-lg);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.flow-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-}
-
-.flow-logo {
-  height: 28px;
-  width: auto;
-}
-
-.flow-user {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-}
-
-.flow-username {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
-.flow-logout {
-  background: none;
-  border: 1px solid var(--color-border);
-  color: var(--color-text-muted);
-  padding: var(--spacing-xs) var(--spacing-md);
-  border-radius: var(--radius-md);
-  font-family: var(--font-family);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.flow-logout:hover {
-  color: var(--color-text);
-  border-color: var(--color-border-light);
 }
 
 /* Progress bar */

@@ -115,7 +115,7 @@ pub async fn api_login(
 
     // Determine redirect based on role
     let redirect_url = match user.role_enum() {
-        models::UserRole::Artist => "/#/stream",
+        models::UserRole::Host => "/#/stream",
         models::UserRole::Admin | models::UserRole::Superadmin => "/#/artists",
     };
 
@@ -1975,6 +1975,10 @@ pub struct ShowDetailResponse {
     soundcloud_url: Option<String>,
     soundcloud_uploaded_at: Option<String>,
     soundcloud_public: Option<bool>,
+    // Host assignment (external/brunchtime shows)
+    host_user_id: Option<i64>,
+    host_username: Option<String>,
+    available_hosts: Vec<AvailableHost>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -1997,6 +2001,12 @@ pub struct AssignedArtistInfo {
 pub struct ArtistBrief {
     id: i64,
     name: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AvailableHost {
+    id: i64,
+    username: String,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -2442,11 +2452,16 @@ pub async fn api_show_detail(
         });
     }
 
-    // Calculate artists left (max 4)
-    let artists_left = (4 - artists.len() as i32).max(0);
+    // Calculate artists left (max 4) — only for UNHEARD shows
+    let is_unheard = show.show_type == "unheard";
+    let artists_left = if is_unheard {
+        (4 - artists.len() as i32).max(0)
+    } else {
+        0
+    };
 
-    // Get available artists (NOT assigned to ANY show - truly unassigned)
-    let available_artists: Vec<ArtistWithPronouns> = if artists_left > 0 {
+    // Get available artists (NOT assigned to ANY show - truly unassigned) — only for UNHEARD shows
+    let available_artists: Vec<ArtistWithPronouns> = if is_unheard && artists_left > 0 {
         sqlx::query_as(
             r#"
             SELECT a.id, a.name, a.pronouns FROM artists a
@@ -2460,6 +2475,36 @@ pub async fn api_show_detail(
         .await?
     } else {
         Vec::new()
+    };
+
+    // Resolve host user for non-UNHEARD shows
+    let (host_user_id, host_username, available_hosts) = if !is_unheard {
+        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
+            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+                .bind(hid)
+                .fetch_optional(&state.db)
+                .await?
+        } else {
+            None
+        };
+
+        // Available hosts: users with role 'host' or 'admin' not already assigned to another show
+        let hosts: Vec<AvailableHost> = sqlx::query_as(
+            r#"
+            SELECT u.id, u.username FROM users u
+            WHERE u.role IN ('host', 'admin')
+              AND (u.id NOT IN (SELECT host_user_id FROM shows WHERE host_user_id IS NOT NULL)
+                   OR u.id = ?)
+            ORDER BY u.username COLLATE NOCASE
+            "#,
+        )
+        .bind(show.host_user_id.unwrap_or(-1))
+        .fetch_all(&state.db)
+        .await?;
+
+        (show.host_user_id, host_username, hosts)
+    } else {
+        (None, None, Vec::new())
     };
 
     // Only return cover URL if cover was actually generated
@@ -2528,6 +2573,9 @@ pub async fn api_show_detail(
         soundcloud_url: show.soundcloud_url,
         soundcloud_uploaded_at: show.soundcloud_uploaded_at,
         soundcloud_public: show.soundcloud_public,
+        host_user_id,
+        host_username,
+        available_hosts,
     }))
 }
 
@@ -2898,6 +2946,93 @@ pub async fn api_show_unassign_artist(
 }
 
 // ============================================================================
+// Show Host Assignment (external/brunchtime shows)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct AssignHostRequest {
+    user_id: i64,
+}
+
+/// Assign a host user to a show (for external/brunchtime shows)
+pub async fn api_show_assign_host(
+    State(state): State<Arc<AppState>>,
+    Path(show_id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<AssignHostRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify show exists and is not UNHEARD
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    if show.show_type == "unheard" {
+        return Err(AppError::BadRequest(
+            "UNHEARD shows use artist assignments, not host assignments".to_string(),
+        ));
+    }
+
+    // Verify user exists and has role 'host' or 'admin'
+    let user: Option<models::User> = sqlx::query_as("SELECT * FROM users WHERE id = ?")
+        .bind(req.user_id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let user = user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    if user.role != "host" && user.role != "admin" {
+        return Err(AppError::BadRequest(
+            "Only users with role 'host' or 'admin' can be assigned to shows".to_string(),
+        ));
+    }
+
+    // Check if this host is already assigned to another show
+    let existing: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM shows WHERE host_user_id = ? AND id != ?")
+            .bind(req.user_id)
+            .bind(show_id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    if existing.is_some() {
+        return Err(AppError::BadRequest(
+            "This host is already assigned to another show".to_string(),
+        ));
+    }
+
+    sqlx::query("UPDATE shows SET host_user_id = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(req.user_id)
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "host_user_id": req.user_id,
+        "host_username": user.username,
+    })))
+}
+
+/// Unassign the host from a show
+pub async fn api_show_unassign_host(
+    State(state): State<Arc<AppState>>,
+    Path(show_id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    sqlx::query("UPDATE shows SET host_user_id = NULL, updated_at = datetime('now') WHERE id = ?")
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
 // Users API
 // ============================================================================
 
@@ -2963,10 +3098,10 @@ pub async fn api_create_user(
         ));
     }
 
-    // Artist users must have an expiration date
-    if req.role == "artist" && req.expires_at.is_none() {
+    // Host users must have an expiration date
+    if req.role == "host" && req.expires_at.is_none() {
         return Err(AppError::BadRequest(
-            "Expiration date is required for artist users".to_string(),
+            "Expiration date is required for host users".to_string(),
         ));
     }
 
@@ -3095,7 +3230,7 @@ pub async fn api_update_user(
 
     // Check role hierarchy - can only edit users below your level
     let role_level = |role: &str| match role {
-        "artist" => 1,
+        "host" => 1,
         "admin" => 2,
         "superadmin" => 3,
         _ => 0,
@@ -3119,13 +3254,13 @@ pub async fn api_update_user(
     // Determine final role (either new role or existing)
     let final_role = req.role.as_ref().unwrap_or(&target.role);
 
-    // Artist users must have an expiration date
-    if final_role == "artist" {
-        // If changing to artist or already artist, check expires_at
+    // Host users must have an expiration date
+    if final_role == "host" {
+        // If changing to host or already host, check expires_at
         let final_expires_at = req.expires_at.as_ref().or(target.expires_at.as_ref());
         if final_expires_at.is_none() {
             return Err(AppError::BadRequest(
-                "Expiration date is required for artist users".to_string(),
+                "Expiration date is required for host users".to_string(),
             ));
         }
     }
@@ -3219,7 +3354,7 @@ pub async fn api_reset_password(
 
     // Check role hierarchy
     let role_level = |role: &str| match role {
-        "artist" => 1,
+        "host" => 1,
         "admin" => 2,
         "superadmin" => 3,
         _ => 0,
@@ -3947,11 +4082,24 @@ pub struct MyShowResponse {
 }
 
 /// Helper: resolve the current user's linked artist and assigned show.
-/// Returns (artist, show) if the user is linked to an artist assigned to a show.
+/// Returns (artist, show) if the user is linked to an artist assigned to a show,
+/// or (None-artist, show) if the user is directly assigned as host to a non-UNHEARD show.
 async fn resolve_user_show(
     state: &Arc<AppState>,
     user: &models::User,
-) -> Result<Option<(models::Artist, models::Show)>> {
+) -> Result<Option<(Option<models::Artist>, models::Show)>> {
+    // Path 1: Direct host assignment (external/brunchtime shows)
+    let direct_show: Option<models::Show> =
+        sqlx::query_as("SELECT * FROM shows WHERE host_user_id = ?")
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    if let Some(show) = direct_show {
+        return Ok(Some((None, show)));
+    }
+
+    // Path 2: Linked via artist profile (UNHEARD shows)
     // Find artist linked to this user
     let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE user_id = ?")
         .bind(user.id)
@@ -3974,7 +4122,7 @@ async fn resolve_user_show(
     .await?;
 
     match show {
-        Some(s) => Ok(Some((artist, s))),
+        Some(s) => Ok(Some((Some(artist), s))),
         None => Ok(None),
     }
 }

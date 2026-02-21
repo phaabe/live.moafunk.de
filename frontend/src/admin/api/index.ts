@@ -70,7 +70,7 @@ export const api = new ApiClient(API_BASE);
 export interface User {
   id: number;
   username: string;
-  role: 'artist' | 'admin' | 'superadmin';
+  role: 'host' | 'admin' | 'superadmin';
   artist_id?: number;
   artist_name?: string;
   has_show?: boolean;
@@ -440,6 +440,10 @@ export interface ShowDetail {
   prerecorded_key?: string;
   prerecorded_filename?: string;
   prerecorded_confirmed_at?: string;
+  // Host assignment (external/brunchtime shows)
+  host_user_id?: number;
+  host_username?: string;
+  available_hosts?: { id: number; username: string }[];
 }
 
 export const showsApi = {
@@ -476,6 +480,16 @@ export const showsApi = {
 
   unassignArtist: (showId: number, artistId: number) =>
     api.delete<{ success: boolean }>(`/api/shows/${showId}/artists/${artistId}`),
+
+  assignHost: (showId: number, userId: number) =>
+    api.post<{ success: boolean; host_user_id: number; host_username: string }>(
+      `/api/shows/${showId}/host`,
+      {
+        user_id: userId,
+      }
+    ),
+
+  unassignHost: (showId: number) => api.delete<{ success: boolean }>(`/api/shows/${showId}/host`),
 
   regenerateBio: (showId: number) =>
     api.post<{ success: boolean; ai_bio: string | null }>(`/api/shows/${showId}/regenerate-bio`),
@@ -864,7 +878,7 @@ export interface ConfirmResponse {
   confirmed_at: string;
 }
 
-export const artistFlowApi = {
+export const hostFlowApi = {
   getMyShow: () => api.get<MyShowResponse>('/api/my-show'),
 
   confirm: () => api.post<ConfirmResponse>('/api/my-show/confirm'),
@@ -905,7 +919,7 @@ export const artistFlowApi = {
 
     if (!useChunked) {
       onProgress?.({ phase: 'uploading', percent: 0 });
-      const result = await artistFlowApi.uploadSmall(file);
+      const result = await hostFlowApi.uploadSmall(file);
       onProgress?.({ phase: 'uploading', percent: 100 });
       return result;
     }

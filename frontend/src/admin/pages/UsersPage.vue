@@ -18,12 +18,12 @@ const availableRoles = computed(() => {
   if (!currentUser) return [];
 
   const roles: Array<{ value: string; label: string }> = [
-    { value: 'artist', label: 'Artist' },
+    { value: 'host', label: 'Host' },
     { value: 'admin', label: 'Admin' },
     { value: 'superadmin', label: 'Superadmin' },
   ];
 
-  const roleLevel: Record<string, number> = { artist: 1, admin: 2, superadmin: 3 };
+  const roleLevel: Record<string, number> = { host: 1, admin: 2, superadmin: 3 };
   const currentLevel = roleLevel[currentUser.role] || 0;
 
   // Can only create users below current user's level
@@ -37,7 +37,7 @@ const showCreateModal = ref(false);
 const creating = ref(false);
 const newUser = ref({
   username: '',
-  role: 'artist',
+  role: 'host',
   expires_at: '',
   artist_id: undefined as number | undefined,
 });
@@ -61,9 +61,9 @@ async function loadUnlinkedArtists() {
   }
 }
 
-// Reload unlinked artists when role changes to artist or modal opens
+// Reload unlinked artists when role changes to host or modal opens
 watch(() => newUser.value.role, (role) => {
-  if (role === 'artist') {
+  if (role === 'host') {
     loadUnlinkedArtists();
   } else {
     newUser.value.artist_id = undefined;
@@ -71,7 +71,7 @@ watch(() => newUser.value.role, (role) => {
 });
 
 watch(showCreateModal, (open) => {
-  if (open && newUser.value.role === 'artist') {
+  if (open && newUser.value.role === 'host') {
     loadUnlinkedArtists();
   }
 });
@@ -135,10 +135,10 @@ async function createUser() {
     return;
   }
 
-  // Validate artist expiration date
-  if (newUser.value.role === 'artist') {
+  // Validate host expiration date
+  if (newUser.value.role === 'host') {
     if (!newUser.value.expires_at) {
-      expiresAtError.value = 'Expiration date is required for artist users';
+      expiresAtError.value = 'Expiration date is required for host users';
       creating.value = false;
       return;
     }
@@ -159,11 +159,11 @@ async function createUser() {
       username: newUser.value.username,
       role: newUser.value.role,
       expires_at: newUser.value.expires_at || undefined,
-      artist_id: newUser.value.role === 'artist' ? newUser.value.artist_id : undefined,
+      artist_id: newUser.value.role === 'host' ? newUser.value.artist_id : undefined,
     });
     createdPassword.value = response.password;
     flash.success(`User "${response.user.username}" created successfully`);
-    newUser.value = { username: '', role: 'artist', expires_at: '', artist_id: undefined };
+    newUser.value = { username: '', role: 'host', expires_at: '', artist_id: undefined };
     await loadUsers();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to create user';
@@ -177,7 +177,7 @@ function canEditUser(targetUser: AdminUser): boolean {
   const currentUser = authStore.user;
   if (!currentUser) return false;
 
-  const roleLevel: Record<string, number> = { artist: 1, admin: 2, superadmin: 3 };
+  const roleLevel: Record<string, number> = { host: 1, admin: 2, superadmin: 3 };
   const currentLevel = roleLevel[currentUser.role] || 0;
   const targetLevel = roleLevel[targetUser.role] || 0;
 
@@ -221,7 +221,7 @@ onMounted(loadUsers);
           <tr>
             <th>Username</th>
             <th>Role</th>
-            <th>Linked Artist</th>
+            <th>Linked UNHEARD Artist</th>
             <th>Expires</th>
             <th>Created</th>
             <th>Actions</th>
@@ -235,7 +235,7 @@ onMounted(loadUsers);
             </td>
             <td>
               <span
-                :class="['badge', user.role === 'superadmin' ? 'warning' : user.role === 'artist' ? 'pink' : 'success']">
+                :class="['badge', user.role === 'superadmin' ? 'warning' : user.role === 'host' ? 'pink' : 'success']">
                 {{ user.role }}
               </span>
             </td>
@@ -291,19 +291,19 @@ onMounted(loadUsers);
               </option>
             </select>
           </div>
-          <div v-if="newUser.role === 'artist'" class="form-group">
+          <div v-if="newUser.role === 'host'" class="form-group">
             <FormInput v-model="newUser.expires_at" label="Expires At" type="date" required />
             <p v-if="expiresAtError" class="error-message">{{ expiresAtError }}</p>
           </div>
-          <div v-if="newUser.role === 'artist'" class="form-group">
-            <label class="label">Link to Artist (optional)</label>
+          <div v-if="newUser.role === 'host'" class="form-group">
+            <label class="label">Link to UNHEARD Artist (optional)</label>
             <select v-model="newUser.artist_id" class="select-input" :disabled="loadingArtists">
               <option :value="undefined">— None —</option>
               <option v-for="artist in unlinkedArtists" :key="artist.id" :value="artist.id">
                 {{ artist.name }}
               </option>
             </select>
-            <p class="help-text">Link this user to an existing artist profile so they can manage their show.</p>
+            <p class="help-text">Link this host to an UNHEARD artist profile so they can manage their show.</p>
           </div>
         </form>
       </template>

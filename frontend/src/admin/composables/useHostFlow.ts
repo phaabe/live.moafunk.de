@@ -1,5 +1,5 @@
 import { ref, computed, readonly } from 'vue';
-import { artistFlowApi, type MyShowInfo, type UploadResult } from '../api';
+import { hostFlowApi, type MyShowInfo, type UploadResult } from '../api';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -16,7 +16,7 @@ export interface UploadProgress {
   totalChunks?: number;
 }
 
-export interface ArtistFlowState {
+export interface HostFlowState {
   /** Whether the initial fetch has completed */
   loaded: boolean;
   /** Whether a fetch is in progress */
@@ -90,7 +90,7 @@ async function fetchMyShow(): Promise<void> {
   error.value = null;
 
   try {
-    const response = await artistFlowApi.getMyShow();
+    const response = await hostFlowApi.getMyShow();
     assigned.value = response.assigned;
     show.value = response.show ?? undefined;
 
@@ -139,7 +139,7 @@ async function uploadFile(file: File): Promise<UploadResult> {
   error.value = null;
 
   try {
-    const result = await artistFlowApi.uploadFile(file, (progress) => {
+    const result = await hostFlowApi.uploadFile(file, (progress) => {
       uploadProgress.value = progress;
     });
 
@@ -169,7 +169,7 @@ async function confirmUpload(): Promise<void> {
   error.value = null;
 
   try {
-    const result = await artistFlowApi.confirm();
+    const result = await hostFlowApi.confirm();
 
     if (show.value) {
       show.value = {
@@ -187,7 +187,7 @@ async function deleteUpload(): Promise<void> {
   error.value = null;
 
   try {
-    await artistFlowApi.deleteUpload();
+    await hostFlowApi.deleteUpload();
 
     if (show.value) {
       show.value = {
@@ -222,7 +222,7 @@ function reset(): void {
 // Composable
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function useArtistFlow() {
+export function useHostFlow() {
   return {
     // State (readonly refs)
     loaded: readonly(loaded),

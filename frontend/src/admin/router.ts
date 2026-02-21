@@ -14,7 +14,7 @@ const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
 
-// Artist flow pages
+// Host flow pages
 const FlowLayout = () => import('./pages/flow/FlowLayout.vue');
 const FlowShowInfo = () => import('./pages/flow/FlowShowInfo.vue');
 const FlowSelectMode = () => import('./pages/flow/FlowSelectMode.vue');
@@ -71,8 +71,8 @@ const router = createRouter({
           name: 'stream',
           // Smart redirect: fetch show state, then route to correct child
           beforeEnter: async (_to, _from, next) => {
-            const { useArtistFlow } = await import('./composables');
-            const flow = useArtistFlow();
+            const { useHostFlow } = await import('./composables');
+            const flow = useHostFlow();
             if (!flow.loaded.value) {
               await flow.fetchMyShow();
             }
@@ -184,14 +184,14 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   if (to.name === 'login' && authStore.isAuthenticated) {
-    const defaultRoute = authStore.user?.role === 'artist' ? '/stream' : '/calendar';
+    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/calendar';
     next(defaultRoute);
     return;
   }
 
   // Redirect '/' based on role
   if (to.path === '/' && authStore.isAuthenticated) {
-    const defaultRoute = authStore.user?.role === 'artist' ? '/stream' : '/calendar';
+    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/calendar';
     next(defaultRoute);
     return;
   }

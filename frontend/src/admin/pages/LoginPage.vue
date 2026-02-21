@@ -16,8 +16,8 @@ async function handleSubmit() {
 
   if (success) {
     const explicitRedirect = route.query.redirect as string | undefined;
-    // Artists default to /stream (artist flow), admins to /calendar
-    const defaultRoute = authStore.user?.role === 'artist' ? '/stream' : '/calendar';
+    // Hosts default to /stream (host flow), admins to /calendar
+    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/calendar';
     router.push(explicitRedirect || defaultRoute);
   }
 }

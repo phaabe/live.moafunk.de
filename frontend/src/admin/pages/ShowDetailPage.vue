@@ -51,10 +51,15 @@ const descriptionForm = ref('');
 const aiBioForm = ref('');
 const selectedArtistId = ref<number | null>(null);
 
+// Host assignment state (external/brunchtime shows)
+const selectedHostId = ref<number | null>(null);
+const assigningHost = ref(false);
+
 // Computed
 const hasArtists = computed(() => show.value && show.value.artists.length > 0);
 const artistsLeft = computed(() => show.value?.artists_left ?? 0);
 const isUnheard = computed(() => !show.value?.show_type || show.value.show_type === 'unheard');
+const hasHost = computed(() => !!show.value?.host_user_id);
 const uploadingCover = ref(false);
 
 // Use recording filename from API
@@ -374,6 +379,58 @@ async function unassignArtist(artistId: number) {
     flash.success('Artist removed from show');
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to remove artist');
+  }
+}
+
+// Host assignment (external/brunchtime shows)
+async function assignHost() {
+  if (!show.value || !selectedHostId.value) return;
+
+  assigningHost.value = true;
+  try {
+    const response = await showsApi.assignHost(show.value.id, selectedHostId.value);
+
+    // Update local state
+    show.value.host_user_id = response.host_user_id;
+    show.value.host_username = response.host_username;
+    // Remove from available list
+    if (show.value.available_hosts) {
+      show.value.available_hosts = show.value.available_hosts.filter(
+        h => h.id !== response.host_user_id
+      );
+    }
+    selectedHostId.value = null;
+    flash.success(`Host "${response.host_username}" assigned to show`);
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to assign host');
+  } finally {
+    assigningHost.value = false;
+  }
+}
+
+async function unassignHost() {
+  if (!show.value || !show.value.host_user_id) return;
+
+  try {
+    const removedHost = {
+      id: show.value.host_user_id,
+      username: show.value.host_username || '',
+    };
+
+    await showsApi.unassignHost(show.value.id);
+
+    // Update local state
+    show.value.host_user_id = undefined;
+    show.value.host_username = undefined;
+    // Add back to available list
+    if (show.value.available_hosts) {
+      show.value.available_hosts = [...show.value.available_hosts, removedHost].sort(
+        (a, b) => a.username.localeCompare(b.username)
+      );
+    }
+    flash.success('Host removed from show');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to remove host');
   }
 }
 
@@ -957,7 +1014,7 @@ onUnmounted(() => {
                       uploadProgress.percent }}%)
                   </span>
                   <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
-                  }}%</span>
+                    }}%</span>
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>
@@ -1048,6 +1105,40 @@ onUnmounted(() => {
           </div>
         </div>
         <p v-else class="empty-state">No artists assigned to this show yet.</p>
+      </div>
+
+      <!-- Host Assignment Section (external/brunchtime shows only) -->
+      <div v-if="!isUnheard" class="card">
+        <h2 class="section-title">Assigned Host</h2>
+
+        <template v-if="hasHost">
+          <div class="host-card">
+            <div class="host-info">
+              <span class="badge pink">🎙 {{ show.host_username }}</span>
+              <router-link :to="`/users`" class="action-link">View Users</router-link>
+            </div>
+            <BaseButton variant="ghost" size="sm" @click="unassignHost">
+              Remove
+            </BaseButton>
+          </div>
+        </template>
+
+        <template v-else>
+          <div v-if="show.available_hosts && show.available_hosts.length > 0" class="assign-form">
+            <select v-model="selectedHostId" class="select-input">
+              <option :value="null" disabled>-- Select a host --</option>
+              <option v-for="host in show.available_hosts" :key="host.id" :value="host.id">
+                {{ host.username }}
+              </option>
+            </select>
+            <BaseButton variant="success" :disabled="!selectedHostId" :loading="assigningHost" @click="assignHost">
+              Assign Host
+            </BaseButton>
+          </div>
+          <p v-else class="text-muted assign-note">
+            No host users available. Create a user with the "Host" role first.
+          </p>
+        </template>
       </div>
 
       <!-- Metadata Section (full width) -->
@@ -1505,6 +1596,21 @@ onUnmounted(() => {
 
 .assign-note {
   margin-bottom: var(--spacing-md);
+}
+
+.host-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-md);
+  background: var(--color-surface-alt);
+  border-radius: var(--radius-md);
+}
+
+.host-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
 }
 
 .select-input {
