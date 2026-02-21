@@ -336,6 +336,28 @@ pub async fn upload_show_cover(
     Ok(key)
 }
 
+/// Upload a plain show collage (no text/branding) to S3
+pub async fn upload_show_collage(
+    state: &Arc<AppState>,
+    show_id: i64,
+    data: Vec<u8>,
+) -> Result<String> {
+    let key = format!("shows/{}/collage.png", show_id);
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(ByteStream::from(data))
+        .content_type("image/png")
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload show collage: {}", e)))?;
+
+    Ok(key)
+}
+
 /// Delete a show cover image from S3
 pub async fn delete_show_cover(state: &Arc<AppState>, show_id: i64) -> Result<()> {
     let key = format!("shows/{}/cover.png", show_id);

@@ -94,6 +94,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "artists", "telegram_video2_message_id", "INTEGER").await?;
     add_column_if_missing(pool, "artists", "telegram_artist_preview_sent_at", "TEXT").await?;
 
+    // Active overlay preset (references overlay_presets.id)
+    add_column_if_missing(pool, "artists", "active_overlay_preset_id", "INTEGER").await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shows (
@@ -136,6 +139,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "shows", "soundcloud_url", "TEXT").await?;
     add_column_if_missing(pool, "shows", "soundcloud_uploaded_at", "TEXT").await?;
     add_column_if_missing(pool, "shows", "soundcloud_public", "INTEGER DEFAULT 0").await?;
+
+    // Active overlay preset for server-side cover rendering
+    add_column_if_missing(pool, "shows", "active_overlay_preset_id", "INTEGER").await?;
 
     // App settings table for storing OAuth tokens and other key-value config
     sqlx::query(
@@ -462,6 +468,15 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "#,
     )
     .execute(pool)
+    .await?;
+
+    // Typed presets: 'artist' or 'show'
+    add_column_if_missing(
+        pool,
+        "overlay_presets",
+        "preset_type",
+        "TEXT NOT NULL DEFAULT 'artist'",
+    )
     .await?;
 
     tracing::info!("Database migrations completed");

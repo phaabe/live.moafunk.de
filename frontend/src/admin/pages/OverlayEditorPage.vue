@@ -3,7 +3,8 @@ import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Cropper from 'cropperjs';
 import 'cropperjs/dist/cropper.css';
-import { artistsApi, type Artist, type ArtistDetail, type OverlayParams } from '../api';
+import { artistsApi, showsApi, presetsApi, type Artist, type ArtistDetail, type Show, type ShowDetail, type OverlayParams } from '../api';
+import { BaseModal } from '@shared/components';
 import {
   getDefaultOverlayParams,
   buildFilterString,
@@ -22,6 +23,13 @@ const router = useRouter();
 const flash = useFlash();
 
 // ---------------------------------------------------------------------------
+// Entity type toggle (artist / show)
+// ---------------------------------------------------------------------------
+
+type EntityType = 'artist' | 'show';
+const entityType = ref<EntityType>('artist');
+
+// ---------------------------------------------------------------------------
 // Artist selection
 // ---------------------------------------------------------------------------
 
@@ -31,6 +39,21 @@ const selectedArtistId = ref<number | null>(null);
 const artist = ref<ArtistDetail | null>(null);
 const artistLoading = ref(false);
 const artistError = ref<string | null>(null);
+
+const activePresetId = computed(() => {
+  if (entityType.value === 'artist') return artist.value?.active_overlay_preset_id ?? undefined;
+  return show.value?.active_overlay_preset_id ?? undefined;
+});
+const currentPresetId = ref<number | null>(null);
+
+// ---------------------------------------------------------------------------
+// Activation modal state (shows only)
+// ---------------------------------------------------------------------------
+
+const showActivateModal = ref(false);
+const activateChoice = ref<'overwrite' | 'new'>('overwrite');
+const activateNewPresetName = ref('');
+const activating = ref(false);
 
 async function loadArtistList(): Promise<void> {
   artistsLoading.value = true;
@@ -59,9 +82,72 @@ async function loadArtistDetail(id: number): Promise<void> {
 
 function onArtistChange(): void {
   if (selectedArtistId.value) {
-    // Update the URL to reflect artist selection
     router.replace({ params: { id: String(selectedArtistId.value) } });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Show selection
+// ---------------------------------------------------------------------------
+
+const shows = ref<Show[]>([]);
+const showsLoading = ref(false);
+const selectedShowId = ref<number | null>(null);
+const show = ref<ShowDetail | null>(null);
+const showLoading = ref(false);
+const showError = ref<string | null>(null);
+
+async function loadShowList(): Promise<void> {
+  showsLoading.value = true;
+  try {
+    const res = await showsApi.list();
+    shows.value = res.shows;
+  } catch (err) {
+    console.error('Failed to load shows:', err);
+  } finally {
+    showsLoading.value = false;
+  }
+}
+
+async function loadShowDetail(id: number): Promise<void> {
+  showLoading.value = true;
+  showError.value = null;
+  try {
+    show.value = await showsApi.get(id);
+  } catch (err) {
+    showError.value = err instanceof Error ? err.message : 'Failed to load show';
+    show.value = null;
+  } finally {
+    showLoading.value = false;
+  }
+}
+
+/** Computed helpers for entity-agnostic template bindings */
+const entityLoading = computed(() =>
+  entityType.value === 'artist' ? artistLoading.value : showLoading.value
+);
+const entityError = computed(() =>
+  entityType.value === 'artist' ? artistError.value : showError.value
+);
+const entityName = computed(() => {
+  if (entityType.value === 'artist') return artist.value?.name ?? '';
+  return show.value?.title ?? '';
+});
+const hasEntity = computed(() =>
+  entityType.value === 'artist' ? !!artist.value : !!show.value
+);
+const entityId = computed(() =>
+  entityType.value === 'artist' ? artist.value?.id : show.value?.id
+);
+
+function onEntityTypeChange(): void {
+  // Reset both selections when switching entity type
+  destroyCropper();
+  selectedArtistId.value = null;
+  selectedShowId.value = null;
+  artist.value = null;
+  show.value = null;
+  activeKey.value = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +161,15 @@ const overlayEl = ref<HTMLElement | null>(null);
 let cropper: Cropper | null = null;
 let objectUrl: string | null = null;
 let destroyed = false;
+
+/**
+ * Scale factor: ratio of the live overlay container width to the 1024px
+ * canvas that renderPreview / Save-to-R2 produces.  All absolute-pixel
+ * values (font sizes, shadow offsets) in the live DOM overlay are
+ * multiplied by this so the editor matches the final output.
+ */
+const overlayScale = ref(1);
+let overlayResizeObserver: ResizeObserver | null = null;
 
 const imageLoaded = ref(false);
 
@@ -134,6 +229,20 @@ function attachOverlay(): void {
     cropperWrapper.value.querySelector<HTMLElement>('.cropper-crop-box');
   if (viewBox && overlayEl.value.parentElement !== viewBox) {
     viewBox.appendChild(overlayEl.value);
+  }
+
+  // Start tracking the overlay container size for scale calculations
+  if (!overlayResizeObserver && overlayEl.value) {
+    const target = overlayEl.value.parentElement ?? overlayEl.value;
+    overlayResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w > 0) overlayScale.value = w / 1024;
+      }
+    });
+    overlayResizeObserver.observe(target);
+    // Seed initial value
+    if (target.clientWidth > 0) overlayScale.value = target.clientWidth / 1024;
   }
 }
 
@@ -231,14 +340,24 @@ watch(liveFilterString, (filterStr) => {
 
 function textShadowCss(el: { shadow?: { offsetX: number; offsetY: number; color: string } }): string {
   if (!el.shadow) return 'none';
-  return `${el.shadow.offsetX}px ${el.shadow.offsetY}px 0px ${el.shadow.color}`;
+  const s = overlayScale.value;
+  return `${el.shadow.offsetX * s}px ${el.shadow.offsetY * s}px 0px ${el.shadow.color}`;
+}
+
+/** Per-tile shadow: uses tileShadowColors[idx] when available, otherwise the shared shadow color. */
+function tileShadowCss(idx: number): string {
+  const shadow = params.value.artistName.shadow;
+  if (!shadow) return 'none';
+  const s = overlayScale.value;
+  const color = params.value.tileShadowColors?.[idx] ?? shadow.color;
+  return `${shadow.offsetX * s}px ${shadow.offsetY * s}px 0px ${color}`;
 }
 
 const overlayUnStyle = computed(() => ({
   display: params.value.un.visible ? 'block' : 'none',
   left: `${params.value.un.x}%`,
   top: `${params.value.un.y}%`,
-  fontSize: `${params.value.un.size}px`,
+  fontSize: `${params.value.un.size * overlayScale.value}px`,
   color: params.value.un.color,
   fontWeight: params.value.un.fontWeight ?? '600',
   fontStyle: params.value.un.fontStyle ?? 'italic',
@@ -249,7 +368,7 @@ const overlayHeardStyle = computed(() => ({
   display: params.value.heard.visible ? 'block' : 'none',
   left: `${params.value.heard.x}%`,
   top: `${params.value.heard.y}%`,
-  fontSize: `${params.value.heard.size}px`,
+  fontSize: `${params.value.heard.size * overlayScale.value}px`,
   color: params.value.heard.color,
   fontWeight: params.value.heard.fontWeight ?? '400',
   fontStyle: params.value.heard.fontStyle ?? 'italic',
@@ -269,7 +388,7 @@ const overlayNameStyle = computed(() => ({
   display: params.value.artistName.visible ? 'flex' : 'none',
   left: `${params.value.artistName.x}%`,
   top: `${params.value.artistName.y}%`,
-  fontSize: `${params.value.artistName.size}px`,
+  fontSize: `${params.value.artistName.size * overlayScale.value}px`,
   color: params.value.artistName.color,
   fontWeight: params.value.artistName.fontWeight ?? '700',
   fontStyle: params.value.artistName.fontStyle ?? 'normal',
@@ -278,8 +397,14 @@ const overlayNameStyle = computed(() => ({
 }));
 
 const displayArtistName = computed(() =>
-  artist.value?.name?.toUpperCase() ?? '',
+  entityName.value?.toUpperCase() ?? '',
 );
+
+/** For show mode: list of up to 4 artist names for tile overlay */
+const showTileNames = computed<string[]>(() => {
+  if (entityType.value !== 'show' || !show.value) return [];
+  return show.value.artists.slice(0, 4).map((a) => a.name);
+});
 
 // ---------------------------------------------------------------------------
 // Preview modal
@@ -290,10 +415,11 @@ const showPreview = ref(false);
 const previewing = ref(false);
 
 async function openPreview(): Promise<void> {
-  if (!cropper || !artist.value) return;
+  if (!cropper || !hasEntity.value) return;
   previewing.value = true;
   try {
-    const { brandedBlob } = await renderPreview(cropper, params.value, artist.value.name);
+    const tiles = entityType.value === 'show' ? showTileNames.value : undefined;
+    const { brandedBlob } = await renderPreview(cropper, params.value, entityName.value, tiles);
     if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
     previewUrl.value = URL.createObjectURL(brandedBlob);
     showPreview.value = true;
@@ -309,19 +435,24 @@ function closePreview(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Save to R2
+// Save to R2 (artists only)
 // ---------------------------------------------------------------------------
 
 const saving = ref(false);
 
 const galleryRef = ref<InstanceType<typeof OverlayGallery> | null>(null);
+const overlayControlsRef = ref<InstanceType<typeof OverlayControls> | null>(null);
 
 async function saveToR2(): Promise<void> {
   if (!cropper || !artist.value) return;
   saving.value = true;
   try {
-    const { brandedBlob } = await renderPreview(cropper, params.value, artist.value.name);
+    const { brandedBlob } = await renderPreview(cropper, params.value, entityName.value);
     await artistsApi.saveOverlay(artist.value.id, brandedBlob);
+    // Sync active preset if one is selected
+    if (currentPresetId.value != null) {
+      await artistsApi.setActivePreset(artist.value.id, currentPresetId.value);
+    }
     flash.success('Overlay saved to R2');
     galleryRef.value?.refresh();
   } catch (err) {
@@ -332,13 +463,73 @@ async function saveToR2(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Activate Current Parameters (shows only)
+// ---------------------------------------------------------------------------
+
+function activateCurrentParams(): void {
+  if (!show.value) return;
+  if (currentPresetId.value == null) {
+    // No preset selected → go straight to "save as new" prompt
+    activateChoice.value = 'new';
+    activateNewPresetName.value = '';
+    showActivateModal.value = true;
+  } else {
+    // Preset selected → show choice modal
+    activateChoice.value = 'overwrite';
+    activateNewPresetName.value = '';
+    showActivateModal.value = true;
+  }
+}
+
+const canConfirmActivation = computed(() => {
+  if (activateChoice.value === 'overwrite') return true;
+  return activateNewPresetName.value.trim().length > 0;
+});
+
+async function confirmActivation(): Promise<void> {
+  if (!show.value) return;
+  activating.value = true;
+  try {
+    let presetId: number;
+
+    if (activateChoice.value === 'overwrite' && currentPresetId.value != null) {
+      // Overwrite the current preset's params
+      await presetsApi.update(currentPresetId.value, {
+        params: JSON.parse(JSON.stringify(params.value)),
+      });
+      presetId = currentPresetId.value;
+    } else {
+      // Create a new preset
+      const name = activateNewPresetName.value.trim();
+      if (!name) return;
+      const created = await presetsApi.create(name, JSON.parse(JSON.stringify(params.value)), 'show');
+      presetId = created.id;
+      currentPresetId.value = presetId;
+    }
+
+    // Set as active preset → triggers server-side cover regeneration
+    await showsApi.setActivePreset(show.value.id, presetId);
+
+    // Refresh preset list in OverlayControls so the new preset appears
+    await overlayControlsRef.value?.refreshPresets(presetId);
+
+    flash.success('Parameters activated — cover is regenerating');
+    showActivateModal.value = false;
+  } catch (err) {
+    flash.error(err instanceof Error ? err.message : 'Activation failed');
+  } finally {
+    activating.value = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Gallery active overlay
 // ---------------------------------------------------------------------------
 
 const activeKey = ref<string | null>(null);
 
 async function handleSetActive(key: string): Promise<void> {
-  if (!artist.value) return;
+  if (entityType.value !== 'artist' || !artist.value) return;
   try {
     await artistsApi.setActiveOverlay(artist.value.id, key);
     activeKey.value = key;
@@ -377,13 +568,43 @@ watch(selectedArtistId, async (id) => {
   await nextTick();
   if (cropperImg.value) {
     try {
-      const blob = await artistsApi.getImageBlob(id, 'original');
+      const blob = await artistsApi.getImageBlob(id, 'cropped');
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       objectUrl = URL.createObjectURL(blob);
       cropperImg.value.src = objectUrl;
     } catch (err) {
       console.error('Failed to load artist image:', err);
       flash.error('Failed to load artist image');
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Watch show selection
+// ---------------------------------------------------------------------------
+
+watch(selectedShowId, async (id) => {
+  destroyCropper();
+  show.value = null;
+  activeKey.value = null;
+  if (!id) return;
+
+  await loadShowDetail(id);
+
+  const loaded = show.value as ShowDetail | null;
+  if (!loaded) return;
+
+  // Load show cover into cropper via same-origin proxy
+  await nextTick();
+  if (cropperImg.value) {
+    try {
+      const blob = await showsApi.getImageBlob(id, 'collage');
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrl = URL.createObjectURL(blob);
+      cropperImg.value.src = objectUrl;
+    } catch (err) {
+      console.error('Failed to load show cover:', err);
+      flash.error('Failed to load show cover image');
     }
   }
 });
@@ -397,9 +618,10 @@ function handleResize(): void {
 }
 
 onMounted(async () => {
-  await loadArtistList();
+  // Load both lists upfront so the user can toggle freely
+  await Promise.all([loadArtistList(), loadShowList()]);
 
-  // If route has :id param, pre-select the artist
+  // If route has :id param, pre-select the artist (default entity type)
   const routeId = Number(route.params.id);
   if (routeId && !isNaN(routeId)) {
     selectedArtistId.value = routeId;
@@ -409,6 +631,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  overlayResizeObserver?.disconnect();
+  overlayResizeObserver = null;
   destroyCropper();
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
   window.removeEventListener('resize', handleResize);
@@ -420,29 +644,47 @@ onUnmounted(() => {
     <!-- Header -->
     <div class="page-header">
       <h1 class="page-title">Overlay Editor</h1>
-      <div class="artist-selector">
-        <label for="artist-select">Artist</label>
-        <select id="artist-select" v-model="selectedArtistId" class="form-input" :disabled="artistsLoading"
-          @change="onArtistChange">
-          <option :value="null" disabled>Select an artist…</option>
-          <option v-for="a in artists" :key="a.id" :value="a.id">
-            {{ a.name }}
-          </option>
-        </select>
+      <div class="entity-selector">
+        <div class="entity-toggle">
+          <button type="button" :class="['toggle-btn', { active: entityType === 'artist' }]"
+            @click="entityType = 'artist'; onEntityTypeChange()">Artist</button>
+          <button type="button" :class="['toggle-btn', { active: entityType === 'show' }]"
+            @click="entityType = 'show'; onEntityTypeChange()">Show</button>
+        </div>
+        <div v-if="entityType === 'artist'" class="selector-dropdown">
+          <label for="artist-select">Artist</label>
+          <select id="artist-select" v-model="selectedArtistId" class="form-input" :disabled="artistsLoading"
+            @change="onArtistChange">
+            <option :value="null" disabled>Select an artist…</option>
+            <option v-for="a in artists" :key="a.id" :value="a.id">
+              {{ a.name }}
+            </option>
+          </select>
+        </div>
+        <div v-else class="selector-dropdown">
+          <label for="show-select">Show</label>
+          <select id="show-select" v-model="selectedShowId" class="form-input" :disabled="showsLoading">
+            <option :value="null" disabled>Select a show…</option>
+            <option v-for="s in shows" :key="s.id" :value="s.id">
+              {{ s.title }} ({{ s.date }})
+            </option>
+          </select>
+        </div>
       </div>
     </div>
 
     <!-- Loading / Error -->
-    <div v-if="artistLoading" class="loading-spinner"></div>
-    <div v-if="artistError" class="flash-message error">{{ artistError }}</div>
+    <div v-if="entityLoading" class="loading-spinner"></div>
+    <div v-if="entityError" class="flash-message error">{{ entityError }}</div>
 
     <!-- Editor -->
-    <div v-if="artist" class="editor-layout">
+    <div v-if="hasEntity" class="editor-layout">
       <!-- Left: Canvas + Actions -->
       <div class="editor-canvas-panel">
         <div ref="cropperWrapper" class="cropper-wrapper">
           <div class="cropper-frame">
-            <img ref="cropperImg" alt="Original artist image" crossorigin="anonymous" @load="onImageLoad" />
+            <img ref="cropperImg" :alt="entityType === 'artist' ? 'Original artist image' : 'Show cover image'"
+              crossorigin="anonymous" @load="onImageLoad" />
 
             <!-- Live DOM overlay (positioned by params) -->
             <div ref="overlayEl" class="live-overlay" aria-hidden="true">
@@ -450,9 +692,22 @@ onUnmounted(() => {
               <span class="live-overlay-heard" :style="overlayHeardStyle">HEARD</span>
               <img class="live-overlay-logo overlay-logo" src="/moafunk.png" alt="" crossorigin="anonymous"
                 :style="overlayLogoStyle" />
-              <span class="live-overlay-name" :style="overlayNameStyle">
+              <!-- Artist mode: single centred name -->
+              <span v-if="entityType === 'artist'" class="live-overlay-name" :style="overlayNameStyle">
                 {{ displayArtistName }}
               </span>
+              <!-- Show mode: 4 tile-centred artist names -->
+              <template v-if="entityType === 'show' && params.artistName.visible">
+                <span v-for="(tName, tIdx) in showTileNames" :key="tIdx" class="live-overlay-tile-name" :style="{
+                  left: `${(tIdx % 2) * 50 + 25}%`,
+                  top: `${(tIdx < 2 ? 0 : 50) + 25}%`,
+                  fontSize: `${params.artistName.size * overlayScale}px`,
+                  color: params.tileColors?.[tIdx] ?? params.artistName.color,
+                  fontWeight: params.artistName.fontWeight ?? '700',
+                  fontStyle: params.artistName.fontStyle ?? 'normal',
+                  textShadow: tileShadowCss(tIdx),
+                }">{{ tName.toUpperCase() }}</span>
+              </template>
             </div>
           </div>
 
@@ -469,13 +724,16 @@ onUnmounted(() => {
           <button type="button" class="btn-secondary" :disabled="previewing" @click="openPreview">
             {{ previewing ? 'Rendering…' : 'Preview' }}
           </button>
-          <button type="button" class="btn-primary" :disabled="saving" @click="saveToR2">
+          <button v-if="entityType === 'artist'" type="button" class="btn-primary" :disabled="saving" @click="saveToR2">
             {{ saving ? 'Saving…' : 'Save to R2' }}
+          </button>
+          <button v-else type="button" class="btn-primary" :disabled="activating" @click="activateCurrentParams">
+            {{ activating ? 'Activating…' : 'Activate Current Parameters' }}
           </button>
         </div>
 
-        <!-- No image hint -->
-        <div v-if="!imageLoaded && !artistLoading" class="no-image-hint">
+        <!-- No image hint (artist) -->
+        <div v-if="entityType === 'artist' && !imageLoaded && !entityLoading && artist" class="no-image-hint">
           <p v-if="!artist.file_urls?.pic_original" class="text-muted">
             This artist has no original image uploaded yet. Upload one from the
             <router-link :to="`/artists/${artist.id}`">artist detail page</router-link>.
@@ -485,19 +743,69 @@ onUnmounted(() => {
             <span class="text-muted">Loading original image…</span>
           </div>
         </div>
+
+        <!-- No image hint (show) -->
+        <div v-if="entityType === 'show' && !imageLoaded && !entityLoading && show" class="no-image-hint">
+          <p v-if="!show.cover_url" class="text-muted">
+            This show has no cover image yet. It will be generated when artists are assigned.
+          </p>
+          <div v-else class="loading-image">
+            <div class="loading-spinner small"></div>
+            <span class="text-muted">Loading show cover…</span>
+          </div>
+        </div>
       </div>
 
       <!-- Right: Controls panel -->
       <div class="editor-controls-panel">
-        <OverlayControls v-model="params" :artist-name="artist.name" />
+        <OverlayControls ref="overlayControlsRef" v-model="params" :artist-name="entityName"
+          :initial-preset-id="activePresetId" :entity-type="entityType"
+          @update:selected-preset-id="currentPresetId = $event" />
       </div>
     </div>
 
-    <!-- Gallery section -->
-    <div v-if="artist" class="gallery-section">
+    <!-- Gallery section (artists only) -->
+    <div v-if="hasEntity && entityId && entityType === 'artist'" class="gallery-section">
       <h2 class="section-title">Saved Overlays</h2>
-      <OverlayGallery ref="galleryRef" :artist-id="artist.id" :active-key="activeKey" @set-active="handleSetActive" />
+      <OverlayGallery v-if="artist" ref="galleryRef" :artist-id="artist.id" :active-key="activeKey"
+        @set-active="handleSetActive" />
     </div>
+
+    <!-- Activate Current Parameters modal (shows only) -->
+    <BaseModal :open="showActivateModal" title="Activate Current Parameters" size="sm"
+      @close="showActivateModal = false">
+      <div class="activate-modal-body">
+        <p class="activate-description">Save overlay parameters before activating. The show cover will be regenerated
+          with
+          the selected preset.</p>
+
+        <!-- Option: Overwrite (only shown when a preset is selected) -->
+        <label v-if="currentPresetId != null" class="activate-option">
+          <input v-model="activateChoice" type="radio" name="activate-choice" value="overwrite" />
+          <span>Overwrite current preset</span>
+        </label>
+
+        <!-- Option: Save as new -->
+        <label class="activate-option">
+          <input v-model="activateChoice" type="radio" name="activate-choice" value="new" />
+          <span>Save as new preset</span>
+        </label>
+
+        <!-- Name input (shown when "new" is selected) -->
+        <div v-if="activateChoice === 'new'" class="activate-name-input">
+          <input v-model="activateNewPresetName" type="text" class="form-input" placeholder="Preset name…"
+            @keydown.enter="canConfirmActivation && confirmActivation()" />
+        </div>
+      </div>
+
+      <template #footer>
+        <button type="button" class="btn-ghost" @click="showActivateModal = false">Cancel</button>
+        <button type="button" class="btn-primary" :disabled="!canConfirmActivation || activating"
+          @click="confirmActivation">
+          {{ activating ? 'Activating…' : 'Activate' }}
+        </button>
+      </template>
+    </BaseModal>
 
     <!-- Preview modal -->
     <Teleport to="body">
@@ -512,8 +820,13 @@ onUnmounted(() => {
           </div>
           <div class="preview-footer">
             <button type="button" class="btn-ghost" @click="closePreview">Close</button>
-            <button type="button" class="btn-primary" :disabled="saving" @click="saveToR2(); closePreview()">
+            <button v-if="entityType === 'artist'" type="button" class="btn-primary" :disabled="saving"
+              @click="saveToR2(); closePreview()">
               {{ saving ? 'Saving…' : 'Save to R2' }}
+            </button>
+            <button v-else type="button" class="btn-primary" :disabled="activating"
+              @click="closePreview(); activateCurrentParams()">
+              {{ activating ? 'Activating…' : 'Activate Current Parameters' }}
             </button>
           </div>
         </div>
@@ -544,18 +857,57 @@ onUnmounted(() => {
   margin: 0;
 }
 
-.artist-selector {
+.artist-selector,
+.entity-selector {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
 }
 
-.artist-selector label {
+.entity-toggle {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.toggle-btn {
+  padding: var(--spacing-xs) var(--spacing-md);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  border: none;
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  transition: all var(--transition-fast);
+}
+
+.toggle-btn:not(:last-child) {
+  border-right: 1px solid var(--color-border);
+}
+
+.toggle-btn.active {
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
+.toggle-btn:hover:not(.active) {
+  background: var(--color-surface-hover);
+}
+
+.selector-dropdown {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.selector-dropdown label {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
   white-space: nowrap;
 }
 
+.selector-dropdown .form-input,
 .artist-selector .form-input {
   min-width: 240px;
   background-color: var(--color-surface);
@@ -782,6 +1134,19 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
+.live-overlay-tile-name {
+  position: absolute;
+  text-transform: uppercase;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  max-width: 43%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---- Preview modal ---- */
 .preview-backdrop {
   position: fixed;
@@ -898,5 +1263,45 @@ onUnmounted(() => {
 :deep(.cropper-modal) {
   background-color: #000 !important;
   opacity: 0.8 !important;
+}
+
+/* ---- Activate modal ---- */
+.activate-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.activate-description {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  margin: 0;
+}
+
+.activate-option {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  cursor: pointer;
+  padding: var(--spacing-xs) 0;
+  font-size: var(--font-size-md);
+}
+
+.activate-option input[type="radio"] {
+  accent-color: var(--color-primary);
+}
+
+.activate-name-input {
+  padding-left: var(--spacing-lg);
+}
+
+.activate-name-input .form-input {
+  width: 100%;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
 }
 </style>

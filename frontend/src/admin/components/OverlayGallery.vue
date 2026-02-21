@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue';
-import { artistsApi } from '../api';
+import { artistsApi, showsApi } from '../api';
 import type { OverlayImage } from '../api';
 
 const props = defineProps<{
   artistId: number;
   activeKey: string | null;
+  entityType?: 'artist' | 'show';
 }>();
 
 const emit = defineEmits<{
@@ -20,7 +21,9 @@ async function fetchOverlays(): Promise<void> {
   loading.value = true;
   error.value = null;
   try {
-    const data = await artistsApi.listOverlays(props.artistId);
+    const data = props.entityType === 'show'
+      ? await showsApi.listOverlays(props.artistId)
+      : await artistsApi.listOverlays(props.artistId);
     // Sort newest first by last_modified
     overlays.value = data.overlays.sort(
       (a, b) => new Date(b.last_modified).getTime() - new Date(a.last_modified).getTime(),
@@ -86,20 +89,11 @@ defineExpose({ refresh });
     </div>
 
     <div v-else class="gallery-grid">
-      <div
-        v-for="overlay in overlays"
-        :key="overlay.key"
-        class="gallery-item"
-        :class="{ active: overlay.key === activeKey }"
-      >
+      <div v-for="overlay in overlays" :key="overlay.key" class="gallery-item"
+        :class="{ active: overlay.key === activeKey }">
         <div class="item-image-wrapper">
-          <img
-            :src="overlay.url"
-            :alt="overlay.key"
-            class="item-image"
-            loading="lazy"
-            @click="openFullSize(overlay.url)"
-          />
+          <img :src="overlay.url" :alt="overlay.key" class="item-image" loading="lazy"
+            @click="openFullSize(overlay.url)" />
           <div v-if="overlay.key === activeKey" class="active-badge">Active</div>
         </div>
 
@@ -108,15 +102,9 @@ defineExpose({ refresh });
         </div>
 
         <div class="item-actions">
-          <button
-            class="btn-sm btn-ghost"
-            @click="openFullSize(overlay.url)"
-          >Preview</button>
-          <button
-            v-if="overlay.key !== activeKey"
-            class="btn-sm btn-primary"
-            @click="emit('set-active', overlay.key)"
-          >Set Active</button>
+          <button class="btn-sm btn-ghost" @click="openFullSize(overlay.url)">Preview</button>
+          <button v-if="overlay.key !== activeKey" class="btn-sm btn-primary"
+            @click="emit('set-active', overlay.key)">Set Active</button>
         </div>
       </div>
     </div>
@@ -170,7 +158,9 @@ defineExpose({ refresh });
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .gallery-error {

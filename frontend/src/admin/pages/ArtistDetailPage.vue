@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onActivated, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { artistsApi, showsApi, type ArtistDetail } from '../api';
+import { artistsApi, showsApi, presetsApi, type ArtistDetail, type OverlayPreset } from '../api';
 import { BaseButton, BaseModal } from '@shared/components';
 import ImageCropper from '../components/ImageCropper.vue';
 import AudioPlayer from '../components/AudioPlayer.vue';
@@ -55,6 +55,10 @@ const editedCaption = ref('');
 const savingCaption = ref(false);
 const carouselIndex = ref(0);
 const regeneratingVideos = ref(false);
+
+// Overlay presets
+const overlayPresets = ref<OverlayPreset[]>([]);
+const savingPreset = ref(false);
 
 const audioForm = ref({
   voice: null as File | null,
@@ -442,7 +446,12 @@ async function saveAudio() {
   }
 }
 
-onMounted(loadArtist);
+onMounted(() => {
+  loadArtist();
+  presetsApi.list().then(res => {
+    overlayPresets.value = res.presets;
+  }).catch(() => { });
+});
 
 onActivated(() => {
   const id = Number(route.params.id);
@@ -454,6 +463,22 @@ onActivated(() => {
 onBeforeUnmount(() => {
   if (coverRefreshTimer) clearTimeout(coverRefreshTimer);
 });
+
+async function onPresetChange(event: Event) {
+  if (!artist.value) return;
+  const target = event.target as HTMLSelectElement;
+  const presetId = target.value ? Number(target.value) : null;
+  savingPreset.value = true;
+  try {
+    await artistsApi.setActivePreset(artist.value.id, presetId);
+    artist.value.active_overlay_preset_id = presetId ?? undefined;
+    flash.success(presetId ? 'Active preset updated' : 'Active preset cleared');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to update preset');
+  } finally {
+    savingPreset.value = false;
+  }
+}
 </script>
 
 <template>
@@ -689,12 +714,8 @@ onBeforeUnmount(() => {
           <div class="card-header">
             <h2 class="section-title">Profile Picture</h2>
             <div class="card-header-actions">
-              <router-link
-                v-if="!editingPicture"
-                :to="`/overlay-editor/${artist.id}`"
-                class="edit-btn"
-                title="Edit Overlay"
-              >overlay</router-link>
+              <router-link v-if="!editingPicture" :to="`/overlay-editor/${artist.id}`" class="edit-btn"
+                title="Edit Overlay">overlay</router-link>
               <button v-if="!editingPicture" class="edit-btn" @click="startEditPicture" title="Edit">edit</button>
             </div>
           </div>
@@ -710,6 +731,16 @@ onBeforeUnmount(() => {
               <img v-if="artist.file_urls.pic" :src="artist.file_urls.pic" alt="Artist picture" class="profile-picture"
                 crossorigin="anonymous" />
               <p v-else class="text-muted">No picture uploaded</p>
+            </div>
+
+            <!-- Overlay Preset Selector -->
+            <div class="preset-selector">
+              <label class="preset-selector-label">🎨 Active Preset</label>
+              <select class="select-input preset-select" :value="artist.active_overlay_preset_id ?? ''"
+                :disabled="savingPreset" @change="onPresetChange">
+                <option value="">None</option>
+                <option v-for="preset in overlayPresets" :key="preset.id" :value="preset.id">{{ preset.name }}</option>
+              </select>
             </div>
           </template>
         </div>
@@ -1243,6 +1274,26 @@ onBeforeUnmount(() => {
   width: 100%;
   border-radius: var(--radius-lg);
   object-fit: contain;
+}
+
+.preset-selector {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) 0;
+  margin-top: var(--spacing-sm);
+  border-top: 1px solid var(--color-border);
+}
+
+.preset-selector-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.preset-select {
+  font-size: var(--font-size-sm) !important;
+  padding: var(--spacing-xs) var(--spacing-sm) !important;
 }
 
 .audio-files-card {

@@ -375,6 +375,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/artists/:id/overlays/active",
             axum::routing::put(handlers::api::api_set_active_overlay),
         )
+        .route(
+            "/api/artists/:id/active-preset",
+            axum::routing::put(handlers::api::api_set_artist_active_preset),
+        )
         // Overlay parameter presets (CRUD)
         .route(
             "/api/overlay-presets",
@@ -404,6 +408,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/shows", post(handlers::api::api_create_show))
         .route("/api/shows/:id", get(handlers::api::api_show_detail))
         .route(
+            "/api/shows/:id/image-proxy",
+            get(handlers::api::api_show_image_proxy),
+        )
+        .route(
+            "/api/shows/:id/overlays",
+            get(handlers::api::api_list_show_overlays),
+        )
+        .route(
+            "/api/shows/:id/overlays",
+            post(handlers::api::api_save_show_overlay),
+        )
+        .route(
             "/api/shows/:id/with-artists",
             get(handlers::api::api_show_with_artists),
         )
@@ -414,6 +430,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id",
             axum::routing::delete(handlers::api::api_delete_show),
+        )
+        .route(
+            "/api/shows/:id/active-preset",
+            axum::routing::put(handlers::api::api_set_show_active_preset),
         )
         .route(
             "/api/shows/:id/artists",

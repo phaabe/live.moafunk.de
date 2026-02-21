@@ -10,12 +10,7 @@
  * Logo size is a percentage of the canvas width.
  */
 
-import type {
-  OverlayParams,
-  OverlayElementParams,
-  OverlayFilterParams,
-  OverlayShadowParams,
-} from '../api';
+import type { OverlayParams, OverlayElementParams, OverlayFilterParams } from '../api';
 import type Cropper from 'cropperjs';
 
 // ---------------------------------------------------------------------------
@@ -64,18 +59,18 @@ export function getDefaultOverlayParams(): OverlayParams {
     un: {
       visible: true,
       x: 15,
-      y: 85,
-      size: 44,
+      y: 81,
+      size: 104,
       color: '#ffec44',
       fontWeight: '600',
       fontStyle: 'italic',
-      shadow: { offsetX: 2, offsetY: 2, color: '#000000' },
+      shadow: { offsetX: 2.5, offsetY: 2.5, color: '#000000' },
     },
     heard: {
       visible: true,
       x: 15,
-      y: 89,
-      size: 19,
+      y: 90,
+      size: 44,
       color: '#ffffff',
       fontWeight: '400',
       fontStyle: 'italic',
@@ -85,14 +80,14 @@ export function getDefaultOverlayParams(): OverlayParams {
       visible: true,
       x: 50,
       y: 87.5,
-      size: 15,
+      size: 20,
       color: '',
     },
     artistName: {
       visible: true,
       x: 80,
       y: 87.5,
-      size: 22,
+      size: 44,
       color: '#ffffff',
       fontWeight: '700',
       fontStyle: 'normal',
@@ -107,6 +102,8 @@ export function getDefaultOverlayParams(): OverlayParams {
       sepia: 0,
       blur: 0,
     },
+    tileColors: ['#ffffff', '#ffffff', '#ffffff', '#ffffff'],
+    tileShadowColors: ['#000000', '#000000', '#000000', '#000000'],
   };
 }
 
@@ -139,11 +136,13 @@ export function buildFilterString(filter: OverlayFilterParams): string {
  * @param canvas  - Target canvas (expected 1024×1024 but works at any size)
  * @param params  - Full overlay parameters
  * @param artistName - Artist display name (uppercased automatically)
+ * @param tileNames  - Optional array of up to 4 artist names for show 2×2 tiles
  */
 export async function drawOverlayOnCanvas(
   canvas: HTMLCanvasElement,
   params: OverlayParams,
-  artistName: string
+  artistName: string,
+  tileNames?: string[]
 ): Promise<void> {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -179,8 +178,22 @@ export async function drawOverlayOnCanvas(
     drawLogo(ctx, params.logo, w, h);
   }
 
-  // --- Artist name ---
-  if (params.artistName.visible && artistName) {
+  // --- Names ---
+  if (tileNames && tileNames.length > 0) {
+    // Show mode: draw artist names centered in each 2×2 tile
+    if (params.artistName.visible) {
+      drawTileNames(
+        ctx,
+        tileNames,
+        params.artistName,
+        w,
+        h,
+        params.tileColors,
+        params.tileShadowColors
+      );
+    }
+  } else if (params.artistName.visible && artistName) {
+    // Artist mode: single name
     drawArtistName(ctx, artistName.toUpperCase(), params.artistName, w, h);
   }
 
@@ -297,6 +310,67 @@ function drawArtistName(
   ctx.fillText(text, centerX, centerY);
 }
 
+/**
+ * Draw artist names centered in each quadrant of a 2×2 tile grid (for shows).
+ * Positions are fixed at tile centers; styling comes from the element params.
+ */
+function drawTileNames(
+  ctx: CanvasRenderingContext2D,
+  names: string[],
+  el: OverlayElementParams,
+  canvasW: number,
+  canvasH: number,
+  tileColors?: string[],
+  tileShadowColors?: string[]
+): void {
+  const fontStyle = el.fontStyle ?? 'normal';
+  const fontWeight = el.fontWeight ?? '700';
+  const tileW = canvasW / 2;
+  const tileH = canvasH / 2;
+
+  for (let idx = 0; idx < Math.min(names.length, 4); idx++) {
+    const name = names[idx]?.trim();
+    if (!name) continue;
+    const text = name.toUpperCase();
+
+    const tileX0 = idx % 2 === 0 ? 0 : tileW;
+    const tileY0 = idx < 2 ? 0 : tileH;
+    const centerX = tileX0 + tileW / 2;
+    const centerY = tileY0 + tileH / 2;
+
+    // Auto-fit: shrink font until it fits in ~86% of tile width
+    const maxWidth = tileW * 0.86;
+    const maxPx = el.size;
+    const minPx = 12;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    let low = minPx;
+    let high = maxPx;
+    for (let i = 0; i < 12; i++) {
+      const mid = (low + high) / 2;
+      ctx.font = `${fontStyle} ${fontWeight} ${mid}px Shoika, sans-serif`;
+      const measured = ctx.measureText(text);
+      if (measured.width <= maxWidth) {
+        low = mid;
+      } else {
+        high = mid;
+      }
+    }
+    const fontSize = Math.floor(low);
+    ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px Shoika, sans-serif`;
+
+    if (el.shadow) {
+      ctx.fillStyle = tileShadowColors?.[idx] ?? el.shadow.color;
+      ctx.fillText(text, centerX + el.shadow.offsetX, centerY + el.shadow.offsetY);
+    }
+
+    ctx.fillStyle = tileColors?.[idx] ?? el.color;
+    ctx.fillText(text, centerX, centerY);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Apply image filter to canvas in-place
 // ---------------------------------------------------------------------------
@@ -343,7 +417,8 @@ export function applyFilterToCanvas(canvas: HTMLCanvasElement, filter: OverlayFi
 export async function renderPreview(
   cropperInstance: Cropper,
   params: OverlayParams,
-  artistName: string
+  artistName: string,
+  tileNames?: string[]
 ): Promise<{ croppedBlob: Blob; brandedBlob: Blob }> {
   const canvas = cropperInstance.getCroppedCanvas({
     width: 1024,
@@ -363,7 +438,7 @@ export async function renderPreview(
   const croppedBlob = await canvasToBlob(canvas);
 
   // Draw overlay
-  await drawOverlayOnCanvas(canvas, params, artistName);
+  await drawOverlayOnCanvas(canvas, params, artistName, tileNames);
 
   // Branded blob (filtered + overlay)
   const brandedBlob = await canvasToBlob(canvas);

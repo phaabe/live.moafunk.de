@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, toRaw } from 'vue';
+import { ref, computed, onMounted, toRaw, watch } from 'vue';
 import type { OverlayParams, OverlayElementParams, OverlayFilterParams, OverlayPreset, OverlayShadowParams } from '../api';
 import { presetsApi } from '../api';
 import { getDefaultOverlayParams } from '../composables/useOverlayRenderer';
@@ -7,10 +7,13 @@ import { getDefaultOverlayParams } from '../composables/useOverlayRenderer';
 const props = defineProps<{
   modelValue: OverlayParams;
   artistName: string;
+  initialPresetId?: number;
+  entityType?: 'artist' | 'show';
 }>();
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: OverlayParams): void;
+  (e: 'update:selectedPresetId', value: number | null): void;
 }>();
 
 // ---------------------------------------------------------------------------
@@ -31,6 +34,20 @@ function updateShadow(key: keyof OverlayParams, field: keyof OverlayShadowParams
 function updateFilter(field: keyof OverlayFilterParams, value: number): void {
   const filter = { ...props.modelValue.filter, [field]: value };
   emit('update:modelValue', { ...props.modelValue, filter });
+}
+
+function updateTileColor(index: number, color: string): void {
+  const current = props.modelValue.tileColors ?? ['#ffffff', '#ffffff', '#ffffff', '#ffffff'];
+  const tileColors = [...current];
+  tileColors[index] = color;
+  emit('update:modelValue', { ...props.modelValue, tileColors });
+}
+
+function updateTileShadowColor(index: number, color: string): void {
+  const current = props.modelValue.tileShadowColors ?? ['#000000', '#000000', '#000000', '#000000'];
+  const tileShadowColors = [...current];
+  tileShadowColors[index] = color;
+  emit('update:modelValue', { ...props.modelValue, tileShadowColors });
 }
 
 const defaults = getDefaultOverlayParams();
@@ -66,7 +83,7 @@ const selectedPreset = computed(() =>
 async function fetchPresets(): Promise<void> {
   presetLoading.value = true;
   try {
-    const { presets: list } = await presetsApi.list();
+    const { presets: list } = await presetsApi.list(props.entityType ?? 'artist');
     presets.value = list;
   } catch (err) {
     console.error('Failed to fetch presets:', err);
@@ -88,7 +105,7 @@ async function saveAsNew(): Promise<void> {
   if (!name) return;
   presetSaving.value = true;
   try {
-    const created = await presetsApi.create(name, JSON.parse(JSON.stringify(toRaw(props.modelValue))));
+    const created = await presetsApi.create(name, JSON.parse(JSON.stringify(toRaw(props.modelValue))), props.entityType ?? 'artist');
     presets.value.push(created);
     selectedPresetId.value = created.id;
     newPresetName.value = '';
@@ -139,6 +156,53 @@ function resetToDefaults(): void {
 
 onMounted(fetchPresets);
 
+// Re-fetch presets when entity type changes
+watch(
+  () => props.entityType,
+  () => {
+    selectedPresetId.value = null;
+    fetchPresets();
+  },
+);
+
+// Auto-apply initial preset when prop is set or changes
+watch(
+  () => props.initialPresetId,
+  (newId) => {
+    if (newId != null && presets.value.length > 0) {
+      selectedPresetId.value = newId;
+      loadPreset();
+    }
+  },
+);
+
+// After fetching presets, apply initial if set
+watch(
+  () => presets.value.length,
+  () => {
+    if (props.initialPresetId != null && presets.value.length > 0 && selectedPresetId.value == null) {
+      selectedPresetId.value = props.initialPresetId;
+      loadPreset();
+    }
+  },
+);
+
+// Emit selected preset ID changes so parent can track it
+watch(selectedPresetId, (id) => emit('update:selectedPresetId', id));
+
+/**
+ * Expose methods for parent components to refresh presets and programmatically
+ * select a preset (e.g., after creating a new one from the activation modal).
+ */
+async function refreshPresets(selectId?: number): Promise<void> {
+  await fetchPresets();
+  if (selectId != null) {
+    selectedPresetId.value = selectId;
+  }
+}
+
+defineExpose({ refreshPresets });
+
 // ---------------------------------------------------------------------------
 // Filter field descriptors for DRY template
 // ---------------------------------------------------------------------------
@@ -182,12 +246,28 @@ const filterGroups: FilterGroup[] = [
 ];
 
 // We track which element sections have the "type" field (text vs logo)
-const elementSections = computed(() => [
-  { key: 'un' as const, label: '"UN"', isText: true, hasColor: true },
-  { key: 'heard' as const, label: '"HEARD"', isText: true, hasColor: true },
-  { key: 'logo' as const, label: 'Logo', isText: false, hasColor: false },
-  { key: 'artistName' as const, label: `Artist Name`, isText: true, hasColor: true },
-]);
+const elementSections = computed(() => {
+  const isShow = props.entityType === 'show';
+  const sections: Array<{
+    key: 'un' | 'heard' | 'logo' | 'artistName';
+    label: string;
+    isText: boolean;
+    hasColor: boolean;
+    noPosition?: boolean;
+  }> = [
+      { key: 'un' as const, label: '"UN"', isText: true, hasColor: true },
+      { key: 'heard' as const, label: '"HEARD"', isText: true, hasColor: true },
+      { key: 'logo' as const, label: 'Logo', isText: false, hasColor: false },
+    ];
+  if (isShow) {
+    // Show mode: tile artist names with fixed positions (no x/y)
+    sections.push({ key: 'artistName' as const, label: 'Tile Names', isText: true, hasColor: true, noPosition: true });
+  } else {
+    // Artist mode: single artist name with full position controls
+    sections.push({ key: 'artistName' as const, label: 'Artist Name', isText: true, hasColor: true });
+  }
+  return sections;
+});
 
 // ---------------------------------------------------------------------------
 // Image filter presets (inspired by popular Instagram / CSS filter recipes)
@@ -324,7 +404,7 @@ function applyImageFilter(preset: ImageFilterPreset): void {
               </div>
 
               <!-- X position -->
-              <div class="control-row">
+              <div v-if="!section.noPosition" class="control-row">
                 <label class="control-label">X</label>
                 <input type="range" class="control-slider" min="0" max="100" step="0.5"
                   :value="(modelValue[section.key] as OverlayElementParams).x"
@@ -336,7 +416,7 @@ function applyImageFilter(preset: ImageFilterPreset): void {
               </div>
 
               <!-- Y position -->
-              <div class="control-row">
+              <div v-if="!section.noPosition" class="control-row">
                 <label class="control-label">Y</label>
                 <input type="range" class="control-slider" min="0" max="100" step="0.5"
                   :value="(modelValue[section.key] as OverlayElementParams).y"
@@ -350,18 +430,32 @@ function applyImageFilter(preset: ImageFilterPreset): void {
               <!-- Size -->
               <div class="control-row">
                 <label class="control-label">Size</label>
-                <input type="range" class="control-slider" :min="section.isText ? 8 : 5" :max="section.isText ? 80 : 40"
-                  :step="section.isText ? 1 : 0.5" :value="(modelValue[section.key] as OverlayElementParams).size"
+                <input type="range" class="control-slider" :min="section.isText ? 8 : 5"
+                  :max="section.isText ? 160 : 80" :step="section.isText ? 1 : 0.5"
+                  :value="(modelValue[section.key] as OverlayElementParams).size"
                   @input="updateElement(section.key, 'size', Number(($event.target as HTMLInputElement).value))" />
                 <input type="number" class="control-number" :min="section.isText ? 8 : 5"
-                  :max="section.isText ? 80 : 40" :step="section.isText ? 1 : 0.5"
+                  :max="section.isText ? 160 : 80" :step="section.isText ? 1 : 0.5"
                   :value="(modelValue[section.key] as OverlayElementParams).size"
                   @input="updateElement(section.key, 'size', Number(($event.target as HTMLInputElement).value))" />
                 <span class="control-unit">{{ section.isText ? 'px' : '%' }}</span>
               </div>
 
               <!-- Color (text elements only) -->
-              <div v-if="section.hasColor" class="control-row">
+              <!-- Per-tile colors for show tile names -->
+              <template v-if="section.hasColor && section.noPosition">
+                <div v-for="tIdx in 4" :key="tIdx" class="control-row">
+                  <label class="control-label">Artist {{ tIdx }}</label>
+                  <input type="color" class="control-color"
+                    :value="modelValue.tileColors?.[tIdx - 1] ?? (modelValue[section.key] as OverlayElementParams).color"
+                    @input="updateTileColor(tIdx - 1, ($event.target as HTMLInputElement).value)" />
+                  <input type="text" class="control-color-text"
+                    :value="modelValue.tileColors?.[tIdx - 1] ?? (modelValue[section.key] as OverlayElementParams).color"
+                    @change="updateTileColor(tIdx - 1, ($event.target as HTMLInputElement).value)" />
+                </div>
+              </template>
+              <!-- Single color for other elements -->
+              <div v-else-if="section.hasColor" class="control-row">
                 <label class="control-label">Color</label>
                 <input type="color" class="control-color"
                   :value="(modelValue[section.key] as OverlayElementParams).color"
@@ -399,25 +493,26 @@ function applyImageFilter(preset: ImageFilterPreset): void {
                 <div class="control-divider">Shadow</div>
                 <div class="control-row">
                   <label class="control-label">X Offset</label>
-                  <input type="range" class="control-slider" min="-10" max="10" step="0.5"
+                  <input type="range" class="control-slider" min="-20" max="20" step="0.5"
                     :value="(modelValue[section.key] as OverlayElementParams).shadow?.offsetX ?? 0"
                     @input="updateShadow(section.key, 'offsetX', Number(($event.target as HTMLInputElement).value))" />
-                  <input type="number" class="control-number" min="-10" max="10" step="0.5"
+                  <input type="number" class="control-number" min="-20" max="20" step="0.5"
                     :value="(modelValue[section.key] as OverlayElementParams).shadow?.offsetX ?? 0"
                     @input="updateShadow(section.key, 'offsetX', Number(($event.target as HTMLInputElement).value))" />
                   <span class="control-unit">px</span>
                 </div>
                 <div class="control-row">
                   <label class="control-label">Y Offset</label>
-                  <input type="range" class="control-slider" min="-10" max="10" step="0.5"
+                  <input type="range" class="control-slider" min="-20" max="20" step="0.5"
                     :value="(modelValue[section.key] as OverlayElementParams).shadow?.offsetY ?? 0"
                     @input="updateShadow(section.key, 'offsetY', Number(($event.target as HTMLInputElement).value))" />
-                  <input type="number" class="control-number" min="-10" max="10" step="0.5"
+                  <input type="number" class="control-number" min="-20" max="20" step="0.5"
                     :value="(modelValue[section.key] as OverlayElementParams).shadow?.offsetY ?? 0"
                     @input="updateShadow(section.key, 'offsetY', Number(($event.target as HTMLInputElement).value))" />
                   <span class="control-unit">px</span>
                 </div>
-                <div class="control-row">
+                <!-- Shared shadow color for non-tile elements -->
+                <div v-if="!section.noPosition" class="control-row">
                   <label class="control-label">Shadow Color</label>
                   <input type="color" class="control-color"
                     :value="(modelValue[section.key] as OverlayElementParams).shadow?.color ?? '#000000'"
@@ -426,6 +521,18 @@ function applyImageFilter(preset: ImageFilterPreset): void {
                     :value="(modelValue[section.key] as OverlayElementParams).shadow?.color ?? '#000000'"
                     @change="updateShadow(section.key, 'color', ($event.target as HTMLInputElement).value)" />
                 </div>
+                <!-- Per-tile shadow colors for show tile names -->
+                <template v-if="section.noPosition">
+                  <div v-for="tIdx in 4" :key="'shadow-' + tIdx" class="control-row">
+                    <label class="control-label">Shadow {{ tIdx }}</label>
+                    <input type="color" class="control-color"
+                      :value="modelValue.tileShadowColors?.[tIdx - 1] ?? (modelValue[section.key] as OverlayElementParams).shadow?.color ?? '#000000'"
+                      @input="updateTileShadowColor(tIdx - 1, ($event.target as HTMLInputElement).value)" />
+                    <input type="text" class="control-color-text"
+                      :value="modelValue.tileShadowColors?.[tIdx - 1] ?? (modelValue[section.key] as OverlayElementParams).shadow?.color ?? '#000000'"
+                      @change="updateTileShadowColor(tIdx - 1, ($event.target as HTMLInputElement).value)" />
+                  </div>
+                </template>
               </template>
             </div>
           </template>

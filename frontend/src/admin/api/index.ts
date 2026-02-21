@@ -121,6 +121,10 @@ export interface OverlayParams {
   logo: OverlayElementParams;
   artistName: OverlayElementParams;
   filter: OverlayFilterParams;
+  /** Per-tile name colors for show overlays (up to 4 hex strings). */
+  tileColors?: string[];
+  /** Per-tile shadow colors for show overlays (up to 4 hex strings). */
+  tileShadowColors?: string[];
 }
 
 export interface OverlayImage {
@@ -139,6 +143,7 @@ export interface OverlayPreset {
   id: number;
   name: string;
   params: OverlayParams;
+  preset_type: 'artist' | 'show';
   created_at: string;
   updated_at: string;
 }
@@ -187,6 +192,7 @@ export interface ArtistDetail {
     cover_generated_at?: string;
   }[];
   available_shows: AvailableShow[];
+  active_overlay_preset_id?: number;
 }
 
 export const artistsApi = {
@@ -315,6 +321,9 @@ export const artistsApi = {
   setActiveOverlay: (id: number, key: string) =>
     api.put<void>(`/api/artists/${id}/overlays/active`, { key }),
 
+  setActivePreset: (id: number, presetId: number | null) =>
+    api.put<{ success: boolean }>(`/api/artists/${id}/active-preset`, { preset_id: presetId }),
+
   updateAudio: async (
     id: number,
     data: {
@@ -409,7 +418,9 @@ export interface ShowDetail {
   available_artists: { id: number; name: string; pronouns: string }[];
   artists_left: number;
   cover_url?: string;
+  collage_url?: string;
   cover_generated_at?: string;
+  active_overlay_preset_id?: number;
   recording_url?: string;
   recording_peaks_url?: string;
   recording_filename?: string;
@@ -600,6 +611,38 @@ export const showsApi = {
       track_url?: string;
       error?: string;
     }>(`/api/shows/${showId}/soundcloud/privacy`, { public: isPublic }),
+
+  setActivePreset: (id: number, presetId: number | null) =>
+    api.put<{ success: boolean }>(`/api/shows/${id}/active-preset`, { preset_id: presetId }),
+
+  /** Fetch a show image as a same-origin blob (avoids R2 CORS issues).
+   *  @param type 'cover' (default, with overlay) or 'collage' (plain 2×2 grid) */
+  getImageBlob: async (id: number, type: 'cover' | 'collage' = 'cover'): Promise<Blob> => {
+    const response = await fetch(`${API_BASE}/api/shows/${id}/image-proxy?type=${type}`, {
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch show image: ${response.status}`);
+    }
+    return response.blob();
+  },
+
+  listOverlays: (id: number) => api.get<OverlayListResponse>(`/api/shows/${id}/overlays`),
+
+  saveOverlay: async (id: number, blob: Blob): Promise<{ key: string; url: string }> => {
+    const formData = new FormData();
+    formData.append('image', blob, 'overlay.jpg');
+    const response = await fetch(`${API_BASE}/api/shows/${id}/overlays`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+      throw new Error(error.error || 'Upload failed');
+    }
+    return response.json();
+  },
 };
 
 // SoundCloud API
@@ -729,10 +772,13 @@ export const recordingApi = {
 
 // Overlay Presets API
 export const presetsApi = {
-  list: () => api.get<{ presets: OverlayPreset[] }>('/api/overlay-presets'),
+  list: (type?: 'artist' | 'show') => {
+    const qs = type ? `?type=${type}` : '';
+    return api.get<{ presets: OverlayPreset[] }>(`/api/overlay-presets${qs}`);
+  },
 
-  create: (name: string, params: OverlayParams) =>
-    api.post<OverlayPreset>('/api/overlay-presets', { name, params }),
+  create: (name: string, params: OverlayParams, preset_type: 'artist' | 'show' = 'artist') =>
+    api.post<OverlayPreset>('/api/overlay-presets', { name, params, preset_type }),
 
   update: (id: number, data: { name?: string; params?: OverlayParams }) =>
     api.put<OverlayPreset>(`/api/overlay-presets/${id}`, data),

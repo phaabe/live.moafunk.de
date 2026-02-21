@@ -323,6 +323,7 @@ pub struct ArtistDetailResponse {
     file_urls: std::collections::HashMap<String, String>,
     shows: Vec<ShowBrief>,
     available_shows: Vec<AvailableShow>,
+    active_overlay_preset_id: Option<i64>,
 }
 
 pub async fn api_artist_detail(
@@ -485,6 +486,7 @@ pub async fn api_artist_detail(
             show_briefs
         },
         available_shows,
+        active_overlay_preset_id: artist.active_overlay_preset_id,
     }))
 }
 
@@ -638,6 +640,55 @@ pub async fn api_unassign_artist_from_show(
         artist_name,
         telegram_notify::ShowUpdateAction::Removed,
     );
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Artist Active Overlay Preset
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct SetActivePresetRequest {
+    preset_id: Option<i64>,
+}
+
+pub async fn api_set_artist_active_preset(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<SetActivePresetRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify artist exists
+    let artist_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM artists WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    if !artist_exists {
+        return Err(AppError::NotFound("Artist not found".to_string()));
+    }
+
+    // Validate preset exists if setting one
+    if let Some(preset_id) = req.preset_id {
+        let preset_exists: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM overlay_presets WHERE id = ?")
+                .bind(preset_id)
+                .fetch_one(&state.db)
+                .await?;
+        if !preset_exists {
+            return Err(AppError::BadRequest("Overlay preset not found".to_string()));
+        }
+    }
+
+    sqlx::query(
+        "UPDATE artists SET active_overlay_preset_id = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(req.preset_id)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -1006,6 +1057,8 @@ pub async fn api_update_artist_picture(
 pub struct CreatePresetRequest {
     name: String,
     params: serde_json::Value,
+    /// 'artist' or 'show' — defaults to 'artist' when omitted
+    preset_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1014,16 +1067,24 @@ pub struct UpdatePresetRequest {
     params: Option<serde_json::Value>,
 }
 
+/// GET /api/overlay-presets?type=artist|show  (optional filter)
 pub async fn api_list_overlay_presets(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(qs): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse> {
     require_admin(&state, &headers).await?;
 
-    let presets: Vec<models::OverlayPreset> =
+    let presets: Vec<models::OverlayPreset> = if let Some(ptype) = qs.get("type") {
+        sqlx::query_as("SELECT * FROM overlay_presets WHERE preset_type = ? ORDER BY name ASC")
+            .bind(ptype)
+            .fetch_all(&state.db)
+            .await?
+    } else {
         sqlx::query_as("SELECT * FROM overlay_presets ORDER BY name ASC")
             .fetch_all(&state.db)
-            .await?;
+            .await?
+    };
 
     // Parse the params JSON string back into serde_json::Value for the response
     let items: Vec<serde_json::Value> = presets
@@ -1035,6 +1096,7 @@ pub async fn api_list_overlay_presets(
                 "id": p.id,
                 "name": p.name,
                 "params": params_val,
+                "preset_type": p.preset_type,
                 "created_at": p.created_at,
                 "updated_at": p.updated_at,
             })
@@ -1058,17 +1120,26 @@ pub async fn api_create_overlay_preset(
     let params_str = serde_json::to_string(&req.params)
         .map_err(|e| AppError::BadRequest(format!("Invalid params JSON: {}", e)))?;
 
-    let result = sqlx::query("INSERT INTO overlay_presets (name, params) VALUES (?, ?)")
-        .bind(req.name.trim())
-        .bind(&params_str)
-        .execute(&state.db)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::Database(ref db_err) if db_err.message().contains("UNIQUE") => {
-                AppError::BadRequest("A preset with that name already exists".to_string())
-            }
-            other => AppError::Database(other),
-        })?;
+    let preset_type = req.preset_type.as_deref().unwrap_or("artist");
+    if preset_type != "artist" && preset_type != "show" {
+        return Err(AppError::BadRequest(
+            "preset_type must be 'artist' or 'show'".to_string(),
+        ));
+    }
+
+    let result =
+        sqlx::query("INSERT INTO overlay_presets (name, params, preset_type) VALUES (?, ?, ?)")
+            .bind(req.name.trim())
+            .bind(&params_str)
+            .bind(preset_type)
+            .execute(&state.db)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::Database(ref db_err) if db_err.message().contains("UNIQUE") => {
+                    AppError::BadRequest("A preset with that name already exists".to_string())
+                }
+                other => AppError::Database(other),
+            })?;
 
     let id = result.last_insert_rowid();
     let params_val: serde_json::Value =
@@ -1088,6 +1159,7 @@ pub async fn api_create_overlay_preset(
             "id": id,
             "name": req.name.trim(),
             "params": params_val,
+            "preset_type": preset_type,
             "created_at": ts.map(|p| &p.created_at),
             "updated_at": ts.map(|p| &p.updated_at),
         })),
@@ -1151,6 +1223,7 @@ pub async fn api_update_overlay_preset(
         "id": updated.id,
         "name": updated.name,
         "params": params_val,
+        "preset_type": updated.preset_type,
         "created_at": updated.created_at,
         "updated_at": updated.updated_at,
     })))
@@ -1219,6 +1292,146 @@ pub async fn api_artist_image_proxy(
         ],
         data,
     ))
+}
+
+/// Proxy a show cover image from R2 so the frontend can load it from same-origin.
+/// GET /api/shows/:id/image-proxy?type=cover|collage
+///
+/// `type` defaults to `cover` for backwards compatibility.
+/// `collage` serves the plain 2×2 image without overlay — used by the overlay editor.
+pub async fn api_show_image_proxy(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse> {
+    let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let _show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    let image_type = params.get("type").map(|s| s.as_str()).unwrap_or("cover");
+    let key = match image_type {
+        "collage" => format!("shows/{}/collage.png", id),
+        _ => format!("shows/{}/cover.png", id),
+    };
+
+    let (data, content_type) = storage::download_file(&state, &key).await?;
+
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "private, max-age=300".to_string()),
+        ],
+        data,
+    ))
+}
+
+/// Save an overlay image for a show to R2.
+/// POST /api/shows/:id/overlays
+pub async fn api_save_show_overlay(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify show exists
+    let _show: models::Show = sqlx::query_as::<_, models::Show>("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    let mut image_data: Option<Vec<u8>> = None;
+    let mut content_type = "image/jpeg".to_string();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name == "image" {
+            content_type = field.content_type().unwrap_or("image/jpeg").to_string();
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Failed to read image data: {}", e)))?;
+            if !data.is_empty() {
+                image_data = Some(data.to_vec());
+            }
+        }
+    }
+
+    let data = image_data.ok_or_else(|| AppError::BadRequest("No image provided".to_string()))?;
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let uuid_short = &uuid::Uuid::new_v4().to_string()[..8];
+    let ext = if content_type.contains("png") {
+        "png"
+    } else {
+        "jpg"
+    };
+    let key = format!("shows/{}/overlay/{}-{}.{}", id, timestamp, uuid_short, ext);
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(aws_sdk_s3::primitives::ByteStream::from(data))
+        .content_type(&content_type)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload show overlay: {}", e)))?;
+
+    let url = storage::get_presigned_url(&state, &key, 3600).await?;
+
+    Ok(Json(serde_json::json!({
+        "key": key,
+        "url": url,
+    })))
+}
+
+/// List all overlay images saved for a show in R2.
+/// GET /api/shows/:id/overlays
+pub async fn api_list_show_overlays(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    let _show: models::Show = sqlx::query_as::<_, models::Show>("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    let prefix = format!("shows/{}/overlay/", id);
+    let objects = storage::list_objects(&state, &prefix).await?;
+
+    let mut items = Vec::new();
+    for obj in &objects {
+        let url = storage::get_presigned_url(&state, &obj.key, 3600)
+            .await
+            .unwrap_or_default();
+        items.push(serde_json::json!({
+            "key": obj.key,
+            "url": url,
+            "last_modified": obj.last_modified,
+            "size": obj.size,
+        }));
+    }
+
+    Ok(Json(serde_json::json!({
+        "overlays": items,
+        "active_key": serde_json::Value::Null,
+    })))
 }
 
 // ============================================================================
@@ -1682,7 +1895,9 @@ pub struct ShowDetailResponse {
     available_artists: Vec<ArtistWithPronouns>,
     artists_left: i32,
     cover_url: Option<String>,
+    collage_url: Option<String>,
     cover_generated_at: Option<String>,
+    active_overlay_preset_id: Option<i64>,
     recording_url: Option<String>,
     recording_peaks_url: Option<String>,
     recording_filename: Option<String>,
@@ -1869,7 +2084,7 @@ pub async fn ensure_default_cover_exists(state: &Arc<AppState>) -> crate::Result
     tracing::info!("Generating and uploading default cover to S3...");
 
     // Generate cover with empty items (all black tiles)
-    let cover_data = crate::image_overlay::build_show_collage(state, Vec::new())
+    let cover_data = crate::image_overlay::build_plain_collage(Vec::new())
         .await
         .ok_or_else(|| crate::AppError::Internal("Failed to generate default cover".to_string()))?;
 
@@ -1925,8 +2140,20 @@ async fn copy_default_cover_to_show(state: &Arc<AppState>, show_id: i64) -> Opti
     Some(dest_key)
 }
 
-/// Actually performs the cover regeneration (called after debounce)
+/// Actually performs the cover regeneration (called after debounce).
+///
+/// 1. Builds a plain 2×2 collage (no text/branding) and uploads to `shows/{id}/collage.png`.
+/// 2. If the show has an active overlay preset, applies it and uploads the branded
+///    result to `shows/{id}/cover.png`. Otherwise, copies the plain collage as cover.
 async fn do_regenerate_show_cover(state: &Arc<AppState>, show_id: i64) -> Option<String> {
+    // Fetch the show (need title + active_overlay_preset_id)
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()?;
+
     // Get assigned artists with their pic keys
     let artists: Vec<ArtistWithFileKeys> = sqlx::query_as(
         r#"
@@ -1944,8 +2171,8 @@ async fn do_regenerate_show_cover(state: &Arc<AppState>, show_id: i64) -> Option
     .await
     .ok()?;
 
-    // Collect artist images for collage (empty vec = all black tiles)
-    let mut collage_items: Vec<(String, Vec<u8>, String)> = Vec::new();
+    // Collect artist images for plain collage (empty vec = all black tiles)
+    let mut collage_items: Vec<(Vec<u8>, String)> = Vec::new();
     for artist in &artists {
         let pic_key = artist
             .pic_cropped_key
@@ -1960,16 +2187,80 @@ async fn do_regenerate_show_cover(state: &Arc<AppState>, show_id: i64) -> Option
                     .and_then(|e| e.to_str())
                     .unwrap_or("jpg")
                     .to_string();
-                collage_items.push((artist.name.clone(), data, ext));
+                collage_items.push((data, ext));
             }
         }
     }
 
-    // Generate collage (works with 0-4 items, missing slots show as black)
-    let collage_png = crate::image_overlay::build_show_collage(state, collage_items).await?;
+    // 1. Generate plain 2×2 collage (no text, no branding)
+    let collage_png = crate::image_overlay::build_plain_collage(collage_items).await?;
 
-    // Upload to S3
-    let key = storage::upload_show_cover(state, show_id, collage_png)
+    // Upload plain collage to R2
+    if let Err(e) = storage::upload_show_collage(state, show_id, collage_png.clone()).await {
+        tracing::warn!("Failed to upload plain collage for show {}: {}", show_id, e);
+    }
+
+    // 2. Determine cover: apply overlay preset if one is active, else use plain collage
+    let cover_png = if let Some(preset_id) = show.active_overlay_preset_id {
+        // Fetch preset params JSON
+        let preset_params: Option<String> =
+            sqlx::query_scalar("SELECT params FROM overlay_presets WHERE id = ?")
+                .bind(preset_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+
+        if let Some(params_json) = preset_params {
+            match serde_json::from_str::<crate::image_overlay::OverlayParams>(&params_json) {
+                Ok(params) => {
+                    // Collect artist names for tile labels
+                    let tile_names: Vec<String> = artists.iter().map(|a| a.name.clone()).collect();
+                    // Apply overlay preset to the plain collage
+                    match crate::image_overlay::apply_overlay_preset(
+                        collage_png.clone(),
+                        params,
+                        show.title.clone(),
+                        Some(tile_names),
+                    )
+                    .await
+                    {
+                        Some(branded) => branded,
+                        None => {
+                            tracing::warn!(
+                                "Failed to apply overlay preset {} to show {}, using plain collage",
+                                preset_id,
+                                show_id
+                            );
+                            collage_png
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to deserialize overlay preset {} params for show {}: {}",
+                        preset_id,
+                        show_id,
+                        e
+                    );
+                    collage_png
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Active overlay preset {} not found for show {}, using plain collage",
+                preset_id,
+                show_id
+            );
+            collage_png
+        }
+    } else {
+        // No active preset — cover is just the plain collage
+        collage_png
+    };
+
+    // Upload cover to R2
+    let key = storage::upload_show_cover(state, show_id, cover_png)
         .await
         .ok()?;
 
@@ -2112,6 +2403,16 @@ pub async fn api_show_detail(
         None
     };
 
+    // Presigned URL for the plain collage (may not exist for legacy shows)
+    let collage_url = if show.cover_generated_at.is_some() {
+        let collage_key = format!("shows/{}/collage.png", id);
+        storage::get_presigned_url(&state, &collage_key, 3600)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
     // Generate presigned URL for recording if it exists
     let recording_url = if let Some(ref key) = show.recording_key {
         storage::get_presigned_url(&state, key, 3600).await.ok()
@@ -2145,7 +2446,9 @@ pub async fn api_show_detail(
         available_artists,
         artists_left,
         cover_url,
+        collage_url,
         cover_generated_at: show.cover_generated_at,
+        active_overlay_preset_id: show.active_overlay_preset_id,
         recording_url,
         recording_peaks_url,
         recording_filename: show.recording_filename,
@@ -2291,6 +2594,54 @@ pub async fn api_delete_show(
 
     // Delete cover from S3 (ignore errors - cover may not exist)
     let _ = storage::delete_show_cover(&state, id).await;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Show Active Overlay Preset
+// ============================================================================
+
+pub async fn api_set_show_active_preset(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<SetActivePresetRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify show exists
+    let show_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    if !show_exists {
+        return Err(AppError::NotFound("Show not found".to_string()));
+    }
+
+    // Validate preset exists if setting one
+    if let Some(preset_id) = req.preset_id {
+        let preset_exists: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM overlay_presets WHERE id = ?")
+                .bind(preset_id)
+                .fetch_one(&state.db)
+                .await?;
+        if !preset_exists {
+            return Err(AppError::BadRequest("Overlay preset not found".to_string()));
+        }
+    }
+
+    // Update the active preset
+    sqlx::query(
+        "UPDATE shows SET active_overlay_preset_id = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(req.preset_id)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+
+    // Re-render the cover with the new preset (or plain collage if cleared)
+    let _ = do_regenerate_show_cover(&state, id).await;
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
