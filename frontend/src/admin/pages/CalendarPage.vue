@@ -119,7 +119,7 @@ const listShowsByMonth = computed(() => {
 // Create show modal state
 const showCreateModal = ref(false);
 const creating = ref(false);
-const newShow = ref({ title: '', date: '', description: '' });
+const newShow = ref({ title: '', date: '', description: '', show_type: 'unheard' });
 
 // Map shows to v-calendar attributes (dots on dates)
 const calendarAttributes = computed(() => {
@@ -137,10 +137,15 @@ const calendarAttributes = computed(() => {
 
   for (const show of shows.value) {
     const daysUntil = getDaysUntil(show.date);
-    let color = 'yellow'; // scheduled / upcoming
-    if (daysUntil < 0) color = 'gray'; // past
-    else if (show.artists.length >= 4) color = 'green'; // fully assigned
-    else if (show.artists.length > 0) color = 'orange'; // partially assigned
+    let color = 'yellow'; // default: unheard
+    if (daysUntil < 0) {
+      color = 'gray'; // past
+    } else {
+      const type = show.show_type || 'unheard';
+      if (type === 'brunchtime') color = 'green';
+      else if (type === 'external') color = 'blue';
+      else color = 'yellow'; // unheard
+    }
 
     attrs.push({
       key: `show-${show.id}`,
@@ -182,8 +187,9 @@ function getDaysClass(days: number): string {
 function getDotColor(show: Show): string {
   const daysUntil = getDaysUntil(show.date);
   if (daysUntil < 0) return 'dot-gray';
-  if (show.artists.length >= 4) return 'dot-green';
-  if (show.artists.length > 0) return 'dot-orange';
+  const type = show.show_type || 'unheard';
+  if (type === 'brunchtime') return 'dot-green';
+  if (type === 'external') return 'dot-blue';
   return 'dot-yellow';
 }
 
@@ -220,6 +226,7 @@ function openCreateModal(prefilledDate?: string) {
     title: '',
     date: prefilledDate || selectedDate.value || '',
     description: '',
+    show_type: 'unheard',
   };
   showCreateModal.value = true;
 }
@@ -247,7 +254,7 @@ async function createShow() {
     const created = await showsApi.create(newShow.value);
     flash.success('Show created successfully');
     showCreateModal.value = false;
-    newShow.value = { title: '', date: '', description: '' };
+    newShow.value = { title: '', date: '', description: '', show_type: 'unheard' };
     await loadShows();
     if (created?.id) {
       router.push(`/shows/${created.id}`);
@@ -285,9 +292,9 @@ onMounted(loadShows);
         <Calendar :attributes="calendarAttributes" :is-dark="true" :first-day-of-week="2" is-expanded
           @dayclick="onDayClick" />
         <div class="calendar-legend">
-          <span class="legend-item"><span class="legend-dot dot-yellow"></span> Unassigned</span>
-          <span class="legend-item"><span class="legend-dot dot-orange"></span> Partial</span>
-          <span class="legend-item"><span class="legend-dot dot-green"></span> Full (4/4)</span>
+          <span class="legend-item"><span class="legend-dot dot-yellow"></span> UNHEARD</span>
+          <span class="legend-item"><span class="legend-dot dot-green"></span> Brunchtime</span>
+          <span class="legend-item"><span class="legend-dot dot-blue"></span> External</span>
           <span class="legend-item"><span class="legend-dot dot-gray"></span> Past</span>
         </div>
       </div>
@@ -310,14 +317,17 @@ onMounted(loadShows);
             <div v-for="show in showsOnSelectedDate" :key="show.id" class="day-show-item" @click="goToShow(show.id)">
               <div class="day-show-info">
                 <span class="day-show-title">{{ show.title }}</span>
-                <span class="day-show-artists text-muted">
+                <span :class="['badge', 'show-type-badge', `type-${show.show_type || 'unheard'}`]">
+                  {{ (show.show_type || 'unheard').toUpperCase() }}
+                </span>
+                <span v-if="show.show_type === 'unheard' || !show.show_type" class="day-show-artists text-muted">
                   {{show.artists.map((a) => a.name).join(', ') || 'No artists assigned'}}
                 </span>
               </div>
               <div class="day-show-meta">
                 <span :class="['badge', 'days-badge', getDaysClass(getDaysUntil(show.date))]">
                   {{ getDaysUntil(show.date) < 0 ? 'Past' : getDaysUntil(show.date) + 'd' }} </span>
-                    <span :class="[
+                    <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
                       'badge',
                       'artist-badge',
                       {
@@ -441,6 +451,14 @@ onMounted(loadShows);
     <!-- Create show modal -->
     <BaseModal :open="showCreateModal" title="Create New Show" @close="showCreateModal = false">
       <form class="create-form" @submit.prevent="createShow">
+        <div class="form-group">
+          <label class="form-label">Show Type</label>
+          <select v-model="newShow.show_type" class="type-select">
+            <option value="unheard">UNHEARD</option>
+            <option value="brunchtime">Brunchtime</option>
+            <option value="external">External</option>
+          </select>
+        </div>
         <FormInput v-model="newShow.title" label="Title" required />
         <FormInput v-model="newShow.date" label="Date" type="date" required />
         <FormInput v-model="newShow.description" label="Description" />
@@ -736,6 +754,10 @@ onMounted(loadShows);
   background-color: #34c759;
 }
 
+.dot-blue {
+  background-color: #3478f6;
+}
+
 .dot-gray {
   background-color: #888;
 }
@@ -880,6 +902,55 @@ onMounted(loadShows);
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.form-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-medium);
+}
+
+.type-select {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-family: var(--font-family);
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+/* Show type badges */
+.show-type-badge {
+  font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-xs, 0.65rem);
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.type-unheard {
+  background-color: rgba(255, 236, 68, 0.2);
+  color: #ffec44;
+  border: 1px solid #ffec44;
+}
+
+.type-brunchtime {
+  background-color: rgba(52, 199, 89, 0.2);
+  color: #34c759;
+  border: 1px solid #34c759;
+}
+
+.type-external {
+  background-color: rgba(52, 120, 246, 0.2);
+  color: #3478f6;
+  border: 1px solid #3478f6;
 }
 
 /* ===== WEEK VIEW ===== */

@@ -1878,6 +1878,7 @@ pub struct ShowListItem {
     date: String,
     description: Option<String>,
     status: String,
+    show_type: String,
     artists: Vec<ArtistBrief>,
 }
 
@@ -1889,6 +1890,7 @@ pub struct ShowDetailResponse {
     description: Option<String>,
     ai_bio: Option<String>,
     status: String,
+    show_type: String,
     created_at: String,
     updated_at: Option<String>,
     artists: Vec<AssignedArtistInfo>,
@@ -1975,6 +1977,7 @@ pub async fn api_shows_list(
             date: show.date,
             description: show.description,
             status: show.status,
+            show_type: show.show_type,
             artists,
         });
     }
@@ -2440,6 +2443,7 @@ pub async fn api_show_detail(
         description: show.description,
         ai_bio: show.ai_bio,
         status: show.status,
+        show_type: show.show_type,
         created_at: show.created_at,
         updated_at: show.updated_at,
         artists,
@@ -2466,6 +2470,7 @@ pub struct CreateShowRequest {
     title: String,
     date: String,
     description: Option<String>,
+    show_type: Option<String>,
 }
 
 pub async fn api_create_show(
@@ -2475,12 +2480,19 @@ pub async fn api_create_show(
 ) -> Result<impl IntoResponse> {
     require_admin(&state, &headers).await?;
 
+    // Validate show_type if provided
+    let show_type = req.show_type.as_deref().unwrap_or("unheard");
+    if !matches!(show_type, "unheard" | "brunchtime" | "external") {
+        return Err(AppError::BadRequest(format!("Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'", show_type)));
+    }
+
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status) VALUES (?, ?, ?, 'scheduled')",
+        "INSERT INTO shows (title, date, description, status, show_type) VALUES (?, ?, ?, 'scheduled', ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
     .bind(&req.description)
+    .bind(show_type)
     .execute(&state.db)
     .await?;
 
@@ -2509,6 +2521,7 @@ pub async fn api_create_show(
             "date": req.date,
             "description": req.description,
             "status": "scheduled",
+            "show_type": show_type,
             "cover_url": cover_url,
             "cover_generated_at": cover_generated_at,
         })),
@@ -2521,6 +2534,7 @@ pub struct UpdateShowRequest {
     date: Option<String>,
     description: Option<String>,
     ai_bio: Option<String>,
+    show_type: Option<String>,
 }
 
 pub async fn api_update_show(
@@ -2550,6 +2564,13 @@ pub async fn api_update_show(
     if let Some(ai_bio) = &req.ai_bio {
         updates.push("ai_bio = ?");
         binds.push(ai_bio.clone());
+    }
+    if let Some(show_type) = &req.show_type {
+        if !matches!(show_type.as_str(), "unheard" | "brunchtime" | "external") {
+            return Err(AppError::BadRequest(format!("Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'", show_type)));
+        }
+        updates.push("show_type = ?");
+        binds.push(show_type.clone());
     }
 
     if updates.is_empty() {
@@ -3670,6 +3691,67 @@ pub async fn api_soundcloud_disconnect(
     require_admin(&state, &headers).await?;
     crate::soundcloud::delete_stored_token(&state).await?;
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
+// Manual Cover Upload (for non-UNHEARD show types)
+// ============================================================================
+
+pub async fn api_upload_show_cover(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify show exists
+    let _show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    // Process uploaded file
+    let mut file_data: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "file" {
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Failed to read file: {}", e)))?
+                .to_vec();
+            file_data = Some(data);
+        }
+    }
+
+    let data = file_data.ok_or_else(|| AppError::BadRequest("No file provided".to_string()))?;
+
+    // Upload cover to S3
+    let key = storage::upload_show_cover(&state, id, data).await?;
+
+    // Update cover_generated_at timestamp
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE shows SET cover_generated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    // Return presigned URL
+    let cover_url = storage::get_presigned_url(&state, &key, 3600).await.ok();
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "cover_url": cover_url,
+        "cover_generated_at": now,
+    })))
 }
 
 // ============================================================================
