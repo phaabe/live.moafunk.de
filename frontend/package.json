@@ -20,6 +20,7 @@
     "cropperjs": "^1.6.2",
     "flv.js": "^1.6.2",
     "pinia": "^2.1.7",
+    "v-calendar": "^3.1.2",
     "vue": "^3.4.15",
     "vue-router": "^4.2.5",
     "wavesurfer.js": "^7.12.1"

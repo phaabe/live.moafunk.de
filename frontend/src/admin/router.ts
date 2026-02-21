@@ -13,6 +13,7 @@ const UsersPage = () => import('./pages/UsersPage.vue');
 const UserEditPage = () => import('./pages/UserEditPage.vue');
 const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
+const CalendarPage = () => import('./pages/CalendarPage.vue');
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -25,7 +26,7 @@ const router = createRouter({
     },
     {
       path: '/',
-      redirect: '/stream',
+      redirect: '/calendar',
     },
     {
       path: '/artists',
@@ -73,6 +74,12 @@ const router = createRouter({
       path: '/users/:id',
       name: 'user-edit',
       component: UserEditPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+    },
+    {
+      path: '/calendar',
+      name: 'calendar',
+      component: CalendarPage,
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {

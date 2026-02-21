@@ -4,6 +4,7 @@ import App from './App.vue';
 import router from './router';
 import '@shared/styles/tokens.css';
 import './styles/admin.css';
+import 'v-calendar/style.css';
 
 const app = createApp(App);
 
