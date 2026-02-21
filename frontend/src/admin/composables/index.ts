@@ -29,3 +29,9 @@ export {
   moafunkLogoPromise,
   shoikaFontsPromise,
 } from './useOverlayRenderer';
+export {
+  useArtistFlow,
+  type FlowStep,
+  type UploadMode,
+  type UploadProgress,
+} from './useArtistFlow';

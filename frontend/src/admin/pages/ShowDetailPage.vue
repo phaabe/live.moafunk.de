@@ -33,6 +33,7 @@ const uploadingToSoundCloud = ref(false);
 const togglingSoundCloudPrivacy = ref(false);
 const scStatus = ref<SoundCloudStatus | null>(null);
 const editingDate = ref(false);
+const editingStartTime = ref(false);
 const editingDescription = ref(false);
 const editingAiBio = ref(false);
 const saving = ref(false);
@@ -45,6 +46,7 @@ const uploadProgress = ref<{ phase: 'extracting' | 'uploading' | 'finalizing'; p
 
 // Form data
 const dateForm = ref('');
+const startTimeForm = ref('');
 const descriptionForm = ref('');
 const aiBioForm = ref('');
 const selectedArtistId = ref<number | null>(null);
@@ -153,6 +155,7 @@ async function loadShow() {
   try {
     show.value = await showsApi.get(id);
     dateForm.value = show.value.date;
+    startTimeForm.value = show.value.start_time || '';
     descriptionForm.value = show.value.description || '';
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load show';
@@ -180,6 +183,30 @@ async function saveDate() {
     await loadShow();
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to update date');
+  } finally {
+    saving.value = false;
+  }
+}
+
+// Start time editing
+function startEditStartTime() {
+  if (show.value) {
+    startTimeForm.value = show.value.start_time || '';
+  }
+  editingStartTime.value = true;
+}
+
+async function saveStartTime() {
+  if (!show.value) return;
+
+  saving.value = true;
+  try {
+    await showsApi.update(show.value.id, { start_time: startTimeForm.value || undefined });
+    flash.success('Start time updated');
+    editingStartTime.value = false;
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to update start time');
   } finally {
     saving.value = false;
   }
@@ -669,11 +696,18 @@ onUnmounted(() => {
 
               <div class="info-label">Date</div>
               <div class="info-value">{{ show.date }}</div>
+
+              <div class="info-label">Start Time</div>
+              <div class="info-value">{{ show.start_time || '—' }}</div>
             </div>
 
             <div class="edit-toggle-container">
               <button type="button" class="btn-edit" @click="startEditDate" v-if="!editingDate">
                 Edit Date
+              </button>
+              <button type="button" class="btn-edit" @click="startEditStartTime" v-if="!editingStartTime"
+                style="margin-left: var(--spacing-sm)">
+                Edit Start Time
               </button>
             </div>
 
@@ -684,6 +718,18 @@ onUnmounted(() => {
                   Save Date
                 </BaseButton>
                 <BaseButton variant="ghost" size="sm" @click="editingDate = false">
+                  Cancel
+                </BaseButton>
+              </div>
+            </div>
+
+            <div v-if="editingStartTime" class="edit-panel">
+              <div class="edit-row">
+                <input type="time" v-model="startTimeForm" class="date-input" />
+                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveStartTime">
+                  Save
+                </BaseButton>
+                <BaseButton variant="ghost" size="sm" @click="editingStartTime = false">
                   Cancel
                 </BaseButton>
               </div>
@@ -911,7 +957,7 @@ onUnmounted(() => {
                       uploadProgress.percent }}%)
                   </span>
                   <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
-                    }}%</span>
+                  }}%</span>
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>

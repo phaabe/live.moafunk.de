@@ -316,6 +316,32 @@ async fn main() -> anyhow::Result<()> {
             "/api/auth/change-password",
             post(handlers::api::api_change_password),
         )
+        // Artist flow — my show
+        .route("/api/my-show", get(handlers::api::api_my_show))
+        .route(
+            "/api/my-show/upload",
+            post(handlers::api::api_my_show_upload),
+        )
+        .route(
+            "/api/my-show/upload/init",
+            post(handlers::api::api_my_show_upload_init),
+        )
+        .route(
+            "/api/my-show/upload/chunk/:session_id",
+            post(handlers::api::api_my_show_upload_chunk),
+        )
+        .route(
+            "/api/my-show/upload/finalize/:session_id",
+            post(handlers::api::api_my_show_upload_finalize),
+        )
+        .route(
+            "/api/my-show/confirm",
+            post(handlers::api::api_my_show_confirm),
+        )
+        .route(
+            "/api/my-show/upload",
+            axum::routing::delete(handlers::api::api_my_show_delete_upload),
+        )
         .route("/api/artists", get(handlers::api::api_artists_list))
         .route("/api/artists/:id", get(handlers::api::api_artist_detail))
         .route(

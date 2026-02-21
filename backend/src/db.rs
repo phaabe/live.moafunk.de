@@ -97,6 +97,19 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Active overlay preset (references overlay_presets.id)
     add_column_if_missing(pool, "artists", "active_overlay_preset_id", "INTEGER").await?;
 
+    // Link artist profile to a login user account
+    add_column_if_missing(pool, "artists", "user_id", "INTEGER REFERENCES users(id)").await?;
+
+    // Ensure each artist links to at most one user (partial unique index, NULL excluded)
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_user_id
+        ON artists(user_id) WHERE user_id IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shows (
@@ -142,6 +155,14 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
     // Active overlay preset for server-side cover rendering
     add_column_if_missing(pool, "shows", "active_overlay_preset_id", "INTEGER").await?;
+
+    // Scheduled start time (HH:MM format)
+    add_column_if_missing(pool, "shows", "start_time", "TEXT").await?;
+
+    // Pre-recorded upload fields for artist show flow
+    add_column_if_missing(pool, "shows", "prerecorded_key", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "prerecorded_filename", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "prerecorded_confirmed_at", "TEXT").await?;
 
     // Show type: unheard, brunchtime, external
     add_column_if_missing(

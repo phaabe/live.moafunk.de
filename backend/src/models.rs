@@ -76,6 +76,9 @@ pub struct Artist {
     // Active overlay preset (references overlay_presets.id)
     pub active_overlay_preset_id: Option<i64>,
 
+    // Linked login user account
+    pub user_id: Option<i64>,
+
     pub status: String,
     pub created_at: String,
     pub updated_at: Option<String>,
@@ -103,6 +106,10 @@ pub struct Show {
     pub soundcloud_public: Option<bool>,
     pub telegram_preview_sent_at: Option<String>,
     pub active_overlay_preset_id: Option<i64>,
+    pub start_time: Option<String>,
+    pub prerecorded_key: Option<String>,
+    pub prerecorded_filename: Option<String>,
+    pub prerecorded_confirmed_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -156,7 +163,10 @@ impl UserRole {
 
     /// Check if this role can change their own password
     pub fn can_change_password(&self) -> bool {
-        matches!(self, UserRole::Superadmin | UserRole::Admin)
+        matches!(
+            self,
+            UserRole::Superadmin | UserRole::Admin | UserRole::Artist
+        )
     }
 }
 

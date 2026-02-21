@@ -119,7 +119,7 @@ const listShowsByMonth = computed(() => {
 // Create show modal state
 const showCreateModal = ref(false);
 const creating = ref(false);
-const newShow = ref({ title: '', date: '', description: '', show_type: 'unheard' });
+const newShow = ref({ title: '', date: '', start_time: '', description: '', show_type: 'unheard' });
 
 // Map shows to v-calendar attributes (dots on dates)
 const calendarAttributes = computed(() => {
@@ -225,6 +225,7 @@ function openCreateModal(prefilledDate?: string) {
   newShow.value = {
     title: '',
     date: prefilledDate || selectedDate.value || '',
+    start_time: '',
     description: '',
     show_type: 'unheard',
   };
@@ -254,7 +255,7 @@ async function createShow() {
     const created = await showsApi.create(newShow.value);
     flash.success('Show created successfully');
     showCreateModal.value = false;
-    newShow.value = { title: '', date: '', description: '', show_type: 'unheard' };
+    newShow.value = { title: '', date: '', start_time: '', description: '', show_type: 'unheard' };
     await loadShows();
     if (created?.id) {
       router.push(`/shows/${created.id}`);
@@ -461,6 +462,7 @@ onMounted(loadShows);
         </div>
         <FormInput v-model="newShow.title" label="Title" required />
         <FormInput v-model="newShow.date" label="Date" type="date" required />
+        <FormInput v-model="newShow.start_time" label="Start Time" type="time" />
         <FormInput v-model="newShow.description" label="Description" />
       </form>
       <template #footer>
