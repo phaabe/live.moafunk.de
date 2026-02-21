@@ -12,6 +12,7 @@ const RecordingPage = () => import('./pages/RecordingPage.vue');
 const UsersPage = () => import('./pages/UsersPage.vue');
 const UserEditPage = () => import('./pages/UserEditPage.vue');
 const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
+const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -72,6 +73,12 @@ const router = createRouter({
       path: '/users/:id',
       name: 'user-edit',
       component: UserEditPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+    },
+    {
+      path: '/overlay-editor/:id?',
+      name: 'overlay-editor',
+      component: OverlayEditorPage,
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {

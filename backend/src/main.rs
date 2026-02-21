@@ -358,6 +358,44 @@ async fn main() -> anyhow::Result<()> {
             "/api/artists/:id/audio",
             axum::routing::put(handlers::api::api_update_artist_audio),
         )
+        // Artist overlay gallery (list, save, set active)
+        .route(
+            "/api/artists/:id/image-proxy",
+            get(handlers::api::api_artist_image_proxy),
+        )
+        .route(
+            "/api/artists/:id/overlays",
+            get(handlers::api::api_list_artist_overlays),
+        )
+        .route(
+            "/api/artists/:id/overlays",
+            post(handlers::api::api_save_artist_overlay),
+        )
+        .route(
+            "/api/artists/:id/overlays/active",
+            axum::routing::put(handlers::api::api_set_active_overlay),
+        )
+        .route(
+            "/api/artists/:id/active-preset",
+            axum::routing::put(handlers::api::api_set_artist_active_preset),
+        )
+        // Overlay parameter presets (CRUD)
+        .route(
+            "/api/overlay-presets",
+            get(handlers::api::api_list_overlay_presets),
+        )
+        .route(
+            "/api/overlay-presets",
+            post(handlers::api::api_create_overlay_preset),
+        )
+        .route(
+            "/api/overlay-presets/:id",
+            axum::routing::put(handlers::api::api_update_overlay_preset),
+        )
+        .route(
+            "/api/overlay-presets/:id",
+            axum::routing::delete(handlers::api::api_delete_overlay_preset),
+        )
         .route(
             "/api/artists/:id/shows",
             post(handlers::api::api_assign_artist_to_show),
@@ -370,6 +408,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/shows", post(handlers::api::api_create_show))
         .route("/api/shows/:id", get(handlers::api::api_show_detail))
         .route(
+            "/api/shows/:id/image-proxy",
+            get(handlers::api::api_show_image_proxy),
+        )
+        .route(
+            "/api/shows/:id/overlays",
+            get(handlers::api::api_list_show_overlays),
+        )
+        .route(
+            "/api/shows/:id/overlays",
+            post(handlers::api::api_save_show_overlay),
+        )
+        .route(
             "/api/shows/:id/with-artists",
             get(handlers::api::api_show_with_artists),
         )
@@ -380,6 +430,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id",
             axum::routing::delete(handlers::api::api_delete_show),
+        )
+        .route(
+            "/api/shows/:id/active-preset",
+            axum::routing::put(handlers::api::api_set_show_active_preset),
         )
         .route(
             "/api/shows/:id/artists",

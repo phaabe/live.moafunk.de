@@ -20,6 +20,7 @@ const navItems: NavItem[] = [
   { label: 'Recording', path: '/recording', roles: ['admin', 'superadmin'], category: 'Radio' },
   { label: 'Artists', path: '/artists', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
+  { label: 'Overlay', path: '/overlay-editor', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Users', path: '/users', roles: ['admin', 'superadmin'], category: 'Configuration' },
 ];
 

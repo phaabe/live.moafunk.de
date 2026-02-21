@@ -73,6 +73,9 @@ pub struct Artist {
     pub telegram_video2_message_id: Option<i64>,
     pub telegram_artist_preview_sent_at: Option<String>,
 
+    // Active overlay preset (references overlay_presets.id)
+    pub active_overlay_preset_id: Option<i64>,
+
     pub status: String,
     pub created_at: String,
     pub updated_at: Option<String>,
@@ -98,6 +101,7 @@ pub struct Show {
     pub soundcloud_uploaded_at: Option<String>,
     pub soundcloud_public: Option<bool>,
     pub telegram_preview_sent_at: Option<String>,
+    pub active_overlay_preset_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -260,4 +264,17 @@ impl RecordingVersion {
     pub fn status_enum(&self) -> RecordingVersionStatus {
         RecordingVersionStatus::from_str(&self.status).unwrap_or(RecordingVersionStatus::Raw)
     }
+}
+
+/// Overlay parameter preset (shared across all admin users)
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct OverlayPreset {
+    pub id: i64,
+    pub name: String,
+    /// JSON blob storing all overlay parameters (positions, sizes, colors, filters)
+    pub params: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// 'artist' or 'show'
+    pub preset_type: String,
 }
