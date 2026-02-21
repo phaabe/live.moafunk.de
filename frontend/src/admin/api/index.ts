@@ -656,6 +656,10 @@ export const showsApi = {
   setActivePreset: (id: number, presetId: number | null) =>
     api.put<{ success: boolean }>(`/api/shows/${id}/active-preset`, { preset_id: presetId }),
 
+  /** Trigger server-side cover regeneration (plain collage + overlay if preset is set). */
+  regenerateCover: (id: number) =>
+    api.post<{ success: boolean; cover_url?: string }>(`/api/shows/${id}/regenerate-cover`),
+
   /** Fetch a show image as a same-origin blob (avoids R2 CORS issues).
    *  @param type 'cover' (default, with overlay) or 'collage' (plain 2×2 grid) */
   getImageBlob: async (id: number, type: 'cover' | 'collage' = 'cover'): Promise<Blob> => {

@@ -2795,6 +2795,33 @@ pub async fn api_set_show_active_preset(
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
+/// POST /api/shows/:id/regenerate-cover
+/// Explicitly trigger cover regeneration (plain collage + overlay if preset is set).
+/// Used by the Overlay Editor when the collage image doesn't exist yet.
+pub async fn api_regenerate_show_cover(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify show exists
+    let show_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    if !show_exists {
+        return Err(AppError::NotFound("Show not found".to_string()));
+    }
+
+    let cover_url = do_regenerate_show_cover(&state, id).await;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "cover_url": cover_url
+    })))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AssignArtistToShowRequest {
     artist_id: i64,

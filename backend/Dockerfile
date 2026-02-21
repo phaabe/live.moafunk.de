@@ -48,8 +48,14 @@ COPY --from=builder /app/target/release/unheard-backend /app/unheard-backend
 COPY backend/assets ./assets
 
 # Copy admin SPA from frontend builder
+# 1. Admin SPA HTML entry point (index.html for client-side routing)
 COPY --from=frontend-builder /app/dist/admin ./static/admin
+# 2. Vite-built JS/CSS bundles (shared across all entry points)
 COPY --from=frontend-builder /app/dist/assets ./static/admin/assets
+# 3. Public assets needed by admin SPA (logo, fonts, favicon)
+COPY --from=frontend-builder /app/dist/moafunk.png ./static/admin/moafunk.png
+COPY --from=frontend-builder /app/dist/Shoika-font ./static/admin/Shoika-font
+COPY --from=frontend-builder /app/dist/icons ./static/admin/icons
 
 # Create data directory
 RUN mkdir -p /app/data
