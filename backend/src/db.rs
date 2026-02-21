@@ -97,6 +97,19 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Active overlay preset (references overlay_presets.id)
     add_column_if_missing(pool, "artists", "active_overlay_preset_id", "INTEGER").await?;
 
+    // Link artist profile to a login user account
+    add_column_if_missing(pool, "artists", "user_id", "INTEGER REFERENCES users(id)").await?;
+
+    // Ensure each artist links to at most one user (partial unique index, NULL excluded)
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_user_id
+        ON artists(user_id) WHERE user_id IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shows (
@@ -143,12 +156,29 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Active overlay preset for server-side cover rendering
     add_column_if_missing(pool, "shows", "active_overlay_preset_id", "INTEGER").await?;
 
+    // Scheduled start time (HH:MM format)
+    add_column_if_missing(pool, "shows", "start_time", "TEXT").await?;
+
+    // Pre-recorded upload fields for artist show flow
+    add_column_if_missing(pool, "shows", "prerecorded_key", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "prerecorded_filename", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "prerecorded_confirmed_at", "TEXT").await?;
+
     // Show type: unheard, brunchtime, external
     add_column_if_missing(
         pool,
         "shows",
         "show_type",
         "TEXT NOT NULL DEFAULT 'unheard'",
+    )
+    .await?;
+
+    // Host user assigned to external/brunchtime shows (1:1 relationship)
+    add_column_if_missing(
+        pool,
+        "shows",
+        "host_user_id",
+        "INTEGER REFERENCES users(id)",
     )
     .await?;
 
@@ -256,7 +286,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'artist',
+            role TEXT NOT NULL DEFAULT 'host',
             created_by INTEGER,
             expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -487,6 +517,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "TEXT NOT NULL DEFAULT 'artist'",
     )
     .await?;
+
+    // Migrate user role 'artist' → 'host' (idempotent)
+    sqlx::query("UPDATE users SET role = 'host' WHERE role = 'artist'")
+        .execute(pool)
+        .await?;
 
     tracing::info!("Database migrations completed");
     Ok(())

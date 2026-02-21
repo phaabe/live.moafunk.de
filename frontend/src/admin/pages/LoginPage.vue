@@ -15,8 +15,10 @@ async function handleSubmit() {
   const success = await authStore.login(username.value, password.value);
 
   if (success) {
-    const redirect = (route.query.redirect as string) || '/artists';
-    router.push(redirect);
+    const explicitRedirect = route.query.redirect as string | undefined;
+    // Hosts default to /stream (host flow), admins to /calendar
+    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/calendar';
+    router.push(explicitRedirect || defaultRoute);
   }
 }
 </script>
@@ -34,31 +36,14 @@ async function handleSubmit() {
           {{ authStore.error }}
         </div>
 
-        <FormInput
-          v-model="username"
-          label="Username"
-          type="text"
-          autocomplete="username"
-          required
-          :disabled="authStore.loading"
-        />
+        <FormInput v-model="username" label="Username" type="text" autocomplete="username" required
+          :disabled="authStore.loading" />
 
-        <FormInput
-          v-model="password"
-          label="Password"
-          type="password"
-          autocomplete="current-password"
-          required
-          :disabled="authStore.loading"
-        />
+        <FormInput v-model="password" label="Password" type="password" autocomplete="current-password" required
+          :disabled="authStore.loading" />
 
-        <BaseButton
-          type="submit"
-          variant="primary"
-          size="lg"
-          :loading="authStore.loading"
-          :disabled="!username || !password"
-        >
+        <BaseButton type="submit" variant="primary" size="lg" :loading="authStore.loading"
+          :disabled="!username || !password">
           Login
         </BaseButton>
       </form>

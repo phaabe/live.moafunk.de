@@ -70,7 +70,10 @@ export const api = new ApiClient(API_BASE);
 export interface User {
   id: number;
   username: string;
-  role: 'artist' | 'admin' | 'superadmin';
+  role: 'host' | 'admin' | 'superadmin';
+  artist_id?: number;
+  artist_name?: string;
+  has_show?: boolean;
 }
 
 export interface LoginResponse {
@@ -196,11 +199,12 @@ export interface ArtistDetail {
 }
 
 export const artistsApi = {
-  list: (params?: { filter?: string; sort?: string; dir?: string }) => {
+  list: (params?: { filter?: string; sort?: string; dir?: string; unlinked?: boolean }) => {
     const searchParams = new URLSearchParams();
     if (params?.filter) searchParams.set('filter', params.filter);
     if (params?.sort) searchParams.set('sort', params.sort);
     if (params?.dir) searchParams.set('dir', params.dir);
+    if (params?.unlinked) searchParams.set('unlinked', 'true');
     const query = searchParams.toString();
     return api.get<{ artists: Artist[]; total: number }>(`/api/artists${query ? `?${query}` : ''}`);
   },
@@ -386,6 +390,7 @@ export interface Show {
   id: number;
   title: string;
   date: string;
+  start_time?: string;
   description?: string;
   status: string;
   show_type: string;
@@ -410,6 +415,7 @@ export interface ShowDetail {
   id: number;
   title: string;
   date: string;
+  start_time?: string;
   description?: string;
   ai_bio?: string;
   status: string;
@@ -431,6 +437,13 @@ export interface ShowDetail {
   soundcloud_url?: string;
   soundcloud_uploaded_at?: string;
   soundcloud_public?: boolean;
+  prerecorded_key?: string;
+  prerecorded_filename?: string;
+  prerecorded_confirmed_at?: string;
+  // Host assignment (external/brunchtime shows)
+  host_user_id?: number;
+  host_username?: string;
+  available_hosts?: { id: number; username: string }[];
 }
 
 export const showsApi = {
@@ -467,6 +480,16 @@ export const showsApi = {
 
   unassignArtist: (showId: number, artistId: number) =>
     api.delete<{ success: boolean }>(`/api/shows/${showId}/artists/${artistId}`),
+
+  assignHost: (showId: number, userId: number) =>
+    api.post<{ success: boolean; host_user_id: number; host_username: string }>(
+      `/api/shows/${showId}/host`,
+      {
+        user_id: userId,
+      }
+    ),
+
+  unassignHost: (showId: number) => api.delete<{ success: boolean }>(`/api/shows/${showId}/host`),
 
   regenerateBio: (showId: number) =>
     api.post<{ success: boolean; ai_bio: string | null }>(`/api/shows/${showId}/regenerate-bio`),
@@ -633,6 +656,10 @@ export const showsApi = {
   setActivePreset: (id: number, presetId: number | null) =>
     api.put<{ success: boolean }>(`/api/shows/${id}/active-preset`, { preset_id: presetId }),
 
+  /** Trigger server-side cover regeneration (plain collage + overlay if preset is set). */
+  regenerateCover: (id: number) =>
+    api.post<{ success: boolean; cover_url?: string }>(`/api/shows/${id}/regenerate-cover`),
+
   /** Fetch a show image as a same-origin blob (avoids R2 CORS issues).
    *  @param type 'cover' (default, with overlay) or 'collage' (plain 2×2 grid) */
   getImageBlob: async (id: number, type: 'cover' | 'collage' = 'cover'): Promise<Blob> => {
@@ -682,15 +709,17 @@ export interface AdminUser {
   role: string;
   expires_at?: string;
   created_at: string;
+  linked_artist_id?: number;
+  linked_artist_name?: string;
 }
 
 export const usersApi = {
   list: () => api.get<{ users: AdminUser[] }>('/api/users'),
 
-  create: (data: { username: string; role: string; expires_at?: string }) =>
+  create: (data: { username: string; role: string; expires_at?: string; artist_id?: number }) =>
     api.post<{ user: AdminUser; password: string }>('/api/users', data),
 
-  update: (id: number, data: { role?: string; expires_at?: string }) =>
+  update: (id: number, data: { role?: string; expires_at?: string; artist_id?: number | null }) =>
     api.put<{ user: AdminUser }>(`/api/users/${id}`, data),
 
   resetPassword: (id: number) =>
@@ -802,4 +831,170 @@ export const presetsApi = {
     api.put<OverlayPreset>(`/api/overlay-presets/${id}`, data),
 
   delete: (id: number) => api.delete<void>(`/api/overlay-presets/${id}`),
+};
+
+// Artist Flow API (My Show)
+export interface MyShowArtist {
+  id: number;
+  name: string;
+}
+
+export interface MyShowInfo {
+  id: number;
+  title: string;
+  date: string;
+  start_time?: string;
+  description?: string;
+  show_type: string;
+  artists: MyShowArtist[];
+  prerecorded_key?: string;
+  prerecorded_url?: string;
+  prerecorded_filename?: string;
+  prerecorded_confirmed_at?: string;
+}
+
+export interface MyShowResponse {
+  assigned: boolean;
+  show?: MyShowInfo;
+}
+
+export interface UploadInitResponse {
+  success: boolean;
+  session_id: string;
+  message: string;
+}
+
+export interface UploadChunkResponse {
+  success: boolean;
+  index: number;
+  received_bytes: number;
+}
+
+export interface UploadResult {
+  success: boolean;
+  key: string;
+  prerecorded_url?: string;
+  filename: string;
+}
+
+export interface ConfirmResponse {
+  success: boolean;
+  confirmed_at: string;
+}
+
+export const hostFlowApi = {
+  getMyShow: () => api.get<MyShowResponse>('/api/my-show'),
+
+  confirm: () => api.post<ConfirmResponse>('/api/my-show/confirm'),
+
+  deleteUpload: () => api.delete<{ success: boolean }>('/api/my-show/upload'),
+
+  /** Upload a small prerecorded file (≤50MB) directly. */
+  uploadSmall: async (file: File): Promise<UploadResult> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE}/api/my-show/upload`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+      throw new Error(error.error || 'Upload failed');
+    }
+
+    return response.json();
+  },
+
+  /** Upload a large prerecorded file via chunked upload with progress callback. */
+  uploadFile: async (
+    file: File,
+    onProgress?: (progress: {
+      phase: 'uploading' | 'finalizing';
+      percent: number;
+      chunkIndex?: number;
+      totalChunks?: number;
+    }) => void
+  ): Promise<UploadResult> => {
+    const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB
+    const useChunked = file.size > CHUNK_SIZE;
+
+    if (!useChunked) {
+      onProgress?.({ phase: 'uploading', percent: 0 });
+      const result = await hostFlowApi.uploadSmall(file);
+      onProgress?.({ phase: 'uploading', percent: 100 });
+      return result;
+    }
+
+    // Chunked upload
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    // Step 1: Init
+    onProgress?.({ phase: 'uploading', percent: 0, chunkIndex: 0, totalChunks });
+    const initResponse = await fetch(`${API_BASE}/api/my-show/upload/init`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        total_size: file.size,
+        total_chunks: totalChunks,
+      }),
+    });
+
+    if (!initResponse.ok) {
+      const error = await initResponse.json().catch(() => ({ error: 'Init failed' }));
+      throw new Error(error.error || error.message || 'Failed to initialize upload');
+    }
+
+    const { session_id } = (await initResponse.json()) as UploadInitResponse;
+
+    // Step 2: Upload chunks
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = file.slice(start, end);
+
+      const chunkFormData = new FormData();
+      chunkFormData.append('chunk', chunk);
+
+      const chunkResponse = await fetch(
+        `${API_BASE}/api/my-show/upload/chunk/${session_id}?index=${i}`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          body: chunkFormData,
+        }
+      );
+
+      if (!chunkResponse.ok) {
+        const error = await chunkResponse.json().catch(() => ({ error: 'Chunk upload failed' }));
+        throw new Error(
+          error.error || error.message || `Failed to upload chunk ${i + 1}/${totalChunks}`
+        );
+      }
+
+      const percent = Math.round(((i + 1) / totalChunks) * 100);
+      onProgress?.({ phase: 'uploading', percent, chunkIndex: i + 1, totalChunks });
+    }
+
+    // Step 3: Finalize
+    onProgress?.({ phase: 'finalizing', percent: 0 });
+    const finalizeResponse = await fetch(`${API_BASE}/api/my-show/upload/finalize/${session_id}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    if (!finalizeResponse.ok) {
+      const error = await finalizeResponse.json().catch(() => ({ error: 'Finalize failed' }));
+      throw new Error(error.error || error.message || 'Failed to finalize upload');
+    }
+
+    onProgress?.({ phase: 'finalizing', percent: 100 });
+    return finalizeResponse.json();
+  },
 };

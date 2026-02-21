@@ -76,6 +76,9 @@ pub struct Artist {
     // Active overlay preset (references overlay_presets.id)
     pub active_overlay_preset_id: Option<i64>,
 
+    // Linked login user account
+    pub user_id: Option<i64>,
+
     pub status: String,
     pub created_at: String,
     pub updated_at: Option<String>,
@@ -103,6 +106,11 @@ pub struct Show {
     pub soundcloud_public: Option<bool>,
     pub telegram_preview_sent_at: Option<String>,
     pub active_overlay_preset_id: Option<i64>,
+    pub start_time: Option<String>,
+    pub prerecorded_key: Option<String>,
+    pub prerecorded_filename: Option<String>,
+    pub prerecorded_confirmed_at: Option<String>,
+    pub host_user_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,7 +126,7 @@ pub struct SubmitResponse {
 pub enum UserRole {
     Superadmin,
     Admin,
-    Artist,
+    Host,
 }
 
 impl UserRole {
@@ -126,7 +134,7 @@ impl UserRole {
         match self {
             UserRole::Superadmin => "superadmin",
             UserRole::Admin => "admin",
-            UserRole::Artist => "artist",
+            UserRole::Host => "host",
         }
     }
 
@@ -134,7 +142,7 @@ impl UserRole {
         match s.to_lowercase().as_str() {
             "superadmin" => Some(UserRole::Superadmin),
             "admin" => Some(UserRole::Admin),
-            "artist" => Some(UserRole::Artist),
+            "host" => Some(UserRole::Host),
             _ => None,
         }
     }
@@ -156,7 +164,10 @@ impl UserRole {
 
     /// Check if this role can change their own password
     pub fn can_change_password(&self) -> bool {
-        matches!(self, UserRole::Superadmin | UserRole::Admin)
+        matches!(
+            self,
+            UserRole::Superadmin | UserRole::Admin | UserRole::Host
+        )
     }
 }
 
@@ -180,7 +191,7 @@ pub struct User {
 
 impl User {
     pub fn role_enum(&self) -> UserRole {
-        UserRole::from_str(&self.role).unwrap_or(UserRole::Artist)
+        UserRole::from_str(&self.role).unwrap_or(UserRole::Host)
     }
 
     pub fn is_expired(&self) -> bool {

@@ -58,7 +58,7 @@ pub async fn list_objects(state: &Arc<AppState>, prefix: &str) -> Result<Vec<Sto
     Ok(objects)
 }
 
-fn sanitize_object_name(input: &str) -> String {
+pub fn sanitize_object_name(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return String::new();

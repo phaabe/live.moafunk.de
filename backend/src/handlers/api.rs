@@ -41,6 +41,9 @@ pub struct UserResponse {
     id: i64,
     username: String,
     role: String,
+    artist_id: Option<i64>,
+    artist_name: Option<String>,
+    has_show: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,9 +88,34 @@ pub async fn api_login(
     // Create session
     let token = auth::create_session(&state, user.id).await?;
 
+    // Look up linked artist and show assignment for the user
+    let artist_info: Option<(i64, String)> =
+        sqlx::query_as("SELECT a.id, a.name FROM artists a WHERE a.user_id = ?")
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    let (artist_id, artist_name) = match &artist_info {
+        Some((id, name)) => (Some(*id), Some(name.clone())),
+        None => (None, None),
+    };
+
+    let has_show = if let Some((aid, _)) = &artist_info {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM artist_show_assignments WHERE artist_id = ?",
+        )
+        .bind(aid)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0)
+            > 0
+    } else {
+        false
+    };
+
     // Determine redirect based on role
     let redirect_url = match user.role_enum() {
-        models::UserRole::Artist => "/#/stream",
+        models::UserRole::Host => "/#/stream",
         models::UserRole::Admin | models::UserRole::Superadmin => "/#/artists",
     };
 
@@ -102,6 +130,9 @@ pub async fn api_login(
             id: user.id,
             username: user.username,
             role: user.role,
+            artist_id,
+            artist_name,
+            has_show,
         },
         redirect_url: redirect_url.to_string(),
     };
@@ -131,11 +162,41 @@ pub async fn api_me(
     let user = auth::get_current_user(&state, token.as_deref()).await;
 
     match user {
-        Some(u) => Ok(Json(UserResponse {
-            id: u.id,
-            username: u.username,
-            role: u.role,
-        })),
+        Some(u) => {
+            // Look up linked artist and show assignment
+            let artist_info: Option<(i64, String)> =
+                sqlx::query_as("SELECT a.id, a.name FROM artists a WHERE a.user_id = ?")
+                    .bind(u.id)
+                    .fetch_optional(&state.db)
+                    .await?;
+
+            let (artist_id, artist_name) = match &artist_info {
+                Some((id, name)) => (Some(*id), Some(name.clone())),
+                None => (None, None),
+            };
+
+            let has_show = if let Some((aid, _)) = &artist_info {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM artist_show_assignments WHERE artist_id = ?",
+                )
+                .bind(aid)
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(0)
+                    > 0
+            } else {
+                false
+            };
+
+            Ok(Json(UserResponse {
+                id: u.id,
+                username: u.username,
+                role: u.role,
+                artist_id,
+                artist_name,
+                has_show,
+            }))
+        }
         None => Err(AppError::Unauthorized("Not authenticated".to_string())),
     }
 }
@@ -212,6 +273,8 @@ pub struct ArtistsQuery {
     filter: Option<String>,
     sort: Option<String>,
     dir: Option<String>,
+    /// When true, return only artists not linked to any user account
+    unlinked: Option<bool>,
 }
 
 pub async fn api_artists_list(
@@ -250,6 +313,9 @@ pub async fn api_artists_list(
             "unassigned" => where_clauses.push("asa.show_id IS NULL"),
             _ => {}
         }
+    }
+    if query.unlinked == Some(true) {
+        where_clauses.push("a.user_id IS NULL");
     }
 
     let where_sql = if where_clauses.is_empty() {
@@ -1909,6 +1975,10 @@ pub struct ShowDetailResponse {
     soundcloud_url: Option<String>,
     soundcloud_uploaded_at: Option<String>,
     soundcloud_public: Option<bool>,
+    // Host assignment (external/brunchtime shows)
+    host_user_id: Option<i64>,
+    host_username: Option<String>,
+    available_hosts: Vec<AvailableHost>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -1931,6 +2001,12 @@ pub struct AssignedArtistInfo {
 pub struct ArtistBrief {
     id: i64,
     name: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AvailableHost {
+    id: i64,
+    username: String,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -2376,11 +2452,16 @@ pub async fn api_show_detail(
         });
     }
 
-    // Calculate artists left (max 4)
-    let artists_left = (4 - artists.len() as i32).max(0);
+    // Calculate artists left (max 4) — only for UNHEARD shows
+    let is_unheard = show.show_type == "unheard";
+    let artists_left = if is_unheard {
+        (4 - artists.len() as i32).max(0)
+    } else {
+        0
+    };
 
-    // Get available artists (NOT assigned to ANY show - truly unassigned)
-    let available_artists: Vec<ArtistWithPronouns> = if artists_left > 0 {
+    // Get available artists (NOT assigned to ANY show - truly unassigned) — only for UNHEARD shows
+    let available_artists: Vec<ArtistWithPronouns> = if is_unheard && artists_left > 0 {
         sqlx::query_as(
             r#"
             SELECT a.id, a.name, a.pronouns FROM artists a
@@ -2394,6 +2475,36 @@ pub async fn api_show_detail(
         .await?
     } else {
         Vec::new()
+    };
+
+    // Resolve host user for non-UNHEARD shows
+    let (host_user_id, host_username, available_hosts) = if !is_unheard {
+        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
+            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+                .bind(hid)
+                .fetch_optional(&state.db)
+                .await?
+        } else {
+            None
+        };
+
+        // Available hosts: users with role 'host' or 'admin' not already assigned to another show
+        let hosts: Vec<AvailableHost> = sqlx::query_as(
+            r#"
+            SELECT u.id, u.username FROM users u
+            WHERE u.role IN ('host', 'admin')
+              AND (u.id NOT IN (SELECT host_user_id FROM shows WHERE host_user_id IS NOT NULL)
+                   OR u.id = ?)
+            ORDER BY u.username COLLATE NOCASE
+            "#,
+        )
+        .bind(show.host_user_id.unwrap_or(-1))
+        .fetch_all(&state.db)
+        .await?;
+
+        (show.host_user_id, host_username, hosts)
+    } else {
+        (None, None, Vec::new())
     };
 
     // Only return cover URL if cover was actually generated
@@ -2462,6 +2573,9 @@ pub async fn api_show_detail(
         soundcloud_url: show.soundcloud_url,
         soundcloud_uploaded_at: show.soundcloud_uploaded_at,
         soundcloud_public: show.soundcloud_public,
+        host_user_id,
+        host_username,
+        available_hosts,
     }))
 }
 
@@ -2471,6 +2585,7 @@ pub struct CreateShowRequest {
     date: String,
     description: Option<String>,
     show_type: Option<String>,
+    start_time: Option<String>,
 }
 
 pub async fn api_create_show(
@@ -2483,16 +2598,20 @@ pub async fn api_create_show(
     // Validate show_type if provided
     let show_type = req.show_type.as_deref().unwrap_or("unheard");
     if !matches!(show_type, "unheard" | "brunchtime" | "external") {
-        return Err(AppError::BadRequest(format!("Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'", show_type)));
+        return Err(AppError::BadRequest(format!(
+            "Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'",
+            show_type
+        )));
     }
 
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status, show_type) VALUES (?, ?, ?, 'scheduled', ?)",
+        "INSERT INTO shows (title, date, description, status, show_type, start_time) VALUES (?, ?, ?, 'scheduled', ?, ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
     .bind(&req.description)
     .bind(show_type)
+    .bind(&req.start_time)
     .execute(&state.db)
     .await?;
 
@@ -2522,6 +2641,7 @@ pub async fn api_create_show(
             "description": req.description,
             "status": "scheduled",
             "show_type": show_type,
+            "start_time": req.start_time,
             "cover_url": cover_url,
             "cover_generated_at": cover_generated_at,
         })),
@@ -2535,6 +2655,7 @@ pub struct UpdateShowRequest {
     description: Option<String>,
     ai_bio: Option<String>,
     show_type: Option<String>,
+    start_time: Option<String>,
 }
 
 pub async fn api_update_show(
@@ -2567,10 +2688,17 @@ pub async fn api_update_show(
     }
     if let Some(show_type) = &req.show_type {
         if !matches!(show_type.as_str(), "unheard" | "brunchtime" | "external") {
-            return Err(AppError::BadRequest(format!("Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'", show_type)));
+            return Err(AppError::BadRequest(format!(
+                "Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'",
+                show_type
+            )));
         }
         updates.push("show_type = ?");
         binds.push(show_type.clone());
+    }
+    if let Some(start_time) = &req.start_time {
+        updates.push("start_time = ?");
+        binds.push(start_time.clone());
     }
 
     if updates.is_empty() {
@@ -2665,6 +2793,33 @@ pub async fn api_set_show_active_preset(
     let _ = do_regenerate_show_cover(&state, id).await;
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// POST /api/shows/:id/regenerate-cover
+/// Explicitly trigger cover regeneration (plain collage + overlay if preset is set).
+/// Used by the Overlay Editor when the collage image doesn't exist yet.
+pub async fn api_regenerate_show_cover(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify show exists
+    let show_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    if !show_exists {
+        return Err(AppError::NotFound("Show not found".to_string()));
+    }
+
+    let cover_url = do_regenerate_show_cover(&state, id).await;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "cover_url": cover_url
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2818,6 +2973,93 @@ pub async fn api_show_unassign_artist(
 }
 
 // ============================================================================
+// Show Host Assignment (external/brunchtime shows)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct AssignHostRequest {
+    user_id: i64,
+}
+
+/// Assign a host user to a show (for external/brunchtime shows)
+pub async fn api_show_assign_host(
+    State(state): State<Arc<AppState>>,
+    Path(show_id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<AssignHostRequest>,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    // Verify show exists and is not UNHEARD
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    if show.show_type == "unheard" {
+        return Err(AppError::BadRequest(
+            "UNHEARD shows use artist assignments, not host assignments".to_string(),
+        ));
+    }
+
+    // Verify user exists and has role 'host' or 'admin'
+    let user: Option<models::User> = sqlx::query_as("SELECT * FROM users WHERE id = ?")
+        .bind(req.user_id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let user = user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    if user.role != "host" && user.role != "admin" {
+        return Err(AppError::BadRequest(
+            "Only users with role 'host' or 'admin' can be assigned to shows".to_string(),
+        ));
+    }
+
+    // Check if this host is already assigned to another show
+    let existing: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM shows WHERE host_user_id = ? AND id != ?")
+            .bind(req.user_id)
+            .bind(show_id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    if existing.is_some() {
+        return Err(AppError::BadRequest(
+            "This host is already assigned to another show".to_string(),
+        ));
+    }
+
+    sqlx::query("UPDATE shows SET host_user_id = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(req.user_id)
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "host_user_id": req.user_id,
+        "host_username": user.username,
+    })))
+}
+
+/// Unassign the host from a show
+pub async fn api_show_unassign_host(
+    State(state): State<Arc<AppState>>,
+    Path(show_id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+
+    sqlx::query("UPDATE shows SET host_user_id = NULL, updated_at = datetime('now') WHERE id = ?")
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ============================================================================
 // Users API
 // ============================================================================
 
@@ -2828,6 +3070,8 @@ pub struct UserListItem {
     role: String,
     expires_at: Option<String>,
     created_at: String,
+    linked_artist_id: Option<i64>,
+    linked_artist_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2842,7 +3086,10 @@ pub async fn api_users_list(
     require_admin(&state, &headers).await?;
 
     let users: Vec<UserListItem> = sqlx::query_as(
-        "SELECT id, username, role, expires_at, created_at FROM users ORDER BY created_at DESC",
+        "SELECT u.id, u.username, u.role, u.expires_at, u.created_at, \
+         a.id AS linked_artist_id, a.name AS linked_artist_name \
+         FROM users u LEFT JOIN artists a ON a.user_id = u.id \
+         ORDER BY u.created_at DESC",
     )
     .fetch_all(&state.db)
     .await?;
@@ -2855,6 +3102,7 @@ pub struct CreateUserRequest {
     username: String,
     role: String,
     expires_at: Option<String>,
+    artist_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2877,10 +3125,10 @@ pub async fn api_create_user(
         ));
     }
 
-    // Artist users must have an expiration date
-    if req.role == "artist" && req.expires_at.is_none() {
+    // Host users must have an expiration date
+    if req.role == "host" && req.expires_at.is_none() {
         return Err(AppError::BadRequest(
-            "Expiration date is required for artist users".to_string(),
+            "Expiration date is required for host users".to_string(),
         ));
     }
 
@@ -2900,12 +3148,44 @@ pub async fn api_create_user(
 
     let user_id = result.last_insert_rowid();
 
+    // Link to artist profile if requested
+    if let Some(artist_id) = req.artist_id {
+        // Validate artist exists and is not already linked
+        let existing: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
+                .bind(artist_id)
+                .fetch_optional(&state.db)
+                .await?;
+
+        match existing {
+            None => {
+                return Err(AppError::NotFound("Artist not found".to_string()));
+            }
+            Some((Some(_),)) => {
+                return Err(AppError::BadRequest(
+                    "Artist is already linked to another user".to_string(),
+                ));
+            }
+            Some((None,)) => {
+                sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
+                    .bind(user_id)
+                    .bind(artist_id)
+                    .execute(&state.db)
+                    .await?;
+            }
+        }
+    }
+
     // Fetch the created user
-    let user: UserListItem =
-        sqlx::query_as("SELECT id, username, role, expires_at, created_at FROM users WHERE id = ?")
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await?;
+    let user: UserListItem = sqlx::query_as(
+        "SELECT u.id, u.username, u.role, u.expires_at, u.created_at, \
+             a.id AS linked_artist_id, a.name AS linked_artist_name \
+             FROM users u LEFT JOIN artists a ON a.user_id = u.id \
+             WHERE u.id = ?",
+    )
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -2956,6 +3236,7 @@ pub async fn api_delete_user(
 pub struct UpdateUserRequest {
     role: Option<String>,
     expires_at: Option<String>,
+    artist_id: Option<serde_json::Value>,
 }
 
 pub async fn api_update_user(
@@ -2976,7 +3257,7 @@ pub async fn api_update_user(
 
     // Check role hierarchy - can only edit users below your level
     let role_level = |role: &str| match role {
-        "artist" => 1,
+        "host" => 1,
         "admin" => 2,
         "superadmin" => 3,
         _ => 0,
@@ -3000,13 +3281,13 @@ pub async fn api_update_user(
     // Determine final role (either new role or existing)
     let final_role = req.role.as_ref().unwrap_or(&target.role);
 
-    // Artist users must have an expiration date
-    if final_role == "artist" {
-        // If changing to artist or already artist, check expires_at
+    // Host users must have an expiration date
+    if final_role == "host" {
+        // If changing to host or already host, check expires_at
         let final_expires_at = req.expires_at.as_ref().or(target.expires_at.as_ref());
         if final_expires_at.is_none() {
             return Err(AppError::BadRequest(
-                "Expiration date is required for artist users".to_string(),
+                "Expiration date is required for host users".to_string(),
             ));
         }
     }
@@ -3028,12 +3309,52 @@ pub async fn api_update_user(
             .await?;
     }
 
-    // Fetch updated user
-    let user: UserListItem =
-        sqlx::query_as("SELECT id, username, role, expires_at, created_at FROM users WHERE id = ?")
+    // Handle artist linking: null to unlink, number to link
+    if let Some(ref artist_id_val) = req.artist_id {
+        // First, unlink any currently linked artist
+        sqlx::query("UPDATE artists SET user_id = NULL WHERE user_id = ?")
             .bind(id)
-            .fetch_one(&state.db)
+            .execute(&state.db)
             .await?;
+
+        // If a new artist_id is provided (not null), link it
+        if let Some(artist_id) = artist_id_val.as_i64() {
+            let existing: Option<(Option<i64>,)> =
+                sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
+                    .bind(artist_id)
+                    .fetch_optional(&state.db)
+                    .await?;
+
+            match existing {
+                None => {
+                    return Err(AppError::NotFound("Artist not found".to_string()));
+                }
+                Some((Some(existing_uid),)) if existing_uid != id => {
+                    return Err(AppError::BadRequest(
+                        "Artist is already linked to another user".to_string(),
+                    ));
+                }
+                _ => {
+                    sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
+                        .bind(id)
+                        .bind(artist_id)
+                        .execute(&state.db)
+                        .await?;
+                }
+            }
+        }
+    }
+
+    // Fetch updated user
+    let user: UserListItem = sqlx::query_as(
+        "SELECT u.id, u.username, u.role, u.expires_at, u.created_at, \
+             a.id AS linked_artist_id, a.name AS linked_artist_name \
+             FROM users u LEFT JOIN artists a ON a.user_id = u.id \
+             WHERE u.id = ?",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
 
     Ok(Json(serde_json::json!({ "user": user })))
 }
@@ -3060,7 +3381,7 @@ pub async fn api_reset_password(
 
     // Check role hierarchy
     let role_level = |role: &str| match role {
-        "artist" => 1,
+        "host" => 1,
         "admin" => 2,
         "superadmin" => 3,
         _ => 0,
@@ -3752,6 +4073,617 @@ pub async fn api_upload_show_cover(
         "cover_url": cover_url,
         "cover_generated_at": now,
     })))
+}
+
+// ============================================================================
+// Artist Flow — My Show
+// ============================================================================
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct MyShowArtist {
+    id: i64,
+    name: String,
+    pronouns: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MyShowInfo {
+    id: i64,
+    title: String,
+    date: String,
+    start_time: Option<String>,
+    description: Option<String>,
+    show_type: String,
+    artists: Vec<MyShowArtist>,
+    prerecorded_key: Option<String>,
+    prerecorded_filename: Option<String>,
+    prerecorded_url: Option<String>,
+    prerecorded_confirmed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MyShowResponse {
+    assigned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show: Option<MyShowInfo>,
+}
+
+/// Helper: resolve the current user's linked artist and assigned show.
+/// Returns (artist, show) if the user is linked to an artist assigned to a show,
+/// or (None-artist, show) if the user is directly assigned as host to a non-UNHEARD show.
+async fn resolve_user_show(
+    state: &Arc<AppState>,
+    user: &models::User,
+) -> Result<Option<(Option<models::Artist>, models::Show)>> {
+    // Path 1: Direct host assignment (external/brunchtime shows)
+    let direct_show: Option<models::Show> =
+        sqlx::query_as("SELECT * FROM shows WHERE host_user_id = ?")
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    if let Some(show) = direct_show {
+        return Ok(Some((None, show)));
+    }
+
+    // Path 2: Linked via artist profile (UNHEARD shows)
+    // Find artist linked to this user
+    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE user_id = ?")
+        .bind(user.id)
+        .fetch_optional(&state.db)
+        .await?;
+
+    let artist = match artist {
+        Some(a) => a,
+        None => return Ok(None),
+    };
+
+    // Find the show this artist is assigned to
+    let show: Option<models::Show> = sqlx::query_as(
+        "SELECT s.* FROM shows s \
+         INNER JOIN artist_show_assignments asa ON asa.show_id = s.id \
+         WHERE asa.artist_id = ?",
+    )
+    .bind(artist.id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    match show {
+        Some(s) => Ok(Some((Some(artist), s))),
+        None => Ok(None),
+    }
+}
+
+pub async fn api_my_show(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let token = auth::get_session_from_headers(&headers);
+    let user = auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    let result = resolve_user_show(&state, &user).await?;
+
+    let (_, show) = match result {
+        Some(pair) => pair,
+        None => {
+            return Ok(Json(MyShowResponse {
+                assigned: false,
+                show: None,
+            }));
+        }
+    };
+
+    // Fetch all artists assigned to this show
+    let artists: Vec<MyShowArtist> = sqlx::query_as(
+        "SELECT a.id, a.name, a.pronouns FROM artists a \
+         INNER JOIN artist_show_assignments asa ON asa.artist_id = a.id \
+         WHERE asa.show_id = ? \
+         ORDER BY asa.sort_order, a.name",
+    )
+    .bind(show.id)
+    .fetch_all(&state.db)
+    .await?;
+
+    // Generate presigned URL for prerecorded file if it exists
+    let prerecorded_url = if let Some(ref key) = show.prerecorded_key {
+        storage::get_presigned_url(&state, key, 3600).await.ok()
+    } else {
+        None
+    };
+
+    Ok(Json(MyShowResponse {
+        assigned: true,
+        show: Some(MyShowInfo {
+            id: show.id,
+            title: show.title,
+            date: show.date,
+            start_time: show.start_time,
+            description: show.description,
+            show_type: show.show_type,
+            artists,
+            prerecorded_key: show.prerecorded_key,
+            prerecorded_filename: show.prerecorded_filename,
+            prerecorded_url,
+            prerecorded_confirmed_at: show.prerecorded_confirmed_at,
+        }),
+    }))
+}
+
+/// Helper: authenticate user and resolve their assigned show.
+/// Returns (user, show) or an appropriate error.
+async fn require_user_show(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<(models::User, models::Show)> {
+    let token = auth::get_session_from_headers(headers);
+    let user = auth::get_current_user(state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    let result = resolve_user_show(state, &user).await?;
+    let (_, show) =
+        result.ok_or_else(|| AppError::BadRequest("You are not assigned to a show".to_string()))?;
+
+    Ok((user, show))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prerecorded upload — small file (≤50MB)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn api_my_show_upload(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    let (_user, show) = require_user_show(&state, &headers).await?;
+
+    let mut file_data: Option<(String, Vec<u8>, String)> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart: {}", e)))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "file" {
+            let filename = field.file_name().unwrap_or("prerecorded").to_string();
+            let content_type = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Failed to read file: {}", e)))?
+                .to_vec();
+            file_data = Some((filename, data, content_type));
+        }
+    }
+
+    let (filename, data, content_type) =
+        file_data.ok_or_else(|| AppError::BadRequest("No file provided".to_string()))?;
+
+    let key = upload_prerecorded_to_r2(&state, show.id, &filename, data, &content_type).await?;
+
+    // Update show
+    sqlx::query(
+        "UPDATE shows SET prerecorded_key = ?, prerecorded_filename = ?, prerecorded_confirmed_at = NULL WHERE id = ?",
+    )
+    .bind(&key)
+    .bind(&filename)
+    .bind(show.id)
+    .execute(&state.db)
+    .await?;
+
+    let prerecorded_url = storage::get_presigned_url(&state, &key, 3600).await.ok();
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "key": key,
+        "prerecorded_url": prerecorded_url,
+        "filename": filename,
+    })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prerecorded upload — chunked: init
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PrerecordedInitRequest {
+    pub filename: String,
+    pub total_size: u64,
+    pub total_chunks: u32,
+}
+
+pub async fn api_my_show_upload_init(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<PrerecordedInitRequest>,
+) -> Result<impl IntoResponse> {
+    let (_user, show) = require_user_show(&state, &headers).await?;
+
+    tracing::info!(
+        "Prerecorded upload init: show_id={}, filename={}, total_size={}, total_chunks={}",
+        show.id,
+        req.filename,
+        req.total_size,
+        req.total_chunks
+    );
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let expires_at = chrono::Utc::now() + chrono::Duration::hours(2);
+
+    sqlx::query(
+        r#"
+        INSERT INTO pending_recording_uploads (
+            session_id, show_id, filename, total_size, total_chunks, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&session_id)
+    .bind(show.id)
+    .bind(&req.filename)
+    .bind(req.total_size as i64)
+    .bind(req.total_chunks as i32)
+    .bind(expires_at.to_rfc3339())
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "session_id": session_id,
+        "message": format!("Upload initialized. Send {} chunks next.", req.total_chunks),
+    })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prerecorded upload — chunked: chunk
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn api_my_show_upload_chunk(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Query(query): Query<super::upload_recording_chunked::ChunkQuery>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    let (_user, show) = require_user_show(&state, &headers).await?;
+
+    let chunk_index = query.index;
+    tracing::info!(
+        "Prerecorded upload chunk {} for session_id={}, show_id={}",
+        chunk_index,
+        session_id,
+        show.id
+    );
+
+    // Verify session exists and matches
+    let row = sqlx::query(
+        "SELECT show_id, total_chunks FROM pending_recording_uploads WHERE session_id = ? AND expires_at > datetime('now')",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let row = row.ok_or_else(|| {
+        AppError::BadRequest("Upload session not found or expired. Please start over.".to_string())
+    })?;
+
+    let db_show_id: i64 = sqlx::Row::get(&row, "show_id");
+    let total_chunks: i32 = sqlx::Row::get(&row, "total_chunks");
+
+    if db_show_id != show.id {
+        return Err(AppError::BadRequest(
+            "Session does not match your show".to_string(),
+        ));
+    }
+
+    if chunk_index >= total_chunks as u32 {
+        return Err(AppError::BadRequest(format!(
+            "Chunk index {} exceeds total chunks {}",
+            chunk_index, total_chunks
+        )));
+    }
+
+    // Read chunk data
+    let mut chunk_data: Option<Vec<u8>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart: {}", e)))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "chunk" || name == "file" {
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Failed to read chunk: {}", e)))?
+                .to_vec();
+            chunk_data = Some(data);
+        }
+    }
+
+    let data =
+        chunk_data.ok_or_else(|| AppError::BadRequest("No chunk data provided".to_string()))?;
+    let received_bytes = data.len();
+
+    // Store chunk in R2
+    let chunk_key = format!(
+        "pending-prerecorded/{}/chunk-{:04}",
+        session_id, chunk_index
+    );
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&chunk_key)
+        .body(aws_sdk_s3::primitives::ByteStream::from(data))
+        .content_type("application/octet-stream")
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload chunk: {}", e)))?;
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO pending_recording_chunks (session_id, chunk_index, chunk_key, size_bytes) VALUES (?, ?, ?, ?)",
+    )
+    .bind(&session_id)
+    .bind(chunk_index as i32)
+    .bind(&chunk_key)
+    .bind(received_bytes as i64)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "index": chunk_index,
+        "received_bytes": received_bytes,
+    })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prerecorded upload — chunked: finalize
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn api_my_show_upload_finalize(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let (_user, show) = require_user_show(&state, &headers).await?;
+
+    tracing::info!(
+        "Prerecorded upload finalize for session_id={}, show_id={}",
+        session_id,
+        show.id
+    );
+
+    // Fetch session metadata
+    let upload_row = sqlx::query(
+        "SELECT show_id, filename, total_chunks FROM pending_recording_uploads WHERE session_id = ? AND expires_at > datetime('now')",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let upload_row = upload_row.ok_or_else(|| {
+        AppError::BadRequest("Upload session not found or expired. Please start over.".to_string())
+    })?;
+
+    let db_show_id: i64 = sqlx::Row::get(&upload_row, "show_id");
+    let filename: String = sqlx::Row::get(&upload_row, "filename");
+    let total_chunks: i32 = sqlx::Row::get(&upload_row, "total_chunks");
+
+    if db_show_id != show.id {
+        return Err(AppError::BadRequest(
+            "Session does not match your show".to_string(),
+        ));
+    }
+
+    // Verify all chunks received
+    let received_chunks: i32 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pending_recording_chunks WHERE session_id = ?")
+            .bind(&session_id)
+            .fetch_one(&state.db)
+            .await?;
+
+    if received_chunks != total_chunks {
+        return Err(AppError::BadRequest(format!(
+            "Missing chunks: received {} of {} expected",
+            received_chunks, total_chunks
+        )));
+    }
+
+    // Fetch all chunk keys in order
+    let chunk_rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT chunk_key, size_bytes FROM pending_recording_chunks WHERE session_id = ? ORDER BY chunk_index ASC",
+    )
+    .bind(&session_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    // Assemble chunks
+    let mut assembled_data = Vec::new();
+    for (chunk_key, _size) in &chunk_rows {
+        let get_result = state
+            .s3_client
+            .get_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(chunk_key)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Storage(format!("Failed to fetch chunk {}: {}", chunk_key, e))
+            })?;
+
+        let chunk_bytes = get_result
+            .body
+            .collect()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to read chunk body: {}", e)))?
+            .into_bytes();
+
+        assembled_data.extend_from_slice(&chunk_bytes);
+    }
+
+    tracing::info!(
+        "Assembled {} bytes from {} chunks",
+        assembled_data.len(),
+        chunk_rows.len()
+    );
+
+    // Determine content type
+    let content_type = match filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" => "audio/ogg",
+        "m4a" | "aac" => "audio/mp4",
+        _ => "application/octet-stream",
+    };
+
+    let key =
+        upload_prerecorded_to_r2(&state, show.id, &filename, assembled_data, content_type).await?;
+
+    // Update show
+    sqlx::query(
+        "UPDATE shows SET prerecorded_key = ?, prerecorded_filename = ?, prerecorded_confirmed_at = NULL WHERE id = ?",
+    )
+    .bind(&key)
+    .bind(&filename)
+    .bind(show.id)
+    .execute(&state.db)
+    .await?;
+
+    // Clean up chunks
+    for (chunk_key, _) in &chunk_rows {
+        let _ = state
+            .s3_client
+            .delete_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(chunk_key)
+            .send()
+            .await;
+    }
+
+    sqlx::query("DELETE FROM pending_recording_chunks WHERE session_id = ?")
+        .bind(&session_id)
+        .execute(&state.db)
+        .await?;
+
+    sqlx::query("DELETE FROM pending_recording_uploads WHERE session_id = ?")
+        .bind(&session_id)
+        .execute(&state.db)
+        .await?;
+
+    let prerecorded_url = storage::get_presigned_url(&state, &key, 3600).await.ok();
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "key": key,
+        "prerecorded_url": prerecorded_url,
+        "filename": filename,
+    })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prerecorded — confirm
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn api_my_show_confirm(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let (_user, show) = require_user_show(&state, &headers).await?;
+
+    if show.prerecorded_key.is_none() {
+        return Err(AppError::BadRequest(
+            "No prerecorded file uploaded yet".to_string(),
+        ));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE shows SET prerecorded_confirmed_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(show.id)
+        .execute(&state.db)
+        .await?;
+
+    tracing::info!("Prerecorded confirmed for show_id={}", show.id);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "confirmed_at": now,
+    })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prerecorded — delete (re-upload)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn api_my_show_delete_upload(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let (_user, show) = require_user_show(&state, &headers).await?;
+
+    // Delete from R2 if exists
+    if let Some(ref key) = show.prerecorded_key {
+        let _ = state
+            .s3_client
+            .delete_object()
+            .bucket(&state.config.r2_bucket_name)
+            .key(key)
+            .send()
+            .await;
+    }
+
+    // Clear DB fields
+    sqlx::query(
+        "UPDATE shows SET prerecorded_key = NULL, prerecorded_filename = NULL, prerecorded_confirmed_at = NULL WHERE id = ?",
+    )
+    .bind(show.id)
+    .execute(&state.db)
+    .await?;
+
+    tracing::info!("Prerecorded upload deleted for show_id={}", show.id);
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// Upload prerecorded file to R2 under the prerecorded/ prefix.
+async fn upload_prerecorded_to_r2(
+    state: &Arc<AppState>,
+    show_id: i64,
+    filename: &str,
+    data: Vec<u8>,
+    content_type: &str,
+) -> Result<String> {
+    let safe_filename = storage::sanitize_object_name(filename);
+    let key = format!("prerecorded/{}/{}", show_id, safe_filename);
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(aws_sdk_s3::primitives::ByteStream::from(data))
+        .content_type(content_type)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload prerecorded file: {}", e)))?;
+
+    Ok(key)
 }
 
 // ============================================================================

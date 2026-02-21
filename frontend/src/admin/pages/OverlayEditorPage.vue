@@ -597,14 +597,29 @@ watch(selectedShowId, async (id) => {
   // Load show cover into cropper via same-origin proxy
   await nextTick();
   if (cropperImg.value) {
+    let blob: Blob | null = null;
+
+    // Try to fetch the existing plain collage
     try {
-      const blob = await showsApi.getImageBlob(id, 'collage');
+      blob = await showsApi.getImageBlob(id, 'collage');
+    } catch {
+      // Collage doesn't exist yet — trigger generation then retry
+      try {
+        flash.info('Generating show cover…');
+        await showsApi.regenerateCover(id);
+        // Re-fetch show detail so URLs are up-to-date
+        await loadShowDetail(id);
+        blob = await showsApi.getImageBlob(id, 'collage');
+      } catch (retryErr) {
+        console.error('Failed to generate/load show cover:', retryErr);
+        flash.error('Failed to generate show cover image');
+      }
+    }
+
+    if (blob) {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       objectUrl = URL.createObjectURL(blob);
       cropperImg.value.src = objectUrl;
-    } catch (err) {
-      console.error('Failed to load show cover:', err);
-      flash.error('Failed to load show cover image');
     }
   }
 });

@@ -16,7 +16,7 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { label: 'Stream', path: '/stream', category: 'Radio' },
+  { label: 'My Show', path: '/stream', category: 'Radio' },
   { label: 'Recording', path: '/recording', roles: ['admin', 'superadmin'], category: 'Radio' },
   { label: 'Artists', path: '/artists', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin'], category: 'UNHEARD' },

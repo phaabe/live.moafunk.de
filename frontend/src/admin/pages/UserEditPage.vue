@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { usersApi, type AdminUser } from '../api';
+import { usersApi, artistsApi, type AdminUser, type Artist } from '../api';
 import { BaseButton, FormInput } from '@shared/components';
 import { useAuthStore } from '../stores/auth';
 import { useFlash } from '../composables/useFlash';
@@ -19,20 +19,48 @@ const error = ref<string | null>(null);
 const editForm = ref({
   role: '',
   expires_at: '',
+  artist_id: undefined as number | undefined,
 });
 
 const newPassword = ref<string | null>(null);
 const generatingPassword = ref(false);
 
+// Unlinked artists for artist linking dropdown
+const unlinkedArtists = ref<Artist[]>([]);
+const loadingArtists = ref(false);
+
+async function loadUnlinkedArtists(currentArtistId?: number) {
+  loadingArtists.value = true;
+  try {
+    const response = await artistsApi.list({ unlinked: true });
+    // Include the currently linked artist in the list so it stays selectable
+    if (currentArtistId && user.value?.linked_artist_name) {
+      const alreadyInList = response.artists.some(a => a.id === currentArtistId);
+      if (!alreadyInList) {
+        unlinkedArtists.value = [
+          { id: currentArtistId, name: user.value.linked_artist_name } as Artist,
+          ...response.artists,
+        ];
+        return;
+      }
+    }
+    unlinkedArtists.value = response.artists;
+  } catch {
+    unlinkedArtists.value = [];
+  } finally {
+    loadingArtists.value = false;
+  }
+}
+
 // Role hierarchy helper
 function canEditRole(targetRole: string): boolean {
   const currentUser = authStore.user;
   if (!currentUser) return false;
-  
-  const roleLevel = { artist: 1, admin: 2, superadmin: 3 };
+
+  const roleLevel = { host: 1, admin: 2, superadmin: 3 };
   const currentLevel = roleLevel[currentUser.role as keyof typeof roleLevel] || 0;
   const targetLevel = roleLevel[targetRole as keyof typeof roleLevel] || 0;
-  
+
   return currentLevel > targetLevel;
 }
 
@@ -40,10 +68,10 @@ function canEditRole(targetRole: string): boolean {
 const availableRoles = computed(() => {
   const currentUser = authStore.user;
   if (!currentUser) return [];
-  
-  const roles = ['artist', 'admin', 'superadmin'];
+
+  const roles = ['host', 'admin', 'superadmin'];
   return roles.filter(role => {
-    const roleLevel = { artist: 1, admin: 2, superadmin: 3 };
+    const roleLevel = { host: 1, admin: 2, superadmin: 3 };
     const currentLevel = roleLevel[currentUser.role as keyof typeof roleLevel] || 0;
     const targetLevel = roleLevel[role as keyof typeof roleLevel] || 0;
     return currentLevel > targetLevel;
@@ -53,16 +81,16 @@ const availableRoles = computed(() => {
 function canDeleteUser(): boolean {
   const currentUser = authStore.user;
   if (!currentUser || !user.value) return false;
-  
+
   // Can't delete yourself
   if (user.value.username === currentUser.username) return false;
-  
+
   // Only superadmin can delete admins and superadmins
   if (user.value.role === 'superadmin' || user.value.role === 'admin') {
     return currentUser.role === 'superadmin';
   }
-  
-  // Admin and superadmin can delete artists
+
+  // Admin and superadmin can delete hosts
   return currentUser.role === 'admin' || currentUser.role === 'superadmin';
 }
 
@@ -74,26 +102,31 @@ async function loadUser() {
     const response = await usersApi.list();
     const userId = parseInt(route.params.id as string);
     user.value = response.users.find((u) => u.id === userId) || null;
-    
+
     if (!user.value) {
       error.value = 'User not found';
       return;
     }
-    
+
     // Check if current user can edit this user
     if (!canEditRole(user.value.role)) {
       error.value = 'You do not have permission to edit this user';
       return;
     }
-    
+
     editForm.value.role = user.value.role;
+    editForm.value.artist_id = user.value.linked_artist_id ?? undefined;
     // Extract date portion from expires_at (handles both 'YYYY-MM-DD' and 'YYYY-MM-DDTHH:MM:SS' formats)
     if (user.value.expires_at) {
-      editForm.value.expires_at = user.value.expires_at.includes('T') 
+      editForm.value.expires_at = user.value.expires_at.includes('T')
         ? user.value.expires_at.split('T')[0]
         : user.value.expires_at.split(' ')[0];
     } else {
       editForm.value.expires_at = '';
+    }
+    // Load unlinked artists if role is host
+    if (user.value.role === 'host' || editForm.value.role === 'host') {
+      loadUnlinkedArtists(user.value.linked_artist_id ?? undefined);
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load user';
@@ -104,16 +137,17 @@ async function loadUser() {
 
 async function saveChanges() {
   if (!user.value) return;
-  
+
   saving.value = true;
   error.value = null;
 
   try {
     await usersApi.update(user.value.id, {
       role: editForm.value.role,
-      expires_at: editForm.value.role === 'artist' && editForm.value.expires_at 
-        ? editForm.value.expires_at 
+      expires_at: editForm.value.role === 'host' && editForm.value.expires_at
+        ? editForm.value.expires_at
         : undefined,
+      artist_id: editForm.value.role === 'host' ? (editForm.value.artist_id ?? null) : null,
     });
     flash.success('User updated successfully');
     await loadUser();
@@ -124,9 +158,18 @@ async function saveChanges() {
   }
 }
 
+// Reload unlinked artists when role changes to host
+watch(() => editForm.value.role, (role) => {
+  if (role === 'host' && unlinkedArtists.value.length === 0) {
+    loadUnlinkedArtists(user.value?.linked_artist_id ?? undefined);
+  } else if (role !== 'host') {
+    editForm.value.artist_id = undefined;
+  }
+});
+
 async function generatePassword() {
   if (!user.value) return;
-  
+
   generatingPassword.value = true;
   error.value = null;
 
@@ -143,7 +186,7 @@ async function generatePassword() {
 
 async function deleteUser() {
   if (!user.value) return;
-  
+
   if (!confirm(`Are you sure you want to delete user "${user.value.username}"?`)) return;
 
   try {
@@ -184,6 +227,9 @@ onMounted(loadUser);
         <span :class="['badge', user.role === 'superadmin' ? 'warning' : 'success']">
           {{ user.role }}
         </span>
+        <router-link v-if="user.linked_artist_id" :to="`/artists/${user.linked_artist_id}`" class="badge pink">
+          🎨 {{ user.linked_artist_name }}
+        </router-link>
       </div>
 
       <form class="edit-form" @submit.prevent="saveChanges">
@@ -199,13 +245,19 @@ onMounted(loadUser);
           </p>
         </div>
 
-        <FormInput
-          v-if="editForm.role === 'artist'"
-          v-model="editForm.expires_at"
-          label="Expires At"
-          type="date"
-          required
-        />
+        <FormInput v-if="editForm.role === 'host'" v-model="editForm.expires_at" label="Expires At" type="date"
+          required />
+
+        <div v-if="editForm.role === 'host'" class="form-group">
+          <label class="label">Link to UNHEARD Artist</label>
+          <select v-model="editForm.artist_id" class="select-input" :disabled="loadingArtists">
+            <option :value="undefined">— None —</option>
+            <option v-for="artist in unlinkedArtists" :key="artist.id" :value="artist.id">
+              {{ artist.name }}
+            </option>
+          </select>
+          <p class="help-text">Link this host to an UNHEARD artist profile so they can manage their show.</p>
+        </div>
 
         <div class="form-actions">
           <BaseButton type="submit" variant="primary" :loading="saving">
@@ -219,7 +271,7 @@ onMounted(loadUser);
       <div class="password-section">
         <h3>Password Reset</h3>
         <p class="help-text">Generate a new password for this user.</p>
-        
+
         <div v-if="newPassword" class="password-result">
           <p>New password generated! Copy it below (it won't be shown again):</p>
           <code class="password-display">
@@ -245,11 +297,7 @@ onMounted(loadUser);
       <div class="danger-zone">
         <h3>Danger Zone</h3>
         <p class="help-text">Permanently delete this user. This action cannot be undone.</p>
-        <BaseButton 
-          v-if="canDeleteUser()" 
-          variant="danger" 
-          @click="deleteUser"
-        >
+        <BaseButton v-if="canDeleteUser()" variant="danger" @click="deleteUser">
           Delete User
         </BaseButton>
         <p v-else class="help-text">You do not have permission to delete this user.</p>

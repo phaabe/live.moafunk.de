@@ -316,6 +316,32 @@ async fn main() -> anyhow::Result<()> {
             "/api/auth/change-password",
             post(handlers::api::api_change_password),
         )
+        // Artist flow — my show
+        .route("/api/my-show", get(handlers::api::api_my_show))
+        .route(
+            "/api/my-show/upload",
+            post(handlers::api::api_my_show_upload),
+        )
+        .route(
+            "/api/my-show/upload/init",
+            post(handlers::api::api_my_show_upload_init),
+        )
+        .route(
+            "/api/my-show/upload/chunk/:session_id",
+            post(handlers::api::api_my_show_upload_chunk),
+        )
+        .route(
+            "/api/my-show/upload/finalize/:session_id",
+            post(handlers::api::api_my_show_upload_finalize),
+        )
+        .route(
+            "/api/my-show/confirm",
+            post(handlers::api::api_my_show_confirm),
+        )
+        .route(
+            "/api/my-show/upload",
+            axum::routing::delete(handlers::api::api_my_show_delete_upload),
+        )
         .route("/api/artists", get(handlers::api::api_artists_list))
         .route("/api/artists/:id", get(handlers::api::api_artist_detail))
         .route(
@@ -444,6 +470,10 @@ async fn main() -> anyhow::Result<()> {
             axum::routing::delete(handlers::api::api_show_unassign_artist),
         )
         .route(
+            "/api/shows/:id/host",
+            post(handlers::api::api_show_assign_host).delete(handlers::api::api_show_unassign_host),
+        )
+        .route(
             "/api/shows/:id/regenerate-bio",
             post(handlers::api::api_regenerate_show_bio),
         )
@@ -463,6 +493,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/upload-recording/finalize/:session_id",
             post(handlers::upload_recording_chunked::finalize_recording_upload),
+        )
+        .route(
+            "/api/shows/:id/regenerate-cover",
+            post(handlers::api::api_regenerate_show_cover),
         )
         .route(
             "/api/shows/:id/upload-cover",
