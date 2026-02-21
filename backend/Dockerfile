@@ -47,9 +47,10 @@ COPY --from=builder /app/target/release/unheard-backend /app/unheard-backend
 # Copy stamping assets (fonts/logos)
 COPY backend/assets ./assets
 
-# Copy admin SPA from frontend builder
-COPY --from=frontend-builder /app/dist/admin ./static/admin
-COPY --from=frontend-builder /app/dist/assets ./static/admin/assets
+# Copy admin SPA from frontend builder (all of dist/ into static/admin/)
+# This includes: admin/ (SPA HTML), assets/ (JS/CSS bundles),
+# and public/ files (moafunk.png, Shoika-font/, icons/, etc.)
+COPY --from=frontend-builder /app/dist ./static/admin
 
 # Create data directory
 RUN mkdir -p /app/data

@@ -495,6 +495,10 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::upload_recording_chunked::finalize_recording_upload),
         )
         .route(
+            "/api/shows/:id/regenerate-cover",
+            post(handlers::api::api_regenerate_show_cover),
+        )
+        .route(
             "/api/shows/:id/upload-cover",
             post(handlers::api::api_upload_show_cover),
         )
