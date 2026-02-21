@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS shows (
     date TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'scheduled',
+    show_type TEXT NOT NULL DEFAULT 'unheard',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT,
     cover_generated_at TEXT,

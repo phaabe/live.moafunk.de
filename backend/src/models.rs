@@ -88,6 +88,7 @@ pub struct Show {
     pub date: String,
     pub description: Option<String>,
     pub status: String,
+    pub show_type: String,
     pub created_at: String,
     pub updated_at: Option<String>,
     pub cover_generated_at: Option<String>,

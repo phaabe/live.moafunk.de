@@ -382,6 +382,39 @@ STRICT rules:\n\
 This is a hard limit — shorten if needed. Prioritise being concise over exhaustive.\n\
 - Output ONLY the show description, nothing else.";
 
+const NON_UNHEARD_BIO_PROMPT: &str = "You write short, engaging show descriptions for Moafunk Radio events.\n\n\
+You will be given the show title, show type (e.g., 'brunchtime' or 'external'), \
+and a description that provides context about the event.\n\n\
+Write a compelling show description that:\n\
+1. Captures the vibe and concept of the event based on the description\n\
+2. Sounds inviting and makes people want to attend or tune in\n\
+3. Integrates the show type naturally (e.g., if brunchtime, reference the relaxed daytime vibe)\n\n\
+STRICT rules:\n\
+- Do NOT use hashtags or emojis\n\
+- Do NOT mention specific dates or times\n\
+- Do NOT repeat the show title — it will already be displayed above\n\
+- Do NOT use words like 'talented', 'amazing', 'incredible', or generic compliments\n\
+- Reads like a music blog preview, not a press release\n\
+- The TOTAL output MUST be under 900 characters (including spaces). \
+This is a hard limit — shorten if needed. Prioritise being concise over exhaustive.\n\
+- Output ONLY the show description, nothing else.";
+
+/// Generate a show bio from description text only (for non-UNHEARD shows).
+pub async fn generate_show_bio_from_text(
+    config: &Config,
+    user_content: &str,
+) -> Result<String> {
+    let api_key = config
+        .openai_api_key
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("OPENAI_API_KEY is not configured".to_string()))?;
+
+    tracing::info!("Calling OpenAI API for non-UNHEARD show bio generation");
+    let bio = call_openai(api_key, NON_UNHEARD_BIO_PROMPT, user_content, 0.7, 300).await?;
+    tracing::info!("Non-UNHEARD show bio generated successfully ({} chars)", bio.len());
+    Ok(bio)
+}
+
 /// Generate a combined show bio from individual artist bios.
 pub async fn generate_show_bio(
     config: &Config,
@@ -421,9 +454,12 @@ pub async fn generate_show_bio(
 
 /// Generate an AI show bio from all assigned artists' bios and persist it.
 ///
-/// If no artists are assigned to the show, clears the show's `ai_bio` to NULL.
-/// Artists missing an `ai_bio` will have one generated first (if they have a
-/// music_description), so the show bio always reflects the full lineup.
+/// For UNHEARD shows: uses artist bios as source material. If no artists are assigned,
+/// clears the show's `ai_bio` to NULL. Artists missing an `ai_bio` will have one
+/// generated first (if they have a music_description).
+///
+/// For non-UNHEARD shows (brunchtime, external): uses the show description as the
+/// sole source material, ignoring artist assignments entirely.
 pub async fn generate_and_store_show_bio(
     state: &Arc<AppState>,
     show_id: i64,
@@ -434,6 +470,48 @@ pub async fn generate_and_store_show_bio(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Show {show_id} not found")))?;
 
+    let show_type = show.show_type.as_str();
+
+    if show_type != "unheard" {
+        // Non-UNHEARD shows: generate bio from description only
+        let description = match show.description.as_deref() {
+            Some(desc) if !desc.trim().is_empty() => desc,
+            _ => {
+                tracing::info!(
+                    "Cannot generate bio for non-UNHEARD show {} — no description provided",
+                    show_id
+                );
+                return Ok(None);
+            }
+        };
+
+        let user_content = format!(
+            "Show title: {}\nShow type: {}\nShow description: {}",
+            show.title, show_type, description
+        );
+
+        let bio = generate_show_bio_from_text(
+            &state.config,
+            &user_content,
+        )
+        .await?;
+
+        sqlx::query("UPDATE shows SET ai_bio = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(&bio)
+            .bind(show_id)
+            .execute(&state.db)
+            .await?;
+
+        tracing::info!(
+            "Generated show bio for non-UNHEARD show {} ({} chars, from description)",
+            show.title,
+            bio.len()
+        );
+
+        return Ok(Some(bio));
+    }
+
+    // UNHEARD shows: original artist-based logic
     // Fetch all assigned artists (full rows so we can generate missing bios)
     let artists: Vec<models::Artist> = sqlx::query_as(
         r#"

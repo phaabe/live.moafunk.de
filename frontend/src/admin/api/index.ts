@@ -388,6 +388,7 @@ export interface Show {
   date: string;
   description?: string;
   status: string;
+  show_type: string;
   artists: { id: number; name: string }[];
 }
 
@@ -412,6 +413,7 @@ export interface ShowDetail {
   description?: string;
   ai_bio?: string;
   status: string;
+  show_type: string;
   created_at: string;
   updated_at?: string;
   artists: AssignedArtist[];
@@ -441,6 +443,22 @@ export const showsApi = {
   update: (id: number, data: Partial<Show>) => api.put<Show>(`/api/shows/${id}`, data),
 
   delete: (id: number) => api.delete<void>(`/api/shows/${id}`),
+
+  uploadCover: async (
+    showId: number,
+    file: File
+  ): Promise<{ success: boolean; cover_url?: string; cover_generated_at?: string }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const token = localStorage.getItem('auth_token');
+    const resp = await fetch(`/api/shows/${showId}/upload-cover`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    return resp.json();
+  },
 
   assignArtist: (showId: number, artistId: number) =>
     api.post<{ success: boolean; artist: AssignedArtist }>(`/api/shows/${showId}/artists`, {

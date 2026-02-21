@@ -15,13 +15,13 @@ const filter = ref<FilterType>('upcoming');
 
 const filteredAndSortedShows = computed(() => {
   let filtered = shows.value;
-  
+
   if (filter.value === 'upcoming') {
     filtered = shows.value.filter(show => getDaysUntil(show.date) >= 0);
   } else if (filter.value === 'past') {
     filtered = shows.value.filter(show => getDaysUntil(show.date) < 0);
   }
-  
+
   return [...filtered].sort((a, b) => {
     return new Date(a.date).getTime() - new Date(b.date).getTime();
   });
@@ -49,6 +49,7 @@ const newShow = ref({
   title: '',
   date: '',
   description: '',
+  show_type: 'unheard',
 });
 
 async function loadShows() {
@@ -74,7 +75,7 @@ async function createShow() {
     await showsApi.create(newShow.value);
     flash.success('Show created successfully');
     showCreateModal.value = false;
-    newShow.value = { title: '', date: '', description: '' };
+    newShow.value = { title: '', date: '', description: '', show_type: 'unheard' };
     await loadShows();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to create show';
@@ -120,6 +121,7 @@ onMounted(loadShows);
         <thead>
           <tr>
             <th>Title</th>
+            <th>Type</th>
             <th>Days Until</th>
             <th>Date</th>
             <th>Assigned</th>
@@ -135,34 +137,46 @@ onMounted(loadShows);
               </router-link>
             </td>
             <td>
-              <span :class="['badge', 'days-until', getDaysClass(getDaysUntil(show.date))]">
-                {{ getDaysUntil(show.date) < 0 ? '✓' : getDaysUntil(show.date) + 'd' }}
+              <span :class="['badge', 'show-type-badge', `type-${show.show_type || 'unheard'}`]">
+                {{ (show.show_type || 'unheard').toUpperCase() }}
               </span>
+            </td>
+            <td>
+              <span :class="['badge', 'days-until', getDaysClass(getDaysUntil(show.date))]">
+                {{ getDaysUntil(show.date) < 0 ? '✓' : getDaysUntil(show.date) + 'd' }} </span>
             </td>
             <td>{{ show.date }}</td>
             <td>
-              <span :class="['badge', 'artist-count', {
-                'count-empty': show.artists.length === 0,
-                'count-partial': show.artists.length > 0 && show.artists.length < 4,
-                'count-full': show.artists.length >= 4
-              }]">
-                {{ show.artists.length }}/4
-              </span>
+              <template v-if="show.show_type === 'unheard' || !show.show_type">
+                <span :class="['badge', 'artist-count', {
+                  'count-empty': show.artists.length === 0,
+                  'count-partial': show.artists.length > 0 && show.artists.length < 4,
+                  'count-full': show.artists.length >= 4
+                }]">
+                  {{ show.artists.length }}/4
+                </span>
+              </template>
+              <span v-else class="text-muted">&mdash;</span>
             </td>
             <td class="text-muted">
-              {{ show.artists.map((a) => a.name).join(', ') || '-' }}
+              <template v-if="show.show_type === 'unheard' || !show.show_type">
+                {{show.artists.map((a) => a.name).join(', ') || '-'}}
+              </template>
+              <span v-else>&mdash;</span>
             </td>
             <td class="download-cell">
-              <template v-if="show.artists.length > 0">
-                <a :href="`/shows/${show.id}/download/recording`" class="dl-btn recording" title="Recording Package">REC</a>
-                <a :href="`/shows/${show.id}/download/social-media`" class="dl-btn social" title="Social Media Package">SM</a>
+              <template v-if="(show.show_type === 'unheard' || !show.show_type) && show.artists.length > 0">
+                <a :href="`/shows/${show.id}/download/recording`" class="dl-btn recording"
+                  title="Recording Package">REC</a>
+                <a :href="`/shows/${show.id}/download/social-media`" class="dl-btn social"
+                  title="Social Media Package">SM</a>
                 <a :href="`/shows/${show.id}/download/all-data`" class="dl-btn all" title="All Material">ALL</a>
               </template>
               <span v-else class="text-muted">-</span>
             </td>
           </tr>
           <tr v-if="filteredAndSortedShows.length === 0">
-            <td colspan="6" class="text-muted" style="text-align: center; padding: 2rem;">
+            <td colspan="7" class="text-muted" style="text-align: center; padding: 2rem;">
               No shows found
             </td>
           </tr>
@@ -178,6 +192,14 @@ onMounted(loadShows);
 
     <BaseModal :open="showCreateModal" title="Create New Show" @close="showCreateModal = false">
       <form class="create-form" @submit.prevent="createShow">
+        <div class="form-group">
+          <label class="form-label">Show Type</label>
+          <select v-model="newShow.show_type" class="filter-select">
+            <option value="unheard">UNHEARD</option>
+            <option value="brunchtime">Brunchtime</option>
+            <option value="external">External</option>
+          </select>
+        </div>
         <FormInput v-model="newShow.title" label="Title" required />
         <FormInput v-model="newShow.date" label="Date" type="date" required />
         <FormInput v-model="newShow.description" label="Description" />
@@ -328,14 +350,57 @@ onMounted(loadShows);
   border: 1px solid #888888;
 }
 
-/* Mobile responsive - show only Title, Status, and Assigned columns */
+/* Show type badges */
+.show-type-badge {
+  font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-sm);
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.type-unheard {
+  background-color: rgba(255, 236, 68, 0.2);
+  color: #ffec44;
+  border: 1px solid #ffec44;
+}
+
+.type-brunchtime {
+  background-color: rgba(52, 199, 89, 0.2);
+  color: #34c759;
+  border: 1px solid #34c759;
+}
+
+.type-external {
+  background-color: rgba(52, 120, 246, 0.2);
+  color: #3478f6;
+  border: 1px solid #3478f6;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.form-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-medium);
+}
+
+/* Mobile responsive - show only Title, Type, and Assigned columns */
 @media (max-width: 768px) {
+
   .data-table th:nth-child(3),
-  .data-table th:nth-child(5),
+  .data-table th:nth-child(4),
   .data-table th:nth-child(6),
+  .data-table th:nth-child(7),
   .data-table td:nth-child(3),
-  .data-table td:nth-child(5),
-  .data-table td:nth-child(6) {
+  .data-table td:nth-child(4),
+  .data-table td:nth-child(6),
+  .data-table td:nth-child(7) {
     display: none;
   }
 }

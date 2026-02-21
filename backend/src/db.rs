@@ -143,6 +143,15 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Active overlay preset for server-side cover rendering
     add_column_if_missing(pool, "shows", "active_overlay_preset_id", "INTEGER").await?;
 
+    // Show type: unheard, brunchtime, external
+    add_column_if_missing(
+        pool,
+        "shows",
+        "show_type",
+        "TEXT NOT NULL DEFAULT 'unheard'",
+    )
+    .await?;
+
     // App settings table for storing OAuth tokens and other key-value config
     sqlx::query(
         r#"

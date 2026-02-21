@@ -52,6 +52,8 @@ const selectedArtistId = ref<number | null>(null);
 // Computed
 const hasArtists = computed(() => show.value && show.value.artists.length > 0);
 const artistsLeft = computed(() => show.value?.artists_left ?? 0);
+const isUnheard = computed(() => !show.value?.show_type || show.value.show_type === 'unheard');
+const uploadingCover = ref(false);
 
 // Use recording filename from API
 const recordingFilename = computed(() => show.value?.recording_filename || null);
@@ -425,7 +427,7 @@ async function uploadToSoundCloud() {
     const msg = e instanceof Error ? e.message : '';
     if (msg.includes('not authorized')) {
       // Refresh status and offer connect
-      try { scStatus.value = await soundcloudApi.getStatus(); } catch {}
+      try { scStatus.value = await soundcloudApi.getStatus(); } catch { }
       if (scStatus.value?.auth_url) {
         window.open(scStatus.value.auth_url, '_blank', 'width=600,height=700');
         flash.success('Complete SoundCloud authorization in the opened window, then try again.');
@@ -568,6 +570,28 @@ async function deleteRecording() {
   }
 }
 
+// Manual cover upload (for non-UNHEARD shows)
+async function handleCoverUpload(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file || !show.value) return;
+
+  uploadingCover.value = true;
+  try {
+    const result = await showsApi.uploadCover(show.value.id, file);
+    if (result.cover_url && show.value) {
+      show.value.cover_url = result.cover_url;
+      show.value.cover_generated_at = result.cover_generated_at;
+    }
+    flash.success('Cover uploaded successfully');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to upload cover');
+  } finally {
+    uploadingCover.value = false;
+    input.value = '';
+  }
+}
+
 // Delete show
 async function deleteShow() {
   if (!show.value) return;
@@ -636,6 +660,13 @@ onUnmounted(() => {
                 <span :class="['status-badge', show.status]">{{ show.status }}</span>
               </div>
 
+              <div class="info-label">Type</div>
+              <div class="info-value">
+                <span :class="['show-type-badge', `type-${show.show_type || 'unheard'}`]">
+                  {{ (show.show_type || 'unheard').toUpperCase() }}
+                </span>
+              </div>
+
               <div class="info-label">Date</div>
               <div class="info-value">{{ show.date }}</div>
             </div>
@@ -690,14 +721,18 @@ onUnmounted(() => {
             <h3 class="subsection-title">AI Show Bio</h3>
             <template v-if="!editingAiBio">
               <div v-if="show.ai_bio" class="description-view">{{ show.ai_bio }}</div>
-              <p v-else class="empty-state">AI bio will be generated when artists are assigned.</p>
+              <p v-else class="empty-state">
+                <template v-if="isUnheard">AI bio will be generated when artists are assigned.</template>
+                <template v-else>AI bio will be generated from the show description.</template>
+              </p>
 
               <div class="edit-toggle-container">
                 <div class="button-row">
                   <button type="button" class="btn-edit" @click="startEditAiBio" v-if="show.ai_bio">
                     Edit AI Bio
                   </button>
-                  <BaseButton variant="primary" size="sm" :loading="regeneratingBio" @click="regenerateShowBio" :disabled="!hasArtists">
+                  <BaseButton variant="primary" size="sm" :loading="regeneratingBio" @click="regenerateShowBio"
+                    :disabled="isUnheard ? !hasArtists : !show.description">
                     Regenerate
                   </BaseButton>
                 </div>
@@ -719,8 +754,8 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Cover Section -->
-        <div class="card cover-card">
+        <!-- Cover Section (UNHEARD: auto-generated) -->
+        <div v-if="isUnheard" class="card cover-card">
           <h2 class="section-title">Cover</h2>
           <div v-if="show.cover_url" class="show-cover-preview">
             <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
@@ -736,10 +771,34 @@ onUnmounted(() => {
           </div>
           <p v-else class="empty-state">Cover appears after artists are assigned and processed.</p>
         </div>
+
+        <!-- Cover Section (non-UNHEARD: manual upload) -->
+        <div v-else class="card cover-card">
+          <h2 class="section-title">Cover</h2>
+          <div v-if="show.cover_url" class="show-cover-preview">
+            <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
+            <div class="cover-actions">
+              <label class="upload-cover-btn">
+                <BaseButton variant="primary" size="sm" :loading="uploadingCover"
+                  @click="($refs.coverInput as HTMLInputElement)?.click()">
+                  Replace Cover
+                </BaseButton>
+              </label>
+            </div>
+          </div>
+          <div v-else class="cover-upload-area">
+            <p class="empty-state">No cover uploaded yet.</p>
+            <BaseButton variant="primary" size="sm" :loading="uploadingCover"
+              @click="($refs.coverInput as HTMLInputElement)?.click()">
+              Upload Cover
+            </BaseButton>
+          </div>
+          <input ref="coverInput" type="file" accept="image/*" class="upload-input" @change="handleCoverUpload" />
+        </div>
       </div>
 
-      <!-- Download / Upload Row -->
-      <div class="download-upload-grid">
+      <!-- Download / Upload Row (UNHEARD only) -->
+      <div v-if="isUnheard" class="download-upload-grid">
         <!-- Download Section -->
         <div class="card">
           <h2 class="section-title">Download</h2>
@@ -810,7 +869,8 @@ onUnmounted(() => {
                   <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
                     Re-upload
                   </BaseButton>
-                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost" @click="disconnectAndReconnectSoundCloud">
+                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost"
+                    @click="disconnectAndReconnectSoundCloud">
                     🔗 Reconnect
                   </BaseButton>
                 </div>
@@ -825,7 +885,8 @@ onUnmounted(() => {
                   <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
                     ☁️ Upload to SoundCloud
                   </BaseButton>
-                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost" @click="disconnectAndReconnectSoundCloud">
+                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost"
+                    @click="disconnectAndReconnectSoundCloud">
                     🔗 Reconnect
                   </BaseButton>
                 </div>
@@ -850,7 +911,7 @@ onUnmounted(() => {
                       uploadProgress.percent }}%)
                   </span>
                   <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
-                  }}%</span>
+                    }}%</span>
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>
@@ -864,8 +925,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Assigned Artists Section -->
-      <div class="card">
+      <!-- Assigned Artists Section (UNHEARD only) -->
+      <div v-if="isUnheard" class="card">
         <h2 class="section-title">Assigned Artists ({{ show.artists.length }})</h2>
         <p class="slots-info">{{ artistsLeft }} slot{{ artistsLeft !== 1 ? 's' : '' }} left (max 4)</p>
 
@@ -988,8 +1049,8 @@ onUnmounted(() => {
       </template>
     </BaseModal>
 
-    <!-- Instagram Preview Modal -->
-    <BaseModal :open="showInstagramModal" title="📸 Instagram Preview" size="lg"
+    <!-- Instagram Preview Modal (UNHEARD only) -->
+    <BaseModal v-if="isUnheard" :open="showInstagramModal" title="📸 Instagram Preview" size="lg"
       @close="showInstagramModal = false">
       <div class="ig-preview-layout">
         <div class="ig-preview-media">
@@ -1012,15 +1073,15 @@ onUnmounted(() => {
             <option value="prod">📡 moafunk_radio</option>
           </select>
         </div>
-        <BaseButton variant="primary" :loading="postingToInstagram"
-          :disabled="!show?.ai_bio || !show?.cover_url" @click="postToInstagram()">
+        <BaseButton variant="primary" :loading="postingToInstagram" :disabled="!show?.ai_bio || !show?.cover_url"
+          @click="postToInstagram()">
           📤 Publish
         </BaseButton>
       </template>
     </BaseModal>
 
-    <!-- Instagram Re-post Confirmation Modal -->
-    <BaseModal :open="showInstagramConfirmModal" title="Post to Instagram Again?"
+    <!-- Instagram Re-post Confirmation Modal (UNHEARD only) -->
+    <BaseModal v-if="isUnheard" :open="showInstagramConfirmModal" title="Post to Instagram Again?"
       @close="showInstagramConfirmModal = false">
       <p>This show was already posted to Instagram.</p>
       <p class="text-muted">Do you want to post it again? This will create a duplicate post.</p>
@@ -1268,6 +1329,44 @@ onUnmounted(() => {
 .status-badge.completed {
   background: #48bb78;
   color: #000;
+}
+
+/* Show type badges */
+.show-type-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.8em;
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.type-unheard {
+  background-color: rgba(255, 236, 68, 0.2);
+  color: #ffec44;
+  border: 1px solid #ffec44;
+}
+
+.type-brunchtime {
+  background-color: rgba(52, 199, 89, 0.2);
+  color: #34c759;
+  border: 1px solid #34c759;
+}
+
+.type-external {
+  background-color: rgba(52, 120, 246, 0.2);
+  color: #3478f6;
+  border: 1px solid #3478f6;
+}
+
+/* Cover upload area for non-UNHEARD */
+.cover-upload-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xl);
 }
 
 .edit-toggle-container {
