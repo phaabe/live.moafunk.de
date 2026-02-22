@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
+import { recordingApi } from '@admin/api';
 
 const router = useRouter();
 const flow = useHostFlow();
@@ -63,6 +64,11 @@ function updateCountdown() {
   if (diff <= 0) {
     countdownText.value = '00:00:00';
     alertState.value = 'critical';
+    // Auto-start the show
+    if (!autoStarted.value && !goLiveLoading.value) {
+      autoStarted.value = true;
+      handleGoLive();
+    }
     return;
   }
 
@@ -110,8 +116,7 @@ function playBeep() {
 
 // ─── Audio device status (live mode) ────────────────────────────────────────
 // If in live mode, the audioCapture from FlowLive is still active.
-// We create a new instance just to check device status — the actual stream
-// was set up in FlowLive and persists.
+// Singleton: same instance as FlowLive — audio capture persists across route navigation
 const audioCapture = isLive.value ? useAudioCapture() : null;
 const audioDeviceOk = computed(() => audioCapture?.isCapturing.value ?? false);
 
@@ -129,38 +134,37 @@ const streamSocket = useStreamSocket({
 
 const goLiveLoading = ref(false);
 const goLiveError = ref<string | null>(null);
+const autoStarted = ref(false);
 
-const canGoLive = computed(() => remaining.value <= 0);
+// ─── Recording option ───────────────────────────────────────────────────────
+function toggleRecordStream() {
+  flow.setRecordStream(!flow.recordStream.value);
+}
 
 async function handleGoLive() {
   goLiveLoading.value = true;
   goLiveError.value = null;
+  flow.setShowStarted();
 
   try {
     if (isLive.value) {
       // Live mode: connect WebSocket, wire audio data, navigate
       await streamSocket.connect();
 
-      // Wire audioCapture data to stream socket
-      // The audioCapture was created in FlowLive and the stream is still running.
-      // We need to start a MediaRecorder and pipe data to streamSocket.
-      if (audioCapture?.processedStream.value || audioCapture?.mediaStream.value) {
-        const stream = audioCapture.processedStream.value || audioCapture.mediaStream.value;
-        if (stream) {
-          const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-            ? 'audio/webm;codecs=opus'
-            : 'audio/webm';
-          const recorder = new MediaRecorder(stream, {
-            mimeType,
-            audioBitsPerSecond: 192000,
-          });
-          recorder.ondataavailable = async (event) => {
-            if (event.data.size > 0) {
-              const buffer = await event.data.arrayBuffer();
-              streamSocket.send(buffer);
-            }
-          };
-          recorder.start(250);
+      // Wire audioCapture data → streamSocket using singleton's setOnData
+      // Same pattern as StreamPage.vue (commit 07f39e4)
+      if (audioCapture) {
+        audioCapture.setOnData((data) => streamSocket.send(data));
+        audioCapture.startRecording();
+      }
+
+      // Start recording if enabled
+      if (flow.recordStream.value && show.value?.id) {
+        try {
+          await recordingApi.start(show.value.id);
+        } catch (err) {
+          console.warn('[FlowWaiting] Failed to start recording:', err);
+          // Don't block going live if recording fails to start
         }
       }
 
@@ -192,6 +196,9 @@ const formattedDate = computed(() => {
     return show.value.date;
   }
 });
+
+// ─── Dev mode ───────────────────────────────────────────────────────────────
+const isDev = import.meta.env.DEV;
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 onMounted(() => {
@@ -249,6 +256,17 @@ onUnmounted(() => {
       </p>
     </div>
 
+    <!-- Recording option (live mode) -->
+    <div v-if="isLive" class="record-option">
+      <label class="record-checkbox-label" @click="toggleRecordStream">
+        <span :class="['checkbox-icon', { checked: flow.recordStream.value }]">
+          {{ flow.recordStream.value ? '☑' : '☐' }}
+        </span>
+        <span>Record this show</span>
+      </label>
+      <p class="record-hint">Audio will be saved for later download &amp; editing</p>
+    </div>
+
     <!-- Mode-specific status -->
     <div class="mode-status">
       <template v-if="isLive">
@@ -266,16 +284,17 @@ onUnmounted(() => {
       </template>
     </div>
 
-    <!-- Go Live button -->
+    <!-- Auto-start status -->
     <div class="go-live-section">
-      <button :class="['btn-go-live', { ready: canGoLive }]" :disabled="!canGoLive || goLiveLoading"
-        @click="handleGoLive">
-        {{ goLiveLoading ? 'Connecting...' : isLive ? '🎙️ Go Live' : '▶ Start Show' }}
-      </button>
-      <p v-if="!canGoLive" class="go-live-hint">
-        Button activates when countdown reaches zero
+      <p v-if="goLiveLoading" class="go-live-status">Connecting...</p>
+      <p v-if="goLiveError" class="go-live-error">{{ goLiveError }}
+        <button class="btn-retry" @click="autoStarted = false">Retry</button>
       </p>
-      <p v-if="goLiveError" class="go-live-error">{{ goLiveError }}</p>
+
+      <!-- Dev-only: start stream without waiting for countdown -->
+      <button v-if="isDev && !goLiveLoading && remaining > 0" class="btn-dev-start" @click="handleGoLive">
+        🛠 Start Stream Now (dev)
+      </button>
     </div>
   </div>
 </template>
@@ -398,6 +417,37 @@ onUnmounted(() => {
   color: #ef4444;
 }
 
+/* ─── Recording option ────────────────────────────────────────────────────── */
+.record-option {
+  margin-bottom: var(--spacing-xl);
+}
+
+.record-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-icon {
+  font-size: 1.3rem;
+  color: var(--color-text-muted);
+  transition: color var(--transition-fast);
+}
+
+.checkbox-icon.checked {
+  color: #ef4444;
+}
+
+.record-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  margin: var(--spacing-xs) 0 0;
+}
+
 /* ─── Mode status ────────────────────────────────────────────────────────── */
 .mode-status {
   margin-bottom: var(--spacing-2xl);
@@ -438,62 +488,58 @@ onUnmounted(() => {
   font-weight: var(--font-weight-bold);
 }
 
-/* ─── Go Live button ─────────────────────────────────────────────────────── */
+/* ─── Auto-start status ──────────────────────────────────────────────────── */
 .go-live-section {
   margin-top: var(--spacing-xl);
 }
 
-.btn-go-live {
-  background: var(--color-surface-alt);
+.go-live-status {
   color: var(--color-text-muted);
-  border: 2px solid var(--color-border);
-  padding: var(--spacing-lg) var(--spacing-3xl);
-  border-radius: var(--radius-xl);
-  font-family: var(--font-family);
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-bold);
-  cursor: not-allowed;
-  transition: all var(--transition-fast);
-}
-
-.btn-go-live.ready {
-  background: var(--color-primary);
-  color: var(--color-primary-text, #fff);
-  border-color: var(--color-primary);
-  cursor: pointer;
-  animation: glow-primary 2s ease-in-out infinite;
-}
-
-.btn-go-live.ready:hover:not(:disabled) {
-  transform: scale(1.02);
-}
-
-.btn-go-live:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-@keyframes glow-primary {
-
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(255, 152, 0, 0);
-  }
-
-  50% {
-    box-shadow: 0 0 20px 4px rgba(255, 152, 0, 0.3);
-  }
-}
-
-.go-live-hint {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  margin: var(--spacing-md) 0 0;
+  font-size: var(--font-size-md);
+  margin: 0;
 }
 
 .go-live-error {
   color: #ef4444;
   font-size: var(--font-size-sm);
-  margin: var(--spacing-md) 0 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+}
+
+.btn-retry {
+  background: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-radius: var(--radius-md);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-retry:hover {
+  border-color: var(--color-text-muted);
+}
+
+.btn-dev-start {
+  margin-top: var(--spacing-lg);
+  background: var(--color-warning, #f59e0b);
+  color: #000;
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  padding: var(--spacing-sm) var(--spacing-xl);
+  border: 2px dashed #000;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-dev-start:hover {
+  background: var(--color-warning-hover, #d97706);
 }
 </style>

@@ -10,7 +10,7 @@ const flash = useFlash();
 
 // Stream status polling
 const currentStreamer = ref<string | null>(null);
-const isOtherUserStreaming = computed(() => 
+const isOtherUserStreaming = computed(() =>
   currentStreamer.value !== null && currentStreamer.value !== authStore.user?.username
 );
 
@@ -111,7 +111,7 @@ async function handleStartStream(force = false) {
 }
 
 function handleStopStream() {
-  streamSocket.disconnect();
+  streamSocket.stopStream();
   audioCapture.stopCapture();
 }
 
@@ -121,7 +121,7 @@ function confirmTakeover() {
 
 async function handleTakeover() {
   showTakeoverModal.value = false;
-  
+
   if (!audioCapture.isCapturing.value) {
     // Need to get audio first
     const success = await audioCapture.captureScreenAudio();
@@ -151,6 +151,10 @@ onUnmounted(() => {
   if (statusInterval) {
     clearInterval(statusInterval);
   }
+  // Explicitly stop stream on page unmount (standalone page, not part of multi-step flow)
+  streamSocket.stopStream();
+  // Singleton: must explicitly stop capture when leaving standalone StreamPage
+  audioCapture.stopCapture();
 });
 </script>
 
@@ -185,11 +189,7 @@ onUnmounted(() => {
             <label for="device-select">Audio Source:</label>
             <select id="device-select" v-model="selectedDevice" class="device-select">
               <option value="">-- Select audio device --</option>
-              <option
-                v-for="device in audioCapture.devices.value"
-                :key="device.deviceId"
-                :value="device.deviceId"
-              >
+              <option v-for="device in audioCapture.devices.value" :key="device.deviceId" :value="device.deviceId">
                 {{ device.label }}
               </option>
             </select>
@@ -208,40 +208,24 @@ onUnmounted(() => {
         </template>
 
         <!-- Start Button (shown when audio ready, not streaming) -->
-        <BaseButton
-          v-if="audioCapture.isCapturing.value && streamSocket.state.value === 'disconnected'"
-          variant="primary"
-          size="lg"
-          @click="() => handleStartStream()"
-        >
+        <BaseButton v-if="audioCapture.isCapturing.value && streamSocket.state.value === 'disconnected'"
+          variant="primary" size="lg" @click="() => handleStartStream()">
           ▶️ Start Streaming
         </BaseButton>
 
         <!-- Stop Button (shown when live) -->
-        <BaseButton
-          v-if="streamSocket.state.value === 'live'"
-          variant="danger"
-          size="lg"
-          @click="handleStopStream"
-        >
+        <BaseButton v-if="streamSocket.state.value === 'live'" variant="danger" size="lg" @click="handleStopStream">
           ⏹️ Stop Streaming
         </BaseButton>
 
         <!-- Takeover Button (shown when another user is streaming) -->
-        <BaseButton
-          v-if="isOtherUserStreaming && streamSocket.state.value !== 'live'"
-          variant="secondary"
-          @click="confirmTakeover"
-        >
+        <BaseButton v-if="isOtherUserStreaming && streamSocket.state.value !== 'live'" variant="secondary"
+          @click="confirmTakeover">
           🔄 Take Over Stream
         </BaseButton>
 
         <!-- Retry Button (shown on error after max reconnects) -->
-        <BaseButton
-          v-if="streamSocket.state.value === 'error'"
-          variant="secondary"
-          @click="handleRetry"
-        >
+        <BaseButton v-if="streamSocket.state.value === 'error'" variant="secondary" @click="handleRetry">
           🔄 Retry Connection
         </BaseButton>
       </div>
@@ -319,10 +303,12 @@ onUnmounted(() => {
 }
 
 @keyframes pulse {
+
   0%,
   100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.5;
   }

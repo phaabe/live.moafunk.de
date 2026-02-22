@@ -32,8 +32,7 @@ const sendingTelegramPreview = ref(false);
 const uploadingToSoundCloud = ref(false);
 const togglingSoundCloudPrivacy = ref(false);
 const scStatus = ref<SoundCloudStatus | null>(null);
-const editingDate = ref(false);
-const editingStartTime = ref(false);
+const editingDateTime = ref(false);
 const editingDescription = ref(false);
 const editingAiBio = ref(false);
 const saving = ref(false);
@@ -169,49 +168,29 @@ async function loadShow() {
   }
 }
 
-// Date editing
-function startEditDate() {
+// Date & time editing
+function startEditDateTime() {
   if (show.value) {
     dateForm.value = show.value.date;
-  }
-  editingDate.value = true;
-}
-
-async function saveDate() {
-  if (!show.value) return;
-
-  saving.value = true;
-  try {
-    await showsApi.update(show.value.id, { date: dateForm.value });
-    flash.success('Date updated');
-    editingDate.value = false;
-    await loadShow();
-  } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to update date');
-  } finally {
-    saving.value = false;
-  }
-}
-
-// Start time editing
-function startEditStartTime() {
-  if (show.value) {
     startTimeForm.value = show.value.start_time || '';
   }
-  editingStartTime.value = true;
+  editingDateTime.value = true;
 }
 
-async function saveStartTime() {
+async function saveDateTime() {
   if (!show.value) return;
 
   saving.value = true;
   try {
-    await showsApi.update(show.value.id, { start_time: startTimeForm.value || undefined });
-    flash.success('Start time updated');
-    editingStartTime.value = false;
+    await showsApi.update(show.value.id, {
+      date: dateForm.value,
+      start_time: startTimeForm.value || undefined,
+    });
+    flash.success('Date & time updated');
+    editingDateTime.value = false;
     await loadShow();
   } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to update start time');
+    flash.error(e instanceof Error ? e.message : 'Failed to update date & time');
   } finally {
     saving.value = false;
   }
@@ -759,34 +738,19 @@ onUnmounted(() => {
             </div>
 
             <div class="edit-toggle-container">
-              <button type="button" class="btn-edit" @click="startEditDate" v-if="!editingDate">
-                Edit Date
-              </button>
-              <button type="button" class="btn-edit" @click="startEditStartTime" v-if="!editingStartTime"
-                style="margin-left: var(--spacing-sm)">
-                Edit Start Time
+              <button type="button" class="btn-edit" @click="startEditDateTime" v-if="!editingDateTime">
+                Edit Date & Time
               </button>
             </div>
 
-            <div v-if="editingDate" class="edit-panel">
+            <div v-if="editingDateTime" class="edit-panel">
               <div class="edit-row">
                 <input type="date" v-model="dateForm" class="date-input" />
-                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDate">
-                  Save Date
-                </BaseButton>
-                <BaseButton variant="ghost" size="sm" @click="editingDate = false">
-                  Cancel
-                </BaseButton>
-              </div>
-            </div>
-
-            <div v-if="editingStartTime" class="edit-panel">
-              <div class="edit-row">
                 <input type="time" v-model="startTimeForm" class="date-input" />
-                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveStartTime">
+                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDateTime">
                   Save
                 </BaseButton>
-                <BaseButton variant="ghost" size="sm" @click="editingStartTime = false">
+                <BaseButton variant="ghost" size="sm" @click="editingDateTime = false">
                   Cancel
                 </BaseButton>
               </div>
@@ -1014,7 +978,7 @@ onUnmounted(() => {
                       uploadProgress.percent }}%)
                   </span>
                   <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
-                    }}%</span>
+                  }}%</span>
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>

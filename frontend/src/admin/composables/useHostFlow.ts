@@ -67,6 +67,8 @@ const uploadProgress = ref<UploadProgress | null>(null);
 const liveSubStep = ref<LiveSubStep>('os-select');
 const liveTestPassed = ref(false);
 const selectedOs = ref<SelectedOs | null>(null);
+const showStarted = ref(false);
+const recordStream = ref(false);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Computed
@@ -99,7 +101,7 @@ function canNavigateTo(step: FlowStep): boolean {
         (uploadMode.value === 'live' && liveTestPassed.value)
       );
     case 'streaming':
-      return canNavigateTo('waiting');
+      return showStarted.value;
     default:
       return false;
   }
@@ -125,6 +127,7 @@ async function fetchMyShow(): Promise<void> {
       if (show.value?.prerecorded_confirmed_at) {
         // Already confirmed → go to confirm (they can review or go live)
         currentStep.value = 'confirm';
+        uploadMode.value = 'prerecorded';
       } else if (show.value?.prerecorded_key) {
         // Has upload but not confirmed → go to confirm step
         currentStep.value = 'confirm';
@@ -242,6 +245,14 @@ function setSelectedOs(os: SelectedOs): void {
   selectedOs.value = os;
 }
 
+function setShowStarted(started = true): void {
+  showStarted.value = started;
+}
+
+function setRecordStream(record: boolean): void {
+  recordStream.value = record;
+}
+
 function reset(): void {
   loaded.value = false;
   loading.value = false;
@@ -255,6 +266,8 @@ function reset(): void {
   liveSubStep.value = 'os-select';
   liveTestPassed.value = false;
   selectedOs.value = null;
+  showStarted.value = false;
+  recordStream.value = false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -276,6 +289,8 @@ export function useHostFlow() {
     liveSubStep: readonly(liveSubStep),
     liveTestPassed: readonly(liveTestPassed),
     selectedOs: readonly(selectedOs),
+    showStarted: readonly(showStarted),
+    recordStream: readonly(recordStream),
 
     // Computed
     hasUpload,
@@ -294,6 +309,8 @@ export function useHostFlow() {
     setLiveSubStep,
     setLiveTestPassed,
     setSelectedOs,
+    setShowStarted,
+    setRecordStream,
     reset,
   };
 }

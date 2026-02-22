@@ -22,12 +22,11 @@ const selectedOs = ref<SelectedOs | null>(flow.selectedOs.value);
 function selectOs(os: SelectedOs) {
   selectedOs.value = os;
   flow.setSelectedOs(os);
-}
-
-function goToTutorial() {
-  if (!selectedOs.value) return;
-  liveStep.value = 'tutorial';
-  flow.setLiveSubStep('tutorial');
+  // Brief delay so the selection animation is visible before navigating
+  setTimeout(() => {
+    liveStep.value = 'tutorial';
+    flow.setLiveSubStep('tutorial');
+  }, 350);
 }
 
 function goBackToMode() {
@@ -298,11 +297,15 @@ const canGoBackFromTest = computed(() =>
   testPhase.value === 'ready' || testPhase.value === 'done' || testPhase.value === 'error'
 );
 
+const isDev = import.meta.env.DEV;
+
 onUnmounted(() => {
   streamTest.cleanup();
   stopTestRecording();
   clearRecordProgress();
   revokePlaybackUrl();
+  // NOTE: do NOT call audioCapture.stopCapture() here —
+  // the singleton persists to FlowWaiting and FlowStreaming.
 });
 </script>
 
@@ -327,9 +330,6 @@ onUnmounted(() => {
 
       <div class="step-actions">
         <button class="btn-secondary" @click="goBackToMode">← Back</button>
-        <button class="btn-primary" :disabled="!selectedOs" @click="goToTutorial">
-          Next →
-        </button>
       </div>
     </template>
 
@@ -415,7 +415,7 @@ onUnmounted(() => {
           <div class="capture-status">
             <span class="status-dot active"></span>
             Audio captured — <strong>{{audioCapture.devices.value.find(d => d.deviceId ===
-              audioCapture.selectedDeviceId.value)?.label || 'Screen Audio' }}</strong>
+              audioCapture.selectedDeviceId.value)?.label || 'Screen Audio'}}</strong>
           </div>
           <div class="audio-level">
             <div class="audio-level-bar" :style="{ width: `${audioMeter.level.value}%` }"></div>
@@ -534,6 +534,11 @@ onUnmounted(() => {
           Continue to Waiting Room →
         </button>
       </div>
+
+      <!-- Dev-only: skip test entirely -->
+      <button v-if="isDev && !flow.liveTestPassed.value" class="btn-dev-skip" @click="markTestPassed">
+        🛠 Skip Test (dev)
+      </button>
 
       <div class="step-actions">
         <button class="btn-secondary" :disabled="!canGoBackFromTest" @click="goBackToTutorial">
@@ -971,5 +976,23 @@ onUnmounted(() => {
 
 .btn-link:hover {
   opacity: 0.8;
+}
+
+.btn-dev-skip {
+  margin-top: var(--spacing-md);
+  background: var(--color-warning, #f59e0b);
+  color: #000;
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  padding: var(--spacing-sm) var(--spacing-xl);
+  border: 2px dashed #000;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-dev-skip:hover {
+  background: var(--color-warning-hover, #d97706);
 }
 </style>

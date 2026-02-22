@@ -7,6 +7,7 @@ import {
   useAudioMeter,
   useStreamSocket,
 } from '@admin/composables';
+import { streamApi, recordingApi } from '@admin/api';
 
 const router = useRouter();
 const flow = useHostFlow();
@@ -30,6 +31,7 @@ function updateElapsed() {
 }
 
 // ─── Composables (live mode) ────────────────────────────────────────────────
+// Singleton: same instance that was set up in FlowLive and wired in FlowWaiting
 const audioCapture = isLive.value ? useAudioCapture() : null;
 const audioMeter = audioCapture ? useAudioMeter(audioCapture.mediaStream) : null;
 const streamSocket = useStreamSocket({
@@ -53,27 +55,69 @@ function updateVolume(event: Event) {
 const stopping = ref(false);
 function handleStop() {
   stopping.value = true;
-  streamSocket.disconnect();
+  streamSocket.stopStream();
   audioCapture?.stopCapture();
+  // Stop recording if active
+  if (isRecording.value) {
+    recordingApi.stop().catch(() => { });
+    isRecording.value = false;
+  }
   streamEnded.value = true;
   stopElapsed();
+}
+
+// Stop show (upload mode)
+function handleStopUpload() {
+  stopping.value = true;
+  streamEnded.value = true;
+  stopElapsed();
+  if (statusInterval) {
+    clearInterval(statusInterval);
+    statusInterval = null;
+  }
 }
 
 // ─── Upload mode: status polling ────────────────────────────────────────────
 const uploadStreamActive = ref(true);
 let statusInterval: ReturnType<typeof setInterval> | null = null;
 
-async function checkUploadStatus() {
-  // Simple check: poll the stream status endpoint
+// ─── Recording state ────────────────────────────────────────────────────────
+const isRecording = ref(flow.recordStream.value);
+const recordingElapsed = ref('');
+let recordingPollInterval: ReturnType<typeof setInterval> | null = null;
+
+async function pollRecordingStatus() {
   try {
-    const resp = await fetch('/api/stream-status');
-    if (resp.ok) {
-      const data = await resp.json();
-      uploadStreamActive.value = data.is_live === true;
-      if (!data.is_live) {
-        streamEnded.value = true;
-        stopElapsed();
-      }
+    const status = await recordingApi.status();
+    isRecording.value = status.is_recording;
+    if (status.is_recording && status.elapsed_ms) {
+      const sec = Math.floor(status.elapsed_ms / 1000);
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      recordingElapsed.value = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+  } catch {
+    // Ignore polling errors
+  }
+}
+
+async function stopRecording() {
+  try {
+    await recordingApi.stop();
+    isRecording.value = false;
+  } catch (err) {
+    console.warn('[FlowStreaming] Failed to stop recording:', err);
+  }
+}
+
+async function checkUploadStatus() {
+  // Poll the stream status endpoint (correct URL: /api/stream/status)
+  try {
+    const status = await streamApi.status();
+    uploadStreamActive.value = status.active === true;
+    if (!status.active) {
+      streamEnded.value = true;
+      stopElapsed();
     }
   } catch {
     // Ignore polling errors
@@ -117,6 +161,12 @@ onMounted(() => {
   if (!isLive.value) {
     statusInterval = setInterval(checkUploadStatus, 5000);
   }
+
+  // Poll recording status if recording was enabled
+  if (flow.recordStream.value) {
+    pollRecordingStatus();
+    recordingPollInterval = setInterval(pollRecordingStatus, 3000);
+  }
 });
 
 onUnmounted(() => {
@@ -124,6 +174,19 @@ onUnmounted(() => {
   if (statusInterval) {
     clearInterval(statusInterval);
     statusInterval = null;
+  }
+  if (recordingPollInterval) {
+    clearInterval(recordingPollInterval);
+    recordingPollInterval = null;
+  }
+  // Stop recording if still active
+  if (isRecording.value) {
+    recordingApi.stop().catch(() => { });
+  }
+  // Stop stream when leaving the streaming page (final step in flow)
+  if (isLive.value && !streamEnded.value) {
+    streamSocket.stopStream();
+    audioCapture?.stopCapture();
   }
 });
 </script>
@@ -154,6 +217,14 @@ onUnmounted(() => {
           <span class="status-label">LIVE</span>
         </div>
         <div class="elapsed-timer">{{ elapsedText }}</div>
+      </div>
+
+      <!-- Recording indicator -->
+      <div v-if="isRecording" class="recording-banner">
+        <span class="rec-dot"></span>
+        <span class="rec-label">REC</span>
+        <span v-if="recordingElapsed" class="rec-elapsed">{{ recordingElapsed }}</span>
+        <button class="btn-stop-rec" @click="stopRecording">Stop Recording</button>
       </div>
 
       <!-- Show info -->
@@ -207,6 +278,13 @@ onUnmounted(() => {
           <p class="upload-status-hint">
             The backend is handling playback automatically. You can close this page safely.
           </p>
+        </div>
+
+        <!-- Stop show button -->
+        <div class="stop-section">
+          <button class="btn-stop" :disabled="stopping" @click="handleStopUpload">
+            {{ stopping ? 'Stopping...' : '⏹ Stop Show' }}
+          </button>
         </div>
       </template>
 
@@ -329,6 +407,69 @@ onUnmounted(() => {
   font-weight: var(--font-weight-bold);
   font-variant-numeric: tabular-nums;
   color: var(--color-text);
+}
+
+/* ─── Recording banner ───────────────────────────────────────────────────── */
+.recording-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  margin-bottom: var(--spacing-xl);
+}
+
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: pulse-rec 1s ease-in-out infinite;
+}
+
+@keyframes pulse-rec {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.rec-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  color: #ef4444;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.rec-elapsed {
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.btn-stop-rec {
+  margin-left: auto;
+  background: none;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+  padding: 2px var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-family);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-stop-rec:hover {
+  background: rgba(239, 68, 68, 0.1);
 }
 
 /* ─── Show card ──────────────────────────────────────────────────────────── */

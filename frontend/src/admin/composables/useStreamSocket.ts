@@ -1,4 +1,4 @@
-import { ref, onUnmounted } from 'vue';
+import { ref } from 'vue';
 
 export type StreamConnectionState = 'disconnected' | 'connecting' | 'connected' | 'live' | 'error';
 
@@ -10,15 +10,35 @@ export interface UseStreamSocketOptions {
   onLive?: () => void;
 }
 
+// ─── Singleton state (shared across components / route navigations) ─────────
+const state = ref<StreamConnectionState>('disconnected');
+const error = ref<string | null>(null);
+const reconnectAttempts = ref(0);
+
+let socket: WebSocket | null = null;
+let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+let currentCallbacks: {
+  onConnected?: () => void;
+  onDisconnected?: () => void;
+  onError?: (error: string) => void;
+  onLive?: () => void;
+} = {};
+
+// ─── Browser close safety net: send 'stop' if page is unloaded ─────────────
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send('stop');
+      socket.close(1000, 'Page unload');
+    }
+  });
+}
+
 export function useStreamSocket(options: UseStreamSocketOptions = {}) {
   const { maxReconnectAttempts = 3, onConnected, onDisconnected, onError, onLive } = options;
 
-  const state = ref<StreamConnectionState>('disconnected');
-  const error = ref<string | null>(null);
-  const reconnectAttempts = ref(0);
-
-  let socket: WebSocket | null = null;
-  let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  // Update callbacks so the currently-mounted component receives events
+  currentCallbacks = { onConnected, onDisconnected, onError, onLive };
 
   function connect(force = false): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -39,7 +59,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       socket.onopen = () => {
         console.log('[StreamSocket] Connected');
         state.value = 'connected';
-        onConnected?.();
+        currentCallbacks.onConnected?.();
         resolve();
       };
 
@@ -47,12 +67,12 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
         const msg = event.data;
         if (msg === 'connected') {
           state.value = 'live';
-          onLive?.();
+          currentCallbacks.onLive?.();
         } else if (typeof msg === 'string' && msg.startsWith('error:')) {
           const errMsg = msg.substring(7);
           error.value = errMsg;
           state.value = 'error';
-          onError?.(errMsg);
+          currentCallbacks.onError?.(errMsg);
         }
       };
 
@@ -72,8 +92,10 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
           reconnectAttempts.value++;
           const delay = Math.pow(2, reconnectAttempts.value - 1) * 1000;
           state.value = 'connecting';
-          console.log(`[StreamSocket] Reconnecting in ${delay}ms (${reconnectAttempts.value}/${maxReconnectAttempts})`);
-          
+          console.log(
+            `[StreamSocket] Reconnecting in ${delay}ms (${reconnectAttempts.value}/${maxReconnectAttempts})`
+          );
+
           reconnectTimeout = setTimeout(() => {
             connect(force).catch(() => {});
           }, delay);
@@ -84,7 +106,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
           state.value = 'disconnected';
         }
 
-        onDisconnected?.();
+        currentCallbacks.onDisconnected?.();
       };
     });
   }
@@ -97,14 +119,20 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     return true;
   }
 
-  function disconnect() {
+  /**
+   * Explicitly stop the stream: sends 'stop' command to backend, then closes.
+   * Use this ONLY for the explicit "Stop Streaming" user action.
+   */
+  function stopStream() {
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
       reconnectTimeout = null;
     }
 
     if (socket) {
-      socket.send('stop');
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send('stop');
+      }
       socket.close(1000, 'User stopped');
       socket = null;
     }
@@ -114,13 +142,40 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     error.value = null;
   }
 
+  /**
+   * Close the socket without sending 'stop' — safe for component cleanup / unmount.
+   * The stream continues on the backend until explicitly stopped.
+   */
+  function cleanup() {
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
+    }
+
+    if (socket) {
+      // Close cleanly without telling the backend to stop
+      socket.close(1000, 'Component cleanup');
+      socket = null;
+    }
+
+    reconnectAttempts.value = 0;
+    state.value = 'disconnected';
+    error.value = null;
+  }
+
+  /**
+   * @deprecated Use stopStream() for explicit stops or cleanup() for unmount.
+   */
+  function disconnect() {
+    stopStream();
+  }
+
   function resetReconnect() {
     reconnectAttempts.value = 0;
   }
 
-  onUnmounted(() => {
-    disconnect();
-  });
+  // NOTE: No onUnmounted hook — callers manage their own lifecycle.
+  // This allows the socket to survive route navigations (e.g. FlowWaiting → FlowStreaming).
 
   return {
     state,
@@ -129,6 +184,8 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     maxReconnectAttempts,
     connect,
     send,
+    stopStream,
+    cleanup,
     disconnect,
     resetReconnect,
   };

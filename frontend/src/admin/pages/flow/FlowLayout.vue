@@ -47,9 +47,7 @@ const showProgressBar = computed(() =>
 );
 
 onMounted(async () => {
-  if (!flow.loaded.value) {
-    await flow.fetchMyShow();
-  }
+  await flow.fetchMyShow();
 });
 
 function navigateToStep(step: FlowStep) {
@@ -109,8 +107,14 @@ function navigateToStep(step: FlowStep) {
 
 /* Progress bar */
 .flow-progress {
+  position: fixed;
+  top: calc(var(--nav-height, 48px) + var(--spacing-md, 12px));
+  left: 0;
+  right: 0;
+  z-index: 100;
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
+  border-top: 1px solid var(--color-border);
   padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-xl);
 }
 
@@ -202,6 +206,7 @@ function navigateToStep(step: FlowStep) {
   justify-content: center;
   color: var(--color-text-muted);
   font-size: var(--font-size-lg);
+  padding-top: calc(80px + var(--spacing-xl));
 }
 
 /* Content */
@@ -211,5 +216,6 @@ function navigateToStep(step: FlowStep) {
   width: 100%;
   margin: 0 auto;
   padding: var(--spacing-xl) var(--spacing-lg);
+  padding-top: calc(80px + var(--spacing-xl));
 }
 </style>

@@ -1953,6 +1953,7 @@ pub struct ShowDetailResponse {
     id: i64,
     title: String,
     date: String,
+    start_time: Option<String>,
     description: Option<String>,
     ai_bio: Option<String>,
     status: String,
@@ -2551,6 +2552,7 @@ pub async fn api_show_detail(
         id: show.id,
         title: show.title,
         date: show.date,
+        start_time: show.start_time,
         description: show.description,
         ai_bio: show.ai_bio,
         status: show.status,
@@ -4095,6 +4097,7 @@ pub struct MyShowInfo {
     description: Option<String>,
     show_type: String,
     artists: Vec<MyShowArtist>,
+    cover_url: Option<String>,
     prerecorded_key: Option<String>,
     prerecorded_filename: Option<String>,
     prerecorded_url: Option<String>,
@@ -4193,6 +4196,16 @@ pub async fn api_my_show(
         None
     };
 
+    // Generate presigned URL for cover image if it was generated
+    let cover_url = if show.cover_generated_at.is_some() {
+        let cover_key = format!("shows/{}/cover.png", show.id);
+        storage::get_presigned_url(&state, &cover_key, 3600)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
     Ok(Json(MyShowResponse {
         assigned: true,
         show: Some(MyShowInfo {
@@ -4203,6 +4216,7 @@ pub async fn api_my_show(
             description: show.description,
             show_type: show.show_type,
             artists,
+            cover_url,
             prerecorded_key: show.prerecorded_key,
             prerecorded_filename: show.prerecorded_filename,
             prerecorded_url,

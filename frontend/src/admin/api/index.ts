@@ -847,6 +847,7 @@ export interface MyShowInfo {
   description?: string;
   show_type: string;
   artists: MyShowArtist[];
+  cover_url?: string;
   prerecorded_key?: string;
   prerecorded_url?: string;
   prerecorded_filename?: string;

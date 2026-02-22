@@ -5,6 +5,7 @@ import { isIOSDevice } from './streamDetector';
 let video: HTMLMediaElement | null = null;
 let btn: HTMLElement | null = null;
 let isLive = false;
+let flvPlayer: ReturnType<typeof flvjs.createPlayer> | null = null;
 
 /**
  * Initializes the appropriate video player based on platform
@@ -19,6 +20,8 @@ export function initializePlayer(): void {
       video.addEventListener('error', () => {
         console.log('HLS stream error - stream may be offline');
       });
+      // Set the HLS source explicitly (re-applies on restart)
+      video.src = config.stream.hls;
     }
   } else if (flvjs.isSupported()) {
     console.log('flv.js is supported - using FLV player');
@@ -26,7 +29,7 @@ export function initializePlayer(): void {
     video = videoElement;
 
     try {
-      const flvPlayer = flvjs.createPlayer({
+      flvPlayer = flvjs.createPlayer({
         type: 'flv',
         url: config.stream.flv,
       });
@@ -45,6 +48,46 @@ export function initializePlayer(): void {
   } else {
     console.log(`Platform ${navigator.platform} not supported for streaming!`);
   }
+}
+
+/**
+ * Destroy the current player instance to free resources.
+ * Call before restartPlayer() on live→offline transitions.
+ */
+export function destroyPlayer(): void {
+  // Reset play button
+  btn = document.getElementById('btn-play');
+  if (btn) btn.className = 'btn';
+
+  if (flvPlayer) {
+    try {
+      flvPlayer.pause();
+      flvPlayer.unload();
+      flvPlayer.detachMediaElement();
+      flvPlayer.destroy();
+    } catch (e) {
+      console.log('Error destroying FLV player:', e);
+    }
+    flvPlayer = null;
+  }
+
+  if (video) {
+    video.pause();
+    // For HLS (iOS), clear the source
+    if (isIOSDevice()) {
+      video.removeAttribute('src');
+      video.load();
+    }
+  }
+}
+
+/**
+ * Create a fresh player instance. Use on offline→live transitions
+ * to avoid stale FLV.js buffer state.
+ */
+export function restartPlayer(): void {
+  destroyPlayer();
+  initializePlayer();
 }
 
 /**

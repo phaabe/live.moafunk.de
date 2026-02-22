@@ -75,9 +75,7 @@ const router = createRouter({
           beforeEnter: async (_to, _from, next) => {
             const { useHostFlow } = await import('./composables');
             const flow = useHostFlow();
-            if (!flow.loaded.value) {
-              await flow.fetchMyShow();
-            }
+            await flow.fetchMyShow();
             const stepRouteMap: Record<string, string> = {
               'not-assigned': '/stream/not-assigned',
               info: '/stream/info',
