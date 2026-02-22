@@ -610,17 +610,6 @@ pub async fn get_recording_version(
     .await
 }
 
-/// Get a recording version by ID
-pub async fn get_recording_version_by_id(
-    pool: &SqlitePool,
-    id: i64,
-) -> Result<Option<RecordingVersion>, sqlx::Error> {
-    sqlx::query_as::<_, RecordingVersion>("SELECT * FROM recording_versions WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-}
-
 /// List all recording versions for a show (ordered by created_at descending)
 pub async fn list_recording_versions(
     pool: &SqlitePool,
@@ -631,19 +620,6 @@ pub async fn list_recording_versions(
     )
     .bind(show_id)
     .fetch_all(pool)
-    .await
-}
-
-/// Get the latest recording version for a show
-pub async fn get_latest_recording_version(
-    pool: &SqlitePool,
-    show_id: i64,
-) -> Result<Option<RecordingVersion>, sqlx::Error> {
-    sqlx::query_as::<_, RecordingVersion>(
-        "SELECT * FROM recording_versions WHERE show_id = ? ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(show_id)
-    .fetch_optional(pool)
     .await
 }
 
@@ -686,35 +662,6 @@ pub async fn finalize_recording_version(
     .bind(id)
     .execute(pool)
     .await?;
-    Ok(())
-}
-
-/// Update recording version duration
-pub async fn update_recording_version_duration(
-    pool: &SqlitePool,
-    id: i64,
-    duration_ms: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        UPDATE recording_versions
-        SET duration_ms = ?, updated_at = datetime('now')
-        WHERE id = ?
-        "#,
-    )
-    .bind(duration_ms)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Delete a recording version
-pub async fn delete_recording_version(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM recording_versions WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
     Ok(())
 }
 

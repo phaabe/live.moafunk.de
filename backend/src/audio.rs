@@ -246,42 +246,6 @@ pub async fn get_duration<P: AsRef<Path>>(path: P) -> Result<u64> {
     }
 }
 
-/// Get the duration of audio data from raw bytes using ffprobe.
-///
-/// Creates a temporary file, probes it, and cleans up.
-///
-/// # Arguments
-/// * `data` - The raw audio file bytes
-/// * `filename_hint` - A filename hint for determining the format (extension)
-///
-/// # Returns
-/// * `Ok(u64)` - Duration in milliseconds
-/// * `Err(AppError)` - If ffprobe fails or duration cannot be parsed
-pub async fn get_duration_from_bytes(data: &[u8], filename_hint: &str) -> Result<u64> {
-    let temp_dir = std::env::temp_dir();
-    let unique_id = uuid::Uuid::new_v4().to_string();
-
-    let ext = Path::new(filename_hint)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("bin");
-
-    let temp_path = temp_dir.join(format!("audio_probe_{}.{}", unique_id, ext));
-
-    // Write data to temp file
-    tokio::fs::write(&temp_path, data)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to write temp file: {}", e)))?;
-
-    // Get duration
-    let result = get_duration(&temp_path).await;
-
-    // Clean up
-    let _ = tokio::fs::remove_file(&temp_path).await;
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

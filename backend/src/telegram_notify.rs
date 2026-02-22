@@ -331,46 +331,6 @@ pub async fn edit_message_media_raw(
     Ok(())
 }
 
-/// Edit (or remove) the reply markup (inline keyboard) of an existing message.
-///
-/// Pass `None` to remove all buttons.
-pub async fn edit_message_reply_markup_raw(
-    token: &str,
-    chat_id: i64,
-    message_id: i64,
-    reply_markup: Option<&str>,
-) -> Result<(), String> {
-    let mut body = serde_json::json!({
-        "chat_id": chat_id,
-        "message_id": message_id,
-    });
-
-    if let Some(markup) = reply_markup {
-        let markup_val: serde_json::Value =
-            serde_json::from_str(markup).map_err(|e| format!("reply_markup JSON parse: {e}"))?;
-        body["reply_markup"] = markup_val;
-    }
-
-    let url = format!("https://api.telegram.org/bot{token}/editMessageReplyMarkup");
-    let resp: TgResponse = reqwest::Client::new()
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("editMessageReplyMarkup request failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("editMessageReplyMarkup response parse failed: {e}"))?;
-
-    if !resp.ok {
-        return Err(format!(
-            "editMessageReplyMarkup API error: {}",
-            resp.description.unwrap_or_default()
-        ));
-    }
-    Ok(())
-}
-
 /// Send a text message via the Telegram Bot API using raw JSON POST.
 ///
 /// Returns the sent message ID on success.

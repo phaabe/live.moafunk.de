@@ -428,12 +428,6 @@ async function assignHost() {
     // Update local state
     show.value.host_user_id = response.host_user_id;
     show.value.host_username = response.host_username;
-    // Remove from available list
-    if (show.value.available_hosts) {
-      show.value.available_hosts = show.value.available_hosts.filter(
-        h => h.id !== response.host_user_id
-      );
-    }
     selectedHostId.value = null;
     flash.success(`Host "${response.host_username}" assigned to show`);
   } catch (e) {
@@ -447,22 +441,11 @@ async function unassignHost() {
   if (!show.value || !show.value.host_user_id) return;
 
   try {
-    const removedHost = {
-      id: show.value.host_user_id,
-      username: show.value.host_username || '',
-    };
-
     await showsApi.unassignHost(show.value.id);
 
     // Update local state
     show.value.host_user_id = undefined;
     show.value.host_username = undefined;
-    // Add back to available list
-    if (show.value.available_hosts) {
-      show.value.available_hosts = [...show.value.available_hosts, removedHost].sort(
-        (a, b) => a.username.localeCompare(b.username)
-      );
-    }
     flash.success('Host removed from show');
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to remove host');

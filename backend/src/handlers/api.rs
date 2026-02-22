@@ -2494,17 +2494,14 @@ pub async fn api_show_detail(
             None
         };
 
-        // Available hosts: users with role 'host' or 'admin' not already assigned to another show
+        // Available hosts: all users with role 'host' or 'admin'
         let hosts: Vec<AvailableHost> = sqlx::query_as(
             r#"
             SELECT u.id, u.username FROM users u
             WHERE u.role IN ('host', 'admin')
-              AND (u.id NOT IN (SELECT host_user_id FROM shows WHERE host_user_id IS NOT NULL)
-                   OR u.id = ?)
             ORDER BY u.username COLLATE NOCASE
             "#,
         )
-        .bind(show.host_user_id.unwrap_or(-1))
         .fetch_all(&state.db)
         .await?;
 
@@ -3029,20 +3026,6 @@ pub async fn api_show_assign_host(
     if user.role != "host" && user.role != "admin" {
         return Err(AppError::BadRequest(
             "Only users with role 'host' or 'admin' can be assigned to shows".to_string(),
-        ));
-    }
-
-    // Check if this host is already assigned to another show
-    let existing: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM shows WHERE host_user_id = ? AND id != ?")
-            .bind(req.user_id)
-            .bind(show_id)
-            .fetch_optional(&state.db)
-            .await?;
-
-    if existing.is_some() {
-        return Err(AppError::BadRequest(
-            "This host is already assigned to another show".to_string(),
         ));
     }
 
