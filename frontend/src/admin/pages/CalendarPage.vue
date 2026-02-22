@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
-import { Calendar } from 'v-calendar';
+import { useRouter, useRoute } from 'vue-router';
 import { showsApi, type Show } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import { useFlash } from '../composables/useFlash';
 import ShowList from '../components/ShowList.vue';
+import MonthCalendar from '../components/MonthCalendar.vue';
 
 const router = useRouter();
+const route = useRoute();
 const flash = useFlash();
 
 const shows = ref<Show[]>([]);
@@ -16,7 +17,10 @@ const error = ref<string | null>(null);
 
 // View mode
 type ViewMode = 'month' | 'week' | 'list';
-const viewMode = ref<ViewMode>('month');
+const initialView = (['month', 'week', 'list'].includes(route.query.view as string)
+  ? route.query.view as ViewMode
+  : 'month');
+const viewMode = ref<ViewMode>(initialView);
 
 // Selected date state
 const selectedDate = ref<string | null>(null);
@@ -106,47 +110,6 @@ const showCreateModal = ref(false);
 const creating = ref(false);
 const newShow = ref({ title: '', date: '', start_time: '', description: '', show_type: 'unheard' });
 
-// Map shows to v-calendar attributes (dots on dates)
-const calendarAttributes = computed(() => {
-  const attrs: Record<string, unknown>[] = [];
-
-  // Highlight today
-  attrs.push({
-    key: 'today',
-    highlight: {
-      color: 'yellow',
-      fillMode: 'solid',
-    },
-    dates: new Date(),
-  });
-
-  for (const show of shows.value) {
-    const daysUntil = getDaysUntil(show.date);
-    let color = 'yellow'; // default: unheard
-    if (daysUntil < 0) {
-      color = 'gray'; // past
-    } else {
-      const type = show.show_type || 'unheard';
-      if (type === 'brunchtime') color = 'green';
-      else if (type === 'external') color = 'blue';
-      else color = 'yellow'; // unheard
-    }
-
-    attrs.push({
-      key: `show-${show.id}`,
-      dot: { color, class: 'show-dot' },
-      dates: new Date(show.date + 'T12:00:00'),
-      popover: {
-        label: show.title,
-        visibility: 'hover' as const,
-      },
-      customData: show,
-    });
-  }
-
-  return attrs;
-});
-
 // Shows for a selected date
 const showsOnSelectedDate = computed(() => {
   if (!selectedDate.value) return [];
@@ -192,9 +155,8 @@ function isToday(dateStr: string): boolean {
   return dateStr === toDateStr(new Date());
 }
 
-function onDayClick(day: { id: string; date: Date }) {
-  const date = day.date;
-  selectedDate.value = toDateStr(date);
+function onDayClick(dateStr: string) {
+  selectedDate.value = dateStr;
 }
 
 function openCreateModal(prefilledDate?: string) {
@@ -266,14 +228,7 @@ onMounted(loadShows);
     <!-- ===== MONTH VIEW ===== -->
     <div v-else-if="viewMode === 'month'" class="calendar-layout">
       <div class="calendar-card card">
-        <Calendar :attributes="calendarAttributes" :is-dark="true" :first-day-of-week="2" is-expanded
-          @dayclick="onDayClick" />
-        <div class="calendar-legend">
-          <span class="legend-item"><span class="legend-dot dot-yellow"></span> UNHEARD</span>
-          <span class="legend-item"><span class="legend-dot dot-green"></span> Brunchtime</span>
-          <span class="legend-item"><span class="legend-dot dot-blue"></span> External</span>
-          <span class="legend-item"><span class="legend-dot dot-gray"></span> Past</span>
-        </div>
+        <MonthCalendar :shows="shows" @day-click="onDayClick" />
       </div>
 
       <!-- Day detail sidebar -->
@@ -350,11 +305,11 @@ onMounted(loadShows);
               <span :class="['week-show-dot', getDotColor(show)]"></span>
               <div class="week-show-info">
                 <span class="week-show-title">{{ show.title }}</span>
-                <span class="week-show-artists text-muted">
+                <span v-if="show.show_type === 'unheard' || !show.show_type" class="week-show-artists text-muted">
                   {{show.artists.map((a) => a.name).join(', ') || '—'}}
                 </span>
               </div>
-              <span :class="[
+              <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
                 'badge',
                 'artist-badge',
                 {
@@ -478,231 +433,6 @@ onMounted(loadShows);
   grid-template-columns: 1fr 360px;
   gap: var(--spacing-lg);
   align-items: start;
-}
-
-/* Calendar card */
-.calendar-card {
-  overflow: hidden;
-}
-
-/* v-calendar dark theme overrides */
-.calendar-card :deep(.vc-container) {
-  --vc-bg: var(--color-surface);
-  --vc-border: var(--color-border);
-  --vc-color: var(--color-text);
-  --vc-font-family: var(--font-family);
-  --vc-text-lg: var(--font-size-lg);
-  --vc-text-base: var(--font-size-base);
-  --vc-text-sm: var(--font-size-sm);
-  --vc-white: var(--color-text);
-  /* Accent scale (yellow primary) */
-  --vc-accent-50: rgba(255, 236, 68, 0.05);
-  --vc-accent-100: rgba(255, 236, 68, 0.1);
-  --vc-accent-200: rgba(255, 236, 68, 0.2);
-  --vc-accent-300: rgba(255, 236, 68, 0.3);
-  --vc-accent-400: rgba(255, 236, 68, 0.5);
-  --vc-accent-500: #ffec44;
-  --vc-accent-600: #ffec44;
-  --vc-accent-700: #e6d43e;
-  --vc-accent-800: #ccbc37;
-  --vc-accent-900: #b3a530;
-  /* Gray scale: keep 50=lightest, 900=darkest for v-calendar internals */
-  --vc-gray-50: rgba(255, 255, 255, 0.05);
-  --vc-gray-100: rgba(255, 255, 255, 0.08);
-  --vc-gray-200: rgba(255, 255, 255, 0.12);
-  --vc-gray-300: var(--color-border);
-  --vc-gray-400: var(--color-border-light);
-  --vc-gray-500: var(--color-text-muted);
-  --vc-gray-600: #aaa;
-  --vc-gray-700: var(--color-border);
-  --vc-gray-800: var(--color-surface-alt);
-  --vc-gray-900: var(--color-surface);
-  /* Header */
-  --vc-header-title-color: var(--color-text);
-  --vc-header-arrow-color: var(--color-text-muted);
-  --vc-header-arrow-hover-bg: var(--color-surface-hover);
-  /* Weekdays */
-  --vc-weekday-color: var(--color-text-muted);
-  /* Popover (month/year picker, day popover) */
-  --vc-popover-content-color: var(--color-text);
-  --vc-popover-content-bg: var(--color-surface-alt);
-  --vc-popover-content-border: var(--color-border);
-  /* Nav (month/year grid) */
-  --vc-nav-hover-bg: var(--color-surface-hover);
-  --vc-nav-title-color: var(--color-text);
-  --vc-nav-item-active-color: var(--color-primary-text);
-  --vc-nav-item-active-bg: var(--color-primary);
-  --vc-nav-item-current-color: var(--color-primary);
-  /* Hover */
-  --vc-hover-bg: var(--color-surface-hover);
-  background: var(--color-surface);
-  border: none;
-  width: 100%;
-}
-
-.calendar-card :deep(.vc-header) {
-  padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-xl);
-}
-
-.calendar-card :deep(.vc-header .vc-title),
-.calendar-card :deep(.vc-header .vc-prev),
-.calendar-card :deep(.vc-header .vc-next) {
-  background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  font-family: var(--font-family);
-  color: var(--color-text-muted);
-}
-
-.calendar-card :deep(.vc-header .vc-title) {
-  color: var(--color-text);
-  font-weight: var(--font-weight-bold);
-}
-
-.calendar-card :deep(.vc-header .vc-title:hover),
-.calendar-card :deep(.vc-header .vc-prev:hover),
-.calendar-card :deep(.vc-header .vc-next:hover) {
-  background: var(--color-surface-hover);
-}
-
-/* Nav popover (month/year picker) */
-.calendar-card :deep(.vc-popover-content) {
-  background: var(--color-surface-alt) !important;
-  border-color: var(--color-border) !important;
-  color: var(--color-text);
-  font-family: var(--font-family);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-}
-
-.calendar-card :deep(.vc-nav-title),
-.calendar-card :deep(.vc-nav-arrow) {
-  font-family: var(--font-family);
-  color: var(--color-text);
-  background: transparent;
-}
-
-.calendar-card :deep(.vc-nav-title:hover),
-.calendar-card :deep(.vc-nav-arrow:hover) {
-  background: var(--color-surface-hover) !important;
-}
-
-.calendar-card :deep(.vc-nav-item) {
-  font-family: var(--font-family);
-  color: var(--color-text-muted);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-}
-
-.calendar-card :deep(.vc-nav-item:hover) {
-  background: var(--color-surface-hover) !important;
-  color: var(--color-text);
-}
-
-.calendar-card :deep(.vc-nav-item.is-active) {
-  color: var(--color-primary-text) !important;
-  background: var(--color-primary) !important;
-  border-color: var(--color-primary) !important;
-}
-
-.calendar-card :deep(.vc-nav-item.is-current) {
-  color: var(--color-primary) !important;
-  border-color: var(--color-primary) !important;
-}
-
-.calendar-card :deep(.vc-weekday) {
-  color: var(--color-text-muted);
-  font-family: var(--font-family);
-  font-weight: var(--font-weight-medium);
-}
-
-.calendar-card :deep(.vc-day) {
-  min-height: 60px;
-}
-
-.calendar-card :deep(.vc-day-content) {
-  font-family: var(--font-family);
-  color: var(--color-text);
-  border-radius: var(--radius-md);
-  width: 32px;
-  height: 32px;
-  transition: background var(--transition-fast);
-}
-
-.calendar-card :deep(.vc-day-content:hover) {
-  background: var(--color-surface-hover);
-}
-
-.calendar-card :deep(.vc-day-content:focus) {
-  background: var(--color-surface-alt);
-}
-
-.calendar-card :deep(.vc-highlight) {
-  background: var(--color-primary) !important;
-  border-radius: var(--radius-md);
-}
-
-.calendar-card :deep(.vc-highlight + .vc-day-content),
-.calendar-card :deep(.vc-day.is-today .vc-day-content),
-.calendar-card :deep(.vc-highlights + .vc-day-content) {
-  color: #000 !important;
-}
-
-.calendar-card :deep(.vc-dot) {
-  width: 8px;
-  height: 8px;
-}
-
-/* v-calendar popover dark theme */
-.calendar-card :deep(.vc-popover-content) {
-  background: var(--color-surface-alt);
-  border: 1px solid var(--color-border);
-  color: var(--color-text);
-  font-family: var(--font-family);
-  border-radius: var(--radius-md);
-}
-
-/* Legend */
-.calendar-legend {
-  display: flex;
-  gap: var(--spacing-lg);
-  padding: var(--spacing-md) var(--spacing-lg);
-  border-top: 1px solid var(--color-border);
-  justify-content: center;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-xs);
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.legend-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.dot-yellow {
-  background-color: #ffec44;
-}
-
-.dot-orange {
-  background-color: #ff9500;
-}
-
-.dot-green {
-  background-color: #34c759;
-}
-
-.dot-blue {
-  background-color: #3478f6;
-}
-
-.dot-gray {
-  background-color: #888;
 }
 
 /* Day detail sidebar */
@@ -1101,11 +831,6 @@ onMounted(loadShows);
 
   .day-detail {
     position: static;
-  }
-
-  .calendar-legend {
-    flex-wrap: wrap;
-    gap: var(--spacing-md);
   }
 
   .week-grid {

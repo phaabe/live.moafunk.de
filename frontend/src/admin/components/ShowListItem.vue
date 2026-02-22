@@ -52,13 +52,15 @@ const daysUntil = getDaysUntil(props.show.date);
     </div>
     <div class="list-show-info">
       <span class="list-show-title">{{ show.title }}</span>
-      <span class="list-show-artists text-muted">
+      <span v-if="show.show_type === 'unheard' || !show.show_type" class="list-show-artists text-muted">
         {{show.artists.map((a) => a.name).join(', ') || 'No artists assigned'}}
       </span>
     </div>
     <div class="list-show-meta">
-      <span :class="['legend-dot', getDotColor(show)]"></span>
-      <span :class="[
+      <span :class="['badge', 'show-type-badge', `type-${show.show_type || 'unheard'}`]">
+        {{ (show.show_type || 'unheard').toUpperCase() }}
+      </span>
+      <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
         'badge',
         'artist-badge',
         {
@@ -113,12 +115,47 @@ const daysUntil = getDaysUntil(props.show.date);
   min-width: 0;
 }
 
+.list-show-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 0;
+}
+
 .list-show-title {
   color: var(--color-primary);
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.show-type-badge {
+  font-size: var(--font-size-xs, 0.65rem);
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-sm);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.type-unheard {
+  background-color: rgba(255, 236, 68, 0.2);
+  color: #ffec44;
+  border: 1px solid #ffec44;
+}
+
+.type-brunchtime {
+  background-color: rgba(52, 199, 89, 0.2);
+  color: #34c759;
+  border: 1px solid #34c759;
+}
+
+.type-external {
+  background-color: rgba(52, 120, 246, 0.2);
+  color: #3478f6;
+  border: 1px solid #3478f6;
 }
 
 .list-show-artists {

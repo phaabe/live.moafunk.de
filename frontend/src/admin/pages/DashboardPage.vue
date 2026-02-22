@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { showsApi, streamApi, settingsApi, type Show, type StreamStatus } from '../api';
 import ShowList from '../components/ShowList.vue';
+import MonthCalendar from '../components/MonthCalendar.vue';
 
 const router = useRouter();
 
@@ -137,19 +138,32 @@ onUnmounted(() => {
           </template>
         </div>
       </div>
-    </div>
 
-    <!-- Next Shows Card (full width) -->
-    <div class="card dashboard-card dashboard-shows-card">
-      <div class="card-header">
-        <h2 class="card-title">📅 Upcoming Shows</h2>
-        <router-link to="/calendar" class="view-all-link">View all →</router-link>
+      <!-- Month View Card -->
+      <div class="card dashboard-card calendar-month-card">
+        <div class="card-header">
+          <h2 class="card-title">📅 Month</h2>
+          <router-link to="/calendar" class="view-all-link">Open calendar →</router-link>
+        </div>
+        <div class="card-body card-body-flush">
+          <div v-if="showsLoading" class="loading-spinner"></div>
+          <MonthCalendar v-else class="compact" :shows="shows"
+            @day-click="(dateStr: string) => router.push(`/calendar?date=${dateStr}`)" />
+        </div>
       </div>
-      <div class="card-body">
-        <div v-if="showsLoading" class="loading-spinner"></div>
-        <ShowList v-else :shows="shows" :limit="10" filter="upcoming" @show-click="goToShow" />
+
+      <!-- List View Card -->
+      <div class="card dashboard-card dashboard-shows-card">
+        <div class="card-header">
+          <h2 class="card-title">📋 Upcoming Shows</h2>
+          <router-link to="/calendar?view=list" class="view-all-link">View all →</router-link>
+        </div>
+        <div class="card-body">
+          <div v-if="showsLoading" class="loading-spinner"></div>
+          <ShowList v-else :shows="shows" :limit="3" filter="upcoming" @show-click="goToShow" />
+        </div>
       </div>
-    </div>
+    </div><!-- end dashboard-grid -->
   </div>
 </template>
 
@@ -162,7 +176,6 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--spacing-lg);
-  margin-bottom: var(--spacing-lg);
 }
 
 .dashboard-card {
@@ -285,6 +298,20 @@ onUnmounted(() => {
   padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
 }
 
+/* Cards in second row should align to top */
+.calendar-month-card,
+.dashboard-shows-card {
+  align-self: start;
+}
+
+.card-body-flush {
+  padding: 0;
+}
+
+.calendar-month-card .card-body-flush {
+  overflow: hidden;
+}
+
 .view-all-link {
   font-size: var(--font-size-sm);
   color: var(--color-primary);
@@ -315,5 +342,7 @@ onUnmounted(() => {
   .dashboard-grid {
     grid-template-columns: 1fr;
   }
+
+
 }
 </style>
