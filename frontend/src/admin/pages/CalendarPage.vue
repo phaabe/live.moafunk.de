@@ -4,7 +4,6 @@ import { useRouter, useRoute } from 'vue-router';
 import { showsApi, type Show } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import { useFlash } from '../composables/useFlash';
-import ShowList from '../components/ShowList.vue';
 import MonthCalendar from '../components/MonthCalendar.vue';
 
 const router = useRouter();
@@ -16,8 +15,8 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 
 // View mode
-type ViewMode = 'month' | 'week' | 'list';
-const initialView = (['month', 'week', 'list'].includes(route.query.view as string)
+type ViewMode = 'month' | 'week';
+const initialView = (['month', 'week'].includes(route.query.view as string)
   ? route.query.view as ViewMode
   : 'month');
 const viewMode = ref<ViewMode>(initialView);
@@ -90,20 +89,6 @@ function goToCurrentWeek() {
 function showsForDate(dateStr: string): Show[] {
   return shows.value.filter((s) => s.date === dateStr);
 }
-
-// List view: all shows sorted by date (upcoming first)
-type ListFilter = 'all' | 'upcoming' | 'past';
-const listFilter = ref<ListFilter>('upcoming');
-
-const listShows = computed(() => {
-  let filtered = shows.value;
-  if (listFilter.value === 'upcoming') {
-    filtered = shows.value.filter((s) => getDaysUntil(s.date) >= 0);
-  } else if (listFilter.value === 'past') {
-    filtered = shows.value.filter((s) => getDaysUntil(s.date) < 0);
-  }
-  return [...filtered].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-});
 
 // Create show modal state
 const showCreateModal = ref(false);
@@ -215,7 +200,6 @@ onMounted(loadShows);
       <div class="view-switcher">
         <button :class="['view-btn', { active: viewMode === 'month' }]" @click="viewMode = 'month'">Month</button>
         <button :class="['view-btn', { active: viewMode === 'week' }]" @click="viewMode = 'week'">Week</button>
-        <button :class="['view-btn', { active: viewMode === 'list' }]" @click="viewMode = 'list'">List</button>
       </div>
       <div class="page-header-actions">
         <BaseButton variant="primary" @click="openCreateModal()">+ New Show</BaseButton>
@@ -328,21 +312,6 @@ onMounted(loadShows);
           <button class="week-day-add" @click="openCreateModal(day.dateStr)">+</button>
         </div>
       </div>
-    </div>
-
-    <!-- ===== LIST VIEW ===== -->
-    <div v-else-if="viewMode === 'list'" class="list-view">
-      <div class="list-toolbar">
-        <div class="list-filters">
-          <button :class="['view-btn', { active: listFilter === 'upcoming' }]"
-            @click="listFilter = 'upcoming'">Upcoming</button>
-          <button :class="['view-btn', { active: listFilter === 'all' }]" @click="listFilter = 'all'">All</button>
-          <button :class="['view-btn', { active: listFilter === 'past' }]" @click="listFilter = 'past'">Past</button>
-        </div>
-        <span class="list-count text-muted">{{ listShows.length }} shows</span>
-      </div>
-
-      <ShowList :shows="shows" :filter="listFilter" @show-click="(show) => goToShow(show.id)" />
     </div>
 
     <!-- Create show modal -->
@@ -802,25 +771,6 @@ onMounted(loadShows);
 .week-day-add:hover {
   background: var(--color-surface-hover);
   color: var(--color-primary);
-}
-
-/* ===== LIST VIEW ===== */
-.list-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--spacing-lg);
-}
-
-.list-filters {
-  display: flex;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.list-count {
-  font-size: var(--font-size-sm);
 }
 
 /* Responsive */

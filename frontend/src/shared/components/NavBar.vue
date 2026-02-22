@@ -17,14 +17,17 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: 'Dashboard', path: '/dashboard', roles: ['admin', 'superadmin'], category: 'Radio' },
+  { label: 'Calendar', path: '/calendar', roles: ['admin', 'superadmin'], category: 'Radio' },
+  { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin'], category: 'Radio' },
   { label: 'My Show', path: '/stream', category: 'Radio' },
-  { label: 'Recording', path: '/recording', roles: ['admin', 'superadmin'], category: 'Radio' },
   { label: 'Artists', path: '/artists', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
-  { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
-  { label: 'Calendar', path: '/calendar', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Overlay', path: '/overlay-editor', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
+  { label: 'Recording', path: '/recording', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Users', path: '/users', roles: ['admin', 'superadmin'], category: 'Configuration' },
 ];
+
+// Preserve category order
+const categoryOrder = ['Radio', 'UNHEARD', 'Configuration'];
 
 const visibleNavItems = computed(() =>
   navItems.filter(
@@ -40,11 +43,23 @@ const groupedNavItems = computed(() => {
     }
     groups[item.category].push(item);
   });
-  return groups;
+  // Return in defined order
+  const ordered: Record<string, NavItem[]> = {};
+  categoryOrder.forEach(cat => {
+    if (groups[cat]) ordered[cat] = groups[cat];
+  });
+  return ordered;
 });
 
 function isActive(path: string): boolean {
   return route.path.startsWith(path);
+}
+
+// Mobile: track which section is expanded (click to toggle)
+const mobileExpandedSection = ref<string | null>(null);
+
+function toggleMobileSection(category: string) {
+  mobileExpandedSection.value = mobileExpandedSection.value === category ? null : category;
 }
 
 function toggleMobileMenu() {
@@ -53,6 +68,7 @@ function toggleMobileMenu() {
 
 function closeMobileMenu() {
   mobileMenuOpen.value = false;
+  mobileExpandedSection.value = null;
 }
 
 // Close mobile menu on route change
@@ -74,12 +90,15 @@ watch(() => route.path, () => {
         <template v-for="(items, category) in groupedNavItems" :key="category">
           <div class="nav-group">
             <span class="nav-category">{{ category }}</span>
-            <router-link v-for="item in items" :key="item.path" :to="item.path"
-              :class="['nav-link', { active: isActive(item.path) }]">
-              {{ item.label }}
-            </router-link>
+            <div class="nav-group-items">
+              <router-link v-for="item in items" :key="item.path" :to="item.path"
+                :class="['nav-link', { active: isActive(item.path) }]">
+                {{ item.label }}
+              </router-link>
+            </div>
           </div>
-          <span v-if="Object.keys(groupedNavItems).indexOf(category) < Object.keys(groupedNavItems).length - 1"
+          <span
+            v-if="Object.keys(groupedNavItems).indexOf(category as string) < Object.keys(groupedNavItems).length - 1"
             class="nav-delimiter">|</span>
         </template>
       </div>
@@ -121,11 +140,16 @@ watch(() => route.path, () => {
       <div class="mobile-menu-links">
         <template v-for="(items, category) in groupedNavItems" :key="category">
           <div class="mobile-nav-group">
-            <span class="mobile-nav-category">{{ category }}</span>
-            <router-link v-for="item in items" :key="item.path" :to="item.path"
-              :class="['mobile-nav-link', { active: isActive(item.path) }]" @click="closeMobileMenu">
-              {{ item.label }}
-            </router-link>
+            <button class="mobile-nav-category" @click="toggleMobileSection(category as string)">
+              {{ category }}
+              <span class="mobile-nav-chevron" :class="{ expanded: mobileExpandedSection === category }">›</span>
+            </button>
+            <div class="mobile-nav-items" :class="{ expanded: mobileExpandedSection === category }">
+              <router-link v-for="item in items" :key="item.path" :to="item.path"
+                :class="['mobile-nav-link', { active: isActive(item.path) }]" @click="closeMobileMenu">
+                {{ item.label }}
+              </router-link>
+            </div>
           </div>
         </template>
       </div>
@@ -182,20 +206,48 @@ watch(() => route.path, () => {
   align-items: center;
 }
 
+/* ===== Desktop collapsible nav groups ===== */
 .nav-group {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--spacing-xs);
 }
 
 .nav-category {
   color: var(--color-primary);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
   text-transform: uppercase;
-  opacity: 0.5;
+  opacity: 0.8;
   letter-spacing: 0.05em;
   user-select: none;
+  cursor: default;
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.nav-group-items {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: var(--spacing-xs) 0;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
+  z-index: calc(var(--z-dropdown) + 1);
+}
+
+.nav-group:hover .nav-group-items {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
 }
 
 .nav-delimiter {
@@ -208,6 +260,7 @@ watch(() => route.path, () => {
   padding: var(--spacing-sm) var(--spacing-md);
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
+  white-space: nowrap;
 }
 
 .nav-link:hover {
@@ -317,7 +370,7 @@ watch(() => route.path, () => {
   border-color: var(--color-text-muted);
 }
 
-/* Mobile menu styles */
+/* ===== Mobile menu styles ===== */
 .hamburger {
   display: none;
   flex-direction: column;
@@ -410,30 +463,68 @@ watch(() => route.path, () => {
   flex-direction: column;
   padding: var(--spacing-lg);
   padding-top: var(--spacing-md);
-  gap: var(--spacing-lg);
+  gap: var(--spacing-sm);
   flex: 1;
 }
 
 .mobile-nav-group {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xs);
 }
 
 .mobile-nav-category {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: none;
+  border: none;
   color: var(--color-primary);
-  font-size: var(--font-size-xs);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   text-transform: uppercase;
-  opacity: 0.5;
+  opacity: 0.7;
   letter-spacing: 0.05em;
-  padding: var(--spacing-xs) var(--spacing-md);
-  user-select: none;
+  padding: var(--spacing-sm) var(--spacing-md);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.mobile-nav-category:hover {
+  opacity: 1;
+  background-color: var(--color-surface-alt);
+}
+
+.mobile-nav-chevron {
+  font-size: var(--font-size-lg);
+  transition: transform 0.2s ease;
+  transform: rotate(0deg);
+}
+
+.mobile-nav-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.mobile-nav-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+}
+
+.mobile-nav-items.expanded {
+  max-height: 300px;
+  padding-top: var(--spacing-xs);
 }
 
 .mobile-nav-link {
   color: var(--color-text-muted);
   padding: var(--spacing-md);
+  padding-left: var(--spacing-xl);
   border-radius: var(--radius-md);
   font-size: var(--font-size-lg);
   transition: all var(--transition-fast);

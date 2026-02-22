@@ -156,7 +156,7 @@ onUnmounted(() => {
       <div class="card dashboard-card dashboard-shows-card">
         <div class="card-header">
           <h2 class="card-title">📋 Upcoming Shows</h2>
-          <router-link to="/calendar?view=list" class="view-all-link">View all →</router-link>
+          <router-link to="/shows" class="view-all-link">View all →</router-link>
         </div>
         <div class="card-body">
           <div v-if="showsLoading" class="loading-spinner"></div>

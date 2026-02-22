@@ -111,7 +111,7 @@ function navigateToStep(step: FlowStep) {
   top: calc(var(--nav-height, 48px) + var(--spacing-md, 12px));
   left: 0;
   right: 0;
-  z-index: 100;
+  z-index: calc(var(--z-dropdown) - 10);
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
   border-top: 1px solid var(--color-border);
