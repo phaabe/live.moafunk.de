@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
-import { recordingApi } from '@admin/api';
+import { recordingApi, hostFlowApi } from '@admin/api';
 
 const router = useRouter();
 const flow = useHostFlow();
@@ -206,8 +206,9 @@ async function handleGoLive() {
 
       // Navigation happens via onLive callback when server confirms
     } else {
-      // Upload mode: just navigate to streaming page
-      // Backend handles the prerecorded playback
+      // Upload mode: tell the backend to start streaming the prerecorded file
+      if (!show.value?.id) throw new Error('No show selected');
+      await hostFlowApi.goLive(show.value.id);
       flow.goToStep('streaming');
       router.push('/stream/streaming');
     }

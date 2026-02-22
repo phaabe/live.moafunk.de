@@ -17,6 +17,7 @@ const DashboardPage = () => import('./pages/DashboardPage.vue');
 
 // Host flow pages
 const FlowLayout = () => import('./pages/flow/FlowLayout.vue');
+const FlowShowSelect = () => import('./pages/flow/FlowShowSelect.vue');
 const FlowShowInfo = () => import('./pages/flow/FlowShowInfo.vue');
 const FlowSelectMode = () => import('./pages/flow/FlowSelectMode.vue');
 const FlowUpload = () => import('./pages/flow/FlowUpload.vue');
@@ -85,6 +86,7 @@ const router = createRouter({
             await flow.fetchMyShow();
             const stepRouteMap: Record<string, string> = {
               'not-assigned': '/stream/not-assigned',
+              select: '/stream/select',
               info: '/stream/info',
               mode: '/stream/mode',
               upload: '/stream/upload',
@@ -93,11 +95,16 @@ const router = createRouter({
               waiting: '/stream/waiting',
               streaming: '/stream/streaming',
             };
-            const target = stepRouteMap[flow.currentStep.value] ?? '/stream/info';
+            const target = stepRouteMap[flow.currentStep.value] ?? '/stream/select';
             next(target);
           },
           // Placeholder component (never actually renders due to redirect)
-          component: FlowShowInfo,
+          component: FlowShowSelect,
+        },
+        {
+          path: 'select',
+          name: 'stream-select',
+          component: FlowShowSelect,
         },
         {
           path: 'info',

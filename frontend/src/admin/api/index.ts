@@ -451,6 +451,9 @@ export interface ShowDetail {
 export const showsApi = {
   list: () => api.get<{ shows: Show[]; artists: Artist[] }>('/api/shows'),
 
+  /** List all shows assigned to the authenticated user (host or artist) */
+  myShows: () => api.get<{ shows: Show[] }>('/api/my-shows'),
+
   get: (id: number) => api.get<ShowDetail>(`/api/shows/${id}`),
 
   create: (data: Partial<Show>) => api.post<Show>('/api/shows', data),
@@ -871,7 +874,7 @@ export interface MyShowInfo {
 
 export interface MyShowResponse {
   assigned: boolean;
-  show?: MyShowInfo;
+  shows: MyShowInfo[];
 }
 
 export interface UploadInitResponse {
@@ -899,18 +902,22 @@ export interface ConfirmResponse {
 }
 
 export const hostFlowApi = {
-  getMyShow: () => api.get<MyShowResponse>('/api/my-show'),
+  getMyShows: () => api.get<MyShowResponse>('/api/my-show'),
 
-  confirm: () => api.post<ConfirmResponse>('/api/my-show/confirm'),
+  confirm: (showId: number) => api.post<ConfirmResponse>(`/api/my-show/confirm?show_id=${showId}`),
 
-  deleteUpload: () => api.delete<{ success: boolean }>('/api/my-show/upload'),
+  goLive: (showId: number) =>
+    api.post<{ success: boolean; message: string }>(`/api/my-show/go-live?show_id=${showId}`),
+
+  deleteUpload: (showId: number) =>
+    api.delete<{ success: boolean }>(`/api/my-show/upload?show_id=${showId}`),
 
   /** Upload a small prerecorded file (≤50MB) directly. */
-  uploadSmall: async (file: File): Promise<UploadResult> => {
+  uploadSmall: async (showId: number, file: File): Promise<UploadResult> => {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE}/api/my-show/upload`, {
+    const response = await fetch(`${API_BASE}/api/my-show/upload?show_id=${showId}`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
@@ -926,6 +933,7 @@ export const hostFlowApi = {
 
   /** Upload a large prerecorded file via chunked upload with progress callback. */
   uploadFile: async (
+    showId: number,
     file: File,
     onProgress?: (progress: {
       phase: 'uploading' | 'finalizing';
@@ -939,7 +947,7 @@ export const hostFlowApi = {
 
     if (!useChunked) {
       onProgress?.({ phase: 'uploading', percent: 0 });
-      const result = await hostFlowApi.uploadSmall(file);
+      const result = await hostFlowApi.uploadSmall(showId, file);
       onProgress?.({ phase: 'uploading', percent: 100 });
       return result;
     }
@@ -949,7 +957,7 @@ export const hostFlowApi = {
 
     // Step 1: Init
     onProgress?.({ phase: 'uploading', percent: 0, chunkIndex: 0, totalChunks });
-    const initResponse = await fetch(`${API_BASE}/api/my-show/upload/init`, {
+    const initResponse = await fetch(`${API_BASE}/api/my-show/upload/init?show_id=${showId}`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -977,7 +985,7 @@ export const hostFlowApi = {
       chunkFormData.append('chunk', chunk);
 
       const chunkResponse = await fetch(
-        `${API_BASE}/api/my-show/upload/chunk/${session_id}?index=${i}`,
+        `${API_BASE}/api/my-show/upload/chunk/${session_id}?index=${i}&show_id=${showId}`,
         {
           method: 'POST',
           credentials: 'include',
@@ -998,12 +1006,15 @@ export const hostFlowApi = {
 
     // Step 3: Finalize
     onProgress?.({ phase: 'finalizing', percent: 0 });
-    const finalizeResponse = await fetch(`${API_BASE}/api/my-show/upload/finalize/${session_id}`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
+    const finalizeResponse = await fetch(
+      `${API_BASE}/api/my-show/upload/finalize/${session_id}?show_id=${showId}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }
+    );
 
     if (!finalizeResponse.ok) {
       const error = await finalizeResponse.json().catch(() => ({ error: 'Finalize failed' }));

@@ -67,8 +67,13 @@ function handleStop() {
 }
 
 // Stop show (upload mode)
-function handleStopUpload() {
+async function handleStopUpload() {
   stopping.value = true;
+  try {
+    await streamApi.stop();
+  } catch (err) {
+    console.warn('[FlowStreaming] Failed to stop stream:', err);
+  }
   streamEnded.value = true;
   stopElapsed();
   if (statusInterval) {
@@ -140,10 +145,10 @@ const formattedDate = computed(() => {
   }
 });
 
-// ─── Navigate back to show ──────────────────────────────────────────────────
+// ─── Navigate back to dashboard ─────────────────────────────────────────────
 function goToShowInfo() {
   flow.reset();
-  router.push('/stream/show');
+  router.push('/dashboard');
 }
 
 // ─── Auto-end timer (based on show end_time) ───────────────────────────────

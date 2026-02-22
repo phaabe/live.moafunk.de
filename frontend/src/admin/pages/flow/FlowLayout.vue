@@ -43,7 +43,8 @@ const currentStepIndex = computed(() => {
 
 const showProgressBar = computed(() =>
   flow.assigned.value &&
-  flow.currentStep.value !== 'not-assigned'
+  flow.currentStep.value !== 'not-assigned' &&
+  flow.currentStep.value !== 'select'
 );
 
 onMounted(async () => {

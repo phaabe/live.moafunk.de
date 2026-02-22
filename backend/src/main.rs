@@ -318,6 +318,7 @@ async fn main() -> anyhow::Result<()> {
         )
         // Artist flow — my show
         .route("/api/my-show", get(handlers::api::api_my_show))
+        .route("/api/my-shows", get(handlers::api::api_my_shows_list))
         .route(
             "/api/my-show/upload",
             post(handlers::api::api_my_show_upload),
@@ -337,6 +338,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/my-show/confirm",
             post(handlers::api::api_my_show_confirm),
+        )
+        .route(
+            "/api/my-show/go-live",
+            post(handlers::api::api_my_show_go_live),
         )
         .route(
             "/api/my-show/upload",

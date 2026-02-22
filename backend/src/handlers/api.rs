@@ -4105,54 +4105,99 @@ pub struct MyShowInfo {
 #[derive(Debug, Serialize)]
 pub struct MyShowResponse {
     assigned: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    show: Option<MyShowInfo>,
+    shows: Vec<MyShowInfo>,
 }
 
-/// Helper: resolve the current user's linked artist and assigned show.
-/// Returns (artist, show) if the user is linked to an artist assigned to a show,
-/// or (None-artist, show) if the user is directly assigned as host to a non-UNHEARD show.
-async fn resolve_user_show(
+/// Helper: resolve ALL shows assigned to the current user.
+/// Returns shows where the user is either directly assigned as host,
+/// or linked via their artist profile.
+async fn resolve_user_shows(
     state: &Arc<AppState>,
     user: &models::User,
-) -> Result<Option<(Option<models::Artist>, models::Show)>> {
-    // Path 1: Direct host assignment (external/brunchtime shows)
-    let direct_show: Option<models::Show> =
-        sqlx::query_as("SELECT * FROM shows WHERE host_user_id = ?")
-            .bind(user.id)
-            .fetch_optional(&state.db)
-            .await?;
+) -> Result<Vec<models::Show>> {
+    let mut all_shows: Vec<models::Show> = Vec::new();
 
-    if let Some(show) = direct_show {
-        return Ok(Some((None, show)));
-    }
+    // Path 1: Direct host assignments (external/brunchtime shows)
+    let direct_shows: Vec<models::Show> =
+        sqlx::query_as("SELECT * FROM shows WHERE host_user_id = ? ORDER BY date DESC")
+            .bind(user.id)
+            .fetch_all(&state.db)
+            .await?;
+    all_shows.extend(direct_shows);
 
     // Path 2: Linked via artist profile (UNHEARD shows)
-    // Find artist linked to this user
     let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE user_id = ?")
         .bind(user.id)
         .fetch_optional(&state.db)
         .await?;
 
-    let artist = match artist {
-        Some(a) => a,
-        None => return Ok(None),
-    };
+    if let Some(artist) = artist {
+        let artist_shows: Vec<models::Show> = sqlx::query_as(
+            "SELECT s.* FROM shows s \
+             INNER JOIN artist_show_assignments asa ON asa.show_id = s.id \
+             WHERE asa.artist_id = ? \
+             ORDER BY s.date DESC",
+        )
+        .bind(artist.id)
+        .fetch_all(&state.db)
+        .await?;
 
-    // Find the show this artist is assigned to
-    let show: Option<models::Show> = sqlx::query_as(
-        "SELECT s.* FROM shows s \
-         INNER JOIN artist_show_assignments asa ON asa.show_id = s.id \
-         WHERE asa.artist_id = ?",
-    )
-    .bind(artist.id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    match show {
-        Some(s) => Ok(Some((Some(artist), s))),
-        None => Ok(None),
+        // Deduplicate (a show could match both paths)
+        for show in artist_shows {
+            if !all_shows.iter().any(|s| s.id == show.id) {
+                all_shows.push(show);
+            }
+        }
     }
+
+    // Sort by date descending
+    all_shows.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(all_shows)
+}
+
+#[derive(Debug, Serialize)]
+pub struct MyShowsListResponse {
+    shows: Vec<ShowListItem>,
+}
+
+/// GET /api/my-shows — list all shows assigned to the authenticated user
+pub async fn api_my_shows_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let token = auth::get_session_from_headers(&headers);
+    let user = auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    let shows = resolve_user_shows(&state, &user).await?;
+
+    let mut show_items = Vec::new();
+    for show in shows {
+        let artists: Vec<ArtistBrief> = sqlx::query_as(
+            "SELECT a.id, a.name FROM artists a \
+             INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
+             WHERE asa.show_id = ? \
+             ORDER BY asa.sort_order, a.name",
+        )
+        .bind(show.id)
+        .fetch_all(&state.db)
+        .await?;
+
+        show_items.push(ShowListItem {
+            id: show.id,
+            title: show.title,
+            date: show.date,
+            start_time: show.start_time,
+            end_time: show.end_time,
+            description: show.description,
+            status: show.status,
+            show_type: show.show_type,
+            artists,
+        });
+    }
+
+    Ok(Json(MyShowsListResponse { shows: show_items }))
 }
 
 pub async fn api_my_show(
@@ -4164,49 +4209,46 @@ pub async fn api_my_show(
         .await
         .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
 
-    let result = resolve_user_show(&state, &user).await?;
+    let all_shows = resolve_user_shows(&state, &user).await?;
 
-    let (_, show) = match result {
-        Some(pair) => pair,
-        None => {
-            return Ok(Json(MyShowResponse {
-                assigned: false,
-                show: None,
-            }));
-        }
-    };
+    if all_shows.is_empty() {
+        return Ok(Json(MyShowResponse {
+            assigned: false,
+            shows: vec![],
+        }));
+    }
 
-    // Fetch all artists assigned to this show
-    let artists: Vec<MyShowArtist> = sqlx::query_as(
-        "SELECT a.id, a.name, a.pronouns FROM artists a \
-         INNER JOIN artist_show_assignments asa ON asa.artist_id = a.id \
-         WHERE asa.show_id = ? \
-         ORDER BY asa.sort_order, a.name",
-    )
-    .bind(show.id)
-    .fetch_all(&state.db)
-    .await?;
+    let mut show_infos = Vec::new();
+    for show in all_shows {
+        // Fetch all artists assigned to this show
+        let artists: Vec<MyShowArtist> = sqlx::query_as(
+            "SELECT a.id, a.name, a.pronouns FROM artists a \
+             INNER JOIN artist_show_assignments asa ON asa.artist_id = a.id \
+             WHERE asa.show_id = ? \
+             ORDER BY asa.sort_order, a.name",
+        )
+        .bind(show.id)
+        .fetch_all(&state.db)
+        .await?;
 
-    // Generate presigned URL for prerecorded file if it exists
-    let prerecorded_url = if let Some(ref key) = show.prerecorded_key {
-        storage::get_presigned_url(&state, key, 3600).await.ok()
-    } else {
-        None
-    };
+        // Generate presigned URL for prerecorded file if it exists
+        let prerecorded_url = if let Some(ref key) = show.prerecorded_key {
+            storage::get_presigned_url(&state, key, 3600).await.ok()
+        } else {
+            None
+        };
 
-    // Generate presigned URL for cover image if it was generated
-    let cover_url = if show.cover_generated_at.is_some() {
-        let cover_key = format!("shows/{}/cover.png", show.id);
-        storage::get_presigned_url(&state, &cover_key, 3600)
-            .await
-            .ok()
-    } else {
-        None
-    };
+        // Generate presigned URL for cover image if it was generated
+        let cover_url = if show.cover_generated_at.is_some() {
+            let cover_key = format!("shows/{}/cover.png", show.id);
+            storage::get_presigned_url(&state, &cover_key, 3600)
+                .await
+                .ok()
+        } else {
+            None
+        };
 
-    Ok(Json(MyShowResponse {
-        assigned: true,
-        show: Some(MyShowInfo {
+        show_infos.push(MyShowInfo {
             id: show.id,
             title: show.title,
             date: show.date,
@@ -4220,24 +4262,38 @@ pub async fn api_my_show(
             prerecorded_filename: show.prerecorded_filename,
             prerecorded_url,
             prerecorded_confirmed_at: show.prerecorded_confirmed_at,
-        }),
+        });
+    }
+
+    Ok(Json(MyShowResponse {
+        assigned: true,
+        shows: show_infos,
     }))
 }
 
-/// Helper: authenticate user and resolve their assigned show.
-/// Returns (user, show) or an appropriate error.
+#[derive(Debug, Deserialize)]
+pub struct ShowIdQuery {
+    pub show_id: i64,
+}
+
+/// Helper: authenticate user and resolve a specific show they're assigned to.
+/// Requires `show_id` query parameter.
 async fn require_user_show(
     state: &Arc<AppState>,
     headers: &HeaderMap,
+    show_id: i64,
 ) -> Result<(models::User, models::Show)> {
     let token = auth::get_session_from_headers(headers);
     let user = auth::get_current_user(state, token.as_deref())
         .await
         .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
 
-    let result = resolve_user_show(state, &user).await?;
-    let (_, show) =
-        result.ok_or_else(|| AppError::BadRequest("You are not assigned to a show".to_string()))?;
+    // Verify the user is assigned to this show
+    let all_shows = resolve_user_shows(state, &user).await?;
+    let show = all_shows
+        .into_iter()
+        .find(|s| s.id == show_id)
+        .ok_or_else(|| AppError::BadRequest("You are not assigned to this show".to_string()))?;
 
     Ok((user, show))
 }
@@ -4248,10 +4304,11 @@ async fn require_user_show(
 
 pub async fn api_my_show_upload(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<ShowIdQuery>,
     headers: HeaderMap,
     mut multipart: axum::extract::Multipart,
 ) -> Result<impl IntoResponse> {
-    let (_user, show) = require_user_show(&state, &headers).await?;
+    let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
     let mut file_data: Option<(String, Vec<u8>, String)> = None;
 
@@ -4314,10 +4371,11 @@ pub struct PrerecordedInitRequest {
 
 pub async fn api_my_show_upload_init(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<ShowIdQuery>,
     headers: HeaderMap,
     Json(req): Json<PrerecordedInitRequest>,
 ) -> Result<impl IntoResponse> {
-    let (_user, show) = require_user_show(&state, &headers).await?;
+    let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
     tracing::info!(
         "Prerecorded upload init: show_id={}, filename={}, total_size={}, total_chunks={}",
@@ -4360,11 +4418,11 @@ pub async fn api_my_show_upload_init(
 pub async fn api_my_show_upload_chunk(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-    Query(query): Query<super::upload_recording_chunked::ChunkQuery>,
+    Query(query): Query<super::upload_recording_chunked::ChunkQueryWithShowId>,
     headers: HeaderMap,
     mut multipart: axum::extract::Multipart,
 ) -> Result<impl IntoResponse> {
-    let (_user, show) = require_user_show(&state, &headers).await?;
+    let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
     let chunk_index = query.index;
     tracing::info!(
@@ -4465,9 +4523,10 @@ pub async fn api_my_show_upload_chunk(
 pub async fn api_my_show_upload_finalize(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(query): Query<ShowIdQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    let (_user, show) = require_user_show(&state, &headers).await?;
+    let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
     tracing::info!(
         "Prerecorded upload finalize for session_id={}, show_id={}",
@@ -4615,9 +4674,10 @@ pub async fn api_my_show_upload_finalize(
 
 pub async fn api_my_show_confirm(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<ShowIdQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    let (_user, show) = require_user_show(&state, &headers).await?;
+    let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
     if show.prerecorded_key.is_none() {
         return Err(AppError::BadRequest(
@@ -4641,14 +4701,70 @@ pub async fn api_my_show_confirm(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Prerecorded — go live (start streaming the uploaded file)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn api_my_show_go_live(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ShowIdQuery>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let (user, show) = require_user_show(&state, &headers, query.show_id).await?;
+
+    // Must have a confirmed prerecorded file
+    if show.prerecorded_key.is_none() {
+        return Err(AppError::BadRequest(
+            "No prerecorded file uploaded".to_string(),
+        ));
+    }
+    if show.prerecorded_confirmed_at.is_none() {
+        return Err(AppError::BadRequest(
+            "Prerecorded file not confirmed yet".to_string(),
+        ));
+    }
+
+    let key = show.prerecorded_key.as_ref().unwrap();
+
+    // Generate a long-lived presigned URL for FFmpeg to read from (4 hours)
+    let presigned_url = storage::get_presigned_url(&state, key, 4 * 3600).await?;
+    let rtmp_destination = state.config.rtmp_destination();
+
+    tracing::info!(
+        "Starting prerecorded stream for show_id={}, user='{}', key='{}'",
+        show.id,
+        user.username,
+        key
+    );
+
+    // Start the prerecorded stream via stream bridge
+    crate::stream_bridge::start_prerecorded_stream(
+        &state.stream_state,
+        user.username.clone(),
+        &presigned_url,
+        &rtmp_destination,
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("Failed to start prerecorded stream: {}", e)))?;
+
+    // Notify via Telegram
+    telegram_notify::notify_stream_start(&state, &user.username);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Prerecorded stream started",
+    })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Prerecorded — delete (re-upload)
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub async fn api_my_show_delete_upload(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<ShowIdQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    let (_user, show) = require_user_show(&state, &headers).await?;
+    let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
     // Delete from R2 if exists
     if let Some(ref key) = show.prerecorded_key {

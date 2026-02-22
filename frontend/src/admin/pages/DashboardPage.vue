@@ -342,7 +342,5 @@ onUnmounted(() => {
   .dashboard-grid {
     grid-template-columns: 1fr;
   }
-
-
 }
 </style>

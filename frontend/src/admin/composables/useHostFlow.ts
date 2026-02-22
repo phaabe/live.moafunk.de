@@ -7,6 +7,7 @@ import { hostFlowApi, type MyShowInfo, type UploadResult } from '../api';
 
 export type FlowStep =
   | 'not-assigned'
+  | 'select'
   | 'info'
   | 'mode'
   | 'upload'
@@ -35,9 +36,11 @@ export interface HostFlowState {
   loading: boolean;
   /** Error message from last operation */
   error: string | null;
-  /** Whether the user is assigned to a show */
+  /** Whether the user is assigned to at least one show */
   assigned: boolean;
-  /** Show data (undefined if not assigned) */
+  /** All shows assigned to the user */
+  shows: MyShowInfo[];
+  /** Currently selected show */
   show: MyShowInfo | undefined;
   /** Current flow step */
   currentStep: FlowStep;
@@ -57,8 +60,9 @@ const loaded = ref(false);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const assigned = ref(false);
+const shows = ref<MyShowInfo[]>([]);
 const show = ref<MyShowInfo | undefined>(undefined);
-const currentStep = ref<FlowStep>('info');
+const currentStep = ref<FlowStep>('select');
 const uploadMode = ref<UploadMode | null>(null);
 const uploading = ref(false);
 const uploadProgress = ref<UploadProgress | null>(null);
@@ -78,6 +82,7 @@ const hasUpload = computed(() => !!show.value?.prerecorded_key);
 const isConfirmed = computed(() => !!show.value?.prerecorded_confirmed_at);
 const prerecordedUrl = computed(() => show.value?.prerecorded_url);
 const prerecordedFilename = computed(() => show.value?.prerecorded_filename);
+const showId = computed(() => show.value?.id);
 
 /** Whether the user can navigate to a given step */
 function canNavigateTo(step: FlowStep): boolean {
@@ -85,20 +90,23 @@ function canNavigateTo(step: FlowStep): boolean {
   switch (step) {
     case 'not-assigned':
       return false;
+    case 'select':
+      return true; // can always go back to show selection
     case 'info':
-      return true;
+      return !!show.value;
     case 'mode':
-      return true; // can always go back to mode selection
+      return !!show.value;
     case 'upload':
-      return uploadMode.value === 'prerecorded';
+      return !!show.value && uploadMode.value === 'prerecorded';
     case 'confirm':
-      return uploadMode.value === 'prerecorded' && hasUpload.value;
+      return !!show.value && uploadMode.value === 'prerecorded' && hasUpload.value;
     case 'live':
-      return uploadMode.value === 'live';
+      return !!show.value && uploadMode.value === 'live';
     case 'waiting':
       return (
-        (uploadMode.value === 'prerecorded' && isConfirmed.value) ||
-        (uploadMode.value === 'live' && liveTestPassed.value)
+        !!show.value &&
+        ((uploadMode.value === 'prerecorded' && isConfirmed.value) ||
+          (uploadMode.value === 'live' && liveTestPassed.value))
       );
     case 'streaming':
       return showStarted.value;
@@ -116,25 +124,19 @@ async function fetchMyShow(): Promise<void> {
   error.value = null;
 
   try {
-    const response = await hostFlowApi.getMyShow();
+    const response = await hostFlowApi.getMyShows();
     assigned.value = response.assigned;
-    show.value = response.show ?? undefined;
+    shows.value = response.shows;
 
-    if (!response.assigned) {
+    if (!response.assigned || response.shows.length === 0) {
       currentStep.value = 'not-assigned';
-    } else if (!loaded.value) {
-      // First load: determine starting step based on show state
-      if (show.value?.prerecorded_confirmed_at) {
-        // Already confirmed → go to confirm (they can review or go live)
-        currentStep.value = 'confirm';
-        uploadMode.value = 'prerecorded';
-      } else if (show.value?.prerecorded_key) {
-        // Has upload but not confirmed → go to confirm step
-        currentStep.value = 'confirm';
-        uploadMode.value = 'prerecorded';
-      } else {
-        currentStep.value = 'info';
-      }
+      show.value = undefined;
+    } else if (response.shows.length === 1 && !loaded.value) {
+      // Auto-select if only one show
+      selectShow(response.shows[0]);
+    } else if (!show.value && !loaded.value) {
+      // Multiple shows, no selection yet → go to select
+      currentStep.value = 'select';
     }
 
     loaded.value = true;
@@ -143,6 +145,34 @@ async function fetchMyShow(): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+/** Select a show and determine the starting step based on its state */
+function selectShow(selectedShow: MyShowInfo): void {
+  show.value = selectedShow;
+
+  if (selectedShow.prerecorded_confirmed_at) {
+    currentStep.value = 'confirm';
+    uploadMode.value = 'prerecorded';
+  } else if (selectedShow.prerecorded_key) {
+    currentStep.value = 'confirm';
+    uploadMode.value = 'prerecorded';
+  } else {
+    currentStep.value = 'info';
+  }
+}
+
+/** Go back to show selection (clears selected show) */
+function deselectShow(): void {
+  show.value = undefined;
+  uploadMode.value = null;
+  currentStep.value = 'select';
+  // Reset flow-specific state
+  liveSubStep.value = 'os-select';
+  liveTestPassed.value = false;
+  selectedOs.value = null;
+  showStarted.value = false;
+  recordStream.value = false;
 }
 
 function goToStep(step: FlowStep): boolean {
@@ -161,12 +191,14 @@ function selectMode(mode: UploadMode): void {
 }
 
 async function uploadFile(file: File): Promise<UploadResult> {
+  if (!showId.value) throw new Error('No show selected');
+
   uploading.value = true;
   uploadProgress.value = null;
   error.value = null;
 
   try {
-    const result = await hostFlowApi.uploadFile(file, (progress) => {
+    const result = await hostFlowApi.uploadFile(showId.value, file, (progress) => {
       uploadProgress.value = progress;
     });
 
@@ -193,10 +225,11 @@ async function uploadFile(file: File): Promise<UploadResult> {
 }
 
 async function confirmUpload(): Promise<void> {
+  if (!showId.value) throw new Error('No show selected');
   error.value = null;
 
   try {
-    const result = await hostFlowApi.confirm();
+    const result = await hostFlowApi.confirm(showId.value);
 
     if (show.value) {
       show.value = {
@@ -211,10 +244,11 @@ async function confirmUpload(): Promise<void> {
 }
 
 async function deleteUpload(): Promise<void> {
+  if (!showId.value) throw new Error('No show selected');
   error.value = null;
 
   try {
-    await hostFlowApi.deleteUpload();
+    await hostFlowApi.deleteUpload(showId.value);
 
     if (show.value) {
       show.value = {
@@ -258,8 +292,9 @@ function reset(): void {
   loading.value = false;
   error.value = null;
   assigned.value = false;
+  shows.value = [];
   show.value = undefined;
-  currentStep.value = 'info';
+  currentStep.value = 'select';
   uploadMode.value = null;
   uploading.value = false;
   uploadProgress.value = null;
@@ -281,6 +316,7 @@ export function useHostFlow() {
     loading: readonly(loading),
     error: readonly(error),
     assigned: readonly(assigned),
+    shows: readonly(shows),
     show: readonly(show),
     currentStep: readonly(currentStep),
     uploadMode: readonly(uploadMode),
@@ -297,9 +333,12 @@ export function useHostFlow() {
     isConfirmed,
     prerecordedUrl,
     prerecordedFilename,
+    showId,
 
     // Actions
     fetchMyShow,
+    selectShow,
+    deselectShow,
     goToStep,
     selectMode,
     uploadFile,
