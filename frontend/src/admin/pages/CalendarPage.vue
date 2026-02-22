@@ -4,7 +4,10 @@ import { useRouter, useRoute } from 'vue-router';
 import { showsApi, type Show } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import { useFlash } from '../composables/useFlash';
+import { useDateTimeRange } from '../composables/useDateTimeRange';
 import MonthCalendar from '../components/MonthCalendar.vue';
+import { VueDatePicker } from '@vuepic/vue-datepicker';
+import '@vuepic/vue-datepicker/dist/main.css';
 
 const router = useRouter();
 const route = useRoute();
@@ -93,7 +96,17 @@ function showsForDate(dateStr: string): Show[] {
 // Create show modal state
 const showCreateModal = ref(false);
 const creating = ref(false);
-const newShow = ref({ title: '', date: '', start_time: '', description: '', show_type: 'unheard' });
+const newShow = ref({ title: '', description: '', show_type: 'unheard' });
+const {
+  startDateTime: createStart,
+  endDateTime: createEnd,
+  isValid: createTimeValid,
+  validationError: createTimeError,
+  apiDate: createDate,
+  apiStartTime: createStartTime,
+  apiEndTime: createEndTime,
+  reset: resetCreateRange,
+} = useDateTimeRange();
 
 // Shows for a selected date
 const showsOnSelectedDate = computed(() => {
@@ -145,13 +158,14 @@ function onDayClick(dateStr: string) {
 }
 
 function openCreateModal(prefilledDate?: string) {
-  newShow.value = {
-    title: '',
-    date: prefilledDate || selectedDate.value || '',
-    start_time: '',
-    description: '',
-    show_type: 'unheard',
-  };
+  newShow.value = { title: '', description: '', show_type: 'unheard' };
+  resetCreateRange();
+  const dateStr = prefilledDate || selectedDate.value;
+  if (dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    createStart.value = new Date(y, m - 1, d, 20, 0);
+    createEnd.value = new Date(y, m - 1, d, 22, 0);
+  }
   showCreateModal.value = true;
 }
 
@@ -173,12 +187,22 @@ async function loadShows() {
 }
 
 async function createShow() {
+  if (!createTimeValid.value) {
+    flash.error(createTimeError.value || 'Invalid date/time');
+    return;
+  }
   creating.value = true;
   try {
-    const created = await showsApi.create(newShow.value);
+    const created = await showsApi.create({
+      ...newShow.value,
+      date: createDate.value,
+      start_time: createStartTime.value,
+      end_time: createEndTime.value,
+    });
     flash.success('Show created successfully');
     showCreateModal.value = false;
-    newShow.value = { title: '', date: '', start_time: '', description: '', show_type: 'unheard' };
+    newShow.value = { title: '', description: '', show_type: 'unheard' };
+    resetCreateRange();
     await loadShows();
     if (created?.id) {
       router.push(`/shows/${created.id}`);
@@ -232,7 +256,20 @@ onMounted(loadShows);
           <div v-else class="day-shows-list">
             <div v-for="show in showsOnSelectedDate" :key="show.id" class="day-show-item" @click="goToShow(show.id)">
               <div class="day-show-info">
-                <span class="day-show-title">{{ show.title }}</span>
+                <span class="day-show-title-row">
+                  <span class="day-show-title">{{ show.title }}</span>
+                  <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
+                    'badge',
+                    'artist-badge',
+                    {
+                      'count-empty': show.artists.length === 0,
+                      'count-partial': show.artists.length > 0 && show.artists.length < 4,
+                      'count-full': show.artists.length >= 4,
+                    },
+                  ]">
+                    {{ show.artists.length }}/4
+                  </span>
+                </span>
                 <span :class="['badge', 'show-type-badge', `type-${show.show_type || 'unheard'}`]">
                   {{ (show.show_type || 'unheard').toUpperCase() }}
                 </span>
@@ -243,17 +280,6 @@ onMounted(loadShows);
               <div class="day-show-meta">
                 <span :class="['badge', 'days-badge', getDaysClass(getDaysUntil(show.date))]">
                   {{ getDaysUntil(show.date) < 0 ? 'Past' : getDaysUntil(show.date) + 'd' }} </span>
-                    <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
-                      'badge',
-                      'artist-badge',
-                      {
-                        'count-empty': show.artists.length === 0,
-                        'count-partial': show.artists.length > 0 && show.artists.length < 4,
-                        'count-full': show.artists.length >= 4,
-                      },
-                    ]">
-                      {{ show.artists.length }}/4
-                    </span>
               </div>
             </div>
           </div>
@@ -288,22 +314,24 @@ onMounted(loadShows);
               @click="goToShow(show.id)">
               <span :class="['week-show-dot', getDotColor(show)]"></span>
               <div class="week-show-info">
-                <span class="week-show-title">{{ show.title }}</span>
+                <span class="week-show-title-row">
+                  <span class="week-show-title">{{ show.title }}</span>
+                  <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
+                    'badge',
+                    'artist-badge',
+                    {
+                      'count-empty': show.artists.length === 0,
+                      'count-partial': show.artists.length > 0 && show.artists.length < 4,
+                      'count-full': show.artists.length >= 4,
+                    },
+                  ]">
+                    {{ show.artists.length }}/4
+                  </span>
+                </span>
                 <span v-if="show.show_type === 'unheard' || !show.show_type" class="week-show-artists text-muted">
                   {{show.artists.map((a) => a.name).join(', ') || '—'}}
                 </span>
               </div>
-              <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
-                'badge',
-                'artist-badge',
-                {
-                  'count-empty': show.artists.length === 0,
-                  'count-partial': show.artists.length > 0 && show.artists.length < 4,
-                  'count-full': show.artists.length >= 4,
-                },
-              ]">
-                {{ show.artists.length }}/4
-              </span>
             </div>
             <div v-if="showsForDate(day.dateStr).length === 0" class="week-day-empty text-muted">
               —
@@ -326,8 +354,37 @@ onMounted(loadShows);
           </select>
         </div>
         <FormInput v-model="newShow.title" label="Title" required />
-        <FormInput v-model="newShow.date" label="Date" type="date" required />
-        <FormInput v-model="newShow.start_time" label="Start Time" type="time" />
+        <div class="form-group">
+          <label class="form-label">Start <span class="form-required">*</span></label>
+          <VueDatePicker
+            v-model="createStart"
+            :enable-time-picker="true"
+            :dark="true"
+            :minutes-increment="5"
+            :max-date="createEnd || undefined"
+            :flow="{ steps: ['calendar', 'time'] }"
+            :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+            placeholder="Start date & time"
+            text-input
+            teleport="body"
+          />
+        </div>
+        <div class="form-group">
+          <label class="form-label">End <span class="form-required">*</span></label>
+          <VueDatePicker
+            v-model="createEnd"
+            :enable-time-picker="true"
+            :dark="true"
+            :minutes-increment="5"
+            :min-date="createStart || undefined"
+            :flow="{ steps: ['calendar', 'time'] }"
+            :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+            placeholder="End date & time"
+            text-input
+            teleport="body"
+          />
+        </div>
+        <p v-if="createStart && createEnd && !createTimeValid" class="field-error">{{ createTimeError }}</p>
         <FormInput v-model="newShow.description" label="Description" />
       </form>
       <template #footer>
@@ -461,6 +518,12 @@ onMounted(loadShows);
   min-width: 0;
 }
 
+.day-show-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
 .day-show-title {
   color: var(--color-primary);
   font-weight: var(--font-weight-medium);
@@ -556,6 +619,16 @@ onMounted(loadShows);
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
   font-weight: var(--font-weight-medium);
+}
+
+.form-required {
+  color: var(--color-error);
+}
+
+.field-error {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  margin: 0;
 }
 
 .type-select {
@@ -738,6 +811,12 @@ onMounted(loadShows);
   gap: 1px;
   min-width: 0;
   flex: 1;
+}
+
+.week-show-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
 }
 
 .week-show-title {

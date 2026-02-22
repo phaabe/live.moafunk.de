@@ -9,6 +9,42 @@ const flow = useHostFlow();
 const show = computed(() => flow.show.value);
 const isLive = computed(() => flow.uploadMode.value === 'live');
 
+/** Format a date string + time string into a readable datetime */
+function fmtDateTime(date: string, time: string): string {
+  const d = new Date(date + 'T' + time + ':00');
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }) + ' · ' + time;
+}
+
+function computeEndDate(date: string, startTime: string, endTime: string): string {
+  if (endTime <= startTime) {
+    const d = new Date(date + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return date;
+}
+
+const formattedStart = computed(() => {
+  if (!show.value?.date || !show.value?.start_time) return '—';
+  return fmtDateTime(show.value.date, show.value.start_time);
+});
+
+const formattedEnd = computed(() => {
+  if (!show.value?.date || !show.value?.end_time) return '—';
+  const endDate = show.value.start_time
+    ? computeEndDate(show.value.date, show.value.start_time, show.value.end_time)
+    : show.value.date;
+  return fmtDateTime(endDate, show.value.end_time);
+});
+
 // ─── Countdown ──────────────────────────────────────────────────────────────
 const remaining = ref<number>(0); // seconds remaining
 const countdownText = ref('--:--:--');
@@ -181,22 +217,6 @@ async function handleGoLive() {
   }
 }
 
-// ─── Show info formatting ───────────────────────────────────────────────────
-const formattedDate = computed(() => {
-  if (!show.value?.date) return '';
-  try {
-    const d = new Date(show.value.date + 'T00:00:00');
-    return d.toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  } catch {
-    return show.value.date;
-  }
-});
-
 // ─── Dev mode ───────────────────────────────────────────────────────────────
 const isDev = import.meta.env.DEV;
 
@@ -229,12 +249,12 @@ onUnmounted(() => {
         <span class="show-card-value">{{ show?.title }}</span>
       </div>
       <div class="show-card-row">
-        <span class="show-card-label">Date</span>
-        <span class="show-card-value">{{ formattedDate }}</span>
+        <span class="show-card-label">Start</span>
+        <span class="show-card-value">{{ formattedStart }} (Berlin)</span>
       </div>
-      <div v-if="show?.start_time" class="show-card-row">
-        <span class="show-card-label">Time</span>
-        <span class="show-card-value">{{ show.start_time }} (Berlin)</span>
+      <div class="show-card-row">
+        <span class="show-card-label">End</span>
+        <span class="show-card-value">{{ formattedEnd }} (Berlin)</span>
       </div>
       <div class="show-card-row">
         <span class="show-card-label">Mode</span>

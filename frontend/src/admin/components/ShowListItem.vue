@@ -51,7 +51,20 @@ const daysUntil = getDaysUntil(props.show.date);
         {{ daysUntil < 0 ? 'Past' : daysUntil + 'd' }} </span>
     </div>
     <div class="list-show-info">
-      <span class="list-show-title">{{ show.title }}</span>
+      <span class="list-show-title-row">
+        <span class="list-show-title">{{ show.title }}</span>
+        <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
+          'badge',
+          'artist-badge',
+          {
+            'count-empty': show.artists.length === 0,
+            'count-partial': show.artists.length > 0 && show.artists.length < 4,
+            'count-full': show.artists.length >= 4,
+          },
+        ]">
+          {{ show.artists.length }}/4
+        </span>
+      </span>
       <span v-if="show.show_type === 'unheard' || !show.show_type" class="list-show-artists text-muted">
         {{show.artists.map((a) => a.name).join(', ') || 'No artists assigned'}}
       </span>
@@ -59,17 +72,6 @@ const daysUntil = getDaysUntil(props.show.date);
     <div class="list-show-meta">
       <span :class="['badge', 'show-type-badge', `type-${show.show_type || 'unheard'}`]">
         {{ (show.show_type || 'unheard').toUpperCase() }}
-      </span>
-      <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
-        'badge',
-        'artist-badge',
-        {
-          'count-empty': show.artists.length === 0,
-          'count-partial': show.artists.length > 0 && show.artists.length < 4,
-          'count-full': show.artists.length >= 4,
-        },
-      ]">
-        {{ show.artists.length }}/4
       </span>
     </div>
   </div>

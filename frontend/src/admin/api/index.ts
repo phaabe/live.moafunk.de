@@ -391,6 +391,7 @@ export interface Show {
   title: string;
   date: string;
   start_time?: string;
+  end_time?: string;
   description?: string;
   status: string;
   show_type: string;
@@ -416,6 +417,7 @@ export interface ShowDetail {
   title: string;
   date: string;
   start_time?: string;
+  end_time?: string;
   description?: string;
   ai_bio?: string;
   status: string;
@@ -856,6 +858,7 @@ export interface MyShowInfo {
   title: string;
   date: string;
   start_time?: string;
+  end_time?: string;
   description?: string;
   show_type: string;
   artists: MyShowArtist[];

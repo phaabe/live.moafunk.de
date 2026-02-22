@@ -159,6 +159,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Scheduled start time (HH:MM format)
     add_column_if_missing(pool, "shows", "start_time", "TEXT").await?;
 
+    // Scheduled end time (HH:MM format)
+    add_column_if_missing(pool, "shows", "end_time", "TEXT").await?;
+
     // Pre-recorded upload fields for artist show flow
     add_column_if_missing(pool, "shows", "prerecorded_key", "TEXT").await?;
     add_column_if_missing(pool, "shows", "prerecorded_filename", "TEXT").await?;

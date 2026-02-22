@@ -1942,6 +1942,8 @@ pub struct ShowListItem {
     id: i64,
     title: String,
     date: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
     description: Option<String>,
     status: String,
     show_type: String,
@@ -1954,6 +1956,7 @@ pub struct ShowDetailResponse {
     title: String,
     date: String,
     start_time: Option<String>,
+    end_time: Option<String>,
     description: Option<String>,
     ai_bio: Option<String>,
     status: String,
@@ -2052,6 +2055,8 @@ pub async fn api_shows_list(
             id: show.id,
             title: show.title,
             date: show.date,
+            start_time: show.start_time,
+            end_time: show.end_time,
             description: show.description,
             status: show.status,
             show_type: show.show_type,
@@ -2553,6 +2558,7 @@ pub async fn api_show_detail(
         title: show.title,
         date: show.date,
         start_time: show.start_time,
+        end_time: show.end_time,
         description: show.description,
         ai_bio: show.ai_bio,
         status: show.status,
@@ -2587,7 +2593,8 @@ pub struct CreateShowRequest {
     date: String,
     description: Option<String>,
     show_type: Option<String>,
-    start_time: Option<String>,
+    start_time: String,
+    end_time: String,
 }
 
 pub async fn api_create_show(
@@ -2607,13 +2614,14 @@ pub async fn api_create_show(
     }
 
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status, show_type, start_time) VALUES (?, ?, ?, 'scheduled', ?, ?)",
+        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time) VALUES (?, ?, ?, 'scheduled', ?, ?, ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
     .bind(&req.description)
     .bind(show_type)
     .bind(&req.start_time)
+    .bind(&req.end_time)
     .execute(&state.db)
     .await?;
 
@@ -2644,6 +2652,7 @@ pub async fn api_create_show(
             "status": "scheduled",
             "show_type": show_type,
             "start_time": req.start_time,
+            "end_time": req.end_time,
             "cover_url": cover_url,
             "cover_generated_at": cover_generated_at,
         })),
@@ -2658,6 +2667,7 @@ pub struct UpdateShowRequest {
     ai_bio: Option<String>,
     show_type: Option<String>,
     start_time: Option<String>,
+    end_time: Option<String>,
 }
 
 pub async fn api_update_show(
@@ -2701,6 +2711,10 @@ pub async fn api_update_show(
     if let Some(start_time) = &req.start_time {
         updates.push("start_time = ?");
         binds.push(start_time.clone());
+    }
+    if let Some(end_time) = &req.end_time {
+        updates.push("end_time = ?");
+        binds.push(end_time.clone());
     }
 
     if updates.is_empty() {
@@ -4094,6 +4108,7 @@ pub struct MyShowInfo {
     title: String,
     date: String,
     start_time: Option<String>,
+    end_time: Option<String>,
     description: Option<String>,
     show_type: String,
     artists: Vec<MyShowArtist>,
@@ -4213,6 +4228,7 @@ pub async fn api_my_show(
             title: show.title,
             date: show.date,
             start_time: show.start_time,
+            end_time: show.end_time,
             description: show.description,
             show_type: show.show_type,
             artists,

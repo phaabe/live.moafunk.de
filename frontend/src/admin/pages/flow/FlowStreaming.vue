@@ -146,6 +146,73 @@ function goToShowInfo() {
   router.push('/stream/show');
 }
 
+// ─── Auto-end timer (based on show end_time) ───────────────────────────────
+const remainingText = ref<string | null>(null);
+const endTimeWarning = ref(false);
+let endTimeInterval: ReturnType<typeof setInterval> | null = null;
+
+function getEndTargetDate(): Date | null {
+  if (!show.value?.date || !show.value?.end_time) return null;
+  const dateStr = show.value.date; // "YYYY-MM-DD"
+  const timeStr = show.value.end_time; // "HH:MM"
+  try {
+    const isoStr = `${dateStr}T${timeStr}:00`;
+    const localDate = new Date(isoStr);
+    // Get Berlin offset
+    const berlinNow = new Date(
+      new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' })
+    );
+    const utcNow = new Date();
+    const offsetMs = berlinNow.getTime() - utcNow.getTime();
+    // Target in UTC = local target - offset
+    return new Date(localDate.getTime() - offsetMs);
+  } catch {
+    return null;
+  }
+}
+
+function updateEndTimeCountdown() {
+  const target = getEndTargetDate();
+  if (!target) {
+    remainingText.value = null;
+    return;
+  }
+
+  const diff = Math.floor((target.getTime() - Date.now()) / 1000);
+
+  if (diff <= 0) {
+    remainingText.value = '00:00';
+    endTimeWarning.value = false;
+    // Auto-stop the stream
+    if (!streamEnded.value && !stopping.value) {
+      if (isLive.value) {
+        handleStop();
+      } else {
+        handleStopUpload();
+      }
+    }
+    stopEndTimeInterval();
+    return;
+  }
+
+  // Show warning when < 5 minutes remain
+  endTimeWarning.value = diff <= 300;
+
+  const h = Math.floor(diff / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  const s = diff % 60;
+  remainingText.value = h > 0
+    ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function stopEndTimeInterval() {
+  if (endTimeInterval) {
+    clearInterval(endTimeInterval);
+    endTimeInterval = null;
+  }
+}
+
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 function stopElapsed() {
   if (elapsedInterval) {
@@ -167,10 +234,17 @@ onMounted(() => {
     pollRecordingStatus();
     recordingPollInterval = setInterval(pollRecordingStatus, 3000);
   }
+
+  // Start end-time countdown if end_time is set
+  if (show.value?.end_time) {
+    updateEndTimeCountdown();
+    endTimeInterval = setInterval(updateEndTimeCountdown, 1000);
+  }
 });
 
 onUnmounted(() => {
   stopElapsed();
+  stopEndTimeInterval();
   if (statusInterval) {
     clearInterval(statusInterval);
     statusInterval = null;
@@ -219,6 +293,12 @@ onUnmounted(() => {
         <div class="elapsed-timer">{{ elapsedText }}</div>
       </div>
 
+      <!-- End time countdown banner -->
+      <div v-if="remainingText !== null" :class="['end-time-banner', { warning: endTimeWarning }]">
+        <span class="end-time-label">{{ endTimeWarning ? '⚠ Ending in' : 'Time remaining' }}</span>
+        <span class="end-time-value">{{ remainingText }}</span>
+      </div>
+
       <!-- Recording indicator -->
       <div v-if="isRecording" class="recording-banner">
         <span class="rec-dot"></span>
@@ -233,6 +313,7 @@ onUnmounted(() => {
         <span class="show-meta">
           {{ formattedDate }}
           <template v-if="show?.start_time"> · {{ show.start_time }}</template>
+          <template v-if="show?.end_time"> – {{ show.end_time }}</template>
         </span>
       </div>
 
@@ -470,6 +551,57 @@ onUnmounted(() => {
 
 .btn-stop-rec:hover {
   background: rgba(239, 68, 68, 0.1);
+}
+
+/* ─── End time countdown banner ──────────────────────────────────────────── */
+.end-time-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  margin-bottom: var(--spacing-xl);
+}
+
+.end-time-banner.warning {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.4);
+  animation: pulse-warning 2s ease-in-out infinite;
+}
+
+@keyframes pulse-warning {
+
+  0%,
+  100% {
+    border-color: rgba(245, 158, 11, 0.4);
+  }
+
+  50% {
+    border-color: rgba(245, 158, 11, 0.8);
+  }
+}
+
+.end-time-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.end-time-banner.warning .end-time-label {
+  color: #f59e0b;
+  font-weight: var(--font-weight-bold);
+}
+
+.end-time-value {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
+.end-time-banner.warning .end-time-value {
+  color: #f59e0b;
 }
 
 /* ─── Show card ──────────────────────────────────────────────────────────── */

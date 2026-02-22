@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@vuepic/vue-datepicker": "^12.1.0",
     "cropperjs": "^1.6.2",
     "flv.js": "^1.6.2",
     "pinia": "^2.1.7",
