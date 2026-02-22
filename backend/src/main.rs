@@ -579,6 +579,10 @@ async fn main() -> anyhow::Result<()> {
         )
         // Stream WebSocket and API
         .route("/ws/stream", get(stream_ws_handler))
+        .route(
+            "/ws/stream-test",
+            get(handlers::stream_test_ws::stream_test_ws_handler),
+        )
         .route("/api/stream/status", get(stream_status_handler))
         .route("/api/stream/stop", post(stream_stop_handler))
         // Recording API for show recording with timecoded track markers

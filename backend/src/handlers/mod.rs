@@ -2,6 +2,7 @@ pub mod api;
 pub mod backup_trigger;
 pub mod download;
 pub mod recording;
+pub mod stream_test_ws;
 pub mod stream_ws;
 pub mod submit;
 pub mod submit_chunked;

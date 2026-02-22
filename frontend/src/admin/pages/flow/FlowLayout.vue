@@ -1,27 +1,49 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useHostFlow, type FlowStep } from '@admin/composables';
 
+const route = useRoute();
 const router = useRouter();
 const flow = useHostFlow();
 
-// Steps shown in the progress indicator (not-assigned and live are special)
-const progressSteps: { key: FlowStep; label: string }[] = [
-  { key: 'info', label: 'Show Info' },
-  { key: 'mode', label: 'Mode' },
-  { key: 'upload', label: 'Upload' },
-  { key: 'confirm', label: 'Confirm' },
-];
+// Dynamic steps based on which branch the user is on
+const progressSteps = computed<{ key: FlowStep; label: string; route: string }[]>(() => {
+  const mode = flow.uploadMode.value;
 
-const currentStepIndex = computed(() =>
-  progressSteps.findIndex((s) => s.key === flow.currentStep.value)
-);
+  if (mode === 'live') {
+    return [
+      { key: 'info', label: 'Show Info', route: '/stream/info' },
+      { key: 'mode', label: 'Mode', route: '/stream/mode' },
+      { key: 'live', label: 'Setup', route: '/stream/live' },
+      { key: 'waiting', label: 'Waiting', route: '/stream/waiting' },
+      { key: 'streaming', label: 'Live', route: '/stream/streaming' },
+    ];
+  }
+
+  // Default / prerecorded branch
+  return [
+    { key: 'info', label: 'Show Info', route: '/stream/info' },
+    { key: 'mode', label: 'Mode', route: '/stream/mode' },
+    { key: 'upload', label: 'Upload', route: '/stream/upload' },
+    { key: 'confirm', label: 'Confirm', route: '/stream/confirm' },
+    { key: 'waiting', label: 'Waiting', route: '/stream/waiting' },
+    { key: 'streaming', label: 'Live', route: '/stream/streaming' },
+  ];
+});
+
+const currentStepIndex = computed(() => {
+  // Match by current route path for accuracy
+  const path = route.path;
+  const idx = progressSteps.value.findIndex((s) => s.route === path);
+  if (idx >= 0) return idx;
+  // Fallback: match by flow step key
+  return progressSteps.value.findIndex((s) => s.key === flow.currentStep.value);
+});
 
 const showProgressBar = computed(() =>
   flow.assigned.value &&
-  flow.currentStep.value !== 'not-assigned' &&
-  flow.currentStep.value !== 'live'
+  flow.currentStep.value !== 'not-assigned'
 );
 
 onMounted(async () => {
@@ -33,7 +55,8 @@ onMounted(async () => {
 function navigateToStep(step: FlowStep) {
   if (flow.canNavigateTo(step)) {
     flow.goToStep(step);
-    router.push(`/stream/${step}`);
+    const target = progressSteps.value.find((s) => s.key === step);
+    router.push(target?.route ?? `/stream/${step}`);
   }
 }
 </script>

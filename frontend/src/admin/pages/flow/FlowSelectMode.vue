@@ -10,6 +10,11 @@ function selectPrerecorded() {
   router.push('/stream/upload');
 }
 
+function selectLive() {
+  flow.selectMode('live');
+  router.push('/stream/live');
+}
+
 function goBack() {
   flow.goToStep('info');
   router.push('/stream/info');
@@ -31,15 +36,14 @@ function goBack() {
         </p>
       </button>
 
-      <!-- Live card (disabled) -->
-      <div class="mode-card disabled">
-        <div class="mode-badge">Coming Soon</div>
+      <!-- Live card -->
+      <button class="mode-card" @click="selectLive">
         <div class="mode-icon">🎙️</div>
         <h2 class="mode-card-title">Live</h2>
         <p class="mode-card-desc">
           Stream your set live directly from your browser.
         </p>
-      </div>
+      </button>
     </div>
 
     <div class="flow-mode-actions">
@@ -93,26 +97,9 @@ function goBack() {
   gap: var(--spacing-md);
 }
 
-.mode-card:not(.disabled):hover {
+.mode-card:hover {
   border-color: var(--color-primary);
   background: var(--color-surface-hover);
-}
-
-.mode-card.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.mode-badge {
-  position: absolute;
-  top: var(--spacing-md);
-  right: var(--spacing-md);
-  background: var(--color-surface-alt);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  padding: var(--spacing-xs) var(--spacing-sm);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--color-border);
 }
 
 .mode-icon {

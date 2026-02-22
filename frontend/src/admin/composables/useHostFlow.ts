@@ -5,7 +5,19 @@ import { hostFlowApi, type MyShowInfo, type UploadResult } from '../api';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type FlowStep = 'not-assigned' | 'info' | 'mode' | 'upload' | 'confirm' | 'live';
+export type FlowStep =
+  | 'not-assigned'
+  | 'info'
+  | 'mode'
+  | 'upload'
+  | 'confirm'
+  | 'live'
+  | 'waiting'
+  | 'streaming';
+
+export type LiveSubStep = 'os-select' | 'tutorial' | 'test';
+
+export type SelectedOs = 'windows' | 'macos' | 'linux';
 
 export type UploadMode = 'prerecorded' | 'live';
 
@@ -51,6 +63,11 @@ const uploadMode = ref<UploadMode | null>(null);
 const uploading = ref(false);
 const uploadProgress = ref<UploadProgress | null>(null);
 
+// Live-specific state
+const liveSubStep = ref<LiveSubStep>('os-select');
+const liveTestPassed = ref(false);
+const selectedOs = ref<SelectedOs | null>(null);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Computed
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,7 +92,14 @@ function canNavigateTo(step: FlowStep): boolean {
     case 'confirm':
       return uploadMode.value === 'prerecorded' && hasUpload.value;
     case 'live':
-      return uploadMode.value === 'live' || isConfirmed.value;
+      return uploadMode.value === 'live';
+    case 'waiting':
+      return (
+        (uploadMode.value === 'prerecorded' && isConfirmed.value) ||
+        (uploadMode.value === 'live' && liveTestPassed.value)
+      );
+    case 'streaming':
+      return canNavigateTo('waiting');
     default:
       return false;
   }
@@ -206,6 +230,18 @@ async function deleteUpload(): Promise<void> {
   }
 }
 
+function setLiveSubStep(step: LiveSubStep): void {
+  liveSubStep.value = step;
+}
+
+function setLiveTestPassed(passed = true): void {
+  liveTestPassed.value = passed;
+}
+
+function setSelectedOs(os: SelectedOs): void {
+  selectedOs.value = os;
+}
+
 function reset(): void {
   loaded.value = false;
   loading.value = false;
@@ -216,6 +252,9 @@ function reset(): void {
   uploadMode.value = null;
   uploading.value = false;
   uploadProgress.value = null;
+  liveSubStep.value = 'os-select';
+  liveTestPassed.value = false;
+  selectedOs.value = null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,6 +273,9 @@ export function useHostFlow() {
     uploadMode: readonly(uploadMode),
     uploading: readonly(uploading),
     uploadProgress: readonly(uploadProgress),
+    liveSubStep: readonly(liveSubStep),
+    liveTestPassed: readonly(liveTestPassed),
+    selectedOs: readonly(selectedOs),
 
     // Computed
     hasUpload,
@@ -249,6 +291,9 @@ export function useHostFlow() {
     confirmUpload,
     deleteUpload,
     canNavigateTo,
+    setLiveSubStep,
+    setLiveTestPassed,
+    setSelectedOs,
     reset,
   };
 }

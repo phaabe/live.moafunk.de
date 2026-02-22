@@ -21,6 +21,8 @@ const FlowSelectMode = () => import('./pages/flow/FlowSelectMode.vue');
 const FlowUpload = () => import('./pages/flow/FlowUpload.vue');
 const FlowConfirm = () => import('./pages/flow/FlowConfirm.vue');
 const FlowLive = () => import('./pages/flow/FlowLive.vue');
+const FlowWaiting = () => import('./pages/flow/FlowWaiting.vue');
+const FlowStreaming = () => import('./pages/flow/FlowStreaming.vue');
 const FlowNotAssigned = () => import('./pages/flow/FlowNotAssigned.vue');
 
 const router = createRouter({
@@ -83,6 +85,8 @@ const router = createRouter({
               upload: '/stream/upload',
               confirm: '/stream/confirm',
               live: '/stream/live',
+              waiting: '/stream/waiting',
+              streaming: '/stream/streaming',
             };
             const target = stepRouteMap[flow.currentStep.value] ?? '/stream/info';
             next(target);
@@ -114,6 +118,16 @@ const router = createRouter({
           path: 'live',
           name: 'stream-live',
           component: FlowLive,
+        },
+        {
+          path: 'waiting',
+          name: 'stream-waiting',
+          component: FlowWaiting,
+        },
+        {
+          path: 'streaming',
+          name: 'stream-streaming',
+          component: FlowStreaming,
         },
         {
           path: 'not-assigned',
