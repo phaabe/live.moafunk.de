@@ -551,8 +551,11 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/users/:id/reset-password",
             post(handlers::api::api_reset_password),
-        )
-        // Download routes (needed by SPA)
+        ) // Settings API (notification toggle)
+        .route(
+            "/api/settings/notifications",
+            get(handlers::settings::get_notifications).put(handlers::settings::set_notifications),
+        ) // Download routes (needed by SPA)
         .route(
             "/artists/:id/download",
             get(handlers::download::download_artist),

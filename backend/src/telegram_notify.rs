@@ -461,11 +461,38 @@ pub async fn edit_message_text_raw(
     Ok(())
 }
 
+/// Send a text message that always goes through, even when notifications are
+/// disabled.  Used for system-level messages like the notification toggle itself.
+///
+/// No-op if `telegram_bot` or `telegram_admin_chat_id` is not configured.
+/// Errors are logged but never propagated.
+pub async fn notify_unconditional(state: &Arc<AppState>, message: &str) {
+    let (Some(bot), Some(chat_id)) = (&state.telegram_bot, state.config.telegram_admin_chat_id)
+    else {
+        return;
+    };
+
+    let chat = ChatId(chat_id);
+    let mut req = bot.send_message(chat, message);
+    if let Some(tid) = state.config.telegram_topic_id {
+        req = req.message_thread_id(ThreadId(MessageId(tid)));
+    }
+    if let Err(e) = req.await {
+        tracing::warn!("Telegram unconditional notification failed: {e}");
+    }
+}
+
 /// Send a text message to the configured admin Telegram chat.
 ///
 /// No-op if `telegram_bot` or `telegram_admin_chat_id` is not configured.
+/// No-op if notifications are disabled via app_settings.
 /// Errors are logged but never propagated — notifications must not break main flows.
 pub async fn notify(state: &Arc<AppState>, message: &str) {
+    if !crate::db::is_notifications_enabled(&state.db).await {
+        tracing::debug!("Telegram notification skipped (notifications disabled)");
+        return;
+    }
+
     let (Some(bot), Some(chat_id)) = (&state.telegram_bot, state.config.telegram_admin_chat_id)
     else {
         return;
@@ -487,8 +514,14 @@ pub async fn notify(state: &Arc<AppState>, message: &str) {
 /// clickable `<a href="…">` links and other HTML formatting.
 ///
 /// No-op if `telegram_bot` or `telegram_admin_chat_id` is not configured.
+/// No-op if notifications are disabled via app_settings.
 /// Errors are logged but never propagated.
 pub async fn notify_html(state: &Arc<AppState>, message: &str) {
+    if !crate::db::is_notifications_enabled(&state.db).await {
+        tracing::debug!("Telegram HTML notification skipped (notifications disabled)");
+        return;
+    }
+
     let (Some(bot), Some(chat_id)) = (&state.telegram_bot, state.config.telegram_admin_chat_id)
     else {
         return;
@@ -1196,6 +1229,11 @@ pub async fn send_show_instagram_preview(
     state: &Arc<AppState>,
     show_id: i64,
 ) -> Result<(), String> {
+    if !crate::db::is_notifications_enabled(&state.db).await {
+        tracing::debug!("Show Instagram preview skipped (notifications disabled)");
+        return Ok(());
+    }
+
     if state.telegram_bot.is_none() {
         return Err("Telegram bot not configured".to_string());
     }
@@ -1388,6 +1426,11 @@ pub async fn send_artist_instagram_preview(
     state: &Arc<AppState>,
     artist: &models::Artist,
 ) -> Result<(), String> {
+    if !crate::db::is_notifications_enabled(&state.db).await {
+        tracing::debug!("Artist Instagram preview skipped (notifications disabled)");
+        return Ok(());
+    }
+
     if state.telegram_bot.is_none() {
         return Err("Telegram bot not configured".to_string());
     }
@@ -1556,6 +1599,11 @@ pub fn build_sort_order_keyboard(
 ///
 /// Lists artists with ⬆️/⬇️ buttons. Day 1 after show → first artist, etc.
 pub async fn send_sort_order_prompt(state: &Arc<AppState>, show_id: i64) -> Result<(), String> {
+    if !crate::db::is_notifications_enabled(&state.db).await {
+        tracing::debug!("Sort order prompt skipped (notifications disabled)");
+        return Ok(());
+    }
+
     let chat_id = state
         .config
         .telegram_admin_chat_id

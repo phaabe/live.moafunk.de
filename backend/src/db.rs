@@ -195,6 +195,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Seed default notification toggle (enabled) if it doesn't exist yet
+    sqlx::query(
+        "INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('notifications_enabled', 'true', datetime('now'))",
+    )
+    .execute(pool)
+    .await?;
+
     // Normalize legacy datetime-local values (e.g. 2026-01-04T20:00) into YYYY-MM-DD.
     // We keep the column type as TEXT, but only store the date portion going forward.
     sqlx::query(
@@ -728,4 +735,38 @@ pub async fn set_artist_sort_order(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+// ============================================================================
+// App Settings (key-value store)
+// ============================================================================
+
+/// Get a setting value by key. Returns None if the key doesn't exist.
+pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM app_settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(v,)| v))
+}
+
+/// Set a setting value (upsert). Creates the key if it doesn't exist.
+pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Check if notifications are enabled. Defaults to true if not set or on DB error.
+pub async fn is_notifications_enabled(pool: &SqlitePool) -> bool {
+    match get_setting(pool, "notifications_enabled").await {
+        Ok(Some(val)) => val != "false",
+        _ => true, // fail-open: default to enabled
+    }
 }

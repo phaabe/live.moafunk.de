@@ -702,6 +702,18 @@ export const soundcloudApi = {
   disconnect: () => api.post<{ success: boolean }>('/api/soundcloud/disconnect'),
 };
 
+// Settings API
+export interface NotificationSettings {
+  enabled: boolean;
+}
+
+export const settingsApi = {
+  getNotifications: () => api.get<NotificationSettings>('/api/settings/notifications'),
+
+  setNotifications: (enabled: boolean) =>
+    api.put<NotificationSettings>('/api/settings/notifications', { enabled }),
+};
+
 // Users API
 export interface AdminUser {
   id: number;

@@ -13,6 +13,7 @@ const UserEditPage = () => import('./pages/UserEditPage.vue');
 const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
+const DashboardPage = () => import('./pages/DashboardPage.vue');
 
 // Host flow pages
 const FlowLayout = () => import('./pages/flow/FlowLayout.vue');
@@ -37,7 +38,13 @@ const router = createRouter({
     {
       path: '/',
       // Redirect handled by beforeEach guard (role-aware)
-      redirect: '/calendar',
+      redirect: '/dashboard',
+    },
+    {
+      path: '/dashboard',
+      name: 'dashboard',
+      component: DashboardPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/artists',
@@ -196,14 +203,14 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   if (to.name === 'login' && authStore.isAuthenticated) {
-    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/calendar';
+    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/dashboard';
     next(defaultRoute);
     return;
   }
 
   // Redirect '/' based on role
   if (to.path === '/' && authStore.isAuthenticated) {
-    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/calendar';
+    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/dashboard';
     next(defaultRoute);
     return;
   }

@@ -5,6 +5,7 @@ import { Calendar } from 'v-calendar';
 import { showsApi, type Show } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import { useFlash } from '../composables/useFlash';
+import ShowList from '../components/ShowList.vue';
 
 const router = useRouter();
 const flash = useFlash();
@@ -100,22 +101,6 @@ const listShows = computed(() => {
   return [...filtered].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 });
 
-// Group list shows by month
-const listShowsByMonth = computed(() => {
-  const groups: { month: string; shows: Show[] }[] = [];
-  let currentMonth = '';
-  for (const show of listShows.value) {
-    const d = new Date(show.date + 'T12:00:00');
-    const month = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-    if (month !== currentMonth) {
-      groups.push({ month, shows: [] });
-      currentMonth = month;
-    }
-    groups[groups.length - 1].shows.push(show);
-  }
-  return groups;
-});
-
 // Create show modal state
 const showCreateModal = ref(false);
 const creating = ref(false);
@@ -200,15 +185,6 @@ function formatDate(dateStr: string): string {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-  });
-}
-
-function formatDateShort(dateStr: string): string {
-  const d = new Date(dateStr + 'T12:00:00');
-  return d.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
   });
 }
 
@@ -411,42 +387,7 @@ onMounted(loadShows);
         <span class="list-count text-muted">{{ listShows.length }} shows</span>
       </div>
 
-      <div v-if="listShows.length === 0" class="list-empty card">
-        <p class="text-muted">No shows found</p>
-      </div>
-
-      <div v-for="group in listShowsByMonth" :key="group.month" class="list-month-group">
-        <h3 class="list-month-header">{{ group.month }}</h3>
-        <div class="list-shows">
-          <div v-for="show in group.shows" :key="show.id" class="list-show-item" @click="goToShow(show.id)">
-            <div class="list-show-date-col">
-              <span class="list-show-date">{{ formatDateShort(show.date) }}</span>
-              <span :class="['badge', 'days-badge', getDaysClass(getDaysUntil(show.date))]">
-                {{ getDaysUntil(show.date) < 0 ? 'Past' : getDaysUntil(show.date) + 'd' }} </span>
-            </div>
-            <div class="list-show-info">
-              <span class="list-show-title">{{ show.title }}</span>
-              <span class="list-show-artists text-muted">
-                {{show.artists.map((a) => a.name).join(', ') || 'No artists assigned'}}
-              </span>
-            </div>
-            <div class="list-show-meta">
-              <span :class="['legend-dot', getDotColor(show)]"></span>
-              <span :class="[
-                'badge',
-                'artist-badge',
-                {
-                  'count-empty': show.artists.length === 0,
-                  'count-partial': show.artists.length > 0 && show.artists.length < 4,
-                  'count-full': show.artists.length >= 4,
-                },
-              ]">
-                {{ show.artists.length }}/4
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <ShowList :shows="shows" :filter="listFilter" @show-click="(show) => goToShow(show.id)" />
     </div>
 
     <!-- Create show modal -->
@@ -1152,95 +1093,6 @@ onMounted(loadShows);
   font-size: var(--font-size-sm);
 }
 
-.list-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--spacing-2xl);
-}
-
-.list-month-group {
-  margin-bottom: var(--spacing-xl);
-}
-
-.list-month-header {
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: var(--spacing-sm);
-  padding-bottom: var(--spacing-xs);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.list-shows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.list-show-item {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-lg);
-  padding: var(--spacing-md) var(--spacing-lg);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.list-show-item:hover {
-  background: var(--color-surface-alt);
-  border-color: var(--color-border-light);
-}
-
-.list-show-date-col {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--spacing-xs);
-  min-width: 100px;
-}
-
-.list-show-date {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.list-show-info {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-  flex: 1;
-  min-width: 0;
-}
-
-.list-show-title {
-  color: var(--color-primary);
-  font-weight: var(--font-weight-medium);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.list-show-artists {
-  font-size: var(--font-size-sm);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.list-show-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  flex-shrink: 0;
-}
-
 /* Responsive */
 @media (max-width: 900px) {
   .calendar-layout {
@@ -1277,16 +1129,6 @@ onMounted(loadShows);
   .page-header-actions {
     flex-wrap: wrap;
     justify-self: end;
-  }
-
-  .list-show-item {
-    flex-wrap: wrap;
-    gap: var(--spacing-sm);
-  }
-
-  .list-show-date-col {
-    flex-direction: row;
-    min-width: auto;
   }
 }
 </style>
