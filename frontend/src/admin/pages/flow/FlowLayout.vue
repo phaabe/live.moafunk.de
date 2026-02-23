@@ -1,39 +1,57 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useHostFlow, type FlowStep } from '@admin/composables';
 
+const route = useRoute();
 const router = useRouter();
 const flow = useHostFlow();
 
-// Steps shown in the progress indicator (not-assigned and live are special)
-const progressSteps: { key: FlowStep; label: string }[] = [
-  { key: 'info', label: 'Show Info' },
-  { key: 'mode', label: 'Mode' },
-  { key: 'upload', label: 'Upload' },
-  { key: 'confirm', label: 'Confirm' },
-];
+// Dynamic steps based on which branch the user is on
+const progressSteps = computed<{ key: FlowStep; label: string; route: string }[]>(() => {
+  const mode = flow.uploadMode.value;
 
-const currentStepIndex = computed(() =>
-  progressSteps.findIndex((s) => s.key === flow.currentStep.value)
-);
+  if (mode === 'live') {
+    return [
+      { key: 'mode', label: 'Mode', route: '/stream/mode' },
+      { key: 'live', label: 'Setup', route: '/stream/live' },
+      { key: 'on-air', label: 'On Air', route: '/stream/on-air' },
+    ];
+  }
+
+  // Default / prerecorded branch
+  return [
+    { key: 'mode', label: 'Mode', route: '/stream/mode' },
+    { key: 'upload', label: 'Upload', route: '/stream/upload' },
+    { key: 'confirm', label: 'Confirm', route: '/stream/confirm' },
+    { key: 'on-air', label: 'On Air', route: '/stream/on-air' },
+  ];
+});
+
+const currentStepIndex = computed(() => {
+  // Match by current route path for accuracy
+  const path = route.path;
+  const idx = progressSteps.value.findIndex((s) => s.route === path);
+  if (idx >= 0) return idx;
+  // Fallback: match by flow step key
+  return progressSteps.value.findIndex((s) => s.key === flow.currentStep.value);
+});
 
 const showProgressBar = computed(() =>
   flow.assigned.value &&
   flow.currentStep.value !== 'not-assigned' &&
-  flow.currentStep.value !== 'live'
+  flow.currentStep.value !== 'select'
 );
 
 onMounted(async () => {
-  if (!flow.loaded.value) {
-    await flow.fetchMyShow();
-  }
+  await flow.fetchMyShow();
 });
 
 function navigateToStep(step: FlowStep) {
   if (flow.canNavigateTo(step)) {
     flow.goToStep(step);
-    router.push(`/stream/${step}`);
+    const target = progressSteps.value.find((s) => s.key === step);
+    router.push(target?.route ?? `/stream/${step}`);
   }
 }
 </script>
@@ -86,8 +104,14 @@ function navigateToStep(step: FlowStep) {
 
 /* Progress bar */
 .flow-progress {
+  position: fixed;
+  top: calc(var(--nav-height, 48px) + var(--spacing-md, 12px));
+  left: 0;
+  right: 0;
+  z-index: calc(var(--z-dropdown) - 10);
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
+  border-top: 1px solid var(--color-border);
   padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-xl);
 }
 
@@ -179,6 +203,7 @@ function navigateToStep(step: FlowStep) {
   justify-content: center;
   color: var(--color-text-muted);
   font-size: var(--font-size-lg);
+  padding-top: calc(80px + var(--spacing-xl));
 }
 
 /* Content */
@@ -188,5 +213,6 @@ function navigateToStep(step: FlowStep) {
   width: 100%;
   margin: 0 auto;
   padding: var(--spacing-xl) var(--spacing-lg);
+  padding-top: calc(80px + var(--spacing-xl));
 }
 </style>

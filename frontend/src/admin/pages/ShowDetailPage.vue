@@ -6,6 +6,9 @@ import { BaseButton, BaseModal } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
+import { useDateTimeRange } from '../composables/useDateTimeRange';
+import { VueDatePicker } from '@vuepic/vue-datepicker';
+import '@vuepic/vue-datepicker/dist/main.css';
 
 defineOptions({
   name: 'ShowDetailPage'
@@ -32,8 +35,7 @@ const sendingTelegramPreview = ref(false);
 const uploadingToSoundCloud = ref(false);
 const togglingSoundCloudPrivacy = ref(false);
 const scStatus = ref<SoundCloudStatus | null>(null);
-const editingDate = ref(false);
-const editingStartTime = ref(false);
+const editingDateTime = ref(false);
 const editingDescription = ref(false);
 const editingAiBio = ref(false);
 const saving = ref(false);
@@ -47,6 +49,17 @@ const uploadProgress = ref<{ phase: 'extracting' | 'uploading' | 'finalizing'; p
 // Form data
 const dateForm = ref('');
 const startTimeForm = ref('');
+const endTimeForm = ref('');
+const {
+  startDateTime: editStart,
+  endDateTime: editEnd,
+  isValid: editTimeValid,
+  validationError: editTimeError,
+  apiDate: editDate,
+  apiStartTime: editStartTime,
+  apiEndTime: editEndTime,
+  setFromApi: setEditRange,
+} = useDateTimeRange();
 const descriptionForm = ref('');
 const aiBioForm = ref('');
 const selectedArtistId = ref<number | null>(null);
@@ -61,6 +74,43 @@ const artistsLeft = computed(() => show.value?.artists_left ?? 0);
 const isUnheard = computed(() => !show.value?.show_type || show.value.show_type === 'unheard');
 const hasHost = computed(() => !!show.value?.host_user_id);
 const uploadingCover = ref(false);
+
+/** Format a date string + time string into a readable datetime */
+function fmtDateTime(date: string, time: string): string {
+  const d = new Date(date + 'T' + time + ':00');
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }) + ' · ' + time;
+}
+
+/** Compute the end date, handling overnight shows (end_time <= start_time → next day) */
+function computeEndDate(date: string, startTime: string, endTime: string): string {
+  if (endTime <= startTime) {
+    const d = new Date(date + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return date;
+}
+
+const formattedStart = computed(() => {
+  if (!show.value?.date || !show.value?.start_time) return '—';
+  return fmtDateTime(show.value.date, show.value.start_time);
+});
+
+const formattedEnd = computed(() => {
+  if (!show.value?.date || !show.value?.end_time) return '—';
+  const endDate = show.value.start_time
+    ? computeEndDate(show.value.date, show.value.start_time, show.value.end_time)
+    : show.value.date;
+  return fmtDateTime(endDate, show.value.end_time);
+});
 
 // Use recording filename from API
 const recordingFilename = computed(() => show.value?.recording_filename || null);
@@ -161,6 +211,7 @@ async function loadShow() {
     show.value = await showsApi.get(id);
     dateForm.value = show.value.date;
     startTimeForm.value = show.value.start_time || '';
+    endTimeForm.value = show.value.end_time || '';
     descriptionForm.value = show.value.description || '';
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load show';
@@ -169,49 +220,33 @@ async function loadShow() {
   }
 }
 
-// Date editing
-function startEditDate() {
+// Date & time editing
+function startEditDateTime() {
   if (show.value) {
-    dateForm.value = show.value.date;
+    setEditRange(show.value.date, show.value.start_time, show.value.end_time);
   }
-  editingDate.value = true;
+  editingDateTime.value = true;
 }
 
-async function saveDate() {
+async function saveDateTime() {
   if (!show.value) return;
+  if (!editTimeValid.value) {
+    flash.error(editTimeError.value || 'Invalid date/time');
+    return;
+  }
 
   saving.value = true;
   try {
-    await showsApi.update(show.value.id, { date: dateForm.value });
-    flash.success('Date updated');
-    editingDate.value = false;
+    await showsApi.update(show.value.id, {
+      date: editDate.value,
+      start_time: editStartTime.value || undefined,
+      end_time: editEndTime.value || undefined,
+    });
+    flash.success('Date & time updated');
+    editingDateTime.value = false;
     await loadShow();
   } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to update date');
-  } finally {
-    saving.value = false;
-  }
-}
-
-// Start time editing
-function startEditStartTime() {
-  if (show.value) {
-    startTimeForm.value = show.value.start_time || '';
-  }
-  editingStartTime.value = true;
-}
-
-async function saveStartTime() {
-  if (!show.value) return;
-
-  saving.value = true;
-  try {
-    await showsApi.update(show.value.id, { start_time: startTimeForm.value || undefined });
-    flash.success('Start time updated');
-    editingStartTime.value = false;
-    await loadShow();
-  } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to update start time');
+    flash.error(e instanceof Error ? e.message : 'Failed to update date & time');
   } finally {
     saving.value = false;
   }
@@ -393,12 +428,6 @@ async function assignHost() {
     // Update local state
     show.value.host_user_id = response.host_user_id;
     show.value.host_username = response.host_username;
-    // Remove from available list
-    if (show.value.available_hosts) {
-      show.value.available_hosts = show.value.available_hosts.filter(
-        h => h.id !== response.host_user_id
-      );
-    }
     selectedHostId.value = null;
     flash.success(`Host "${response.host_username}" assigned to show`);
   } catch (e) {
@@ -412,22 +441,11 @@ async function unassignHost() {
   if (!show.value || !show.value.host_user_id) return;
 
   try {
-    const removedHost = {
-      id: show.value.host_user_id,
-      username: show.value.host_username || '',
-    };
-
     await showsApi.unassignHost(show.value.id);
 
     // Update local state
     show.value.host_user_id = undefined;
     show.value.host_username = undefined;
-    // Add back to available list
-    if (show.value.available_hosts) {
-      show.value.available_hosts = [...show.value.available_hosts, removedHost].sort(
-        (a, b) => a.username.localeCompare(b.username)
-      );
-    }
     flash.success('Host removed from show');
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to remove host');
@@ -751,44 +769,60 @@ onUnmounted(() => {
                 </span>
               </div>
 
-              <div class="info-label">Date</div>
-              <div class="info-value">{{ show.date }}</div>
+              <div class="info-label">Start</div>
+              <div class="info-value">{{ formattedStart }}</div>
 
-              <div class="info-label">Start Time</div>
-              <div class="info-value">{{ show.start_time || '—' }}</div>
+              <div class="info-label">End</div>
+              <div class="info-value">{{ formattedEnd }}</div>
             </div>
 
             <div class="edit-toggle-container">
-              <button type="button" class="btn-edit" @click="startEditDate" v-if="!editingDate">
-                Edit Date
-              </button>
-              <button type="button" class="btn-edit" @click="startEditStartTime" v-if="!editingStartTime"
-                style="margin-left: var(--spacing-sm)">
-                Edit Start Time
+              <button type="button" class="btn-edit" @click="startEditDateTime" v-if="!editingDateTime">
+                Edit Date & Time
               </button>
             </div>
 
-            <div v-if="editingDate" class="edit-panel">
-              <div class="edit-row">
-                <input type="date" v-model="dateForm" class="date-input" />
-                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDate">
-                  Save Date
-                </BaseButton>
-                <BaseButton variant="ghost" size="sm" @click="editingDate = false">
-                  Cancel
-                </BaseButton>
-              </div>
-            </div>
-
-            <div v-if="editingStartTime" class="edit-panel">
-              <div class="edit-row">
-                <input type="time" v-model="startTimeForm" class="date-input" />
-                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveStartTime">
-                  Save
-                </BaseButton>
-                <BaseButton variant="ghost" size="sm" @click="editingStartTime = false">
-                  Cancel
-                </BaseButton>
+            <div v-if="editingDateTime" class="edit-panel">
+              <div class="edit-row edit-row-datetime">
+                <div class="datetime-field">
+                  <label class="form-label">Start</label>
+                  <VueDatePicker
+                    v-model="editStart"
+                    :enable-time-picker="true"
+                    :dark="true"
+                    :minutes-increment="5"
+                    :max-date="editEnd || undefined"
+                    :flow="{ steps: ['calendar', 'time'] }"
+                    :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+                    placeholder="Start date & time"
+                    text-input
+                    teleport="body"
+                  />
+                </div>
+                <div class="datetime-field">
+                  <label class="form-label">End</label>
+                  <VueDatePicker
+                    v-model="editEnd"
+                    :enable-time-picker="true"
+                    :dark="true"
+                    :minutes-increment="5"
+                    :min-date="editStart || undefined"
+                    :flow="{ steps: ['calendar', 'time'] }"
+                    :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+                    placeholder="End date & time"
+                    text-input
+                    teleport="body"
+                  />
+                </div>
+                <div class="datetime-actions">
+                  <p v-if="editStart && editEnd && !editTimeValid" class="field-error">{{ editTimeError }}</p>
+                  <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDateTime">
+                    Save
+                  </BaseButton>
+                  <BaseButton variant="ghost" size="sm" @click="editingDateTime = false">
+                    Cancel
+                  </BaseButton>
+                </div>
               </div>
             </div>
 
@@ -1014,7 +1048,7 @@ onUnmounted(() => {
                       uploadProgress.percent }}%)
                   </span>
                   <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
-                    }}%</span>
+                  }}%</span>
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>
@@ -1543,6 +1577,30 @@ onUnmounted(() => {
   gap: var(--spacing-sm);
   align-items: center;
   flex-wrap: wrap;
+}
+
+.edit-row-datetime {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.datetime-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.datetime-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+  margin-top: var(--spacing-xs);
+}
+
+.field-error {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  margin: 0;
 }
 
 .date-input {

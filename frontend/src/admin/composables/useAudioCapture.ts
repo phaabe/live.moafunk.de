@@ -1,4 +1,4 @@
-import { ref, onUnmounted, shallowRef } from 'vue';
+import { ref, shallowRef } from 'vue';
 
 export interface AudioDevice {
   deviceId: string;
@@ -10,31 +10,55 @@ export interface UseAudioCaptureOptions {
   onError?: (error: string) => void;
 }
 
+// ─── Singleton state (shared across components / route navigations) ─────────
+const devices = ref<AudioDevice[]>([]);
+const selectedDeviceId = ref<string>('');
+const isCapturing = ref(false);
+const isRecording = ref(false);
+const error = ref<string | null>(null);
+
+// Volume control (0-2, where 1 is normal, 0 is muted, 2 is 2x gain)
+const inputVolume = ref(1);
+
+// Use shallowRef for non-reactive objects
+const mediaStream = shallowRef<MediaStream | null>(null);
+// The processed stream (with gain applied) for MediaRecorder
+const processedStream = shallowRef<MediaStream | null>(null);
+
+// Private singleton vars
+let mediaRecorder: MediaRecorder | null = null;
+let audioContext: AudioContext | null = null;
+let gainNode: GainNode | null = null;
+let sourceNode: MediaStreamAudioSourceNode | null = null;
+let destinationNode: MediaStreamAudioDestinationNode | null = null;
+
+// Mutable callbacks — updated via options or setOnData()/setOnError()
+let currentOnData: ((data: ArrayBuffer) => void) | null = null;
+let currentOnError: ((error: string) => void) | null = null;
+
 export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
-  const { onData, onError } = options;
+  // Update callbacks so the currently-mounted component receives events
+  if (options.onData) currentOnData = options.onData;
+  if (options.onError) currentOnError = options.onError;
 
-  const devices = ref<AudioDevice[]>([]);
-  const selectedDeviceId = ref<string>('');
-  const isCapturing = ref(false);
-  const isRecording = ref(false);
-  const error = ref<string | null>(null);
+  // ─── Public methods ─────────────────────────────────────────────────────
 
-  // Volume control (0-2, where 1 is normal, 0 is muted, 2 is 2x gain)
-  const inputVolume = ref(1);
+  /**
+   * Update the onData callback at runtime.
+   * Use this to wire audio chunks to a new sink (e.g. streamSocket.send)
+   * after the composable has already been created.
+   */
+  function setOnData(callback: ((data: ArrayBuffer) => void) | null): void {
+    currentOnData = callback;
+  }
 
-  // Use shallowRef for non-reactive objects
-  const mediaStream = shallowRef<MediaStream | null>(null);
-  // The processed stream (with gain applied) for MediaRecorder
-  const processedStream = shallowRef<MediaStream | null>(null);
-  let mediaRecorder: MediaRecorder | null = null;
+  /**
+   * Update the onError callback at runtime.
+   */
+  function setOnError(callback: ((error: string) => void) | null): void {
+    currentOnError = callback;
+  }
 
-  // Audio processing
-  let audioContext: AudioContext | null = null;
-  let gainNode: GainNode | null = null;
-  let sourceNode: MediaStreamAudioSourceNode | null = null;
-  let destinationNode: MediaStreamAudioDestinationNode | null = null;
-
-  // Set input volume
   function setInputVolume(volume: number): void {
     inputVolume.value = Math.max(0, Math.min(2, volume));
     if (gainNode) {
@@ -60,7 +84,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to list devices';
       error.value = msg;
-      onError?.(msg);
+      currentOnError?.(msg);
     }
   }
 
@@ -97,7 +121,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to capture audio';
       error.value = msg;
-      onError?.(msg);
+      currentOnError?.(msg);
       return false;
     }
   }
@@ -189,7 +213,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
       } else {
         error.value = e instanceof Error ? e.message : 'Failed to capture screen audio';
       }
-      onError?.(error.value);
+      currentOnError?.(error.value);
       return false;
     }
   }
@@ -214,16 +238,16 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
       });
 
       mediaRecorder.ondataavailable = async (event) => {
-        if (event.data.size > 0 && onData) {
+        if (event.data.size > 0 && currentOnData) {
           const buffer = await event.data.arrayBuffer();
-          onData(buffer);
+          currentOnData(buffer);
         }
       };
 
       mediaRecorder.onerror = (e) => {
         console.error('[AudioCapture] Recorder error:', e);
         error.value = 'Recording error';
-        onError?.('Recording error');
+        currentOnError?.('Recording error');
       };
 
       // 250ms chunks for low latency
@@ -235,7 +259,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to start recording';
       error.value = msg;
-      onError?.(msg);
+      currentOnError?.(msg);
       return false;
     }
   }
@@ -286,9 +310,10 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     console.log('[AudioCapture] Capture stopped');
   }
 
-  onUnmounted(() => {
-    stopCapture();
-  });
+  // NOTE: No onUnmounted hook — callers manage their own lifecycle.
+  // This allows audio capture to survive route navigations
+  // (e.g. FlowLive → FlowWaiting → FlowStreaming).
+  // Call stopCapture() explicitly when done.
 
   return {
     devices,
@@ -300,6 +325,8 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     processedStream,
     inputVolume,
     setInputVolume,
+    setOnData,
+    setOnError,
     refreshDevices,
     captureDevice,
     captureScreenAudio,

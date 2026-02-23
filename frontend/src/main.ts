@@ -1,24 +1,46 @@
 import { config } from './config';
 import { checkStreamStatus } from './streamDetector';
-import { initializePlayer, updateLiveStatus } from './player';
+import { initializePlayer, updateLiveStatus, destroyPlayer, restartPlayer } from './player';
 
 // Only initialize if we're on a page with a player
 const hasPlayer = document.getElementById('player') || document.getElementById('videoElement');
 
 if (hasPlayer) {
-  // Check stream status and initialize player
+  let wasLive = false;
+
+  // Initial check + player init
   checkStreamStatus(config.stream.hls).then((live) => {
+    wasLive = live;
     updateLiveStatus(live);
+    if (live) {
+      initializePlayer();
+    }
   });
 
-  // Initialize the appropriate player for the platform
-  initializePlayer();
+  // Poll stream status every 8 seconds to detect live↔offline transitions
+  setInterval(async () => {
+    const live = await checkStreamStatus(config.stream.hls);
+
+    if (live && !wasLive) {
+      // Transition: offline → live
+      console.log('[StreamPoll] Stream went live');
+      updateLiveStatus(true);
+      restartPlayer();
+    } else if (!live && wasLive) {
+      // Transition: live → offline
+      console.log('[StreamPoll] Stream went offline');
+      updateLiveStatus(false);
+      destroyPlayer();
+    }
+
+    wasLive = live;
+  }, 8000);
 }
 
 // Emoji explosion effect for logo
 function getRandomEmoji(): string {
   const random = Math.random();
-  if (random < 0.70) return '💕'; // 70% pink hearts
+  if (random < 0.7) return '💕'; // 70% pink hearts
   if (random < 0.75) return '❤️'; // 5% red heart
   return '🛸'; // 25% UFO
 }
@@ -44,13 +66,16 @@ function createFlyingEmoji(x: number, y: number) {
 
   // Animate
   const duration = 1000 + Math.random() * 500;
-  emoji.animate([
-    { transform: 'translate(0, 0) scale(1)', opacity: 1 },
-    { transform: `translate(${endX - x}px, ${endY - y}px) scale(0.5)`, opacity: 0 }
-  ], {
-    duration,
-    easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)'
-  }).onfinish = () => emoji.remove();
+  emoji.animate(
+    [
+      { transform: 'translate(0, 0) scale(1)', opacity: 1 },
+      { transform: `translate(${endX - x}px, ${endY - y}px) scale(0.5)`, opacity: 0 },
+    ],
+    {
+      duration,
+      easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+    }
+  ).onfinish = () => emoji.remove();
 }
 
 // Add click handler to logo

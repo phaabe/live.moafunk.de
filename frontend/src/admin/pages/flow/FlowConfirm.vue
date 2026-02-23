@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow } from '@admin/composables';
+import AudioPlayer from '@admin/components/AudioPlayer.vue';
 
 const router = useRouter();
 const flow = useHostFlow();
@@ -49,8 +50,14 @@ async function handleReupload() {
 }
 
 function goBack() {
-  flow.goToStep('upload');
-  router.push('/stream/upload');
+  // Revert: going back from confirm deletes upload and returns to mode selection
+  flow.revertToMode();
+  router.push('/stream/mode');
+}
+
+function goToWaiting() {
+  flow.goToStep('on-air');
+  router.push('/stream/on-air');
 }
 </script>
 
@@ -82,10 +89,14 @@ function goBack() {
         </div>
       </div>
 
-      <!-- Pre-listen placeholder -->
-      <div class="prelisten-placeholder">
+      <!-- Pre-listen audio player -->
+      <div v-if="flow.prerecordedUrl.value" class="prelisten-section">
+        <h3 class="prelisten-heading">🎧 Preview your upload</h3>
+        <AudioPlayer :src="flow.prerecordedUrl.value" />
+      </div>
+      <div v-else class="prelisten-placeholder">
         <span class="prelisten-icon">🎧</span>
-        <span class="prelisten-text">Pre-listen coming soon</span>
+        <span class="prelisten-text">Audio preview not available</span>
       </div>
 
       <!-- Error -->
@@ -125,6 +136,9 @@ function goBack() {
         </p>
 
         <div class="confirmed-actions">
+          <button class="btn-primary" @click="goToWaiting">
+            Continue to Waiting Room →
+          </button>
           <button class="btn-danger-outline" @click="handleReupload">
             Replace upload
           </button>
@@ -197,6 +211,17 @@ function goBack() {
   font-size: 1.2rem;
 }
 
+.prelisten-section {
+  margin-bottom: var(--spacing-xl);
+}
+
+.prelisten-heading {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+  margin: 0 0 var(--spacing-md);
+}
+
 /* Error */
 .confirm-error {
   background: var(--color-error-bg);
@@ -265,6 +290,8 @@ function goBack() {
 .confirmed-actions {
   display: flex;
   justify-content: center;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
 }
 
 /* Shared button styles */

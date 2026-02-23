@@ -8,19 +8,40 @@ const flow = useHostFlow();
 
 const show = computed(() => flow.show.value);
 
-const formattedDate = computed(() => {
-  if (!show.value?.date) return '';
-  try {
-    const d = new Date(show.value.date + 'T00:00:00');
-    return d.toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  } catch {
-    return show.value.date;
+/** Format a date string + time string into a readable datetime */
+function fmtDateTime(date: string, time: string): string {
+  const d = new Date(date + 'T' + time + ':00');
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }) + ' · ' + time;
+}
+
+function computeEndDate(date: string, startTime: string, endTime: string): string {
+  if (endTime <= startTime) {
+    const d = new Date(date + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
   }
+  return date;
+}
+
+const formattedStart = computed(() => {
+  if (!show.value?.date || !show.value?.start_time) return '—';
+  return fmtDateTime(show.value.date, show.value.start_time);
+});
+
+const formattedEnd = computed(() => {
+  if (!show.value?.date || !show.value?.end_time) return '—';
+  const endDate = show.value.start_time
+    ? computeEndDate(show.value.date, show.value.start_time, show.value.end_time)
+    : show.value.date;
+  return fmtDateTime(endDate, show.value.end_time);
 });
 
 function proceed() {
@@ -40,12 +61,12 @@ function proceed() {
 
       <div class="flow-info-meta">
         <div class="meta-item">
-          <span class="meta-label">Date</span>
-          <span class="meta-value">{{ formattedDate }}</span>
+          <span class="meta-label">Start</span>
+          <span class="meta-value">{{ formattedStart }}</span>
         </div>
-        <div v-if="show.start_time" class="meta-item">
-          <span class="meta-label">Time</span>
-          <span class="meta-value">{{ show.start_time }}</span>
+        <div class="meta-item">
+          <span class="meta-label">End</span>
+          <span class="meta-value">{{ formattedEnd }}</span>
         </div>
       </div>
 

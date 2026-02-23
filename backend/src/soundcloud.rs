@@ -32,7 +32,6 @@ struct OAuthTokenResponse {
 pub struct SoundCloudTrack {
     pub id: i64,
     pub permalink_url: Option<String>,
-    pub title: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

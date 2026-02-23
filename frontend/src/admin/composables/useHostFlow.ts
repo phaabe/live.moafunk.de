@@ -1,11 +1,22 @@
 import { ref, computed, readonly } from 'vue';
-import { hostFlowApi, type MyShowInfo, type UploadResult } from '../api';
+import { hostFlowApi, streamApi, type MyShowInfo, type UploadResult } from '../api';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type FlowStep = 'not-assigned' | 'info' | 'mode' | 'upload' | 'confirm' | 'live';
+export type FlowStep =
+  | 'not-assigned'
+  | 'select'
+  | 'mode'
+  | 'upload'
+  | 'confirm'
+  | 'live'
+  | 'on-air';
+
+export type LiveSubStep = 'os-select' | 'tutorial' | 'test';
+
+export type SelectedOs = 'windows' | 'macos' | 'linux';
 
 export type UploadMode = 'prerecorded' | 'live';
 
@@ -23,9 +34,11 @@ export interface HostFlowState {
   loading: boolean;
   /** Error message from last operation */
   error: string | null;
-  /** Whether the user is assigned to a show */
+  /** Whether the user is assigned to at least one show */
   assigned: boolean;
-  /** Show data (undefined if not assigned) */
+  /** All shows assigned to the user */
+  shows: MyShowInfo[];
+  /** Currently selected show */
   show: MyShowInfo | undefined;
   /** Current flow step */
   currentStep: FlowStep;
@@ -45,11 +58,19 @@ const loaded = ref(false);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const assigned = ref(false);
+const shows = ref<MyShowInfo[]>([]);
 const show = ref<MyShowInfo | undefined>(undefined);
-const currentStep = ref<FlowStep>('info');
+const currentStep = ref<FlowStep>('select');
 const uploadMode = ref<UploadMode | null>(null);
 const uploading = ref(false);
 const uploadProgress = ref<UploadProgress | null>(null);
+
+// Live-specific state
+const liveSubStep = ref<LiveSubStep>('os-select');
+const liveTestPassed = ref(false);
+const selectedOs = ref<SelectedOs | null>(null);
+const showStarted = ref(false);
+const recordStream = ref(false);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Computed
@@ -59,6 +80,7 @@ const hasUpload = computed(() => !!show.value?.prerecorded_key);
 const isConfirmed = computed(() => !!show.value?.prerecorded_confirmed_at);
 const prerecordedUrl = computed(() => show.value?.prerecorded_url);
 const prerecordedFilename = computed(() => show.value?.prerecorded_filename);
+const showId = computed(() => show.value?.id);
 
 /** Whether the user can navigate to a given step */
 function canNavigateTo(step: FlowStep): boolean {
@@ -66,16 +88,22 @@ function canNavigateTo(step: FlowStep): boolean {
   switch (step) {
     case 'not-assigned':
       return false;
-    case 'info':
-      return true;
+    case 'select':
+      return true; // can always go back to show selection
     case 'mode':
-      return true; // can always go back to mode selection
+      return !!show.value;
     case 'upload':
-      return uploadMode.value === 'prerecorded';
+      return !!show.value && uploadMode.value === 'prerecorded';
     case 'confirm':
-      return uploadMode.value === 'prerecorded' && hasUpload.value;
+      return !!show.value && uploadMode.value === 'prerecorded' && hasUpload.value;
     case 'live':
-      return uploadMode.value === 'live' || isConfirmed.value;
+      return !!show.value && uploadMode.value === 'live';
+    case 'on-air':
+      return (
+        !!show.value &&
+        ((uploadMode.value === 'prerecorded' && isConfirmed.value) ||
+          (uploadMode.value === 'live' && liveTestPassed.value))
+      );
     default:
       return false;
   }
@@ -90,24 +118,19 @@ async function fetchMyShow(): Promise<void> {
   error.value = null;
 
   try {
-    const response = await hostFlowApi.getMyShow();
+    const response = await hostFlowApi.getMyShows();
     assigned.value = response.assigned;
-    show.value = response.show ?? undefined;
+    shows.value = response.shows;
 
-    if (!response.assigned) {
+    if (!response.assigned || response.shows.length === 0) {
       currentStep.value = 'not-assigned';
-    } else if (!loaded.value) {
-      // First load: determine starting step based on show state
-      if (show.value?.prerecorded_confirmed_at) {
-        // Already confirmed → go to confirm (they can review or go live)
-        currentStep.value = 'confirm';
-      } else if (show.value?.prerecorded_key) {
-        // Has upload but not confirmed → go to confirm step
-        currentStep.value = 'confirm';
-        uploadMode.value = 'prerecorded';
-      } else {
-        currentStep.value = 'info';
-      }
+      show.value = undefined;
+    } else if (response.shows.length === 1 && !loaded.value) {
+      // Auto-select if only one show
+      selectShow(response.shows[0]);
+    } else if (!show.value && !loaded.value) {
+      // Multiple shows, no selection yet → go to select
+      currentStep.value = 'select';
     }
 
     loaded.value = true;
@@ -116,6 +139,90 @@ async function fetchMyShow(): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+/**
+ * Get the current Berlin wall-clock time as an ISO-comparable string (YYYY-MM-DDTHH:MM:SS).
+ * Uses sv-SE locale which formats as "YYYY-MM-DD HH:MM:SS".
+ */
+function getBerlinNowISO(): string {
+  return new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' }).replace(' ', 'T');
+}
+
+/**
+ * Convert a Berlin wall-clock date + time to a proper UTC Date object.
+ * Useful for countdown arithmetic (target.getTime() - Date.now()).
+ */
+function berlinToUtcDate(dateStr: string, timeStr: string): Date {
+  // Interpret as UTC first, then adjust by the Berlin-UTC offset
+  const asUtc = new Date(`${dateStr}T${timeStr}:00Z`);
+  const berlinMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'Europe/Berlin' })).getTime();
+  const utcMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'UTC' })).getTime();
+  const berlinOffsetMs = berlinMs - utcMs;
+  return new Date(asUtc.getTime() - berlinOffsetMs);
+}
+
+function nextDayDateStr(dateStr: string): string {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Check if a show is currently running (between start and end time in Berlin TZ) */
+function isShowRunning(s: MyShowInfo): boolean {
+  if (!s.date || !s.start_time || !s.end_time) return false;
+  const nowStr = getBerlinNowISO();
+  const startStr = `${s.date}T${s.start_time}:00`;
+  const endDateStr = s.end_time <= s.start_time ? nextDayDateStr(s.date) : s.date;
+  const endStr = `${endDateStr}T${s.end_time}:00`;
+  return nowStr >= startStr && nowStr <= endStr;
+}
+
+/** Check if a show has ended (end date/time is past) */
+function isShowEnded(s: MyShowInfo): boolean {
+  if (!s.date || !s.end_time) return false;
+  const nowStr = getBerlinNowISO();
+  const endDateStr = s.start_time && s.end_time <= s.start_time ? nextDayDateStr(s.date) : s.date;
+  const endStr = `${endDateStr}T${s.end_time}:00`;
+  return nowStr > endStr;
+}
+
+/** Select a show and determine the starting step based on its state */
+function selectShow(selectedShow: MyShowInfo): void {
+  show.value = selectedShow;
+
+  // Running shows: always go directly to on-air page
+  if (isShowRunning(selectedShow)) {
+    if (selectedShow.prerecorded_confirmed_at) {
+      uploadMode.value = 'prerecorded';
+      currentStep.value = 'on-air';
+    } else {
+      currentStep.value = 'mode';
+    }
+    return;
+  }
+
+  // Upcoming shows: if user already set settings until on-air, resume there
+  if (selectedShow.prerecorded_confirmed_at) {
+    uploadMode.value = 'prerecorded';
+    currentStep.value = 'on-air';
+  } else {
+    // Always start from mode selection
+    currentStep.value = 'mode';
+  }
+}
+
+/** Go back to show selection (clears selected show) */
+function deselectShow(): void {
+  show.value = undefined;
+  uploadMode.value = null;
+  currentStep.value = 'select';
+  // Reset flow-specific state
+  liveSubStep.value = 'os-select';
+  liveTestPassed.value = false;
+  selectedOs.value = null;
+  showStarted.value = false;
+  recordStream.value = false;
 }
 
 function goToStep(step: FlowStep): boolean {
@@ -134,12 +241,14 @@ function selectMode(mode: UploadMode): void {
 }
 
 async function uploadFile(file: File): Promise<UploadResult> {
+  if (!showId.value) throw new Error('No show selected');
+
   uploading.value = true;
   uploadProgress.value = null;
   error.value = null;
 
   try {
-    const result = await hostFlowApi.uploadFile(file, (progress) => {
+    const result = await hostFlowApi.uploadFile(showId.value, file, (progress) => {
       uploadProgress.value = progress;
     });
 
@@ -166,10 +275,11 @@ async function uploadFile(file: File): Promise<UploadResult> {
 }
 
 async function confirmUpload(): Promise<void> {
+  if (!showId.value) throw new Error('No show selected');
   error.value = null;
 
   try {
-    const result = await hostFlowApi.confirm();
+    const result = await hostFlowApi.confirm(showId.value);
 
     if (show.value) {
       show.value = {
@@ -184,10 +294,11 @@ async function confirmUpload(): Promise<void> {
 }
 
 async function deleteUpload(): Promise<void> {
+  if (!showId.value) throw new Error('No show selected');
   error.value = null;
 
   try {
-    await hostFlowApi.deleteUpload();
+    await hostFlowApi.deleteUpload(showId.value);
 
     if (show.value) {
       show.value = {
@@ -206,16 +317,82 @@ async function deleteUpload(): Promise<void> {
   }
 }
 
+function setLiveSubStep(step: LiveSubStep): void {
+  liveSubStep.value = step;
+}
+
+function setLiveTestPassed(passed = true): void {
+  liveTestPassed.value = passed;
+}
+
+function setSelectedOs(os: SelectedOs): void {
+  selectedOs.value = os;
+}
+
+function setShowStarted(started = true): void {
+  showStarted.value = started;
+}
+
+function setRecordStream(record: boolean): void {
+  recordStream.value = record;
+}
+
+/** Revert settings back to mode selection (clears upload/live state for upcoming shows) */
+async function revertToMode(): Promise<void> {
+  // Delete prerecorded upload if present
+  if (show.value?.prerecorded_key && showId.value) {
+    try {
+      await hostFlowApi.deleteUpload(showId.value);
+      if (show.value) {
+        show.value = {
+          ...show.value,
+          prerecorded_key: undefined,
+          prerecorded_url: undefined,
+          prerecorded_filename: undefined,
+          prerecorded_confirmed_at: undefined,
+        };
+      }
+    } catch (err) {
+      console.warn('[useHostFlow] Failed to delete upload during revert:', err);
+    }
+  }
+  // Clear flow state
+  uploadMode.value = null;
+  liveSubStep.value = 'os-select';
+  liveTestPassed.value = false;
+  selectedOs.value = null;
+  showStarted.value = false;
+  recordStream.value = false;
+  currentStep.value = 'mode';
+}
+
+/** Stop the active stream and revert to mode selection */
+async function stopStreamAndRevert(): Promise<void> {
+  try {
+    await streamApi.stop();
+  } catch (err) {
+    console.warn('[useHostFlow] Failed to stop stream:', err);
+  }
+  showStarted.value = false;
+  await revertToMode();
+}
+
 function reset(): void {
   loaded.value = false;
   loading.value = false;
   error.value = null;
   assigned.value = false;
+  shows.value = [];
   show.value = undefined;
-  currentStep.value = 'info';
+  currentStep.value = 'select';
   uploadMode.value = null;
   uploading.value = false;
   uploadProgress.value = null;
+  liveSubStep.value = 'os-select';
+  liveTestPassed.value = false;
+  selectedOs.value = null;
+  showStarted.value = false;
+  recordStream.value = false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,26 +406,45 @@ export function useHostFlow() {
     loading: readonly(loading),
     error: readonly(error),
     assigned: readonly(assigned),
+    shows: readonly(shows),
     show: readonly(show),
     currentStep: readonly(currentStep),
     uploadMode: readonly(uploadMode),
     uploading: readonly(uploading),
     uploadProgress: readonly(uploadProgress),
+    liveSubStep: readonly(liveSubStep),
+    liveTestPassed: readonly(liveTestPassed),
+    selectedOs: readonly(selectedOs),
+    showStarted: readonly(showStarted),
+    recordStream: readonly(recordStream),
 
     // Computed
     hasUpload,
     isConfirmed,
     prerecordedUrl,
     prerecordedFilename,
+    showId,
 
     // Actions
     fetchMyShow,
+    selectShow,
+    deselectShow,
     goToStep,
     selectMode,
     uploadFile,
     confirmUpload,
     deleteUpload,
     canNavigateTo,
+    setLiveSubStep,
+    setLiveTestPassed,
+    setSelectedOs,
+    setShowStarted,
+    setRecordStream,
+    revertToMode,
+    stopStreamAndRevert,
+    isShowRunning,
+    isShowEnded,
+    berlinToUtcDate,
     reset,
   };
 }

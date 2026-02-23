@@ -42,8 +42,9 @@ impl StreamState {
     }
 
     /// Returns true if a stream is currently active.
+    /// For live streams, `ffmpeg_stdin` is set. For prerecorded streams, only `ffmpeg_handle`.
     pub fn is_active(&self) -> bool {
-        self.current_user.is_some() && self.ffmpeg_stdin.is_some()
+        self.current_user.is_some() && (self.ffmpeg_stdin.is_some() || self.ffmpeg_handle.is_some())
     }
 
     /// Returns true if recording to file is active.
@@ -117,26 +118,37 @@ impl StreamState {
     }
 
     /// Stop the current stream gracefully.
+    ///
+    /// For live streams (stdin-based), closes stdin to signal EOF then waits.
+    /// For prerecorded streams (no stdin), kills the FFmpeg process directly.
     pub async fn stop_stream(&mut self) -> Result<(), StreamError> {
         let user = self.current_user.take();
+        let had_stdin = self.ffmpeg_stdin.is_some();
 
-        // Close stdin to signal EOF to FFmpeg
+        // Close stdin to signal EOF to FFmpeg (live streams only)
         if let Some(mut stdin) = self.ffmpeg_stdin.take() {
             let _ = stdin.shutdown().await;
         }
 
-        // Wait for FFmpeg to finish (with timeout)
+        // Wait for FFmpeg to finish (with timeout), or kill immediately for prerecorded
         if let Some(mut handle) = self.ffmpeg_handle.take() {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait()).await {
-                Ok(Ok(status)) => {
-                    tracing::info!("FFmpeg exited with status: {}", status);
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("FFmpeg wait error: {}", e);
-                }
-                Err(_) => {
-                    tracing::warn!("FFmpeg did not exit in time, killing...");
-                    let _ = handle.kill().await;
+            if !had_stdin {
+                // Prerecorded stream: no stdin to close, kill directly
+                tracing::info!("Killing prerecorded FFmpeg process");
+                let _ = handle.kill().await;
+            } else {
+                // Live stream: wait for graceful exit after stdin close
+                match tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait()).await {
+                    Ok(Ok(status)) => {
+                        tracing::info!("FFmpeg exited with status: {}", status);
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("FFmpeg wait error: {}", e);
+                    }
+                    Err(_) => {
+                        tracing::warn!("FFmpeg did not exit in time, killing...");
+                        let _ = handle.kill().await;
+                    }
                 }
             }
         }
@@ -247,6 +259,111 @@ pub type SharedStreamState = std::sync::Arc<Mutex<StreamState>>;
 /// Create a new shared stream state.
 pub fn new_shared_state() -> SharedStreamState {
     std::sync::Arc::new(Mutex::new(StreamState::new()))
+}
+
+/// Start a prerecorded stream: FFmpeg reads from a URL and outputs to RTMP.
+///
+/// Unlike live streaming (where audio chunks are piped via stdin), this spawns
+/// FFmpeg with `-re` (real-time playback) reading directly from the presigned
+/// URL. A background task monitors when FFmpeg exits and cleans up the state.
+pub async fn start_prerecorded_stream(
+    stream_state: &SharedStreamState,
+    user: String,
+    input_url: &str,
+    rtmp_destination: &str,
+) -> Result<(), StreamError> {
+    {
+        let mut state = stream_state.lock().await;
+
+        // Clean up any existing stream first
+        if state.is_active() {
+            state.stop_stream().await?;
+        }
+
+        tracing::info!(
+            "Starting prerecorded stream for user '{}' to {}",
+            user,
+            rtmp_destination
+        );
+
+        // Spawn FFmpeg with file/URL input:
+        // -re: read at native frame rate (essential for streaming prerecorded content)
+        let child = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-re",
+                "-i",
+                input_url,
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-f",
+                "flv",
+                rtmp_destination,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
+
+        state.current_user = Some(user.clone());
+        state.ffmpeg_handle = Some(child);
+        // No ffmpeg_stdin for prerecorded streams
+    }
+
+    // Spawn a background task to monitor when FFmpeg exits
+    let monitor_state = stream_state.clone();
+    let monitor_user = user.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let mut state = monitor_state.lock().await;
+            let should_break = if let Some(ref mut handle) = state.ffmpeg_handle {
+                match handle.try_wait() {
+                    Ok(Some(status)) => {
+                        tracing::info!(
+                            "Prerecorded stream FFmpeg exited with status: {} (user '{}')",
+                            status,
+                            monitor_user
+                        );
+                        state.current_user = None;
+                        state.ffmpeg_handle = None;
+                        true
+                    }
+                    Ok(None) => false, // still running
+                    Err(e) => {
+                        tracing::error!(
+                            "Error checking prerecorded FFmpeg status: {} (user '{}')",
+                            e,
+                            monitor_user
+                        );
+                        state.current_user = None;
+                        state.ffmpeg_handle = None;
+                        true
+                    }
+                }
+            } else {
+                // Handle was taken by stop_stream
+                true
+            };
+            drop(state);
+            if should_break {
+                break;
+            }
+        }
+        tracing::info!("Prerecorded stream for '{}' has ended", monitor_user);
+    });
+
+    Ok(())
 }
 
 /// Status information for API responses.

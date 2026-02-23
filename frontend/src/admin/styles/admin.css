@@ -154,3 +154,23 @@ body {
     transform: rotate(360deg);
   }
 }
+
+/* VueDatePicker z-index override (must sit above modal z-index 300) */
+.dp__menu {
+  z-index: 400 !important;
+}
+
+/* VueDatePicker: green full-width confirm button */
+.dp__action_row {
+  display: flex !important;
+}
+
+.dp__action_row .dp__action_select {
+  width: 100% !important;
+  background-color: var(--color-success) !important;
+  color: #000 !important;
+  font-weight: bold !important;
+  border-radius: var(--radius-md) !important;
+  text-align: center !important;
+  justify-content: center !important;
+}

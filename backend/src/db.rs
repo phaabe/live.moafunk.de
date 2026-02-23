@@ -159,6 +159,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Scheduled start time (HH:MM format)
     add_column_if_missing(pool, "shows", "start_time", "TEXT").await?;
 
+    // Scheduled end time (HH:MM format)
+    add_column_if_missing(pool, "shows", "end_time", "TEXT").await?;
+
     // Pre-recorded upload fields for artist show flow
     add_column_if_missing(pool, "shows", "prerecorded_key", "TEXT").await?;
     add_column_if_missing(pool, "shows", "prerecorded_filename", "TEXT").await?;
@@ -191,6 +194,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Seed default notification toggle (enabled) if it doesn't exist yet
+    sqlx::query(
+        "INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('notifications_enabled', 'true', datetime('now'))",
     )
     .execute(pool)
     .await?;
@@ -600,17 +610,6 @@ pub async fn get_recording_version(
     .await
 }
 
-/// Get a recording version by ID
-pub async fn get_recording_version_by_id(
-    pool: &SqlitePool,
-    id: i64,
-) -> Result<Option<RecordingVersion>, sqlx::Error> {
-    sqlx::query_as::<_, RecordingVersion>("SELECT * FROM recording_versions WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-}
-
 /// List all recording versions for a show (ordered by created_at descending)
 pub async fn list_recording_versions(
     pool: &SqlitePool,
@@ -621,19 +620,6 @@ pub async fn list_recording_versions(
     )
     .bind(show_id)
     .fetch_all(pool)
-    .await
-}
-
-/// Get the latest recording version for a show
-pub async fn get_latest_recording_version(
-    pool: &SqlitePool,
-    show_id: i64,
-) -> Result<Option<RecordingVersion>, sqlx::Error> {
-    sqlx::query_as::<_, RecordingVersion>(
-        "SELECT * FROM recording_versions WHERE show_id = ? ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(show_id)
-    .fetch_optional(pool)
     .await
 }
 
@@ -679,35 +665,6 @@ pub async fn finalize_recording_version(
     Ok(())
 }
 
-/// Update recording version duration
-pub async fn update_recording_version_duration(
-    pool: &SqlitePool,
-    id: i64,
-    duration_ms: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        UPDATE recording_versions
-        SET duration_ms = ?, updated_at = datetime('now')
-        WHERE id = ?
-        "#,
-    )
-    .bind(duration_ms)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Delete a recording version
-pub async fn delete_recording_version(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM recording_versions WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 // ============================================================================
 // Artist Sort Order
 // ============================================================================
@@ -728,4 +685,38 @@ pub async fn set_artist_sort_order(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+// ============================================================================
+// App Settings (key-value store)
+// ============================================================================
+
+/// Get a setting value by key. Returns None if the key doesn't exist.
+pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM app_settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(v,)| v))
+}
+
+/// Set a setting value (upsert). Creates the key if it doesn't exist.
+pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Check if notifications are enabled. Defaults to true if not set or on DB error.
+pub async fn is_notifications_enabled(pool: &SqlitePool) -> bool {
+    match get_setting(pool, "notifications_enabled").await {
+        Ok(Some(val)) => val != "false",
+        _ => true, // fail-open: default to enabled
+    }
 }

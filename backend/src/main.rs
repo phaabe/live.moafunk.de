@@ -318,6 +318,7 @@ async fn main() -> anyhow::Result<()> {
         )
         // Artist flow — my show
         .route("/api/my-show", get(handlers::api::api_my_show))
+        .route("/api/my-shows", get(handlers::api::api_my_shows_list))
         .route(
             "/api/my-show/upload",
             post(handlers::api::api_my_show_upload),
@@ -337,6 +338,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/my-show/confirm",
             post(handlers::api::api_my_show_confirm),
+        )
+        .route(
+            "/api/my-show/go-live",
+            post(handlers::api::api_my_show_go_live),
         )
         .route(
             "/api/my-show/upload",
@@ -551,8 +556,11 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/users/:id/reset-password",
             post(handlers::api::api_reset_password),
-        )
-        // Download routes (needed by SPA)
+        ) // Settings API (notification toggle)
+        .route(
+            "/api/settings/notifications",
+            get(handlers::settings::get_notifications).put(handlers::settings::set_notifications),
+        ) // Download routes (needed by SPA)
         .route(
             "/artists/:id/download",
             get(handlers::download::download_artist),
@@ -579,6 +587,10 @@ async fn main() -> anyhow::Result<()> {
         )
         // Stream WebSocket and API
         .route("/ws/stream", get(stream_ws_handler))
+        .route(
+            "/ws/stream-test",
+            get(handlers::stream_test_ws::stream_test_ws_handler),
+        )
         .route("/api/stream/status", get(stream_status_handler))
         .route("/api/stream/stop", post(stream_stop_handler))
         // Recording API for show recording with timecoded track markers

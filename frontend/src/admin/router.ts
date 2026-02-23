@@ -13,14 +13,16 @@ const UserEditPage = () => import('./pages/UserEditPage.vue');
 const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
+const DashboardPage = () => import('./pages/DashboardPage.vue');
 
 // Host flow pages
 const FlowLayout = () => import('./pages/flow/FlowLayout.vue');
-const FlowShowInfo = () => import('./pages/flow/FlowShowInfo.vue');
+const FlowShowSelect = () => import('./pages/flow/FlowShowSelect.vue');
 const FlowSelectMode = () => import('./pages/flow/FlowSelectMode.vue');
 const FlowUpload = () => import('./pages/flow/FlowUpload.vue');
 const FlowConfirm = () => import('./pages/flow/FlowConfirm.vue');
 const FlowLive = () => import('./pages/flow/FlowLive.vue');
+const FlowOnAir = () => import('./pages/flow/FlowOnAir.vue');
 const FlowNotAssigned = () => import('./pages/flow/FlowNotAssigned.vue');
 
 const router = createRouter({
@@ -35,7 +37,13 @@ const router = createRouter({
     {
       path: '/',
       // Redirect handled by beforeEach guard (role-aware)
-      redirect: '/calendar',
+      redirect: '/dashboard',
+    },
+    {
+      path: '/dashboard',
+      name: 'dashboard',
+      component: DashboardPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/artists',
@@ -73,27 +81,31 @@ const router = createRouter({
           beforeEnter: async (_to, _from, next) => {
             const { useHostFlow } = await import('./composables');
             const flow = useHostFlow();
-            if (!flow.loaded.value) {
-              await flow.fetchMyShow();
-            }
+            await flow.fetchMyShow();
             const stepRouteMap: Record<string, string> = {
               'not-assigned': '/stream/not-assigned',
-              info: '/stream/info',
+              select: '/stream/select',
               mode: '/stream/mode',
               upload: '/stream/upload',
               confirm: '/stream/confirm',
               live: '/stream/live',
+              'on-air': '/stream/on-air',
             };
-            const target = stepRouteMap[flow.currentStep.value] ?? '/stream/info';
+            const target = stepRouteMap[flow.currentStep.value] ?? '/stream/select';
             next(target);
           },
           // Placeholder component (never actually renders due to redirect)
-          component: FlowShowInfo,
+          component: FlowShowSelect,
         },
         {
+          path: 'select',
+          name: 'stream-select',
+          component: FlowShowSelect,
+        },
+        {
+          // Legacy redirect: info step removed, redirect to mode
           path: 'info',
-          name: 'stream-info',
-          component: FlowShowInfo,
+          redirect: '/stream/mode',
         },
         {
           path: 'mode',
@@ -114,6 +126,20 @@ const router = createRouter({
           path: 'live',
           name: 'stream-live',
           component: FlowLive,
+        },
+        {
+          path: 'on-air',
+          name: 'stream-on-air',
+          component: FlowOnAir,
+        },
+        {
+          // Legacy redirects
+          path: 'waiting',
+          redirect: '/stream/on-air',
+        },
+        {
+          path: 'streaming',
+          redirect: '/stream/on-air',
         },
         {
           path: 'not-assigned',
@@ -184,14 +210,14 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   if (to.name === 'login' && authStore.isAuthenticated) {
-    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/calendar';
+    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/dashboard';
     next(defaultRoute);
     return;
   }
 
   // Redirect '/' based on role
   if (to.path === '/' && authStore.isAuthenticated) {
-    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/calendar';
+    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/dashboard';
     next(defaultRoute);
     return;
   }

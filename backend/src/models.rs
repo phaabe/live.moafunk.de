@@ -107,6 +107,7 @@ pub struct Show {
     pub telegram_preview_sent_at: Option<String>,
     pub active_overlay_preset_id: Option<i64>,
     pub start_time: Option<String>,
+    pub end_time: Option<String>,
     pub prerecorded_key: Option<String>,
     pub prerecorded_filename: Option<String>,
     pub prerecorded_confirmed_at: Option<String>,
@@ -152,16 +153,6 @@ impl UserRole {
         matches!(self, UserRole::Superadmin | UserRole::Admin)
     }
 
-    /// Check if this role can manage users
-    pub fn can_manage_users(&self) -> bool {
-        matches!(self, UserRole::Superadmin | UserRole::Admin)
-    }
-
-    /// Check if this role can manage superadmin accounts
-    pub fn can_manage_superadmins(&self) -> bool {
-        matches!(self, UserRole::Superadmin)
-    }
-
     /// Check if this role can change their own password
     pub fn can_change_password(&self) -> bool {
         matches!(
@@ -205,47 +196,6 @@ impl User {
     }
 }
 
-/// Status of a recording version in the finalize pipeline
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RecordingVersionStatus {
-    /// Raw recording saved, not yet finalized
-    Raw,
-    /// Finalize in progress
-    Finalizing,
-    /// Successfully finalized
-    Finalized,
-    /// Finalize failed
-    Failed,
-}
-
-impl RecordingVersionStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            RecordingVersionStatus::Raw => "raw",
-            RecordingVersionStatus::Finalizing => "finalizing",
-            RecordingVersionStatus::Finalized => "finalized",
-            RecordingVersionStatus::Failed => "failed",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "raw" => Some(RecordingVersionStatus::Raw),
-            "finalizing" => Some(RecordingVersionStatus::Finalizing),
-            "finalized" => Some(RecordingVersionStatus::Finalized),
-            "failed" => Some(RecordingVersionStatus::Failed),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for RecordingVersionStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
 /// A versioned recording for a show (each recording session creates a new version)
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct RecordingVersion {
@@ -270,12 +220,6 @@ pub struct RecordingVersion {
     pub created_at: String,
     pub updated_at: Option<String>,
     pub finalized_at: Option<String>,
-}
-
-impl RecordingVersion {
-    pub fn status_enum(&self) -> RecordingVersionStatus {
-        RecordingVersionStatus::from_str(&self.status).unwrap_or(RecordingVersionStatus::Raw)
-    }
 }
 
 /// Overlay parameter preset (shared across all admin users)

@@ -178,7 +178,7 @@ function handleStopStream() {
     flash.error('Stop recording first before stopping the stream');
     return;
   }
-  streamSocket.disconnect();
+  streamSocket.stopStream();
   audioCapture.stopCapture();
 }
 
@@ -196,6 +196,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (statusInterval) clearInterval(statusInterval);
+  // Explicitly stop stream on page unmount (standalone page, not part of multi-step flow)
+  streamSocket.stopStream();
+  audioCapture.stopCapture();
 });
 </script>
 

@@ -29,4 +29,12 @@ export {
   moafunkLogoPromise,
   shoikaFontsPromise,
 } from './useOverlayRenderer';
-export { useHostFlow, type FlowStep, type UploadMode, type UploadProgress } from './useHostFlow';
+export {
+  useHostFlow,
+  type FlowStep,
+  type LiveSubStep,
+  type SelectedOs,
+  type UploadMode,
+  type UploadProgress,
+} from './useHostFlow';
+export { useStreamTest, type StreamTestState, type UseStreamTestOptions } from './useStreamTest';

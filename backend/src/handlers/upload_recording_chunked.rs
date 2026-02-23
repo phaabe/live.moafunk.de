@@ -47,6 +47,15 @@ pub struct ChunkQuery {
     pub index: u32,
 }
 
+/// ChunkQuery extended with show_id for the my-show flow
+#[derive(Deserialize)]
+pub struct ChunkQueryWithShowId {
+    /// 0-indexed chunk number
+    pub index: u32,
+    /// The show this upload belongs to
+    pub show_id: i64,
+}
+
 #[derive(Serialize)]
 pub struct ChunkResponse {
     pub success: bool,

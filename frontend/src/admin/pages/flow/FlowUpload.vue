@@ -9,6 +9,7 @@ const flow = useHostFlow();
 const isDragging = ref(false);
 const selectedFile = ref<File | null>(null);
 const uploadError = ref<string | null>(null);
+const showDeleteConfirm = ref(false);
 
 const hasExistingUpload = computed(() => flow.hasUpload.value);
 const existingFilename = computed(() => flow.prerecordedFilename.value);
@@ -74,8 +75,35 @@ async function deleteAndReupload() {
   }
 }
 
-function goBack() {
-  flow.goToStep('mode');
+function confirmDelete() {
+  showDeleteConfirm.value = true;
+}
+
+function cancelDelete() {
+  showDeleteConfirm.value = false;
+}
+
+async function deleteUpload() {
+  showDeleteConfirm.value = false;
+  try {
+    await flow.deleteUpload();
+    selectedFile.value = null;
+  } catch (err) {
+    uploadError.value = err instanceof Error ? err.message : 'Failed to delete upload';
+  }
+}
+
+async function goBack() {
+  // Revert: delete any in-progress upload and clear mode selection
+  if (flow.hasUpload.value) {
+    try {
+      await flow.deleteUpload();
+      selectedFile.value = null;
+    } catch {
+      // Continue navigating back even if delete fails
+    }
+  }
+  await flow.revertToMode();
   router.push('/stream/mode');
 }
 </script>
@@ -100,9 +128,21 @@ function goBack() {
         <button class="btn-primary" @click="router.push('/stream/confirm')">
           Continue →
         </button>
-        <button class="btn-danger-outline" @click="deleteAndReupload">
+        <button class="btn-secondary" @click="deleteAndReupload">
           Re-upload
         </button>
+        <button class="btn-danger-outline" @click="confirmDelete">
+          Delete Upload
+        </button>
+      </div>
+
+      <!-- Delete confirmation -->
+      <div v-if="showDeleteConfirm" class="delete-confirm">
+        <p class="delete-confirm-text">Are you sure you want to delete this upload? This cannot be undone.</p>
+        <div class="delete-confirm-actions">
+          <button class="btn-secondary" @click="cancelDelete">Cancel</button>
+          <button class="btn-danger" @click="deleteUpload">Yes, Delete</button>
+        </div>
       </div>
     </div>
 
@@ -372,5 +412,42 @@ function goBack() {
 
 .btn-danger-outline:hover {
   background: var(--color-error-bg);
+}
+
+/* Delete confirmation */
+.delete-confirm {
+  background: var(--color-surface);
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  margin-top: var(--spacing-md);
+}
+
+.delete-confirm-text {
+  margin: 0 0 var(--spacing-md);
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+}
+
+.delete-confirm-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  justify-content: flex-end;
+}
+
+.btn-danger {
+  background: var(--color-error);
+  border: none;
+  color: #fff;
+  padding: var(--spacing-sm) var(--spacing-xl);
+  border-radius: var(--radius-md);
+  font-family: var(--font-family);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-danger:hover {
+  opacity: 0.85;
 }
 </style>
