@@ -30,6 +30,8 @@ function selectOs(os: SelectedOs) {
 }
 
 function goBackToMode() {
+  // Revert: clear live setup state and return to mode selection
+  flow.revertToMode();
   router.push('/stream/mode');
 }
 
@@ -270,8 +272,8 @@ function markTestPassed() {
 }
 
 function goToWaiting() {
-  flow.goToStep('waiting');
-  router.push('/stream/waiting');
+  flow.goToStep('on-air');
+  router.push('/stream/on-air');
 }
 
 function retryTest() {

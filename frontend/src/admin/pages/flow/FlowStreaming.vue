@@ -82,6 +82,31 @@ async function handleStopUpload() {
   }
 }
 
+// Stop stream and change settings (running shows)
+const changingSettings = ref(false);
+async function handleStopAndChangeSettings() {
+  changingSettings.value = true;
+  // Stop live stream resources
+  if (isLive.value) {
+    streamSocket.stopStream();
+    audioCapture?.stopCapture();
+  }
+  // Stop recording if active
+  if (isRecording.value) {
+    recordingApi.stop().catch(() => { });
+    isRecording.value = false;
+  }
+  stopElapsed();
+  if (statusInterval) {
+    clearInterval(statusInterval);
+    statusInterval = null;
+  }
+  // Use the composable to stop stream on backend and revert to mode selection
+  await flow.stopStreamAndRevert();
+  changingSettings.value = false;
+  router.push('/stream/mode');
+}
+
 // ─── Upload mode: status polling ────────────────────────────────────────────
 const uploadStreamActive = ref(true);
 let statusInterval: ReturnType<typeof setInterval> | null = null;
@@ -373,6 +398,15 @@ onUnmounted(() => {
           </button>
         </div>
       </template>
+
+      <!-- Stop stream & change settings (for running shows) -->
+      <div class="change-settings-section">
+        <button class="btn-change-settings" :disabled="stopping || changingSettings"
+          @click="handleStopAndChangeSettings">
+          {{ changingSettings ? 'Stopping...' : '⚠ Stop Stream & Change Settings' }}
+        </button>
+        <p class="change-settings-hint">This will stop the current stream and let you reconfigure your show.</p>
+      </div>
 
       <!-- Future feature placeholders -->
       <div class="future-panels">
@@ -741,6 +775,45 @@ onUnmounted(() => {
 }
 
 /* ─── Future panels ──────────────────────────────────────────────────────── */
+
+/* ─── Change settings ────────────────────────────────────────────────────── */
+.change-settings-section {
+  margin-top: var(--spacing-2xl);
+  padding-top: var(--spacing-xl);
+  border-top: 1px solid var(--color-border);
+  text-align: center;
+}
+
+.btn-change-settings {
+  background: transparent;
+  color: #ef4444;
+  border: 2px solid #ef4444;
+  padding: var(--spacing-sm) var(--spacing-xl);
+  border-radius: var(--radius-md);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-change-settings:hover:not(:disabled) {
+  background: #ef4444;
+  color: #fff;
+}
+
+.btn-change-settings:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.change-settings-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  margin: var(--spacing-sm) 0 0;
+}
+
+/* ─── Future panels (cont) ───────────────────────────────────────────────── */
 .future-panels {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

@@ -13,22 +13,18 @@ const progressSteps = computed<{ key: FlowStep; label: string; route: string }[]
 
   if (mode === 'live') {
     return [
-      { key: 'info', label: 'Show Info', route: '/stream/info' },
       { key: 'mode', label: 'Mode', route: '/stream/mode' },
       { key: 'live', label: 'Setup', route: '/stream/live' },
-      { key: 'waiting', label: 'Waiting', route: '/stream/waiting' },
-      { key: 'streaming', label: 'Live', route: '/stream/streaming' },
+      { key: 'on-air', label: 'On Air', route: '/stream/on-air' },
     ];
   }
 
   // Default / prerecorded branch
   return [
-    { key: 'info', label: 'Show Info', route: '/stream/info' },
     { key: 'mode', label: 'Mode', route: '/stream/mode' },
     { key: 'upload', label: 'Upload', route: '/stream/upload' },
     { key: 'confirm', label: 'Confirm', route: '/stream/confirm' },
-    { key: 'waiting', label: 'Waiting', route: '/stream/waiting' },
-    { key: 'streaming', label: 'Live', route: '/stream/streaming' },
+    { key: 'on-air', label: 'On Air', route: '/stream/on-air' },
   ];
 });
 

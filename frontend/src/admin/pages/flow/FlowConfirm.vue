@@ -50,13 +50,14 @@ async function handleReupload() {
 }
 
 function goBack() {
-  flow.goToStep('upload');
-  router.push('/stream/upload');
+  // Revert: going back from confirm deletes upload and returns to mode selection
+  flow.revertToMode();
+  router.push('/stream/mode');
 }
 
 function goToWaiting() {
-  flow.goToStep('waiting');
-  router.push('/stream/waiting');
+  flow.goToStep('on-air');
+  router.push('/stream/on-air');
 }
 </script>
 

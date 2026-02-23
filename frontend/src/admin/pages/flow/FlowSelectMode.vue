@@ -16,8 +16,8 @@ function selectLive() {
 }
 
 function goBack() {
-  flow.goToStep('info');
-  router.push('/stream/info');
+  flow.deselectShow();
+  router.push('/stream/select');
 }
 </script>
 

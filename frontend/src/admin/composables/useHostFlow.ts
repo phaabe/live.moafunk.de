@@ -1,5 +1,5 @@
 import { ref, computed, readonly } from 'vue';
-import { hostFlowApi, type MyShowInfo, type UploadResult } from '../api';
+import { hostFlowApi, streamApi, type MyShowInfo, type UploadResult } from '../api';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -8,13 +8,11 @@ import { hostFlowApi, type MyShowInfo, type UploadResult } from '../api';
 export type FlowStep =
   | 'not-assigned'
   | 'select'
-  | 'info'
   | 'mode'
   | 'upload'
   | 'confirm'
   | 'live'
-  | 'waiting'
-  | 'streaming';
+  | 'on-air';
 
 export type LiveSubStep = 'os-select' | 'tutorial' | 'test';
 
@@ -92,8 +90,6 @@ function canNavigateTo(step: FlowStep): boolean {
       return false;
     case 'select':
       return true; // can always go back to show selection
-    case 'info':
-      return !!show.value;
     case 'mode':
       return !!show.value;
     case 'upload':
@@ -102,14 +98,12 @@ function canNavigateTo(step: FlowStep): boolean {
       return !!show.value && uploadMode.value === 'prerecorded' && hasUpload.value;
     case 'live':
       return !!show.value && uploadMode.value === 'live';
-    case 'waiting':
+    case 'on-air':
       return (
         !!show.value &&
         ((uploadMode.value === 'prerecorded' && isConfirmed.value) ||
           (uploadMode.value === 'live' && liveTestPassed.value))
       );
-    case 'streaming':
-      return showStarted.value;
     default:
       return false;
   }
@@ -147,18 +141,74 @@ async function fetchMyShow(): Promise<void> {
   }
 }
 
+/**
+ * Get the current Berlin wall-clock time as an ISO-comparable string (YYYY-MM-DDTHH:MM:SS).
+ * Uses sv-SE locale which formats as "YYYY-MM-DD HH:MM:SS".
+ */
+function getBerlinNowISO(): string {
+  return new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' }).replace(' ', 'T');
+}
+
+/**
+ * Convert a Berlin wall-clock date + time to a proper UTC Date object.
+ * Useful for countdown arithmetic (target.getTime() - Date.now()).
+ */
+function berlinToUtcDate(dateStr: string, timeStr: string): Date {
+  // Interpret as UTC first, then adjust by the Berlin-UTC offset
+  const asUtc = new Date(`${dateStr}T${timeStr}:00Z`);
+  const berlinMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'Europe/Berlin' })).getTime();
+  const utcMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'UTC' })).getTime();
+  const berlinOffsetMs = berlinMs - utcMs;
+  return new Date(asUtc.getTime() - berlinOffsetMs);
+}
+
+function nextDayDateStr(dateStr: string): string {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Check if a show is currently running (between start and end time in Berlin TZ) */
+function isShowRunning(s: MyShowInfo): boolean {
+  if (!s.date || !s.start_time || !s.end_time) return false;
+  const nowStr = getBerlinNowISO();
+  const startStr = `${s.date}T${s.start_time}:00`;
+  const endDateStr = s.end_time <= s.start_time ? nextDayDateStr(s.date) : s.date;
+  const endStr = `${endDateStr}T${s.end_time}:00`;
+  return nowStr >= startStr && nowStr <= endStr;
+}
+
+/** Check if a show has ended (end date/time is past) */
+function isShowEnded(s: MyShowInfo): boolean {
+  if (!s.date || !s.end_time) return false;
+  const nowStr = getBerlinNowISO();
+  const endDateStr = s.start_time && s.end_time <= s.start_time ? nextDayDateStr(s.date) : s.date;
+  const endStr = `${endDateStr}T${s.end_time}:00`;
+  return nowStr > endStr;
+}
+
 /** Select a show and determine the starting step based on its state */
 function selectShow(selectedShow: MyShowInfo): void {
   show.value = selectedShow;
 
+  // Running shows: always go directly to on-air page
+  if (isShowRunning(selectedShow)) {
+    if (selectedShow.prerecorded_confirmed_at) {
+      uploadMode.value = 'prerecorded';
+      currentStep.value = 'on-air';
+    } else {
+      currentStep.value = 'mode';
+    }
+    return;
+  }
+
+  // Upcoming shows: if user already set settings until on-air, resume there
   if (selectedShow.prerecorded_confirmed_at) {
-    currentStep.value = 'confirm';
     uploadMode.value = 'prerecorded';
-  } else if (selectedShow.prerecorded_key) {
-    currentStep.value = 'confirm';
-    uploadMode.value = 'prerecorded';
+    currentStep.value = 'on-air';
   } else {
-    currentStep.value = 'info';
+    // Always start from mode selection
+    currentStep.value = 'mode';
   }
 }
 
@@ -287,6 +337,46 @@ function setRecordStream(record: boolean): void {
   recordStream.value = record;
 }
 
+/** Revert settings back to mode selection (clears upload/live state for upcoming shows) */
+async function revertToMode(): Promise<void> {
+  // Delete prerecorded upload if present
+  if (show.value?.prerecorded_key && showId.value) {
+    try {
+      await hostFlowApi.deleteUpload(showId.value);
+      if (show.value) {
+        show.value = {
+          ...show.value,
+          prerecorded_key: undefined,
+          prerecorded_url: undefined,
+          prerecorded_filename: undefined,
+          prerecorded_confirmed_at: undefined,
+        };
+      }
+    } catch (err) {
+      console.warn('[useHostFlow] Failed to delete upload during revert:', err);
+    }
+  }
+  // Clear flow state
+  uploadMode.value = null;
+  liveSubStep.value = 'os-select';
+  liveTestPassed.value = false;
+  selectedOs.value = null;
+  showStarted.value = false;
+  recordStream.value = false;
+  currentStep.value = 'mode';
+}
+
+/** Stop the active stream and revert to mode selection */
+async function stopStreamAndRevert(): Promise<void> {
+  try {
+    await streamApi.stop();
+  } catch (err) {
+    console.warn('[useHostFlow] Failed to stop stream:', err);
+  }
+  showStarted.value = false;
+  await revertToMode();
+}
+
 function reset(): void {
   loaded.value = false;
   loading.value = false;
@@ -350,6 +440,11 @@ export function useHostFlow() {
     setSelectedOs,
     setShowStarted,
     setRecordStream,
+    revertToMode,
+    stopStreamAndRevert,
+    isShowRunning,
+    isShowEnded,
+    berlinToUtcDate,
     reset,
   };
 }

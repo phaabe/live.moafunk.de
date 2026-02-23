@@ -93,8 +93,17 @@ async function deleteUpload() {
   }
 }
 
-function goBack() {
-  flow.goToStep('mode');
+async function goBack() {
+  // Revert: delete any in-progress upload and clear mode selection
+  if (flow.hasUpload.value) {
+    try {
+      await flow.deleteUpload();
+      selectedFile.value = null;
+    } catch {
+      // Continue navigating back even if delete fails
+    }
+  }
+  await flow.revertToMode();
   router.push('/stream/mode');
 }
 </script>

@@ -18,13 +18,11 @@ const DashboardPage = () => import('./pages/DashboardPage.vue');
 // Host flow pages
 const FlowLayout = () => import('./pages/flow/FlowLayout.vue');
 const FlowShowSelect = () => import('./pages/flow/FlowShowSelect.vue');
-const FlowShowInfo = () => import('./pages/flow/FlowShowInfo.vue');
 const FlowSelectMode = () => import('./pages/flow/FlowSelectMode.vue');
 const FlowUpload = () => import('./pages/flow/FlowUpload.vue');
 const FlowConfirm = () => import('./pages/flow/FlowConfirm.vue');
 const FlowLive = () => import('./pages/flow/FlowLive.vue');
-const FlowWaiting = () => import('./pages/flow/FlowWaiting.vue');
-const FlowStreaming = () => import('./pages/flow/FlowStreaming.vue');
+const FlowOnAir = () => import('./pages/flow/FlowOnAir.vue');
 const FlowNotAssigned = () => import('./pages/flow/FlowNotAssigned.vue');
 
 const router = createRouter({
@@ -87,13 +85,11 @@ const router = createRouter({
             const stepRouteMap: Record<string, string> = {
               'not-assigned': '/stream/not-assigned',
               select: '/stream/select',
-              info: '/stream/info',
               mode: '/stream/mode',
               upload: '/stream/upload',
               confirm: '/stream/confirm',
               live: '/stream/live',
-              waiting: '/stream/waiting',
-              streaming: '/stream/streaming',
+              'on-air': '/stream/on-air',
             };
             const target = stepRouteMap[flow.currentStep.value] ?? '/stream/select';
             next(target);
@@ -107,9 +103,9 @@ const router = createRouter({
           component: FlowShowSelect,
         },
         {
+          // Legacy redirect: info step removed, redirect to mode
           path: 'info',
-          name: 'stream-info',
-          component: FlowShowInfo,
+          redirect: '/stream/mode',
         },
         {
           path: 'mode',
@@ -132,14 +128,18 @@ const router = createRouter({
           component: FlowLive,
         },
         {
+          path: 'on-air',
+          name: 'stream-on-air',
+          component: FlowOnAir,
+        },
+        {
+          // Legacy redirects
           path: 'waiting',
-          name: 'stream-waiting',
-          component: FlowWaiting,
+          redirect: '/stream/on-air',
         },
         {
           path: 'streaming',
-          name: 'stream-streaming',
-          component: FlowStreaming,
+          redirect: '/stream/on-air',
         },
         {
           path: 'not-assigned',

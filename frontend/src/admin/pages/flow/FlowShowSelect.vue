@@ -7,7 +7,8 @@ import type { MyShowInfo } from '@admin/api';
 const router = useRouter();
 const flow = useHostFlow();
 
-const shows = computed(() => flow.shows.value);
+// Filter out shows that have already ended
+const shows = computed(() => flow.shows.value.filter(s => !flow.isShowEnded(s)));
 
 /** Format a date string into a readable date */
 function fmtDate(dateStr: string): string {
@@ -46,10 +47,15 @@ function daysClass(dateStr: string): string {
   return 'days-future';
 }
 
-/** Select a show and navigate to its info page */
+/** Select a show and navigate to the appropriate step */
 function pickShow(s: MyShowInfo) {
   flow.selectShow(s);
-  router.push('/stream/info');
+  const stepRouteMap: Record<string, string> = {
+    mode: '/stream/mode',
+    'on-air': '/stream/on-air',
+  };
+  const target = stepRouteMap[flow.currentStep.value] ?? '/stream/mode';
+  router.push(target);
 }
 
 /** Show type badge text */
@@ -88,8 +94,11 @@ function showTypeBadge(type: string): string {
             {{ artist.name }}
           </span>
         </div>
-        <div v-if="s.prerecorded_confirmed_at" class="show-card-status status-confirmed">
-          ✓ Pre-recorded & confirmed
+        <div v-if="flow.isShowRunning(s)" class="show-card-status status-live">
+          🔴 Live Now
+        </div>
+        <div v-else-if="s.prerecorded_confirmed_at" class="show-card-status status-confirmed">
+          ✓ Pre-recorded &amp; confirmed
         </div>
         <div v-else-if="s.prerecorded_key" class="show-card-status status-uploaded">
           ↑ Uploaded — needs confirmation
@@ -229,5 +238,10 @@ function showTypeBadge(type: string): string {
 
 .status-uploaded {
   color: #ffcc00;
+}
+
+.status-live {
+  color: #ef4444;
+  font-weight: var(--font-weight-bold);
 }
 </style>
