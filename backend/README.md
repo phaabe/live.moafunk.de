@@ -33,23 +33,39 @@ Rust backend (Axum + SQLx + Tera) for managing UNHEARD artist submissions, shows
 
 ### 3. Configuration
 
+Local-dev secrets come from **Bitwarden Secrets Manager** — the same source CI/prod use
+(`.github/workflows/backend.yml`) — not a hand-edited `.env`. `./scripts/dev-secrets.sh`
+generates a gitignored `.env` from Bitwarden; your personal values live in `.env.local`.
+
+Prerequisites: the [`bws` CLI](https://bitwarden.com/help/secrets-manager-cli/) and `jq`.
+
 ```bash
-# Copy the example env file
-cp .env.example .env
+# 1. A dev machine-account access token (Bitwarden → Secrets Manager → Machine accounts).
+export BWS_ACCESS_TOKEN=<your token>
 
-# Generate an admin password hash
+# 2. Your personal, non-shared values (gitignored). The admin password hash is required;
+#    generate it, then add it to backend/.env.local single-quoted (the hash contains '$'):
 cargo run --bin hash_password -- "your-password"
+#    backend/.env.local:
+#      SUPERADMIN_PASSWORD_HASH='$argon2id$v=19$...'
+#      # optional overrides: DATABASE_URL=..., RUST_LOG=...
 
-# Copy the hash to .env
-# Edit .env with your R2 credentials
+# 3. Generate backend/.env from Bitwarden (re-run anytime to refresh).
+./scripts/dev-secrets.sh
+
+# 4. Run the backend.
+cargo run
 ```
 
-Required environment variables:
-- `SECRET_KEY`: Random secret for session management
-- `ADMIN_PASSWORD_HASH`: Argon2 hash from the password generator
-- `R2_ACCOUNT_ID`: Your Cloudflare account ID
-- `R2_ACCESS_KEY_ID`: R2 API token access key
-- `R2_SECRET_ACCESS_KEY`: R2 API token secret
+`.env` is generated and gitignored — never edit it by hand (re-run the script instead).
+No Bitwarden token? Fall back to `cp .env.example .env` and fill it in manually.
+
+Required environment variables (see `.env.example` for the full list):
+- `SECRET_KEY`: Random secret for session management (from Bitwarden)
+- `SUPERADMIN_PASSWORD_HASH`: Argon2 hash from the password generator (your own, in `.env.local`)
+- `R2_ACCOUNT_ID`: Your Cloudflare account ID (from Bitwarden)
+- `R2_ACCESS_KEY_ID`: R2 API token access key (from Bitwarden)
+- `R2_SECRET_ACCESS_KEY`: R2 API token secret (from Bitwarden)
 - `R2_BUCKET_NAME`: Name of your R2 bucket
 
 Optional environment variables (ZIP artist image stamping):

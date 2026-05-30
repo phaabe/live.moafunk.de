@@ -182,6 +182,9 @@ The production backend is deployed by pulling that image on the Lightsail instan
 - [backend/scripts/deploy_lightsail.sh](backend/scripts/deploy_lightsail.sh)
 - Backend details and configuration: [backend/README.md](backend/README.md)
 
+For local backend development, secrets are pulled from Bitwarden Secrets Manager via
+`backend/scripts/dev-secrets.sh` (no hand-edited `.env`) — see [backend/README.md](backend/README.md#setup).
+
 ## Testing
 
 ### JavaScript/TypeScript Tests
