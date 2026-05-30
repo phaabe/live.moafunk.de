@@ -14,8 +14,8 @@ const progressSteps = computed<{ key: FlowStep; label: string; route: string }[]
   if (mode === 'live') {
     return [
       { key: 'mode', label: 'Mode', route: '/stream/mode' },
-      { key: 'live', label: 'Setup', route: '/stream/live' },
-      { key: 'on-air', label: 'On Air', route: '/stream/on-air' },
+      { key: 'live', label: 'Set Up & Test', route: '/stream/live' },
+      { key: 'on-air', label: 'Stream', route: '/stream/on-air' },
     ];
   }
 
@@ -37,10 +37,11 @@ const currentStepIndex = computed(() => {
   return progressSteps.value.findIndex((s) => s.key === flow.currentStep.value);
 });
 
-const showProgressBar = computed(() =>
-  flow.assigned.value &&
-  flow.currentStep.value !== 'not-assigned' &&
-  flow.currentStep.value !== 'select'
+const showProgressBar = computed(
+  () =>
+    flow.assigned.value &&
+    flow.currentStep.value !== 'not-assigned' &&
+    flow.currentStep.value !== 'select'
 );
 
 onMounted(async () => {
@@ -61,14 +62,19 @@ function navigateToStep(step: FlowStep) {
     <!-- Progress bar -->
     <div v-if="showProgressBar" class="flow-progress">
       <div class="flow-progress-inner">
-        <div v-for="(step, index) in progressSteps" :key="step.key" :class="[
-          'flow-step-dot',
-          {
-            active: step.key === flow.currentStep.value,
-            completed: index < currentStepIndex,
-            clickable: flow.canNavigateTo(step.key),
-          },
-        ]" @click="navigateToStep(step.key)">
+        <div
+          v-for="(step, index) in progressSteps"
+          :key="step.key"
+          :class="[
+            'flow-step-dot',
+            {
+              active: step.key === flow.currentStep.value,
+              completed: index < currentStepIndex,
+              clickable: flow.canNavigateTo(step.key),
+            },
+          ]"
+          @click="navigateToStep(step.key)"
+        >
           <div class="dot">
             <span v-if="index < currentStepIndex" class="dot-check">✓</span>
             <span v-else class="dot-number">{{ index + 1 }}</span>
@@ -77,16 +83,18 @@ function navigateToStep(step: FlowStep) {
         </div>
         <!-- Connecting lines -->
         <div class="flow-progress-line">
-          <div class="flow-progress-fill"
-            :style="{ width: `${(Math.max(0, currentStepIndex) / (progressSteps.length - 1)) * 100}%` }" />
+          <div
+            class="flow-progress-fill"
+            :style="{
+              width: `${(Math.max(0, currentStepIndex) / (progressSteps.length - 1)) * 100}%`,
+            }"
+          />
         </div>
       </div>
     </div>
 
     <!-- Loading state -->
-    <div v-if="flow.loading.value && !flow.loaded.value" class="flow-loading">
-      Loading...
-    </div>
+    <div v-if="flow.loading.value && !flow.loaded.value" class="flow-loading">Loading...</div>
 
     <!-- Main content -->
     <main v-else class="flow-content">

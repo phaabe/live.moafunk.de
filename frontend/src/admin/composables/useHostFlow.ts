@@ -14,10 +14,6 @@ export type FlowStep =
   | 'live'
   | 'on-air';
 
-export type LiveSubStep = 'os-select' | 'tutorial' | 'test';
-
-export type SelectedOs = 'windows' | 'macos' | 'linux';
-
 export type UploadMode = 'prerecorded' | 'live';
 
 export interface UploadProgress {
@@ -66,9 +62,7 @@ const uploading = ref(false);
 const uploadProgress = ref<UploadProgress | null>(null);
 
 // Live-specific state
-const liveSubStep = ref<LiveSubStep>('os-select');
 const liveTestPassed = ref(false);
-const selectedOs = ref<SelectedOs | null>(null);
 const showStarted = ref(false);
 const recordStream = ref(false);
 
@@ -218,9 +212,7 @@ function deselectShow(): void {
   uploadMode.value = null;
   currentStep.value = 'select';
   // Reset flow-specific state
-  liveSubStep.value = 'os-select';
   liveTestPassed.value = false;
-  selectedOs.value = null;
   showStarted.value = false;
   recordStream.value = false;
 }
@@ -317,16 +309,8 @@ async function deleteUpload(): Promise<void> {
   }
 }
 
-function setLiveSubStep(step: LiveSubStep): void {
-  liveSubStep.value = step;
-}
-
 function setLiveTestPassed(passed = true): void {
   liveTestPassed.value = passed;
-}
-
-function setSelectedOs(os: SelectedOs): void {
-  selectedOs.value = os;
 }
 
 function setShowStarted(started = true): void {
@@ -358,9 +342,7 @@ async function revertToMode(): Promise<void> {
   }
   // Clear flow state
   uploadMode.value = null;
-  liveSubStep.value = 'os-select';
   liveTestPassed.value = false;
-  selectedOs.value = null;
   showStarted.value = false;
   recordStream.value = false;
   currentStep.value = 'mode';
@@ -388,9 +370,7 @@ function reset(): void {
   uploadMode.value = null;
   uploading.value = false;
   uploadProgress.value = null;
-  liveSubStep.value = 'os-select';
   liveTestPassed.value = false;
-  selectedOs.value = null;
   showStarted.value = false;
   recordStream.value = false;
 }
@@ -412,9 +392,7 @@ export function useHostFlow() {
     uploadMode: readonly(uploadMode),
     uploading: readonly(uploading),
     uploadProgress: readonly(uploadProgress),
-    liveSubStep: readonly(liveSubStep),
     liveTestPassed: readonly(liveTestPassed),
-    selectedOs: readonly(selectedOs),
     showStarted: readonly(showStarted),
     recordStream: readonly(recordStream),
 
@@ -435,9 +413,7 @@ export function useHostFlow() {
     confirmUpload,
     deleteUpload,
     canNavigateTo,
-    setLiveSubStep,
     setLiveTestPassed,
-    setSelectedOs,
     setShowStarted,
     setRecordStream,
     revertToMode,
