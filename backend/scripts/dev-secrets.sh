@@ -37,8 +37,9 @@ if [[ -z "${BWS_ACCESS_TOKEN:-}" && -f "$BOOTSTRAP_FILE" ]]; then
   set -a; . "$BOOTSTRAP_FILE"; set +a
 fi
 
-# Bitwarden region — EU vault, same as CI (.github/workflows/backend.yml). Override if needed.
-export BWS_SERVER_URL="${BWS_SERVER_URL:-https://vault.bitwarden.eu}"
+# Bitwarden region — US cloud by default (CI sets no base_url, i.e. sm-action's
+# vault.bitwarden.com default). EU/self-host: set BWS_SERVER_URL (env or .env.bootstrap).
+export BWS_SERVER_URL="${BWS_SERVER_URL:-https://vault.bitwarden.com}"
 
 # Shared app-runtime secrets to pull from Bitwarden into .env.
 # Deliberately EXCLUDES:

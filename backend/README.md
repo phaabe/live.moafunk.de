@@ -38,6 +38,7 @@ Local-dev secrets come from **Bitwarden Secrets Manager** — the same source CI
 generates a gitignored `.env` from Bitwarden; your personal values live in `.env.local`.
 
 Prerequisites: the [`bws` CLI](https://bitwarden.com/help/secrets-manager-cli/) and `jq`.
+Bitwarden US cloud is assumed; for an EU/self-hosted org set `BWS_SERVER_URL` (env or `.env.bootstrap`).
 
 ```bash
 # 1. A dev machine-account access token (Bitwarden → Secrets Manager → Machine accounts).
