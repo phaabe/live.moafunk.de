@@ -21,8 +21,9 @@ fn main() {
             println!("Password hash:");
             println!("{}", hash.to_string());
             println!();
-            println!("Add this to your .env file:");
-            println!("ADMIN_PASSWORD_HASH={}", hash.to_string());
+            println!("Add this to your .env file (single quotes are required —");
+            println!("the hash contains '$' which dotenvy would otherwise expand):");
+            println!("SUPERADMIN_PASSWORD_HASH='{}'", hash.to_string());
         }
         Err(e) => {
             eprintln!("Error hashing password: {}", e);
