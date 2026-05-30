@@ -1,0 +1,56 @@
+name: "🐛 Bug"
+description: Something isn't working as expected
+title: "fix(<scope>): <short summary>"
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: type
+    attributes:
+      label: Component
+      options:
+        - "type::backend (Rust/Axum backend)"
+        - "type::admin_dashboard (Vue admin SPA)"
+    validations:
+      required: true
+  - type: dropdown
+    id: project
+    attributes:
+      label: Project / area
+      options:
+        - "project::Stream"
+        - "project::recording"
+        - "project::Instagram"
+        - "project::Telegram"
+        - "project::Soundcloud"
+        - "project::ImgGen"
+        - "project::Upload"
+        - "project::Backup"
+        - "project::Infrastructure"
+        - "project::ExternalShows"
+        - "project::Ai"
+        - "project::unheard-artist-form"
+        - "project::UNHEARD"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Actual vs expected behaviour.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment / logs
+      description: Browser, deploy (Pages/Lightsail), relevant log lines or screenshots.

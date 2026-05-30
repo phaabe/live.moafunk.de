@@ -48,3 +48,7 @@ backend/.env
 .vscode/
 *.swp
 *.swo
+.gitnexus
+
+# Claude Code — commit shared config, ignore per-developer local overrides
+.claude/settings.local.json

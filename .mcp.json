@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json.schemastore.org/mcp.json",
+  "mcpServers": {
+    "gitnexus": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "gitnexus", "mcp"]
+    }
+  }
+}
