@@ -66,6 +66,24 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     }
   }
 
+  /**
+   * Map raw device descriptors to our AudioDevice shape, hiding BlackHole
+   * virtual devices (not relevant to hosts for now).
+   */
+  function mapInputDevices(all: MediaDeviceInfo[]): AudioDevice[] {
+    return all
+      .filter((d) => d.kind === 'audioinput')
+      .filter((d) => !/blackhole/i.test(d.label))
+      .map((device, index) => ({
+        deviceId: device.deviceId,
+        label: device.label || `Audio Input ${index + 1}`,
+      }));
+  }
+
+  /**
+   * Full refresh: requests mic permission first so device labels are populated,
+   * then enumerates. Use this once on entry (it may prompt the user).
+   */
   async function refreshDevices(): Promise<void> {
     try {
       // Request permission first to get device labels
@@ -73,18 +91,28 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
       tempStream.getTracks().forEach((track) => track.stop());
 
       const allDevices = await navigator.mediaDevices.enumerateDevices();
-      const audioInputs = allDevices.filter((d) => d.kind === 'audioinput');
-
-      devices.value = audioInputs.map((device, index) => ({
-        deviceId: device.deviceId,
-        label: device.label || `Audio Input ${index + 1}`,
-      }));
+      devices.value = mapInputDevices(allDevices);
 
       console.log('[AudioCapture] Found devices:', devices.value);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to list devices';
       error.value = msg;
       currentOnError?.(msg);
+    }
+  }
+
+  /**
+   * Lightweight refresh: enumerates devices without requesting a new stream.
+   * Safe to call on a timer or `devicechange` event — labels persist once
+   * permission has been granted, so this never re-prompts or disturbs an
+   * active capture.
+   */
+  async function listDevices(): Promise<void> {
+    try {
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      devices.value = mapInputDevices(allDevices);
+    } catch (e) {
+      console.warn('[AudioCapture] listDevices failed:', e);
     }
   }
 
@@ -328,6 +356,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     setOnData,
     setOnError,
     refreshDevices,
+    listDevices,
     captureDevice,
     captureScreenAudio,
     startRecording,

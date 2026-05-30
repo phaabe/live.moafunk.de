@@ -1,84 +1,61 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, shallowRef } from 'vue';
+import { ref, computed, onMounted, onUnmounted, shallowRef, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import {
-  useHostFlow,
-  useAudioCapture,
-  useAudioMeter,
-  useStreamTest,
-  type LiveSubStep,
-  type SelectedOs,
-} from '@admin/composables';
+import { useHostFlow, useAudioCapture, useStreamTest } from '@admin/composables';
+import DbMeter from '@admin/components/DbMeter.vue';
+import AudioPlayer from '@admin/components/AudioPlayer.vue';
 
 const router = useRouter();
 const flow = useHostFlow();
 
-// ─── Sub-step state ──────────────────────────────────────────────────────────
-const liveStep = ref<LiveSubStep>(flow.liveSubStep.value);
-
-// ─── B.1 — OS Selection ─────────────────────────────────────────────────────
-const selectedOs = ref<SelectedOs | null>(flow.selectedOs.value);
-
-function selectOs(os: SelectedOs) {
-  selectedOs.value = os;
-  flow.setSelectedOs(os);
-  // Brief delay so the selection animation is visible before navigating
-  setTimeout(() => {
-    liveStep.value = 'tutorial';
-    flow.setLiveSubStep('tutorial');
-  }, 350);
-}
-
-function goBackToMode() {
-  // Revert: clear live setup state and return to mode selection
-  flow.revertToMode();
-  router.push('/stream/mode');
-}
-
-// ─── B.2 — Tutorial + Device Selection ──────────────────────────────────────
+// ─── Device selection ────────────────────────────────────────────────────────
 const audioCapture = useAudioCapture();
-const audioMeter = useAudioMeter(audioCapture.mediaStream);
-const deviceSelected = ref(false);
 const selectedDevice = ref('');
 
+let deviceRefreshInterval: ReturnType<typeof setInterval> | null = null;
+
+function onDeviceChange() {
+  audioCapture.listDevices();
+}
+
 onMounted(async () => {
+  // First refresh prompts for permission so device labels are populated.
   await audioCapture.refreshDevices();
+  // Keep the list fresh: react to hot-plug events, plus a slow timer fallback.
+  navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
+  deviceRefreshInterval = setInterval(() => audioCapture.listDevices(), 3000);
 });
 
 async function handleDeviceSelect() {
   if (!selectedDevice.value) return;
-  const ok = await audioCapture.captureDevice(selectedDevice.value);
-  if (ok) {
-    deviceSelected.value = true;
-  }
+  await audioCapture.captureDevice(selectedDevice.value);
+  // A change of input invalidates any previous successful test.
+  resetTest();
 }
 
 async function handleScreenShare() {
   const ok = await audioCapture.captureScreenAudio();
   if (ok) {
-    deviceSelected.value = true;
+    selectedDevice.value = '';
+    resetTest();
   }
 }
 
-function goBackToOs() {
-  liveStep.value = 'os-select';
-  flow.setLiveSubStep('os-select');
-}
+const capturedLabel = computed(() => {
+  if (audioCapture.selectedDeviceId.value === 'screen') return 'Screen Audio';
+  return (
+    audioCapture.devices.value.find((d) => d.deviceId === audioCapture.selectedDeviceId.value)
+      ?.label || 'Audio input'
+  );
+});
 
-function goToTest() {
-  if (!deviceSelected.value && !audioCapture.isCapturing.value) return;
-  liveStep.value = 'test';
-  flow.setLiveSubStep('test');
-}
-
-// ─── B.3 — Test Stream ─────────────────────────────────────────────────────
+// ─── Test stream (server round-trip) ─────────────────────────────────────────
 type TestPhase = 'ready' | 'recording' | 'waiting' | 'playing' | 'done' | 'error';
 const testPhase = ref<TestPhase>('ready');
 const testError = ref<string | null>(null);
 const recordProgress = ref(0);
 let recordInterval: ReturnType<typeof setInterval> | null = null;
 
-// Collect ALL chunks (sent + received) for debugging
 const sentChunks = shallowRef<ArrayBuffer[]>([]);
 const playbackChunks = shallowRef<ArrayBuffer[]>([]);
 const playbackUrl = ref<string | null>(null);
@@ -86,45 +63,45 @@ const playbackUrl = ref<string | null>(null);
 const streamTest = useStreamTest({
   recordDuration: 10_000,
   onPlaybackData: (data: ArrayBuffer) => {
-    console.log(`[FlowLive] Received playback chunk: ${data.byteLength} bytes (total: ${playbackChunks.value.length + 1})`);
     playbackChunks.value = [...playbackChunks.value, data];
   },
   onError: (msg: string) => {
-    console.error('[FlowLive] StreamTest error:', msg);
     testPhase.value = 'error';
     testError.value = msg;
     clearRecordProgress();
   },
 });
 
-// Watch streamTest state and sync to local testPhase
-import { watch } from 'vue';
-watch(() => streamTest.state.value, (s) => {
-  console.log('[FlowLive] streamTest state →', s);
-
-  if (s === 'idle') return;
-  if (s === 'recording') { testPhase.value = 'recording'; return; }
-  if (s === 'waiting') {
-    testPhase.value = 'waiting';
-    stopTestRecording();
-    return;
+watch(
+  () => streamTest.state.value,
+  (s) => {
+    if (s === 'idle') return;
+    if (s === 'recording') {
+      testPhase.value = 'recording';
+      return;
+    }
+    if (s === 'waiting') {
+      testPhase.value = 'waiting';
+      stopTestRecording();
+      return;
+    }
+    if (s === 'playing') {
+      testPhase.value = 'playing';
+      return;
+    }
+    if (s === 'done') {
+      testPhase.value = 'done';
+      clearRecordProgress();
+      buildPlaybackBlob();
+      return;
+    }
+    if (s === 'error') {
+      testPhase.value = 'error';
+      testError.value = streamTest.error.value;
+      clearRecordProgress();
+    }
   }
-  if (s === 'playing') {
-    testPhase.value = 'playing';
-    return;
-  }
-  if (s === 'done') {
-    testPhase.value = 'done';
-    clearRecordProgress();
-    buildPlaybackBlob();
-    return;
-  }
-  if (s === 'error') {
-    testPhase.value = 'error';
-    testError.value = streamTest.error.value;
-    clearRecordProgress();
-  }
-});
+);
 
 // ─── Test recorder (dedicated MediaRecorder on the capture stream) ──────────
 let testRecorder: MediaRecorder | null = null;
@@ -132,18 +109,15 @@ let testRecorder: MediaRecorder | null = null;
 function startTestRecording() {
   const stream = audioCapture.processedStream.value || audioCapture.mediaStream.value;
   if (!stream) {
-    console.error('[FlowLive] No audio stream available for test recording');
     testPhase.value = 'error';
-    testError.value = 'No audio stream available. Go back and select an audio device.';
+    testError.value = 'No audio stream available. Select an audio device first.';
     return;
   }
 
-  // Verify stream has active tracks
   const tracks = stream.getAudioTracks();
-  console.log(`[FlowLive] Stream tracks: ${tracks.length}, active: ${tracks.filter(t => t.enabled && t.readyState === 'live').length}`);
-  if (tracks.length === 0 || tracks.every(t => t.readyState !== 'live')) {
+  if (tracks.length === 0 || tracks.every((t) => t.readyState !== 'live')) {
     testPhase.value = 'error';
-    testError.value = 'Audio device is no longer active. Go back and re-select your device.';
+    testError.value = 'Audio device is no longer active. Re-select your device.';
     return;
   }
 
@@ -151,42 +125,32 @@ function startTestRecording() {
     ? 'audio/webm;codecs=opus'
     : 'audio/webm';
 
-  console.log('[FlowLive] Starting test recorder, mimeType:', mimeType);
-
-  testRecorder = new MediaRecorder(stream, {
-    mimeType,
-    audioBitsPerSecond: 192000,
-  });
+  testRecorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 192000 });
 
   testRecorder.ondataavailable = async (event) => {
     if (event.data.size > 0) {
       const buffer = await event.data.arrayBuffer();
-      // Keep a copy for debugging/download
       sentChunks.value = [...sentChunks.value, buffer];
-      const ok = streamTest.sendChunk(buffer);
-      console.log(`[FlowLive] Sent chunk: ${buffer.byteLength} bytes, accepted: ${ok}, total sent: ${sentChunks.value.length}`);
+      streamTest.sendChunk(buffer);
     }
   };
 
-  testRecorder.onerror = (e) => {
-    console.error('[FlowLive] MediaRecorder error:', e);
+  testRecorder.onerror = () => {
     testError.value = 'Audio recorder error';
     testPhase.value = 'error';
   };
 
   testRecorder.start(250);
-  console.log('[FlowLive] Test recorder started');
 }
 
 function stopTestRecording() {
   if (testRecorder && testRecorder.state !== 'inactive') {
-    console.log('[FlowLive] Stopping test recorder');
     testRecorder.stop();
     testRecorder = null;
   }
 }
 
-// ─── Test flow ──────────────────────────────────────────────────────────────
+// ─── Test flow ────────────────────────────────────────────────────────────────
 async function runTest() {
   testError.value = null;
   testPhase.value = 'ready';
@@ -195,25 +159,18 @@ async function runTest() {
   revokePlaybackUrl();
 
   try {
-    console.log('[FlowLive] Connecting to stream test WebSocket...');
     await streamTest.connect();
-    console.log('[FlowLive] Connected. Starting recording...');
-
     streamTest.startRecording();
     testPhase.value = 'recording';
-
-    // Start dedicated test recorder on the audio stream
     startTestRecording();
 
-    // Progress bar: 0→100% over 10s
     recordProgress.value = 0;
     const start = Date.now();
     recordInterval = setInterval(() => {
       const elapsed = Date.now() - start;
       recordProgress.value = Math.min(100, (elapsed / 10_000) * 100);
     }, 100);
-  } catch (err) {
-    console.error('[FlowLive] runTest failed:', err);
+  } catch {
     testPhase.value = 'error';
     testError.value = 'Failed to connect to test server';
   }
@@ -226,38 +183,13 @@ function clearRecordProgress() {
   }
 }
 
-// ─── Playback ───────────────────────────────────────────────────────────────
 function buildPlaybackBlob() {
-  console.log(`[FlowLive] Building playback blob from ${playbackChunks.value.length} chunks`);
   if (playbackChunks.value.length === 0) {
-    console.warn('[FlowLive] No playback chunks received!');
-    testError.value = `No audio data received back from server (sent: ${sentChunks.value.length} chunks)`;
+    testError.value = `No audio data received from server (sent: ${sentChunks.value.length} chunks)`;
     return;
   }
-
   const blob = new Blob(playbackChunks.value, { type: 'audio/webm;codecs=opus' });
-  console.log(`[FlowLive] Playback blob size: ${blob.size} bytes`);
-  const url = URL.createObjectURL(blob);
-  playbackUrl.value = url;
-}
-
-function downloadBlob(chunks: ArrayBuffer[], filename: string) {
-  if (chunks.length === 0) return;
-  const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function downloadSent() {
-  downloadBlob(sentChunks.value, 'stream-test-sent.webm');
-}
-
-function downloadReceived() {
-  downloadBlob(playbackChunks.value, 'stream-test-received.webm');
+  playbackUrl.value = URL.createObjectURL(blob);
 }
 
 function revokePlaybackUrl() {
@@ -267,287 +199,169 @@ function revokePlaybackUrl() {
   }
 }
 
-function markTestPassed() {
-  flow.setLiveTestPassed(true);
-}
-
-function goToWaiting() {
-  flow.goToStep('on-air');
-  router.push('/stream/on-air');
-}
-
-function retryTest() {
-  streamTest.stop();
-  testPhase.value = 'ready';
-  testError.value = null;
-  recordProgress.value = 0;
-  playbackChunks.value = [];
-  revokePlaybackUrl();
-}
-
-function goBackToTutorial() {
+/** Reset test state (e.g. after switching inputs). */
+function resetTest() {
   streamTest.stop();
   stopTestRecording();
   clearRecordProgress();
   revokePlaybackUrl();
   testPhase.value = 'ready';
-  liveStep.value = 'tutorial';
-  flow.setLiveSubStep('tutorial');
+  testError.value = null;
+  recordProgress.value = 0;
+  sentChunks.value = [];
+  playbackChunks.value = [];
+  flow.setLiveTestPassed(false);
 }
 
-const canGoBackFromTest = computed(() =>
-  testPhase.value === 'ready' || testPhase.value === 'done' || testPhase.value === 'error'
-);
+function retryTest() {
+  resetTest();
+}
+
+function markTestPassed() {
+  flow.setLiveTestPassed(true);
+}
+
+function goToStream() {
+  flow.goToStep('on-air');
+  router.push('/stream/on-air');
+}
+
+function goBackToMode() {
+  flow.revertToMode();
+  router.push('/stream/mode');
+}
 
 const isDev = import.meta.env.DEV;
 
 onUnmounted(() => {
+  navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
+  if (deviceRefreshInterval) {
+    clearInterval(deviceRefreshInterval);
+    deviceRefreshInterval = null;
+  }
   streamTest.cleanup();
   stopTestRecording();
   clearRecordProgress();
   revokePlaybackUrl();
   // NOTE: do NOT call audioCapture.stopCapture() here —
-  // the singleton persists to FlowWaiting and FlowStreaming.
+  // the singleton capture persists into the Stream step (FlowOnAir).
 });
 </script>
 
 <template>
   <div class="flow-live">
-    <!-- ═══ B.1 — OS Selection ═══ -->
-    <template v-if="liveStep === 'os-select'">
-      <h1 class="step-title">What's your operating system?</h1>
-      <p class="step-subtitle">We'll show you how to set up audio capture for your system.</p>
+    <h1 class="step-title">Set Up Audio &amp; Test</h1>
+    <p class="step-subtitle">
+      Pick your audio input, check the level on the meter, then run a quick test.
+    </p>
 
-      <div class="os-cards">
-        <button v-for="os in (['windows', 'macos', 'linux'] as const)" :key="os"
-          :class="['os-card', { selected: selectedOs === os }]" @click="selectOs(os)">
-          <div class="os-icon">
-            {{ os === 'windows' ? '🪟' : os === 'macos' ? '🍎' : '🐧' }}
-          </div>
-          <span class="os-label">
-            {{ os === 'windows' ? 'Windows' : os === 'macos' ? 'macOS' : 'Linux' }}
-          </span>
-        </button>
+    <!-- ─── Device selection ─── -->
+    <div class="device-section">
+      <h3>Audio Input</h3>
+
+      <div class="device-row">
+        <select v-model="selectedDevice" class="device-select" @change="handleDeviceSelect">
+          <option value="">-- Select audio input --</option>
+          <option v-for="device in audioCapture.devices.value" :key="device.deviceId" :value="device.deviceId">
+            {{ device.label }}
+          </option>
+        </select>
+        <button class="btn-icon" title="Refresh devices" @click="audioCapture.listDevices()">🔄</button>
       </div>
 
-      <div class="step-actions">
-        <button class="btn-secondary" @click="goBackToMode">← Back</button>
-      </div>
-    </template>
-
-    <!-- ═══ B.2 — Tutorial + Device Selection ═══ -->
-    <template v-else-if="liveStep === 'tutorial'">
-      <h1 class="step-title">Set Up Audio Capture</h1>
-
-      <!-- macOS instructions -->
-      <div v-if="selectedOs === 'macos'" class="tutorial-content">
-        <div class="tutorial-section">
-          <h3>Option A: BlackHole (recommended for system audio)</h3>
-          <ol>
-            <li>Install <a href="https://existential.audio/blackhole/" target="_blank" rel="noopener">BlackHole</a>
-              (free virtual audio driver)</li>
-            <li>Open <strong>Audio MIDI Setup</strong> → create a <strong>Multi-Output Device</strong> combining your
-              speakers + BlackHole</li>
-            <li>Set the Multi-Output as your system output</li>
-            <li>Select <strong>BlackHole</strong> as your audio source below</li>
-          </ol>
-        </div>
-        <div class="tutorial-section">
-          <h3>Option B: External audio (mixer, turntable)</h3>
-          <p>If you're using an external audio interface, simply select it from the dropdown below.</p>
-        </div>
-      </div>
-
-      <!-- Windows instructions -->
-      <div v-if="selectedOs === 'windows'" class="tutorial-content">
-        <div class="tutorial-section">
-          <h3>Capture System Audio</h3>
-          <p>Click <strong>"Share Screen Audio"</strong> below. In the browser dialog:</p>
-          <ol>
-            <li>Select any tab or screen to share</li>
-            <li><strong>Check "Share audio"</strong> at the bottom of the dialog</li>
-            <li>The video is discarded — only the audio is captured</li>
-          </ol>
-        </div>
-        <div class="tutorial-section">
-          <h3>Or use an audio device</h3>
-          <p>If you have an external audio interface or mixer, select it from the dropdown below.</p>
-        </div>
-      </div>
-
-      <!-- Linux instructions -->
-      <div v-if="selectedOs === 'linux'" class="tutorial-content">
-        <div class="tutorial-section">
-          <h3>PulseAudio / PipeWire Monitor</h3>
-          <p>Select a <strong>Monitor</strong> source from the dropdown below to capture system audio output.</p>
-          <p class="text-muted">
-            If you don't see a monitor source, ensure PulseAudio or PipeWire is installed and the
-            <code>module-loopback</code> is loaded.
-          </p>
-        </div>
-      </div>
-
-      <!-- Device selector -->
-      <div class="device-section">
-        <h3>Select Audio Source</h3>
-
-        <div class="device-row">
-          <select v-model="selectedDevice" class="device-select">
-            <option value="">-- Select audio device --</option>
-            <option v-for="device in audioCapture.devices.value" :key="device.deviceId" :value="device.deviceId">
-              {{ device.label }}
-            </option>
-          </select>
-          <button class="btn-icon" @click="audioCapture.refreshDevices()" title="Refresh devices">
-            🔄
-          </button>
-        </div>
-
-        <div class="device-actions">
-          <button class="btn-primary" :disabled="!selectedDevice" @click="handleDeviceSelect">
-            🎧 Use Selected Device
-          </button>
-          <button v-if="selectedOs === 'windows'" class="btn-secondary" @click="handleScreenShare">
-            🖥️ Share Screen Audio
-          </button>
-        </div>
-
-        <!-- Audio level preview -->
-        <div v-if="audioCapture.isCapturing.value" class="audio-preview">
-          <div class="capture-status">
-            <span class="status-dot active"></span>
-            Audio captured — <strong>{{audioCapture.devices.value.find(d => d.deviceId ===
-              audioCapture.selectedDeviceId.value)?.label || 'Screen Audio'}}</strong>
-          </div>
-          <div class="audio-level">
-            <div class="audio-level-bar" :style="{ width: `${audioMeter.level.value}%` }"></div>
-          </div>
-        </div>
-
-        <p v-if="audioCapture.error.value" class="error-text">{{ audioCapture.error.value }}</p>
-      </div>
-
-      <div class="step-actions">
-        <button class="btn-secondary" @click="goBackToOs">← Back</button>
-        <button class="btn-primary" :disabled="!audioCapture.isCapturing.value" @click="goToTest">
-          Continue to Test →
-        </button>
-      </div>
-    </template>
-
-    <!-- ═══ B.3 — Test Stream ═══ -->
-    <template v-else-if="liveStep === 'test'">
-      <h1 class="step-title">Test Your Stream</h1>
-      <p class="step-subtitle">
-        We'll record 10 seconds of your audio and play it back so you can verify it sounds right.
-      </p>
-
-      <div class="test-panel">
-        <!-- Audio level meter (always visible when capturing) -->
-        <div v-if="audioCapture.isCapturing.value" class="audio-level test-level">
-          <div class="audio-level-bar" :style="{ width: `${audioMeter.level.value}%` }"></div>
-        </div>
-
-        <!-- Ready state -->
-        <div v-if="testPhase === 'ready'" class="test-state">
-          <p>Play some audio from your music source, then click start.</p>
-          <button class="btn-primary btn-lg" @click="runTest">
-            🎤 Start Test
-          </button>
-        </div>
-
-        <!-- Recording state -->
-        <div v-if="testPhase === 'recording'" class="test-state">
-          <div class="test-recording-indicator">
-            <span class="recording-dot"></span>
-            Recording... <span class="chunk-counter">({{ sentChunks.length }} chunks sent)</span>
-          </div>
-          <div class="progress-bar">
-            <div class="progress-fill" :style="{ width: `${recordProgress}%` }"></div>
-          </div>
-          <p class="text-muted">{{ Math.ceil((100 - recordProgress) / 10) }}s remaining</p>
-        </div>
-
-        <!-- Waiting state -->
-        <div v-if="testPhase === 'waiting'" class="test-state">
-          <p>Sent {{ sentChunks.length }} chunks. Waiting for server...</p>
-        </div>
-
-        <!-- Playing state -->
-        <div v-if="testPhase === 'playing'" class="test-state">
-          <div class="test-playing-indicator">
-            <span class="playing-icon">🔊</span>
-            Receiving... <span class="chunk-counter">({{ playbackChunks.length }} chunks)</span>
-          </div>
-          <p class="text-muted">Server is sending your audio back. Playback starts when complete.</p>
-        </div>
-
-        <!-- Done state -->
-        <div v-if="testPhase === 'done'" class="test-state">
-          <!-- Playback audio element -->
-          <div v-if="playbackUrl" class="playback-section">
-            <p class="playback-label">Your test recording ({{ playbackChunks.length }} chunks received):</p>
-            <audio :src="playbackUrl" controls autoplay class="playback-audio"></audio>
-          </div>
-          <div v-else-if="playbackChunks.length === 0" class="playback-section">
-            <p class="error-text">No audio data received from server. Sent {{ sentChunks.length }} chunks.</p>
-          </div>
-
-          <p>Did you hear your audio clearly?</p>
-          <div class="test-result-actions">
-            <button class="btn-success" @click="markTestPassed">
-              ✓ Yes, it sounds good!
-            </button>
-            <button class="btn-secondary" @click="retryTest">
-              Try Again
-            </button>
-          </div>
-
-          <!-- Debug download buttons -->
-          <div class="debug-downloads">
-            <button v-if="sentChunks.length > 0" class="btn-link" @click="downloadSent">
-              ⬇ Download sent audio ({{ sentChunks.length }} chunks)
-            </button>
-            <button v-if="playbackChunks.length > 0" class="btn-link" @click="downloadReceived">
-              ⬇ Download received audio ({{ playbackChunks.length }} chunks)
-            </button>
-          </div>
-        </div>
-
-        <!-- Error state -->
-        <div v-if="testPhase === 'error'" class="test-state">
-          <p class="error-text">{{ testError || 'An error occurred during the test.' }}</p>
-          <!-- Show download even on error if we have data -->
-          <div v-if="sentChunks.length > 0" class="debug-downloads">
-            <button class="btn-link" @click="downloadSent">
-              ⬇ Download sent audio ({{ sentChunks.length }} chunks)
-            </button>
-          </div>
-          <button class="btn-secondary" @click="retryTest">
-            Try Again
-          </button>
-        </div>
-      </div>
-
-      <!-- Continue after pass -->
-      <div v-if="flow.liveTestPassed.value" class="test-passed-banner">
-        <span>✓ Stream test passed</span>
-        <button class="btn-primary" @click="goToWaiting">
-          Continue to Waiting Room →
-        </button>
-      </div>
-
-      <!-- Dev-only: skip test entirely -->
-      <button v-if="isDev && !flow.liveTestPassed.value" class="btn-dev-skip" @click="markTestPassed">
-        🛠 Skip Test (dev)
+      <button class="btn-link screen-share" @click="handleScreenShare">
+        🖥️ Share screen audio instead
       </button>
 
-      <div class="step-actions">
-        <button class="btn-secondary" :disabled="!canGoBackFromTest" @click="goBackToTutorial">
-          ← Back
-        </button>
+      <!-- Capture status + dB meter -->
+      <div v-if="audioCapture.isCapturing.value" class="capture-block">
+        <div class="capture-status">
+          <span class="status-dot active"></span>
+          Capturing — <strong>{{ capturedLabel }}</strong>
+        </div>
+        <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input Level" />
       </div>
-    </template>
+
+      <p v-if="audioCapture.error.value" class="error-text">{{ audioCapture.error.value }}</p>
+    </div>
+
+    <!-- ─── Test ─── -->
+    <div class="test-panel">
+      <h3>Test Your Stream</h3>
+      <p class="panel-hint">
+        We record 10 seconds and round-trip it through the server, then show it back as a waveform.
+      </p>
+
+      <!-- Ready -->
+      <div v-if="testPhase === 'ready'" class="test-state">
+        <button class="btn-primary btn-lg" :disabled="!audioCapture.isCapturing.value" @click="runTest">
+          🎤 Start Test
+        </button>
+        <p v-if="!audioCapture.isCapturing.value" class="text-muted">Select an audio input first.</p>
+      </div>
+
+      <!-- Recording -->
+      <div v-else-if="testPhase === 'recording'" class="test-state">
+        <div class="test-recording-indicator">
+          <span class="recording-dot"></span>
+          Recording... <span class="chunk-counter">({{ sentChunks.length }} chunks)</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: `${recordProgress}%` }"></div>
+        </div>
+        <p class="text-muted">{{ Math.ceil((100 - recordProgress) / 10) }}s remaining</p>
+      </div>
+
+      <!-- Waiting -->
+      <div v-else-if="testPhase === 'waiting'" class="test-state">
+        <p>Sent {{ sentChunks.length }} chunks. Waiting for server...</p>
+      </div>
+
+      <!-- Playing (receiving) -->
+      <div v-else-if="testPhase === 'playing'" class="test-state">
+        <div class="test-playing-indicator">
+          <span class="playing-icon">🔊</span>
+          Receiving... <span class="chunk-counter">({{ playbackChunks.length }} chunks)</span>
+        </div>
+      </div>
+
+      <!-- Done -->
+      <div v-else-if="testPhase === 'done'" class="test-state">
+        <div v-if="playbackUrl" class="playback-section">
+          <AudioPlayer :src="playbackUrl" label="Your test recording" />
+        </div>
+        <div v-else class="playback-section">
+          <p class="error-text">No audio data received from server. Sent {{ sentChunks.length }} chunks.</p>
+        </div>
+
+        <p>Did you hear your audio clearly?</p>
+        <div class="test-result-actions">
+          <button class="btn-success" @click="markTestPassed">✓ Yes, it sounds good!</button>
+          <button class="btn-secondary" @click="retryTest">Try Again</button>
+        </div>
+      </div>
+
+      <!-- Error -->
+      <div v-else-if="testPhase === 'error'" class="test-state">
+        <p class="error-text">{{ testError || 'An error occurred during the test.' }}</p>
+        <button class="btn-secondary" @click="retryTest">Try Again</button>
+      </div>
+    </div>
+
+    <!-- Continue after pass -->
+    <div v-if="flow.liveTestPassed.value" class="test-passed-banner">
+      <span>✓ Stream test passed</span>
+      <button class="btn-primary" @click="goToStream">Continue to Stream →</button>
+    </div>
+
+    <!-- Dev-only: skip test entirely -->
+    <button v-if="isDev && !flow.liveTestPassed.value" class="btn-dev-skip" @click="markTestPassed">
+      🛠 Skip Test (dev)
+    </button>
+
+    <div class="step-actions">
+      <button class="btn-secondary" @click="goBackToMode">← Back</button>
+    </div>
   </div>
 </template>
 
@@ -557,7 +371,6 @@ onUnmounted(() => {
   margin: 0 auto;
 }
 
-/* ─── Common step styling ────────────────────────────────────────────────── */
 .step-title {
   font-size: var(--font-size-2xl);
   font-weight: var(--font-weight-bold);
@@ -577,94 +390,13 @@ onUnmounted(() => {
   gap: var(--spacing-md);
 }
 
-/* ─── B.1 — OS Cards ─────────────────────────────────────────────────────── */
-.os-cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--spacing-md);
-  margin-bottom: var(--spacing-lg);
-}
-
-@media (max-width: 480px) {
-  .os-cards {
-    grid-template-columns: 1fr;
-  }
-}
-
-.os-card {
-  background: var(--color-surface);
-  border: 2px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  padding: var(--spacing-xl) var(--spacing-md);
-  text-align: center;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  font-family: var(--font-family);
-  color: var(--color-text);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--spacing-sm);
-}
-
-.os-card:hover {
-  border-color: var(--color-primary);
-  background: var(--color-surface-hover);
-}
-
-.os-card.selected {
-  border-color: var(--color-primary);
-  background: var(--color-primary-bg, rgba(255, 152, 0, 0.08));
-}
-
-.os-icon {
-  font-size: 2.5rem;
-}
-
-.os-label {
-  font-weight: var(--font-weight-bold);
-}
-
-/* ─── B.2 — Tutorial ─────────────────────────────────────────────────────── */
-.tutorial-content {
-  margin-bottom: var(--spacing-xl);
-}
-
-.tutorial-section {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-lg);
-  margin-bottom: var(--spacing-md);
-}
-
-.tutorial-section h3 {
-  margin: 0 0 var(--spacing-sm);
-  font-size: var(--font-size-md);
-  color: var(--color-text);
-}
-
-.tutorial-section ol,
-.tutorial-section p {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-relaxed);
-}
-
-.tutorial-section ol {
-  padding-left: var(--spacing-xl);
-}
-
-.tutorial-section li {
-  margin-bottom: var(--spacing-xs);
-}
-
+/* ─── Device section ─── */
 .device-section {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
 }
 
 .device-section h3 {
@@ -675,7 +407,7 @@ onUnmounted(() => {
 .device-row {
   display: flex;
   gap: var(--spacing-sm);
-  margin-bottom: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
 }
 
 .device-select {
@@ -698,13 +430,11 @@ onUnmounted(() => {
   font-size: var(--font-size-md);
 }
 
-.device-actions {
-  display: flex;
-  gap: var(--spacing-sm);
-  flex-wrap: wrap;
+.screen-share {
+  margin-bottom: var(--spacing-md);
 }
 
-.audio-preview {
+.capture-block {
   margin-top: var(--spacing-md);
 }
 
@@ -714,7 +444,7 @@ onUnmounted(() => {
   gap: var(--spacing-sm);
   font-size: var(--font-size-sm);
   color: var(--color-text);
-  margin-bottom: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
 }
 
 .status-dot {
@@ -729,27 +459,7 @@ onUnmounted(() => {
   box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
 }
 
-/* ─── Audio level meter ──────────────────────────────────────────────────── */
-.audio-level {
-  height: 6px;
-  background: var(--color-surface-alt);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-}
-
-.audio-level-bar {
-  height: 100%;
-  background: linear-gradient(90deg, #22c55e, #eab308, #ef4444);
-  transition: width 50ms;
-  border-radius: var(--radius-full);
-}
-
-.test-level {
-  margin-bottom: var(--spacing-lg);
-  height: 10px;
-}
-
-/* ─── B.3 — Test Stream ──────────────────────────────────────────────────── */
+/* ─── Test panel ─── */
 .test-panel {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -758,11 +468,22 @@ onUnmounted(() => {
   margin-bottom: var(--spacing-lg);
 }
 
+.test-panel h3 {
+  margin: 0 0 var(--spacing-xs);
+  font-size: var(--font-size-md);
+}
+
+.panel-hint {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  margin: 0 0 var(--spacing-lg);
+}
+
 .test-state {
   text-align: center;
 }
 
-.test-state p {
+.test-state > p {
   color: var(--color-text-muted);
   margin: 0 0 var(--spacing-md);
 }
@@ -787,12 +508,10 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-red {
-
   0%,
   100% {
     opacity: 1;
   }
-
   50% {
     opacity: 0.4;
   }
@@ -832,7 +551,6 @@ onUnmounted(() => {
   from {
     transform: scale(1);
   }
-
   to {
     transform: scale(1.15);
   }
@@ -840,17 +558,6 @@ onUnmounted(() => {
 
 .playback-section {
   margin-bottom: var(--spacing-lg);
-}
-
-.playback-label {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  margin: 0 0 var(--spacing-sm);
-}
-
-.playback-audio {
-  width: 100%;
-  max-width: 400px;
 }
 
 .test-result-actions {
@@ -873,7 +580,7 @@ onUnmounted(() => {
   gap: var(--spacing-md);
 }
 
-/* ─── Buttons ────────────────────────────────────────────────────────────── */
+/* ─── Buttons ─── */
 .btn-primary {
   background: var(--color-primary);
   color: var(--color-primary-text, #fff);
@@ -918,11 +625,6 @@ onUnmounted(() => {
   border-color: var(--color-border-light);
 }
 
-.btn-secondary:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 .btn-success {
   background: #22c55e;
   color: #fff;
@@ -940,6 +642,21 @@ onUnmounted(() => {
   background: #16a34a;
 }
 
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  padding: var(--spacing-xs) 0;
+}
+
+.btn-link:hover {
+  opacity: 0.8;
+}
+
 .error-text {
   color: #ef4444;
   font-size: var(--font-size-sm);
@@ -950,34 +667,10 @@ onUnmounted(() => {
   font-size: var(--font-size-sm);
 }
 
-/* ─── Debug / download helpers ───────────────────────────────────────────── */
 .chunk-counter {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
   font-weight: normal;
-}
-
-.debug-downloads {
-  display: flex;
-  gap: var(--spacing-md);
-  justify-content: center;
-  margin-top: var(--spacing-md);
-  flex-wrap: wrap;
-}
-
-.btn-link {
-  background: none;
-  border: none;
-  color: var(--color-primary);
-  font-family: var(--font-family);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  text-decoration: underline;
-  padding: var(--spacing-xs) var(--spacing-sm);
-}
-
-.btn-link:hover {
-  opacity: 0.8;
 }
 
 .btn-dev-skip {

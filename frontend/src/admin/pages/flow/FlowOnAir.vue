@@ -1,13 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import {
-  useHostFlow,
-  useAudioCapture,
-  useAudioMeter,
-  useStreamSocket,
-} from '@admin/composables';
+import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
 import { streamApi, recordingApi, hostFlowApi } from '@admin/api';
+import DbMeter from '@admin/components/DbMeter.vue';
 
 const router = useRouter();
 const flow = useHostFlow();
@@ -153,9 +149,8 @@ function playBeep() {
   }
 }
 
-// ─── Audio device status (live mode, waiting phase) ─────────────────────────
+// ─── Audio device status (live mode, waiting + streaming phases) ────────────
 const audioCapture = isLiveMode.value ? useAudioCapture() : null;
-const audioMeter = audioCapture ? useAudioMeter(audioCapture.mediaStream) : null;
 const audioDeviceOk = computed(() => audioCapture?.isCapturing.value ?? false);
 
 // ─── Stream socket ──────────────────────────────────────────────────────────
@@ -266,14 +261,6 @@ function stopElapsed() {
     clearInterval(elapsedInterval);
     elapsedInterval = null;
   }
-}
-
-// ─── Volume control (live mode) ─────────────────────────────────────────────
-const volume = ref(1);
-function updateVolume(event: Event) {
-  const val = parseFloat((event.target as HTMLInputElement).value);
-  volume.value = val;
-  audioCapture?.setInputVolume(val);
 }
 
 // ─── Stop streaming ─────────────────────────────────────────────────────────
@@ -539,22 +526,8 @@ onUnmounted(() => {
 
       <!-- Live mode controls -->
       <template v-if="isLiveMode">
-        <div v-if="audioMeter" class="audio-level-section">
-          <label class="section-label">Audio Level</label>
-          <div class="audio-level">
-            <div class="audio-level-bar" :style="{ width: `${audioMeter.level.value}%` }"></div>
-          </div>
-        </div>
-
-        <div v-if="audioCapture" class="volume-section">
-          <label class="section-label">Input Volume</label>
-          <div class="volume-row">
-            <span class="volume-icon">🔇</span>
-            <input type="range" min="0" max="2" step="0.01" :value="volume" class="volume-slider"
-              @input="updateVolume" />
-            <span class="volume-icon">🔊</span>
-            <span class="volume-value">{{ Math.round(volume * 100) }}%</span>
-          </div>
+        <div v-if="audioCapture" class="audio-level-section">
+          <DbMeter :media-stream="audioCapture.mediaStream.value" label="Audio Level" />
         </div>
 
         <div class="stop-section">
@@ -672,6 +645,10 @@ onUnmounted(() => {
             <span :class="['status-dot', audioDeviceOk ? 'ok' : 'lost']"></span>
             <span v-if="audioDeviceOk">Audio device active</span>
             <span v-else class="status-lost-text">Audio device disconnected — return to setup</span>
+          </div>
+          <!-- dB meter stays live throughout the countdown -->
+          <div v-if="audioCapture && audioDeviceOk" class="waiting-meter">
+            <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input Level" />
           </div>
         </template>
         <template v-else>
@@ -951,59 +928,17 @@ onUnmounted(() => {
   font-size: var(--font-size-sm);
 }
 
-/* Audio level */
+/* Audio level (dB meter) */
 .audio-level-section {
-  margin-bottom: var(--spacing-lg);
-}
-
-.section-label {
-  display: block;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  margin-bottom: var(--spacing-sm);
-}
-
-.audio-level {
-  height: 10px;
-  background: var(--color-surface-alt);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-}
-
-.audio-level-bar {
-  height: 100%;
-  background: linear-gradient(90deg, #22c55e, #eab308, #ef4444);
-  transition: width 50ms;
-  border-radius: var(--radius-full);
-}
-
-/* Volume */
-.volume-section {
   margin-bottom: var(--spacing-xl);
 }
 
-.volume-row {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-}
-
-.volume-icon {
-  font-size: var(--font-size-sm);
-}
-
-.volume-slider {
-  flex: 1;
-  accent-color: var(--color-primary);
-  cursor: pointer;
-}
-
-.volume-value {
-  font-size: var(--font-size-sm);
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-muted);
-  min-width: 3em;
-  text-align: right;
+/* dB meter shown during the waiting countdown */
+.waiting-meter {
+  margin-top: var(--spacing-lg);
+  max-width: 360px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* Stop button */
