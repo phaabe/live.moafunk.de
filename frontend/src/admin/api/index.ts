@@ -398,7 +398,7 @@ export interface Show {
   artists: { id: number; name: string }[];
 }
 
-/** Read-only schedule entry returned by GET /api/shows/overview. */
+/** Read-only schedule entry returned by GET /api/shows-overview. */
 export interface ShowOverviewItem {
   id: number;
   title: string;
