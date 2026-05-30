@@ -28,6 +28,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$BACKEND_DIR/.env"
 LOCAL_FILE="$BACKEND_DIR/.env.local"
+BOOTSTRAP_FILE="$BACKEND_DIR/.env.bootstrap"
+
+# Convenience: if BWS_ACCESS_TOKEN isn't already exported, source it from a gitignored
+# .env.bootstrap so you don't have to re-export it every session. This file feeds THIS
+# script only — the backend never reads it. See .env.bootstrap.example.
+if [[ -z "${BWS_ACCESS_TOKEN:-}" && -f "$BOOTSTRAP_FILE" ]]; then
+  set -a; . "$BOOTSTRAP_FILE"; set +a
+fi
 
 # Bitwarden region — EU vault, same as CI (.github/workflows/backend.yml). Override if needed.
 export BWS_SERVER_URL="${BWS_SERVER_URL:-https://vault.bitwarden.eu}"

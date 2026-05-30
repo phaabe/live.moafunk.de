@@ -42,6 +42,8 @@ Prerequisites: the [`bws` CLI](https://bitwarden.com/help/secrets-manager-cli/) 
 ```bash
 # 1. A dev machine-account access token (Bitwarden → Secrets Manager → Machine accounts).
 export BWS_ACCESS_TOKEN=<your token>
+#    Or persist it once instead of re-exporting (gitignored; dev-secrets.sh sources it):
+#      cp .env.bootstrap.example .env.bootstrap   # then put your token in it
 
 # 2. Your personal, non-shared values (gitignored). The admin password hash is required;
 #    generate it, then add it to backend/.env.local single-quoted (the hash contains '$'):
