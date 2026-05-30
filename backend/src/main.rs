@@ -437,6 +437,12 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/shows", get(handlers::api::api_shows_list))
         .route("/api/shows", post(handlers::api::api_create_show))
+        // Note: distinct literal (not /api/shows/overview) to avoid a matchit
+        // 0.7 static-vs-:id sibling conflict with the route below.
+        .route(
+            "/api/shows-overview",
+            get(handlers::api::api_shows_overview),
+        )
         .route("/api/shows/:id", get(handlers::api::api_show_detail))
         .route(
             "/api/shows/:id/image-proxy",

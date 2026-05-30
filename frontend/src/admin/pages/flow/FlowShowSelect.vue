@@ -1,14 +1,48 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow } from '@admin/composables';
-import type { MyShowInfo } from '@admin/api';
+import { showsApi, type MyShowInfo, type Show, type ShowOverviewItem } from '@admin/api';
+import { BaseButton, BaseModal } from '@shared/components';
+import ShowCreateModal from '@admin/components/ShowCreateModal.vue';
 
 const router = useRouter();
 const flow = useHostFlow();
 
 // Filter out shows that have already ended
 const shows = computed(() => flow.shows.value.filter(s => !flow.isShowEnded(s)));
+
+const showCreateModal = ref(false);
+
+// Read-only overview of the full schedule (incl. other users' shows).
+const allShows = ref<ShowOverviewItem[]>([]);
+const allShowsError = ref<string | null>(null);
+const detailShow = ref<ShowOverviewItem | null>(null);
+
+async function loadAllShows() {
+  allShowsError.value = null;
+  try {
+    const response = await showsApi.overview();
+    allShows.value = response.shows;
+  } catch (e) {
+    allShowsError.value = e instanceof Error ? e.message : 'Failed to load shows';
+  }
+}
+
+onMounted(loadAllShows);
+
+/** Open the read-only detail modal for any show in the overview. */
+function openDetail(s: ShowOverviewItem) {
+  detailShow.value = s;
+}
+
+/** After a host creates a show, reload the flow and jump straight into it. */
+async function onShowCreated(show: Show) {
+  showCreateModal.value = false;
+  await Promise.all([flow.fetchMyShow(), loadAllShows()]);
+  const created = flow.shows.value.find((s) => s.id === show.id);
+  if (created) pickShow(created);
+}
 
 /** Format a date string into a readable date */
 function fmtDate(dateStr: string): string {
@@ -71,11 +105,17 @@ function showTypeBadge(type: string): string {
 
 <template>
   <div class="flow-select">
-    <h1 class="flow-select-title">My Shows</h1>
-    <p class="flow-select-subtitle">Select a show to prepare for streaming.</p>
+    <div class="flow-select-header">
+      <div>
+        <h1 class="flow-select-title">My Shows</h1>
+        <p class="flow-select-subtitle">Select a show to prepare for streaming.</p>
+      </div>
+      <BaseButton variant="primary" @click="showCreateModal = true">+ New Show</BaseButton>
+    </div>
 
     <div v-if="shows.length === 0" class="flow-select-empty">
-      <p class="text-muted">No shows assigned.</p>
+      <p class="text-muted">No shows yet.</p>
+      <BaseButton variant="primary" @click="showCreateModal = true">+ New Show</BaseButton>
     </div>
 
     <div class="show-cards">
@@ -105,10 +145,92 @@ function showTypeBadge(type: string): string {
         </div>
       </button>
     </div>
+
+    <!-- Full schedule (read-only) -->
+    <section class="all-shows">
+      <h2 class="all-shows-title">All Shows</h2>
+      <p class="all-shows-subtitle">The full schedule, including other hosts' shows.</p>
+
+      <div v-if="allShowsError" class="all-shows-error">{{ allShowsError }}</div>
+      <div v-else-if="allShows.length === 0" class="text-muted">No shows scheduled.</div>
+
+      <div v-else class="show-cards">
+        <button v-for="s in allShows" :key="s.id" class="show-card" @click="openDetail(s)">
+          <div class="show-card-header">
+            <span class="show-card-type">{{ showTypeBadge(s.show_type) }}</span>
+            <span :class="['show-card-days', daysClass(s.date)]">{{ daysLabel(s.date) }}</span>
+          </div>
+          <h3 class="show-card-title">{{ s.title }}</h3>
+          <div class="show-card-date">{{ fmtDate(s.date) }}</div>
+          <div v-if="s.start_time" class="show-card-time">
+            {{ s.start_time }}<template v-if="s.end_time"> – {{ s.end_time }}</template>
+          </div>
+          <div v-if="s.host_username" class="show-card-host">Host: {{ s.host_username }}</div>
+          <div v-if="s.artists.length > 0" class="show-card-artists">
+            <span v-for="artist in s.artists" :key="artist.id" class="artist-chip">
+              {{ artist.name }}
+            </span>
+          </div>
+        </button>
+      </div>
+    </section>
+
+    <ShowCreateModal
+      :open="showCreateModal"
+      @close="showCreateModal = false"
+      @created="onShowCreated"
+    />
+
+    <!-- Read-only show detail -->
+    <BaseModal :open="!!detailShow" :title="detailShow?.title" @close="detailShow = null">
+      <div v-if="detailShow" class="detail">
+        <div class="detail-row">
+          <span class="detail-label">Type</span>
+          <span>{{ showTypeBadge(detailShow.show_type) }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Date</span>
+          <span>{{ fmtDate(detailShow.date) }}</span>
+        </div>
+        <div v-if="detailShow.start_time" class="detail-row">
+          <span class="detail-label">Time</span>
+          <span>
+            {{ detailShow.start_time }}<template v-if="detailShow.end_time"> – {{ detailShow.end_time }}</template>
+          </span>
+        </div>
+        <div v-if="detailShow.host_username" class="detail-row">
+          <span class="detail-label">Host</span>
+          <span>{{ detailShow.host_username }}</span>
+        </div>
+        <div v-if="detailShow.artists.length > 0" class="detail-row">
+          <span class="detail-label">Artists</span>
+          <div class="show-card-artists">
+            <span v-for="artist in detailShow.artists" :key="artist.id" class="artist-chip">
+              {{ artist.name }}
+            </span>
+          </div>
+        </div>
+        <div v-if="detailShow.description" class="detail-row detail-description">
+          <span class="detail-label">Description</span>
+          <p>{{ detailShow.description }}</p>
+        </div>
+      </div>
+      <template #footer>
+        <BaseButton variant="ghost" @click="detailShow = null">Close</BaseButton>
+      </template>
+    </BaseModal>
   </div>
 </template>
 
 <style scoped>
+.flow-select-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-xl);
+}
+
 .flow-select-title {
   font-size: var(--font-size-3xl);
   font-weight: var(--font-weight-bold);
@@ -118,12 +240,16 @@ function showTypeBadge(type: string): string {
 
 .flow-select-subtitle {
   color: var(--color-text-muted);
-  margin: 0 0 var(--spacing-xl);
+  margin: 0;
 }
 
 .flow-select-empty {
   text-align: center;
   padding: var(--spacing-2xl);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-lg);
 }
 
 .show-cards {
@@ -243,5 +369,70 @@ function showTypeBadge(type: string): string {
 .status-live {
   color: #ef4444;
   font-weight: var(--font-weight-bold);
+}
+
+/* All Shows (read-only overview) */
+.all-shows {
+  margin-top: var(--spacing-2xl);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--spacing-xl);
+}
+
+.all-shows-title {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+  margin: 0 0 var(--spacing-xs);
+}
+
+.all-shows-subtitle {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--spacing-lg);
+}
+
+.all-shows-error {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+}
+
+.show-card-host {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+/* Read-only detail modal */
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.detail-row {
+  display: flex;
+  gap: var(--spacing-md);
+  align-items: baseline;
+}
+
+.detail-label {
+  flex: 0 0 90px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.detail-description {
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.detail-description p {
+  margin: 0;
+  line-height: var(--line-height-relaxed);
+}
+
+.detail .show-card-artists {
+  margin-top: 0;
 }
 </style>

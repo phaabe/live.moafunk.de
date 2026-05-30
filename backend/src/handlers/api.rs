@@ -2026,6 +2026,82 @@ pub struct ShowsListResponse {
     artists: Vec<ArtistBrief>,
 }
 
+/// Read-only schedule entry returned to any authenticated user (hosts included).
+#[derive(Debug, Serialize)]
+pub struct ShowOverviewItem {
+    id: i64,
+    title: String,
+    date: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    description: Option<String>,
+    status: String,
+    show_type: String,
+    /// Username of the assigned host (external/brunchtime shows), if any.
+    host_username: Option<String>,
+    artists: Vec<ArtistBrief>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ShowsOverviewResponse {
+    shows: Vec<ShowOverviewItem>,
+}
+
+/// GET /api/shows-overview — read-only list of **all** shows for any authenticated
+/// user. Lets hosts see the full schedule (including other users' shows) without
+/// the admin-only assignment data exposed by [`api_shows_list`].
+pub async fn api_shows_overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let token = auth::get_session_from_headers(&headers);
+    auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    let shows: Vec<models::Show> =
+        sqlx::query_as("SELECT * FROM shows ORDER BY date DESC, id DESC")
+            .fetch_all(&state.db)
+            .await?;
+
+    let mut items = Vec::new();
+    for show in shows {
+        let artists: Vec<ArtistBrief> = sqlx::query_as(
+            "SELECT a.id, a.name FROM artists a \
+             INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
+             WHERE asa.show_id = ? \
+             ORDER BY asa.sort_order, a.name",
+        )
+        .bind(show.id)
+        .fetch_all(&state.db)
+        .await?;
+
+        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
+            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+                .bind(hid)
+                .fetch_optional(&state.db)
+                .await?
+        } else {
+            None
+        };
+
+        items.push(ShowOverviewItem {
+            id: show.id,
+            title: show.title,
+            date: show.date,
+            start_time: show.start_time,
+            end_time: show.end_time,
+            description: show.description,
+            status: show.status,
+            show_type: show.show_type,
+            host_username,
+            artists,
+        });
+    }
+
+    Ok(Json(ShowsOverviewResponse { shows: items }))
+}
+
 pub async fn api_shows_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2590,35 +2666,57 @@ pub struct CreateShowRequest {
     date: String,
     description: Option<String>,
     show_type: Option<String>,
-    start_time: String,
-    end_time: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
 }
+
+/// Default show type for host-created shows. Hosts can't pick a type, and host
+/// assignment is reserved for non-UNHEARD shows (see `api_show_assign_host`).
+const HOST_DEFAULT_SHOW_TYPE: &str = "external";
 
 pub async fn api_create_show(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(req): Json<CreateShowRequest>,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    let user = require_show_creator(&state, &headers).await?;
+    let is_admin = user.role_enum().can_access_admin();
 
-    // Validate show_type if provided
-    let show_type = req.show_type.as_deref().unwrap_or("unheard");
-    if !matches!(show_type, "unheard" | "brunchtime" | "external") {
-        return Err(AppError::BadRequest(format!(
-            "Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'",
-            show_type
-        )));
-    }
+    // Hosts get a constrained show: forced type, self-assigned, no description /
+    // end time. Admins get full control over every field.
+    let (show_type, description, end_time, host_user_id) = if is_admin {
+        let show_type = req.show_type.as_deref().unwrap_or("unheard");
+        if !matches!(show_type, "unheard" | "brunchtime" | "external") {
+            return Err(AppError::BadRequest(format!(
+                "Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'",
+                show_type
+            )));
+        }
+        (
+            show_type.to_string(),
+            req.description.clone(),
+            req.end_time.clone(),
+            None::<i64>,
+        )
+    } else {
+        (
+            HOST_DEFAULT_SHOW_TYPE.to_string(),
+            None,
+            None,
+            Some(user.id),
+        )
+    };
 
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time) VALUES (?, ?, ?, 'scheduled', ?, ?, ?)",
+        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
-    .bind(&req.description)
-    .bind(show_type)
+    .bind(&description)
+    .bind(&show_type)
     .bind(&req.start_time)
-    .bind(&req.end_time)
+    .bind(&end_time)
+    .bind(host_user_id)
     .execute(&state.db)
     .await?;
 
@@ -2645,11 +2743,12 @@ pub async fn api_create_show(
             "id": show_id,
             "title": req.title,
             "date": req.date,
-            "description": req.description,
+            "description": description,
             "status": "scheduled",
             "show_type": show_type,
             "start_time": req.start_time,
-            "end_time": req.end_time,
+            "end_time": end_time,
+            "host_user_id": host_user_id,
             "cover_url": cover_url,
             "cover_generated_at": cover_generated_at,
         })),
@@ -4827,6 +4926,28 @@ pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result
 
     if !user.role_enum().can_access_admin() {
         return Err(AppError::Forbidden("Admin access required".to_string()));
+    }
+
+    Ok(user)
+}
+
+/// Require an authenticated user allowed to create shows (host or admin).
+///
+/// Unlike [`require_admin`], hosts pass this check — they create a constrained,
+/// self-assigned show (see [`api_create_show`]).
+pub async fn require_show_creator(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<models::User> {
+    let token = auth::get_session_from_headers(headers);
+    let user = auth::get_current_user(state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    if !user.role_enum().can_create_show() {
+        return Err(AppError::Forbidden(
+            "Host or admin access required to create shows".to_string(),
+        ));
     }
 
     Ok(user)

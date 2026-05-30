@@ -398,6 +398,20 @@ export interface Show {
   artists: { id: number; name: string }[];
 }
 
+/** Read-only schedule entry returned by GET /api/shows-overview. */
+export interface ShowOverviewItem {
+  id: number;
+  title: string;
+  date: string;
+  start_time?: string;
+  end_time?: string;
+  description?: string;
+  status: string;
+  show_type: string;
+  host_username?: string;
+  artists: { id: number; name: string }[];
+}
+
 export interface AssignedArtist {
   id: number;
   name: string;
@@ -450,6 +464,9 @@ export interface ShowDetail {
 
 export const showsApi = {
   list: () => api.get<{ shows: Show[]; artists: Artist[] }>('/api/shows'),
+
+  /** Read-only list of all shows (incl. other users') for any authenticated user. */
+  overview: () => api.get<{ shows: ShowOverviewItem[] }>('/api/shows-overview'),
 
   /** List all shows assigned to the authenticated user (host or artist) */
   myShows: () => api.get<{ shows: Show[] }>('/api/my-shows'),
