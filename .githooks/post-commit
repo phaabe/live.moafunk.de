@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Git-native post-commit reindex. Keeps the GitNexus index fresh for commits made
+# OUTSIDE Claude Code too. Activate per-clone with:  git config core.hooksPath .githooks
+# (done by /workflow.setup and `make setup`). Deduped against the Claude PostToolUse
+# hook via the helper's lockfile; uses --skip-agents-md + self-heal → tree stays clean.
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -z "$REPO_ROOT" ] && exit 0
+HELPER="$REPO_ROOT/.claude/hooks/scripts/gitnexus-reindex.sh"
+[ -x "$HELPER" ] || exit 0
+[ -d "$REPO_ROOT/.gitnexus" ] || exit 0
+
+( GN_REPO_ROOT="$REPO_ROOT" bash "$HELPER" "git-post-commit" ) </dev/null >/dev/null 2>&1 &
+disown 2>/dev/null || true
+exit 0

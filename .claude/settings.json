@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "120000",
+    "BASH_MAX_TIMEOUT_MS": "600000",
+    "MCP_TIMEOUT": "30000"
+  },
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git commit:*)",
+      "Bash(git diff:*)",
+      "Bash(git fetch:*)",
+      "Bash(git log:*)",
+      "Bash(git pull:*)",
+      "Bash(git remote:*)",
+      "Bash(git restore:*)",
+      "Bash(git show:*)",
+      "Bash(git stash:*)",
+      "Bash(git status:*)",
+      "Bash(git switch:*)",
+      "Bash(git tag:*)",
+      "Bash(git worktree:*)",
+      "Bash(git config core.hooksPath:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr status:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(gh pr comment:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh label:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh auth status)",
+      "Bash(npm run:*)",
+      "Bash(npm ci)",
+      "Bash(npm test:*)",
+      "Bash(npm outdated)",
+      "Bash(npm audit)",
+      "Bash(npx gitnexus:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx prettier:*)",
+      "Bash(eslint:*)",
+      "Bash(prettier:*)",
+      "Bash(vitest:*)",
+      "Bash(tsc:*)",
+      "Bash(tsx:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo run:*)",
+      "Bash(rustfmt:*)",
+      "Bash(node:*)",
+      "Bash(uv:*)",
+      "Bash(python3:*)",
+      "Bash(rg:*)",
+      "Bash(fd:*)",
+      "Bash(jq:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(find:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(tr:*)",
+      "Bash(cut:*)",
+      "Bash(diff:*)",
+      "Bash(tree:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(pwd)",
+      "Bash(date)",
+      "Bash(which:*)",
+      "Bash(test:*)",
+      "Bash(stat:*)",
+      "Bash(chmod:*)",
+      "Bash(mkdir:*)",
+      "Bash(curl -s http://localhost:*)",
+      "Bash(curl -sI http://localhost:*)",
+      "mcp__gitnexus__context",
+      "mcp__gitnexus__query",
+      "mcp__gitnexus__impact",
+      "mcp__gitnexus__api_impact",
+      "mcp__gitnexus__detect_changes",
+      "mcp__gitnexus__list_repos",
+      "mcp__gitnexus__route_map",
+      "mcp__gitnexus__tool_map",
+      "mcp__gitnexus__cypher",
+      "mcp__gitnexus__shape_check"
+    ],
+    "deny": [
+      "Bash(curl * | bash)",
+      "Bash(curl * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(wget * | sh)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf $HOME)",
+      "Bash(git push --force origin main)",
+      "Bash(git push --force-with-lease origin main)",
+      "Bash(git push -f origin main)",
+      "Bash(mkfs.*)",
+      "Bash(dd if=* of=/dev/*)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.prod*)",
+      "Read(backend/.env)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Edit(**/.env)",
+      "Edit(backend/.env)",
+      "Edit(**/*.pem)",
+      "Edit(**/*.key)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(git rebase:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(npm install:*)",
+      "Bash(npm i:*)",
+      "Bash(cargo install:*)",
+      "Bash(cargo add:*)",
+      "Bash(docker system prune:*)",
+      "mcp__gitnexus__rename"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/gitnexus/gitnexus-hook.cjs\"",
+            "timeout": 10,
+            "statusMessage": "Enriching with GitNexus graph context..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/block-dangerous.sh\"",
+            "timeout": 5,
+            "statusMessage": "Safety: scanning bash command..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/branch-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Branch-guard: checking protected branches..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/merge-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Merge-guard: PR-only merging..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/gitnexus/gitnexus-hook.cjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking GitNexus index freshness..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/gitnexus-reindex-after-commit.sh\"",
+            "timeout": 10,
+            "statusMessage": "GitNexus: reindex after commit..."
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/auto-format.sh\"",
+            "timeout": 30,
+            "statusMessage": "Auto-formatting edited file..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/auto-lint.sh\"",
+            "timeout": 60,
+            "statusMessage": "Linting edited file..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/gitnexus-mark-stale.sh\"",
+            "timeout": 5,
+            "statusMessage": "GitNexus: scheduling reindex..."
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/session-start.sh\"",
+            "timeout": 5,
+            "statusMessage": "Loading session context..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/gitnexus-session-prep.sh\"",
+            "timeout": 5,
+            "statusMessage": "GitNexus: ensuring index..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/topic-switch-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Checking for topic switch / uncommitted work..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/gitnexus-consult-first.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

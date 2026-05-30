@@ -1,0 +1,58 @@
+name: "✨ Feature / Task"
+description: A new capability or unit of work
+title: "feat(<scope>): <short imperative summary>"
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: type
+    attributes:
+      label: Component
+      description: Which part of the system does this touch?
+      options:
+        - "type::backend (Rust/Axum backend)"
+        - "type::admin_dashboard (Vue admin SPA)"
+    validations:
+      required: true
+  - type: dropdown
+    id: project
+    attributes:
+      label: Project / area
+      description: The most specific functional area.
+      options:
+        - "project::Stream"
+        - "project::recording"
+        - "project::Instagram"
+        - "project::Telegram"
+        - "project::Soundcloud"
+        - "project::ImgGen"
+        - "project::Upload"
+        - "project::Backup"
+        - "project::Infrastructure"
+        - "project::ExternalShows"
+        - "project::Ai"
+        - "project::unheard-artist-form"
+        - "project::UNHEARD"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why does this matter? Where did it come up?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable, checkable outcomes.
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Constraints, links, related issues. (Tip: paste a GitNexus scope/impact summary.)
