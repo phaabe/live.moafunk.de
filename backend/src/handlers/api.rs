@@ -2590,35 +2590,57 @@ pub struct CreateShowRequest {
     date: String,
     description: Option<String>,
     show_type: Option<String>,
-    start_time: String,
-    end_time: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
 }
+
+/// Default show type for host-created shows. Hosts can't pick a type, and host
+/// assignment is reserved for non-UNHEARD shows (see `api_show_assign_host`).
+const HOST_DEFAULT_SHOW_TYPE: &str = "external";
 
 pub async fn api_create_show(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(req): Json<CreateShowRequest>,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    let user = require_show_creator(&state, &headers).await?;
+    let is_admin = user.role_enum().can_access_admin();
 
-    // Validate show_type if provided
-    let show_type = req.show_type.as_deref().unwrap_or("unheard");
-    if !matches!(show_type, "unheard" | "brunchtime" | "external") {
-        return Err(AppError::BadRequest(format!(
-            "Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'",
-            show_type
-        )));
-    }
+    // Hosts get a constrained show: forced type, self-assigned, no description /
+    // end time. Admins get full control over every field.
+    let (show_type, description, end_time, host_user_id) = if is_admin {
+        let show_type = req.show_type.as_deref().unwrap_or("unheard");
+        if !matches!(show_type, "unheard" | "brunchtime" | "external") {
+            return Err(AppError::BadRequest(format!(
+                "Invalid show_type: '{}'. Must be 'unheard', 'brunchtime', or 'external'",
+                show_type
+            )));
+        }
+        (
+            show_type.to_string(),
+            req.description.clone(),
+            req.end_time.clone(),
+            None::<i64>,
+        )
+    } else {
+        (
+            HOST_DEFAULT_SHOW_TYPE.to_string(),
+            None,
+            None,
+            Some(user.id),
+        )
+    };
 
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time) VALUES (?, ?, ?, 'scheduled', ?, ?, ?)",
+        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
-    .bind(&req.description)
-    .bind(show_type)
+    .bind(&description)
+    .bind(&show_type)
     .bind(&req.start_time)
-    .bind(&req.end_time)
+    .bind(&end_time)
+    .bind(host_user_id)
     .execute(&state.db)
     .await?;
 
@@ -2645,11 +2667,12 @@ pub async fn api_create_show(
             "id": show_id,
             "title": req.title,
             "date": req.date,
-            "description": req.description,
+            "description": description,
             "status": "scheduled",
             "show_type": show_type,
             "start_time": req.start_time,
-            "end_time": req.end_time,
+            "end_time": end_time,
+            "host_user_id": host_user_id,
             "cover_url": cover_url,
             "cover_generated_at": cover_generated_at,
         })),
@@ -4827,6 +4850,28 @@ pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result
 
     if !user.role_enum().can_access_admin() {
         return Err(AppError::Forbidden("Admin access required".to_string()));
+    }
+
+    Ok(user)
+}
+
+/// Require an authenticated user allowed to create shows (host or admin).
+///
+/// Unlike [`require_admin`], hosts pass this check — they create a constrained,
+/// self-assigned show (see [`api_create_show`]).
+pub async fn require_show_creator(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<models::User> {
+    let token = auth::get_session_from_headers(headers);
+    let user = auth::get_current_user(state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    if !user.role_enum().can_create_show() {
+        return Err(AppError::Forbidden(
+            "Host or admin access required to create shows".to_string(),
+        ));
     }
 
     Ok(user)

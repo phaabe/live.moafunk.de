@@ -1,16 +1,40 @@
 <script setup lang="ts">
+import { ref } from 'vue';
+import { useRouter } from 'vue-router';
+import { useHostFlow } from '@admin/composables';
+import { BaseButton } from '@shared/components';
+import ShowCreateModal from '@admin/components/ShowCreateModal.vue';
+
+const router = useRouter();
+const flow = useHostFlow();
+
+const showCreateModal = ref(false);
+
+/** Reset the cached flow so the new show is picked up, then re-enter /stream. */
+async function onShowCreated() {
+  showCreateModal.value = false;
+  flow.reset();
+  await router.push('/stream');
+}
 </script>
 
 <template>
   <div class="flow-not-assigned">
     <div class="not-assigned-content">
       <img src="/assets/brand/moafunk.png" alt="Moafunk" class="not-assigned-logo" />
-      <h1 class="not-assigned-title">Not Assigned</h1>
+      <h1 class="not-assigned-title">No Shows Yet</h1>
       <p class="not-assigned-message">
         You are not currently assigned to a show.<br />
-        Please wait for your assignment — we'll let you know when it's time.
+        Create your own to start streaming.
       </p>
+      <BaseButton variant="primary" class="not-assigned-cta" @click="showCreateModal = true">+ New Show</BaseButton>
     </div>
+
+    <ShowCreateModal
+      :open="showCreateModal"
+      @close="showCreateModal = false"
+      @created="onShowCreated"
+    />
   </div>
 </template>
 
@@ -45,5 +69,9 @@
   color: var(--color-text-muted);
   line-height: var(--line-height-relaxed);
   margin: 0;
+}
+
+.not-assigned-cta {
+  margin-top: var(--spacing-xl);
 }
 </style>

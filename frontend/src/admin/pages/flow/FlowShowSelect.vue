@@ -1,14 +1,26 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow } from '@admin/composables';
-import type { MyShowInfo } from '@admin/api';
+import type { MyShowInfo, Show } from '@admin/api';
+import { BaseButton } from '@shared/components';
+import ShowCreateModal from '@admin/components/ShowCreateModal.vue';
 
 const router = useRouter();
 const flow = useHostFlow();
 
 // Filter out shows that have already ended
 const shows = computed(() => flow.shows.value.filter(s => !flow.isShowEnded(s)));
+
+const showCreateModal = ref(false);
+
+/** After a host creates a show, reload the flow and jump straight into it. */
+async function onShowCreated(show: Show) {
+  showCreateModal.value = false;
+  await flow.fetchMyShow();
+  const created = flow.shows.value.find((s) => s.id === show.id);
+  if (created) pickShow(created);
+}
 
 /** Format a date string into a readable date */
 function fmtDate(dateStr: string): string {
@@ -71,11 +83,17 @@ function showTypeBadge(type: string): string {
 
 <template>
   <div class="flow-select">
-    <h1 class="flow-select-title">My Shows</h1>
-    <p class="flow-select-subtitle">Select a show to prepare for streaming.</p>
+    <div class="flow-select-header">
+      <div>
+        <h1 class="flow-select-title">My Shows</h1>
+        <p class="flow-select-subtitle">Select a show to prepare for streaming.</p>
+      </div>
+      <BaseButton variant="primary" @click="showCreateModal = true">+ New Show</BaseButton>
+    </div>
 
     <div v-if="shows.length === 0" class="flow-select-empty">
-      <p class="text-muted">No shows assigned.</p>
+      <p class="text-muted">No shows yet.</p>
+      <BaseButton variant="primary" @click="showCreateModal = true">+ New Show</BaseButton>
     </div>
 
     <div class="show-cards">
@@ -105,10 +123,24 @@ function showTypeBadge(type: string): string {
         </div>
       </button>
     </div>
+
+    <ShowCreateModal
+      :open="showCreateModal"
+      @close="showCreateModal = false"
+      @created="onShowCreated"
+    />
   </div>
 </template>
 
 <style scoped>
+.flow-select-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-xl);
+}
+
 .flow-select-title {
   font-size: var(--font-size-3xl);
   font-weight: var(--font-weight-bold);
@@ -118,12 +150,16 @@ function showTypeBadge(type: string): string {
 
 .flow-select-subtitle {
   color: var(--color-text-muted);
-  margin: 0 0 var(--spacing-xl);
+  margin: 0;
 }
 
 .flow-select-empty {
   text-align: center;
   padding: var(--spacing-2xl);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-lg);
 }
 
 .show-cards {

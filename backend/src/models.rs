@@ -160,6 +160,18 @@ impl UserRole {
             UserRole::Superadmin | UserRole::Admin | UserRole::Host
         )
     }
+
+    /// Check if this role may create shows.
+    ///
+    /// Hosts may create shows too, but get a constrained form: the show is
+    /// self-assigned (`host_user_id`) with a forced show type and no
+    /// description/end time. Admins get the full form.
+    pub fn can_create_show(&self) -> bool {
+        matches!(
+            self,
+            UserRole::Superadmin | UserRole::Admin | UserRole::Host
+        )
+    }
 }
 
 impl std::fmt::Display for UserRole {
@@ -233,4 +245,32 @@ pub struct OverlayPreset {
     pub updated_at: String,
     /// 'artist' or 'show'
     pub preset_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_parsing_round_trips() {
+        for role in [UserRole::Superadmin, UserRole::Admin, UserRole::Host] {
+            assert_eq!(UserRole::from_str(role.as_str()), Some(role.clone()));
+        }
+        assert_eq!(UserRole::from_str("ADMIN"), Some(UserRole::Admin));
+        assert_eq!(UserRole::from_str("nope"), None);
+    }
+
+    #[test]
+    fn only_admins_can_access_admin() {
+        assert!(UserRole::Superadmin.can_access_admin());
+        assert!(UserRole::Admin.can_access_admin());
+        assert!(!UserRole::Host.can_access_admin());
+    }
+
+    #[test]
+    fn hosts_and_admins_can_create_shows() {
+        assert!(UserRole::Superadmin.can_create_show());
+        assert!(UserRole::Admin.can_create_show());
+        assert!(UserRole::Host.can_create_show());
+    }
 }
