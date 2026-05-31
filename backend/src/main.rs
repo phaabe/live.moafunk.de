@@ -316,6 +316,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/auth/change-password",
             post(handlers::api::api_change_password),
         )
+        .route(
+            "/api/auth/set-initial-password",
+            post(handlers::api::api_set_initial_password),
+        )
         // Artist flow — my show
         .route("/api/my-show", get(handlers::api::api_my_show))
         .route("/api/my-shows", get(handlers::api::api_my_shows_list))

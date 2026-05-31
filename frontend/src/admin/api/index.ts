@@ -74,6 +74,7 @@ export interface User {
   artist_id?: number;
   artist_name?: string;
   has_show?: boolean;
+  must_change_password?: boolean;
 }
 
 export interface LoginResponse {
@@ -88,6 +89,11 @@ export const authApi = {
   logout: () => api.post<void>('/api/auth/logout'),
 
   me: () => api.get<User>('/api/auth/me'),
+
+  // First-login password set: no current password required (session proves
+  // identity); only valid while the account has must_change_password set.
+  setInitialPassword: (newPassword: string) =>
+    api.post<void>('/api/auth/set-initial-password', { new_password: newPassword }),
 };
 
 // Overlay types

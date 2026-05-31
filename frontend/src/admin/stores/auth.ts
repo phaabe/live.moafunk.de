@@ -56,6 +56,12 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null;
   }
 
+  // Clear the forced-change flag locally after the user sets their own password,
+  // so the router guard releases without requiring a full reload.
+  function markPasswordChanged(): void {
+    if (user.value) user.value.must_change_password = false;
+  }
+
   return {
     user,
     initialized,
@@ -66,5 +72,6 @@ export const useAuthStore = defineStore('auth', () => {
     logout,
     checkAuth,
     clearError,
+    markPasswordChanged,
   };
 });

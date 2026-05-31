@@ -188,6 +188,9 @@ pub struct User {
     pub role: String,
     pub created_by: Option<i64>,
     pub expires_at: Option<String>,
+    /// True while the user must replace an admin-generated bootstrap password
+    /// with one they chose (set on create/reset, cleared on change).
+    pub must_change_password: bool,
     pub created_at: String,
     pub updated_at: Option<String>,
 }

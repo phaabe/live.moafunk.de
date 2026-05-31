@@ -204,6 +204,16 @@ router.beforeEach(async (to, _from, next) => {
     return;
   }
 
+  // Force a self-chosen password before anything else is reachable.
+  if (
+    authStore.isAuthenticated &&
+    authStore.user?.must_change_password &&
+    to.name !== 'change-password'
+  ) {
+    next({ name: 'change-password' });
+    return;
+  }
+
   if (requiredRoles && authStore.user && !requiredRoles.includes(authStore.user.role)) {
     next({ name: 'stream' }); // Redirect to stream if insufficient role
     return;
