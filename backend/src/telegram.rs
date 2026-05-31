@@ -1051,7 +1051,11 @@ async fn handle_aig_pub(
         .ok_or_else(|| format!("Artist {artist_id} not found"))?;
 
     // Remove buttons and show progress
-    let token = state.config.telegram_bot_token.as_deref().unwrap_or_default();
+    let token = state
+        .config
+        .telegram_bot_token
+        .as_deref()
+        .unwrap_or_default();
     let chat_id = state.config.telegram_admin_chat_id.unwrap_or_default();
 
     if let Some(preview_msg_id) = artist.telegram_preview_message_id {
@@ -1061,7 +1065,12 @@ async fn handle_aig_pub(
             1024,
         );
         let _ = telegram_notify::edit_message_caption_raw(
-            token, chat_id, preview_msg_id, &progress_caption, "", None,
+            token,
+            chat_id,
+            preview_msg_id,
+            &progress_caption,
+            "",
+            None,
         )
         .await;
     }
@@ -1088,7 +1097,12 @@ async fn handle_aig_pub(
                     1024,
                 );
                 let _ = telegram_notify::edit_message_caption_raw(
-                    token, chat_id, preview_msg_id, &success_caption, "", None,
+                    token,
+                    chat_id,
+                    preview_msg_id,
+                    &success_caption,
+                    "",
+                    None,
                 )
                 .await;
             }
@@ -1109,7 +1123,12 @@ async fn handle_aig_pub(
                     artist.track2_video_key.is_some(),
                 );
                 let _ = telegram_notify::edit_message_caption_raw(
-                    token, chat_id, preview_msg_id, &error_caption, "", Some(&markup),
+                    token,
+                    chat_id,
+                    preview_msg_id,
+                    &error_caption,
+                    "",
+                    Some(&markup),
                 )
                 .await;
             }
@@ -1119,17 +1138,20 @@ async fn handle_aig_pub(
             // Restore buttons with error
             if let Some(preview_msg_id) = artist.telegram_preview_message_id {
                 let caption = artist.instagram_caption.as_deref().unwrap_or("");
-                let error_caption = telegram_notify::truncate_caption(
-                    &format!("{caption}\n\n❌ Error: {e}"),
-                    1024,
-                );
+                let error_caption =
+                    telegram_notify::truncate_caption(&format!("{caption}\n\n❌ Error: {e}"), 1024);
                 let markup = telegram_notify::build_artist_preview_keyboard(
                     artist_id,
                     artist.track1_video_key.is_some(),
                     artist.track2_video_key.is_some(),
                 );
                 let _ = telegram_notify::edit_message_caption_raw(
-                    token, chat_id, preview_msg_id, &error_caption, "", Some(&markup),
+                    token,
+                    chat_id,
+                    preview_msg_id,
+                    &error_caption,
+                    "",
+                    Some(&markup),
                 )
                 .await;
             }
@@ -1445,7 +1467,9 @@ async fn handle_aig_sort(
         .await;
     }
 
-    bot.answer_callback_query(&q.id).text("✅ Reordered").await?;
+    bot.answer_callback_query(&q.id)
+        .text("✅ Reordered")
+        .await?;
     Ok(())
 }
 
@@ -1464,7 +1488,11 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
 
     let session = match session {
         Some(s) => {
-            tracing::info!("Edit session found for chat {chat_id}: field={:?}, artist_id={:?}", s.field, s.artist_id);
+            tracing::info!(
+                "Edit session found for chat {chat_id}: field={:?}, artist_id={:?}",
+                s.field,
+                s.artist_id
+            );
             s
         }
         None => return Ok(()), // No active session — silently ignore
@@ -1498,12 +1526,11 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                 .await;
 
                 // Rebuild keyboard from artist
-                let artist: models::Artist =
-                    sqlx::query_as("SELECT * FROM artists WHERE id = ?")
-                        .bind(artist_id)
-                        .fetch_optional(&state.db)
-                        .await?
-                        .ok_or_else(|| format!("Artist {artist_id} not found"))?;
+                let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+                    .bind(artist_id)
+                    .fetch_optional(&state.db)
+                    .await?
+                    .ok_or_else(|| format!("Artist {artist_id} not found"))?;
 
                 let markup = telegram_notify::build_artist_preview_keyboard(
                     artist_id,
@@ -1592,7 +1619,9 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                     .put_object()
                     .bucket(&state.config.r2_bucket_name)
                     .key(&key)
-                    .body(aws_sdk_s3::primitives::ByteStream::from(photo_bytes.clone()))
+                    .body(aws_sdk_s3::primitives::ByteStream::from(
+                        photo_bytes.clone(),
+                    ))
                     .content_type("image/jpeg")
                     .send()
                     .await
@@ -1607,12 +1636,11 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                 .await;
 
                 // Rebuild keyboard
-                let artist: models::Artist =
-                    sqlx::query_as("SELECT * FROM artists WHERE id = ?")
-                        .bind(artist_id)
-                        .fetch_optional(&state.db)
-                        .await?
-                        .ok_or_else(|| format!("Artist {artist_id} not found"))?;
+                let artist: models::Artist = sqlx::query_as("SELECT * FROM artists WHERE id = ?")
+                    .bind(artist_id)
+                    .fetch_optional(&state.db)
+                    .await?
+                    .ok_or_else(|| format!("Artist {artist_id} not found"))?;
 
                 let markup = telegram_notify::build_artist_preview_keyboard(
                     artist_id,
@@ -1687,14 +1715,15 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
             req.await?;
         }
         models::TelegramEditField::Timecode => {
-            tracing::info!("Timecode edit session active for chat {chat_id}, artist_id={:?}", session.artist_id);
+            tracing::info!(
+                "Timecode edit session active for chat {chat_id}, artist_id={:?}",
+                session.artist_id
+            );
             let input = match msg.text() {
                 Some(text) => text.to_string(),
                 None => {
-                    let mut req = bot.send_message(
-                        msg.chat.id,
-                        "❌ Please send a timecode (e.g. 1:30 or 90).",
-                    );
+                    let mut req = bot
+                        .send_message(msg.chat.id, "❌ Please send a timecode (e.g. 1:30 or 90).");
                     if let Some(tid) = state.config.telegram_topic_id {
                         req = req.message_thread_id(ThreadId(MessageId(tid)));
                     }
@@ -1710,10 +1739,7 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
                 }
                 Err(err_msg) => {
                     // Re-insert session so user can try again
-                    let mut req = bot.send_message(
-                        msg.chat.id,
-                        format!("❌ {err_msg}"),
-                    );
+                    let mut req = bot.send_message(msg.chat.id, format!("❌ {err_msg}"));
                     if let Some(tid) = state.config.telegram_topic_id {
                         req = req.message_thread_id(ThreadId(MessageId(tid)));
                     }

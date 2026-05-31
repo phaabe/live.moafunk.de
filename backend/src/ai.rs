@@ -382,7 +382,8 @@ STRICT rules:\n\
 This is a hard limit — shorten if needed. Prioritise being concise over exhaustive.\n\
 - Output ONLY the show description, nothing else.";
 
-const NON_UNHEARD_BIO_PROMPT: &str = "You write short, engaging show descriptions for Moafunk Radio events.\n\n\
+const NON_UNHEARD_BIO_PROMPT: &str =
+    "You write short, engaging show descriptions for Moafunk Radio events.\n\n\
 You will be given the show title, show type (e.g., 'brunchtime' or 'external'), \
 and a description that provides context about the event.\n\n\
 Write a compelling show description that:\n\
@@ -400,10 +401,7 @@ This is a hard limit — shorten if needed. Prioritise being concise over exhaus
 - Output ONLY the show description, nothing else.";
 
 /// Generate a show bio from description text only (for non-UNHEARD shows).
-pub async fn generate_show_bio_from_text(
-    config: &Config,
-    user_content: &str,
-) -> Result<String> {
+pub async fn generate_show_bio_from_text(config: &Config, user_content: &str) -> Result<String> {
     let api_key = config
         .openai_api_key
         .as_ref()
@@ -411,7 +409,10 @@ pub async fn generate_show_bio_from_text(
 
     tracing::info!("Calling OpenAI API for non-UNHEARD show bio generation");
     let bio = call_openai(api_key, NON_UNHEARD_BIO_PROMPT, user_content, 0.7, 300).await?;
-    tracing::info!("Non-UNHEARD show bio generated successfully ({} chars)", bio.len());
+    tracing::info!(
+        "Non-UNHEARD show bio generated successfully ({} chars)",
+        bio.len()
+    );
     Ok(bio)
 }
 
@@ -490,11 +491,7 @@ pub async fn generate_and_store_show_bio(
             show.title, show_type, description
         );
 
-        let bio = generate_show_bio_from_text(
-            &state.config,
-            &user_content,
-        )
-        .await?;
+        let bio = generate_show_bio_from_text(&state.config, &user_content).await?;
 
         sqlx::query("UPDATE shows SET ai_bio = ?, updated_at = datetime('now') WHERE id = ?")
             .bind(&bio)
