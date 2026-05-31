@@ -1,11 +1,6 @@
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::HeaderMap, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::{auth, db, telegram_notify, AppError, AppState, Result};
@@ -33,9 +28,7 @@ pub async fn get_notifications(
         .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
 
     if !user.role_enum().can_access_admin() {
-        return Err(AppError::Forbidden(
-            "Admin access required".to_string(),
-        ));
+        return Err(AppError::Forbidden("Admin access required".to_string()));
     }
 
     let enabled = db::is_notifications_enabled(&state.db).await;
@@ -56,9 +49,7 @@ pub async fn set_notifications(
         .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
 
     if !user.role_enum().can_access_admin() {
-        return Err(AppError::Forbidden(
-            "Admin access required".to_string(),
-        ));
+        return Err(AppError::Forbidden("Admin access required".to_string()));
     }
 
     let value = if req.enabled { "true" } else { "false" };

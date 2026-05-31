@@ -86,7 +86,10 @@ impl IntoResponse for AppError {
             }
             AppError::Config(msg) => {
                 tracing::error!("Configuration error: {}", msg);
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Configuration error: {}", msg))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Configuration error: {}", msg),
+                )
             }
             AppError::External(msg) => {
                 tracing::error!("External service error: {}", msg);

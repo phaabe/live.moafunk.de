@@ -74,7 +74,15 @@ pub async fn generate_track_preview_video(
         .map_err(|e| AppError::Internal(format!("Failed to create temp dir: {}", e)))?;
 
     // Ensure cleanup even on error
-    let result = generate_inner(state, artist_image_key, track_key, duration, start_offset_secs, &temp_dir).await;
+    let result = generate_inner(
+        state,
+        artist_image_key,
+        track_key,
+        duration,
+        start_offset_secs,
+        &temp_dir,
+    )
+    .await;
 
     // Clean up temp directory
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;
@@ -136,8 +144,15 @@ pub async fn generate_and_store_artist_videos(state: Arc<AppState>, artist_id: i
             artist_id
         );
 
-        match generate_track_preview_video(&state, &image_key, track_key, "", VIDEO_DURATION_SECS, 0)
-            .await
+        match generate_track_preview_video(
+            &state,
+            &image_key,
+            track_key,
+            "",
+            VIDEO_DURATION_SECS,
+            0,
+        )
+        .await
         {
             Ok(mp4_bytes) => {
                 let video_key = format!("artists/{}/{}_video/preview.mp4", artist_id, label);
@@ -469,16 +484,16 @@ async fn compose_video(
                 // Audio codec
                 "-c:a".to_string(),
                 "aac".to_string(),
-            "-b:a".to_string(),
-            "192k".to_string(),
-            "-ar".to_string(),
-            "44100".to_string(),
-            // Web/Instagram compatibility
-            "-movflags".to_string(),
-            "+faststart".to_string(),
-            // Overwrite
-            "-y".to_string(),
-            output_str.to_string(),
+                "-b:a".to_string(),
+                "192k".to_string(),
+                "-ar".to_string(),
+                "44100".to_string(),
+                // Web/Instagram compatibility
+                "-movflags".to_string(),
+                "+faststart".to_string(),
+                // Overwrite
+                "-y".to_string(),
+                output_str.to_string(),
             ]);
             a
         })

@@ -219,11 +219,32 @@ pub fn generate_artist_pdf(
     lines.push((12, String::new()));
 
     lines.push((14, "Social Media".to_string()));
-    lines.push((12, format!("Instagram: {}", artist.instagram.as_deref().unwrap_or("N/A"))));
-    lines.push((12, format!("SoundCloud: {}", artist.soundcloud.as_deref().unwrap_or("N/A"))));
-    lines.push((12, format!("Bandcamp: {}", artist.bandcamp.as_deref().unwrap_or("N/A"))));
-    lines.push((12, format!("Spotify: {}", artist.spotify.as_deref().unwrap_or("N/A"))));
-    lines.push((12, format!("Other: {}", artist.other_social.as_deref().unwrap_or("N/A"))));
+    lines.push((
+        12,
+        format!(
+            "Instagram: {}",
+            artist.instagram.as_deref().unwrap_or("N/A")
+        ),
+    ));
+    lines.push((
+        12,
+        format!(
+            "SoundCloud: {}",
+            artist.soundcloud.as_deref().unwrap_or("N/A")
+        ),
+    ));
+    lines.push((
+        12,
+        format!("Bandcamp: {}", artist.bandcamp.as_deref().unwrap_or("N/A")),
+    ));
+    lines.push((
+        12,
+        format!("Spotify: {}", artist.spotify.as_deref().unwrap_or("N/A")),
+    ));
+    lines.push((
+        12,
+        format!("Other: {}", artist.other_social.as_deref().unwrap_or("N/A")),
+    ));
     lines.push((12, String::new()));
 
     lines.push((14, "Things to Mention".to_string()));
@@ -276,7 +297,8 @@ pub fn generate_artist_pdf(
         b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj"
             .to_vec(),
     );
-    objects.push(b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj".to_vec());
+    objects
+        .push(b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj".to_vec());
 
     let stream_obj = {
         let mut s = Vec::new();
