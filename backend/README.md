@@ -22,10 +22,14 @@ Rust backend (Axum + SQLx + Tera) for managing UNHEARD artist submissions, shows
 ### 1. Prerequisites
 
 - Rust 1.75+ (install via [rustup](https://rustup.rs/))
-- Docker & Docker Compose (for deployment)
-- Cloudflare R2 bucket
+- [`bws`](https://bitwarden.com/help/secrets-manager-cli/) (Bitwarden Secrets Manager CLI) and `jq` — to pull dev secrets
+- `ffmpeg` on your `PATH` — transcodes uploaded audio to MP3
+- Docker & Docker Compose — only for the container / deploy path
 
-### 2. Cloudflare R2 Setup
+### 2. Cloudflare R2 (manual fallback only)
+
+The standard setup pulls R2 credentials from Bitwarden (next section) — skip this unless you're
+filling `.env` by hand. In that case:
 
 1. Create an R2 bucket in your Cloudflare dashboard
 2. Create an API token with R2 read/write permissions
@@ -41,27 +45,39 @@ Prerequisites: the [`bws` CLI](https://bitwarden.com/help/secrets-manager-cli/) 
 Bitwarden US cloud is assumed; for an EU/self-hosted org set `BWS_SERVER_URL` (env or `.env.bootstrap`).
 
 ```bash
-# 1. A dev machine-account access token (Bitwarden → Secrets Manager → Machine accounts).
-export BWS_ACCESS_TOKEN=<your token>
-#    Or persist it once instead of re-exporting (gitignored; dev-secrets.sh sources it):
-#      cp .env.bootstrap.example .env.bootstrap   # then put your token in it
+cd backend
 
-# 2. Your personal, non-shared values (gitignored). The admin password hash is required;
-#    generate it, then add it to backend/.env.local single-quoted (the hash contains '$'):
+# 1) Bitwarden access token — a Secrets Manager *machine-account* access token
+#    (Bitwarden → Secrets Manager → Machine accounts → <account> → Access tokens → New).
+#    It looks like  0.<uuid>.<secret>:<key>  and can read every secret in the project.
+#    Persist it once (gitignored; dev-secrets.sh sources it automatically):
+cp .env.bootstrap.example .env.bootstrap
+"$EDITOR" .env.bootstrap            # replace the placeholder with your real token
+#    (or, just for this shell:  export BWS_ACCESS_TOKEN='0.…')
+
+# 2) Your own admin login — NOT pulled from Bitwarden; each dev sets their own.
+#    Generate an Argon2 hash, then add it to .env.local (single-quoted; it contains '$'):
 cargo run --bin hash_password -- "your-password"
-#    backend/.env.local:
-#      SUPERADMIN_PASSWORD_HASH='$argon2id$v=19$...'
-#      # optional overrides: DATABASE_URL=..., RUST_LOG=...
+"$EDITOR" .env.local                # SUPERADMIN_PASSWORD_HASH='<the hash>'
+#    .env.local also takes optional overrides:  DATABASE_URL=…   RUST_LOG=…
 
-# 3. Generate backend/.env from Bitwarden (re-run anytime to refresh).
+# 3) Generate backend/.env from Bitwarden (re-run anytime to refresh):
 ./scripts/dev-secrets.sh
 
-# 4. Run the backend.
-cargo run
+# 4) Run (then log in as user `superadmin` with the password from step 2):
+cargo run                           # or: cargo watch -x run   (auto-reload)
 ```
 
-`.env` is generated and gitignored — never edit it by hand (re-run the script instead).
-No Bitwarden token? Fall back to `cp .env.example .env` and fill it in manually.
+`.env` is **generated** and gitignored — never edit it by hand; re-run `./scripts/dev-secrets.sh`.
+`.env.bootstrap` and `.env.local` are gitignored and personal — never commit the token.
+
+**Troubleshooting**
+
+- `400 invalid_client` from the script → wrong/placeholder token, or wrong region. The
+  `.env.bootstrap.example` ships a dummy `0.0000…` token — make sure you actually replaced it.
+- Test the token directly (US cloud): `bws secret list --server-url https://vault.bitwarden.com --access-token '0.…'`.
+  Data on one region + `401` on the other tells you which region; for EU/self-host set `BWS_SERVER_URL`.
+- No Bitwarden access at all? `cp .env.example .env` and fill it in by hand (needs your own R2 bucket — see above).
 
 Required environment variables (see `.env.example` for the full list):
 - `SECRET_KEY`: Random secret for session management (from Bitwarden)
