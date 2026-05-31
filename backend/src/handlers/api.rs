@@ -44,6 +44,7 @@ pub struct UserResponse {
     artist_id: Option<i64>,
     artist_name: Option<String>,
     has_show: bool,
+    must_change_password: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,6 +134,7 @@ pub async fn api_login(
             artist_id,
             artist_name,
             has_show,
+            must_change_password: user.must_change_password,
         },
         redirect_url: redirect_url.to_string(),
     };
@@ -195,6 +197,7 @@ pub async fn api_me(
                 artist_id,
                 artist_name,
                 has_show,
+                must_change_password: u.must_change_password,
             }))
         }
         None => Err(AppError::Unauthorized("Not authenticated".to_string())),
@@ -238,9 +241,53 @@ pub async fn api_change_password(
         ));
     }
 
-    // Hash and update password
+    // Hash and update password, clearing any forced-change flag
     let new_hash = auth::hash_password(&req.new_password)?;
-    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
+        .bind(&new_hash)
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetInitialPasswordRequest {
+    new_password: String,
+}
+
+/// Set a self-chosen password on first login, replacing the admin-generated
+/// bootstrap password. Unlike `api_change_password`, this does not require the
+/// current password — the session proves identity — but it is only usable while
+/// `must_change_password` is set, so it cannot bypass verification afterwards.
+pub async fn api_set_initial_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<SetInitialPasswordRequest>,
+) -> Result<impl IntoResponse> {
+    let token = auth::get_session_from_headers(&headers);
+    let user = auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    // Only usable while a forced password change is pending.
+    if !user.must_change_password {
+        return Err(AppError::Forbidden(
+            "Password change is not required for this account".to_string(),
+        ));
+    }
+
+    // Validate new password
+    if req.new_password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "New password must be at least 8 characters".to_string(),
+        ));
+    }
+
+    // Hash and update password, clearing the forced-change flag
+    let new_hash = auth::hash_password(&req.new_password)?;
+    sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
         .bind(&new_hash)
         .bind(user.id)
         .execute(&state.db)
@@ -3235,7 +3282,8 @@ pub async fn api_create_user(
     let password_hash = auth::hash_password(&password)?;
 
     let result = sqlx::query(
-        "INSERT INTO users (username, password_hash, role, expires_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO users (username, password_hash, role, expires_at, must_change_password) \
+         VALUES (?, ?, ?, ?, 1)",
     )
     .bind(&req.username)
     .bind(&password_hash)
@@ -3491,11 +3539,11 @@ pub async fn api_reset_password(
         ));
     }
 
-    // Generate new password
+    // Generate new bootstrap password; force the user to choose their own on next login
     let password = auth::generate_session_token()[..16].to_string();
     let password_hash = auth::hash_password(&password)?;
 
-    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?")
         .bind(&password_hash)
         .bind(id)
         .execute(&state.db)

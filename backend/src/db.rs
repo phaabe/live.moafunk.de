@@ -299,6 +299,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             role TEXT NOT NULL DEFAULT 'host',
             created_by INTEGER,
             expires_at TEXT,
+            must_change_password INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT,
             FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
@@ -306,6 +307,16 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "#,
     )
     .execute(pool)
+    .await?;
+
+    // Migration: force a self-chosen password after the admin-generated bootstrap
+    // password (set on create/reset, cleared once the user picks their own).
+    add_column_if_missing(
+        pool,
+        "users",
+        "must_change_password",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
     .await?;
 
     sqlx::query(
