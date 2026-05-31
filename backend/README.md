@@ -78,6 +78,9 @@ cargo run                           # or: cargo watch -x run   (auto-reload)
 - Test the token directly (US cloud): `bws secret list --server-url https://vault.bitwarden.com --access-token '0.…'`.
   Data on one region + `401` on the other tells you which region; for EU/self-host set `BWS_SERVER_URL`.
 - No Bitwarden access at all? `cp .env.example .env` and fill it in by hand (needs your own R2 bucket — see above).
+- `TerminatedByOtherGetUpdates` (Telegram) → your local bot is fighting the production bot for the
+  same token. Set `DEV_SECRETS_EXCLUDE='TELEGRAM_BOT_TOKEN'` in `.env.bootstrap` and re-run
+  `./scripts/dev-secrets.sh` — the token is left out of `.env` so the local bot stays off.
 
 Required environment variables (see `.env.example` for the full list):
 - `SECRET_KEY`: Random secret for session management (from Bitwarden)
