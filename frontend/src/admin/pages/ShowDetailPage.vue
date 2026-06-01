@@ -16,6 +16,7 @@ import ShowSocialChannels from '../components/show-detail/ShowSocialChannels.vue
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
+import { useHostFlow } from '../composables/useHostFlow';
 import { useAuthStore } from '../stores/auth';
 import { VueDatePicker } from '@vuepic/vue-datepicker';
 import '@vuepic/vue-datepicker/dist/main.css';
@@ -28,6 +29,7 @@ const flash = useFlash();
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
+const hostFlow = useHostFlow();
 const { invalidate, consume } = useDataInvalidation();
 
 const show = ref<ShowDetail | null>(null);
@@ -101,13 +103,6 @@ const uploadingCover = ref(false);
 // ── Dashboard (external/brunchtime) state ──────────────────────────────────
 const editMode = ref(false);
 const mediaMode = ref<'live' | 'upload'>('upload');
-const prerecordedProgress = ref<{
-  phase: 'uploading' | 'finalizing';
-  percent: number;
-  chunkIndex?: number;
-  totalChunks?: number;
-} | null>(null);
-const extFileInput = ref<HTMLInputElement | null>(null);
 const extCoverInput = ref<HTMLInputElement | null>(null);
 
 /** The assigned host may manage media (matches the backend require_user_show check). */
@@ -381,34 +376,33 @@ async function saveDashboardEdits() {
   }
 }
 
-// ── Media (live vs upload) — reuses the host /api/my-show endpoints ─────────
-function triggerMediaUpload() {
-  extFileInput.value?.click();
-}
-
-function onMediaFileChosen(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (file) uploadPrerecorded(file);
-  input.value = '';
-}
-
-async function uploadPrerecorded(file: File) {
+// ── Media (live vs upload) — hand off to the existing host user stories ─────
+/**
+ * Enter the host streaming flow for this show at the chosen mode's step:
+ * 'prerecorded' → upload story, 'live' → live story. Only the assigned host
+ * (canManageMedia) can reach these; the show is then among their `my-shows`.
+ */
+async function enterFlow(mode: 'prerecorded' | 'live') {
   if (!show.value) return;
-  prerecordedProgress.value = { phase: 'uploading', percent: 0 };
+  const id = show.value.id;
   try {
-    await hostFlowApi.uploadFile(show.value.id, file, (p) => {
-      prerecordedProgress.value = p;
-    });
-    flash.success('File uploaded');
-    mediaMode.value = 'upload';
-    await loadShow();
+    if (!hostFlow.shows.value.length) await hostFlow.fetchMyShow();
+    const mine = hostFlow.shows.value.find((s) => s.id === id);
+    if (!mine) {
+      flash.error('This show is not assigned to you.');
+      return;
+    }
+    mediaMode.value = mode === 'live' ? 'live' : 'upload';
+    hostFlow.selectShow(mine);
+    hostFlow.selectMode(mode);
+    router.push(mode === 'live' ? '/stream/live' : '/stream/upload');
   } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Upload failed');
-  } finally {
-    prerecordedProgress.value = null;
+    flash.error(e instanceof Error ? e.message : 'Failed to open the streaming flow');
   }
 }
+
+const goToUploadFlow = () => enterFlow('prerecorded');
+const goToLiveFlow = () => enterFlow('live');
 
 async function markUploaded() {
   if (!show.value) return;
@@ -418,37 +412,6 @@ async function markUploaded() {
     await loadShow();
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to mark uploaded');
-  }
-}
-
-function selectUploadMode() {
-  mediaMode.value = 'upload';
-}
-
-async function switchToLive() {
-  if (!show.value) return;
-  if (show.value.prerecorded_key && !confirm('Switch to live? This removes the uploaded file.')) {
-    return;
-  }
-  try {
-    await hostFlowApi.goLive(show.value.id);
-    mediaMode.value = 'live';
-    flash.success('Switched to live');
-    await loadShow();
-  } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to switch to live');
-  }
-}
-
-async function removePrerecorded() {
-  if (!show.value || !show.value.prerecorded_key) return;
-  if (!confirm('Remove the uploaded file?')) return;
-  try {
-    await hostFlowApi.deleteUpload(show.value.id);
-    flash.success('Upload removed');
-    await loadShow();
-  } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to remove upload');
   }
 }
 
@@ -988,7 +951,7 @@ onUnmounted(() => {
           :show="show"
           :air-target="airTarget"
           :can-upload="canManageMedia"
-          @upload="triggerMediaUpload"
+          @upload="goToUploadFlow"
         />
 
         <!-- Hero: cover + title + description -->
@@ -1109,25 +1072,12 @@ onUnmounted(() => {
             :show="show"
             :mode="mediaMode"
             :can-manage="canManageMedia"
-            :upload-progress="prerecordedProgress"
-            @select-live="switchToLive"
-            @select-upload="selectUploadMode"
-            @browse="triggerMediaUpload"
-            @pick-file="uploadPrerecorded"
+            @select-live="goToLiveFlow"
+            @select-upload="goToUploadFlow"
             @mark-uploaded="markUploaded"
-            @remove="removePrerecorded"
           />
           <ShowSocialChannels />
         </div>
-
-        <!-- Hidden input for prerecorded upload (banner + media card share it) -->
-        <input
-          ref="extFileInput"
-          type="file"
-          accept="audio/*"
-          class="upload-input"
-          @change="onMediaFileChosen"
-        />
       </template>
 
       <div v-if="isUnheard" class="top-grid">
