@@ -1047,6 +1047,35 @@ onUnmounted(() => {
               </div>
             </div>
             <p v-else class="empty-state">No host assigned.</p>
+
+            <!-- Admins may (re)assign the host inline while editing. -->
+            <div v-if="isAdmin && editMode" class="host-edit">
+              <template v-if="show.available_hosts && show.available_hosts.length > 0">
+                <select v-model="selectedHostId" class="select-input">
+                  <option :value="null" disabled>
+                    {{ hasHost ? '-- Reassign host --' : '-- Select a host --' }}
+                  </option>
+                  <option v-for="h in show.available_hosts" :key="h.id" :value="h.id">
+                    {{ h.username }}
+                  </option>
+                </select>
+                <BaseButton
+                  variant="success"
+                  size="sm"
+                  :disabled="!selectedHostId || assigningHost"
+                  :loading="assigningHost"
+                  @click="assignHost"
+                >
+                  {{ hasHost ? 'Reassign' : 'Assign' }}
+                </BaseButton>
+                <BaseButton v-if="hasHost" variant="ghost" size="sm" @click="unassignHost">
+                  Remove
+                </BaseButton>
+              </template>
+              <p v-else class="text-muted assign-note">
+                No host users available. Create a user with the "Host" role first.
+              </p>
+            </div>
           </div>
         </div>
 
@@ -1546,43 +1575,6 @@ onUnmounted(() => {
           </div>
         </div>
         <p v-else class="empty-state">No artists assigned to this show yet.</p>
-      </div>
-
-      <!-- Host Assignment Section (external/brunchtime, admin, edit mode only) -->
-      <div v-if="!isUnheard && isAdmin && editMode" class="card">
-        <h2 class="section-title">Assigned Host</h2>
-
-        <template v-if="hasHost">
-          <div class="host-card">
-            <div class="host-info">
-              <span class="badge pink">🎙 {{ show.host_username }}</span>
-              <router-link :to="`/users`" class="action-link">View Users</router-link>
-            </div>
-            <BaseButton variant="ghost" size="sm" @click="unassignHost"> Remove </BaseButton>
-          </div>
-        </template>
-
-        <template v-else>
-          <div v-if="show.available_hosts && show.available_hosts.length > 0" class="assign-form">
-            <select v-model="selectedHostId" class="select-input">
-              <option :value="null" disabled>-- Select a host --</option>
-              <option v-for="host in show.available_hosts" :key="host.id" :value="host.id">
-                {{ host.username }}
-              </option>
-            </select>
-            <BaseButton
-              variant="success"
-              :disabled="!selectedHostId"
-              :loading="assigningHost"
-              @click="assignHost"
-            >
-              Assign Host
-            </BaseButton>
-          </div>
-          <p v-else class="text-muted assign-note">
-            No host users available. Create a user with the "Host" role first.
-          </p>
-        </template>
       </div>
 
       <!-- Metadata Section (full width) -->
@@ -2270,19 +2262,12 @@ onUnmounted(() => {
   margin-bottom: var(--spacing-md);
 }
 
-.host-card {
+.host-edit {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--spacing-md);
-  background: var(--color-surface-alt);
-  border-radius: var(--radius-md);
-}
-
-.host-info {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
 }
 
 .select-input {
