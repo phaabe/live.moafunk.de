@@ -22,6 +22,10 @@ pub struct StreamState {
     recording_file: Option<File>,
     /// Path to the current recording file (for status reporting).
     recording_path: Option<PathBuf>,
+    /// Set when a recording-file write fails (e.g. disk full). The recording
+    /// is abandoned (file handle dropped) but the live stream keeps running.
+    /// Surfaced via [`StreamStatus`] so the failure is never silently swallowed.
+    recording_failed: Option<String>,
 }
 
 impl Default for StreamState {
@@ -38,6 +42,7 @@ impl StreamState {
             ffmpeg_handle: None,
             recording_file: None,
             recording_path: None,
+            recording_failed: None,
         }
     }
 
@@ -50,6 +55,12 @@ impl StreamState {
     /// Returns true if recording to file is active.
     pub fn is_recording(&self) -> bool {
         self.recording_file.is_some()
+    }
+
+    /// Returns the recording write-failure message, if a tee write has failed
+    /// since recording started. Used to mark the archive as incomplete.
+    pub fn recording_failure(&self) -> Option<&str> {
+        self.recording_failed.as_deref()
     }
 
     /// Start streaming for the given user to the specified RTMP destination.
@@ -175,11 +186,22 @@ impl StreamState {
             return Err(StreamError::NotStreaming);
         }
 
-        // Tee to recording file if active (non-fatal errors)
+        // Tee to recording file if active. A write failure here (e.g. disk full)
+        // must NOT silently corrupt the archive: surface it as a recording-failed
+        // status + error log, drop the file handle so we stop appending to a
+        // half-written file, and keep the live stream running.
         if let Some(ref mut file) = self.recording_file {
             if let Err(e) = file.write_all(data).await {
-                tracing::warn!("Failed to write to recording file: {}", e);
-                // Don't fail the stream, just log the error
+                let msg = e.to_string();
+                tracing::error!(
+                    "Recording write failed (archive will be incomplete): {} — path={:?}",
+                    msg,
+                    self.recording_path
+                );
+                self.recording_failed = Some(msg);
+                // Stop teeing — the file is now unreliable. The live stream
+                // (FFmpeg) is unaffected and continues.
+                self.recording_file = None;
             }
         }
 
@@ -215,6 +237,7 @@ impl StreamState {
 
         self.recording_file = Some(file);
         self.recording_path = Some(path);
+        self.recording_failed = None;
 
         Ok(())
     }
@@ -249,6 +272,7 @@ impl StreamState {
             user: self.current_user.clone(),
             recording: self.is_recording(),
             recording_path: self.recording_path.clone(),
+            recording_failed: self.recording_failed.clone(),
         }
     }
 }
@@ -374,6 +398,10 @@ pub struct StreamStatus {
     pub recording: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording_path: Option<PathBuf>,
+    /// Non-null when a recording write failed mid-stream; the archive for this
+    /// session is incomplete. Stays set until the next recording starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_failed: Option<String>,
 }
 
 /// Errors that can occur during streaming.

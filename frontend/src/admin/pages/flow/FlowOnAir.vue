@@ -190,17 +190,12 @@ async function handleGoLive() {
 
   try {
     if (isLiveMode.value) {
-      await streamSocket.connect();
+      // Recording now starts automatically on the backend when the stream goes
+      // live (keyed on show_id), so it survives a dropped tab / WS reconnect.
+      await streamSocket.connect(false, show.value?.id);
       if (audioCapture) {
         audioCapture.setOnData((data) => streamSocket.send(data));
         audioCapture.startRecording();
-      }
-      if (flow.recordStream.value && show.value?.id) {
-        try {
-          await recordingApi.start(show.value.id);
-        } catch (err) {
-          console.warn('[FlowOnAir] Failed to start recording:', err);
-        }
       }
       // Navigation happens via onLive callback
     } else {

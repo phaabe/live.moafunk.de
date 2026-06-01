@@ -17,6 +17,8 @@ const reconnectAttempts = ref(0);
 
 let socket: WebSocket | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+// Remembered across reconnects so the backend keeps auto-recording the same show.
+let currentShowId: number | null = null;
 let currentCallbacks: {
   onConnected?: () => void;
   onDisconnected?: () => void;
@@ -40,18 +42,27 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
   // Update callbacks so the currently-mounted component receives events
   currentCallbacks = { onConnected, onDisconnected, onError, onLive };
 
-  function connect(force = false): Promise<void> {
+  function connect(force = false, showId?: number): Promise<void> {
     return new Promise((resolve, reject) => {
       if (socket && socket.readyState === WebSocket.OPEN) {
         resolve();
         return;
       }
 
+      // Remember the show so reconnects re-send it; backend keys recording on it.
+      if (showId != null) {
+        currentShowId = showId;
+      }
+
       error.value = null;
       state.value = 'connecting';
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws/stream${force ? '?force=true' : ''}`;
+      const params = new URLSearchParams();
+      if (force) params.set('force', 'true');
+      if (currentShowId != null) params.set('show_id', String(currentShowId));
+      const qs = params.toString();
+      const wsUrl = `${protocol}//${window.location.host}/ws/stream${qs ? `?${qs}` : ''}`;
 
       socket = new WebSocket(wsUrl);
       socket.binaryType = 'arraybuffer';
@@ -137,6 +148,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       socket = null;
     }
 
+    currentShowId = null;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
     error.value = null;
@@ -158,6 +170,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       socket = null;
     }
 
+    currentShowId = null;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
     error.value = null;
