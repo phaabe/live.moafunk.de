@@ -38,6 +38,9 @@ export type HostMode = 'existing' | 'guest';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const isAdmin = ref(false);
+// The logged-in user, so a non-admin host can assign themselves without the
+// admin-only users list.
+const currentUser = ref<{ id: number; username: string } | null>(null);
 const mode = ref<WizardMode | null>(null);
 
 // Existing-template branch
@@ -240,6 +243,18 @@ async function loadTemplates(): Promise<void> {
 }
 
 async function loadAssignableUsers(): Promise<void> {
+  // Non-admins can't list users; a host's only "existing" choice is themselves.
+  // Default to self so they can self-assign and proceed immediately.
+  if (!isAdmin.value) {
+    if (currentUser.value) {
+      assignableUsers.value = [
+        { id: currentUser.value.id, username: currentUser.value.username, role: 'host' },
+      ];
+      if (assigneeUserId.value === null) assigneeUserId.value = currentUser.value.id;
+    }
+    return;
+  }
+
   assigneeLoading.value = true;
   try {
     const res = await usersApi.list();
@@ -310,8 +325,13 @@ async function submit(): Promise<Show> {
 }
 
 /** Reset all state and (re)initialise the wizard for a fresh run. */
-function start(opts: { isAdmin: boolean; prefillDate?: string }): void {
+function start(opts: {
+  isAdmin: boolean;
+  currentUser?: { id: number; username: string } | null;
+  prefillDate?: string;
+}): void {
   isAdmin.value = opts.isAdmin;
+  currentUser.value = opts.currentUser ?? null;
   mode.value = null;
   templates.value = [];
   templatesLoading.value = false;

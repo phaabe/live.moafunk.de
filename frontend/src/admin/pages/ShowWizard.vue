@@ -55,7 +55,8 @@ const createdShowId = ref<number | null>(null);
 
 onMounted(() => {
   const prefillDate = typeof route.query.date === 'string' ? route.query.date : undefined;
-  wizard.start({ isAdmin: isAdmin.value, prefillDate });
+  const currentUser = auth.user ? { id: auth.user.id, username: auth.user.username } : null;
+  wizard.start({ isAdmin: isAdmin.value, currentUser, prefillDate });
 });
 
 function onCancel() {
