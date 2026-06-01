@@ -2,21 +2,28 @@
 import { ref, computed, onMounted, onActivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showsApi, soundcloudApi, type ShowDetail, type SoundCloudStatus } from '../api';
-import { BaseButton, BaseModal } from '@shared/components';
+import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
+import ShowDeadlineBanner from '../components/show-detail/ShowDeadlineBanner.vue';
+import ShowMediaCard from '../components/show-detail/ShowMediaCard.vue';
+import ShowSocialChannels from '../components/show-detail/ShowSocialChannels.vue';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
+import { useHostFlow } from '../composables/useHostFlow';
+import { useAuthStore } from '../stores/auth';
 import { VueDatePicker } from '@vuepic/vue-datepicker';
 import '@vuepic/vue-datepicker/dist/main.css';
 
 defineOptions({
-  name: 'ShowDetailPage'
+  name: 'ShowDetailPage',
 });
 
 const flash = useFlash();
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
+const hostFlow = useHostFlow();
 const { invalidate, consume } = useDataInvalidation();
 
 const show = ref<ShowDetail | null>(null);
@@ -44,7 +51,12 @@ const assigning = ref(false);
 const uploading = ref(false);
 const uploadDragOver = ref(false);
 const uploadingFilename = ref<string | null>(null);
-const uploadProgress = ref<{ phase: 'extracting' | 'uploading' | 'finalizing'; percent: number; chunkIndex?: number; totalChunks?: number } | null>(null);
+const uploadProgress = ref<{
+  phase: 'extracting' | 'uploading' | 'finalizing';
+  percent: number;
+  chunkIndex?: number;
+  totalChunks?: number;
+} | null>(null);
 
 // Form data
 const dateForm = ref('');
@@ -60,6 +72,7 @@ const {
   apiEndTime: editEndTime,
   setFromApi: setEditRange,
 } = useDateTimeRange();
+const titleForm = ref('');
 const descriptionForm = ref('');
 const aiBioForm = ref('');
 const selectedArtistId = ref<number | null>(null);
@@ -72,18 +85,77 @@ const assigningHost = ref(false);
 const hasArtists = computed(() => show.value && show.value.artists.length > 0);
 const artistsLeft = computed(() => show.value?.artists_left ?? 0);
 const isUnheard = computed(() => !show.value?.show_type || show.value.show_type === 'unheard');
+
+// Role-based access. Backend enforces the same rules; these only gate the UI.
+const isAdmin = computed(() => auth.user?.role === 'admin' || auth.user?.role === 'superadmin');
+const canEdit = computed(
+  () => isAdmin.value || (auth.user?.role === 'host' && show.value?.host_user_id === auth.user?.id)
+);
 const hasHost = computed(() => !!show.value?.host_user_id);
 const uploadingCover = ref(false);
 
-/** Format a date string + time string into a readable datetime */
-function fmtDateTime(date: string, time: string): string {
-  const d = new Date(date + 'T' + time + ':00');
-  return d.toLocaleDateString('en-US', {
+// ── Dashboard (external/brunchtime) state ──────────────────────────────────
+const editMode = ref(false);
+const mediaMode = ref<'live' | 'upload'>('upload');
+const extCoverInput = ref<HTMLInputElement | null>(null);
+
+/** The assigned host may manage media (matches the backend require_user_show check). */
+const canManageMedia = computed(() => !!show.value && show.value.host_user_id === auth.user?.id);
+
+const hostInitials = computed(() => {
+  const name = show.value?.host_username;
+  if (!name) return '?';
+  return name
+    .split(/\s+/)
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+});
+
+/** Convert a Berlin wall-clock date + time to a UTC Date for countdown math. */
+function berlinToUtcDate(dateStr: string, timeStr: string): Date {
+  const asUtc = new Date(`${dateStr}T${timeStr}:00Z`);
+  const berlinMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'Europe/Berlin' })).getTime();
+  const utcMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'UTC' })).getTime();
+  return new Date(asUtc.getTime() - (berlinMs - utcMs));
+}
+
+const airTarget = computed(() => {
+  if (!show.value?.date || !show.value?.start_time) return null;
+  return berlinToUtcDate(show.value.date, show.value.start_time);
+});
+
+const airDateLabel = computed(() => {
+  if (!show.value?.date) return '—';
+  return new Date(show.value.date + 'T12:00:00').toLocaleDateString('en-US', {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-  }) + ' · ' + time;
+  });
+});
+
+const airTimeRange = computed(() => {
+  if (!show.value?.start_time) return '';
+  return show.value.end_time
+    ? `${show.value.start_time} – ${show.value.end_time}`
+    : show.value.start_time;
+});
+
+/** Format a date string + time string into a readable datetime */
+function fmtDateTime(date: string, time: string): string {
+  const d = new Date(date + 'T' + time + ':00');
+  return (
+    d.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }) +
+    ' · ' +
+    time
+  );
 }
 
 /** Compute the end date, handling overnight shows (end_time <= start_time → next day) */
@@ -213,6 +285,9 @@ async function loadShow() {
     startTimeForm.value = show.value.start_time || '';
     endTimeForm.value = show.value.end_time || '';
     descriptionForm.value = show.value.description || '';
+    // A present prerecorded file implies upload mode; otherwise keep the
+    // current selection (defaults to 'upload' to surface the upload affordance).
+    if (show.value.prerecorded_key) mediaMode.value = 'upload';
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load show';
   } finally {
@@ -252,6 +327,77 @@ async function saveDateTime() {
   }
 }
 
+// ── Dashboard combined edit mode (external/brunchtime) ─────────────────────
+function startDashboardEdit() {
+  if (!show.value) return;
+  titleForm.value = show.value.title;
+  descriptionForm.value = show.value.description || '';
+  setEditRange(show.value.date, show.value.start_time, show.value.end_time);
+  editMode.value = true;
+}
+
+function cancelDashboardEdit() {
+  editMode.value = false;
+}
+
+async function saveDashboardEdits() {
+  if (!show.value) return;
+  const trimmed = titleForm.value.trim();
+  if (!trimmed) {
+    flash.error('Title cannot be empty');
+    return;
+  }
+  if (!editTimeValid.value) {
+    flash.error(editTimeError.value || 'Invalid date/time');
+    return;
+  }
+  saving.value = true;
+  try {
+    await showsApi.update(show.value.id, {
+      title: trimmed,
+      description: descriptionForm.value,
+      date: editDate.value,
+      start_time: editStartTime.value || undefined,
+      end_time: editEndTime.value || undefined,
+    });
+    flash.success('Show updated');
+    editMode.value = false;
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to update show');
+  } finally {
+    saving.value = false;
+  }
+}
+
+// ── Media (live vs upload) — hand off to the existing host user stories ─────
+/**
+ * Enter the host streaming flow for this show at the chosen mode's step:
+ * 'prerecorded' → upload story, 'live' → live story. Only the assigned host
+ * (canManageMedia) can reach these; the show is then among their `my-shows`.
+ */
+async function enterFlow(mode: 'prerecorded' | 'live') {
+  if (!show.value) return;
+  const id = show.value.id;
+  try {
+    if (!hostFlow.shows.value.length) await hostFlow.fetchMyShow();
+    const mine = hostFlow.shows.value.find((s) => s.id === id);
+    if (!mine) {
+      flash.error('This show is not assigned to you.');
+      return;
+    }
+    mediaMode.value = mode === 'live' ? 'live' : 'upload';
+    hostFlow.selectShow(mine);
+    hostFlow.selectMode(mode);
+    router.push(mode === 'live' ? '/stream/live' : '/stream/upload');
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to open the streaming flow');
+  }
+}
+
+/** Launch the user story for the currently selected media type. */
+const launchFlow = () => enterFlow(mediaMode.value === 'live' ? 'live' : 'prerecorded');
+
 // Description editing
 function startEditDescription() {
   if (show.value) {
@@ -289,7 +435,7 @@ async function saveAiBio() {
 
   saving.value = true;
   try {
-    await showsApi.update(show.value.id, { ai_bio: aiBioForm.value } as Partial<any>);
+    await showsApi.update(show.value.id, { ai_bio: aiBioForm.value });
     flash.success('AI bio updated');
     editingAiBio.value = false;
     await loadShow();
@@ -323,7 +469,7 @@ async function assignArtist() {
 
   // Find the artist in available_artists before we remove it
   const selectedAvailableArtist = show.value.available_artists.find(
-    a => a.id === artistIdToAssign
+    (a) => a.id === artistIdToAssign
   );
 
   if (!selectedAvailableArtist) {
@@ -347,7 +493,7 @@ async function assignArtist() {
     // Update local state surgically
     show.value.artists = [...show.value.artists, newArtist];
     show.value.available_artists = show.value.available_artists.filter(
-      a => a.id !== artistIdToAssign
+      (a) => a.id !== artistIdToAssign
     );
     show.value.artists_left = Math.max(0, show.value.artists_left - 1);
 
@@ -376,12 +522,12 @@ async function unassignArtist(artistId: number) {
 
   try {
     // Find artist before removing for the available_artists update
-    const removedArtist = show.value.artists.find(a => a.id === artistId);
+    const removedArtist = show.value.artists.find((a) => a.id === artistId);
 
     await showsApi.unassignArtist(show.value.id, artistId);
 
     // Update local state surgically using spread for reactivity
-    show.value.artists = show.value.artists.filter(a => a.id !== artistId);
+    show.value.artists = show.value.artists.filter((a) => a.id !== artistId);
     show.value.artists_left = Math.min(4, show.value.artists_left + 1);
 
     // Add back to available_artists if we have the info
@@ -389,10 +535,10 @@ async function unassignArtist(artistId: number) {
       const newAvailable = {
         id: removedArtist.id,
         name: removedArtist.name,
-        pronouns: removedArtist.pronouns
+        pronouns: removedArtist.pronouns,
       };
-      show.value.available_artists = [...show.value.available_artists, newAvailable].sort(
-        (a, b) => a.name.localeCompare(b.name)
+      show.value.available_artists = [...show.value.available_artists, newAvailable].sort((a, b) =>
+        a.name.localeCompare(b.name)
       );
     }
 
@@ -529,7 +675,9 @@ async function uploadToSoundCloud() {
     const msg = e instanceof Error ? e.message : '';
     if (msg.includes('not authorized')) {
       // Refresh status and offer connect
-      try { scStatus.value = await soundcloudApi.getStatus(); } catch { }
+      try {
+        scStatus.value = await soundcloudApi.getStatus();
+      } catch {}
       if (scStatus.value?.auth_url) {
         window.open(scStatus.value.auth_url, '_blank', 'width=600,height=700');
         flash.success('Complete SoundCloud authorization in the opened window, then try again.');
@@ -745,13 +893,207 @@ onUnmounted(() => {
     <div v-else-if="error" class="flash-message error">{{ error }}</div>
 
     <template v-else-if="show">
-      <!-- Header -->
-      <div class="page-header">
+      <!-- Header (UNHEARD) -->
+      <div v-if="isUnheard" class="page-header">
         <router-link to="/shows" class="back-link">← Back to Shows</router-link>
         <h1 class="page-title">{{ show.title }}</h1>
       </div>
 
-      <div class="top-grid">
+      <!-- Header (external/brunchtime dashboard) -->
+      <div v-else class="page-header">
+        <router-link :to="isAdmin ? '/shows' : '/stream'" class="back-link">← Back</router-link>
+        <div class="dash-header-row">
+          <div>
+            <p class="dash-eyebrow">SHOW DASHBOARD</p>
+            <h1 class="page-title">Episode overview</h1>
+          </div>
+          <div class="dash-header-actions">
+            <BaseButton
+              v-if="canEdit && !editMode"
+              variant="ghost"
+              size="sm"
+              @click="startDashboardEdit"
+            >
+              ✎ Edit
+            </BaseButton>
+            <template v-if="editMode">
+              <BaseButton variant="ghost" size="sm" @click="cancelDashboardEdit">Cancel</BaseButton>
+              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDashboardEdits">
+                Save
+              </BaseButton>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== External / brunchtime dashboard ===================== -->
+      <template v-if="!isUnheard">
+        <!-- Deadline banner: countdown to air for live, or upload-status for upload mode -->
+        <ShowDeadlineBanner
+          v-if="mediaMode === 'live' || !show.prerecorded_confirmed_at"
+          :show="show"
+          :mode="mediaMode"
+          :air-target="airTarget"
+          :can-act="canManageMedia"
+          @action="launchFlow"
+        />
+
+        <!-- Hero: cover + title + description -->
+        <div class="card hero-card">
+          <div class="hero-cover">
+            <img v-if="show.cover_url" :src="show.cover_url" alt="Cover" class="hero-cover-img" />
+            <div v-else class="hero-cover-placeholder">
+              <span class="hero-cover-ico">🎙</span>
+              <span>COVER</span>
+            </div>
+            <button
+              v-if="canEdit"
+              type="button"
+              class="cover-replace"
+              :disabled="uploadingCover"
+              @click="extCoverInput?.click()"
+            >
+              ⬆ {{ show.cover_url ? 'Replace' : 'Upload' }}
+            </button>
+            <input
+              ref="extCoverInput"
+              type="file"
+              accept="image/*"
+              class="upload-input"
+              @change="handleCoverUpload"
+            />
+          </div>
+
+          <div class="hero-body">
+            <p class="dash-label">TITLE</p>
+            <FormInput v-if="editMode" v-model="titleForm" required />
+            <h2 v-else class="hero-title">{{ show.title }}</h2>
+
+            <p class="dash-label">DESCRIPTION</p>
+            <textarea
+              v-if="editMode"
+              v-model="descriptionForm"
+              class="text-field"
+              rows="4"
+              placeholder="Brief description..."
+            ></textarea>
+            <p v-else-if="show.description" class="hero-desc">{{ show.description }}</p>
+            <p v-else class="empty-state">No description.</p>
+          </div>
+        </div>
+
+        <!-- Grid: air date + assigned host -->
+        <div class="dash-grid">
+          <div class="card info-tile">
+            <h2 class="section-title"><span class="ico">📅</span> Air date</h2>
+            <template v-if="editMode">
+              <div class="edit-row edit-row-datetime">
+                <div class="datetime-field">
+                  <label class="form-label">Start</label>
+                  <VueDatePicker
+                    v-model="editStart"
+                    :enable-time-picker="true"
+                    :dark="true"
+                    :minutes-increment="5"
+                    :max-date="editEnd || undefined"
+                    :flow="{ steps: ['calendar', 'time'] }"
+                    :action-row="{
+                      showCancel: false,
+                      showPreview: false,
+                      selectBtnLabel: 'Confirm',
+                    }"
+                    placeholder="Start date & time"
+                    text-input
+                    teleport="body"
+                  />
+                </div>
+                <div class="datetime-field">
+                  <label class="form-label">End</label>
+                  <VueDatePicker
+                    v-model="editEnd"
+                    :enable-time-picker="true"
+                    :dark="true"
+                    :minutes-increment="5"
+                    :min-date="editStart || undefined"
+                    :flow="{ steps: ['calendar', 'time'] }"
+                    :action-row="{
+                      showCancel: false,
+                      showPreview: false,
+                      selectBtnLabel: 'Confirm',
+                    }"
+                    placeholder="End date & time"
+                    text-input
+                    teleport="body"
+                  />
+                </div>
+              </div>
+              <p v-if="editStart && editEnd && !editTimeValid" class="field-error">
+                {{ editTimeError }}
+              </p>
+            </template>
+            <template v-else>
+              <p class="tile-value">{{ airDateLabel }}</p>
+              <p class="tile-sub">{{ airTimeRange }}</p>
+            </template>
+          </div>
+
+          <div class="card info-tile">
+            <h2 class="section-title"><span class="ico">👤</span> Assigned host</h2>
+            <div v-if="hasHost" class="host-row">
+              <span class="host-avatar">{{ hostInitials }}</span>
+              <div>
+                <p class="tile-value">{{ show.host_username }}</p>
+                <p class="tile-sub">Host</p>
+              </div>
+            </div>
+            <p v-else class="empty-state">No host assigned.</p>
+
+            <!-- Admins may (re)assign the host inline while editing. -->
+            <div v-if="isAdmin && editMode" class="host-edit">
+              <template v-if="show.available_hosts && show.available_hosts.length > 0">
+                <select v-model="selectedHostId" class="select-input">
+                  <option :value="null" disabled>
+                    {{ hasHost ? '-- Reassign host --' : '-- Select a host --' }}
+                  </option>
+                  <option v-for="h in show.available_hosts" :key="h.id" :value="h.id">
+                    {{ h.username }}
+                  </option>
+                </select>
+                <BaseButton
+                  variant="success"
+                  size="sm"
+                  :disabled="!selectedHostId || assigningHost"
+                  :loading="assigningHost"
+                  @click="assignHost"
+                >
+                  {{ hasHost ? 'Reassign' : 'Assign' }}
+                </BaseButton>
+                <BaseButton v-if="hasHost" variant="ghost" size="sm" @click="unassignHost">
+                  Remove
+                </BaseButton>
+              </template>
+              <p v-else class="text-muted assign-note">
+                No host users available. Create a user with the "Host" role first.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Grid: media + social -->
+        <div class="dash-grid">
+          <ShowMediaCard
+            :show="show"
+            :mode="mediaMode"
+            :can-manage="canManageMedia"
+            @select-live="mediaMode = 'live'"
+            @select-upload="mediaMode = 'upload'"
+            @launch="launchFlow"
+          />
+          <ShowSocialChannels />
+        </div>
+      </template>
+
+      <div v-if="isUnheard" class="top-grid">
         <div class="main-column">
           <!-- Information Section (with description) -->
           <div class="card info-card">
@@ -777,7 +1119,12 @@ onUnmounted(() => {
             </div>
 
             <div class="edit-toggle-container">
-              <button type="button" class="btn-edit" @click="startEditDateTime" v-if="!editingDateTime">
+              <button
+                type="button"
+                class="btn-edit"
+                @click="startEditDateTime"
+                v-if="!editingDateTime && canEdit"
+              >
                 Edit Date & Time
               </button>
             </div>
@@ -793,7 +1140,11 @@ onUnmounted(() => {
                     :minutes-increment="5"
                     :max-date="editEnd || undefined"
                     :flow="{ steps: ['calendar', 'time'] }"
-                    :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+                    :action-row="{
+                      showCancel: false,
+                      showPreview: false,
+                      selectBtnLabel: 'Confirm',
+                    }"
                     placeholder="Start date & time"
                     text-input
                     teleport="body"
@@ -808,14 +1159,20 @@ onUnmounted(() => {
                     :minutes-increment="5"
                     :min-date="editStart || undefined"
                     :flow="{ steps: ['calendar', 'time'] }"
-                    :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+                    :action-row="{
+                      showCancel: false,
+                      showPreview: false,
+                      selectBtnLabel: 'Confirm',
+                    }"
                     placeholder="End date & time"
                     text-input
                     teleport="body"
                   />
                 </div>
                 <div class="datetime-actions">
-                  <p v-if="editStart && editEnd && !editTimeValid" class="field-error">{{ editTimeError }}</p>
+                  <p v-if="editStart && editEnd && !editTimeValid" class="field-error">
+                    {{ editTimeError }}
+                  </p>
                   <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDateTime">
                     Save
                   </BaseButton>
@@ -833,7 +1190,7 @@ onUnmounted(() => {
               <div v-if="show.description" class="description-view">{{ show.description }}</div>
               <p v-else class="empty-state">No description.</p>
 
-              <div class="edit-toggle-container">
+              <div v-if="canEdit" class="edit-toggle-container">
                 <button type="button" class="btn-edit" @click="startEditDescription">
                   Edit Description
                 </button>
@@ -841,8 +1198,12 @@ onUnmounted(() => {
             </template>
 
             <div v-else class="edit-panel">
-              <textarea v-model="descriptionForm" class="text-field" rows="4"
-                placeholder="Brief description..."></textarea>
+              <textarea
+                v-model="descriptionForm"
+                class="text-field"
+                rows="4"
+                placeholder="Brief description..."
+              ></textarea>
               <div class="edit-actions">
                 <BaseButton variant="ghost" size="sm" @click="editingDescription = false">
                   Cancel
@@ -859,17 +1220,24 @@ onUnmounted(() => {
             <template v-if="!editingAiBio">
               <div v-if="show.ai_bio" class="description-view">{{ show.ai_bio }}</div>
               <p v-else class="empty-state">
-                <template v-if="isUnheard">AI bio will be generated when artists are assigned.</template>
+                <template v-if="isUnheard"
+                  >AI bio will be generated when artists are assigned.</template
+                >
                 <template v-else>AI bio will be generated from the show description.</template>
               </p>
 
-              <div class="edit-toggle-container">
+              <div v-if="isAdmin" class="edit-toggle-container">
                 <div class="button-row">
                   <button type="button" class="btn-edit" @click="startEditAiBio" v-if="show.ai_bio">
                     Edit AI Bio
                   </button>
-                  <BaseButton variant="primary" size="sm" :loading="regeneratingBio" @click="regenerateShowBio"
-                    :disabled="isUnheard ? !hasArtists : !show.description">
+                  <BaseButton
+                    variant="primary"
+                    size="sm"
+                    :loading="regeneratingBio"
+                    @click="regenerateShowBio"
+                    :disabled="isUnheard ? !hasArtists : !show.description"
+                  >
                     Regenerate
                   </BaseButton>
                 </div>
@@ -877,8 +1245,12 @@ onUnmounted(() => {
             </template>
 
             <div v-else class="edit-panel">
-              <textarea v-model="aiBioForm" class="text-field" rows="8"
-                placeholder="AI-generated show bio..."></textarea>
+              <textarea
+                v-model="aiBioForm"
+                class="text-field"
+                rows="8"
+                placeholder="AI-generated show bio..."
+              ></textarea>
               <div class="edit-actions">
                 <BaseButton variant="ghost" size="sm" @click="editingAiBio = false">
                   Cancel
@@ -896,46 +1268,27 @@ onUnmounted(() => {
           <h2 class="section-title">Cover</h2>
           <div v-if="show.cover_url" class="show-cover-preview">
             <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
-            <div class="cover-actions">
+            <div v-if="isAdmin" class="cover-actions">
               <BaseButton variant="primary" size="sm" @click="openInstagramPreview">
                 <span v-if="show.instagram_posted_at">📸 Posted to Instagram ✓</span>
                 <span v-else>📸 Instagram Preview</span>
               </BaseButton>
-              <BaseButton variant="secondary" size="sm" :loading="sendingTelegramPreview" @click="sendTelegramPreview">
+              <BaseButton
+                variant="secondary"
+                size="sm"
+                :loading="sendingTelegramPreview"
+                @click="sendTelegramPreview"
+              >
                 📱 Preview on Telegram
               </BaseButton>
             </div>
           </div>
           <p v-else class="empty-state">Cover appears after artists are assigned and processed.</p>
         </div>
-
-        <!-- Cover Section (non-UNHEARD: manual upload) -->
-        <div v-else class="card cover-card">
-          <h2 class="section-title">Cover</h2>
-          <div v-if="show.cover_url" class="show-cover-preview">
-            <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
-            <div class="cover-actions">
-              <label class="upload-cover-btn">
-                <BaseButton variant="primary" size="sm" :loading="uploadingCover"
-                  @click="($refs.coverInput as HTMLInputElement)?.click()">
-                  Replace Cover
-                </BaseButton>
-              </label>
-            </div>
-          </div>
-          <div v-else class="cover-upload-area">
-            <p class="empty-state">No cover uploaded yet.</p>
-            <BaseButton variant="primary" size="sm" :loading="uploadingCover"
-              @click="($refs.coverInput as HTMLInputElement)?.click()">
-              Upload Cover
-            </BaseButton>
-          </div>
-          <input ref="coverInput" type="file" accept="image/*" class="upload-input" @change="handleCoverUpload" />
-        </div>
       </div>
 
-      <!-- Download / Upload Row (UNHEARD only) -->
-      <div v-if="isUnheard" class="download-upload-grid">
+      <!-- Download / Upload Row (UNHEARD only, admin only) -->
+      <div v-if="isUnheard && isAdmin" class="download-upload-grid">
         <!-- Download Section -->
         <div class="card">
           <h2 class="section-title">Download</h2>
@@ -977,11 +1330,20 @@ onUnmounted(() => {
             </p>
             <AudioPlayer :key="show.recording_url" :src="show.recording_url" />
             <div class="recording-actions">
-              <BaseButton size="sm" variant="primary" :loading="uploading"
-                @click="($refs.fileInput as HTMLInputElement)?.click()">
+              <BaseButton
+                size="sm"
+                variant="primary"
+                :loading="uploading"
+                @click="($refs.fileInput as HTMLInputElement)?.click()"
+              >
                 Replace File
               </BaseButton>
-              <BaseButton size="sm" variant="danger" :loading="deletingRecording" @click="deleteRecording">
+              <BaseButton
+                size="sm"
+                variant="danger"
+                :loading="deletingRecording"
+                @click="deleteRecording"
+              >
                 Delete File
               </BaseButton>
             </div>
@@ -991,7 +1353,12 @@ onUnmounted(() => {
               <template v-if="show.soundcloud_url">
                 <div class="soundcloud-status">
                   <span class="soundcloud-label">☁️ SoundCloud</span>
-                  <a :href="show.soundcloud_url" target="_blank" rel="noopener" class="soundcloud-link">
+                  <a
+                    :href="show.soundcloud_url"
+                    target="_blank"
+                    rel="noopener"
+                    class="soundcloud-link"
+                  >
                     {{ show.soundcloud_public ? '🔓 Public' : '🔒 Private' }}
                   </a>
                   <span v-if="show.soundcloud_uploaded_at" class="text-muted soundcloud-timestamp">
@@ -999,15 +1366,28 @@ onUnmounted(() => {
                   </span>
                 </div>
                 <div class="soundcloud-actions">
-                  <BaseButton size="sm" :variant="show.soundcloud_public ? 'ghost' : 'success'"
-                    :loading="togglingSoundCloudPrivacy" @click="toggleSoundCloudPrivacy">
+                  <BaseButton
+                    size="sm"
+                    :variant="show.soundcloud_public ? 'ghost' : 'success'"
+                    :loading="togglingSoundCloudPrivacy"
+                    @click="toggleSoundCloudPrivacy"
+                  >
                     {{ show.soundcloud_public ? 'Make Private' : 'Make Public' }}
                   </BaseButton>
-                  <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
+                  <BaseButton
+                    size="sm"
+                    variant="ghost"
+                    :loading="uploadingToSoundCloud"
+                    @click="uploadToSoundCloud"
+                  >
                     Re-upload
                   </BaseButton>
-                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost"
-                    @click="disconnectAndReconnectSoundCloud">
+                  <BaseButton
+                    v-if="scStatus && scStatus.auth_url"
+                    size="sm"
+                    variant="ghost"
+                    @click="disconnectAndReconnectSoundCloud"
+                  >
                     🔗 Reconnect
                   </BaseButton>
                 </div>
@@ -1019,11 +1399,20 @@ onUnmounted(() => {
               </template>
               <template v-else>
                 <div class="soundcloud-actions">
-                  <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
+                  <BaseButton
+                    size="sm"
+                    variant="ghost"
+                    :loading="uploadingToSoundCloud"
+                    @click="uploadToSoundCloud"
+                  >
                     ☁️ Upload to SoundCloud
                   </BaseButton>
-                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost"
-                    @click="disconnectAndReconnectSoundCloud">
+                  <BaseButton
+                    v-if="scStatus && scStatus.auth_url"
+                    size="sm"
+                    variant="ghost"
+                    @click="disconnectAndReconnectSoundCloud"
+                  >
                     🔗 Reconnect
                   </BaseButton>
                 </div>
@@ -1034,21 +1423,36 @@ onUnmounted(() => {
           <!-- Show upload if no recording -->
           <template v-else>
             <p class="upload-description">Upload the final show recording.</p>
-            <div class="upload-dropzone" :class="{ 'drag-over': uploadDragOver, 'uploading': uploading }"
-              @dragover="handleDragOver" @dragleave="handleDragLeave" @drop="handleDrop"
-              @click="($refs.fileInput as HTMLInputElement)?.click()">
+            <div
+              class="upload-dropzone"
+              :class="{ 'drag-over': uploadDragOver, uploading: uploading }"
+              @dragover="handleDragOver"
+              @dragleave="handleDragLeave"
+              @drop="handleDrop"
+              @click="($refs.fileInput as HTMLInputElement)?.click()"
+            >
               <div v-if="uploading" class="upload-status">
                 <div class="loading-spinner small"></div>
                 <div class="upload-status-text">
-                  <span class="upload-filename" v-if="uploadingFilename">{{ uploadingFilename }}</span>
+                  <span class="upload-filename" v-if="uploadingFilename">{{
+                    uploadingFilename
+                  }}</span>
                   <span v-if="uploadProgress?.phase === 'extracting'">Extracting waveform...</span>
                   <span
-                    v-else-if="uploadProgress?.phase === 'uploading' && uploadProgress.totalChunks && uploadProgress.totalChunks > 1">
-                    Uploading chunk {{ uploadProgress.chunkIndex }}/{{ uploadProgress.totalChunks }} ({{
-                      uploadProgress.percent }}%)
+                    v-else-if="
+                      uploadProgress?.phase === 'uploading' &&
+                      uploadProgress.totalChunks &&
+                      uploadProgress.totalChunks > 1
+                    "
+                  >
+                    Uploading chunk {{ uploadProgress.chunkIndex }}/{{
+                      uploadProgress.totalChunks
+                    }}
+                    ({{ uploadProgress.percent }}%)
                   </span>
-                  <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
-                  }}%</span>
+                  <span v-else-if="uploadProgress?.phase === 'uploading'"
+                    >Uploading... {{ uploadProgress?.percent ?? 0 }}%</span
+                  >
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>
@@ -1062,10 +1466,12 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Assigned Artists Section (UNHEARD only) -->
-      <div v-if="isUnheard" class="card">
+      <!-- Assigned Artists Section (UNHEARD only, admin only) -->
+      <div v-if="isUnheard && isAdmin" class="card">
         <h2 class="section-title">Assigned Artists ({{ show.artists.length }})</h2>
-        <p class="slots-info">{{ artistsLeft }} slot{{ artistsLeft !== 1 ? 's' : '' }} left (max 4)</p>
+        <p class="slots-info">
+          {{ artistsLeft }} slot{{ artistsLeft !== 1 ? 's' : '' }} left (max 4)
+        </p>
 
         <!-- Assignment Form -->
         <template v-if="artistsLeft > 0 && show.available_artists.length > 0">
@@ -1076,7 +1482,12 @@ onUnmounted(() => {
                 {{ artist.name }} ({{ artist.pronouns }})
               </option>
             </select>
-            <BaseButton variant="success" :disabled="!selectedArtistId" :loading="assigning" @click="assignArtist">
+            <BaseButton
+              variant="success"
+              :disabled="!selectedArtistId"
+              :loading="assigning"
+              @click="assignArtist"
+            >
               Assign
             </BaseButton>
           </div>
@@ -1092,8 +1503,13 @@ onUnmounted(() => {
         <div v-if="show.artists.length > 0" class="artists-list">
           <div v-for="artist in show.artists" :key="artist.id" class="artist-card">
             <div class="artist-header">
-              <img v-if="artist.pic_url" :src="artist.pic_url" :alt="artist.name" class="artist-thumb"
-                crossorigin="anonymous" />
+              <img
+                v-if="artist.pic_url"
+                :src="artist.pic_url"
+                :alt="artist.name"
+                class="artist-thumb"
+                crossorigin="anonymous"
+              />
               <div v-else class="artist-thumb-placeholder"></div>
               <div class="artist-info">
                 <router-link :to="`/artists/${artist.id}`" class="artist-name">
@@ -1107,12 +1523,32 @@ onUnmounted(() => {
             </div>
 
             <div class="download-btns">
-              <a v-if="artist.voice_url || artist.track1_url || artist.track2_url"
-                :href="`/artists/${artist.id}/download/audio`" class="tbl-dl-btn audio" title="Download Audio">AUD</a>
-              <a v-if="artist.has_pic" :href="`/artists/${artist.id}/download/images`" class="tbl-dl-btn images"
-                title="Download Images">IMG</a>
-              <a :href="`/artists/${artist.id}/download/pdf`" class="tbl-dl-btn pdf" title="Download Handout">PDF</a>
-              <a :href="`/artists/${artist.id}/download`" class="tbl-dl-btn all" title="Download Full Profile">ALL</a>
+              <a
+                v-if="artist.voice_url || artist.track1_url || artist.track2_url"
+                :href="`/artists/${artist.id}/download/audio`"
+                class="tbl-dl-btn audio"
+                title="Download Audio"
+                >AUD</a
+              >
+              <a
+                v-if="artist.has_pic"
+                :href="`/artists/${artist.id}/download/images`"
+                class="tbl-dl-btn images"
+                title="Download Images"
+                >IMG</a
+              >
+              <a
+                :href="`/artists/${artist.id}/download/pdf`"
+                class="tbl-dl-btn pdf"
+                title="Download Handout"
+                >PDF</a
+              >
+              <a
+                :href="`/artists/${artist.id}/download`"
+                class="tbl-dl-btn all"
+                title="Download Full Profile"
+                >ALL</a
+              >
             </div>
 
             <div class="audio-players">
@@ -1141,40 +1577,6 @@ onUnmounted(() => {
         <p v-else class="empty-state">No artists assigned to this show yet.</p>
       </div>
 
-      <!-- Host Assignment Section (external/brunchtime shows only) -->
-      <div v-if="!isUnheard" class="card">
-        <h2 class="section-title">Assigned Host</h2>
-
-        <template v-if="hasHost">
-          <div class="host-card">
-            <div class="host-info">
-              <span class="badge pink">🎙 {{ show.host_username }}</span>
-              <router-link :to="`/users`" class="action-link">View Users</router-link>
-            </div>
-            <BaseButton variant="ghost" size="sm" @click="unassignHost">
-              Remove
-            </BaseButton>
-          </div>
-        </template>
-
-        <template v-else>
-          <div v-if="show.available_hosts && show.available_hosts.length > 0" class="assign-form">
-            <select v-model="selectedHostId" class="select-input">
-              <option :value="null" disabled>-- Select a host --</option>
-              <option v-for="host in show.available_hosts" :key="host.id" :value="host.id">
-                {{ host.username }}
-              </option>
-            </select>
-            <BaseButton variant="success" :disabled="!selectedHostId" :loading="assigningHost" @click="assignHost">
-              Assign Host
-            </BaseButton>
-          </div>
-          <p v-else class="text-muted assign-note">
-            No host users available. Create a user with the "Host" role first.
-          </p>
-        </template>
-      </div>
-
       <!-- Metadata Section (full width) -->
       <div class="card">
         <h2 class="section-title">Metadata</h2>
@@ -1193,17 +1595,18 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="danger-zone">
+      <!-- Delete: admins only; on the external dashboard only while editing. Deletes
+           the show only (never its template). -->
+      <div v-if="isAdmin && (isUnheard || editMode)" class="danger-zone">
         <div class="danger-zone-content">
           <div class="danger-zone-info">
             <h2 class="danger-zone-title">Danger Zone</h2>
             <p class="danger-zone-description">
-              Deleting this show permanently removes its assignments and cover. <strong>This cannot be undone.</strong>
+              Deleting this show permanently removes its assignments and cover. The show template is
+              kept. <strong>This cannot be undone.</strong>
             </p>
           </div>
-          <BaseButton variant="danger" @click="showDeleteModal = true">
-            Delete Show
-          </BaseButton>
+          <BaseButton variant="danger" @click="showDeleteModal = true"> Delete Show </BaseButton>
         </div>
       </div>
     </template>
@@ -1211,21 +1614,30 @@ onUnmounted(() => {
     <!-- Delete Confirmation Modal -->
     <BaseModal :open="showDeleteModal" title="Delete Show" @close="showDeleteModal = false">
       <p>Really delete this show?</p>
-      <p class="text-muted">This will remove all artist assignments from it. This cannot be undone.</p>
+      <p class="text-muted">
+        This will remove all artist assignments from it. This cannot be undone.
+      </p>
       <template #footer>
         <BaseButton variant="ghost" @click="showDeleteModal = false">Cancel</BaseButton>
-        <BaseButton variant="danger" :loading="deleting" @click="deleteShow">
-          Delete
-        </BaseButton>
+        <BaseButton variant="danger" :loading="deleting" @click="deleteShow"> Delete </BaseButton>
       </template>
     </BaseModal>
 
-    <!-- Instagram Preview Modal (UNHEARD only) -->
-    <BaseModal v-if="isUnheard" :open="showInstagramModal" title="📸 Instagram Preview" size="lg"
-      @close="showInstagramModal = false">
+    <!-- Instagram Preview Modal (all show types) -->
+    <BaseModal
+      :open="showInstagramModal"
+      title="📸 Instagram Preview"
+      size="lg"
+      @close="showInstagramModal = false"
+    >
       <div class="ig-preview-layout">
         <div class="ig-preview-media">
-          <img v-if="show?.cover_url" :src="show.cover_url" alt="Show cover" class="ig-preview-img" />
+          <img
+            v-if="show?.cover_url"
+            :src="show.cover_url"
+            alt="Show cover"
+            class="ig-preview-img"
+          />
           <div v-else class="ig-preview-placeholder">No cover</div>
         </div>
         <div class="ig-preview-caption">
@@ -1244,16 +1656,23 @@ onUnmounted(() => {
             <option value="prod">📡 moafunk_radio</option>
           </select>
         </div>
-        <BaseButton variant="primary" :loading="postingToInstagram" :disabled="!show?.ai_bio || !show?.cover_url"
-          @click="postToInstagram()">
+        <BaseButton
+          variant="primary"
+          :loading="postingToInstagram"
+          :disabled="!show?.ai_bio || !show?.cover_url"
+          @click="postToInstagram()"
+        >
           📤 Publish
         </BaseButton>
       </template>
     </BaseModal>
 
-    <!-- Instagram Re-post Confirmation Modal (UNHEARD only) -->
-    <BaseModal v-if="isUnheard" :open="showInstagramConfirmModal" title="Post to Instagram Again?"
-      @close="showInstagramConfirmModal = false">
+    <!-- Instagram Re-post Confirmation Modal (all show types) -->
+    <BaseModal
+      :open="showInstagramConfirmModal"
+      title="Post to Instagram Again?"
+      @close="showInstagramConfirmModal = false"
+    >
       <p>This show was already posted to Instagram.</p>
       <p class="text-muted">Do you want to post it again? This will create a duplicate post.</p>
       <template #footer>
@@ -1267,6 +1686,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.show-detail-page {
+  padding-left: clamp(var(--spacing-xl), 6vw, 6rem);
+  padding-right: clamp(var(--spacing-xl), 6vw, 6rem);
+}
+
 .back-link {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
@@ -1281,6 +1705,189 @@ onUnmounted(() => {
 
 .card {
   margin-bottom: var(--spacing-lg);
+}
+
+/* ── External/brunchtime dashboard ──────────────────────────────────────── */
+.dash-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+}
+
+.dash-eyebrow {
+  margin: 0 0 2px;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.dash-header-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex: 0 0 auto;
+}
+
+.dash-label {
+  margin: 0 0 var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  align-items: stretch;
+  margin-bottom: var(--spacing-lg);
+}
+
+.dash-grid > .card {
+  margin-bottom: 0;
+}
+
+.hero-card {
+  display: flex;
+  gap: var(--spacing-xl);
+  align-items: flex-start;
+}
+
+.hero-cover {
+  position: relative;
+  flex: 0 0 auto;
+  width: 200px;
+  height: 200px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-surface-alt);
+}
+
+.hero-cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hero-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  color: #fff;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--color-primary) 0,
+    var(--color-primary) 10px,
+    var(--color-surface-alt) 10px,
+    var(--color-surface-alt) 20px
+  );
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.hero-cover-ico {
+  font-size: 2rem;
+}
+
+.cover-replace {
+  position: absolute;
+  left: var(--spacing-sm);
+  bottom: var(--spacing-sm);
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font-size: var(--font-size-sm);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  cursor: pointer;
+}
+
+.cover-replace:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.hero-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hero-title {
+  margin: 0 0 var(--spacing-lg);
+  font-size: 1.8em;
+  font-weight: 700;
+}
+
+.hero-desc {
+  margin: 0;
+  line-height: var(--line-height-relaxed, 1.6);
+  color: var(--color-text);
+}
+
+.info-tile .section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.tile-value {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.tile-sub {
+  margin: 2px 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.host-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.host-avatar {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-success-bg);
+  color: var(--color-success);
+  font-weight: 700;
+}
+
+@media (max-width: 768px) {
+  .dash-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-card {
+    flex-direction: column;
+  }
+
+  .hero-cover {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+  }
 }
 
 .top-grid {
@@ -1386,7 +1993,7 @@ onUnmounted(() => {
   gap: var(--spacing-sm);
 }
 
-.recording-actions>* {
+.recording-actions > * {
   flex: 1;
 }
 
@@ -1623,7 +2230,6 @@ onUnmounted(() => {
   margin: 6px 0 var(--spacing-md);
 }
 
-
 .cover-card {
   height: fit-content;
 }
@@ -1656,19 +2262,12 @@ onUnmounted(() => {
   margin-bottom: var(--spacing-md);
 }
 
-.host-card {
+.host-edit {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--spacing-md);
-  background: var(--color-surface-alt);
-  border-radius: var(--radius-md);
-}
-
-.host-info {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
 }
 
 .select-input {
@@ -1989,7 +2588,6 @@ onUnmounted(() => {
   justify-content: flex-end;
   margin-top: var(--spacing-sm);
 }
-
 
 .download-list {
   display: flex;

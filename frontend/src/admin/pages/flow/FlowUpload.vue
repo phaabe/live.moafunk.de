@@ -104,7 +104,7 @@ async function goBack() {
     }
   }
   await flow.revertToMode();
-  router.push('/stream/mode');
+  router.push(flow.showId.value ? `/shows/${flow.showId.value}` : '/stream/select');
 }
 </script>
 
@@ -125,20 +125,16 @@ async function goBack() {
         </div>
       </div>
       <div class="existing-actions">
-        <button class="btn-primary" @click="router.push('/stream/confirm')">
-          Continue →
-        </button>
-        <button class="btn-secondary" @click="deleteAndReupload">
-          Re-upload
-        </button>
-        <button class="btn-danger-outline" @click="confirmDelete">
-          Delete Upload
-        </button>
+        <button class="btn-primary" @click="router.push('/stream/confirm')">Continue →</button>
+        <button class="btn-secondary" @click="deleteAndReupload">Re-upload</button>
+        <button class="btn-danger-outline" @click="confirmDelete">Delete Upload</button>
       </div>
 
       <!-- Delete confirmation -->
       <div v-if="showDeleteConfirm" class="delete-confirm">
-        <p class="delete-confirm-text">Are you sure you want to delete this upload? This cannot be undone.</p>
+        <p class="delete-confirm-text">
+          Are you sure you want to delete this upload? This cannot be undone.
+        </p>
         <div class="delete-confirm-actions">
           <button class="btn-secondary" @click="cancelDelete">Cancel</button>
           <button class="btn-danger" @click="deleteUpload">Yes, Delete</button>
@@ -149,8 +145,14 @@ async function goBack() {
     <!-- Upload area -->
     <template v-else>
       <!-- Drop zone -->
-      <div v-if="!flow.uploading.value" :class="['drop-zone', { dragging: isDragging }]" @dragover="handleDragOver"
-        @dragleave="handleDragLeave" @drop="handleDrop" @click="($refs.fileInput as HTMLInputElement)?.click()">
+      <div
+        v-if="!flow.uploading.value"
+        :class="['drop-zone', { dragging: isDragging }]"
+        @dragover="handleDragOver"
+        @dragleave="handleDragLeave"
+        @drop="handleDrop"
+        @click="($refs.fileInput as HTMLInputElement)?.click()"
+      >
         <div v-if="!selectedFile" class="drop-zone-content">
           <span class="drop-icon">📁</span>
           <p class="drop-text">Drag & drop your audio file here</p>
@@ -161,21 +163,31 @@ async function goBack() {
           <p class="file-name-large">{{ selectedFile.name }}</p>
           <p class="file-size">{{ formatSize(selectedFile.size) }}</p>
         </div>
-        <input ref="fileInput" type="file" accept="audio/*" class="file-input-hidden" @change="handleFileInput" />
+        <input
+          ref="fileInput"
+          type="file"
+          accept="audio/*"
+          class="file-input-hidden"
+          @change="handleFileInput"
+        />
       </div>
 
       <!-- Upload progress -->
       <div v-if="flow.uploading.value && flow.uploadProgress.value" class="upload-progress">
         <div class="progress-info">
           <span>{{ selectedFile?.name }}</span>
-          <span>{{ flow.uploadProgress.value.phase === 'finalizing' ? 'Finalizing...' :
-            `${flow.uploadProgress.value.percent}%` }}</span>
+          <span>{{
+            flow.uploadProgress.value.phase === 'finalizing'
+              ? 'Finalizing...'
+              : `${flow.uploadProgress.value.percent}%`
+          }}</span>
         </div>
         <div class="progress-bar">
           <div class="progress-fill" :style="{ width: `${flow.uploadProgress.value.percent}%` }" />
         </div>
         <p v-if="flow.uploadProgress.value.totalChunks" class="progress-detail">
-          Chunk {{ flow.uploadProgress.value.chunkIndex }} / {{ flow.uploadProgress.value.totalChunks }}
+          Chunk {{ flow.uploadProgress.value.chunkIndex }} /
+          {{ flow.uploadProgress.value.totalChunks }}
         </p>
       </div>
 
@@ -186,10 +198,12 @@ async function goBack() {
 
       <!-- Actions -->
       <div class="flow-upload-actions">
-        <button class="btn-secondary" @click="goBack">
-          ← Back
-        </button>
-        <button v-if="selectedFile && !flow.uploading.value" class="btn-primary" @click="startUpload">
+        <button class="btn-secondary" @click="goBack">← Back</button>
+        <button
+          v-if="selectedFile && !flow.uploading.value"
+          class="btn-primary"
+          @click="startUpload"
+        >
           Upload
         </button>
       </div>

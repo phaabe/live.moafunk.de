@@ -19,12 +19,16 @@ const streamEnded = ref(false);
 // ─── Shared date formatting ─────────────────────────────────────────────────
 function fmtDateTime(date: string, time: string): string {
   const d = new Date(date + 'T' + time + ':00');
-  return d.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }) + ' · ' + time;
+  return (
+    d.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }) +
+    ' · ' +
+    time
+  );
 }
 
 function computeEndDate(date: string, startTime: string, endTime: string): string {
@@ -121,8 +125,7 @@ function updateCountdown() {
   const hours = Math.floor(diff / 3600);
   const minutes = Math.floor((diff % 3600) / 60);
   const seconds = diff % 60;
-  countdownText.value =
-    `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  countdownText.value = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 // ─── Beep ───────────────────────────────────────────────────────────────────
@@ -251,9 +254,10 @@ function updateElapsed() {
   const h = Math.floor(diff / 3600);
   const m = Math.floor((diff % 3600) / 60);
   const s = diff % 60;
-  elapsedText.value = h > 0
-    ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  elapsedText.value =
+    h > 0
+      ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+      : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function stopElapsed() {
@@ -271,7 +275,7 @@ function handleStop() {
   streamSocket.stopStream();
   audioCapture?.stopCapture();
   if (isRecording.value) {
-    recordingApi.stop().catch(() => { });
+    recordingApi.stop().catch(() => {});
     isRecording.value = false;
   }
   streamEnded.value = true;
@@ -302,7 +306,7 @@ async function handleStopAndChangeSettings() {
     audioCapture?.stopCapture();
   }
   if (isRecording.value) {
-    recordingApi.stop().catch(() => { });
+    recordingApi.stop().catch(() => {});
     isRecording.value = false;
   }
   stopElapsed();
@@ -312,7 +316,7 @@ async function handleStopAndChangeSettings() {
   }
   await flow.stopStreamAndRevert();
   changingSettings.value = false;
-  router.push('/stream/mode');
+  router.push(flow.showId.value ? `/shows/${flow.showId.value}` : '/stream/select');
 }
 
 // ─── Upload mode: status polling ────────────────────────────────────────────
@@ -376,13 +380,14 @@ function getEndTargetDate(): Date | null {
   if (!show.value?.date || !show.value?.end_time) return null;
   try {
     // Handle overnight shows (end time wraps past midnight)
-    const endDateStr = (show.value.start_time && show.value.end_time <= show.value.start_time)
-      ? (() => {
-        const d = new Date(`${show.value!.date}T00:00:00`);
-        d.setDate(d.getDate() + 1);
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      })()
-      : show.value.date;
+    const endDateStr =
+      show.value.start_time && show.value.end_time <= show.value.start_time
+        ? (() => {
+            const d = new Date(`${show.value!.date}T00:00:00`);
+            d.setDate(d.getDate() + 1);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          })()
+        : show.value.date;
     return flow.berlinToUtcDate(endDateStr, show.value.end_time);
   } catch {
     return null;
@@ -417,9 +422,10 @@ function updateEndTimeCountdown() {
   const h = Math.floor(diff / 3600);
   const m = Math.floor((diff % 3600) / 60);
   const s = diff % 60;
-  remainingText.value = h > 0
-    ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  remainingText.value =
+    h > 0
+      ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+      : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function stopEndTimeInterval() {
@@ -459,7 +465,7 @@ onUnmounted(() => {
     recordingPollInterval = null;
   }
   if (isRecording.value) {
-    recordingApi.stop().catch(() => { });
+    recordingApi.stop().catch(() => {});
   }
   if (isLiveMode.value && streamActive.value && !streamEnded.value) {
     streamSocket.stopStream();
@@ -481,9 +487,7 @@ onUnmounted(() => {
           Your show <strong>{{ show?.title }}</strong> has finished.
         </p>
         <p class="ended-duration">Duration: {{ elapsedText }}</p>
-        <button class="btn-primary" @click="goToDashboard">
-          Done
-        </button>
+        <button class="btn-primary" @click="goToDashboard">Done</button>
       </div>
     </template>
 
@@ -544,7 +548,11 @@ onUnmounted(() => {
             <span :class="['status-dot', uploadStreamActive ? 'live' : 'offline']"></span>
           </div>
           <p class="upload-status-text">
-            {{ uploadStreamActive ? 'Your pre-recorded set is playing' : 'Waiting for stream to start...' }}
+            {{
+              uploadStreamActive
+                ? 'Your pre-recorded set is playing'
+                : 'Waiting for stream to start...'
+            }}
           </p>
           <p class="upload-status-hint">
             The backend is handling playback automatically. You can close this page safely.
@@ -560,11 +568,16 @@ onUnmounted(() => {
 
       <!-- Stop stream & change settings -->
       <div class="change-settings-section">
-        <button class="btn-change-settings" :disabled="stopping || changingSettings"
-          @click="handleStopAndChangeSettings">
+        <button
+          class="btn-change-settings"
+          :disabled="stopping || changingSettings"
+          @click="handleStopAndChangeSettings"
+        >
           {{ changingSettings ? 'Stopping...' : '⚠ Stop Stream & Change Settings' }}
         </button>
-        <p class="change-settings-hint">This will stop the current stream and let you reconfigure your show.</p>
+        <p class="change-settings-hint">
+          This will stop the current stream and let you reconfigure your show.
+        </p>
       </div>
 
       <!-- Future feature placeholders -->
@@ -662,12 +675,17 @@ onUnmounted(() => {
       <!-- Auto-start status -->
       <div class="go-live-section">
         <p v-if="goLiveLoading" class="go-live-status">Connecting...</p>
-        <p v-if="goLiveError" class="go-live-error">{{ goLiveError }}
+        <p v-if="goLiveError" class="go-live-error">
+          {{ goLiveError }}
           <button class="btn-retry" @click="autoStarted = false">Retry</button>
         </p>
 
         <!-- Dev-only: start stream without waiting for countdown -->
-        <button v-if="isDev && !goLiveLoading && remaining > 0" class="btn-dev-start" @click="handleGoLive">
+        <button
+          v-if="isDev && !goLiveLoading && remaining > 0"
+          class="btn-dev-start"
+          @click="handleGoLive"
+        >
           🛠 Start Stream Now (dev)
         </button>
       </div>
@@ -766,7 +784,6 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-live {
-
   0%,
   100% {
     opacity: 1;
@@ -813,7 +830,6 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-rec {
-
   0%,
   100% {
     opacity: 1;
@@ -874,7 +890,6 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-warning {
-
   0%,
   100% {
     border-color: rgba(245, 158, 11, 0.4);
@@ -1140,7 +1155,6 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-yellow {
-
   0%,
   100% {
     box-shadow: 0 0 0 0 rgba(234, 179, 8, 0);
@@ -1152,7 +1166,6 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-red {
-
   0%,
   100% {
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);

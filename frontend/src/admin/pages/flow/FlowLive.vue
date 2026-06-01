@@ -228,7 +228,7 @@ function goToStream() {
 
 function goBackToMode() {
   flow.revertToMode();
-  router.push('/stream/mode');
+  router.push(flow.showId.value ? `/shows/${flow.showId.value}` : '/stream/select');
 }
 
 const isDev = import.meta.env.DEV;
@@ -262,11 +262,17 @@ onUnmounted(() => {
       <div class="device-row">
         <select v-model="selectedDevice" class="device-select" @change="handleDeviceSelect">
           <option value="">-- Select audio input --</option>
-          <option v-for="device in audioCapture.devices.value" :key="device.deviceId" :value="device.deviceId">
+          <option
+            v-for="device in audioCapture.devices.value"
+            :key="device.deviceId"
+            :value="device.deviceId"
+          >
             {{ device.label }}
           </option>
         </select>
-        <button class="btn-icon" title="Refresh devices" @click="audioCapture.listDevices()">🔄</button>
+        <button class="btn-icon" title="Refresh devices" @click="audioCapture.listDevices()">
+          🔄
+        </button>
       </div>
 
       <button class="btn-link screen-share" @click="handleScreenShare">
@@ -294,10 +300,16 @@ onUnmounted(() => {
 
       <!-- Ready -->
       <div v-if="testPhase === 'ready'" class="test-state">
-        <button class="btn-primary btn-lg" :disabled="!audioCapture.isCapturing.value" @click="runTest">
+        <button
+          class="btn-primary btn-lg"
+          :disabled="!audioCapture.isCapturing.value"
+          @click="runTest"
+        >
           🎤 Start Test
         </button>
-        <p v-if="!audioCapture.isCapturing.value" class="text-muted">Select an audio input first.</p>
+        <p v-if="!audioCapture.isCapturing.value" class="text-muted">
+          Select an audio input first.
+        </p>
       </div>
 
       <!-- Recording -->
@@ -331,7 +343,9 @@ onUnmounted(() => {
           <AudioPlayer :src="playbackUrl" label="Your test recording" />
         </div>
         <div v-else class="playback-section">
-          <p class="error-text">No audio data received from server. Sent {{ sentChunks.length }} chunks.</p>
+          <p class="error-text">
+            No audio data received from server. Sent {{ sentChunks.length }} chunks.
+          </p>
         </div>
 
         <p>Did you hear your audio clearly?</p>

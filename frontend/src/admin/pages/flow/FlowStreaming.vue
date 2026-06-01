@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import {
-  useHostFlow,
-  useAudioCapture,
-  useAudioMeter,
-  useStreamSocket,
-} from '@admin/composables';
+import { useHostFlow, useAudioCapture, useAudioMeter, useStreamSocket } from '@admin/composables';
 import { streamApi, recordingApi } from '@admin/api';
 
 const router = useRouter();
@@ -25,9 +20,10 @@ function updateElapsed() {
   const h = Math.floor(diff / 3600);
   const m = Math.floor((diff % 3600) / 60);
   const s = diff % 60;
-  elapsedText.value = h > 0
-    ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  elapsedText.value =
+    h > 0
+      ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+      : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 // ─── Composables (live mode) ────────────────────────────────────────────────
@@ -59,7 +55,7 @@ function handleStop() {
   audioCapture?.stopCapture();
   // Stop recording if active
   if (isRecording.value) {
-    recordingApi.stop().catch(() => { });
+    recordingApi.stop().catch(() => {});
     isRecording.value = false;
   }
   streamEnded.value = true;
@@ -93,7 +89,7 @@ async function handleStopAndChangeSettings() {
   }
   // Stop recording if active
   if (isRecording.value) {
-    recordingApi.stop().catch(() => { });
+    recordingApi.stop().catch(() => {});
     isRecording.value = false;
   }
   stopElapsed();
@@ -104,7 +100,7 @@ async function handleStopAndChangeSettings() {
   // Use the composable to stop stream on backend and revert to mode selection
   await flow.stopStreamAndRevert();
   changingSettings.value = false;
-  router.push('/stream/mode');
+  router.push(flow.showId.value ? `/shows/${flow.showId.value}` : '/stream/select');
 }
 
 // ─── Upload mode: status polling ────────────────────────────────────────────
@@ -189,9 +185,7 @@ function getEndTargetDate(): Date | null {
     const isoStr = `${dateStr}T${timeStr}:00`;
     const localDate = new Date(isoStr);
     // Get Berlin offset
-    const berlinNow = new Date(
-      new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' })
-    );
+    const berlinNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
     const utcNow = new Date();
     const offsetMs = berlinNow.getTime() - utcNow.getTime();
     // Target in UTC = local target - offset
@@ -231,9 +225,10 @@ function updateEndTimeCountdown() {
   const h = Math.floor(diff / 3600);
   const m = Math.floor((diff % 3600) / 60);
   const s = diff % 60;
-  remainingText.value = h > 0
-    ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  remainingText.value =
+    h > 0
+      ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+      : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function stopEndTimeInterval() {
@@ -285,7 +280,7 @@ onUnmounted(() => {
   }
   // Stop recording if still active
   if (isRecording.value) {
-    recordingApi.stop().catch(() => { });
+    recordingApi.stop().catch(() => {});
   }
   // Stop stream when leaving the streaming page (final step in flow)
   if (isLive.value && !streamEnded.value) {
@@ -306,9 +301,7 @@ onUnmounted(() => {
           Your show <strong>{{ show?.title }}</strong> has finished.
         </p>
         <p class="ended-duration">Duration: {{ elapsedText }}</p>
-        <button class="btn-primary" @click="goToShowInfo">
-          Return to Show Info
-        </button>
+        <button class="btn-primary" @click="goToShowInfo">Return to Show Info</button>
       </div>
     </template>
 
@@ -362,8 +355,15 @@ onUnmounted(() => {
           <label class="section-label">Input Volume</label>
           <div class="volume-row">
             <span class="volume-icon">🔇</span>
-            <input type="range" min="0" max="2" step="0.01" :value="volume" class="volume-slider"
-              @input="updateVolume" />
+            <input
+              type="range"
+              min="0"
+              max="2"
+              step="0.01"
+              :value="volume"
+              class="volume-slider"
+              @input="updateVolume"
+            />
             <span class="volume-icon">🔊</span>
             <span class="volume-value">{{ Math.round(volume * 100) }}%</span>
           </div>
@@ -384,7 +384,11 @@ onUnmounted(() => {
             <span :class="['status-dot', uploadStreamActive ? 'live' : 'offline']"></span>
           </div>
           <p class="upload-status-text">
-            {{ uploadStreamActive ? 'Your pre-recorded set is playing' : 'Waiting for stream to start...' }}
+            {{
+              uploadStreamActive
+                ? 'Your pre-recorded set is playing'
+                : 'Waiting for stream to start...'
+            }}
           </p>
           <p class="upload-status-hint">
             The backend is handling playback automatically. You can close this page safely.
@@ -401,11 +405,16 @@ onUnmounted(() => {
 
       <!-- Stop stream & change settings (for running shows) -->
       <div class="change-settings-section">
-        <button class="btn-change-settings" :disabled="stopping || changingSettings"
-          @click="handleStopAndChangeSettings">
+        <button
+          class="btn-change-settings"
+          :disabled="stopping || changingSettings"
+          @click="handleStopAndChangeSettings"
+        >
           {{ changingSettings ? 'Stopping...' : '⚠ Stop Stream & Change Settings' }}
         </button>
-        <p class="change-settings-hint">This will stop the current stream and let you reconfigure your show.</p>
+        <p class="change-settings-hint">
+          This will stop the current stream and let you reconfigure your show.
+        </p>
       </div>
 
       <!-- Future feature placeholders -->
@@ -503,7 +512,6 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-live {
-
   0%,
   100% {
     opacity: 1;
@@ -550,7 +558,6 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-rec {
-
   0%,
   100% {
     opacity: 1;
@@ -611,7 +618,6 @@ onUnmounted(() => {
 }
 
 @keyframes pulse-warning {
-
   0%,
   100% {
     border-color: rgba(245, 158, 11, 0.4);

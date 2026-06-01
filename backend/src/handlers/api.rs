@@ -2026,6 +2026,11 @@ pub struct ShowDetailResponse {
     soundcloud_url: Option<String>,
     soundcloud_uploaded_at: Option<String>,
     soundcloud_public: Option<bool>,
+    // Prerecorded media (external/brunchtime shows): present => "upload" mode, absent => "live"
+    prerecorded_key: Option<String>,
+    prerecorded_filename: Option<String>,
+    prerecorded_confirmed_at: Option<String>,
+    prerecorded_url: Option<String>,
     // Host assignment (external/brunchtime shows)
     host_user_id: Option<i64>,
     host_username: Option<String>,
@@ -2531,7 +2536,14 @@ pub async fn api_show_detail(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // Any authenticated user may VIEW a show's detail. Hosts can open shows from
+    // the "All Shows" overview; write access is enforced per-endpoint (see
+    // require_show_editor) and edit controls are role-gated in the UI.
+    let token = auth::get_session_from_headers(&headers);
+    let viewer = auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+    let viewer_is_admin = viewer.role_enum().can_access_admin();
 
     let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
         .bind(id)
@@ -2631,22 +2643,24 @@ pub async fn api_show_detail(
         0
     };
 
-    // Get available artists (NOT assigned to ANY show - truly unassigned) — only for UNHEARD shows
-    let available_artists: Vec<ArtistWithPronouns> = if is_unheard && artists_left > 0 {
-        sqlx::query_as(
-            r#"
+    // Get available artists (NOT assigned to ANY show - truly unassigned) — only for
+    // UNHEARD shows, and only for admins (the assignment dropdown is admin-only).
+    let available_artists: Vec<ArtistWithPronouns> =
+        if viewer_is_admin && is_unheard && artists_left > 0 {
+            sqlx::query_as(
+                r#"
             SELECT a.id, a.name, a.pronouns FROM artists a
             WHERE a.id NOT IN (
                 SELECT DISTINCT artist_id FROM artist_show_assignments
             )
             ORDER BY a.name COLLATE NOCASE
             "#,
-        )
-        .fetch_all(&state.db)
-        .await?
-    } else {
-        Vec::new()
-    };
+            )
+            .fetch_all(&state.db)
+            .await?
+        } else {
+            Vec::new()
+        };
 
     // Resolve host user for non-UNHEARD shows
     let (host_user_id, host_username, available_hosts) = if !is_unheard {
@@ -2659,16 +2673,21 @@ pub async fn api_show_detail(
             None
         };
 
-        // Available hosts: all users with role 'host' or 'admin'
-        let hosts: Vec<AvailableHost> = sqlx::query_as(
-            r#"
+        // Available hosts: all users with role 'host' or 'admin' — admin-only,
+        // since reassigning a host is an admin action.
+        let hosts: Vec<AvailableHost> = if viewer_is_admin {
+            sqlx::query_as(
+                r#"
             SELECT u.id, u.username FROM users u
             WHERE u.role IN ('host', 'admin')
             ORDER BY u.username COLLATE NOCASE
             "#,
-        )
-        .fetch_all(&state.db)
-        .await?;
+            )
+            .fetch_all(&state.db)
+            .await?
+        } else {
+            Vec::new()
+        };
 
         (show.host_user_id, host_username, hosts)
     } else {
@@ -2715,6 +2734,13 @@ pub async fn api_show_detail(
         None
     };
 
+    // Generate presigned URL for the prerecorded file if it exists (external/brunchtime upload mode)
+    let prerecorded_url = if let Some(ref key) = show.prerecorded_key {
+        storage::get_presigned_url(&state, key, 3600).await.ok()
+    } else {
+        None
+    };
+
     Ok(Json(ShowDetailResponse {
         id: show.id,
         title: show.title,
@@ -2743,6 +2769,10 @@ pub async fn api_show_detail(
         soundcloud_url: show.soundcloud_url,
         soundcloud_uploaded_at: show.soundcloud_uploaded_at,
         soundcloud_public: show.soundcloud_public,
+        prerecorded_key: show.prerecorded_key,
+        prerecorded_filename: show.prerecorded_filename,
+        prerecorded_confirmed_at: show.prerecorded_confirmed_at,
+        prerecorded_url,
         host_user_id,
         host_username,
         available_hosts,
@@ -3067,7 +3097,15 @@ pub async fn api_update_show(
     headers: HeaderMap,
     Json(req): Json<UpdateShowRequest>,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // Admins (any show) or the assigned host (their own show) may update.
+    let (user, _show) = require_show_editor(&state, &headers, id).await?;
+
+    // show_type and ai_bio are admin-only fields; hosts have no UI for them.
+    if !user.role_enum().can_access_admin() && (req.show_type.is_some() || req.ai_bio.is_some()) {
+        return Err(AppError::Forbidden(
+            "Only admins can change show type or AI bio".to_string(),
+        ));
+    }
 
     // Build dynamic update query
     let mut updates = Vec::new();
@@ -4418,14 +4456,8 @@ pub async fn api_upload_show_cover(
     headers: HeaderMap,
     mut multipart: axum::extract::Multipart,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
-
-    // Verify show exists
-    let _show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+    // Admins (any show) or the assigned host (their own show) may replace the cover.
+    let (_user, _show) = require_show_editor(&state, &headers, id).await?;
 
     // Process uploaded file
     let mut file_data: Option<Vec<u8>> = None;
@@ -5247,4 +5279,34 @@ pub async fn require_show_creator(
     }
 
     Ok(user)
+}
+
+/// Require a user allowed to EDIT a specific show: admins/superadmins (any show)
+/// or the host assigned to this show. Returns the authenticated user and the
+/// loaded show so the caller can reuse it.
+pub async fn require_show_editor(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    show_id: i64,
+) -> Result<(models::User, models::Show)> {
+    let token = auth::get_session_from_headers(headers);
+    let user = auth::get_current_user(state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+
+    let is_admin = user.role_enum().can_access_admin();
+    let is_owner = show.host_user_id == Some(user.id);
+    if !is_admin && !is_owner {
+        return Err(AppError::Forbidden(
+            "You can only edit shows you host".to_string(),
+        ));
+    }
+
+    Ok((user, show))
 }
