@@ -945,7 +945,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Header (external/brunchtime dashboard) -->
-      <div v-else class="page-header">
+      <div v-else class="page-header dash-header">
         <router-link :to="isAdmin ? '/shows' : '/stream'" class="back-link">← Back</router-link>
         <div class="dash-header-row">
           <div>
@@ -1797,6 +1797,14 @@ onUnmounted(() => {
 }
 
 /* ── External/brunchtime dashboard ──────────────────────────────────────── */
+/* Stack the dashboard header (Back on top, then a full-width title row) instead
+   of inheriting the global .page-header flex row, which would push the title to
+   the right. */
+.dash-header {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .dash-header-row {
   display: flex;
   align-items: flex-start;
