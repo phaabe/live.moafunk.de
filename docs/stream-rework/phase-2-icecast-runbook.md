@@ -46,6 +46,86 @@ Listeners on HLS/FLV are unaffected. The new `/test.mp3` mount is reachable only
 
 ---
 
+## ✅ Validated locally (2026-06-01)
+
+The full chain (NMS 2.4.9 → Liquidsoap `savonet/liquidsoap:v2.2.5` → Icecast `/test.mp3`,
+MP3 128k) was rehearsed end-to-end with the Docker harness in
+[`local-test-harness/`](local-test-harness/) and **plays on both desktop and a real
+iPhone**. So the codec/transport decision is already proven — the relay-box work below is
+about reproducing that on prod, not discovering whether it works.
+
+Two gotchas that bit us (now baked into the steps):
+
+- **Icecast answers `HEAD` (`curl -I`/`-sI`) on a mount with `400`.** Always check mounts with GET.
+- **`mksafe` serves silence if the RTMP source isn't up when the producer connects.** Symptom: the mount plays but is silent. Fix: start the source first, then (re)start the producer. Confirm real audio with `volumedetect` (silence ≈ -91 dB; live ≈ -20 dB or louder).
+
+## Tier 2 — concrete relay-box sequence (run this on prod)
+
+Fully additive: NMS 2.4.9, the backend RTMP push, and the live HLS/FLV listeners are never
+touched. Substitute `RELAY` (your SSH target) and `BOXIP` (the box's **direct public IP** —
+use this, not `stream.moafunk.de`, for the phone test; the hostname is TLS/Cloudflare-fronted
+on 443 and won't pass port 8010). Pick a `SRCPW`/`ADMPW`.
+
+**1. Recon (read-only):**
+```bash
+ssh RELAY
+sudo ss -ltnp | grep -E ':1935|:8000|:8010'   # 1935+8000 = NMS (leave alone); 8010 must be FREE
+cat /etc/os-release; free -m; df -h /
+ffmpeg -hide_banner -encoders 2>/dev/null | grep -E 'libmp3lame|aac'   # need an MP3 encoder
+```
+If `libmp3lame` is absent, skip the ffmpeg smoke test and go straight to Liquidsoap/Docker (step 5 — savonet ships lame).
+
+**2. Install + configure Icecast (⚠️ port 8010, NOT 8000 — NMS owns 8000):**
+```bash
+sudo apt-get update && sudo apt-get install -y icecast2
+sudo nano /etc/icecast2/icecast.xml   # set: <source-password>=SRCPW, <admin-password>=ADMPW, <listen-socket><port>=8010
+sudo sed -i 's/^ENABLE=false/ENABLE=true/' /etc/default/icecast2
+sudo systemctl restart icecast2
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8010/   # → 200
+```
+
+**3. Smoke test — laptop pushes a tone, box pulls → Icecast:**
+```bash
+# ON LAPTOP (RTMP 1935 is public; this is where the backend pushes):
+ffmpeg -re -f lavfi -i "sine=frequency=440:sample_rate=44100" \
+  -c:a aac -b:a 128k -f flv rtmp://stream.moafunk.de/live/stream-io-test
+#   ^ or, during a real show, skip this and pull the real "stream-io" below (read-only; doesn't disturb NMS)
+
+# ON BOX (after the push is running):
+ffmpeg -hide_banner -loglevel warning \
+  -i rtmp://127.0.0.1:1935/live/stream-io-test \
+  -c:a libmp3lame -b:a 128k -ar 44100 -ac 2 \
+  -content_type audio/mpeg -f mp3 \
+  icecast://source:SRCPW@127.0.0.1:8010/test.mp3
+
+# VERIFY (separate shell on box):
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' --max-time 3 http://127.0.0.1:8010/test.mp3  # 200 audio/mpeg
+curl -s --max-time 5 http://127.0.0.1:8010/test.mp3 -o /tmp/t.mp3
+ffmpeg -hide_banner -i /tmp/t.mp3 -af volumedetect -f null - 2>&1 | grep mean_volume                 # ~-24 dB, not -91
+```
+
+**4. iOS gate over the public internet:**
+```bash
+sudo ufw status && sudo ufw allow 8010/tcp   # if ufw active; temporary — revert after
+```
+iPhone **on cellular** (proves real public reach), Safari → `http://BOXIP:8010/test.mp3`. Must play.
+
+**5. Swap ffmpeg → Liquidsoap (production producer, #174):** `which docker && docker --version`
+```bash
+# Docker present (exact image we validated). Copy local-test-harness/liquidsoap/moafunk.liq to the
+# box, change host→127.0.0.1, the rtmp URL→rtmp://127.0.0.1:1935/live/stream-io-test, password→SRCPW:
+docker run -d --restart unless-stopped --network host \
+  -v /opt/moafunk/moafunk.liq:/moafunk.liq:ro \
+  savonet/liquidsoap:v2.2.5 liquidsoap /moafunk.liq
+```
+No Docker → install the prebuilt Liquidsoap **2.x `.deb`** from savonet's GitHub releases (`sudo apt install ./liquidsoap_*.deb`). **Do NOT** `opam install` (compiling OCaml on a 2 GB/1-vCPU box is slow/risky) and **do NOT** use apt `liquidsoap` (1.4.x, no `input.ffmpeg`). Then re-run the step-3 verification, kill the smoke-test ffmpeg, and confirm `mksafe` fallback (stop source → silence, mount stays up).
+
+**Rollback (anytime):** `sudo systemctl stop icecast2` (+ `docker stop` the liquidsoap container), `sudo ufw delete allow 8010/tcp`. NMS/backend/listeners untouched.
+
+**Stop after step 4** if you only need the prod iOS gate confirmed; step 5 is the productionizing pass. After a stable mount exists (ideally behind TLS — see Step 4 further below), wire up the **#175** admin preview player against that URL.
+
+---
+
 ## Step 0 — Pre-flight (read-only)
 
 ```bash
