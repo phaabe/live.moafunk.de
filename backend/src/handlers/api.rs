@@ -2819,6 +2819,56 @@ pub async fn api_show_detail(
     }))
 }
 
+/// Whether two same-day time windows clash. Times are zero-padded "HH:MM", so
+/// lexical comparison matches chronological order. A missing end is treated as a
+/// zero-length point at its start; identical starts always clash (catches the
+/// "two shows booked at the same time" case even when end times are absent).
+fn time_windows_overlap(
+    start_a: &str,
+    end_a: Option<&str>,
+    start_b: &str,
+    end_b: Option<&str>,
+) -> bool {
+    let end_a = end_a.unwrap_or(start_a);
+    let end_b = end_b.unwrap_or(start_b);
+    // Half-open overlap [start, end), plus an explicit equal-start collision.
+    (start_a < end_b && start_b < end_a) || start_a == start_b
+}
+
+/// Reject if the proposed window overlaps another show on the same date.
+/// `exclude_id` skips the show being edited (so it never clashes with itself).
+/// No start time → nothing to check (the window is undefined).
+async fn ensure_no_show_conflict(
+    state: &AppState,
+    date: &str,
+    start_time: Option<&str>,
+    end_time: Option<&str>,
+    exclude_id: Option<i64>,
+) -> Result<()> {
+    let Some(start) = start_time else {
+        return Ok(());
+    };
+
+    let others: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT title, start_time, end_time FROM shows \
+         WHERE date = ? AND id != ? AND start_time IS NOT NULL",
+    )
+    .bind(date)
+    .bind(exclude_id.unwrap_or(-1))
+    .fetch_all(&state.db)
+    .await?;
+
+    for (title, other_start, other_end) in others {
+        if time_windows_overlap(start, end_time, &other_start, other_end.as_deref()) {
+            return Err(AppError::Conflict(format!(
+                "This time overlaps an existing show \"{}\" on {}",
+                title, date
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateShowRequest {
     title: String,
@@ -2928,6 +2978,17 @@ pub async fn api_create_show(
         Some("prerecorded") => "prerecorded",
         _ => "live",
     };
+
+    // Refuse to double-book a slot: the new window must not overlap another show
+    // on the same date.
+    ensure_no_show_conflict(
+        &state,
+        &req.date,
+        req.start_time.as_deref(),
+        end_time.as_deref(),
+        None,
+    )
+    .await?;
 
     let result = sqlx::query(
         "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id, stream_mode, created_by) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?)",
@@ -3172,7 +3233,7 @@ pub async fn api_update_show(
     Json(req): Json<UpdateShowRequest>,
 ) -> Result<impl IntoResponse> {
     // Admins (any show) or the assigned host (their own show) may update.
-    let (user, _show) = require_show_editor(&state, &headers, id).await?;
+    let (user, existing) = require_show_editor(&state, &headers, id).await?;
 
     // show_type and ai_bio are admin-only fields; hosts have no UI for them.
     if !user.role_enum().can_access_admin() && (req.show_type.is_some() || req.ai_bio.is_some()) {
@@ -3232,6 +3293,15 @@ pub async fn api_update_show(
 
     if updates.is_empty() {
         return Err(AppError::BadRequest("No fields to update".to_string()));
+    }
+
+    // If the schedule window is being touched, make sure it doesn't collide with
+    // another show. Fall back to the show's current values for fields left unset.
+    if req.date.is_some() || req.start_time.is_some() || req.end_time.is_some() {
+        let date = req.date.as_deref().unwrap_or(&existing.date);
+        let start_time = req.start_time.as_deref().or(existing.start_time.as_deref());
+        let end_time = req.end_time.as_deref().or(existing.end_time.as_deref());
+        ensure_no_show_conflict(&state, date, start_time, end_time, Some(id)).await?;
     }
 
     let query_str = format!("UPDATE shows SET {} WHERE id = ?", updates.join(", "));
@@ -5495,4 +5565,64 @@ pub async fn require_show_editor(
     }
 
     Ok((user, show))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::time_windows_overlap;
+
+    #[test]
+    fn distinct_windows_do_not_overlap() {
+        // 20:00–22:00 vs 22:00–23:00: touch at the boundary, half-open → no clash.
+        assert!(!time_windows_overlap(
+            "20:00",
+            Some("22:00"),
+            "22:00",
+            Some("23:00")
+        ));
+        // Fully separate.
+        assert!(!time_windows_overlap(
+            "18:00",
+            Some("19:00"),
+            "20:00",
+            Some("21:00")
+        ));
+    }
+
+    #[test]
+    fn partially_overlapping_windows_clash() {
+        assert!(time_windows_overlap(
+            "20:00",
+            Some("22:00"),
+            "21:00",
+            Some("23:00")
+        ));
+        // Containment.
+        assert!(time_windows_overlap(
+            "20:00",
+            Some("23:00"),
+            "21:00",
+            Some("22:00")
+        ));
+    }
+
+    #[test]
+    fn identical_start_always_clashes() {
+        // Same start, even with no end times recorded.
+        assert!(time_windows_overlap("20:00", None, "20:00", None));
+        assert!(time_windows_overlap(
+            "20:00",
+            Some("22:00"),
+            "20:00",
+            Some("21:00")
+        ));
+    }
+
+    #[test]
+    fn missing_end_is_a_point_inside_another_window() {
+        // A start-only show at 21:00 falls inside 20:00–22:00.
+        assert!(time_windows_overlap("21:00", None, "20:00", Some("22:00")));
+        // ...but a point at 22:00 is outside the half-open [20:00, 22:00).
+        assert!(!time_windows_overlap("22:00", None, "20:00", Some("22:00")));
+    }
 }

@@ -1,21 +1,31 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 import { useShowWizard } from '../../composables';
-import { showsApi, type Show } from '../../api';
 import MonthCalendar from '../MonthCalendar.vue';
+import DayTimeline from './DayTimeline.vue';
 
 const wizard = useShowWizard();
-const { startDateTime, endDateTime } = wizard;
+const { startDateTime, endDateTime, scheduledShows, conflictingShow } = wizard;
 
-const shows = ref<Show[]>([]);
+// Match the timeline's height to the calendar's (which changes with 5/6-week
+// months) by measuring it live.
+const calWrap = ref<HTMLElement | null>(null);
+const calHeight = ref(420);
+let resizeObserver: ResizeObserver | null = null;
 
-onMounted(async () => {
-  try {
-    const res = await showsApi.overview();
-    shows.value = res.shows as Show[];
-  } catch {
-    shows.value = [];
+onMounted(() => {
+  void wizard.loadScheduledShows();
+  if (calWrap.value && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      if (calWrap.value) calHeight.value = calWrap.value.clientHeight;
+    });
+    resizeObserver.observe(calWrap.value);
+    calHeight.value = calWrap.value.clientHeight;
   }
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
 });
 
 function pad(n: number): string {
@@ -38,12 +48,38 @@ const selectedDateLabel = computed(() => {
   });
 });
 
+/** Midnight of the selected day, in epoch ms — the timeline's minute origin. */
+const dayBase = computed(() => {
+  if (!selectedDateStr.value) return null;
+  const [y, m, d] = selectedDateStr.value.split('-').map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+});
+
+/** Show window as minutes-from-midnight, so a cross-midnight end stays > start. */
+const startMinutes = computed(() =>
+  startDateTime.value && dayBase.value !== null
+    ? Math.round((startDateTime.value.getTime() - dayBase.value) / 60000)
+    : null
+);
+const endMinutes = computed(() =>
+  endDateTime.value && dayBase.value !== null
+    ? Math.round((endDateTime.value.getTime() - dayBase.value) / 60000)
+    : null
+);
+
 function onDayClick(dateStr: string) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const s = startDateTime.value;
   const e = endDateTime.value;
   startDateTime.value = new Date(y, m - 1, d, s ? s.getHours() : 20, s ? s.getMinutes() : 0);
   endDateTime.value = new Date(y, m - 1, d, e ? e.getHours() : 22, e ? e.getMinutes() : 0);
+}
+
+/** Apply a window dragged/clicked on the timeline back onto the Date refs. */
+function onTimelineUpdate({ start, end }: { start: number; end: number }) {
+  if (dayBase.value === null) return;
+  startDateTime.value = new Date(dayBase.value + start * 60000);
+  endDateTime.value = new Date(dayBase.value + end * 60000);
 }
 
 function timeModel(target: 'start' | 'end') {
@@ -71,9 +107,25 @@ const endTime = timeModel('end');
   <div class="step">
     <h2 class="step-title">When is the show?</h2>
 
-    <MonthCalendar class="compact" :shows="shows" @day-click="onDayClick" />
+    <div class="date-grid">
+      <div ref="calWrap" class="cal-wrap">
+        <MonthCalendar class="compact" :shows="scheduledShows" @day-click="onDayClick" />
+      </div>
 
-    <div v-if="selectedDateLabel" class="time-row">
+      <DayTimeline
+        v-if="selectedDateStr"
+        :date="selectedDateStr"
+        :start-minutes="startMinutes"
+        :end-minutes="endMinutes"
+        :shows="scheduledShows"
+        :conflict="!!conflictingShow"
+        :height="calHeight"
+        @update="onTimelineUpdate"
+      />
+      <div v-else class="timeline-placeholder">Pick a day in the calendar.</div>
+    </div>
+
+    <div v-if="selectedDateLabel && selectedDateStr" class="time-controls">
       <span class="selected-date">{{ selectedDateLabel }}</span>
       <div class="time-fields">
         <label class="time-field">
@@ -85,11 +137,15 @@ const endTime = timeModel('end');
           <input v-model="endTime" type="time" class="time-input" />
         </label>
       </div>
-      <p v-if="!wizard.rangeValid.value && wizard.rangeError.value" class="field-error">
+      <p v-if="conflictingShow" class="field-error">
+        This overlaps “{{ conflictingShow.title }}” ({{ conflictingShow.start_time
+        }}<template v-if="conflictingShow.end_time">–{{ conflictingShow.end_time }}</template
+        >). Pick another time.
+      </p>
+      <p v-else-if="!wizard.rangeValid.value && wizard.rangeError.value" class="field-error">
         {{ wizard.rangeError.value }}
       </p>
     </div>
-    <p v-else class="step-hint">Pick a day in the calendar above.</p>
   </div>
 </template>
 
@@ -102,27 +158,45 @@ const endTime = timeModel('end');
   text-align: center;
 }
 
-.step-hint {
-  color: var(--color-text-muted);
-  margin: var(--spacing-lg) 0 0;
-  text-align: center;
+.date-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: var(--spacing-xl);
+  align-items: start;
 }
 
-.time-row {
-  margin-top: var(--spacing-lg);
+/* Enlarge the month calendar so it matches the day timeline's height. */
+.date-grid :deep(.month-calendar.compact .vc-day) {
+  min-height: 52px;
+}
+
+.timeline-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
   text-align: center;
+  padding: var(--spacing-lg);
+}
+
+.time-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-lg);
 }
 
 .selected-date {
-  display: block;
   font-weight: var(--font-weight-bold);
   color: var(--color-text);
-  margin-bottom: var(--spacing-md);
 }
 
 .time-fields {
   display: flex;
-  justify-content: center;
   gap: var(--spacing-lg);
 }
 
@@ -151,6 +225,13 @@ const endTime = timeModel('end');
 .field-error {
   color: var(--color-error);
   font-size: var(--font-size-sm);
-  margin: var(--spacing-md) 0 0;
+  margin: 0;
+}
+
+@media (max-width: 800px) {
+  .date-grid {
+    grid-template-columns: 1fr;
+    gap: var(--spacing-lg);
+  }
 }
 </style>

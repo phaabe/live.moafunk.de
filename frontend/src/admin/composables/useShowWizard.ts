@@ -8,8 +8,10 @@ import {
   type ShowTemplate,
   type AdminUser,
   type GuestCredentials,
+  type ScheduleItem,
 } from '../api';
 import { useDateTimeRange } from './useDateTimeRange';
+import { findConflictingShow } from '../showConflict';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -56,6 +58,9 @@ const coverPreviewUrl = ref<string | null>(null);
 
 // Date / time (start + end)
 const range = useDateTimeRange();
+
+// All scheduled shows, used to block double-booking a time slot on the date step.
+const scheduledShows = ref<ScheduleItem[]>([]);
 
 // Host step: assign an existing user, or create a guest who becomes the host.
 const assignableUsers = ref<AdminUser[]>([]);
@@ -104,6 +109,11 @@ const currentStep = computed<WizardStep>(() => steps.value[stepIndex.value] ?? '
 const isFirstStep = computed(() => stepIndex.value === 0);
 const isLastStep = computed(() => stepIndex.value === steps.value.length - 1);
 
+/** The already-scheduled show whose time the chosen window overlaps, if any. */
+const conflictingShow = computed(() =>
+  findConflictingShow(range.startDateTime.value, range.endDateTime.value, scheduledShows.value)
+);
+
 /** Whether the current step is complete enough to advance. */
 const canProceed = computed(() => {
   switch (currentStep.value) {
@@ -118,7 +128,7 @@ const canProceed = computed(() => {
     case 'description':
       return true; // optional
     case 'date':
-      return range.isValid.value;
+      return range.isValid.value && conflictingShow.value === null;
     case 'host':
       // Either pick an existing user, or name a guest to create.
       return hostMode.value === 'existing'
@@ -242,6 +252,16 @@ async function loadTemplates(): Promise<void> {
   }
 }
 
+/** Load every scheduled show so the date step can block overlapping slots. */
+async function loadScheduledShows(): Promise<void> {
+  try {
+    const res = await showsApi.overview();
+    scheduledShows.value = res.shows as ScheduleItem[];
+  } catch {
+    scheduledShows.value = [];
+  }
+}
+
 async function loadAssignableUsers(): Promise<void> {
   // Non-admins can't list users; a host's only "existing" choice is themselves.
   // Default to self so they can self-assign and proceed immediately.
@@ -340,6 +360,7 @@ function start(opts: {
   newDescription.value = '';
   setCover(null);
   range.reset();
+  scheduledShows.value = [];
   assignableUsers.value = [];
   assigneeLoading.value = false;
   assigneeUserId.value = null;
@@ -378,6 +399,8 @@ export function useShowWizard() {
     endDateTime: range.endDateTime,
     rangeValid: range.isValid,
     rangeError: range.validationError,
+    scheduledShows: readonly(scheduledShows),
+    conflictingShow,
     assignableUsers: readonly(assignableUsers),
     assigneeLoading: readonly(assigneeLoading),
     assigneeUserId,
@@ -417,6 +440,7 @@ export function useShowWizard() {
     goToStep,
     setCover,
     loadTemplates,
+    loadScheduledShows,
     loadAssignableUsers,
     submit,
   };

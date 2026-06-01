@@ -64,10 +64,12 @@ function onCancel() {
 }
 
 function leave() {
-  if (isAdmin.value) {
-    router.push(createdShowId.value ? `/shows/${createdShowId.value}` : '/shows');
+  // After creation, land on the new show's detail page (hosts and guests can
+  // view it too). Fall back to the role's home if we somehow have no id.
+  if (createdShowId.value) {
+    router.push(`/shows/${createdShowId.value}`);
   } else {
-    router.push('/stream');
+    router.push(isAdmin.value ? '/shows' : '/stream');
   }
 }
 
