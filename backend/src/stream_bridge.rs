@@ -10,10 +10,17 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 /// Length of each recording segment, in seconds. A crash loses at most one.
 const SEGMENT_SECONDS: u32 = 10;
+
+/// Bounded queue between the stream write path and the recording writer task.
+/// Decouples recording from the live stream: if the recorder/disk falls behind,
+/// the queue fills and chunks are dropped (archive degrades, surfaced via
+/// `recording_failed`) instead of blocking the live broadcast. ~1024 small
+/// WebM/Opus fragments ≈ tens of seconds of slack.
+const RECORDING_CHANNEL_CAP: usize = 1024;
 
 /// Current state of the audio stream.
 pub struct StreamState {
@@ -23,9 +30,13 @@ pub struct StreamState {
     ffmpeg_stdin: Option<ChildStdin>,
     /// Handle to the FFmpeg child process.
     ffmpeg_handle: Option<Child>,
-    /// Stdin of the recording FFmpeg (segment muxer). When Some, audio chunks
-    /// are tee'd here alongside the streaming FFmpeg.
-    recording_stdin: Option<ChildStdin>,
+    /// Bounded sender to the recording writer task (which owns the recorder
+    /// FFmpeg's stdin). `try_send` is used so the live path never blocks on the
+    /// recorder. When Some, audio chunks are tee'd to the recorder.
+    recording_tx: Option<mpsc::Sender<Vec<u8>>>,
+    /// Join handle for the recording writer task, awaited at stop so queued
+    /// chunks are flushed before the recorder is finalized.
+    recording_writer: Option<tokio::task::JoinHandle<()>>,
     /// Handle to the recording FFmpeg child process.
     recording_handle: Option<Child>,
     /// Directory holding the in-progress MPEG-TS segments for this session.
@@ -51,7 +62,8 @@ impl StreamState {
             current_user: None,
             ffmpeg_stdin: None,
             ffmpeg_handle: None,
-            recording_stdin: None,
+            recording_tx: None,
+            recording_writer: None,
             recording_handle: None,
             recording_seg_dir: None,
             recording_path: None,
@@ -67,7 +79,7 @@ impl StreamState {
 
     /// Returns true if recording to file is active.
     pub fn is_recording(&self) -> bool {
-        self.recording_stdin.is_some()
+        self.recording_tx.is_some()
     }
 
     /// Returns the recording write-failure message, if a tee write has failed
@@ -199,23 +211,28 @@ impl StreamState {
             return Err(StreamError::NotStreaming);
         }
 
-        // Tee to the recording FFmpeg (segment muxer) if active. A write failure
-        // here (disk full, or the recorder died) must NOT silently corrupt the
-        // archive: surface it as a recording-failed status + error log, drop the
-        // recorder stdin (segments already flushed to disk survive), and keep the
-        // live stream running.
-        if let Some(ref mut stdin) = self.recording_stdin {
-            if let Err(e) = stdin.write_all(data).await {
-                let msg = e.to_string();
-                tracing::error!(
-                    "Recording tee write failed (archive will be incomplete): {} — segments={:?}",
-                    msg,
-                    self.recording_seg_dir
-                );
-                self.recording_failed = Some(msg);
-                // Stop teeing. Completed segments on disk are still recoverable
-                // at stop. The live stream (FFmpeg) is unaffected and continues.
-                self.recording_stdin = None;
+        // Tee to the recording writer task via a bounded, NON-BLOCKING send, so a
+        // slow/stuck recorder can never stall the live broadcast. If the queue is
+        // full (recorder/disk too slow) or the writer has stopped, the archive is
+        // marked incomplete and surfaced via `recording_failed` — but the live
+        // stream keeps running. Completed segments already on disk survive.
+        if let Some(ref tx) = self.recording_tx {
+            match tx.try_send(data.to_vec()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::error!(
+                        "Recording tee queue full — dropping chunk (recorder/disk too slow); archive will be incomplete"
+                    );
+                    self.recording_failed.get_or_insert_with(|| {
+                        "recording queue overflow (recorder/disk too slow)".to_string()
+                    });
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::error!("Recording writer task stopped — recording abandoned");
+                    self.recording_failed
+                        .get_or_insert_with(|| "recording writer stopped".to_string());
+                    self.recording_tx = None;
+                }
             }
         }
 
@@ -285,7 +302,23 @@ impl StreamState {
             .spawn()
             .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
 
-        let stdin = child.stdin.take().ok_or(StreamError::NoStdin)?;
+        let mut stdin = child.stdin.take().ok_or(StreamError::NoStdin)?;
+
+        // Dedicated writer task owns the recorder stdin and drains the bounded
+        // queue. Keeping it off the stream write path means a slow recorder backs
+        // up the queue (→ dropped chunks) rather than blocking the live stream.
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(RECORDING_CHANNEL_CAP);
+        let writer = tokio::spawn(async move {
+            while let Some(chunk) = rx.recv().await {
+                if let Err(e) = stdin.write_all(&chunk).await {
+                    tracing::error!("Recording writer: failed to write to recorder stdin: {}", e);
+                    break;
+                }
+            }
+            // Channel closed (stop) or write failed: flush + close stdin so the
+            // recorder sees EOF and finalizes its last segment.
+            let _ = stdin.shutdown().await;
+        });
 
         tracing::info!(
             "Started crash-safe segment recording to {:?} (final artifact {:?})",
@@ -293,7 +326,8 @@ impl StreamState {
             path
         );
 
-        self.recording_stdin = Some(stdin);
+        self.recording_tx = Some(tx);
+        self.recording_writer = Some(writer);
         self.recording_handle = Some(child);
         self.recording_seg_dir = Some(seg_dir);
         self.recording_path = Some(path);
@@ -310,9 +344,19 @@ impl StreamState {
         let path = self.recording_path.take();
         let seg_dir = self.recording_seg_dir.take();
 
-        // Close stdin to signal EOF so FFmpeg finalizes the last segment.
-        if let Some(mut stdin) = self.recording_stdin.take() {
-            let _ = stdin.shutdown().await;
+        // Drop the sender to close the channel; the writer task then drains any
+        // queued chunks, writes them, and shuts down the recorder stdin (EOF).
+        self.recording_tx = None;
+
+        // Wait for the writer to finish flushing queued chunks before we wait on
+        // the recorder, so the last segment includes everything that was queued.
+        if let Some(writer) = self.recording_writer.take() {
+            if tokio::time::timeout(std::time::Duration::from_secs(10), writer)
+                .await
+                .is_err()
+            {
+                tracing::warn!("Recording writer did not drain in time");
+            }
         }
 
         // Wait for the recorder to exit (it may already be dead, e.g. crash).
