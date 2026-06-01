@@ -19,7 +19,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::Command;
 
@@ -350,15 +350,54 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
     let show_id = session.show_id;
     let version = session.version_timestamp.clone();
     let marker_count = session.markers.len();
+    let markers_json = session
+        .markers_json()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
+    let finalized = upload_artifact_and_record(
+        state,
+        show_id,
+        &version,
+        &session.temp_file_path,
+        markers_json,
+        marker_count,
+        write_failure,
+    )
+    .await?;
+
+    Ok(Some(finalized))
+}
+
+/// Upload a finished raw recording artifact to R2, verify it, persist the markers
+/// JSON + a `recording_versions` row, and delete the local artifact once R2 has
+/// confirmed it.
+///
+/// This is the back half of [`finalize_and_upload`], factored out so startup
+/// orphan recovery ([`recover_orphaned_recordings`]) can reuse the exact same
+/// upload + verify + record path. `write_failure`, when set, marks the resulting
+/// DB row `failed` (the archive is known incomplete); recovery passes `None` and
+/// relies on the short-recording check for partial captures.
+///
+/// `markers_json` is the serialized markers array (recovery passes `"[]"` — a
+/// crashed session has no markers, but an empty array keeps the finalize/merge
+/// path working).
+async fn upload_artifact_and_record(
+    state: &Arc<AppState>,
+    show_id: i64,
+    version: &str,
+    artifact_path: &Path,
+    markers_json: String,
+    marker_count: usize,
+    write_failure: Option<String>,
+) -> Result<FinalizedRecording> {
     // Read the local artifact and probe its duration BEFORE upload — we keep this
     // file on disk until R2 has verified it (see cleanup below).
     let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);
-    let raw_data = tokio::fs::read(&session.temp_file_path)
+    let raw_data = tokio::fs::read(artifact_path)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to read recording file: {}", e)))?;
     let local_size = raw_data.len() as u64;
-    let local_duration_ms = audio::get_duration(&session.temp_file_path).await.ok();
+    let local_duration_ms = audio::get_duration(artifact_path).await.ok();
 
     // Resumable, integrity-checked multipart upload (explicit CRC32C). On failure
     // this returns Err and we keep the local file (never deleted unverified).
@@ -406,9 +445,6 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
 
     // Upload markers JSON to R2
     let markers_key = format!("recordings/{}/{}/markers.json", show_id, version);
-    let markers_json = session
-        .markers_json()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
 
     state
         .s3_client
@@ -429,7 +465,7 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
     match crate::db::create_recording_version(
         &state.db,
         show_id,
-        &version,
+        version,
         &raw_key,
         &markers_key,
         marker_count as i64,
@@ -471,24 +507,208 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
     // Verify-before-delete: only remove the local artifact once R2 confirms the
     // object landed intact (size match). On a mismatch we keep it for recovery.
     if size_verified {
-        if let Err(e) = tokio::fs::remove_file(&session.temp_file_path).await {
+        if let Err(e) = tokio::fs::remove_file(artifact_path).await {
             tracing::warn!("Failed to clean up temp file: {}", e);
         }
     } else {
         tracing::warn!(
             "Keeping local recording {:?} — R2 verification did not pass",
-            session.temp_file_path
+            artifact_path
         );
     }
 
-    Ok(Some(FinalizedRecording {
+    Ok(FinalizedRecording {
         show_id,
-        version,
+        version: version.to_string(),
         marker_count,
         raw_key,
         markers_key,
         incomplete,
-    }))
+    })
+}
+
+/// Parse a segment directory name `recording_{show_id}_{version}.segs` into its
+/// `(show_id, version)` parts. `version` is a `%Y-%m-%dT%H-%M-%S` timestamp and
+/// therefore contains no `_`, so splitting on the first `_` after the prefix is
+/// unambiguous. Returns `None` for any name that doesn't match the shape.
+fn parse_seg_dir_name(name: &str) -> Option<(i64, String)> {
+    let rest = name.strip_suffix(".segs")?.strip_prefix("recording_")?;
+    let (id_str, version) = rest.split_once('_')?;
+    let show_id: i64 = id_str.parse().ok()?;
+    if version.is_empty() {
+        return None;
+    }
+    Some((show_id, version.to_string()))
+}
+
+/// True if this recording was already persisted to R2 (and usually the DB), so
+/// recovery must skip it to avoid a duplicate `recording_versions` row or a
+/// re-upload to the same key. Checks the DB row first (created only after a
+/// successful upload), then falls back to a HEAD on the raw object (covers a
+/// crash between upload and DB-row creation).
+async fn recording_already_persisted(state: &Arc<AppState>, show_id: i64, version: &str) -> bool {
+    if let Ok(Some(_)) = crate::db::get_recording_version(&state.db, show_id, version).await {
+        return true;
+    }
+    let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);
+    matches!(
+        storage::head_object_size(&state.s3_client, &state.config.r2_bucket_name, &raw_key).await,
+        Ok(size) if size > 0
+    )
+}
+
+/// Recover recordings orphaned by a backend restart mid-show.
+///
+/// On a crash/restart the recorder FFmpeg is killed (`kill_on_drop`), leaving a
+/// `recording_{show_id}_{version}.segs/` directory of finalized MPEG-TS segments
+/// that nothing ever concatenates or uploads — the show would otherwise be
+/// silently lost (the dead-man's-switch alerts but can't recover it, and
+/// `cleanup_stale_files` deletes the dir after ~1 day).
+///
+/// This scans `temp_dir` for such dirs at startup and, for each one not already
+/// persisted, concatenates the segments and runs the normal upload + verify +
+/// record path ([`upload_artifact_and_record`]) with an empty markers array,
+/// then removes the seg dir. Idempotent: running it twice (or after a normal
+/// finalize) is a no-op. Failures are logged and the dir is left in place for the
+/// next attempt / the dead-man's-switch.
+///
+/// Run once at startup, before the daily temp cleanup could remove anything.
+/// Only dirs present at boot are considered; a new live session uses a fresh
+/// timestamp, so there is no collision with concurrent recording.
+pub async fn recover_orphaned_recordings(state: &Arc<AppState>, temp_dir: &Path) {
+    let mut read_dir = match tokio::fs::read_dir(temp_dir).await {
+        Ok(rd) => rd,
+        Err(e) => {
+            // A fresh install has no temp dir yet — not an error.
+            tracing::debug!(
+                "Recording recovery: nothing to scan in {:?}: {}",
+                temp_dir,
+                e
+            );
+            return;
+        }
+    };
+
+    // Snapshot the orphaned segment dirs present at boot.
+    let mut seg_dirs: Vec<PathBuf> = Vec::new();
+    loop {
+        match read_dir.next_entry().await {
+            Ok(Some(entry)) => {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("segs") && path.is_dir() {
+                    seg_dirs.push(path);
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::warn!("Recording recovery: error scanning {:?}: {}", temp_dir, e);
+                break;
+            }
+        }
+    }
+
+    if seg_dirs.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        "Recording recovery: found {} orphaned segment dir(s) to evaluate",
+        seg_dirs.len()
+    );
+
+    let (mut recovered, mut skipped, mut failed) = (0u32, 0u32, 0u32);
+    for seg_dir in seg_dirs {
+        let name = seg_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+
+        let Some((show_id, version)) = parse_seg_dir_name(name) else {
+            tracing::warn!(
+                "Recording recovery: unparseable segment dir {:?}, skipping",
+                seg_dir
+            );
+            continue;
+        };
+
+        if recording_already_persisted(state, show_id, &version).await {
+            tracing::info!(
+                "Recording recovery: show {} version {} already uploaded, removing stale seg dir",
+                show_id,
+                version
+            );
+            if let Err(e) = tokio::fs::remove_dir_all(&seg_dir).await {
+                tracing::warn!(
+                    "Recording recovery: failed to remove stale seg dir {:?}: {}",
+                    seg_dir,
+                    e
+                );
+            }
+            skipped += 1;
+            continue;
+        }
+
+        // Concat the surviving segments into the sibling artifact path
+        // (`recording_{id}_{version}.webm`), matching the normal stop path.
+        let artifact_path = seg_dir.with_extension("webm");
+        if let Err(e) = crate::stream_bridge::concat_segments(&seg_dir, &artifact_path).await {
+            // Empty/garbage dir (e.g. crash before the first segment flushed):
+            // leave it for the dead-man's-switch; never create a 0-byte object.
+            tracing::warn!(
+                "Recording recovery: cannot concat {:?} (show {} version {}): {} — leaving in place",
+                seg_dir,
+                show_id,
+                version,
+                e
+            );
+            failed += 1;
+            continue;
+        }
+
+        match upload_artifact_and_record(
+            state,
+            show_id,
+            &version,
+            &artifact_path,
+            "[]".to_string(),
+            0,
+            None,
+        )
+        .await
+        {
+            Ok(_) => {
+                tracing::info!(
+                    "Recording recovery: recovered show {} version {} from orphaned segments",
+                    show_id,
+                    version
+                );
+                if let Err(e) = tokio::fs::remove_dir_all(&seg_dir).await {
+                    tracing::warn!(
+                        "Recording recovery: failed to remove seg dir {:?} after upload: {}",
+                        seg_dir,
+                        e
+                    );
+                }
+                recovered += 1;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Recording recovery: upload failed for show {} version {}: {} — leaving seg dir for retry",
+                    show_id,
+                    version,
+                    e
+                );
+                failed += 1;
+            }
+        }
+    }
+
+    tracing::info!(
+        "Recording recovery complete: {} recovered, {} skipped, {} failed/left",
+        recovered,
+        skipped,
+        failed
+    );
 }
 
 /// Ensure a recording session is running for `show_id`, idempotently.
@@ -1348,5 +1568,54 @@ async fn send_progress_msg(
 ) {
     if let Ok(json) = serde_json::to_string(&progress) {
         let _ = sender.send(Message::Text(json.into())).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_well_formed_seg_dir_names() {
+        assert_eq!(
+            parse_seg_dir_name("recording_1_2026-01-28T19-30-00.segs"),
+            Some((1, "2026-01-28T19-30-00".to_string()))
+        );
+        // Multi-digit show id.
+        assert_eq!(
+            parse_seg_dir_name("recording_4271_2026-06-01T00-00-05.segs"),
+            Some((4271, "2026-06-01T00-00-05".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_seg_dir_names() {
+        // Missing suffix.
+        assert_eq!(parse_seg_dir_name("recording_1_2026-01-28T19-30-00"), None);
+        // Missing prefix.
+        assert_eq!(parse_seg_dir_name("1_2026-01-28T19-30-00.segs"), None);
+        // Non-numeric show id.
+        assert_eq!(
+            parse_seg_dir_name("recording_abc_2026-01-28T19-30-00.segs"),
+            None
+        );
+        // No version part.
+        assert_eq!(parse_seg_dir_name("recording_1.segs"), None);
+        // Empty version.
+        assert_eq!(parse_seg_dir_name("recording_1_.segs"), None);
+        // Unrelated file.
+        assert_eq!(parse_seg_dir_name("concat_list.txt"), None);
+    }
+
+    #[test]
+    fn seg_dir_name_roundtrips_artifact_path() {
+        // The sibling artifact recovery writes to must match the normal stop
+        // path: `recording_{id}_{version}.webm` next to the `.segs` dir.
+        let seg =
+            std::path::Path::new("/data/recordings-temp/recording_7_2026-01-28T19-30-00.segs");
+        assert_eq!(
+            seg.with_extension("webm"),
+            std::path::Path::new("/data/recordings-temp/recording_7_2026-01-28T19-30-00.webm")
+        );
     }
 }

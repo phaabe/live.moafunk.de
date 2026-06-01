@@ -664,6 +664,18 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Recover recordings orphaned by a restart mid-show: concat + upload any
+    // `*.segs/` segment dirs left on disk before the daily cleanup could delete
+    // them. Idempotent; only touches dirs present at boot (a new live session
+    // uses a fresh timestamp), so it's safe to run concurrently with startup.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let dir = std::path::PathBuf::from("./data/recordings-temp");
+            handlers::recording::recover_orphaned_recordings(&state, &dir).await;
+        });
+    }
+
     // Spawn background task to clean up orphaned recording temp files (stale
     // `recording_*.webm` artifacts and `*.segs/` segment dirs left by a crash),
     // older than ~1 day. Runs daily.
