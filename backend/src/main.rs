@@ -664,6 +664,40 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn background task to clean up orphaned recording temp files (stale
+    // `recording_*.webm` artifacts and `*.segs/` segment dirs left by a crash),
+    // older than ~1 day. Runs daily.
+    tokio::spawn(async move {
+        let dir = std::path::PathBuf::from("./data/recordings-temp");
+        let max_age = std::time::Duration::from_secs(24 * 60 * 60);
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+        loop {
+            interval.tick().await;
+            match storage::cleanup_stale_files(&dir, max_age).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("Recording temp cleanup removed {n} stale entr(y/ies)"),
+                Err(e) => tracing::error!("Recording temp cleanup failed: {e}"),
+            }
+        }
+    });
+
+    // Spawn the recording dead-man's-switch: alert (once) if a finished live show
+    // produced no recording. Checks every 5 minutes; self-guards via the
+    // `recording_alert_sent_at` column.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+            loop {
+                interval.tick().await;
+                if state.telegram_bot.is_none() {
+                    continue;
+                }
+                scheduler::check_missing_recordings(state.clone()).await;
+            }
+        });
+    }
+
     let addr = format!("{}:{}", config.host, config.port);
     tracing::info!("Starting server on {}", addr);
 

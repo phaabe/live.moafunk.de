@@ -216,6 +216,57 @@ pub async fn ensure_multipart_abort_lifecycle(client: &aws_sdk_s3::Client, bucke
     }
 }
 
+/// Remove entries in `dir` whose modification time is older than `max_age`.
+///
+/// Handles both stale recording files (`recording_*.webm`) and orphaned segment
+/// directories (`*.segs/` left by a crashed recorder). Returns the count removed.
+/// Best-effort: a missing dir is a no-op, and per-entry errors are logged, not
+/// propagated, so a scheduled sweep never aborts mid-way.
+pub async fn cleanup_stale_files(
+    dir: &std::path::Path,
+    max_age: std::time::Duration,
+) -> std::io::Result<usize> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+
+    let now = std::time::SystemTime::now();
+    let mut removed = 0usize;
+    while let Some(entry) = entries.next_entry().await? {
+        let meta = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified = match meta.modified() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let age = now
+            .duration_since(modified)
+            .unwrap_or(std::time::Duration::ZERO);
+        if age < max_age {
+            continue;
+        }
+
+        let path = entry.path();
+        let result = if meta.is_dir() {
+            tokio::fs::remove_dir_all(&path).await
+        } else {
+            tokio::fs::remove_file(&path).await
+        };
+        match result {
+            Ok(()) => {
+                removed += 1;
+                tracing::info!("Cleaned up stale temp entry {:?}", path);
+            }
+            Err(e) => tracing::warn!("Failed to remove stale temp entry {:?}: {}", path, e),
+        }
+    }
+    Ok(removed)
+}
+
 /// List all objects in the bucket matching a given key prefix.
 pub async fn list_objects(state: &Arc<AppState>, prefix: &str) -> Result<Vec<StorageObject>> {
     let mut objects = Vec::new();
@@ -935,6 +986,49 @@ pub async fn upload_audio_to_pending_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cleanup_removes_old_keeps_fresh_and_tolerates_missing_dir() {
+        use std::time::Duration;
+
+        // Missing directory → no-op, not an error.
+        let missing = std::path::Path::new("/tmp/does-not-exist-xyz-170");
+        assert_eq!(
+            cleanup_stale_files(missing, Duration::ZERO).await.unwrap(),
+            0
+        );
+
+        let dir = tempfile::TempDir::new().unwrap();
+        // A stale file and a stale segment directory.
+        tokio::fs::write(dir.path().join("recording_1.webm"), b"x")
+            .await
+            .unwrap();
+        tokio::fs::create_dir(dir.path().join("recording_1.segs"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("recording_1.segs/seg_00000.ts"), b"y")
+            .await
+            .unwrap();
+
+        // max_age 1h: nothing is that old yet → kept.
+        assert_eq!(
+            cleanup_stale_files(dir.path(), Duration::from_secs(3600))
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(dir.path().join("recording_1.webm").exists());
+
+        // max_age 0: everything qualifies → file + dir removed (2 entries).
+        assert_eq!(
+            cleanup_stale_files(dir.path(), Duration::ZERO)
+                .await
+                .unwrap(),
+            2
+        );
+        assert!(!dir.path().join("recording_1.webm").exists());
+        assert!(!dir.path().join("recording_1.segs").exists());
+    }
 
     /// Integration test against a **real R2 bucket**. Validates the checksum
     /// landmine fix end-to-end: a multi-part upload with explicit CRC32C must
