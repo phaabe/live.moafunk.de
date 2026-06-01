@@ -537,7 +537,11 @@ fn build_concat_list(segments: &[PathBuf]) -> String {
 /// matches their chronological order. Uses stream copy (`-c copy`) so there's no
 /// re-encode, and forces `-f mpegts` because the output path keeps a legacy
 /// `.webm` extension for R2-layout compatibility.
-async fn concat_segments(seg_dir: &Path, output: &Path) -> Result<(), StreamError> {
+///
+/// `pub(crate)` so startup orphan recovery (see
+/// [`crate::handlers::recording::recover_orphaned_recordings`]) can reuse it for
+/// segment dirs left behind by a crash mid-show.
+pub(crate) async fn concat_segments(seg_dir: &Path, output: &Path) -> Result<(), StreamError> {
     // Collect + sort the segment files.
     let mut segments: Vec<PathBuf> = Vec::new();
     let mut entries = tokio::fs::read_dir(seg_dir)
