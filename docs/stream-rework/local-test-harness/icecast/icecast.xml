@@ -1,0 +1,53 @@
+<icecast>
+  <location>local</location>
+  <admin>admin@localhost</admin>
+
+  <limits>
+    <clients>50</clients>
+    <sources>4</sources>
+    <queue-size>524288</queue-size>
+    <burst-on-connect>1</burst-on-connect>
+    <burst-size>65536</burst-size>
+  </limits>
+
+  <!-- LOCAL-ONLY credentials. Must match liquidsoap/moafunk.liq. -->
+  <authentication>
+    <source-password>localsource</source-password>
+    <relay-password>localrelay</relay-password>
+    <admin-user>admin</admin-user>
+    <admin-password>localadmin</admin-password>
+  </authentication>
+
+  <listen-socket>
+    <port>8000</port>
+  </listen-socket>
+
+  <!-- The new MP3 mount (iOS-safe codec). Mounts are dynamic in Icecast; this
+       block just pins limits/visibility for parity with the prod runbook. -->
+  <mount type="normal">
+    <mount-name>/test.mp3</mount-name>
+    <max-listeners>50</max-listeners>
+    <public>0</public>
+  </mount>
+
+  <fileserve>1</fileserve>
+
+  <paths>
+    <logdir>/var/log/icecast2</logdir>
+    <webroot>/usr/share/icecast2/web</webroot>
+    <adminroot>/usr/share/icecast2/admin</adminroot>
+  </paths>
+
+  <!-- Started as root in the container, then drops to the icecast2 user. -->
+  <security>
+    <chroot>0</chroot>
+    <changeowner>
+      <user>icecast2</user>
+      <group>icecast</group>
+    </changeowner>
+  </security>
+
+  <logging>
+    <loglevel>3</loglevel>
+  </logging>
+</icecast>
