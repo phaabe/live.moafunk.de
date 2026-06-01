@@ -395,7 +395,6 @@ async function enterFlow(mode: 'prerecorded' | 'live') {
   }
 }
 
-const goToUploadFlow = () => enterFlow('prerecorded');
 /** Launch the user story for the currently selected media type. */
 const launchFlow = () => enterFlow(mediaMode.value === 'live' ? 'live' : 'prerecorded');
 
@@ -929,13 +928,14 @@ onUnmounted(() => {
 
       <!-- ===================== External / brunchtime dashboard ===================== -->
       <template v-if="!isUnheard">
-        <!-- Deadline banner (upload mode, not yet confirmed) -->
+        <!-- Deadline banner: countdown to air for live, or upload-status for upload mode -->
         <ShowDeadlineBanner
-          v-if="mediaMode === 'upload' && !show.prerecorded_confirmed_at"
+          v-if="mediaMode === 'live' || !show.prerecorded_confirmed_at"
           :show="show"
+          :mode="mediaMode"
           :air-target="airTarget"
-          :can-upload="canManageMedia"
-          @upload="goToUploadFlow"
+          :can-act="canManageMedia"
+          @action="launchFlow"
         />
 
         <!-- Hero: cover + title + description -->
@@ -1548,8 +1548,8 @@ onUnmounted(() => {
         <p v-else class="empty-state">No artists assigned to this show yet.</p>
       </div>
 
-      <!-- Host Assignment Section (external/brunchtime shows only, admin only) -->
-      <div v-if="!isUnheard && isAdmin" class="card">
+      <!-- Host Assignment Section (external/brunchtime, admin, edit mode only) -->
+      <div v-if="!isUnheard && isAdmin && editMode" class="card">
         <h2 class="section-title">Assigned Host</h2>
 
         <template v-if="hasHost">
@@ -1603,13 +1603,15 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-if="isAdmin" class="danger-zone">
+      <!-- Delete: admins only; on the external dashboard only while editing. Deletes
+           the show only (never its template). -->
+      <div v-if="isAdmin && (isUnheard || editMode)" class="danger-zone">
         <div class="danger-zone-content">
           <div class="danger-zone-info">
             <h2 class="danger-zone-title">Danger Zone</h2>
             <p class="danger-zone-description">
-              Deleting this show permanently removes its assignments and cover.
-              <strong>This cannot be undone.</strong>
+              Deleting this show permanently removes its assignments and cover. The show template is
+              kept. <strong>This cannot be undone.</strong>
             </p>
           </div>
           <BaseButton variant="danger" @click="showDeleteModal = true"> Delete Show </BaseButton>
@@ -1693,8 +1695,8 @@ onUnmounted(() => {
 
 <style scoped>
 .show-detail-page {
-  padding-left: var(--spacing-xl);
-  padding-right: var(--spacing-xl);
+  padding-left: clamp(var(--spacing-xl), 6vw, 6rem);
+  padding-right: clamp(var(--spacing-xl), 6vw, 6rem);
 }
 
 .back-link {

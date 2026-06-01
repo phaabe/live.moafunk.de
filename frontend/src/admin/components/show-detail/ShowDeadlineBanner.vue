@@ -5,13 +5,15 @@ import { BaseButton } from '@shared/components';
 
 const props = defineProps<{
   show: ShowDetail;
+  /** Selected media mode. */
+  mode: 'live' | 'upload';
   /** Air datetime (UTC) used for the countdown, or null if unknown. */
   airTarget: Date | null;
-  /** Whether the current viewer (assigned host) may upload. */
-  canUpload: boolean;
+  /** Whether the current viewer (assigned host) may act (upload / go live). */
+  canAct: boolean;
 }>();
 
-const emit = defineEmits<{ upload: [] }>();
+const emit = defineEmits<{ action: [] }>();
 
 const hasFile = computed(() => !!props.show.prerecorded_key);
 
@@ -45,22 +47,39 @@ const countdown = computed(() => {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${pad(d)}d ${pad(h)}h ${pad(m)}m ${pad(s)}s`;
 });
+
+/** Which visual state to render. */
+const state = computed<'live' | 'no-file' | 'unconfirmed'>(() => {
+  if (props.mode === 'live') return 'live';
+  return hasFile.value ? 'unconfirmed' : 'no-file';
+});
 </script>
 
 <template>
-  <!-- Uploaded but not yet confirmed -->
-  <div v-if="hasFile" class="deadline-banner warn">
+  <!-- Live: countdown to air -->
+  <div v-if="state === 'live'" class="deadline-banner info">
+    <div class="banner-icon">📡</div>
+    <div class="banner-body">
+      <p class="banner-label">{{ overdue ? 'ON AIR NOW' : 'SHOW GOES LIVE IN' }}</p>
+      <p class="banner-title">{{ overdue ? 'Air time reached' : countdown }}</p>
+      <p class="banner-sub">Live show — be ready to stream at air time.</p>
+    </div>
+    <BaseButton v-if="canAct" variant="primary" @click="emit('action')"> 📡 Go live </BaseButton>
+  </div>
+
+  <!-- Upload, file present but not confirmed -->
+  <div v-else-if="state === 'unconfirmed'" class="deadline-banner warn">
     <div class="banner-icon">⏳</div>
     <div class="banner-body">
       <p class="banner-label">FILE UPLOADED — NOT CONFIRMED</p>
-      <p class="banner-title">Confirm before air time</p>
+      <p class="banner-title">{{ overdue ? 'Air time reached' : countdown }}</p>
       <p class="banner-sub">
-        {{ show.prerecorded_filename || 'A file' }} is uploaded. Mark it as uploaded to lock it in.
+        {{ show.prerecorded_filename || 'A file' }} is uploaded but not yet confirmed.
       </p>
     </div>
   </div>
 
-  <!-- No file submitted yet -->
+  <!-- Upload, no file submitted yet -->
   <div v-else class="deadline-banner danger">
     <div class="banner-icon">🚫</div>
     <div class="banner-body">
@@ -68,9 +87,7 @@ const countdown = computed(() => {
       <p class="banner-title">{{ overdue ? 'Air time reached' : countdown }}</p>
       <p class="banner-sub">No file submitted yet. Upload before air time.</p>
     </div>
-    <BaseButton v-if="canUpload" variant="primary" @click="emit('upload')">
-      ⬆ Upload show
-    </BaseButton>
+    <BaseButton v-if="canAct" variant="primary" @click="emit('action')"> ⬆ Upload show </BaseButton>
   </div>
 </template>
 
@@ -93,6 +110,11 @@ const countdown = computed(() => {
 .deadline-banner.warn {
   background: var(--color-warning-bg);
   border-color: var(--color-warning);
+}
+
+.deadline-banner.info {
+  background: var(--color-surface);
+  border-color: var(--color-primary);
 }
 
 .banner-icon {
