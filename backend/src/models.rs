@@ -114,6 +114,19 @@ pub struct Show {
     pub host_user_id: Option<i64>,
 }
 
+/// Reusable show template: a per-user bundle of presentation content
+/// (name, description, optional cover) used to spin up shows quickly.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ShowTemplate {
+    pub id: i64,
+    pub owner_user_id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub cover_key: Option<String>,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SubmitResponse {
     pub success: bool,

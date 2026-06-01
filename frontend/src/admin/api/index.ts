@@ -479,7 +479,8 @@ export const showsApi = {
 
   get: (id: number) => api.get<ShowDetail>(`/api/shows/${id}`),
 
-  create: (data: Partial<Show>) => api.post<Show>('/api/shows', data),
+  create: (data: Partial<Show> & { template_id?: number; host_user_id?: number }) =>
+    api.post<Show>('/api/shows', data),
 
   update: (id: number, data: Partial<Show>) => api.put<Show>(`/api/shows/${id}`, data),
 
@@ -716,6 +717,40 @@ export const showsApi = {
     }
     return response.json();
   },
+};
+
+// Show Templates API — per-user reusable (name + cover + description) bundles
+export interface ShowTemplate {
+  id: number;
+  name: string;
+  description?: string;
+  cover_url?: string;
+  created_at: string;
+}
+
+export const showTemplatesApi = {
+  /** List the current user's templates (with presigned cover URLs). */
+  list: () => api.get<{ templates: ShowTemplate[] }>('/api/show-templates'),
+
+  create: (data: { name: string; description?: string }) =>
+    api.post<{ id: number; name: string; description?: string }>('/api/show-templates', data),
+
+  uploadCover: async (
+    templateId: number,
+    file: File
+  ): Promise<{ success: boolean; cover_url?: string }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const resp = await fetch(`/api/show-templates/${templateId}/cover`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    return resp.json();
+  },
+
+  delete: (id: number) => api.delete<void>(`/api/show-templates/${id}`),
 };
 
 // SoundCloud API

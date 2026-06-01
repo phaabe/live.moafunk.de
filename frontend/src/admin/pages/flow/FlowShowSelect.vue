@@ -2,17 +2,18 @@
 import { computed, ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow } from '@admin/composables';
-import { showsApi, type MyShowInfo, type Show, type ShowOverviewItem } from '@admin/api';
+import { showsApi, type MyShowInfo, type ShowOverviewItem } from '@admin/api';
 import { BaseButton, BaseModal } from '@shared/components';
-import ShowCreateModal from '@admin/components/ShowCreateModal.vue';
 
 const router = useRouter();
 const flow = useHostFlow();
 
 // Filter out shows that have already ended
-const shows = computed(() => flow.shows.value.filter(s => !flow.isShowEnded(s)));
+const shows = computed(() => flow.shows.value.filter((s) => !flow.isShowEnded(s)));
 
-const showCreateModal = ref(false);
+function openCreateWizard() {
+  router.push('/shows/new');
+}
 
 // Read-only overview of the full schedule (incl. other users' shows).
 const allShows = ref<ShowOverviewItem[]>([]);
@@ -34,14 +35,6 @@ onMounted(loadAllShows);
 /** Open the read-only detail modal for any show in the overview. */
 function openDetail(s: ShowOverviewItem) {
   detailShow.value = s;
-}
-
-/** After a host creates a show, reload the flow and jump straight into it. */
-async function onShowCreated(show: Show) {
-  showCreateModal.value = false;
-  await Promise.all([flow.fetchMyShow(), loadAllShows()]);
-  const created = flow.shows.value.find((s) => s.id === show.id);
-  if (created) pickShow(created);
 }
 
 /** Format a date string into a readable date */
@@ -95,10 +88,14 @@ function pickShow(s: MyShowInfo) {
 /** Show type badge text */
 function showTypeBadge(type: string): string {
   switch (type) {
-    case 'unheard': return 'UNHEARD';
-    case 'brunchtime': return 'Brunchtime';
-    case 'external': return 'External';
-    default: return type;
+    case 'unheard':
+      return 'UNHEARD';
+    case 'brunchtime':
+      return 'Brunchtime';
+    case 'external':
+      return 'External';
+    default:
+      return type;
   }
 }
 </script>
@@ -110,12 +107,12 @@ function showTypeBadge(type: string): string {
         <h1 class="flow-select-title">My Shows</h1>
         <p class="flow-select-subtitle">Select a show to prepare for streaming.</p>
       </div>
-      <BaseButton variant="primary" @click="showCreateModal = true">+ New Show</BaseButton>
+      <BaseButton variant="primary" @click="openCreateWizard">+ New Show</BaseButton>
     </div>
 
     <div v-if="shows.length === 0" class="flow-select-empty">
       <p class="text-muted">No shows yet.</p>
-      <BaseButton variant="primary" @click="showCreateModal = true">+ New Show</BaseButton>
+      <BaseButton variant="primary" @click="openCreateWizard">+ New Show</BaseButton>
     </div>
 
     <div class="show-cards">
@@ -134,9 +131,7 @@ function showTypeBadge(type: string): string {
             {{ artist.name }}
           </span>
         </div>
-        <div v-if="flow.isShowRunning(s)" class="show-card-status status-live">
-          🔴 Live Now
-        </div>
+        <div v-if="flow.isShowRunning(s)" class="show-card-status status-live">🔴 Live Now</div>
         <div v-else-if="s.prerecorded_confirmed_at" class="show-card-status status-confirmed">
           ✓ Pre-recorded &amp; confirmed
         </div>
@@ -175,12 +170,6 @@ function showTypeBadge(type: string): string {
       </div>
     </section>
 
-    <ShowCreateModal
-      :open="showCreateModal"
-      @close="showCreateModal = false"
-      @created="onShowCreated"
-    />
-
     <!-- Read-only show detail -->
     <BaseModal :open="!!detailShow" :title="detailShow?.title" @close="detailShow = null">
       <div v-if="detailShow" class="detail">
@@ -195,7 +184,8 @@ function showTypeBadge(type: string): string {
         <div v-if="detailShow.start_time" class="detail-row">
           <span class="detail-label">Time</span>
           <span>
-            {{ detailShow.start_time }}<template v-if="detailShow.end_time"> – {{ detailShow.end_time }}</template>
+            {{ detailShow.start_time
+            }}<template v-if="detailShow.end_time"> – {{ detailShow.end_time }}</template>
           </span>
         </div>
         <div v-if="detailShow.host_username" class="detail-row">
@@ -267,7 +257,9 @@ function showTypeBadge(type: string): string {
   border-radius: var(--radius-lg);
   padding: var(--spacing-lg);
   cursor: pointer;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
   font-family: var(--font-family);
 }
 

@@ -336,6 +336,25 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Migration: add user_id column to existing sessions table if missing
     add_column_if_missing(pool, "sessions", "user_id", "INTEGER").await?;
 
+    // Reusable show templates (name + cover + description) owned by a user.
+    // A show can be created from a template, copying its content into the show.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS show_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            cover_key TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT,
+            FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)
     sqlx::query(
         r#"
@@ -729,5 +748,131 @@ pub async fn is_notifications_enabled(pool: &SqlitePool) -> bool {
     match get_setting(pool, "notifications_enabled").await {
         Ok(Some(val)) => val != "false",
         _ => true, // fail-open: default to enabled
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn mem_db() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        pool
+    }
+
+    async fn insert_user(pool: &SqlitePool, username: &str) -> i64 {
+        sqlx::query("INSERT INTO users (username, password_hash, role) VALUES (?, 'x', 'host')")
+            .bind(username)
+            .execute(pool)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+    }
+
+    async fn insert_template(pool: &SqlitePool, owner: i64, name: &str) -> i64 {
+        sqlx::query("INSERT INTO show_templates (owner_user_id, name) VALUES (?, ?)")
+            .bind(owner)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+    }
+
+    /// The show_templates table is created by the migrations and lists are
+    /// scoped to the owning user — the contract the handlers rely on.
+    #[tokio::test]
+    async fn show_templates_are_owner_scoped() {
+        let pool = mem_db().await;
+        let alice = insert_user(&pool, "alice").await;
+        let bob = insert_user(&pool, "bob").await;
+        insert_template(&pool, alice, "Alice Weekly").await;
+        insert_template(&pool, alice, "Alice Special").await;
+        insert_template(&pool, bob, "Bob Show").await;
+
+        let alice_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM show_templates WHERE owner_user_id = ?")
+                .bind(alice)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(alice_count, 2);
+
+        let bob_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM show_templates WHERE owner_user_id = ?")
+                .bind(bob)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(bob_count, 1);
+    }
+
+    /// Owner-scoped delete: a user cannot delete another user's template.
+    #[tokio::test]
+    async fn delete_template_is_owner_scoped() {
+        let pool = mem_db().await;
+        let alice = insert_user(&pool, "alice").await;
+        let bob = insert_user(&pool, "bob").await;
+        let alice_tpl = insert_template(&pool, alice, "Alice Weekly").await;
+
+        // Bob's delete touches nothing.
+        let bob_attempt =
+            sqlx::query("DELETE FROM show_templates WHERE id = ? AND owner_user_id = ?")
+                .bind(alice_tpl)
+                .bind(bob)
+                .execute(&pool)
+                .await
+                .unwrap();
+        assert_eq!(bob_attempt.rows_affected(), 0);
+
+        // Owner can delete.
+        let alice_attempt =
+            sqlx::query("DELETE FROM show_templates WHERE id = ? AND owner_user_id = ?")
+                .bind(alice_tpl)
+                .bind(alice)
+                .execute(&pool)
+                .await
+                .unwrap();
+        assert_eq!(alice_attempt.rows_affected(), 1);
+    }
+
+    /// Creating a show from a template only resolves the cover for templates the
+    /// caller owns — mirrors the lookup in `api_create_show`.
+    #[tokio::test]
+    async fn template_cover_lookup_requires_ownership() {
+        let pool = mem_db().await;
+        let alice = insert_user(&pool, "alice").await;
+        let bob = insert_user(&pool, "bob").await;
+        let tpl = insert_template(&pool, alice, "Alice Weekly").await;
+        sqlx::query("UPDATE show_templates SET cover_key = ? WHERE id = ?")
+            .bind("templates/1/cover.png")
+            .bind(tpl)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let owner_row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT cover_key FROM show_templates WHERE id = ? AND owner_user_id = ?",
+        )
+        .bind(tpl)
+        .bind(alice)
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            owner_row,
+            Some((Some("templates/1/cover.png".to_string()),))
+        );
+
+        let other_row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT cover_key FROM show_templates WHERE id = ? AND owner_user_id = ?",
+        )
+        .bind(tpl)
+        .bind(bob)
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert!(other_row.is_none());
     }
 }

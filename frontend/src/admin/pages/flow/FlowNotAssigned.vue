@@ -1,20 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { useHostFlow } from '@admin/composables';
 import { BaseButton } from '@shared/components';
-import ShowCreateModal from '@admin/components/ShowCreateModal.vue';
 
 const router = useRouter();
-const flow = useHostFlow();
 
-const showCreateModal = ref(false);
-
-/** Reset the cached flow so the new show is picked up, then re-enter /stream. */
-async function onShowCreated() {
-  showCreateModal.value = false;
-  flow.reset();
-  await router.push('/stream');
+function openCreateWizard() {
+  router.push('/shows/new');
 }
 </script>
 
@@ -27,14 +18,10 @@ async function onShowCreated() {
         You are not currently assigned to a show.<br />
         Create your own to start streaming.
       </p>
-      <BaseButton variant="primary" class="not-assigned-cta" @click="showCreateModal = true">+ New Show</BaseButton>
+      <BaseButton variant="primary" class="not-assigned-cta" @click="openCreateWizard"
+        >+ New Show</BaseButton
+      >
     </div>
-
-    <ShowCreateModal
-      :open="showCreateModal"
-      @close="showCreateModal = false"
-      @created="onShowCreated"
-    />
   </div>
 </template>
 

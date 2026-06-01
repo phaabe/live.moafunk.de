@@ -4,7 +4,6 @@ import { useRouter } from 'vue-router';
 import { showsApi, type Show } from '../api';
 import { BaseButton } from '@shared/components';
 import ShowList from '../components/ShowList.vue';
-import ShowCreateModal from '../components/ShowCreateModal.vue';
 
 const router = useRouter();
 const shows = ref<Show[]>([]);
@@ -33,10 +32,12 @@ const showCount = computed(() => {
   return filtered.length;
 });
 
-const showCreateModal = ref(false);
-
 function goToShow(show: Show) {
   router.push(`/shows/${show.id}`);
+}
+
+function openCreateWizard() {
+  router.push('/shows/new');
 }
 
 async function loadShows() {
@@ -52,14 +53,6 @@ async function loadShows() {
   }
 }
 
-async function onShowCreated(show: Show) {
-  showCreateModal.value = false;
-  await loadShows();
-  if (show?.id) {
-    router.push(`/shows/${show.id}`);
-  }
-}
-
 onMounted(loadShows);
 </script>
 
@@ -68,7 +61,7 @@ onMounted(loadShows);
     <div class="page-header">
       <h1 class="page-title">Shows</h1>
       <div class="page-header-actions">
-        <BaseButton variant="primary" @click="showCreateModal = true">+ New Show</BaseButton>
+        <BaseButton variant="primary" @click="openCreateWizard">+ New Show</BaseButton>
       </div>
     </div>
 
@@ -78,22 +71,30 @@ onMounted(loadShows);
     <template v-else>
       <div class="list-toolbar">
         <div class="list-filters">
-          <button :class="['filter-btn', { active: listFilter === 'upcoming' }]"
-            @click="listFilter = 'upcoming'">Upcoming</button>
-          <button :class="['filter-btn', { active: listFilter === 'all' }]" @click="listFilter = 'all'">All</button>
-          <button :class="['filter-btn', { active: listFilter === 'past' }]" @click="listFilter = 'past'">Past</button>
+          <button
+            :class="['filter-btn', { active: listFilter === 'upcoming' }]"
+            @click="listFilter = 'upcoming'"
+          >
+            Upcoming
+          </button>
+          <button
+            :class="['filter-btn', { active: listFilter === 'all' }]"
+            @click="listFilter = 'all'"
+          >
+            All
+          </button>
+          <button
+            :class="['filter-btn', { active: listFilter === 'past' }]"
+            @click="listFilter = 'past'"
+          >
+            Past
+          </button>
         </div>
         <span class="list-count text-muted">{{ showCount }} shows</span>
       </div>
 
       <ShowList :shows="shows" :filter="listFilter" @show-click="goToShow" />
     </template>
-
-    <ShowCreateModal
-      :open="showCreateModal"
-      @close="showCreateModal = false"
-      @created="onShowCreated"
-    />
   </div>
 </template>
 

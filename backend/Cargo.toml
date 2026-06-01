@@ -75,3 +75,6 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 imageproc = "0.25"
 ab_glyph = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
