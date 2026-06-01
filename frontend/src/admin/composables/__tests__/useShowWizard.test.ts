@@ -14,7 +14,7 @@ describe('useShowWizard step machine', () => {
     wizard.start({ isAdmin: false });
   });
 
-  it('admin "new template" branch walks name → cover → description → date → assign → confirm', () => {
+  it('admin "new template" branch walks through to confirm', () => {
     wizard.start({ isAdmin: true });
     expect(wizard.currentStep.value).toBe('choice');
 
@@ -26,6 +26,8 @@ describe('useShowWizard step machine', () => {
       'description',
       'date',
       'assign',
+      'guest',
+      'stream-mode',
       'confirm',
     ]);
 
@@ -48,6 +50,15 @@ describe('useShowWizard step machine', () => {
     expect(wizard.currentStep.value).toBe('assign');
     expect(wizard.canProceed.value).toBe(false); // no assignee yet
     wizard.assigneeUserId.value = 42;
+    expect(wizard.goNext()).toBe(true); // → guest
+
+    expect(wizard.currentStep.value).toBe('guest');
+    expect(wizard.canProceed.value).toBe(true); // guest is optional
+    expect(wizard.goNext()).toBe(true); // → stream-mode
+
+    expect(wizard.currentStep.value).toBe('stream-mode');
+    expect(wizard.canProceed.value).toBe(false); // no mode chosen yet
+    wizard.setStreamMode('live');
     expect(wizard.goNext()).toBe(true); // → confirm
     expect(wizard.currentStep.value).toBe('confirm');
     expect(wizard.isLastStep.value).toBe(true);
@@ -56,13 +67,23 @@ describe('useShowWizard step machine', () => {
   it('host "existing template" branch has no assign step', () => {
     wizard.start({ isAdmin: false });
     wizard.setMode('existing');
-    expect(wizard.steps.value).toEqual(['choice', 'select', 'date', 'confirm']);
+    expect(wizard.steps.value).toEqual([
+      'choice',
+      'select',
+      'date',
+      'guest',
+      'stream-mode',
+      'confirm',
+    ]);
 
     expect(wizard.goNext()).toBe(true); // → select
     expect(wizard.canProceed.value).toBe(false); // nothing selected
     wizard.selectedTemplateId.value = 7;
     expect(wizard.goNext()).toBe(true); // → date
     setValidDate();
+    expect(wizard.goNext()).toBe(true); // → guest
+    expect(wizard.goNext()).toBe(true); // → stream-mode
+    wizard.setStreamMode('prerecorded');
     expect(wizard.goNext()).toBe(true); // → confirm
     expect(wizard.currentStep.value).toBe('confirm');
   });
@@ -95,5 +116,30 @@ describe('useShowWizard step machine', () => {
     wizard.setMode('existing');
     expect(wizard.maxVisited.value).toBe(0);
     expect(wizard.canNavigateTo(2)).toBe(false);
+  });
+
+  it('starts with no templates known (choice gate stays closed until loaded)', () => {
+    wizard.start({ isAdmin: false });
+    expect(wizard.hasTemplates.value).toBe(false);
+  });
+
+  it('goToNamedStep jumps back to a visited step from confirm', () => {
+    wizard.start({ isAdmin: false });
+    wizard.setMode('existing');
+    wizard.goNext(); // → select
+    wizard.selectedTemplateId.value = 7;
+    wizard.goNext(); // → date
+    setValidDate();
+    wizard.goNext(); // → guest
+    wizard.goNext(); // → stream-mode
+    wizard.setStreamMode('live');
+    wizard.goNext(); // → confirm
+
+    expect(wizard.currentStep.value).toBe('confirm');
+    expect(wizard.goToNamedStep('date')).toBe(true);
+    expect(wizard.currentStep.value).toBe('date');
+
+    // A step outside the current branch is not navigable.
+    expect(wizard.goToNamedStep('assign')).toBe(false);
   });
 });

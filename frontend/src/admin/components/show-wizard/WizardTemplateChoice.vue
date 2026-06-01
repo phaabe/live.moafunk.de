@@ -1,9 +1,24 @@
 <script setup lang="ts">
+import { computed, onMounted } from 'vue';
 import { useShowWizard } from '../../composables';
 
 const wizard = useShowWizard();
 
+// Load the user's templates up front so we know whether "use existing" is
+// available — it's disabled until at least one template exists.
+onMounted(() => {
+  if (wizard.templates.value.length === 0) {
+    wizard.loadTemplates();
+  }
+});
+
+// "Use existing" is unavailable while templates are loading or none exist.
+const existingDisabled = computed(
+  () => wizard.templatesLoading.value || !wizard.hasTemplates.value
+);
+
 async function choose(mode: 'existing' | 'new') {
+  if (mode === 'existing' && existingDisabled.value) return;
   wizard.setMode(mode);
   if (mode === 'existing') {
     await wizard.loadTemplates();
@@ -20,12 +35,24 @@ async function choose(mode: 'existing' | 'new') {
     <div class="choice-grid">
       <button
         type="button"
-        :class="['choice-card', { selected: wizard.mode.value === 'existing' }]"
+        :class="[
+          'choice-card',
+          { selected: wizard.mode.value === 'existing', disabled: existingDisabled },
+        ]"
+        :disabled="existingDisabled"
+        :aria-disabled="existingDisabled"
+        :title="existingDisabled ? 'No templates yet — create one first' : undefined"
         @click="choose('existing')"
       >
         <span class="choice-icon">📁</span>
         <span class="choice-label">Use existing template</span>
-        <span class="choice-sub">Pick from your saved templates</span>
+        <span class="choice-sub">
+          {{
+            existingDisabled
+              ? 'No templates yet — create one first'
+              : 'Pick from your saved templates'
+          }}
+        </span>
       </button>
 
       <button
@@ -78,10 +105,15 @@ async function choose(mode: 'existing' | 'new') {
   transition: all var(--transition-fast);
 }
 
-.choice-card:hover,
+.choice-card:hover:not(.disabled),
 .choice-card.selected {
   border-color: var(--color-primary);
   background: var(--color-surface-hover);
+}
+
+.choice-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .choice-icon {

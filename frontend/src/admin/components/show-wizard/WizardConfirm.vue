@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useShowWizard } from '../../composables';
+import { useShowWizard, type WizardStep } from '../../composables';
 
 const wizard = useShowWizard();
 
@@ -19,6 +19,22 @@ const dateLabel = computed(() => {
   const end = e ? `${pad(e.getHours())}:${pad(e.getMinutes())}` : '';
   return end ? `${day}, ${start}–${end}` : `${day}, ${start}`;
 });
+
+// For the existing-template branch, title/description/cover all come from the
+// selected template, so their "Edit" jumps back to the template picker.
+const contentStep = computed<WizardStep>(() =>
+  wizard.mode.value === 'existing' ? 'select' : 'name'
+);
+const descriptionStep = computed<WizardStep>(() =>
+  wizard.mode.value === 'existing' ? 'select' : 'description'
+);
+const coverStep = computed<WizardStep>(() =>
+  wizard.mode.value === 'existing' ? 'select' : 'cover'
+);
+
+function edit(step: WizardStep) {
+  wizard.goToNamedStep(step);
+}
 </script>
 
 <template>
@@ -29,22 +45,47 @@ const dateLabel = computed(() => {
       <div class="summary-cover">
         <img v-if="wizard.summaryCoverUrl.value" :src="wizard.summaryCoverUrl.value" alt="Cover" />
         <div v-else class="summary-cover-placeholder">No cover</div>
+        <button type="button" class="edit-link cover-edit" @click="edit(coverStep)">Edit</button>
       </div>
 
       <dl class="summary-details">
         <dt>Title</dt>
-        <dd>{{ wizard.summaryName.value || '—' }}</dd>
+        <dd>
+          <span>{{ wizard.summaryName.value || '—' }}</span>
+          <button type="button" class="edit-link" @click="edit(contentStep)">Edit</button>
+        </dd>
 
         <dt>Description</dt>
-        <dd>{{ wizard.summaryDescription.value || '—' }}</dd>
+        <dd>
+          <span>{{ wizard.summaryDescription.value || '—' }}</span>
+          <button type="button" class="edit-link" @click="edit(descriptionStep)">Edit</button>
+        </dd>
 
         <dt>When</dt>
-        <dd>{{ dateLabel }}</dd>
+        <dd>
+          <span>{{ dateLabel }}</span>
+          <button type="button" class="edit-link" @click="edit('date')">Edit</button>
+        </dd>
 
         <template v-if="wizard.isAdmin.value">
           <dt>Host</dt>
-          <dd>{{ wizard.assigneeUsername.value || '—' }}</dd>
+          <dd>
+            <span>{{ wizard.assigneeUsername.value || '—' }}</span>
+            <button type="button" class="edit-link" @click="edit('assign')">Edit</button>
+          </dd>
         </template>
+
+        <dt>Delivery</dt>
+        <dd>
+          <span>{{ wizard.streamModeLabel.value || '—' }}</span>
+          <button type="button" class="edit-link" @click="edit('stream-mode')">Edit</button>
+        </dd>
+
+        <dt>Guest</dt>
+        <dd>
+          <span>{{ wizard.summaryGuest.value || 'None' }}</span>
+          <button type="button" class="edit-link" @click="edit('guest')">Edit</button>
+        </dd>
       </dl>
     </div>
   </div>
@@ -65,6 +106,10 @@ const dateLabel = computed(() => {
   align-items: flex-start;
 }
 
+.summary-cover {
+  position: relative;
+}
+
 .summary-cover,
 .summary-cover-placeholder {
   width: 160px;
@@ -73,6 +118,28 @@ const dateLabel = computed(() => {
   border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--color-surface-alt);
+}
+
+.cover-edit {
+  position: absolute;
+  bottom: var(--spacing-xs);
+  right: var(--spacing-xs);
+}
+
+.edit-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: var(--spacing-sm);
+  color: var(--color-primary);
+  font-family: var(--font-family);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+}
+
+.edit-link:hover {
+  text-decoration: underline;
 }
 
 .summary-cover img {
@@ -106,6 +173,10 @@ const dateLabel = computed(() => {
 .summary-details dd {
   margin: 0;
   color: var(--color-text);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
 }
 
 @media (max-width: 600px) {

@@ -569,6 +569,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/users", get(handlers::api::api_users_list))
         .route("/api/users", post(handlers::api::api_create_user))
+        // Guest accounts (date-restricted) — creatable by any show creator.
+        .route("/api/guests", post(handlers::api::api_create_guest))
         .route(
             "/api/users/:id",
             axum::routing::put(handlers::api::api_update_user),

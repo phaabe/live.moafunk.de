@@ -86,6 +86,13 @@ pub async fn api_login(
         ));
     }
 
+    // Guests may only sign in on their show's date.
+    if !user.is_login_allowed_today() {
+        return Err(AppError::Unauthorized(
+            "Guest login is only available on the day of the show.".to_string(),
+        ));
+    }
+
     // Create session
     let token = auth::create_session(&state, user.id).await?;
 
@@ -116,7 +123,7 @@ pub async fn api_login(
 
     // Determine redirect based on role
     let redirect_url = match user.role_enum() {
-        models::UserRole::Host => "/#/stream",
+        models::UserRole::Host | models::UserRole::Guest => "/#/stream",
         models::UserRole::Admin | models::UserRole::Superadmin => "/#/artists",
     };
 
@@ -2035,6 +2042,8 @@ pub struct ShowDetailResponse {
     host_user_id: Option<i64>,
     host_username: Option<String>,
     available_hosts: Vec<AvailableHost>,
+    /// Intended delivery: "live" or "prerecorded" (changeable after creation).
+    stream_mode: Option<String>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -2776,6 +2785,7 @@ pub async fn api_show_detail(
         host_user_id,
         host_username,
         available_hosts,
+        stream_mode: show.stream_mode,
     }))
 }
 
@@ -2792,6 +2802,8 @@ pub struct CreateShowRequest {
     /// Optional user to present the show. Admins only; ignored for hosts (who
     /// always self-assign).
     host_user_id: Option<i64>,
+    /// Intended delivery: "live" or "prerecorded". Defaults to "live".
+    stream_mode: Option<String>,
 }
 
 /// Default show type for host-created shows. Hosts can't pick a type, and host
@@ -2859,8 +2871,14 @@ pub async fn api_create_show(
         )
     };
 
+    // Delivery mode: accept only the two known values, default to "live".
+    let stream_mode = match req.stream_mode.as_deref() {
+        Some("prerecorded") => "prerecorded",
+        _ => "live",
+    };
+
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?)",
+        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id, stream_mode) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
@@ -2869,6 +2887,7 @@ pub async fn api_create_show(
     .bind(&req.start_time)
     .bind(&end_time)
     .bind(host_user_id)
+    .bind(stream_mode)
     .execute(&state.db)
     .await?;
 
@@ -2910,6 +2929,7 @@ pub async fn api_create_show(
             "start_time": req.start_time,
             "end_time": end_time,
             "host_user_id": host_user_id,
+            "stream_mode": stream_mode,
             "cover_url": cover_url,
             "cover_generated_at": cover_generated_at,
         })),
@@ -3089,6 +3109,7 @@ pub struct UpdateShowRequest {
     show_type: Option<String>,
     start_time: Option<String>,
     end_time: Option<String>,
+    stream_mode: Option<String>,
 }
 
 pub async fn api_update_show(
@@ -3144,6 +3165,16 @@ pub async fn api_update_show(
     if let Some(end_time) = &req.end_time {
         updates.push("end_time = ?");
         binds.push(end_time.clone());
+    }
+    if let Some(stream_mode) = &req.stream_mode {
+        if !matches!(stream_mode.as_str(), "live" | "prerecorded") {
+            return Err(AppError::BadRequest(format!(
+                "Invalid stream_mode: '{}'. Must be 'live' or 'prerecorded'",
+                stream_mode
+            )));
+        }
+        updates.push("stream_mode = ?");
+        binds.push(stream_mode.clone());
     }
 
     if updates.is_empty() {
@@ -3622,6 +3653,86 @@ pub async fn api_create_user(
     Ok((
         StatusCode::CREATED,
         Json(CreateUserResponse { user, password }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateGuestRequest {
+    username: String,
+    /// The date (YYYY-MM-DD) on which the guest may log in — the show's date.
+    login_date: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateGuestResponse {
+    user_id: i64,
+    username: String,
+    /// One-time bootstrap password; the guest must replace it on first login.
+    password: String,
+    login_date: String,
+}
+
+/// Create a date-restricted guest account during show setup.
+///
+/// Available to any show creator (host or admin). The guest may only log in on
+/// `login_date` (the show date) and is auto-removed after it expires.
+pub async fn api_create_guest(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreateGuestRequest>,
+) -> Result<impl IntoResponse> {
+    let current_user = require_show_creator(&state, &headers).await?;
+
+    let username = req.username.trim();
+    if username.is_empty() {
+        return Err(AppError::BadRequest("Username is required".to_string()));
+    }
+
+    // Validate login_date is a plausible YYYY-MM-DD.
+    if chrono::NaiveDate::parse_from_str(&req.login_date, "%Y-%m-%d").is_err() {
+        return Err(AppError::BadRequest(
+            "login_date must be a valid YYYY-MM-DD date".to_string(),
+        ));
+    }
+
+    // Reject duplicate usernames up front for a clean error message.
+    let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE username = ?")
+        .bind(username)
+        .fetch_optional(&state.db)
+        .await?;
+    if existing.is_some() {
+        return Err(AppError::BadRequest(
+            "A user with this username already exists".to_string(),
+        ));
+    }
+
+    // Generate a one-time bootstrap password (replaced on first login).
+    let password = auth::generate_session_token()[..16].to_string();
+    let password_hash = auth::hash_password(&password)?;
+
+    // Expire at the end of the show day so the weekly cleanup removes the guest.
+    let expires_at = format!("{}T23:59:59", req.login_date);
+
+    let result = sqlx::query(
+        "INSERT INTO users (username, password_hash, role, created_by, expires_at, must_change_password, login_date) \
+         VALUES (?, ?, 'guest', ?, ?, 1, ?)",
+    )
+    .bind(username)
+    .bind(&password_hash)
+    .bind(current_user.id)
+    .bind(&expires_at)
+    .bind(&req.login_date)
+    .execute(&state.db)
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateGuestResponse {
+            user_id: result.last_insert_rowid(),
+            username: username.to_string(),
+            password,
+            login_date: req.login_date,
+        }),
     ))
 }
 

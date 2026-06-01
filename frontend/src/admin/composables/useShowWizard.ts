@@ -3,9 +3,11 @@ import {
   showsApi,
   showTemplatesApi,
   usersApi,
+  guestsApi,
   type Show,
   type ShowTemplate,
   type AdminUser,
+  type GuestCredentials,
 } from '../api';
 import { useDateTimeRange } from './useDateTimeRange';
 
@@ -15,6 +17,8 @@ import { useDateTimeRange } from './useDateTimeRange';
 
 export type WizardMode = 'existing' | 'new';
 
+export type StreamMode = 'live' | 'prerecorded';
+
 export type WizardStep =
   | 'choice'
   | 'select'
@@ -23,6 +27,8 @@ export type WizardStep =
   | 'description'
   | 'date'
   | 'assign'
+  | 'guest'
+  | 'stream-mode'
   | 'confirm';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -51,6 +57,13 @@ const assignableUsers = ref<AdminUser[]>([]);
 const assigneeLoading = ref(false);
 const assigneeUserId = ref<number | null>(null);
 
+// Guest account (optional — created during show setup, login limited to show date)
+const guestUsername = ref('');
+const guestCredentials = ref<GuestCredentials | null>(null);
+
+// Delivery mode (live vs prerecorded upload)
+const streamMode = ref<StreamMode | null>(null);
+
 // Navigation
 const stepIndex = ref(0);
 const maxVisited = ref(0);
@@ -74,7 +87,7 @@ const steps = computed<WizardStep[]>(() => {
   if (mode.value) {
     out.push('date');
     if (isAdmin.value) out.push('assign');
-    out.push('confirm');
+    out.push('guest', 'stream-mode', 'confirm');
   }
   return out;
 });
@@ -100,6 +113,10 @@ const canProceed = computed(() => {
       return range.isValid.value;
     case 'assign':
       return assigneeUserId.value !== null;
+    case 'guest':
+      return true; // optional
+    case 'stream-mode':
+      return streamMode.value !== null;
     case 'confirm':
       return true;
     default:
@@ -110,6 +127,19 @@ const canProceed = computed(() => {
 /** A step is reachable by direct navigation only if already visited. */
 function canNavigateTo(index: number): boolean {
   return index >= 0 && index < steps.value.length && index <= maxVisited.value;
+}
+
+/** True once the user has at least one saved template (drives the choice gate). */
+const hasTemplates = computed(() => templates.value.length > 0);
+
+/**
+ * Jump to a named step (used by the confirm page's per-row "Edit" affordances).
+ * Only succeeds if that step exists in the current branch and has been visited.
+ */
+function goToNamedStep(step: WizardStep): boolean {
+  const index = steps.value.indexOf(step);
+  if (index === -1) return false;
+  return goToStep(index);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +163,14 @@ const assigneeUsername = computed(
   () => assignableUsers.value.find((u) => u.id === assigneeUserId.value)?.username ?? null
 );
 
+const streamModeLabel = computed(() => {
+  if (streamMode.value === 'live') return 'Live';
+  if (streamMode.value === 'prerecorded') return 'Pre-recorded upload';
+  return null;
+});
+
+const summaryGuest = computed(() => guestUsername.value.trim() || null);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Actions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +180,10 @@ function setMode(m: WizardMode): void {
   mode.value = m;
   // Switching branch invalidates any forward progress; force a re-walk.
   maxVisited.value = stepIndex.value;
+}
+
+function setStreamMode(m: StreamMode): void {
+  streamMode.value = m;
 }
 
 function goNext(): boolean {
@@ -191,7 +233,7 @@ async function loadAssignableUsers(): Promise<void> {
   }
 }
 
-/** Create the show (and the template, if new). Returns the created show. */
+/** Create the show (template + optional guest, if requested). Returns the created show. */
 async function submit(): Promise<Show> {
   submitting.value = true;
   try {
@@ -218,16 +260,28 @@ async function submit(): Promise<Show> {
       description = tpl.description || undefined;
     }
 
-    return await showsApi.create({
+    const show = await showsApi.create({
       title,
       description,
       show_type: 'external',
       date: range.apiDate.value,
       start_time: range.apiStartTime.value,
       end_time: range.apiEndTime.value,
+      stream_mode: streamMode.value ?? 'live',
       template_id: templateId,
       host_user_id: isAdmin.value ? (assigneeUserId.value ?? undefined) : undefined,
     });
+
+    // Optionally create a date-restricted guest account for this show's date.
+    const guest = guestUsername.value.trim();
+    if (guest) {
+      guestCredentials.value = await guestsApi.create({
+        username: guest,
+        login_date: range.apiDate.value,
+      });
+    }
+
+    return show;
   } finally {
     submitting.value = false;
   }
@@ -247,6 +301,9 @@ function start(opts: { isAdmin: boolean; prefillDate?: string }): void {
   assignableUsers.value = [];
   assigneeLoading.value = false;
   assigneeUserId.value = null;
+  guestUsername.value = '';
+  guestCredentials.value = null;
+  streamMode.value = null;
   stepIndex.value = 0;
   maxVisited.value = 0;
   submitting.value = false;
@@ -281,6 +338,9 @@ export function useShowWizard() {
     assignableUsers: readonly(assignableUsers),
     assigneeLoading: readonly(assigneeLoading),
     assigneeUserId,
+    guestUsername,
+    guestCredentials: readonly(guestCredentials),
+    streamMode: readonly(streamMode),
     submitting: readonly(submitting),
 
     // Step machine
@@ -292,16 +352,21 @@ export function useShowWizard() {
     isLastStep,
     canProceed,
     canNavigateTo,
+    hasTemplates,
+    goToNamedStep,
 
     // Summary
     summaryName,
     summaryDescription,
     summaryCoverUrl,
     assigneeUsername,
+    streamModeLabel,
+    summaryGuest,
 
     // Actions
     start,
     setMode,
+    setStreamMode,
     goNext,
     goBack,
     goToStep,

@@ -112,6 +112,9 @@ pub struct Show {
     pub prerecorded_filename: Option<String>,
     pub prerecorded_confirmed_at: Option<String>,
     pub host_user_id: Option<i64>,
+    /// Intended delivery: "live" (host streams in-browser) or "prerecorded"
+    /// (host uploads a set). Defaults to "live"; can be changed after creation.
+    pub stream_mode: Option<String>,
 }
 
 /// Reusable show template: a per-user bundle of presentation content
@@ -141,6 +144,9 @@ pub enum UserRole {
     Superadmin,
     Admin,
     Host,
+    /// A show guest: a temporary account created during show setup that may
+    /// only log in on the show's date (see `login_date` / `User::is_login_allowed_today`).
+    Guest,
 }
 
 impl UserRole {
@@ -149,6 +155,7 @@ impl UserRole {
             UserRole::Superadmin => "superadmin",
             UserRole::Admin => "admin",
             UserRole::Host => "host",
+            UserRole::Guest => "guest",
         }
     }
 
@@ -157,6 +164,7 @@ impl UserRole {
             "superadmin" => Some(UserRole::Superadmin),
             "admin" => Some(UserRole::Admin),
             "host" => Some(UserRole::Host),
+            "guest" => Some(UserRole::Guest),
             _ => None,
         }
     }
@@ -170,7 +178,7 @@ impl UserRole {
     pub fn can_change_password(&self) -> bool {
         matches!(
             self,
-            UserRole::Superadmin | UserRole::Admin | UserRole::Host
+            UserRole::Superadmin | UserRole::Admin | UserRole::Host | UserRole::Guest
         )
     }
 
@@ -178,7 +186,7 @@ impl UserRole {
     ///
     /// Hosts may create shows too, but get a constrained form: the show is
     /// self-assigned (`host_user_id`) with a forced show type and no
-    /// description/end time. Admins get the full form.
+    /// description/end time. Admins get the full form. Guests cannot create shows.
     pub fn can_create_show(&self) -> bool {
         matches!(
             self,
@@ -204,6 +212,9 @@ pub struct User {
     /// True while the user must replace an admin-generated bootstrap password
     /// with one they chose (set on create/reset, cleared on change).
     pub must_change_password: bool,
+    /// For guest accounts: the single date (YYYY-MM-DD) on which login is
+    /// permitted (the show's date). `None` for non-guest roles.
+    pub login_date: Option<String>,
     pub created_at: String,
     pub updated_at: Option<String>,
 }
@@ -220,6 +231,27 @@ impl User {
             expires_at < &now
         } else {
             false
+        }
+    }
+
+    /// Whether this account is allowed to log in today.
+    ///
+    /// Guests bound to a `login_date` may only sign in on that exact day
+    /// (evaluated in Europe/Berlin, the show timezone). All other accounts —
+    /// and guests without a bound date — are unrestricted by this check.
+    pub fn is_login_allowed_today(&self) -> bool {
+        if self.role_enum() != UserRole::Guest {
+            return true;
+        }
+        match self.login_date {
+            Some(ref login_date) => {
+                let today = chrono::Utc::now()
+                    .with_timezone(&chrono_tz::Europe::Berlin)
+                    .format("%Y-%m-%d")
+                    .to_string();
+                login_date == &today
+            }
+            None => true,
         }
     }
 }

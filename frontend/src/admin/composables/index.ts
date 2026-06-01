@@ -32,4 +32,4 @@ export {
 } from './useOverlayRenderer';
 export { useHostFlow, type FlowStep, type UploadMode, type UploadProgress } from './useHostFlow';
 export { useStreamTest, type StreamTestState, type UseStreamTestOptions } from './useStreamTest';
-export { useShowWizard, type WizardMode, type WizardStep } from './useShowWizard';
+export { useShowWizard, type WizardMode, type WizardStep, type StreamMode } from './useShowWizard';

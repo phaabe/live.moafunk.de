@@ -185,6 +185,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .await?;
 
+    // Intended delivery mode chosen at creation: 'live' or 'prerecorded'
+    // (non-binding default — can be switched later).
+    add_column_if_missing(pool, "shows", "stream_mode", "TEXT DEFAULT 'live'").await?;
+
     // App settings table for storing OAuth tokens and other key-value config
     sqlx::query(
         r#"
@@ -318,6 +322,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
+
+    // Migration: guest accounts may only log in on a single date (the show's
+    // date, YYYY-MM-DD). NULL for non-guest accounts.
+    add_column_if_missing(pool, "users", "login_date", "TEXT").await?;
 
     sqlx::query(
         r#"
