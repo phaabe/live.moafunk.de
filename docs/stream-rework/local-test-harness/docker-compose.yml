@@ -1,0 +1,35 @@
+# Local rehearsal of the Phase-2 Icecast parallel-run (see ../phase-2-icecast-runbook.md).
+# Brings up the SAME chain as prod — NodeMediaServer 2.4.9 → Liquidsoap → Icecast —
+# on your laptop, fed by a synthetic test tone. Nothing here touches prod.
+#
+#   docker compose up --build         # start the stack
+#   ./push-test-tone.sh               # feed a 440 Hz tone into NMS (separate terminal)
+#   open http://localhost:8010/test.mp3   # desktop; iPhone uses http://<your-LAN-ip>:8010/test.mp3
+#
+name: moafunk-stream-test
+
+services:
+  # NodeMediaServer pinned to the prod version (2.4.9) — RTMP ingest + HTTP/HLS.
+  nms:
+    build: ./nms
+    ports:
+      - "1935:1935" # RTMP — push the test tone here
+      - "8000:8000" # NMS HTTP/HLS — verify the existing path is untouched
+    restart: unless-stopped
+
+  # Icecast — serves the new /test.mp3 mount (host 8010 → container 8000).
+  icecast:
+    build: ./icecast
+    ports:
+      - "8010:8000"
+    restart: unless-stopped
+
+  # Liquidsoap — pulls the RTMP locally from NMS and re-emits MP3 to Icecast.
+  # mksafe() means the mount serves silence until the tone is pushed, then audio.
+  liquidsoap:
+    image: savonet/liquidsoap:v2.2.5
+    depends_on: [nms, icecast]
+    volumes:
+      - ./liquidsoap/moafunk.liq:/moafunk.liq:ro
+    command: ["liquidsoap", "/moafunk.liq"]
+    restart: unless-stopped
