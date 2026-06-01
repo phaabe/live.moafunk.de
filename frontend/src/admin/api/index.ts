@@ -407,6 +407,16 @@ export interface Show {
   artists: { id: number; name: string }[];
 }
 
+/**
+ * Common shape shared by `Show` (admin `/api/shows`) and `ShowOverviewItem`
+ * (read-only `/api/shows-overview`). Schedule widgets (ShowList, MonthCalendar)
+ * accept this so they can render data from either source regardless of role.
+ */
+export type ScheduleItem = Pick<
+  Show,
+  'id' | 'title' | 'date' | 'start_time' | 'end_time' | 'status' | 'show_type' | 'artists'
+>;
+
 /** Read-only schedule entry returned by GET /api/shows-overview. */
 export interface ShowOverviewItem {
   id: number;

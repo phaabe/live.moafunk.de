@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { Calendar } from 'v-calendar';
-import type { Show } from '../api';
+import type { ScheduleItem } from '../api';
 
 const props = defineProps<{
-  shows: Show[];
+  shows: ScheduleItem[];
 }>();
 
 const emit = defineEmits<{
   (e: 'day-click', dateStr: string): void;
-  (e: 'show-click', show: Show): void;
+  (e: 'show-click', show: ScheduleItem): void;
 }>();
 
 function getDaysUntil(dateStr: string): number {
@@ -72,8 +72,13 @@ function onDayClick(day: { id: string; date: Date }) {
 
 <template>
   <div class="month-calendar">
-    <Calendar :attributes="calendarAttributes" :is-dark="true" :first-day-of-week="2" is-expanded
-      @dayclick="onDayClick" />
+    <Calendar
+      :attributes="calendarAttributes"
+      :is-dark="true"
+      :first-day-of-week="2"
+      is-expanded
+      @dayclick="onDayClick"
+    />
     <div class="calendar-legend">
       <span class="legend-item"><span class="legend-dot dot-yellow"></span> UNHEARD</span>
       <span class="legend-item"><span class="legend-dot dot-green"></span> Brunchtime</span>

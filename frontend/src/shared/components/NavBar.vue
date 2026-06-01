@@ -16,14 +16,29 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { label: 'Dashboard', path: '/dashboard', roles: ['admin', 'superadmin'], category: 'Radio' },
-  { label: 'Calendar', path: '/calendar', roles: ['admin', 'superadmin'], category: 'Radio' },
-  { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin'], category: 'Radio' },
-  { label: 'My Show', path: '/stream/select', category: 'Radio' },
+  {
+    label: 'Dashboard',
+    path: '/dashboard',
+    roles: ['admin', 'superadmin', 'host'],
+    category: 'Radio',
+  },
+  {
+    label: 'Calendar',
+    path: '/calendar',
+    roles: ['admin', 'superadmin', 'host'],
+    category: 'Radio',
+  },
+  { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin', 'host'], category: 'Radio' },
   { label: 'Artists', path: '/artists', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
-  { label: 'Overlay', path: '/overlay-editor', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
+  {
+    label: 'Overlay',
+    path: '/overlay-editor',
+    roles: ['admin', 'superadmin'],
+    category: 'UNHEARD',
+  },
   { label: 'Recording', path: '/recording', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Users', path: '/users', roles: ['admin', 'superadmin'], category: 'Configuration' },
+  { label: 'Config', path: '/config', roles: ['admin', 'superadmin'], category: 'Configuration' },
 ];
 
 // Preserve category order
@@ -37,7 +52,7 @@ const visibleNavItems = computed(() =>
 
 const groupedNavItems = computed(() => {
   const groups: Record<string, NavItem[]> = {};
-  visibleNavItems.value.forEach(item => {
+  visibleNavItems.value.forEach((item) => {
     if (!groups[item.category]) {
       groups[item.category] = [];
     }
@@ -45,7 +60,7 @@ const groupedNavItems = computed(() => {
   });
   // Return in defined order
   const ordered: Record<string, NavItem[]> = {};
-  categoryOrder.forEach(cat => {
+  categoryOrder.forEach((cat) => {
     if (groups[cat]) ordered[cat] = groups[cat];
   });
   return ordered;
@@ -72,9 +87,12 @@ function closeMobileMenu() {
 }
 
 // Close mobile menu on route change
-watch(() => route.path, () => {
-  closeMobileMenu();
-});
+watch(
+  () => route.path,
+  () => {
+    closeMobileMenu();
+  }
+);
 </script>
 
 <template>
@@ -91,15 +109,24 @@ watch(() => route.path, () => {
           <div class="nav-group">
             <span class="nav-category">{{ category }}</span>
             <div class="nav-group-items">
-              <router-link v-for="item in items" :key="item.path" :to="item.path"
-                :class="['nav-link', { active: isActive(item.path) }]">
+              <router-link
+                v-for="item in items"
+                :key="item.path"
+                :to="item.path"
+                :class="['nav-link', { active: isActive(item.path) }]"
+              >
                 {{ item.label }}
               </router-link>
             </div>
           </div>
           <span
-            v-if="Object.keys(groupedNavItems).indexOf(category as string) < Object.keys(groupedNavItems).length - 1"
-            class="nav-delimiter">|</span>
+            v-if="
+              Object.keys(groupedNavItems).indexOf(category as string) <
+              Object.keys(groupedNavItems).length - 1
+            "
+            class="nav-delimiter"
+            >|</span
+          >
         </template>
       </div>
 
@@ -108,19 +135,19 @@ watch(() => route.path, () => {
         <div class="user-dropdown">
           <span class="username">{{ authStore.user?.username }}</span>
           <div class="user-dropdown-menu">
-            <router-link to="/change-password" class="dropdown-link">
-              Change Password
-            </router-link>
-            <button class="dropdown-logout" @click="authStore.logout()">
-              Logout
-            </button>
+            <router-link to="/change-password" class="dropdown-link"> Change Password </router-link>
+            <button class="dropdown-logout" @click="authStore.logout()">Logout</button>
           </div>
         </div>
       </div>
 
       <!-- Mobile hamburger button -->
-      <button class="hamburger mobile-only" :class="{ open: mobileMenuOpen }" @click="toggleMobileMenu"
-        aria-label="Toggle menu">
+      <button
+        class="hamburger mobile-only"
+        :class="{ open: mobileMenuOpen }"
+        @click="toggleMobileMenu"
+        aria-label="Toggle menu"
+      >
         <span class="hamburger-line"></span>
         <span class="hamburger-line"></span>
         <span class="hamburger-line"></span>
@@ -133,20 +160,27 @@ watch(() => route.path, () => {
     <!-- Mobile menu -->
     <div class="mobile-menu" :class="{ open: mobileMenuOpen }">
       <div class="mobile-menu-header">
-        <button class="close-button" @click="closeMobileMenu" aria-label="Close menu">
-          ✕
-        </button>
+        <button class="close-button" @click="closeMobileMenu" aria-label="Close menu">✕</button>
       </div>
       <div class="mobile-menu-links">
         <template v-for="(items, category) in groupedNavItems" :key="category">
           <div class="mobile-nav-group">
             <button class="mobile-nav-category" @click="toggleMobileSection(category as string)">
               {{ category }}
-              <span class="mobile-nav-chevron" :class="{ expanded: mobileExpandedSection === category }">›</span>
+              <span
+                class="mobile-nav-chevron"
+                :class="{ expanded: mobileExpandedSection === category }"
+                >›</span
+              >
             </button>
             <div class="mobile-nav-items" :class="{ expanded: mobileExpandedSection === category }">
-              <router-link v-for="item in items" :key="item.path" :to="item.path"
-                :class="['mobile-nav-link', { active: isActive(item.path) }]" @click="closeMobileMenu">
+              <router-link
+                v-for="item in items"
+                :key="item.path"
+                :to="item.path"
+                :class="['mobile-nav-link', { active: isActive(item.path) }]"
+                @click="closeMobileMenu"
+              >
                 {{ item.label }}
               </router-link>
             </div>
@@ -240,7 +274,10 @@ watch(() => route.path, () => {
   opacity: 0;
   visibility: hidden;
   transform: translateY(-4px);
-  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease,
+    visibility 0.2s ease;
   z-index: calc(var(--z-dropdown) + 1);
 }
 

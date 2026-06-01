@@ -1,38 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { showsApi, streamApi, settingsApi, type Show, type StreamStatus } from '../api';
+import { showsApi, streamApi, type ScheduleItem, type StreamStatus } from '../api';
+import { useAuthStore } from '../stores/auth';
 import ShowList from '../components/ShowList.vue';
 import MonthCalendar from '../components/MonthCalendar.vue';
 
 const router = useRouter();
-
-// --- Notifications ---
-const notificationsEnabled = ref(true);
-const notificationsLoading = ref(true);
-
-async function loadNotificationSettings() {
-  try {
-    const response = await settingsApi.getNotifications();
-    notificationsEnabled.value = response.enabled;
-  } catch (e) {
-    console.error('Failed to load notification settings:', e);
-  } finally {
-    notificationsLoading.value = false;
-  }
-}
-
-async function toggleNotifications() {
-  const newValue = !notificationsEnabled.value;
-  notificationsEnabled.value = newValue;
-  try {
-    await settingsApi.setNotifications(newValue);
-  } catch (e) {
-    // Revert on failure
-    notificationsEnabled.value = !newValue;
-    console.error('Failed to update notification settings:', e);
-  }
-}
+const authStore = useAuthStore();
 
 // --- Stream Status ---
 const streamStatus = ref<StreamStatus>({ active: false });
@@ -50,12 +25,13 @@ async function loadStreamStatus() {
 }
 
 // --- Shows ---
-const shows = ref<Show[]>([]);
+const shows = ref<ScheduleItem[]>([]);
 const showsLoading = ref(true);
 
 async function loadShows() {
   try {
-    const response = await showsApi.list();
+    // Admins get the full editable list; hosts read the open schedule overview.
+    const response = authStore.isAdmin ? await showsApi.list() : await showsApi.overview();
     shows.value = response.shows;
   } catch (e) {
     console.error('Failed to load shows:', e);
@@ -64,13 +40,13 @@ async function loadShows() {
   }
 }
 
-function goToShow(show: Show) {
+function goToShow(show: ScheduleItem) {
   router.push(`/shows/${show.id}`);
 }
 
 onMounted(async () => {
   // Load all data in parallel
-  await Promise.all([loadNotificationSettings(), loadStreamStatus(), loadShows()]);
+  await Promise.all([loadStreamStatus(), loadShows()]);
 
   // Poll stream status every 10s
   streamPollTimer = setInterval(loadStreamStatus, 10000);
@@ -91,31 +67,6 @@ onUnmounted(() => {
     </div>
 
     <div class="dashboard-grid">
-      <!-- Moafunkbot Notifications Card -->
-      <div class="card dashboard-card">
-        <div class="card-header">
-          <h2 class="card-title">🤖 Moafunkbot</h2>
-        </div>
-        <div class="card-body">
-          <div class="notification-row">
-            <div class="notification-info">
-              <span class="notification-label">Telegram Notifications</span>
-              <span :class="['badge', notificationsEnabled ? 'badge-success' : 'badge-error']">
-                {{ notificationsEnabled ? 'Enabled' : 'Disabled' }}
-              </span>
-            </div>
-            <label class="toggle-switch" :class="{ loading: notificationsLoading }">
-              <input type="checkbox" :checked="notificationsEnabled" :disabled="notificationsLoading"
-                @change="toggleNotifications" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <p class="text-muted notification-hint">
-            Controls all bot notifications: stream alerts, artist submissions, show updates, Instagram previews.
-          </p>
-        </div>
-      </div>
-
       <!-- Stream Status Card -->
       <div class="card dashboard-card">
         <div class="card-header">
@@ -147,8 +98,12 @@ onUnmounted(() => {
         </div>
         <div class="card-body card-body-flush">
           <div v-if="showsLoading" class="loading-spinner"></div>
-          <MonthCalendar v-else class="compact" :shows="shows"
-            @day-click="(dateStr: string) => router.push(`/calendar?date=${dateStr}`)" />
+          <MonthCalendar
+            v-else
+            class="compact"
+            :shows="shows"
+            @day-click="(dateStr: string) => router.push(`/calendar?date=${dateStr}`)"
+          />
         </div>
       </div>
 
@@ -163,7 +118,8 @@ onUnmounted(() => {
           <ShowList v-else :shows="shows" :limit="3" filter="upcoming" @show-click="goToShow" />
         </div>
       </div>
-    </div><!-- end dashboard-grid -->
+    </div>
+    <!-- end dashboard-grid -->
   </div>
 </template>
 
@@ -199,80 +155,6 @@ onUnmounted(() => {
 
 .card-body {
   padding: var(--spacing-lg);
-}
-
-/* ===== Notification toggle ===== */
-.notification-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-md);
-}
-
-.notification-info {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-}
-
-.notification-label {
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text);
-}
-
-.notification-hint {
-  font-size: var(--font-size-sm);
-  margin-top: var(--spacing-md);
-  margin-bottom: 0;
-}
-
-/* Toggle switch */
-.toggle-switch {
-  position: relative;
-  display: inline-block;
-  width: 44px;
-  height: 24px;
-  flex-shrink: 0;
-  cursor: pointer;
-}
-
-.toggle-switch.loading {
-  opacity: 0.5;
-  pointer-events: none;
-}
-
-.toggle-switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
-.toggle-slider {
-  position: absolute;
-  inset: 0;
-  background-color: var(--color-surface-alt, #444);
-  border-radius: 12px;
-  transition: background-color var(--transition-fast);
-}
-
-.toggle-slider::before {
-  content: '';
-  position: absolute;
-  height: 18px;
-  width: 18px;
-  left: 3px;
-  bottom: 3px;
-  background-color: var(--color-text);
-  border-radius: 50%;
-  transition: transform var(--transition-fast);
-}
-
-.toggle-switch input:checked+.toggle-slider {
-  background-color: var(--color-success, #34c759);
-}
-
-.toggle-switch input:checked+.toggle-slider::before {
-  transform: translateX(20px);
 }
 
 /* ===== Stream status ===== */

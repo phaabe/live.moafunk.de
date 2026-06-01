@@ -12,6 +12,8 @@ export const useAuthStore = defineStore('auth', () => {
   const error = ref<string | null>(null);
 
   const isAuthenticated = computed(() => user.value !== null);
+  /** Admin-tier roles that may reach admin-only pages and the full `/api/shows` list. */
+  const isAdmin = computed(() => ['admin', 'superadmin'].includes(user.value?.role ?? ''));
 
   async function login(username: string, password: string): Promise<boolean> {
     loading.value = true;
@@ -68,6 +70,7 @@ export const useAuthStore = defineStore('auth', () => {
     loading,
     error,
     isAuthenticated,
+    isAdmin,
     login,
     logout,
     checkAuth,
