@@ -3,7 +3,7 @@ import { computed, ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow } from '@admin/composables';
 import { showsApi, type MyShowInfo, type ShowOverviewItem } from '@admin/api';
-import { BaseButton, BaseModal } from '@shared/components';
+import { BaseButton } from '@shared/components';
 
 const router = useRouter();
 const flow = useHostFlow();
@@ -18,7 +18,11 @@ function openCreateWizard() {
 // Read-only overview of the full schedule (incl. other users' shows).
 const allShows = ref<ShowOverviewItem[]>([]);
 const allShowsError = ref<string | null>(null);
-const detailShow = ref<ShowOverviewItem | null>(null);
+
+/** Open the full detail page for a show (view-only for non-owned shows). */
+function openShow(id: number) {
+  router.push(`/shows/${id}`);
+}
 
 async function loadAllShows() {
   allShowsError.value = null;
@@ -31,11 +35,6 @@ async function loadAllShows() {
 }
 
 onMounted(loadAllShows);
-
-/** Open the read-only detail modal for any show in the overview. */
-function openDetail(s: ShowOverviewItem) {
-  detailShow.value = s;
-}
 
 /** Format a date string into a readable date */
 function fmtDate(dateStr: string): string {
@@ -116,7 +115,15 @@ function showTypeBadge(type: string): string {
     </div>
 
     <div class="show-cards">
-      <button v-for="s in shows" :key="s.id" class="show-card" @click="pickShow(s)">
+      <div
+        v-for="s in shows"
+        :key="s.id"
+        class="show-card"
+        role="button"
+        tabindex="0"
+        @click="openShow(s.id)"
+        @keydown.enter.self="openShow(s.id)"
+      >
         <div class="show-card-header">
           <span class="show-card-type">{{ showTypeBadge(s.show_type) }}</span>
           <span :class="['show-card-days', daysClass(s.date)]">{{ daysLabel(s.date) }}</span>
@@ -138,7 +145,12 @@ function showTypeBadge(type: string): string {
         <div v-else-if="s.prerecorded_key" class="show-card-status status-uploaded">
           ↑ Uploaded — needs confirmation
         </div>
-      </button>
+        <div class="show-card-actions">
+          <BaseButton variant="primary" size="sm" @click.stop="pickShow(s)">
+            {{ flow.isShowRunning(s) ? '🔴 Go on air' : 'Prepare to stream' }}
+          </BaseButton>
+        </div>
+      </div>
     </div>
 
     <!-- Full schedule (read-only) -->
@@ -150,7 +162,15 @@ function showTypeBadge(type: string): string {
       <div v-else-if="allShows.length === 0" class="text-muted">No shows scheduled.</div>
 
       <div v-else class="show-cards">
-        <button v-for="s in allShows" :key="s.id" class="show-card" @click="openDetail(s)">
+        <div
+          v-for="s in allShows"
+          :key="s.id"
+          class="show-card"
+          role="button"
+          tabindex="0"
+          @click="openShow(s.id)"
+          @keydown.enter.self="openShow(s.id)"
+        >
           <div class="show-card-header">
             <span class="show-card-type">{{ showTypeBadge(s.show_type) }}</span>
             <span :class="['show-card-days', daysClass(s.date)]">{{ daysLabel(s.date) }}</span>
@@ -166,49 +186,9 @@ function showTypeBadge(type: string): string {
               {{ artist.name }}
             </span>
           </div>
-        </button>
+        </div>
       </div>
     </section>
-
-    <!-- Read-only show detail -->
-    <BaseModal :open="!!detailShow" :title="detailShow?.title" @close="detailShow = null">
-      <div v-if="detailShow" class="detail">
-        <div class="detail-row">
-          <span class="detail-label">Type</span>
-          <span>{{ showTypeBadge(detailShow.show_type) }}</span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">Date</span>
-          <span>{{ fmtDate(detailShow.date) }}</span>
-        </div>
-        <div v-if="detailShow.start_time" class="detail-row">
-          <span class="detail-label">Time</span>
-          <span>
-            {{ detailShow.start_time
-            }}<template v-if="detailShow.end_time"> – {{ detailShow.end_time }}</template>
-          </span>
-        </div>
-        <div v-if="detailShow.host_username" class="detail-row">
-          <span class="detail-label">Host</span>
-          <span>{{ detailShow.host_username }}</span>
-        </div>
-        <div v-if="detailShow.artists.length > 0" class="detail-row">
-          <span class="detail-label">Artists</span>
-          <div class="show-card-artists">
-            <span v-for="artist in detailShow.artists" :key="artist.id" class="artist-chip">
-              {{ artist.name }}
-            </span>
-          </div>
-        </div>
-        <div v-if="detailShow.description" class="detail-row detail-description">
-          <span class="detail-label">Description</span>
-          <p>{{ detailShow.description }}</p>
-        </div>
-      </div>
-      <template #footer>
-        <BaseButton variant="ghost" @click="detailShow = null">Close</BaseButton>
-      </template>
-    </BaseModal>
   </div>
 </template>
 
@@ -393,38 +373,9 @@ function showTypeBadge(type: string): string {
   margin-top: 2px;
 }
 
-/* Read-only detail modal */
-.detail {
+.show-card-actions {
   display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-}
-
-.detail-row {
-  display: flex;
-  gap: var(--spacing-md);
-  align-items: baseline;
-}
-
-.detail-label {
-  flex: 0 0 90px;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.detail-description {
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.detail-description p {
-  margin: 0;
-  line-height: var(--line-height-relaxed);
-}
-
-.detail .show-card-artists {
-  margin-top: 0;
+  justify-content: flex-end;
+  margin-top: var(--spacing-md);
 }
 </style>

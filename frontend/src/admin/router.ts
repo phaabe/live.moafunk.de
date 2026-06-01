@@ -75,7 +75,9 @@ const router = createRouter({
       path: '/shows/:id',
       name: 'show-detail',
       component: ShowDetailPage,
-      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+      // Hosts may view any show and edit the ones they host; finer-grained
+      // edit gating lives in ShowDetailPage + the backend.
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
       path: '/stream',
