@@ -44,6 +44,10 @@ const navItems: NavItem[] = [
 // Preserve category order
 const categoryOrder = ['Radio', 'UNHEARD', 'Configuration'];
 
+// Categories whose items are rendered inline (always visible, side by side)
+// on desktop instead of behind a hover dropdown.
+const flatCategories = ['Radio'];
+
 const visibleNavItems = computed(() =>
   navItems.filter(
     (item) => !item.roles || (authStore.user && item.roles.includes(authStore.user.role))
@@ -106,7 +110,19 @@ watch(
       <!-- Desktop nav links -->
       <div class="nav-links desktop-only">
         <template v-for="(items, category) in groupedNavItems" :key="category">
-          <div class="nav-group">
+          <!-- Flat category: items always visible, side by side -->
+          <div v-if="flatCategories.includes(category as string)" class="nav-group-flat">
+            <router-link
+              v-for="item in items"
+              :key="item.path"
+              :to="item.path"
+              :class="['nav-link', { active: isActive(item.path) }]"
+            >
+              {{ item.label }}
+            </router-link>
+          </div>
+          <!-- Collapsible category: label + hover dropdown -->
+          <div v-else class="nav-group">
             <span class="nav-category">{{ category }}</span>
             <div class="nav-group-items">
               <router-link
@@ -238,6 +254,13 @@ watch(
   display: flex;
   gap: var(--spacing-md);
   align-items: center;
+}
+
+/* Flat group: items rendered inline, always visible */
+.nav-group-flat {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
 }
 
 /* ===== Desktop collapsible nav groups ===== */
