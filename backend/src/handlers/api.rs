@@ -3250,7 +3250,8 @@ pub async fn api_delete_show(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // Admins (any show), or the host/creator of this show, may delete it.
+    require_show_editor(&state, &headers, id).await?;
 
     // Delete the show from database
     sqlx::query("DELETE FROM shows WHERE id = ?")

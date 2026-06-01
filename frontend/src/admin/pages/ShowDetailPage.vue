@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { showsApi, soundcloudApi, type ShowDetail, type SoundCloudStatus } from '../api';
+import {
+  showsApi,
+  soundcloudApi,
+  guestsApi,
+  type ShowDetail,
+  type SoundCloudStatus,
+  type GuestCredentials,
+} from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import ShowDeadlineBanner from '../components/show-detail/ShowDeadlineBanner.vue';
@@ -80,6 +87,11 @@ const selectedArtistId = ref<number | null>(null);
 // Host assignment state (external/brunchtime shows)
 const selectedHostId = ref<number | null>(null);
 const assigningHost = ref(false);
+
+// Inline guest creation (assign a one-off guest as the show's host).
+const hostEditMode = ref<'existing' | 'guest'>('existing');
+const newGuestUsername = ref('');
+const guestCreds = ref<GuestCredentials | null>(null);
 
 // Computed
 const hasArtists = computed(() => show.value && show.value.artists.length > 0);
@@ -593,6 +605,29 @@ async function assignHost() {
   }
 }
 
+// Create a date-restricted guest and assign them as this show's host.
+async function createGuestHost() {
+  if (!show.value) return;
+  const username = newGuestUsername.value.trim();
+  if (!username) return;
+
+  assigningHost.value = true;
+  try {
+    const guest = await guestsApi.create({ username, login_date: show.value.date });
+    const response = await showsApi.assignHost(show.value.id, guest.user_id);
+
+    show.value.host_user_id = response.host_user_id;
+    show.value.host_username = response.host_username;
+    guestCreds.value = guest;
+    newGuestUsername.value = '';
+    flash.success(`Guest host "${guest.username}" created and assigned`);
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to create guest host');
+  } finally {
+    assigningHost.value = false;
+  }
+}
+
 async function unassignHost() {
   if (!show.value || !show.value.host_user_id) return;
 
@@ -1058,33 +1093,77 @@ onUnmounted(() => {
             </div>
             <p v-else class="empty-state">No host assigned.</p>
 
-            <!-- Admins and the show's creator may (re)assign the host inline. -->
+            <!-- Admins and the show's creator may (re)assign the host inline,
+                 either to an existing user or to a freshly created guest. -->
             <div v-if="canEditHost && editMode" class="host-edit">
-              <template v-if="show.available_hosts && show.available_hosts.length > 0">
-                <select v-model="selectedHostId" class="select-input">
-                  <option :value="null" disabled>
-                    {{ hasHost ? '-- Reassign host --' : '-- Select a host --' }}
-                  </option>
-                  <option v-for="h in show.available_hosts" :key="h.id" :value="h.id">
-                    {{ h.username }}
-                  </option>
-                </select>
+              <div class="host-edit-toggle">
+                <button
+                  type="button"
+                  :class="['toggle-chip', { active: hostEditMode === 'existing' }]"
+                  @click="hostEditMode = 'existing'"
+                >
+                  Existing user
+                </button>
+                <button
+                  type="button"
+                  :class="['toggle-chip', { active: hostEditMode === 'guest' }]"
+                  @click="hostEditMode = 'guest'"
+                >
+                  Create guest
+                </button>
+              </div>
+
+              <template v-if="hostEditMode === 'existing'">
+                <template v-if="show.available_hosts && show.available_hosts.length > 0">
+                  <select v-model="selectedHostId" class="select-input">
+                    <option :value="null" disabled>
+                      {{ hasHost ? '-- Reassign host --' : '-- Select a host --' }}
+                    </option>
+                    <option v-for="h in show.available_hosts" :key="h.id" :value="h.id">
+                      {{ h.username }}
+                    </option>
+                  </select>
+                  <BaseButton
+                    variant="success"
+                    size="sm"
+                    :disabled="!selectedHostId || assigningHost"
+                    :loading="assigningHost"
+                    @click="assignHost"
+                  >
+                    {{ hasHost ? 'Reassign' : 'Assign' }}
+                  </BaseButton>
+                  <BaseButton v-if="hasHost" variant="ghost" size="sm" @click="unassignHost">
+                    Remove
+                  </BaseButton>
+                </template>
+                <p v-else class="text-muted assign-note">No assignable users available.</p>
+              </template>
+
+              <template v-else>
+                <input
+                  v-model="newGuestUsername"
+                  type="text"
+                  class="select-input"
+                  placeholder="Guest username"
+                  autocomplete="off"
+                />
                 <BaseButton
                   variant="success"
                   size="sm"
-                  :disabled="!selectedHostId || assigningHost"
+                  :disabled="!newGuestUsername.trim() || assigningHost"
                   :loading="assigningHost"
-                  @click="assignHost"
+                  @click="createGuestHost"
                 >
-                  {{ hasHost ? 'Reassign' : 'Assign' }}
+                  Create &amp; assign
                 </BaseButton>
-                <BaseButton v-if="hasHost" variant="ghost" size="sm" @click="unassignHost">
-                  Remove
-                </BaseButton>
+                <p class="text-muted assign-note">
+                  The guest can only log in on the show date and is deleted afterwards.
+                </p>
+                <p v-if="guestCreds" class="guest-creds">
+                  Username <code>{{ guestCreds.username }}</code> · one-time password
+                  <code>{{ guestCreds.password }}</code> (shown once)
+                </p>
               </template>
-              <p v-else class="text-muted assign-note">
-                No host users available. Create a user with the "Host" role first.
-              </p>
             </div>
           </div>
         </div>
@@ -1605,9 +1684,9 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Delete: admins only; on the external dashboard only while editing. Deletes
-           the show only (never its template). -->
-      <div v-if="isAdmin && (isUnheard || editMode)" class="danger-zone">
+      <!-- Delete: admins, the assigned host, or the creator; on the external
+           dashboard only while editing. Deletes the show only (never its template). -->
+      <div v-if="canEdit && (isUnheard || editMode)" class="danger-zone">
         <div class="danger-zone-content">
           <div class="danger-zone-info">
             <h2 class="danger-zone-title">Danger Zone</h2>
@@ -2278,6 +2357,43 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--spacing-sm);
   margin-top: var(--spacing-md);
+}
+
+.host-edit-toggle {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-basis: 100%;
+}
+
+.toggle-chip {
+  padding: 4px 12px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.toggle-chip.active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.guest-creds {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.guest-creds code {
+  font-family: monospace;
+  background: var(--color-surface-alt);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
 }
 
 .select-input {
