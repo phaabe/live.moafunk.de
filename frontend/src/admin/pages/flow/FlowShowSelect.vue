@@ -76,12 +76,13 @@ function daysClass(dateStr: string): string {
 /** Select a show and navigate to the appropriate step */
 function pickShow(s: MyShowInfo) {
   flow.selectShow(s);
-  const stepRouteMap: Record<string, string> = {
-    mode: '/stream/mode',
-    'on-air': '/stream/on-air',
-  };
-  const target = stepRouteMap[flow.currentStep.value] ?? '/stream/mode';
-  router.push(target);
+  // A confirmed/running show resumes on-air; otherwise the media type is chosen
+  // on the show dashboard (the mode-selection step has been removed).
+  if (flow.currentStep.value === 'on-air') {
+    router.push('/stream/on-air');
+  } else {
+    router.push(`/shows/${s.id}`);
+  }
 }
 
 /** Show type badge text */

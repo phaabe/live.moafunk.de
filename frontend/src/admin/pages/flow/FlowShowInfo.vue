@@ -11,12 +11,16 @@ const show = computed(() => flow.show.value);
 /** Format a date string + time string into a readable datetime */
 function fmtDateTime(date: string, time: string): string {
   const d = new Date(date + 'T' + time + ':00');
-  return d.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }) + ' · ' + time;
+  return (
+    d.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }) +
+    ' · ' +
+    time
+  );
 }
 
 function computeEndDate(date: string, startTime: string, endTime: string): string {
@@ -45,8 +49,7 @@ const formattedEnd = computed(() => {
 });
 
 function proceed() {
-  flow.goToStep('mode');
-  router.push('/stream/mode');
+  router.push(flow.showId.value ? `/shows/${flow.showId.value}` : '/stream/select');
 }
 </script>
 
@@ -85,9 +88,7 @@ function proceed() {
       </div>
 
       <div class="flow-info-actions">
-        <button class="btn-primary" @click="proceed">
-          Next →
-        </button>
+        <button class="btn-primary" @click="proceed">Next →</button>
       </div>
     </template>
   </div>

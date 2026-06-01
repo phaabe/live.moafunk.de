@@ -50,9 +50,9 @@ async function handleReupload() {
 }
 
 function goBack() {
-  // Revert: going back from confirm deletes upload and returns to mode selection
+  // Revert: going back from confirm deletes the upload and returns to the show dashboard
   flow.revertToMode();
-  router.push('/stream/mode');
+  router.push(flow.showId.value ? `/shows/${flow.showId.value}` : '/stream/select');
 }
 
 function goToWaiting() {
@@ -66,9 +66,7 @@ function goToWaiting() {
     <!-- Not yet confirmed -->
     <template v-if="!flow.isConfirmed.value">
       <h1 class="flow-confirm-title">Review & Confirm</h1>
-      <p class="flow-confirm-subtitle">
-        Please review your upload before confirming.
-      </p>
+      <p class="flow-confirm-subtitle">Please review your upload before confirming.</p>
 
       <div class="confirm-card">
         <div class="confirm-section">
@@ -105,13 +103,9 @@ function goToWaiting() {
       </div>
 
       <div class="flow-confirm-actions">
-        <button class="btn-secondary" @click="goBack">
-          ← Back
-        </button>
+        <button class="btn-secondary" @click="goBack">← Back</button>
         <div class="action-group">
-          <button class="btn-danger-outline" @click="handleReupload">
-            Re-upload
-          </button>
+          <button class="btn-danger-outline" @click="handleReupload">Re-upload</button>
           <button class="btn-primary" :disabled="confirming" @click="handleConfirm">
             {{ confirming ? 'Confirming...' : 'Confirm ✓' }}
           </button>
@@ -129,19 +123,15 @@ function goToWaiting() {
         </p>
         <p class="confirmed-schedule">
           It will stream on <strong>{{ formattedDate }}</strong>
-          <template v-if="show?.start_time"> at <strong>{{ show.start_time }}</strong></template>.
+          <template v-if="show?.start_time">
+            at <strong>{{ show.start_time }}</strong></template
+          >.
         </p>
-        <p class="confirmed-file">
-          🎵 {{ flow.prerecordedFilename.value }}
-        </p>
+        <p class="confirmed-file">🎵 {{ flow.prerecordedFilename.value }}</p>
 
         <div class="confirmed-actions">
-          <button class="btn-primary" @click="goToWaiting">
-            Continue to Waiting Room →
-          </button>
-          <button class="btn-danger-outline" @click="handleReupload">
-            Replace upload
-          </button>
+          <button class="btn-primary" @click="goToWaiting">Continue to Waiting Room →</button>
+          <button class="btn-danger-outline" @click="handleReupload">Replace upload</button>
         </div>
       </div>
     </template>

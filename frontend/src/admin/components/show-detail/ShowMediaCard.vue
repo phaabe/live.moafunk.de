@@ -13,11 +13,12 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  /** Go to the live user story. */
+  /** Set the selected media type to live (does not navigate). */
   'select-live': [];
-  /** Go to the upload user story. */
+  /** Set the selected media type to upload (does not navigate). */
   'select-upload': [];
-  'mark-uploaded': [];
+  /** Enter the chosen user story (live or upload). */
+  launch: [];
 }>();
 
 const hasFile = computed(() => !!props.show.prerecorded_key);
@@ -76,21 +77,17 @@ const statusText = computed(() => {
         />
       </template>
 
-      <!-- Status row -->
+      <!-- Auto-detected upload status -->
       <div class="status-row">
         <span class="status-label">Upload status</span>
         <span class="status-value" :class="{ done: confirmed }">{{ statusText }}</span>
-        <BaseButton
-          v-if="canManage"
-          size="sm"
-          variant="primary"
-          :disabled="!hasFile || confirmed"
-          @click="emit('mark-uploaded')"
-        >
-          Mark uploaded
-        </BaseButton>
       </div>
     </template>
+
+    <!-- Action: enter the chosen user story -->
+    <BaseButton v-if="canManage" variant="primary" class="launch-btn" @click="emit('launch')">
+      {{ mode === 'live' ? '📡 Go live' : '⬆ Upload show' }}
+    </BaseButton>
   </div>
 </template>
 
@@ -202,5 +199,10 @@ const statusText = computed(() => {
 
 .status-value.done {
   color: var(--color-success);
+}
+
+.launch-btn {
+  width: 100%;
+  margin-top: var(--spacing-xs);
 }
 </style>

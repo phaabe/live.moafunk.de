@@ -13,7 +13,6 @@ const progressSteps = computed<{ key: FlowStep; label: string; route: string }[]
 
   if (mode === 'live') {
     return [
-      { key: 'mode', label: 'Mode', route: '/stream/mode' },
       { key: 'live', label: 'Set Up & Test', route: '/stream/live' },
       { key: 'on-air', label: 'Stream', route: '/stream/on-air' },
     ];
@@ -21,7 +20,6 @@ const progressSteps = computed<{ key: FlowStep; label: string; route: string }[]
 
   // Default / prerecorded branch
   return [
-    { key: 'mode', label: 'Mode', route: '/stream/mode' },
     { key: 'upload', label: 'Upload', route: '/stream/upload' },
     { key: 'confirm', label: 'Confirm', route: '/stream/confirm' },
     { key: 'on-air', label: 'On Air', route: '/stream/on-air' },

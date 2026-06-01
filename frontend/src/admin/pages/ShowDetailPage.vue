@@ -1,13 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import {
-  showsApi,
-  soundcloudApi,
-  hostFlowApi,
-  type ShowDetail,
-  type SoundCloudStatus,
-} from '../api';
+import { showsApi, soundcloudApi, type ShowDetail, type SoundCloudStatus } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import ShowDeadlineBanner from '../components/show-detail/ShowDeadlineBanner.vue';
@@ -402,18 +396,8 @@ async function enterFlow(mode: 'prerecorded' | 'live') {
 }
 
 const goToUploadFlow = () => enterFlow('prerecorded');
-const goToLiveFlow = () => enterFlow('live');
-
-async function markUploaded() {
-  if (!show.value) return;
-  try {
-    await hostFlowApi.confirm(show.value.id);
-    flash.success('Marked as uploaded');
-    await loadShow();
-  } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to mark uploaded');
-  }
-}
+/** Launch the user story for the currently selected media type. */
+const launchFlow = () => enterFlow(mediaMode.value === 'live' ? 'live' : 'prerecorded');
 
 // Description editing
 function startEditDescription() {
@@ -1072,9 +1056,9 @@ onUnmounted(() => {
             :show="show"
             :mode="mediaMode"
             :can-manage="canManageMedia"
-            @select-live="goToLiveFlow"
-            @select-upload="goToUploadFlow"
-            @mark-uploaded="markUploaded"
+            @select-live="mediaMode = 'live'"
+            @select-upload="mediaMode = 'upload'"
+            @launch="launchFlow"
           />
           <ShowSocialChannels />
         </div>
@@ -1708,6 +1692,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.show-detail-page {
+  padding-left: var(--spacing-xl);
+  padding-right: var(--spacing-xl);
+}
+
 .back-link {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);

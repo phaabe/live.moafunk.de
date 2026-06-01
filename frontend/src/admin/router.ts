@@ -19,7 +19,6 @@ const DashboardPage = () => import('./pages/DashboardPage.vue');
 // Host flow pages
 const FlowLayout = () => import('./pages/flow/FlowLayout.vue');
 const FlowShowSelect = () => import('./pages/flow/FlowShowSelect.vue');
-const FlowSelectMode = () => import('./pages/flow/FlowSelectMode.vue');
 const FlowUpload = () => import('./pages/flow/FlowUpload.vue');
 const FlowConfirm = () => import('./pages/flow/FlowConfirm.vue');
 const FlowLive = () => import('./pages/flow/FlowLive.vue');
@@ -92,10 +91,15 @@ const router = createRouter({
             const { useHostFlow } = await import('./composables');
             const flow = useHostFlow();
             await flow.fetchMyShow();
+            // The media type is chosen on the show dashboard now, so an
+            // unconfigured ("mode") show redirects to its detail page.
+            if (flow.currentStep.value === 'mode' && flow.show.value) {
+              next(`/shows/${flow.show.value.id}`);
+              return;
+            }
             const stepRouteMap: Record<string, string> = {
               'not-assigned': '/stream/not-assigned',
               select: '/stream/select',
-              mode: '/stream/mode',
               upload: '/stream/upload',
               confirm: '/stream/confirm',
               live: '/stream/live',
@@ -113,14 +117,13 @@ const router = createRouter({
           component: FlowShowSelect,
         },
         {
-          // Legacy redirect: info step removed, redirect to mode
+          // Legacy redirects: the info and mode steps have been removed.
           path: 'info',
-          redirect: '/stream/mode',
+          redirect: '/stream/select',
         },
         {
           path: 'mode',
-          name: 'stream-mode',
-          component: FlowSelectMode,
+          redirect: '/stream/select',
         },
         {
           path: 'upload',
