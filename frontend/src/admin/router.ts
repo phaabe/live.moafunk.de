@@ -6,6 +6,7 @@ const LoginPage = () => import('./pages/LoginPage.vue');
 const ArtistsPage = () => import('./pages/ArtistsPage.vue');
 const ArtistDetailPage = () => import('./pages/ArtistDetailPage.vue');
 const ShowsPage = () => import('./pages/ShowsPage.vue');
+const ShowWizard = () => import('./pages/ShowWizard.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
 const RecordingPage = () => import('./pages/RecordingPage.vue');
 const UsersPage = () => import('./pages/UsersPage.vue');
@@ -62,6 +63,13 @@ const router = createRouter({
       name: 'shows',
       component: ShowsPage,
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+    },
+    {
+      // Multi-step create-show wizard — available to any show creator (admin + host).
+      path: '/shows/new',
+      name: 'show-create',
+      component: ShowWizard,
+      meta: { requiresAuth: true },
     },
     {
       path: '/shows/:id',

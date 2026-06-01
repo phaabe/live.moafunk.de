@@ -2348,6 +2348,48 @@ async fn copy_default_cover_to_show(state: &Arc<AppState>, show_id: i64) -> Opti
     Some(dest_key)
 }
 
+/// Copy a show template's cover into a show's cover slot (S3-to-S3) and stamp
+/// `cover_generated_at`. Mirrors `copy_default_cover_to_show` but sources the
+/// template cover instead of the global default.
+async fn copy_template_cover_to_show(
+    state: &Arc<AppState>,
+    template_cover_key: &str,
+    show_id: i64,
+) -> Option<String> {
+    let dest_key = format!("shows/{}/cover.png", show_id);
+    let source = format!("{}/{}", state.config.r2_bucket_name, template_cover_key);
+
+    let result = state
+        .s3_client
+        .copy_object()
+        .bucket(&state.config.r2_bucket_name)
+        .copy_source(&source)
+        .key(&dest_key)
+        .content_type("image/png")
+        .send()
+        .await;
+
+    if let Err(e) = result {
+        tracing::warn!(
+            "Failed to copy template cover {} to show {}: {}",
+            template_cover_key,
+            show_id,
+            e
+        );
+        return None;
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("UPDATE shows SET cover_generated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(show_id)
+        .execute(&state.db)
+        .await;
+
+    tracing::info!("Template cover copied to show {}: {}", show_id, dest_key);
+    Some(dest_key)
+}
+
 /// Actually performs the cover regeneration (called after debounce).
 ///
 /// 1. Builds a plain 2×2 collage (no text/branding) and uploads to `shows/{id}/collage.png`.
@@ -2715,6 +2757,11 @@ pub struct CreateShowRequest {
     show_type: Option<String>,
     start_time: Option<String>,
     end_time: Option<String>,
+    /// Optional show template (owned by the caller) to seed the cover from.
+    template_id: Option<i64>,
+    /// Optional user to present the show. Admins only; ignored for hosts (who
+    /// always self-assign).
+    host_user_id: Option<i64>,
 }
 
 /// Default show type for host-created shows. Hosts can't pick a type, and host
@@ -2729,6 +2776,24 @@ pub async fn api_create_show(
     let user = require_show_creator(&state, &headers).await?;
     let is_admin = user.role_enum().can_access_admin();
 
+    // If a template is referenced, it must exist and be owned by the caller.
+    // We use its cover (if any) for the new show.
+    let template_cover_key: Option<String> = if let Some(template_id) = req.template_id {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT cover_key FROM show_templates WHERE id = ? AND owner_user_id = ?",
+        )
+        .bind(template_id)
+        .bind(user.id)
+        .fetch_optional(&state.db)
+        .await?;
+        match row {
+            Some((cover_key,)) => cover_key,
+            None => return Err(AppError::NotFound("Template not found".to_string())),
+        }
+    } else {
+        None
+    };
+
     // Hosts get a constrained show: forced type, self-assigned, no description /
     // end time. Admins get full control over every field.
     let (show_type, description, end_time, host_user_id) = if is_admin {
@@ -2739,11 +2804,21 @@ pub async fn api_create_show(
                 show_type
             )));
         }
+        // Validate the assignee exists, if one was provided.
+        if let Some(host_user_id) = req.host_user_id {
+            let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE id = ?")
+                .bind(host_user_id)
+                .fetch_optional(&state.db)
+                .await?;
+            if exists.is_none() {
+                return Err(AppError::BadRequest("Assignee user not found".to_string()));
+            }
+        }
         (
             show_type.to_string(),
             req.description.clone(),
             req.end_time.clone(),
-            None::<i64>,
+            req.host_user_id,
         )
     } else {
         (
@@ -2769,8 +2844,17 @@ pub async fn api_create_show(
 
     let show_id = result.last_insert_rowid();
 
-    // Copy default cover synchronously so it's ready when frontend loads
-    let cover_url = if let Some(key) = copy_default_cover_to_show(&state, show_id).await {
+    // Seed the cover synchronously so it's ready when the frontend loads: prefer
+    // the chosen template's cover, otherwise fall back to the default cover.
+    let copied_key = match &template_cover_key {
+        Some(tpl_key) => copy_template_cover_to_show(&state, tpl_key, show_id).await,
+        None => None,
+    };
+    let copied_key = match copied_key {
+        Some(key) => Some(key),
+        None => copy_default_cover_to_show(&state, show_id).await,
+    };
+    let cover_url = if let Some(key) = copied_key {
         storage::get_presigned_url(&state, &key, 3600).await.ok()
     } else {
         None
@@ -2800,6 +2884,170 @@ pub async fn api_create_show(
             "cover_generated_at": cover_generated_at,
         })),
     ))
+}
+
+// ============================================================================
+// Show Templates — reusable (name + cover + description) bundles, per user
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct ShowTemplateItem {
+    id: i64,
+    name: String,
+    description: Option<String>,
+    cover_url: Option<String>,
+    created_at: String,
+}
+
+/// GET /api/show-templates — list the current user's templates (with presigned covers).
+pub async fn api_list_show_templates(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let user = require_show_creator(&state, &headers).await?;
+
+    let templates: Vec<models::ShowTemplate> = sqlx::query_as(
+        "SELECT * FROM show_templates WHERE owner_user_id = ? ORDER BY created_at DESC, id DESC",
+    )
+    .bind(user.id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut items = Vec::with_capacity(templates.len());
+    for t in templates {
+        let cover_url = match &t.cover_key {
+            Some(key) => storage::get_presigned_url(&state, key, 3600).await.ok(),
+            None => None,
+        };
+        items.push(ShowTemplateItem {
+            id: t.id,
+            name: t.name,
+            description: t.description,
+            cover_url,
+            created_at: t.created_at,
+        });
+    }
+
+    Ok(Json(serde_json::json!({ "templates": items })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateShowTemplateRequest {
+    name: String,
+    description: Option<String>,
+}
+
+/// POST /api/show-templates — create a template owned by the current user.
+pub async fn api_create_show_template(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreateShowTemplateRequest>,
+) -> Result<impl IntoResponse> {
+    let user = require_show_creator(&state, &headers).await?;
+
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest(
+            "Template name is required".to_string(),
+        ));
+    }
+
+    let result = sqlx::query(
+        "INSERT INTO show_templates (owner_user_id, name, description) VALUES (?, ?, ?)",
+    )
+    .bind(user.id)
+    .bind(name)
+    .bind(&req.description)
+    .execute(&state.db)
+    .await?;
+
+    let id = result.last_insert_rowid();
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": id,
+            "name": name,
+            "description": req.description,
+        })),
+    ))
+}
+
+/// POST /api/show-templates/:id/cover — upload a cover image for a template.
+pub async fn api_upload_template_cover(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    let user = require_show_creator(&state, &headers).await?;
+
+    // Template must exist and be owned by the caller.
+    let owned: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM show_templates WHERE id = ? AND owner_user_id = ?")
+            .bind(id)
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?;
+    if owned.is_none() {
+        return Err(AppError::NotFound("Template not found".to_string()));
+    }
+
+    let mut file_data: Option<Vec<u8>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        if field.name().unwrap_or("") == "file" {
+            file_data = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Failed to read file: {}", e)))?
+                    .to_vec(),
+            );
+        }
+    }
+
+    let data = file_data.ok_or_else(|| AppError::BadRequest("No file provided".to_string()))?;
+
+    let key = storage::upload_template_cover(&state, id, data).await?;
+    sqlx::query(
+        "UPDATE show_templates SET cover_key = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(&key)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+
+    let cover_url = storage::get_presigned_url(&state, &key, 3600).await.ok();
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "cover_url": cover_url,
+    })))
+}
+
+/// DELETE /api/show-templates/:id — delete a template owned by the current user.
+pub async fn api_delete_show_template(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let user = require_show_creator(&state, &headers).await?;
+
+    let result = sqlx::query("DELETE FROM show_templates WHERE id = ? AND owner_user_id = ?")
+        .bind(id)
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Template not found".to_string()));
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 #[derive(Debug, Deserialize)]

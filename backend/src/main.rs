@@ -441,6 +441,20 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/shows", get(handlers::api::api_shows_list))
         .route("/api/shows", post(handlers::api::api_create_show))
+        // Show templates (per-user reusable name + cover + description)
+        .route(
+            "/api/show-templates",
+            get(handlers::api::api_list_show_templates)
+                .post(handlers::api::api_create_show_template),
+        )
+        .route(
+            "/api/show-templates/:id",
+            axum::routing::delete(handlers::api::api_delete_show_template),
+        )
+        .route(
+            "/api/show-templates/:id/cover",
+            post(handlers::api::api_upload_template_cover),
+        )
         // Note: distinct literal (not /api/shows/overview) to avoid a matchit
         // 0.7 static-vs-:id sibling conflict with the route below.
         .route(

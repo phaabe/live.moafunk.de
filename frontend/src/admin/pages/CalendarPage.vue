@@ -2,16 +2,11 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { showsApi, type Show } from '../api';
-import { BaseButton, BaseModal, FormInput } from '@shared/components';
-import { useFlash } from '../composables/useFlash';
-import { useDateTimeRange } from '../composables/useDateTimeRange';
+import { BaseButton } from '@shared/components';
 import MonthCalendar from '../components/MonthCalendar.vue';
-import { VueDatePicker } from '@vuepic/vue-datepicker';
-import '@vuepic/vue-datepicker/dist/main.css';
 
 const router = useRouter();
 const route = useRoute();
-const flash = useFlash();
 
 const shows = ref<Show[]>([]);
 const loading = ref(true);
@@ -93,21 +88,6 @@ function showsForDate(dateStr: string): Show[] {
   return shows.value.filter((s) => s.date === dateStr);
 }
 
-// Create show modal state
-const showCreateModal = ref(false);
-const creating = ref(false);
-const newShow = ref({ title: '', description: '', show_type: 'unheard' });
-const {
-  startDateTime: createStart,
-  endDateTime: createEnd,
-  isValid: createTimeValid,
-  validationError: createTimeError,
-  apiDate: createDate,
-  apiStartTime: createStartTime,
-  apiEndTime: createEndTime,
-  reset: resetCreateRange,
-} = useDateTimeRange();
-
 // Shows for a selected date
 const showsOnSelectedDate = computed(() => {
   if (!selectedDate.value) return [];
@@ -158,15 +138,8 @@ function onDayClick(dateStr: string) {
 }
 
 function openCreateModal(prefilledDate?: string) {
-  newShow.value = { title: '', description: '', show_type: 'unheard' };
-  resetCreateRange();
   const dateStr = prefilledDate || selectedDate.value;
-  if (dateStr) {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    createStart.value = new Date(y, m - 1, d, 20, 0);
-    createEnd.value = new Date(y, m - 1, d, 22, 0);
-  }
-  showCreateModal.value = true;
+  router.push(dateStr ? `/shows/new?date=${dateStr}` : '/shows/new');
 }
 
 function goToShow(showId: number) {
@@ -183,34 +156,6 @@ async function loadShows() {
     error.value = e instanceof Error ? e.message : 'Failed to load shows';
   } finally {
     loading.value = false;
-  }
-}
-
-async function createShow() {
-  if (!createTimeValid.value) {
-    flash.error(createTimeError.value || 'Invalid date/time');
-    return;
-  }
-  creating.value = true;
-  try {
-    const created = await showsApi.create({
-      ...newShow.value,
-      date: createDate.value,
-      start_time: createStartTime.value,
-      end_time: createEndTime.value,
-    });
-    flash.success('Show created successfully');
-    showCreateModal.value = false;
-    newShow.value = { title: '', description: '', show_type: 'unheard' };
-    resetCreateRange();
-    await loadShows();
-    if (created?.id) {
-      router.push(`/shows/${created.id}`);
-    }
-  } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to create show');
-  } finally {
-    creating.value = false;
   }
 }
 
@@ -342,58 +287,6 @@ onMounted(loadShows);
       </div>
     </div>
 
-    <!-- Create show modal -->
-    <BaseModal :open="showCreateModal" title="Create New Show" @close="showCreateModal = false">
-      <form class="create-form" @submit.prevent="createShow">
-        <div class="form-group">
-          <label class="form-label">Show Type</label>
-          <select v-model="newShow.show_type" class="type-select">
-            <option value="unheard">UNHEARD</option>
-            <option value="brunchtime">Brunchtime</option>
-            <option value="external">External</option>
-          </select>
-        </div>
-        <FormInput v-model="newShow.title" label="Title" required />
-        <div class="form-group">
-          <label class="form-label">Start <span class="form-required">*</span></label>
-          <VueDatePicker
-            v-model="createStart"
-            :enable-time-picker="true"
-            :dark="true"
-            :minutes-increment="5"
-            :max-date="createEnd || undefined"
-            :flow="{ steps: ['calendar', 'time'] }"
-            :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
-            placeholder="Start date & time"
-            text-input
-            teleport="body"
-          />
-        </div>
-        <div class="form-group">
-          <label class="form-label">End <span class="form-required">*</span></label>
-          <VueDatePicker
-            v-model="createEnd"
-            :enable-time-picker="true"
-            :dark="true"
-            :minutes-increment="5"
-            :min-date="createStart || undefined"
-            :flow="{ steps: ['calendar', 'time'] }"
-            :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
-            placeholder="End date & time"
-            text-input
-            teleport="body"
-          />
-        </div>
-        <p v-if="createStart && createEnd && !createTimeValid" class="field-error">{{ createTimeError }}</p>
-        <FormInput v-model="newShow.description" label="Description" />
-      </form>
-      <template #footer>
-        <BaseButton variant="ghost" @click="showCreateModal = false">Cancel</BaseButton>
-        <BaseButton variant="primary" :loading="creating" @click="createShow">
-          Create Show
-        </BaseButton>
-      </template>
-    </BaseModal>
   </div>
 </template>
 

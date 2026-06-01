@@ -336,6 +336,28 @@ pub async fn upload_show_cover(
     Ok(key)
 }
 
+/// Upload a show-template cover image to S3
+pub async fn upload_template_cover(
+    state: &Arc<AppState>,
+    template_id: i64,
+    data: Vec<u8>,
+) -> Result<String> {
+    let key = format!("templates/{}/cover.png", template_id);
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(ByteStream::from(data))
+        .content_type("image/png")
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload template cover: {}", e)))?;
+
+    Ok(key)
+}
+
 /// Upload a plain show collage (no text/branding) to S3
 pub async fn upload_show_collage(
     state: &Arc<AppState>,
