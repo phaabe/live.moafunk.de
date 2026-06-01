@@ -219,6 +219,7 @@ function retryTest() {
 
 function markTestPassed() {
   flow.setLiveTestPassed(true);
+  goToStream();
 }
 
 function goToStream() {
@@ -360,12 +361,6 @@ onUnmounted(() => {
         <p class="error-text">{{ testError || 'An error occurred during the test.' }}</p>
         <button class="btn-secondary" @click="retryTest">Try Again</button>
       </div>
-    </div>
-
-    <!-- Continue after pass -->
-    <div v-if="flow.liveTestPassed.value" class="test-passed-banner">
-      <span>✓ Stream test passed</span>
-      <button class="btn-primary" @click="goToStream">Continue to Stream →</button>
     </div>
 
     <!-- Dev-only: skip test entirely -->
@@ -579,19 +574,6 @@ onUnmounted(() => {
   gap: var(--spacing-md);
   justify-content: center;
   flex-wrap: wrap;
-}
-
-.test-passed-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: rgba(34, 197, 94, 0.1);
-  border: 1px solid rgba(34, 197, 94, 0.3);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-md) var(--spacing-lg);
-  color: #22c55e;
-  font-weight: var(--font-weight-bold);
-  gap: var(--spacing-md);
 }
 
 /* ─── Buttons ─── */
