@@ -66,30 +66,38 @@ onUnmounted(() => {
       <h1 class="page-title">Dashboard</h1>
     </div>
 
-    <div class="dashboard-grid">
-      <!-- Stream Status Card -->
-      <div class="card dashboard-card">
-        <div class="card-header">
-          <h2 class="card-title">📡 Stream</h2>
-        </div>
-        <div class="card-body">
-          <div v-if="streamLoading" class="loading-spinner"></div>
-          <template v-else>
-            <div class="stream-status-row">
-              <span :class="['badge', streamStatus.active ? 'badge-success' : 'badge-error']">
-                {{ streamStatus.active ? 'LIVE' : 'Off Air' }}
-              </span>
-              <span v-if="streamStatus.active && streamStatus.user" class="stream-user">
-                {{ streamStatus.user }}
-              </span>
-            </div>
-            <p v-if="!streamStatus.active" class="text-muted stream-hint">
-              No active stream. Hosts can start streaming from their show page.
-            </p>
-          </template>
-        </div>
+    <!-- Stream Status Banner (full width, colored by state) -->
+    <div
+      :class="[
+        'card',
+        'stream-banner',
+        streamStatus.active ? 'stream-banner-live' : 'stream-banner-off',
+      ]"
+    >
+      <div class="stream-banner-left">
+        <span class="stream-banner-icon">📡</span>
+        <h2 class="card-title">Stream</h2>
+        <span
+          v-if="!streamLoading"
+          :class="['badge', streamStatus.active ? 'badge-success' : 'badge-error']"
+        >
+          {{ streamStatus.active ? 'LIVE' : 'Off Air' }}
+        </span>
       </div>
+      <div class="stream-banner-right">
+        <div v-if="streamLoading" class="loading-spinner"></div>
+        <template v-else>
+          <span v-if="streamStatus.active && streamStatus.user" class="stream-user">
+            {{ streamStatus.user }}
+          </span>
+          <span v-else-if="!streamStatus.active" class="text-muted stream-hint">
+            No active stream. Hosts can start streaming from their show page.
+          </span>
+        </template>
+      </div>
+    </div>
 
+    <div class="dashboard-grid">
       <!-- Month View Card -->
       <div class="card dashboard-card calendar-month-card">
         <div class="card-header">
@@ -157,8 +165,40 @@ onUnmounted(() => {
   padding: var(--spacing-lg);
 }
 
-/* ===== Stream status ===== */
-.stream-status-row {
+/* ===== Stream banner (full width, colored by state) ===== */
+.stream-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+  padding: var(--spacing-md) var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
+  border-left-width: 4px;
+  border-left-style: solid;
+}
+
+.stream-banner-live {
+  background: rgba(52, 199, 89, 0.08);
+  border-left-color: #34c759;
+}
+
+.stream-banner-off {
+  background: rgba(255, 59, 48, 0.06);
+  border-left-color: #ff3b30;
+}
+
+.stream-banner-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.stream-banner-icon {
+  font-size: var(--font-size-lg);
+}
+
+.stream-banner-right {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
@@ -171,8 +211,7 @@ onUnmounted(() => {
 
 .stream-hint {
   font-size: var(--font-size-sm);
-  margin-top: var(--spacing-md);
-  margin-bottom: 0;
+  margin: 0;
 }
 
 /* ===== Shows section ===== */
