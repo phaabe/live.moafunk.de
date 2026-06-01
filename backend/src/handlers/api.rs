@@ -2026,6 +2026,11 @@ pub struct ShowDetailResponse {
     soundcloud_url: Option<String>,
     soundcloud_uploaded_at: Option<String>,
     soundcloud_public: Option<bool>,
+    // Prerecorded media (external/brunchtime shows): present => "upload" mode, absent => "live"
+    prerecorded_key: Option<String>,
+    prerecorded_filename: Option<String>,
+    prerecorded_confirmed_at: Option<String>,
+    prerecorded_url: Option<String>,
     // Host assignment (external/brunchtime shows)
     host_user_id: Option<i64>,
     host_username: Option<String>,
@@ -2715,6 +2720,13 @@ pub async fn api_show_detail(
         None
     };
 
+    // Generate presigned URL for the prerecorded file if it exists (external/brunchtime upload mode)
+    let prerecorded_url = if let Some(ref key) = show.prerecorded_key {
+        storage::get_presigned_url(&state, key, 3600).await.ok()
+    } else {
+        None
+    };
+
     Ok(Json(ShowDetailResponse {
         id: show.id,
         title: show.title,
@@ -2743,6 +2755,10 @@ pub async fn api_show_detail(
         soundcloud_url: show.soundcloud_url,
         soundcloud_uploaded_at: show.soundcloud_uploaded_at,
         soundcloud_public: show.soundcloud_public,
+        prerecorded_key: show.prerecorded_key,
+        prerecorded_filename: show.prerecorded_filename,
+        prerecorded_confirmed_at: show.prerecorded_confirmed_at,
+        prerecorded_url,
         host_user_id,
         host_username,
         available_hosts,
