@@ -1618,4 +1618,149 @@ mod tests {
             std::path::Path::new("/data/recordings-temp/recording_7_2026-01-28T19-30-00.webm")
         );
     }
+
+    /// Generate real MPEG-TS segments (`seg_%05d.ts`) into `seg_dir` from a short
+    /// synthetic sine tone, mirroring what the recorder FFmpeg produces.
+    #[cfg(test)]
+    async fn gen_test_segments(seg_dir: &Path) {
+        let pattern = seg_dir.join("seg_%05d.ts");
+        let status = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=4",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-f",
+                "segment",
+                "-segment_time",
+                "2",
+                "-segment_format",
+                "mpegts",
+                "-reset_timestamps",
+                "1",
+            ])
+            .arg(&pattern)
+            .status()
+            .await
+            .expect("spawn ffmpeg to generate test segments");
+        assert!(status.success(), "ffmpeg failed to generate test segments");
+    }
+
+    /// End-to-end orphan recovery against a **real R2 bucket**: seed a `.segs`
+    /// dir with real MPEG-TS segments, run [`recover_orphaned_recordings`], and
+    /// assert the raw object + `recording_versions` row land and the seg dir is
+    /// removed. Then prove idempotency: re-seeding the same dir and re-running
+    /// must skip (already persisted) — no duplicate row, no re-upload.
+    ///
+    /// Ignored by default (hits the network + needs ffmpeg). Run with R2 creds:
+    ///   cargo test --bin unheard-backend -- --ignored recover_orphaned_recordings_roundtrip
+    /// Skips gracefully if the R2 environment is not configured.
+    #[tokio::test]
+    #[ignore = "requires real R2 credentials + ffmpeg"]
+    async fn recover_orphaned_recordings_roundtrip() {
+        dotenvy::dotenv().ok();
+        let config = match crate::Config::from_env() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Skipping recovery integration test — config not available: {e}");
+                return;
+            }
+        };
+        let s3_client = storage::build_s3_client(&config);
+        let bucket = config.r2_bucket_name.clone();
+
+        // In-memory DB with a show row (recording_versions has an FK → shows).
+        let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let show_id: i64 = sqlx::query_scalar(
+            "INSERT INTO shows (title, date) VALUES ('Recovery IT', '2026-06-01') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        // Temp recording dir with a per-session seg dir of REAL segments.
+        let temp = tempfile::TempDir::new().unwrap();
+        let temp_dir = temp.path().to_path_buf();
+        let version = "2026-06-01T20-00-00";
+        let seg_dir = temp_dir.join(format!("recording_{}_{}.segs", show_id, version));
+        tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+        gen_test_segments(&seg_dir).await;
+
+        let state = Arc::new(AppState {
+            db: db.clone(),
+            config: config.clone(),
+            s3_client: s3_client.clone(),
+            stream_state: crate::stream_bridge::new_shared_state(),
+            recording_manager: crate::recording::new_shared_manager(temp_dir.clone()),
+            recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
+            cover_debounce: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            default_cover: tokio::sync::OnceCell::new(),
+            telegram_bot: None,
+            pending_show_notifications: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            telegram_edit_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        });
+
+        let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);
+        let markers_key = format!("recordings/{}/{}/markers.json", show_id, version);
+
+        // First run: recovers the orphaned segments.
+        recover_orphaned_recordings(&state, &temp_dir).await;
+
+        let size = storage::head_object_size(&s3_client, &bucket, &raw_key)
+            .await
+            .expect("raw object should exist in R2 after recovery");
+        assert!(size > 0, "recovered object is empty");
+        assert!(
+            crate::db::get_recording_version(&db, show_id, version)
+                .await
+                .unwrap()
+                .is_some(),
+            "a recording_versions row should exist after recovery"
+        );
+        assert!(
+            !seg_dir.exists(),
+            "seg dir should be removed after successful recovery"
+        );
+
+        // Idempotency: re-seed the same seg dir (simulating a crash between upload
+        // and seg-dir cleanup) and re-run. Must skip — exactly one row, no
+        // re-upload — and still clean up the stale dir.
+        tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+        gen_test_segments(&seg_dir).await;
+        recover_orphaned_recordings(&state, &temp_dir).await;
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM recording_versions WHERE show_id = ?")
+                .bind(show_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "recovery must not create a duplicate version");
+        assert!(
+            !seg_dir.exists(),
+            "an already-persisted seg dir should be cleaned up on re-run"
+        );
+
+        // Cleanup R2.
+        let _ = s3_client
+            .delete_object()
+            .bucket(&bucket)
+            .key(&raw_key)
+            .send()
+            .await;
+        let _ = s3_client
+            .delete_object()
+            .bucket(&bucket)
+            .key(&markers_key)
+            .send()
+            .await;
+    }
 }
