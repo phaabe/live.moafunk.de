@@ -569,6 +569,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/users", get(handlers::api::api_users_list))
         .route("/api/users", post(handlers::api::api_create_user))
+        // Guest accounts (date-restricted) — creatable by any show creator.
+        .route("/api/guests", post(handlers::api::api_create_guest))
         .route(
             "/api/users/:id",
             axum::routing::put(handlers::api::api_update_user),
@@ -635,10 +637,11 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
-    // Spawn background task to clean up expired user accounts (runs weekly)
+    // Spawn background task to clean up expired user accounts. Runs daily so
+    // date-restricted guests are removed promptly once their show date passes.
     let cleanup_db = state.db.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 60 * 60)); // 1 week
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60)); // 1 day
         loop {
             interval.tick().await;
             tracing::info!("Running expired user cleanup...");

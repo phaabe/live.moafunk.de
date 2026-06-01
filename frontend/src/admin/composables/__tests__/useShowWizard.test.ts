@@ -14,7 +14,7 @@ describe('useShowWizard step machine', () => {
     wizard.start({ isAdmin: false });
   });
 
-  it('admin "new template" branch walks name → cover → description → date → assign → confirm', () => {
+  it('admin "new template" branch walks through to confirm', () => {
     wizard.start({ isAdmin: true });
     expect(wizard.currentStep.value).toBe('choice');
 
@@ -25,7 +25,8 @@ describe('useShowWizard step machine', () => {
       'cover',
       'description',
       'date',
-      'assign',
+      'host',
+      'stream-mode',
       'confirm',
     ]);
 
@@ -43,28 +44,63 @@ describe('useShowWizard step machine', () => {
     expect(wizard.currentStep.value).toBe('date');
     expect(wizard.canProceed.value).toBe(false); // no date yet
     setValidDate();
-    expect(wizard.goNext()).toBe(true); // → assign
+    expect(wizard.goNext()).toBe(true); // → host
 
-    expect(wizard.currentStep.value).toBe('assign');
-    expect(wizard.canProceed.value).toBe(false); // no assignee yet
+    expect(wizard.currentStep.value).toBe('host');
+    expect(wizard.canProceed.value).toBe(false); // no existing user picked yet
     wizard.assigneeUserId.value = 42;
+    expect(wizard.goNext()).toBe(true); // → stream-mode
+
+    expect(wizard.currentStep.value).toBe('stream-mode');
+    expect(wizard.canProceed.value).toBe(false); // no mode chosen yet
+    wizard.setStreamMode('live');
     expect(wizard.goNext()).toBe(true); // → confirm
     expect(wizard.currentStep.value).toBe('confirm');
     expect(wizard.isLastStep.value).toBe(true);
   });
 
-  it('host "existing template" branch has no assign step', () => {
+  it('host "existing template" branch includes the unified host step', () => {
     wizard.start({ isAdmin: false });
     wizard.setMode('existing');
-    expect(wizard.steps.value).toEqual(['choice', 'select', 'date', 'confirm']);
+    expect(wizard.steps.value).toEqual([
+      'choice',
+      'select',
+      'date',
+      'host',
+      'stream-mode',
+      'confirm',
+    ]);
 
     expect(wizard.goNext()).toBe(true); // → select
     expect(wizard.canProceed.value).toBe(false); // nothing selected
     wizard.selectedTemplateId.value = 7;
     expect(wizard.goNext()).toBe(true); // → date
     setValidDate();
+    expect(wizard.goNext()).toBe(true); // → host
+    expect(wizard.currentStep.value).toBe('host');
+    wizard.assigneeUserId.value = 5;
+    expect(wizard.goNext()).toBe(true); // → stream-mode
+    wizard.setStreamMode('prerecorded');
     expect(wizard.goNext()).toBe(true); // → confirm
     expect(wizard.currentStep.value).toBe('confirm');
+  });
+
+  it('host step accepts a guest username instead of an existing user', () => {
+    wizard.start({ isAdmin: false });
+    wizard.setMode('existing');
+    wizard.goNext(); // → select
+    wizard.selectedTemplateId.value = 7;
+    wizard.goNext(); // → date
+    setValidDate();
+    wizard.goNext(); // → host
+
+    expect(wizard.currentStep.value).toBe('host');
+    // Guest sub-mode: a non-empty username is enough to proceed.
+    wizard.setHostMode('guest');
+    expect(wizard.canProceed.value).toBe(false);
+    wizard.guestUsername.value = 'dj-guest';
+    expect(wizard.canProceed.value).toBe(true);
+    expect(wizard.summaryHost.value).toBe('dj-guest (guest)');
   });
 
   it('only allows direct navigation to already-visited steps', () => {
@@ -95,5 +131,31 @@ describe('useShowWizard step machine', () => {
     wizard.setMode('existing');
     expect(wizard.maxVisited.value).toBe(0);
     expect(wizard.canNavigateTo(2)).toBe(false);
+  });
+
+  it('starts with no templates known (choice gate stays closed until loaded)', () => {
+    wizard.start({ isAdmin: false });
+    expect(wizard.hasTemplates.value).toBe(false);
+  });
+
+  it('goToNamedStep jumps back to a visited step from confirm', () => {
+    wizard.start({ isAdmin: false });
+    wizard.setMode('existing');
+    wizard.goNext(); // → select
+    wizard.selectedTemplateId.value = 7;
+    wizard.goNext(); // → date
+    setValidDate();
+    wizard.goNext(); // → host
+    wizard.assigneeUserId.value = 5;
+    wizard.goNext(); // → stream-mode
+    wizard.setStreamMode('live');
+    wizard.goNext(); // → confirm
+
+    expect(wizard.currentStep.value).toBe('confirm');
+    expect(wizard.goToNamedStep('date')).toBe(true);
+    expect(wizard.currentStep.value).toBe('date');
+
+    // A step outside the current branch is not navigable.
+    expect(wizard.goToNamedStep('name')).toBe(false);
   });
 });

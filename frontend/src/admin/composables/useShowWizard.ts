@@ -3,9 +3,11 @@ import {
   showsApi,
   showTemplatesApi,
   usersApi,
+  guestsApi,
   type Show,
   type ShowTemplate,
   type AdminUser,
+  type GuestCredentials,
 } from '../api';
 import { useDateTimeRange } from './useDateTimeRange';
 
@@ -15,6 +17,8 @@ import { useDateTimeRange } from './useDateTimeRange';
 
 export type WizardMode = 'existing' | 'new';
 
+export type StreamMode = 'live' | 'prerecorded';
+
 export type WizardStep =
   | 'choice'
   | 'select'
@@ -22,14 +26,21 @@ export type WizardStep =
   | 'cover'
   | 'description'
   | 'date'
-  | 'assign'
+  | 'host'
+  | 'stream-mode'
   | 'confirm';
+
+/** On the host step: assign an existing user, or create a guest as the host. */
+export type HostMode = 'existing' | 'guest';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton state (shared across the wizard's step components)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const isAdmin = ref(false);
+// The logged-in user, so a non-admin host can assign themselves without the
+// admin-only users list.
+const currentUser = ref<{ id: number; username: string } | null>(null);
 const mode = ref<WizardMode | null>(null);
 
 // Existing-template branch
@@ -46,10 +57,21 @@ const coverPreviewUrl = ref<string | null>(null);
 // Date / time (start + end)
 const range = useDateTimeRange();
 
-// Assignee (admin only)
+// Host step: assign an existing user, or create a guest who becomes the host.
 const assignableUsers = ref<AdminUser[]>([]);
 const assigneeLoading = ref(false);
 const assigneeUserId = ref<number | null>(null);
+
+// Which sub-mode of the host step is active.
+const hostMode = ref<HostMode>('existing');
+
+// Guest account (created during show setup, login limited to the show date,
+// auto-deleted after it). When chosen, the guest becomes the show's host.
+const guestUsername = ref('');
+const guestCredentials = ref<GuestCredentials | null>(null);
+
+// Delivery mode (live vs prerecorded upload)
+const streamMode = ref<StreamMode | null>(null);
 
 // Navigation
 const stepIndex = ref(0);
@@ -61,8 +83,9 @@ const submitting = ref(false);
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The ordered steps for the current branch + role. `choice` is always first;
- * admins get an extra `assign` step before `confirm`.
+ * The ordered steps for the current branch. `choice` is always first; the
+ * `host` step (assign an existing user OR create a guest) is shown to every
+ * creator before delivery mode and confirmation.
  */
 const steps = computed<WizardStep[]>(() => {
   const out: WizardStep[] = ['choice'];
@@ -72,9 +95,7 @@ const steps = computed<WizardStep[]>(() => {
     out.push('select');
   }
   if (mode.value) {
-    out.push('date');
-    if (isAdmin.value) out.push('assign');
-    out.push('confirm');
+    out.push('date', 'host', 'stream-mode', 'confirm');
   }
   return out;
 });
@@ -98,8 +119,13 @@ const canProceed = computed(() => {
       return true; // optional
     case 'date':
       return range.isValid.value;
-    case 'assign':
-      return assigneeUserId.value !== null;
+    case 'host':
+      // Either pick an existing user, or name a guest to create.
+      return hostMode.value === 'existing'
+        ? assigneeUserId.value !== null
+        : guestUsername.value.trim().length > 0;
+    case 'stream-mode':
+      return streamMode.value !== null;
     case 'confirm':
       return true;
     default:
@@ -110,6 +136,19 @@ const canProceed = computed(() => {
 /** A step is reachable by direct navigation only if already visited. */
 function canNavigateTo(index: number): boolean {
   return index >= 0 && index < steps.value.length && index <= maxVisited.value;
+}
+
+/** True once the user has at least one saved template (drives the choice gate). */
+const hasTemplates = computed(() => templates.value.length > 0);
+
+/**
+ * Jump to a named step (used by the confirm page's per-row "Edit" affordances).
+ * Only succeeds if that step exists in the current branch and has been visited.
+ */
+function goToNamedStep(step: WizardStep): boolean {
+  const index = steps.value.indexOf(step);
+  if (index === -1) return false;
+  return goToStep(index);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +172,21 @@ const assigneeUsername = computed(
   () => assignableUsers.value.find((u) => u.id === assigneeUserId.value)?.username ?? null
 );
 
+const streamModeLabel = computed(() => {
+  if (streamMode.value === 'live') return 'Live';
+  if (streamMode.value === 'prerecorded') return 'Pre-recorded upload';
+  return null;
+});
+
+/** Confirm-page label for the chosen host (existing user or new guest). */
+const summaryHost = computed(() => {
+  if (hostMode.value === 'guest') {
+    const name = guestUsername.value.trim();
+    return name ? `${name} (guest)` : null;
+  }
+  return assigneeUsername.value;
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Actions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +196,14 @@ function setMode(m: WizardMode): void {
   mode.value = m;
   // Switching branch invalidates any forward progress; force a re-walk.
   maxVisited.value = stepIndex.value;
+}
+
+function setStreamMode(m: StreamMode): void {
+  streamMode.value = m;
+}
+
+function setHostMode(m: HostMode): void {
+  hostMode.value = m;
 }
 
 function goNext(): boolean {
@@ -181,6 +243,18 @@ async function loadTemplates(): Promise<void> {
 }
 
 async function loadAssignableUsers(): Promise<void> {
+  // Non-admins can't list users; a host's only "existing" choice is themselves.
+  // Default to self so they can self-assign and proceed immediately.
+  if (!isAdmin.value) {
+    if (currentUser.value) {
+      assignableUsers.value = [
+        { id: currentUser.value.id, username: currentUser.value.username, role: 'host' },
+      ];
+      if (assigneeUserId.value === null) assigneeUserId.value = currentUser.value.id;
+    }
+    return;
+  }
+
   assigneeLoading.value = true;
   try {
     const res = await usersApi.list();
@@ -191,7 +265,7 @@ async function loadAssignableUsers(): Promise<void> {
   }
 }
 
-/** Create the show (and the template, if new). Returns the created show. */
+/** Create the show (template + optional guest, if requested). Returns the created show. */
 async function submit(): Promise<Show> {
   submitting.value = true;
   try {
@@ -218,6 +292,22 @@ async function submit(): Promise<Show> {
       description = tpl.description || undefined;
     }
 
+    // Resolve the show's host. Either an existing user, or a freshly created
+    // guest (date-restricted to the show date) who becomes the host.
+    let hostUserId: number | undefined;
+    if (hostMode.value === 'guest') {
+      const name = guestUsername.value.trim();
+      if (!name) throw new Error('Guest username is required');
+      const guest = await guestsApi.create({
+        username: name,
+        login_date: range.apiDate.value,
+      });
+      guestCredentials.value = guest;
+      hostUserId = guest.user_id;
+    } else {
+      hostUserId = assigneeUserId.value ?? undefined;
+    }
+
     return await showsApi.create({
       title,
       description,
@@ -225,8 +315,9 @@ async function submit(): Promise<Show> {
       date: range.apiDate.value,
       start_time: range.apiStartTime.value,
       end_time: range.apiEndTime.value,
+      stream_mode: streamMode.value ?? 'live',
       template_id: templateId,
-      host_user_id: isAdmin.value ? (assigneeUserId.value ?? undefined) : undefined,
+      host_user_id: hostUserId,
     });
   } finally {
     submitting.value = false;
@@ -234,8 +325,13 @@ async function submit(): Promise<Show> {
 }
 
 /** Reset all state and (re)initialise the wizard for a fresh run. */
-function start(opts: { isAdmin: boolean; prefillDate?: string }): void {
+function start(opts: {
+  isAdmin: boolean;
+  currentUser?: { id: number; username: string } | null;
+  prefillDate?: string;
+}): void {
   isAdmin.value = opts.isAdmin;
+  currentUser.value = opts.currentUser ?? null;
   mode.value = null;
   templates.value = [];
   templatesLoading.value = false;
@@ -247,6 +343,10 @@ function start(opts: { isAdmin: boolean; prefillDate?: string }): void {
   assignableUsers.value = [];
   assigneeLoading.value = false;
   assigneeUserId.value = null;
+  hostMode.value = 'existing';
+  guestUsername.value = '';
+  guestCredentials.value = null;
+  streamMode.value = null;
   stepIndex.value = 0;
   maxVisited.value = 0;
   submitting.value = false;
@@ -281,6 +381,10 @@ export function useShowWizard() {
     assignableUsers: readonly(assignableUsers),
     assigneeLoading: readonly(assigneeLoading),
     assigneeUserId,
+    hostMode: readonly(hostMode),
+    guestUsername,
+    guestCredentials: readonly(guestCredentials),
+    streamMode: readonly(streamMode),
     submitting: readonly(submitting),
 
     // Step machine
@@ -292,16 +396,22 @@ export function useShowWizard() {
     isLastStep,
     canProceed,
     canNavigateTo,
+    hasTemplates,
+    goToNamedStep,
 
     // Summary
     summaryName,
     summaryDescription,
     summaryCoverUrl,
     assigneeUsername,
+    streamModeLabel,
+    summaryHost,
 
     // Actions
     start,
     setMode,
+    setStreamMode,
+    setHostMode,
     goNext,
     goBack,
     goToStep,

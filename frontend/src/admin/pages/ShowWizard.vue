@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import { useShowWizard, type WizardStep } from '../composables';
@@ -11,7 +11,8 @@ import WizardTemplateName from '../components/show-wizard/WizardTemplateName.vue
 import WizardTemplateCover from '../components/show-wizard/WizardTemplateCover.vue';
 import WizardTemplateDescription from '../components/show-wizard/WizardTemplateDescription.vue';
 import WizardDate from '../components/show-wizard/WizardDate.vue';
-import WizardAssign from '../components/show-wizard/WizardAssign.vue';
+import WizardHost from '../components/show-wizard/WizardHost.vue';
+import WizardStreamMode from '../components/show-wizard/WizardStreamMode.vue';
 import WizardConfirm from '../components/show-wizard/WizardConfirm.vue';
 
 const router = useRouter();
@@ -29,7 +30,8 @@ const STEP_LABELS: Record<WizardStep, string> = {
   cover: 'Cover',
   description: 'About',
   date: 'Date',
-  assign: 'Host',
+  host: 'Host',
+  'stream-mode': 'Mode',
   confirm: 'Confirm',
 };
 
@@ -40,29 +42,43 @@ const STEP_COMPONENTS = {
   cover: WizardTemplateCover,
   description: WizardTemplateDescription,
   date: WizardDate,
-  assign: WizardAssign,
+  host: WizardHost,
+  'stream-mode': WizardStreamMode,
   confirm: WizardConfirm,
 } as const;
 
 const currentComponent = computed(() => STEP_COMPONENTS[wizard.currentStep.value]);
 
+// After creation we hold here to show guest credentials (which can't be
+// retrieved again) before navigating away.
+const createdShowId = ref<number | null>(null);
+
 onMounted(() => {
   const prefillDate = typeof route.query.date === 'string' ? route.query.date : undefined;
-  wizard.start({ isAdmin: isAdmin.value, prefillDate });
+  const currentUser = auth.user ? { id: auth.user.id, username: auth.user.username } : null;
+  wizard.start({ isAdmin: isAdmin.value, currentUser, prefillDate });
 });
 
 function onCancel() {
   router.push(isAdmin.value ? '/shows' : '/stream');
 }
 
+function leave() {
+  if (isAdmin.value) {
+    router.push(createdShowId.value ? `/shows/${createdShowId.value}` : '/shows');
+  } else {
+    router.push('/stream');
+  }
+}
+
 async function onCreate() {
   try {
     const show = await wizard.submit();
     flash.success('Show created successfully');
-    if (isAdmin.value) {
-      router.push(show?.id ? `/shows/${show.id}` : '/shows');
-    } else {
-      router.push('/stream');
+    createdShowId.value = show?.id ?? null;
+    // If a guest was created, stay and show the one-time credentials.
+    if (!wizard.guestCredentials.value) {
+      leave();
     }
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to create show');
@@ -109,34 +125,61 @@ async function onCreate() {
       </div>
     </div>
 
-    <!-- Step content -->
-    <div class="wizard-content card">
-      <component :is="currentComponent" />
+    <!-- Guest credentials (shown once, after creation) -->
+    <div v-if="wizard.guestCredentials.value" class="wizard-content card">
+      <h2 class="creds-title">Guest login created</h2>
+      <p class="creds-hint">
+        Share these with your guest now — the password is shown only once. They can sign in on
+        {{ wizard.guestCredentials.value.login_date }} and will be asked to choose their own
+        password.
+      </p>
+      <dl class="creds">
+        <dt>Username</dt>
+        <dd>{{ wizard.guestCredentials.value.username }}</dd>
+        <dt>Password</dt>
+        <dd>
+          <code>{{ wizard.guestCredentials.value.password }}</code>
+        </dd>
+      </dl>
+      <div class="wizard-nav">
+        <span />
+        <BaseButton variant="primary" @click="leave">Done</BaseButton>
+      </div>
     </div>
 
-    <!-- Navigation -->
-    <div class="wizard-nav">
-      <BaseButton variant="ghost" @click="wizard.isFirstStep.value ? onCancel() : wizard.goBack()">
-        {{ wizard.isFirstStep.value ? 'Cancel' : 'Back' }}
-      </BaseButton>
-      <BaseButton
-        v-if="!wizard.isLastStep.value"
-        variant="primary"
-        :disabled="!wizard.canProceed.value"
-        @click="wizard.goNext()"
-      >
-        Next
-      </BaseButton>
-      <BaseButton
-        v-else
-        variant="primary"
-        :loading="wizard.submitting.value"
-        :disabled="!wizard.canProceed.value"
-        @click="onCreate"
-      >
-        Create Show
-      </BaseButton>
-    </div>
+    <template v-else>
+      <!-- Step content -->
+      <div class="wizard-content card">
+        <component :is="currentComponent" />
+      </div>
+
+      <!-- Navigation -->
+      <div class="wizard-nav">
+        <BaseButton
+          variant="ghost"
+          @click="wizard.isFirstStep.value ? onCancel() : wizard.goBack()"
+        >
+          {{ wizard.isFirstStep.value ? 'Cancel' : 'Back' }}
+        </BaseButton>
+        <BaseButton
+          v-if="!wizard.isLastStep.value"
+          variant="primary"
+          :disabled="!wizard.canProceed.value"
+          @click="wizard.goNext()"
+        >
+          Next
+        </BaseButton>
+        <BaseButton
+          v-else
+          variant="primary"
+          :loading="wizard.submitting.value"
+          :disabled="!wizard.canProceed.value"
+          @click="onCreate"
+        >
+          Create Show
+        </BaseButton>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -249,5 +292,45 @@ async function onCreate() {
   display: flex;
   justify-content: space-between;
   margin-top: var(--spacing-lg);
+}
+
+.creds-title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+  margin: 0 0 var(--spacing-sm);
+  text-align: center;
+}
+
+.creds-hint {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--spacing-lg);
+  text-align: center;
+}
+
+.creds {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--spacing-sm) var(--spacing-md);
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.creds dt {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-medium);
+}
+
+.creds dd {
+  margin: 0;
+  color: var(--color-text);
+}
+
+.creds code {
+  font-family: monospace;
+  background: var(--color-surface-alt);
+  padding: 2px var(--spacing-xs);
+  border-radius: var(--radius-sm);
 }
 </style>

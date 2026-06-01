@@ -70,7 +70,7 @@ export const api = new ApiClient(API_BASE);
 export interface User {
   id: number;
   username: string;
-  role: 'host' | 'admin' | 'superadmin';
+  role: 'host' | 'admin' | 'superadmin' | 'guest';
   artist_id?: number;
   artist_name?: string;
   has_show?: boolean;
@@ -402,6 +402,8 @@ export interface Show {
   ai_bio?: string;
   status: string;
   show_type: string;
+  /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */
+  stream_mode?: 'live' | 'prerecorded';
   artists: { id: number; name: string }[];
 }
 
@@ -468,6 +470,8 @@ export interface ShowDetail {
   host_user_id?: number;
   host_username?: string;
   available_hosts?: { id: number; username: string }[];
+  /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */
+  stream_mode?: 'live' | 'prerecorded';
 }
 
 export const showsApi = {
@@ -809,6 +813,21 @@ export const usersApi = {
       current_password: currentPassword,
       new_password: newPassword,
     }),
+};
+
+// Guest accounts — date-restricted logins created during show setup.
+export interface GuestCredentials {
+  user_id: number;
+  username: string;
+  /** One-time bootstrap password; the guest must replace it on first login. */
+  password: string;
+  login_date: string;
+}
+
+export const guestsApi = {
+  /** Create a guest who may only log in on `login_date` (the show date). */
+  create: (data: { username: string; login_date: string }) =>
+    api.post<GuestCredentials>('/api/guests', data),
 };
 
 // Stream API

@@ -86,6 +86,13 @@ pub async fn api_login(
         ));
     }
 
+    // Guests may only sign in on their show's date.
+    if !user.is_login_allowed_today() {
+        return Err(AppError::Unauthorized(
+            "Guest login is only available on the day of the show.".to_string(),
+        ));
+    }
+
     // Create session
     let token = auth::create_session(&state, user.id).await?;
 
@@ -116,7 +123,7 @@ pub async fn api_login(
 
     // Determine redirect based on role
     let redirect_url = match user.role_enum() {
-        models::UserRole::Host => "/#/stream",
+        models::UserRole::Host | models::UserRole::Guest => "/#/stream",
         models::UserRole::Admin | models::UserRole::Superadmin => "/#/artists",
     };
 
@@ -2035,6 +2042,10 @@ pub struct ShowDetailResponse {
     host_user_id: Option<i64>,
     host_username: Option<String>,
     available_hosts: Vec<AvailableHost>,
+    /// Intended delivery: "live" or "prerecorded" (changeable after creation).
+    stream_mode: Option<String>,
+    /// The user who created the show (may differ from the assigned host).
+    created_by: Option<i64>,
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -2673,8 +2684,11 @@ pub async fn api_show_detail(
             None
         };
 
-        // Available hosts: all users with role 'host' or 'admin' — admin-only,
-        // since reassigning a host is an admin action.
+        // Available hosts depend on who's viewing:
+        //  - admins may assign any host/admin user;
+        //  - the show's creator may toggle between themselves and a guest they
+        //    created (one show has exactly one host);
+        //  - everyone else gets an empty list (no reassignment UI).
         let hosts: Vec<AvailableHost> = if viewer_is_admin {
             sqlx::query_as(
                 r#"
@@ -2683,6 +2697,18 @@ pub async fn api_show_detail(
             ORDER BY u.username COLLATE NOCASE
             "#,
             )
+            .fetch_all(&state.db)
+            .await?
+        } else if show.created_by == Some(viewer.id) {
+            sqlx::query_as(
+                r#"
+            SELECT u.id, u.username FROM users u
+            WHERE u.id = ? OR (u.role = 'guest' AND u.created_by = ?)
+            ORDER BY u.username COLLATE NOCASE
+            "#,
+            )
+            .bind(viewer.id)
+            .bind(viewer.id)
             .fetch_all(&state.db)
             .await?
         } else {
@@ -2776,6 +2802,8 @@ pub async fn api_show_detail(
         host_user_id,
         host_username,
         available_hosts,
+        stream_mode: show.stream_mode,
+        created_by: show.created_by,
     }))
 }
 
@@ -2792,6 +2820,8 @@ pub struct CreateShowRequest {
     /// Optional user to present the show. Admins only; ignored for hosts (who
     /// always self-assign).
     host_user_id: Option<i64>,
+    /// Intended delivery: "live" or "prerecorded". Defaults to "live".
+    stream_mode: Option<String>,
 }
 
 /// Default show type for host-created shows. Hosts can't pick a type, and host
@@ -2824,8 +2854,9 @@ pub async fn api_create_show(
         None
     };
 
-    // Hosts get a constrained show: forced type, self-assigned, no description /
-    // end time. Admins get full control over every field.
+    // Hosts get a constrained show: forced type, no description / end time. They
+    // host the show themselves or assign a guest they created. Admins get full
+    // control over every field.
     let (show_type, description, end_time, host_user_id) = if is_admin {
         let show_type = req.show_type.as_deref().unwrap_or("unheard");
         if !matches!(show_type, "unheard" | "brunchtime" | "external") {
@@ -2851,16 +2882,43 @@ pub async fn api_create_show(
             req.host_user_id,
         )
     } else {
+        // A host may host the show themselves (default) or hand it to a guest
+        // they created. Any other assignee is rejected.
+        let host_user_id = match req.host_user_id {
+            None => user.id,
+            Some(hid) if hid == user.id => user.id,
+            Some(hid) => {
+                let is_own_guest: Option<(i64,)> = sqlx::query_as(
+                    "SELECT id FROM users WHERE id = ? AND role = 'guest' AND created_by = ?",
+                )
+                .bind(hid)
+                .bind(user.id)
+                .fetch_optional(&state.db)
+                .await?;
+                if is_own_guest.is_none() {
+                    return Err(AppError::Forbidden(
+                        "You can only assign yourself or a guest you created as host".to_string(),
+                    ));
+                }
+                hid
+            }
+        };
         (
             HOST_DEFAULT_SHOW_TYPE.to_string(),
             None,
             None,
-            Some(user.id),
+            Some(host_user_id),
         )
     };
 
+    // Delivery mode: accept only the two known values, default to "live".
+    let stream_mode = match req.stream_mode.as_deref() {
+        Some("prerecorded") => "prerecorded",
+        _ => "live",
+    };
+
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?)",
+        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id, stream_mode, created_by) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
@@ -2869,6 +2927,8 @@ pub async fn api_create_show(
     .bind(&req.start_time)
     .bind(&end_time)
     .bind(host_user_id)
+    .bind(stream_mode)
+    .bind(user.id)
     .execute(&state.db)
     .await?;
 
@@ -2910,6 +2970,7 @@ pub async fn api_create_show(
             "start_time": req.start_time,
             "end_time": end_time,
             "host_user_id": host_user_id,
+            "stream_mode": stream_mode,
             "cover_url": cover_url,
             "cover_generated_at": cover_generated_at,
         })),
@@ -3089,6 +3150,7 @@ pub struct UpdateShowRequest {
     show_type: Option<String>,
     start_time: Option<String>,
     end_time: Option<String>,
+    stream_mode: Option<String>,
 }
 
 pub async fn api_update_show(
@@ -3145,6 +3207,16 @@ pub async fn api_update_show(
         updates.push("end_time = ?");
         binds.push(end_time.clone());
     }
+    if let Some(stream_mode) = &req.stream_mode {
+        if !matches!(stream_mode.as_str(), "live" | "prerecorded") {
+            return Err(AppError::BadRequest(format!(
+                "Invalid stream_mode: '{}'. Must be 'live' or 'prerecorded'",
+                stream_mode
+            )));
+        }
+        updates.push("stream_mode = ?");
+        binds.push(stream_mode.clone());
+    }
 
     if updates.is_empty() {
         return Err(AppError::BadRequest("No fields to update".to_string()));
@@ -3178,7 +3250,8 @@ pub async fn api_delete_show(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // Admins (any show), or the host/creator of this show, may delete it.
+    require_show_editor(&state, &headers, id).await?;
 
     // Delete the show from database
     sqlx::query("DELETE FROM shows WHERE id = ?")
@@ -3433,14 +3506,9 @@ pub async fn api_show_assign_host(
     headers: HeaderMap,
     Json(req): Json<AssignHostRequest>,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
-
-    // Verify show exists and is not UNHEARD
-    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-        .bind(show_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+    // Admins, or the show's creator, may (re)assign the host.
+    let (editor, show) = require_show_editor(&state, &headers, show_id).await?;
+    let editor_is_admin = editor.role_enum().can_access_admin();
 
     if show.show_type == "unheard" {
         return Err(AppError::BadRequest(
@@ -3448,17 +3516,30 @@ pub async fn api_show_assign_host(
         ));
     }
 
-    // Verify user exists and has role 'host' or 'admin'
-    let user: Option<models::User> = sqlx::query_as("SELECT * FROM users WHERE id = ?")
+    // Verify the target user exists.
+    let user: models::User = sqlx::query_as("SELECT * FROM users WHERE id = ?")
         .bind(req.user_id)
         .fetch_optional(&state.db)
-        .await?;
+        .await?
+        .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
-    let user = user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
-    if user.role != "host" && user.role != "admin" {
-        return Err(AppError::BadRequest(
-            "Only users with role 'host' or 'admin' can be assigned to shows".to_string(),
-        ));
+    if editor_is_admin {
+        // Admins may assign any host/admin user.
+        if user.role != "host" && user.role != "admin" {
+            return Err(AppError::BadRequest(
+                "Only users with role 'host' or 'admin' can be assigned to shows".to_string(),
+            ));
+        }
+    } else {
+        // A host creator may only toggle the host between themselves and a guest
+        // they created for this show.
+        let is_self = user.id == editor.id;
+        let is_own_guest = user.role == "guest" && user.created_by == Some(editor.id);
+        if !is_self && !is_own_guest {
+            return Err(AppError::Forbidden(
+                "You can only assign yourself or a guest you created as host".to_string(),
+            ));
+        }
     }
 
     sqlx::query("UPDATE shows SET host_user_id = ?, updated_at = datetime('now') WHERE id = ?")
@@ -3480,7 +3561,8 @@ pub async fn api_show_unassign_host(
     Path(show_id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // Admins or the show's creator may clear the host.
+    require_show_editor(&state, &headers, show_id).await?;
 
     sqlx::query("UPDATE shows SET host_user_id = NULL, updated_at = datetime('now') WHERE id = ?")
         .bind(show_id)
@@ -3622,6 +3704,86 @@ pub async fn api_create_user(
     Ok((
         StatusCode::CREATED,
         Json(CreateUserResponse { user, password }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateGuestRequest {
+    username: String,
+    /// The date (YYYY-MM-DD) on which the guest may log in — the show's date.
+    login_date: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateGuestResponse {
+    user_id: i64,
+    username: String,
+    /// One-time bootstrap password; the guest must replace it on first login.
+    password: String,
+    login_date: String,
+}
+
+/// Create a date-restricted guest account during show setup.
+///
+/// Available to any show creator (host or admin). The guest may only log in on
+/// `login_date` (the show date) and is auto-removed after it expires.
+pub async fn api_create_guest(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreateGuestRequest>,
+) -> Result<impl IntoResponse> {
+    let current_user = require_show_creator(&state, &headers).await?;
+
+    let username = req.username.trim();
+    if username.is_empty() {
+        return Err(AppError::BadRequest("Username is required".to_string()));
+    }
+
+    // Validate login_date is a plausible YYYY-MM-DD.
+    if chrono::NaiveDate::parse_from_str(&req.login_date, "%Y-%m-%d").is_err() {
+        return Err(AppError::BadRequest(
+            "login_date must be a valid YYYY-MM-DD date".to_string(),
+        ));
+    }
+
+    // Reject duplicate usernames up front for a clean error message.
+    let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE username = ?")
+        .bind(username)
+        .fetch_optional(&state.db)
+        .await?;
+    if existing.is_some() {
+        return Err(AppError::BadRequest(
+            "A user with this username already exists".to_string(),
+        ));
+    }
+
+    // Generate a one-time bootstrap password (replaced on first login).
+    let password = auth::generate_session_token()[..16].to_string();
+    let password_hash = auth::hash_password(&password)?;
+
+    // Expire at the end of the show day so the weekly cleanup removes the guest.
+    let expires_at = format!("{}T23:59:59", req.login_date);
+
+    let result = sqlx::query(
+        "INSERT INTO users (username, password_hash, role, created_by, expires_at, must_change_password, login_date) \
+         VALUES (?, ?, 'guest', ?, ?, 1, ?)",
+    )
+    .bind(username)
+    .bind(&password_hash)
+    .bind(current_user.id)
+    .bind(&expires_at)
+    .bind(&req.login_date)
+    .execute(&state.db)
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateGuestResponse {
+            user_id: result.last_insert_rowid(),
+            username: username.to_string(),
+            password,
+            login_date: req.login_date,
+        }),
     ))
 }
 
@@ -5281,9 +5443,10 @@ pub async fn require_show_creator(
     Ok(user)
 }
 
-/// Require a user allowed to EDIT a specific show: admins/superadmins (any show)
-/// or the host assigned to this show. Returns the authenticated user and the
-/// loaded show so the caller can reuse it.
+/// Require a user allowed to EDIT a specific show: admins/superadmins (any show),
+/// the host assigned to this show, or the user who created it. The creator is
+/// included so a host who hands the show to a guest keeps control of it.
+/// Returns the authenticated user and the loaded show so the caller can reuse it.
 pub async fn require_show_editor(
     state: &Arc<AppState>,
     headers: &HeaderMap,
@@ -5301,10 +5464,11 @@ pub async fn require_show_editor(
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
     let is_admin = user.role_enum().can_access_admin();
-    let is_owner = show.host_user_id == Some(user.id);
-    if !is_admin && !is_owner {
+    let is_host = show.host_user_id == Some(user.id);
+    let is_creator = show.created_by == Some(user.id);
+    if !is_admin && !is_host && !is_creator {
         return Err(AppError::Forbidden(
-            "You can only edit shows you host".to_string(),
+            "You can only edit shows you host or created".to_string(),
         ));
     }
 
