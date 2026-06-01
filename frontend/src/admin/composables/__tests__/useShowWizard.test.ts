@@ -25,8 +25,7 @@ describe('useShowWizard step machine', () => {
       'cover',
       'description',
       'date',
-      'assign',
-      'guest',
+      'host',
       'stream-mode',
       'confirm',
     ]);
@@ -45,15 +44,11 @@ describe('useShowWizard step machine', () => {
     expect(wizard.currentStep.value).toBe('date');
     expect(wizard.canProceed.value).toBe(false); // no date yet
     setValidDate();
-    expect(wizard.goNext()).toBe(true); // → assign
+    expect(wizard.goNext()).toBe(true); // → host
 
-    expect(wizard.currentStep.value).toBe('assign');
-    expect(wizard.canProceed.value).toBe(false); // no assignee yet
+    expect(wizard.currentStep.value).toBe('host');
+    expect(wizard.canProceed.value).toBe(false); // no existing user picked yet
     wizard.assigneeUserId.value = 42;
-    expect(wizard.goNext()).toBe(true); // → guest
-
-    expect(wizard.currentStep.value).toBe('guest');
-    expect(wizard.canProceed.value).toBe(true); // guest is optional
     expect(wizard.goNext()).toBe(true); // → stream-mode
 
     expect(wizard.currentStep.value).toBe('stream-mode');
@@ -64,14 +59,14 @@ describe('useShowWizard step machine', () => {
     expect(wizard.isLastStep.value).toBe(true);
   });
 
-  it('host "existing template" branch has no assign step', () => {
+  it('host "existing template" branch includes the unified host step', () => {
     wizard.start({ isAdmin: false });
     wizard.setMode('existing');
     expect(wizard.steps.value).toEqual([
       'choice',
       'select',
       'date',
-      'guest',
+      'host',
       'stream-mode',
       'confirm',
     ]);
@@ -81,11 +76,31 @@ describe('useShowWizard step machine', () => {
     wizard.selectedTemplateId.value = 7;
     expect(wizard.goNext()).toBe(true); // → date
     setValidDate();
-    expect(wizard.goNext()).toBe(true); // → guest
+    expect(wizard.goNext()).toBe(true); // → host
+    expect(wizard.currentStep.value).toBe('host');
+    wizard.assigneeUserId.value = 5;
     expect(wizard.goNext()).toBe(true); // → stream-mode
     wizard.setStreamMode('prerecorded');
     expect(wizard.goNext()).toBe(true); // → confirm
     expect(wizard.currentStep.value).toBe('confirm');
+  });
+
+  it('host step accepts a guest username instead of an existing user', () => {
+    wizard.start({ isAdmin: false });
+    wizard.setMode('existing');
+    wizard.goNext(); // → select
+    wizard.selectedTemplateId.value = 7;
+    wizard.goNext(); // → date
+    setValidDate();
+    wizard.goNext(); // → host
+
+    expect(wizard.currentStep.value).toBe('host');
+    // Guest sub-mode: a non-empty username is enough to proceed.
+    wizard.setHostMode('guest');
+    expect(wizard.canProceed.value).toBe(false);
+    wizard.guestUsername.value = 'dj-guest';
+    expect(wizard.canProceed.value).toBe(true);
+    expect(wizard.summaryHost.value).toBe('dj-guest (guest)');
   });
 
   it('only allows direct navigation to already-visited steps', () => {
@@ -130,7 +145,8 @@ describe('useShowWizard step machine', () => {
     wizard.selectedTemplateId.value = 7;
     wizard.goNext(); // → date
     setValidDate();
-    wizard.goNext(); // → guest
+    wizard.goNext(); // → host
+    wizard.assigneeUserId.value = 5;
     wizard.goNext(); // → stream-mode
     wizard.setStreamMode('live');
     wizard.goNext(); // → confirm
@@ -140,6 +156,6 @@ describe('useShowWizard step machine', () => {
     expect(wizard.currentStep.value).toBe('date');
 
     // A step outside the current branch is not navigable.
-    expect(wizard.goToNamedStep('assign')).toBe(false);
+    expect(wizard.goToNamedStep('name')).toBe(false);
   });
 });

@@ -189,6 +189,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // (non-binding default — can be switched later).
     add_column_if_missing(pool, "shows", "stream_mode", "TEXT DEFAULT 'live'").await?;
 
+    // The user who created the show. Kept separate from host_user_id so a host
+    // who assigns a guest as the host still retains edit rights over the show.
+    add_column_if_missing(pool, "shows", "created_by", "INTEGER REFERENCES users(id)").await?;
+
     // App settings table for storing OAuth tokens and other key-value config
     sqlx::query(
         r#"

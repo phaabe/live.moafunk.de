@@ -26,10 +26,12 @@ export type WizardStep =
   | 'cover'
   | 'description'
   | 'date'
-  | 'assign'
-  | 'guest'
+  | 'host'
   | 'stream-mode'
   | 'confirm';
+
+/** On the host step: assign an existing user, or create a guest as the host. */
+export type HostMode = 'existing' | 'guest';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton state (shared across the wizard's step components)
@@ -52,12 +54,16 @@ const coverPreviewUrl = ref<string | null>(null);
 // Date / time (start + end)
 const range = useDateTimeRange();
 
-// Assignee (admin only)
+// Host step: assign an existing user, or create a guest who becomes the host.
 const assignableUsers = ref<AdminUser[]>([]);
 const assigneeLoading = ref(false);
 const assigneeUserId = ref<number | null>(null);
 
-// Guest account (optional — created during show setup, login limited to show date)
+// Which sub-mode of the host step is active.
+const hostMode = ref<HostMode>('existing');
+
+// Guest account (created during show setup, login limited to the show date,
+// auto-deleted after it). When chosen, the guest becomes the show's host.
 const guestUsername = ref('');
 const guestCredentials = ref<GuestCredentials | null>(null);
 
@@ -74,8 +80,9 @@ const submitting = ref(false);
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The ordered steps for the current branch + role. `choice` is always first;
- * admins get an extra `assign` step before `confirm`.
+ * The ordered steps for the current branch. `choice` is always first; the
+ * `host` step (assign an existing user OR create a guest) is shown to every
+ * creator before delivery mode and confirmation.
  */
 const steps = computed<WizardStep[]>(() => {
   const out: WizardStep[] = ['choice'];
@@ -85,9 +92,7 @@ const steps = computed<WizardStep[]>(() => {
     out.push('select');
   }
   if (mode.value) {
-    out.push('date');
-    if (isAdmin.value) out.push('assign');
-    out.push('guest', 'stream-mode', 'confirm');
+    out.push('date', 'host', 'stream-mode', 'confirm');
   }
   return out;
 });
@@ -111,10 +116,11 @@ const canProceed = computed(() => {
       return true; // optional
     case 'date':
       return range.isValid.value;
-    case 'assign':
-      return assigneeUserId.value !== null;
-    case 'guest':
-      return true; // optional
+    case 'host':
+      // Either pick an existing user, or name a guest to create.
+      return hostMode.value === 'existing'
+        ? assigneeUserId.value !== null
+        : guestUsername.value.trim().length > 0;
     case 'stream-mode':
       return streamMode.value !== null;
     case 'confirm':
@@ -169,7 +175,14 @@ const streamModeLabel = computed(() => {
   return null;
 });
 
-const summaryGuest = computed(() => guestUsername.value.trim() || null);
+/** Confirm-page label for the chosen host (existing user or new guest). */
+const summaryHost = computed(() => {
+  if (hostMode.value === 'guest') {
+    const name = guestUsername.value.trim();
+    return name ? `${name} (guest)` : null;
+  }
+  return assigneeUsername.value;
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Actions
@@ -184,6 +197,10 @@ function setMode(m: WizardMode): void {
 
 function setStreamMode(m: StreamMode): void {
   streamMode.value = m;
+}
+
+function setHostMode(m: HostMode): void {
+  hostMode.value = m;
 }
 
 function goNext(): boolean {
@@ -260,7 +277,23 @@ async function submit(): Promise<Show> {
       description = tpl.description || undefined;
     }
 
-    const show = await showsApi.create({
+    // Resolve the show's host. Either an existing user, or a freshly created
+    // guest (date-restricted to the show date) who becomes the host.
+    let hostUserId: number | undefined;
+    if (hostMode.value === 'guest') {
+      const name = guestUsername.value.trim();
+      if (!name) throw new Error('Guest username is required');
+      const guest = await guestsApi.create({
+        username: name,
+        login_date: range.apiDate.value,
+      });
+      guestCredentials.value = guest;
+      hostUserId = guest.user_id;
+    } else {
+      hostUserId = assigneeUserId.value ?? undefined;
+    }
+
+    return await showsApi.create({
       title,
       description,
       show_type: 'external',
@@ -269,19 +302,8 @@ async function submit(): Promise<Show> {
       end_time: range.apiEndTime.value,
       stream_mode: streamMode.value ?? 'live',
       template_id: templateId,
-      host_user_id: isAdmin.value ? (assigneeUserId.value ?? undefined) : undefined,
+      host_user_id: hostUserId,
     });
-
-    // Optionally create a date-restricted guest account for this show's date.
-    const guest = guestUsername.value.trim();
-    if (guest) {
-      guestCredentials.value = await guestsApi.create({
-        username: guest,
-        login_date: range.apiDate.value,
-      });
-    }
-
-    return show;
   } finally {
     submitting.value = false;
   }
@@ -301,6 +323,7 @@ function start(opts: { isAdmin: boolean; prefillDate?: string }): void {
   assignableUsers.value = [];
   assigneeLoading.value = false;
   assigneeUserId.value = null;
+  hostMode.value = 'existing';
   guestUsername.value = '';
   guestCredentials.value = null;
   streamMode.value = null;
@@ -338,6 +361,7 @@ export function useShowWizard() {
     assignableUsers: readonly(assignableUsers),
     assigneeLoading: readonly(assigneeLoading),
     assigneeUserId,
+    hostMode: readonly(hostMode),
     guestUsername,
     guestCredentials: readonly(guestCredentials),
     streamMode: readonly(streamMode),
@@ -361,12 +385,13 @@ export function useShowWizard() {
     summaryCoverUrl,
     assigneeUsername,
     streamModeLabel,
-    summaryGuest,
+    summaryHost,
 
     // Actions
     start,
     setMode,
     setStreamMode,
+    setHostMode,
     goNext,
     goBack,
     goToStep,

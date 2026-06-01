@@ -89,10 +89,20 @@ const isUnheard = computed(() => !show.value?.show_type || show.value.show_type 
 // Role-based access. Backend enforces the same rules; these only gate the UI.
 const isAdmin = computed(() => auth.user?.role === 'admin' || auth.user?.role === 'superadmin');
 const canEdit = computed(
-  () => isAdmin.value || (auth.user?.role === 'host' && show.value?.host_user_id === auth.user?.id)
+  () =>
+    isAdmin.value ||
+    show.value?.host_user_id === auth.user?.id ||
+    show.value?.created_by === auth.user?.id
 );
 const hasHost = computed(() => !!show.value?.host_user_id);
 const uploadingCover = ref(false);
+
+// The show's creator (a host) may toggle the host between themselves and a
+// guest they created — not just admins. The backend scopes `available_hosts`
+// accordingly, so the dropdown only ever offers valid choices.
+const canEditHost = computed(
+  () => isAdmin.value || (!!show.value && show.value.created_by === auth.user?.id)
+);
 
 // ── Dashboard (external/brunchtime) state ──────────────────────────────────
 const editMode = ref(false);
@@ -1048,8 +1058,8 @@ onUnmounted(() => {
             </div>
             <p v-else class="empty-state">No host assigned.</p>
 
-            <!-- Admins may (re)assign the host inline while editing. -->
-            <div v-if="isAdmin && editMode" class="host-edit">
+            <!-- Admins and the show's creator may (re)assign the host inline. -->
+            <div v-if="canEditHost && editMode" class="host-edit">
               <template v-if="show.available_hosts && show.available_hosts.length > 0">
                 <select v-model="selectedHostId" class="select-input">
                   <option :value="null" disabled>

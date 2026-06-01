@@ -67,24 +67,16 @@ function edit(step: WizardStep) {
           <button type="button" class="edit-link" @click="edit('date')">Edit</button>
         </dd>
 
-        <template v-if="wizard.isAdmin.value">
-          <dt>Host</dt>
-          <dd>
-            <span>{{ wizard.assigneeUsername.value || '—' }}</span>
-            <button type="button" class="edit-link" @click="edit('assign')">Edit</button>
-          </dd>
-        </template>
+        <dt>Host</dt>
+        <dd>
+          <span>{{ wizard.summaryHost.value || '—' }}</span>
+          <button type="button" class="edit-link" @click="edit('host')">Edit</button>
+        </dd>
 
         <dt>Delivery</dt>
         <dd>
           <span>{{ wizard.streamModeLabel.value || '—' }}</span>
           <button type="button" class="edit-link" @click="edit('stream-mode')">Edit</button>
-        </dd>
-
-        <dt>Guest</dt>
-        <dd>
-          <span>{{ wizard.summaryGuest.value || 'None' }}</span>
-          <button type="button" class="edit-link" @click="edit('guest')">Edit</button>
         </dd>
       </dl>
     </div>

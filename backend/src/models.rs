@@ -115,6 +115,10 @@ pub struct Show {
     /// Intended delivery: "live" (host streams in-browser) or "prerecorded"
     /// (host uploads a set). Defaults to "live"; can be changed after creation.
     pub stream_mode: Option<String>,
+    /// The user who created this show. Distinct from `host_user_id`: a host who
+    /// creates a show may assign a guest they created as the host, yet retains
+    /// edit rights over the show via this field.
+    pub created_by: Option<i64>,
 }
 
 /// Reusable show template: a per-user bundle of presentation content

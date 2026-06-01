@@ -11,8 +11,7 @@ import WizardTemplateName from '../components/show-wizard/WizardTemplateName.vue
 import WizardTemplateCover from '../components/show-wizard/WizardTemplateCover.vue';
 import WizardTemplateDescription from '../components/show-wizard/WizardTemplateDescription.vue';
 import WizardDate from '../components/show-wizard/WizardDate.vue';
-import WizardAssign from '../components/show-wizard/WizardAssign.vue';
-import WizardGuest from '../components/show-wizard/WizardGuest.vue';
+import WizardHost from '../components/show-wizard/WizardHost.vue';
 import WizardStreamMode from '../components/show-wizard/WizardStreamMode.vue';
 import WizardConfirm from '../components/show-wizard/WizardConfirm.vue';
 
@@ -31,8 +30,7 @@ const STEP_LABELS: Record<WizardStep, string> = {
   cover: 'Cover',
   description: 'About',
   date: 'Date',
-  assign: 'Host',
-  guest: 'Guest',
+  host: 'Host',
   'stream-mode': 'Mode',
   confirm: 'Confirm',
 };
@@ -44,8 +42,7 @@ const STEP_COMPONENTS = {
   cover: WizardTemplateCover,
   description: WizardTemplateDescription,
   date: WizardDate,
-  assign: WizardAssign,
-  guest: WizardGuest,
+  host: WizardHost,
   'stream-mode': WizardStreamMode,
   confirm: WizardConfirm,
 } as const;
