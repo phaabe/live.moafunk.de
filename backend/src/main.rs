@@ -202,22 +202,14 @@ async fn main() -> anyhow::Result<()> {
     // Seed superadmin if no users exist
     db::seed_superadmin(&db, &config).await?;
 
-    // Initialize S3 client for R2 (avoid aws-config to reduce dependencies/compile time)
-    // R2 requires path-style addressing (not virtual-hosted style)
-    let s3_config = aws_sdk_s3::Config::builder()
-        .endpoint_url(&config.r2_endpoint)
-        .credentials_provider(aws_sdk_s3::config::Credentials::new(
-            &config.r2_access_key_id,
-            &config.r2_secret_access_key,
-            None,
-            None,
-            "r2",
-        ))
-        .region(aws_sdk_s3::config::Region::new("auto"))
-        .force_path_style(true)
-        .build();
+    // Initialize S3 client for R2 (avoid aws-config to reduce dependencies/compile time).
+    // Client construction (incl. the R2 checksum-behavior fix) lives in storage.rs
+    // so it's shared with integration tests.
+    let s3_client = storage::build_s3_client(&config);
 
-    let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
+    // Ensure a lifecycle rule auto-aborts stale incomplete multipart uploads,
+    // so interrupted recording uploads don't accumulate storage cost.
+    storage::ensure_multipart_abort_lifecycle(&s3_client, &config.r2_bucket_name).await;
 
     // Initialize stream state
     let stream_state = stream_bridge::new_shared_state();

@@ -264,6 +264,55 @@ pub struct FinalizedRecording {
     pub incomplete: bool,
 }
 
+/// Fraction of the scheduled show length below which a recording is treated as
+/// suspiciously short (recorder likely died early). 50% is a generous floor.
+const SHORT_RECORDING_FRACTION: f64 = 0.5;
+
+/// If the recorded duration is implausibly short versus the show's scheduled
+/// length, return a human-readable reason; otherwise `None`. Returns `None` when
+/// the duration or schedule is unknown (can't judge).
+async fn detect_short_recording(
+    state: &Arc<AppState>,
+    show_id: i64,
+    local_duration_ms: Option<u64>,
+) -> Option<String> {
+    let duration_ms = local_duration_ms?;
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()??;
+    let scheduled_secs = scheduled_duration_secs(&show)?;
+    let threshold_ms = (scheduled_secs as f64 * SHORT_RECORDING_FRACTION * 1000.0) as u64;
+    if duration_ms < threshold_ms {
+        Some(format!(
+            "recording is {}s but show was scheduled for {}s",
+            duration_ms / 1000,
+            scheduled_secs
+        ))
+    } else {
+        None
+    }
+}
+
+/// Scheduled show length in seconds from `start_time`/`end_time` ("HH:MM").
+/// Handles overnight shows (end ≤ start → next day). `None` if times are unset
+/// or unparseable.
+fn scheduled_duration_secs(show: &models::Show) -> Option<u64> {
+    let parse = |t: &str| -> Option<i64> {
+        let (h, m) = t.split_once(':')?;
+        Some(h.parse::<i64>().ok()? * 3600 + m.parse::<i64>().ok()? * 60)
+    };
+    let start = parse(show.start_time.as_deref()?)?;
+    let end = parse(show.end_time.as_deref()?)?;
+    let secs = if end > start {
+        end - start
+    } else {
+        end + 24 * 3600 - start
+    };
+    (secs > 0).then_some(secs as u64)
+}
+
 /// Stop the active recording (if any), upload the raw recording + markers to R2,
 /// and record a `recording_versions` row.
 ///
@@ -301,26 +350,59 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
     let show_id = session.show_id;
     let version = session.version_timestamp.clone();
     let marker_count = session.markers.len();
-    let incomplete = write_failure.is_some();
 
-    // Upload raw recording to R2
+    // Read the local artifact and probe its duration BEFORE upload — we keep this
+    // file on disk until R2 has verified it (see cleanup below).
     let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);
     let raw_data = tokio::fs::read(&session.temp_file_path)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to read recording file: {}", e)))?;
+    let local_size = raw_data.len() as u64;
+    let local_duration_ms = audio::get_duration(&session.temp_file_path).await.ok();
 
-    state
-        .s3_client
-        .put_object()
-        .bucket(&state.config.r2_bucket_name)
-        .key(&raw_key)
-        .body(aws_sdk_s3::primitives::ByteStream::from(raw_data))
-        .content_type("audio/webm")
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("Failed to upload raw recording: {}", e)))?;
+    // Resumable, integrity-checked multipart upload (explicit CRC32C). On failure
+    // this returns Err and we keep the local file (never deleted unverified).
+    storage::upload_multipart(
+        &state.s3_client,
+        &state.config.r2_bucket_name,
+        &raw_key,
+        raw_data,
+        "audio/webm",
+    )
+    .await
+    .map_err(|e| AppError::Storage(format!("Failed to upload raw recording: {}", e)))?;
 
-    tracing::info!("Uploaded raw recording to {}", raw_key);
+    // Verify before delete: HEAD the object and confirm the size matches, and
+    // sanity-check the duration against the scheduled show length (a recorder
+    // that died early still produces a valid-but-short object).
+    let remote_size =
+        storage::head_object_size(&state.s3_client, &state.config.r2_bucket_name, &raw_key)
+            .await
+            .unwrap_or(0);
+    let size_verified = remote_size == local_size && local_size > 0;
+
+    let mut failure_reason = write_failure;
+    if !size_verified {
+        let msg = format!(
+            "R2 size mismatch after upload (local {} != remote {})",
+            local_size, remote_size
+        );
+        tracing::error!("{}", msg);
+        failure_reason.get_or_insert(msg);
+    }
+    if let Some(short) = detect_short_recording(state, show_id, local_duration_ms).await {
+        tracing::warn!("Recording for show {} looks short: {}", show_id, short);
+        failure_reason.get_or_insert(short);
+    }
+
+    let incomplete = failure_reason.is_some();
+    tracing::info!(
+        "Uploaded raw recording to {} ({} bytes, size_verified={}, duration_ms={:?})",
+        raw_key,
+        local_size,
+        size_verified,
+        local_duration_ms
+    );
 
     // Upload markers JSON to R2
     let markers_key = format!("recordings/{}/{}/markers.json", show_id, version);
@@ -360,19 +442,19 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
                 show_id,
                 version
             );
-            // Mark incomplete recordings as failed so the operator sees the gap.
-            if let Some(ref err) = write_failure {
-                let msg = format!("Recording write failed mid-stream: {}", err);
+            // Mark incomplete recordings as failed so the operator sees the gap
+            // (write failure, R2 size mismatch, or a suspiciously short archive).
+            if let Some(ref reason) = failure_reason {
                 tracing::error!(
                     "Marking recording version {} as failed: {}",
                     recording.id,
-                    msg
+                    reason
                 );
                 if let Err(e) = crate::db::update_recording_version_status(
                     &state.db,
                     recording.id,
                     "failed",
-                    Some(&msg),
+                    Some(reason),
                 )
                 .await
                 {
@@ -386,9 +468,17 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
         }
     }
 
-    // Clean up temp file
-    if let Err(e) = tokio::fs::remove_file(&session.temp_file_path).await {
-        tracing::warn!("Failed to clean up temp file: {}", e);
+    // Verify-before-delete: only remove the local artifact once R2 confirms the
+    // object landed intact (size match). On a mismatch we keep it for recovery.
+    if size_verified {
+        if let Err(e) = tokio::fs::remove_file(&session.temp_file_path).await {
+            tracing::warn!("Failed to clean up temp file: {}", e);
+        }
+    } else {
+        tracing::warn!(
+            "Keeping local recording {:?} — R2 verification did not pass",
+            session.temp_file_path
+        );
     }
 
     Ok(Some(FinalizedRecording {

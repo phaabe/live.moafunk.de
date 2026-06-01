@@ -1,8 +1,35 @@
+use crate::config::Config;
 use crate::{audio, AppError, AppState, Result};
 use aws_sdk_s3::primitives::ByteStream;
 use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// Build the S3 client for Cloudflare R2.
+///
+/// R2 requires path-style addressing and the `auto` region. Critically, it sets
+/// checksum calculation/validation to **WhenRequired**: aws-sdk-s3 ≥1.7x
+/// defaults to `WhenSupported`, which auto-injects a CRC32 checksum on every
+/// request — and that has broken uploads against R2 in the field. With
+/// `WhenRequired` the SDK only attaches a checksum when we explicitly ask for one
+/// (we use CRC32C on the recording multipart upload, which R2 supports).
+pub fn build_s3_client(config: &Config) -> aws_sdk_s3::Client {
+    let s3_config = aws_sdk_s3::Config::builder()
+        .endpoint_url(&config.r2_endpoint)
+        .credentials_provider(aws_sdk_s3::config::Credentials::new(
+            &config.r2_access_key_id,
+            &config.r2_secret_access_key,
+            None,
+            None,
+            "r2",
+        ))
+        .region(aws_sdk_s3::config::Region::new("auto"))
+        .force_path_style(true)
+        .request_checksum_calculation(aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired)
+        .response_checksum_validation(aws_sdk_s3::config::ResponseChecksumValidation::WhenRequired)
+        .build();
+    aws_sdk_s3::Client::from_conf(s3_config)
+}
 
 /// An object returned from listing objects in R2/S3.
 #[derive(Debug, Clone, Serialize)]
@@ -10,6 +37,183 @@ pub struct StorageObject {
     pub key: String,
     pub last_modified: Option<String>,
     pub size: i64,
+}
+
+/// Minimum multipart part size (S3 requires ≥5 MiB except the last part).
+const MULTIPART_PART_FLOOR: usize = 16 * 1024 * 1024;
+/// S3 caps a multipart upload at 10,000 parts.
+const MULTIPART_MAX_PARTS: usize = 10_000;
+
+/// Upload `data` to `key` via S3 multipart with an explicit CRC32C checksum.
+///
+/// - Part size = `max(16 MiB, ceil(len / 10000))`, so any object fits in ≤10k parts.
+/// - Each part and the final object carry a CRC32C checksum (R2-supported), set
+///   explicitly so the SDK's default-checksum behavior is never relied upon.
+/// - On any failure the multipart upload is aborted (and the bucket lifecycle
+///   rule sweeps anything an abort misses). Uses a deterministic `key`, so a
+///   retry after abort restarts cleanly within R2's 1-write/sec/key limit.
+pub async fn upload_multipart(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+    data: Vec<u8>,
+    content_type: &str,
+) -> Result<()> {
+    use aws_sdk_s3::types::{ChecksumAlgorithm, CompletedMultipartUpload, CompletedPart};
+
+    let total = data.len();
+    let part_size = std::cmp::max(MULTIPART_PART_FLOOR, total.div_ceil(MULTIPART_MAX_PARTS));
+
+    let create = client
+        .create_multipart_upload()
+        .bucket(bucket)
+        .key(key)
+        .content_type(content_type)
+        .checksum_algorithm(ChecksumAlgorithm::Crc32C)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("create_multipart_upload: {}", e)))?;
+
+    let upload_id = create
+        .upload_id()
+        .ok_or_else(|| AppError::Storage("create_multipart_upload returned no upload_id".into()))?
+        .to_string();
+
+    // Upload parts; abort the whole upload if anything fails.
+    let upload_result: Result<()> = async {
+        let mut completed: Vec<CompletedPart> = Vec::new();
+        let mut offset = 0usize;
+        let mut part_number = 1i32;
+        while offset < total {
+            let end = std::cmp::min(offset + part_size, total);
+            let chunk = data[offset..end].to_vec();
+
+            let resp = client
+                .upload_part()
+                .bucket(bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .part_number(part_number)
+                .checksum_algorithm(ChecksumAlgorithm::Crc32C)
+                .body(ByteStream::from(chunk))
+                .send()
+                .await
+                .map_err(|e| AppError::Storage(format!("upload_part {}: {}", part_number, e)))?;
+
+            let mut part = CompletedPart::builder()
+                .part_number(part_number)
+                .e_tag(resp.e_tag().unwrap_or_default());
+            if let Some(c) = resp.checksum_crc32_c() {
+                part = part.checksum_crc32_c(c);
+            }
+            completed.push(part.build());
+
+            offset = end;
+            part_number += 1;
+        }
+
+        client
+            .complete_multipart_upload()
+            .bucket(bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .multipart_upload(
+                CompletedMultipartUpload::builder()
+                    .set_parts(Some(completed))
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("complete_multipart_upload: {}", e)))?;
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = upload_result {
+        tracing::warn!("Multipart upload to {} failed, aborting: {}", key, e);
+        let _ = client
+            .abort_multipart_upload()
+            .bucket(bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .send()
+            .await;
+        return Err(e);
+    }
+
+    tracing::info!(
+        "Multipart-uploaded {} ({} bytes, {} part(s))",
+        key,
+        total,
+        total.div_ceil(part_size)
+    );
+    Ok(())
+}
+
+/// HEAD an object and return its size in bytes. Used to verify an upload landed
+/// intact before deleting the local copy.
+pub async fn head_object_size(client: &aws_sdk_s3::Client, bucket: &str, key: &str) -> Result<u64> {
+    let head = client
+        .head_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("head_object {}: {}", key, e)))?;
+    Ok(head.content_length().unwrap_or(0).max(0) as u64)
+}
+
+/// Ensure the bucket has a lifecycle rule that auto-aborts incomplete multipart
+/// uploads after 7 days (R2's default behavior when configured). Best-effort:
+/// logs and continues on failure so startup never blocks on it.
+pub async fn ensure_multipart_abort_lifecycle(client: &aws_sdk_s3::Client, bucket: &str) {
+    use aws_sdk_s3::types::{
+        AbortIncompleteMultipartUpload, BucketLifecycleConfiguration, ExpirationStatus,
+        LifecycleRule, LifecycleRuleFilter,
+    };
+
+    let rule = match LifecycleRule::builder()
+        .id("abort-incomplete-multipart-uploads")
+        .status(ExpirationStatus::Enabled)
+        .filter(LifecycleRuleFilter::builder().prefix("").build())
+        .abort_incomplete_multipart_upload(
+            AbortIncompleteMultipartUpload::builder()
+                .days_after_initiation(7)
+                .build(),
+        )
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("Could not build multipart-abort lifecycle rule: {}", e);
+            return;
+        }
+    };
+
+    let config = match BucketLifecycleConfiguration::builder().rules(rule).build() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Could not build lifecycle configuration: {}", e);
+            return;
+        }
+    };
+
+    match client
+        .put_bucket_lifecycle_configuration()
+        .bucket(bucket)
+        .lifecycle_configuration(config)
+        .send()
+        .await
+    {
+        Ok(_) => tracing::info!(
+            "Ensured multipart-abort lifecycle rule on bucket {}",
+            bucket
+        ),
+        Err(e) => tracing::warn!(
+            "Could not set multipart-abort lifecycle rule (continuing): {}",
+            e
+        ),
+    }
 }
 
 /// List all objects in the bucket matching a given key prefix.
@@ -726,4 +930,72 @@ pub async fn upload_audio_to_pending_async(
         original_key,
         mp3_key,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Integration test against a **real R2 bucket**. Validates the checksum
+    /// landmine fix end-to-end: a multi-part upload with explicit CRC32C must
+    /// succeed, HEAD must report the exact size, and the round-tripped bytes must
+    /// match (proving no checksum-related corruption/rejection).
+    ///
+    /// Ignored by default (hits the network). Run with R2 creds available:
+    ///   cargo test --bin unheard-backend -- --ignored r2_multipart_roundtrip
+    /// Skips gracefully if the R2 environment is not configured.
+    #[tokio::test]
+    #[ignore = "requires real R2 credentials"]
+    async fn r2_multipart_roundtrip() {
+        dotenvy::dotenv().ok();
+        let config = match Config::from_env() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Skipping R2 integration test — config not available: {e}");
+                return;
+            }
+        };
+        let client = build_s3_client(&config);
+        let bucket = config.r2_bucket_name.clone();
+
+        // ~18 MiB forces a multi-part upload (16 MiB floor → 2 parts).
+        let size = 18 * 1024 * 1024;
+        let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let key = format!("recordings/_inttest/{}/raw.bin", Uuid::new_v4());
+
+        upload_multipart(
+            &client,
+            &bucket,
+            &key,
+            data.clone(),
+            "application/octet-stream",
+        )
+        .await
+        .expect("multipart upload to R2 failed");
+
+        let remote_size = head_object_size(&client, &bucket, &key)
+            .await
+            .expect("head_object failed");
+        assert_eq!(remote_size, data.len() as u64, "remote size mismatch");
+
+        // Round-trip the bytes to prove integrity.
+        let resp = client
+            .get_object()
+            .bucket(&bucket)
+            .key(&key)
+            .send()
+            .await
+            .expect("get_object failed");
+        let got = resp.body.collect().await.expect("read body").into_bytes();
+        assert_eq!(got.len(), data.len(), "downloaded length mismatch");
+        assert!(got[..] == data[..], "downloaded bytes differ from uploaded");
+
+        // Cleanup.
+        let _ = client
+            .delete_object()
+            .bucket(&bucket)
+            .key(&key)
+            .send()
+            .await;
+    }
 }
