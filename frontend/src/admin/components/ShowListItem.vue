@@ -22,7 +22,7 @@ function getDaysClass(days: number): string {
   return 'days-ok';
 }
 
-function getDotColor(show: Show): string {
+function getDotColor(show: ScheduleItem): string {
   const daysUntil = getDaysUntil(show.date);
   if (daysUntil < 0) return 'dot-gray';
   const type = show.show_type || 'unheard';
@@ -74,6 +74,9 @@ const daysUntil = getDaysUntil(props.show.date);
         class="list-show-artists text-muted"
       >
         {{ show.artists.map((a) => a.name).join(', ') || 'No artists assigned' }}
+      </span>
+      <span v-if="show.host_username" class="list-show-host text-muted">
+        Host: {{ show.host_username }}
       </span>
     </div>
     <div class="list-show-meta">
@@ -168,6 +171,13 @@ const daysUntil = getDaysUntil(props.show.date);
 }
 
 .list-show-artists {
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list-show-host {
   font-size: var(--font-size-sm);
   white-space: nowrap;
   overflow: hidden;

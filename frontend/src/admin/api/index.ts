@@ -404,6 +404,8 @@ export interface Show {
   show_type: string;
   /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */
   stream_mode?: 'live' | 'prerecorded';
+  /** Username of the assigned host (external/brunchtime shows), if any. */
+  host_username?: string;
   artists: { id: number; name: string }[];
 }
 
@@ -414,7 +416,15 @@ export interface Show {
  */
 export type ScheduleItem = Pick<
   Show,
-  'id' | 'title' | 'date' | 'start_time' | 'end_time' | 'status' | 'show_type' | 'artists'
+  | 'id'
+  | 'title'
+  | 'date'
+  | 'start_time'
+  | 'end_time'
+  | 'status'
+  | 'show_type'
+  | 'host_username'
+  | 'artists'
 >;
 
 /** Read-only schedule entry returned by GET /api/shows-overview. */

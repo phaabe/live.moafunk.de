@@ -2001,6 +2001,8 @@ pub struct ShowListItem {
     description: Option<String>,
     status: String,
     show_type: String,
+    /// Username of the assigned host (external/brunchtime shows), if any.
+    host_username: Option<String>,
     artists: Vec<ArtistBrief>,
 }
 
@@ -2190,6 +2192,15 @@ pub async fn api_shows_list(
         .fetch_all(&state.db)
         .await?;
 
+        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
+            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+                .bind(hid)
+                .fetch_optional(&state.db)
+                .await?
+        } else {
+            None
+        };
+
         show_items.push(ShowListItem {
             id: show.id,
             title: show.title,
@@ -2199,6 +2210,7 @@ pub async fn api_shows_list(
             description: show.description,
             status: show.status,
             show_type: show.show_type,
+            host_username,
             artists,
         });
     }
@@ -4773,6 +4785,15 @@ pub async fn api_my_shows_list(
         .fetch_all(&state.db)
         .await?;
 
+        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
+            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+                .bind(hid)
+                .fetch_optional(&state.db)
+                .await?
+        } else {
+            None
+        };
+
         show_items.push(ShowListItem {
             id: show.id,
             title: show.title,
@@ -4782,6 +4803,7 @@ pub async fn api_my_shows_list(
             description: show.description,
             status: show.status,
             show_type: show.show_type,
+            host_username,
             artists,
         });
     }
