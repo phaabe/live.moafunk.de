@@ -426,7 +426,13 @@ mod tests {
 
         // Add a marker
         let marker = manager
-            .add_marker(1, "track1".into(), "artists/1/track1.mp3".into(), 180000)
+            .add_marker(
+                1,
+                "track1".into(),
+                "artists/1/track1.mp3".into(),
+                180000,
+                100,
+            )
             .unwrap();
         assert_eq!(marker.artist_id, 1);
         assert_eq!(marker.track_type, "track1");
@@ -447,7 +453,7 @@ mod tests {
         assert!(!manager.is_recording());
 
         // Adding marker when not recording should error
-        let result = manager.add_marker(1, "track1".into(), "key".into(), 1000);
+        let result = manager.add_marker(1, "track1".into(), "key".into(), 1000, 100);
         assert!(matches!(result, Err(RecordingError::NotRecording)));
     }
 
@@ -458,10 +464,22 @@ mod tests {
 
         manager.start(1).await.unwrap();
         manager
-            .add_marker(10, "track1".into(), "artists/10/track1.mp3".into(), 200000)
+            .add_marker(
+                10,
+                "track1".into(),
+                "artists/10/track1.mp3".into(),
+                200000,
+                100,
+            )
             .unwrap();
         manager
-            .add_marker(10, "track2".into(), "artists/10/track2.mp3".into(), 180000)
+            .add_marker(
+                10,
+                "track2".into(),
+                "artists/10/track2.mp3".into(),
+                180000,
+                100,
+            )
             .unwrap();
         manager
             .add_marker(
@@ -469,6 +487,7 @@ mod tests {
                 "voice_message".into(),
                 "artists/11/voice.mp3".into(),
                 30000,
+                100,
             )
             .unwrap();
 
