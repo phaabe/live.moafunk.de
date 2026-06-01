@@ -122,7 +122,7 @@ Place at `/etc/icecast2/icecast.xml` (apt) or `/usr/local/etc/icecast.xml` (KH s
 </icecast>
 ```
 
-Start it: `sudo systemctl enable --now icecast2` (apt) or run the KH binary under a unit you add. Confirm: `curl -sI http://127.0.0.1:8010/` → Icecast banner.
+Start it: `sudo systemctl enable --now icecast2` (apt) or run the KH binary under a unit you add. Confirm it's up: `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8010/` → `200` (use GET, not `-I`/HEAD — Icecast returns 400 to HEAD).
 
 ### 1c. Pull RTMP → MP3 → Icecast with ffmpeg (run during a LIVE show so there's audio)
 
@@ -139,11 +139,18 @@ ffmpeg -hide_banner -loglevel warning \
 ## Step 2 — Validate (this is the gate)
 
 ```bash
-# Mount is live and serving MP3:
-curl -sI http://127.0.0.1:8010/test.mp3        # 200, Content-Type: audio/mpeg
+# Mount is live and serving MP3 (GET, not HEAD — Icecast answers HEAD with 400):
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' --max-time 3 http://127.0.0.1:8010/test.mp3
+# → 200 audio/mpeg
+# Confirm the audio is NOT silent (silence ≈ -91 dB; a real broadcast is much louder):
+curl -s --max-time 5 http://127.0.0.1:8010/test.mp3 -o /tmp/t.mp3
+ffmpeg -hide_banner -i /tmp/t.mp3 -af volumedetect -f null - 2>&1 | grep mean_volume
 # From your laptop (open the relay's firewall to your IP for 8010, or SSH-tunnel):
 ssh -L 8010:127.0.0.1:8010 <relay-host>        # then use http://127.0.0.1:8010/test.mp3 locally
 ```
+
+> If `/test.mp3` plays but is **silent**, the source isn't reaching the producer
+> (Liquidsoap's `mksafe` is filling with silence) — not a mount problem. See Step 3.
 
 - **Desktop browser:** `<audio controls src="http://127.0.0.1:8010/test.mp3">` plays.
 - **iPhone Safari (MANDATORY gate):** navigate Safari directly to `http://<relay>:8010/test.mp3` (or an HTML page with the `<audio>` tag served over the SAME http origin). It must play. ⚠️ It will **not** play if embedded in an `https://` page over `http://` audio (mixed-content block) — that's expected; production fixes it with TLS (Step 4). For this gate, test over plain http directly.

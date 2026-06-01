@@ -30,15 +30,27 @@ In a second terminal, feed audio in:
 Liquidsoap serves **silence** to `/test.mp3` the moment it's up (thanks to `mksafe`),
 then switches to your audio within a few seconds of starting the push.
 
+> **Ordering matters.** Liquidsoap's RTMP puller gives up if the source isn't there
+> when it first connects, then sits on `mksafe` silence. So if `/test.mp3` is **playing
+> but silent**, the tone simply isn't reaching Liquidsoap: start `./push-test-tone.sh`,
+> then re-pull with `docker compose restart liquidsoap`. Verify with
+> `docker compose logs liquidsoap | tail` (want a successful connect to
+> `rtmp://nms:1935/live/stream-io-test`, not repeated failures).
+
 ## Validate (this mirrors the prod gates)
+
+> **Don't use `curl -I`/`-sI` against an Icecast mount** — Icecast answers `HEAD` with
+> `400 Bad Request` (it only serves `GET`/`SOURCE`). A 400 there does **not** mean the
+> mount is down. Use the GET-based checks below.
 
 | Check | How |
 |---|---|
-| NMS got the push | `curl -sI http://localhost:8000/live/stream-io-test.flv` → `200` (and `…/index.m3u8` once HLS warms up) |
-| Icecast serving MP3 | `curl -sI http://localhost:8010/test.mp3` → `200`, `Content-Type: audio/mpeg` |
+| NMS got the push | `curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/live/stream-io-test.flv` → `200` |
+| Icecast serving MP3 | `curl -s -o /dev/null -w '%{http_code} %{content_type}\n' --max-time 3 http://localhost:8010/test.mp3` → `200 audio/mpeg` |
+| **Audio is non-silent** | `curl -s --max-time 5 http://localhost:8010/test.mp3 -o /tmp/t.mp3; ffmpeg -hide_banner -i /tmp/t.mp3 -af volumedetect -f null - 2>&1 \| grep mean_volume` — silence ≈ `-91 dB`, a 440 Hz tone ≈ `-20 dB` or louder |
 | Icecast stats | open `http://localhost:8010/admin/stats.xml` (user `admin` / pass `localadmin`) — one source, listener count |
-| Desktop playback | open `http://localhost:8010/test.mp3` in a browser |
-| **iOS gate** | on the iPhone, Safari → `http://<your-laptop-LAN-ip>:8010/test.mp3` — **must play** |
+| Desktop playback | open `http://localhost:8010/test.mp3` in a browser (ignore the player's duration readout — it's a meaningless estimate for a live stream) |
+| **iOS gate** | on the **iPhone's Safari address bar** (not a shell!), enter `http://<your-laptop-LAN-ip>:8010/test.mp3` — **must play** |
 
 Find your LAN IP: `ipconfig getifaddr en0` (macOS Wi-Fi).
 
