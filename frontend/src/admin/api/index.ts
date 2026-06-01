@@ -399,6 +399,7 @@ export interface Show {
   start_time?: string;
   end_time?: string;
   description?: string;
+  ai_bio?: string;
   status: string;
   show_type: string;
   artists: { id: number; name: string }[];
@@ -462,6 +463,7 @@ export interface ShowDetail {
   prerecorded_key?: string;
   prerecorded_filename?: string;
   prerecorded_confirmed_at?: string;
+  prerecorded_url?: string;
   // Host assignment (external/brunchtime shows)
   host_user_id?: number;
   host_username?: string;

@@ -2,8 +2,9 @@
 import { ref, computed, onMounted, onActivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showsApi, soundcloudApi, type ShowDetail, type SoundCloudStatus } from '../api';
-import { BaseButton, BaseModal } from '@shared/components';
+import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
+import ShowMediaSection from '../components/show-detail/ShowMediaSection.vue';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
@@ -11,7 +12,7 @@ import { VueDatePicker } from '@vuepic/vue-datepicker';
 import '@vuepic/vue-datepicker/dist/main.css';
 
 defineOptions({
-  name: 'ShowDetailPage'
+  name: 'ShowDetailPage',
 });
 
 const flash = useFlash();
@@ -35,6 +36,7 @@ const sendingTelegramPreview = ref(false);
 const uploadingToSoundCloud = ref(false);
 const togglingSoundCloudPrivacy = ref(false);
 const scStatus = ref<SoundCloudStatus | null>(null);
+const editingTitle = ref(false);
 const editingDateTime = ref(false);
 const editingDescription = ref(false);
 const editingAiBio = ref(false);
@@ -44,7 +46,12 @@ const assigning = ref(false);
 const uploading = ref(false);
 const uploadDragOver = ref(false);
 const uploadingFilename = ref<string | null>(null);
-const uploadProgress = ref<{ phase: 'extracting' | 'uploading' | 'finalizing'; percent: number; chunkIndex?: number; totalChunks?: number } | null>(null);
+const uploadProgress = ref<{
+  phase: 'extracting' | 'uploading' | 'finalizing';
+  percent: number;
+  chunkIndex?: number;
+  totalChunks?: number;
+} | null>(null);
 
 // Form data
 const dateForm = ref('');
@@ -60,6 +67,7 @@ const {
   apiEndTime: editEndTime,
   setFromApi: setEditRange,
 } = useDateTimeRange();
+const titleForm = ref('');
 const descriptionForm = ref('');
 const aiBioForm = ref('');
 const selectedArtistId = ref<number | null>(null);
@@ -78,12 +86,16 @@ const uploadingCover = ref(false);
 /** Format a date string + time string into a readable datetime */
 function fmtDateTime(date: string, time: string): string {
   const d = new Date(date + 'T' + time + ':00');
-  return d.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }) + ' · ' + time;
+  return (
+    d.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }) +
+    ' · ' +
+    time
+  );
 }
 
 /** Compute the end date, handling overnight shows (end_time <= start_time → next day) */
@@ -252,6 +264,36 @@ async function saveDateTime() {
   }
 }
 
+// Title editing
+function startEditTitle() {
+  if (show.value) {
+    titleForm.value = show.value.title;
+  }
+  editingTitle.value = true;
+}
+
+async function saveTitle() {
+  if (!show.value) return;
+
+  const trimmed = titleForm.value.trim();
+  if (!trimmed) {
+    flash.error('Title cannot be empty');
+    return;
+  }
+
+  saving.value = true;
+  try {
+    await showsApi.update(show.value.id, { title: trimmed });
+    flash.success('Title updated');
+    editingTitle.value = false;
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to update title');
+  } finally {
+    saving.value = false;
+  }
+}
+
 // Description editing
 function startEditDescription() {
   if (show.value) {
@@ -289,7 +331,7 @@ async function saveAiBio() {
 
   saving.value = true;
   try {
-    await showsApi.update(show.value.id, { ai_bio: aiBioForm.value } as Partial<any>);
+    await showsApi.update(show.value.id, { ai_bio: aiBioForm.value });
     flash.success('AI bio updated');
     editingAiBio.value = false;
     await loadShow();
@@ -323,7 +365,7 @@ async function assignArtist() {
 
   // Find the artist in available_artists before we remove it
   const selectedAvailableArtist = show.value.available_artists.find(
-    a => a.id === artistIdToAssign
+    (a) => a.id === artistIdToAssign
   );
 
   if (!selectedAvailableArtist) {
@@ -347,7 +389,7 @@ async function assignArtist() {
     // Update local state surgically
     show.value.artists = [...show.value.artists, newArtist];
     show.value.available_artists = show.value.available_artists.filter(
-      a => a.id !== artistIdToAssign
+      (a) => a.id !== artistIdToAssign
     );
     show.value.artists_left = Math.max(0, show.value.artists_left - 1);
 
@@ -376,12 +418,12 @@ async function unassignArtist(artistId: number) {
 
   try {
     // Find artist before removing for the available_artists update
-    const removedArtist = show.value.artists.find(a => a.id === artistId);
+    const removedArtist = show.value.artists.find((a) => a.id === artistId);
 
     await showsApi.unassignArtist(show.value.id, artistId);
 
     // Update local state surgically using spread for reactivity
-    show.value.artists = show.value.artists.filter(a => a.id !== artistId);
+    show.value.artists = show.value.artists.filter((a) => a.id !== artistId);
     show.value.artists_left = Math.min(4, show.value.artists_left + 1);
 
     // Add back to available_artists if we have the info
@@ -389,10 +431,10 @@ async function unassignArtist(artistId: number) {
       const newAvailable = {
         id: removedArtist.id,
         name: removedArtist.name,
-        pronouns: removedArtist.pronouns
+        pronouns: removedArtist.pronouns,
       };
-      show.value.available_artists = [...show.value.available_artists, newAvailable].sort(
-        (a, b) => a.name.localeCompare(b.name)
+      show.value.available_artists = [...show.value.available_artists, newAvailable].sort((a, b) =>
+        a.name.localeCompare(b.name)
       );
     }
 
@@ -529,7 +571,9 @@ async function uploadToSoundCloud() {
     const msg = e instanceof Error ? e.message : '';
     if (msg.includes('not authorized')) {
       // Refresh status and offer connect
-      try { scStatus.value = await soundcloudApi.getStatus(); } catch { }
+      try {
+        scStatus.value = await soundcloudApi.getStatus();
+      } catch {}
       if (scStatus.value?.auth_url) {
         window.open(scStatus.value.auth_url, '_blank', 'width=600,height=700');
         flash.success('Complete SoundCloud authorization in the opened window, then try again.');
@@ -748,10 +792,238 @@ onUnmounted(() => {
       <!-- Header -->
       <div class="page-header">
         <router-link to="/shows" class="back-link">← Back to Shows</router-link>
-        <h1 class="page-title">{{ show.title }}</h1>
+
+        <!-- UNHEARD: static title (status/type live in the Information card below) -->
+        <h1 v-if="isUnheard" class="page-title">{{ show.title }}</h1>
+
+        <!-- External/brunchtime: editable title + compact status/type line -->
+        <template v-else>
+          <div v-if="!editingTitle" class="title-row">
+            <h1 class="page-title">{{ show.title }}</h1>
+            <button type="button" class="btn-edit" @click="startEditTitle">Edit</button>
+          </div>
+          <div v-else class="title-edit">
+            <FormInput v-model="titleForm" label="Title" required @keyup.enter="saveTitle" />
+            <div class="edit-actions">
+              <BaseButton variant="ghost" size="sm" @click="editingTitle = false"
+                >Cancel</BaseButton
+              >
+              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveTitle">
+                Save
+              </BaseButton>
+            </div>
+          </div>
+          <div class="show-meta-line">
+            <span :class="['status-badge', show.status]">{{ show.status }}</span>
+            <span :class="['show-type-badge', `type-${show.show_type || 'external'}`]">
+              {{ (show.show_type || 'external').toUpperCase() }}
+            </span>
+          </div>
+        </template>
       </div>
 
-      <div class="top-grid">
+      <!-- ===================== External / brunchtime layout ===================== -->
+      <template v-if="!isUnheard">
+        <!-- Schedule -->
+        <div class="card">
+          <h2 class="section-title">Date &amp; Time</h2>
+          <div class="info-grid">
+            <div class="info-label">Start</div>
+            <div class="info-value">{{ formattedStart }}</div>
+            <div class="info-label">End</div>
+            <div class="info-value">{{ formattedEnd }}</div>
+          </div>
+
+          <div class="edit-toggle-container" v-if="!editingDateTime">
+            <button type="button" class="btn-edit" @click="startEditDateTime">
+              Edit Date &amp; Time
+            </button>
+          </div>
+
+          <div v-if="editingDateTime" class="edit-panel">
+            <div class="edit-row edit-row-datetime">
+              <div class="datetime-field">
+                <label class="form-label">Start</label>
+                <VueDatePicker
+                  v-model="editStart"
+                  :enable-time-picker="true"
+                  :dark="true"
+                  :minutes-increment="5"
+                  :max-date="editEnd || undefined"
+                  :flow="{ steps: ['calendar', 'time'] }"
+                  :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+                  placeholder="Start date & time"
+                  text-input
+                  teleport="body"
+                />
+              </div>
+              <div class="datetime-field">
+                <label class="form-label">End</label>
+                <VueDatePicker
+                  v-model="editEnd"
+                  :enable-time-picker="true"
+                  :dark="true"
+                  :minutes-increment="5"
+                  :min-date="editStart || undefined"
+                  :flow="{ steps: ['calendar', 'time'] }"
+                  :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+                  placeholder="End date & time"
+                  text-input
+                  teleport="body"
+                />
+              </div>
+              <div class="datetime-actions">
+                <p v-if="editStart && editEnd && !editTimeValid" class="field-error">
+                  {{ editTimeError }}
+                </p>
+                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDateTime">
+                  Save
+                </BaseButton>
+                <BaseButton variant="ghost" size="sm" @click="editingDateTime = false">
+                  Cancel
+                </BaseButton>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Description -->
+        <div class="card">
+          <h2 class="section-title">Description</h2>
+          <template v-if="!editingDescription">
+            <div v-if="show.description" class="description-view">{{ show.description }}</div>
+            <p v-else class="empty-state">No description.</p>
+            <div class="edit-toggle-container">
+              <button type="button" class="btn-edit" @click="startEditDescription">
+                Edit Description
+              </button>
+            </div>
+          </template>
+          <div v-else class="edit-panel">
+            <textarea
+              v-model="descriptionForm"
+              class="text-field"
+              rows="4"
+              placeholder="Brief description..."
+            ></textarea>
+            <div class="edit-actions">
+              <BaseButton variant="ghost" size="sm" @click="editingDescription = false">
+                Cancel
+              </BaseButton>
+              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDescription">
+                Save Description
+              </BaseButton>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cover (manual upload) -->
+        <div class="card cover-card">
+          <h2 class="section-title">Cover</h2>
+          <div v-if="show.cover_url" class="show-cover-preview">
+            <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
+            <div class="cover-actions">
+              <BaseButton
+                variant="primary"
+                size="sm"
+                :loading="uploadingCover"
+                @click="($refs.extCoverInput as HTMLInputElement)?.click()"
+              >
+                Replace Cover
+              </BaseButton>
+            </div>
+          </div>
+          <div v-else class="cover-upload-area">
+            <p class="empty-state">No cover uploaded yet.</p>
+            <BaseButton
+              variant="primary"
+              size="sm"
+              :loading="uploadingCover"
+              @click="($refs.extCoverInput as HTMLInputElement)?.click()"
+            >
+              Upload Cover
+            </BaseButton>
+          </div>
+          <input
+            ref="extCoverInput"
+            type="file"
+            accept="image/*"
+            class="upload-input"
+            @change="handleCoverUpload"
+          />
+        </div>
+
+        <!-- Social media (AI bio is the caption source) -->
+        <div class="card">
+          <h2 class="section-title">Social Media</h2>
+
+          <h3 class="subsection-title">AI Show Bio</h3>
+          <template v-if="!editingAiBio">
+            <div v-if="show.ai_bio" class="description-view">{{ show.ai_bio }}</div>
+            <p v-else class="empty-state">AI bio will be generated from the show description.</p>
+            <div class="edit-toggle-container">
+              <div class="button-row">
+                <button type="button" class="btn-edit" @click="startEditAiBio" v-if="show.ai_bio">
+                  Edit AI Bio
+                </button>
+                <BaseButton
+                  variant="primary"
+                  size="sm"
+                  :loading="regeneratingBio"
+                  :disabled="!show.description"
+                  @click="regenerateShowBio"
+                >
+                  Regenerate
+                </BaseButton>
+              </div>
+            </div>
+          </template>
+          <div v-else class="edit-panel">
+            <textarea
+              v-model="aiBioForm"
+              class="text-field"
+              rows="8"
+              placeholder="AI-generated show bio..."
+            ></textarea>
+            <div class="edit-actions">
+              <BaseButton variant="ghost" size="sm" @click="editingAiBio = false"
+                >Cancel</BaseButton
+              >
+              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveAiBio">
+                Save AI Bio
+              </BaseButton>
+            </div>
+          </div>
+
+          <div class="section-divider"></div>
+
+          <h3 class="subsection-title">Publish</h3>
+          <template v-if="show.cover_generated_at">
+            <div class="cover-actions">
+              <BaseButton variant="primary" size="sm" @click="openInstagramPreview">
+                <span v-if="show.instagram_posted_at">📸 Posted to Instagram ✓</span>
+                <span v-else>📸 Instagram Preview</span>
+              </BaseButton>
+              <BaseButton
+                variant="secondary"
+                size="sm"
+                :loading="sendingTelegramPreview"
+                @click="sendTelegramPreview"
+              >
+                📱 Preview on Telegram
+              </BaseButton>
+            </div>
+          </template>
+          <p v-else class="empty-state">
+            Upload a cover to enable Instagram &amp; Telegram posting.
+          </p>
+        </div>
+
+        <!-- Media (live vs upload) -->
+        <ShowMediaSection :show="show" />
+      </template>
+
+      <div v-if="isUnheard" class="top-grid">
         <div class="main-column">
           <!-- Information Section (with description) -->
           <div class="card info-card">
@@ -777,7 +1049,12 @@ onUnmounted(() => {
             </div>
 
             <div class="edit-toggle-container">
-              <button type="button" class="btn-edit" @click="startEditDateTime" v-if="!editingDateTime">
+              <button
+                type="button"
+                class="btn-edit"
+                @click="startEditDateTime"
+                v-if="!editingDateTime"
+              >
                 Edit Date & Time
               </button>
             </div>
@@ -793,7 +1070,11 @@ onUnmounted(() => {
                     :minutes-increment="5"
                     :max-date="editEnd || undefined"
                     :flow="{ steps: ['calendar', 'time'] }"
-                    :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+                    :action-row="{
+                      showCancel: false,
+                      showPreview: false,
+                      selectBtnLabel: 'Confirm',
+                    }"
                     placeholder="Start date & time"
                     text-input
                     teleport="body"
@@ -808,14 +1089,20 @@ onUnmounted(() => {
                     :minutes-increment="5"
                     :min-date="editStart || undefined"
                     :flow="{ steps: ['calendar', 'time'] }"
-                    :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
+                    :action-row="{
+                      showCancel: false,
+                      showPreview: false,
+                      selectBtnLabel: 'Confirm',
+                    }"
                     placeholder="End date & time"
                     text-input
                     teleport="body"
                   />
                 </div>
                 <div class="datetime-actions">
-                  <p v-if="editStart && editEnd && !editTimeValid" class="field-error">{{ editTimeError }}</p>
+                  <p v-if="editStart && editEnd && !editTimeValid" class="field-error">
+                    {{ editTimeError }}
+                  </p>
                   <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDateTime">
                     Save
                   </BaseButton>
@@ -841,8 +1128,12 @@ onUnmounted(() => {
             </template>
 
             <div v-else class="edit-panel">
-              <textarea v-model="descriptionForm" class="text-field" rows="4"
-                placeholder="Brief description..."></textarea>
+              <textarea
+                v-model="descriptionForm"
+                class="text-field"
+                rows="4"
+                placeholder="Brief description..."
+              ></textarea>
               <div class="edit-actions">
                 <BaseButton variant="ghost" size="sm" @click="editingDescription = false">
                   Cancel
@@ -859,7 +1150,9 @@ onUnmounted(() => {
             <template v-if="!editingAiBio">
               <div v-if="show.ai_bio" class="description-view">{{ show.ai_bio }}</div>
               <p v-else class="empty-state">
-                <template v-if="isUnheard">AI bio will be generated when artists are assigned.</template>
+                <template v-if="isUnheard"
+                  >AI bio will be generated when artists are assigned.</template
+                >
                 <template v-else>AI bio will be generated from the show description.</template>
               </p>
 
@@ -868,8 +1161,13 @@ onUnmounted(() => {
                   <button type="button" class="btn-edit" @click="startEditAiBio" v-if="show.ai_bio">
                     Edit AI Bio
                   </button>
-                  <BaseButton variant="primary" size="sm" :loading="regeneratingBio" @click="regenerateShowBio"
-                    :disabled="isUnheard ? !hasArtists : !show.description">
+                  <BaseButton
+                    variant="primary"
+                    size="sm"
+                    :loading="regeneratingBio"
+                    @click="regenerateShowBio"
+                    :disabled="isUnheard ? !hasArtists : !show.description"
+                  >
                     Regenerate
                   </BaseButton>
                 </div>
@@ -877,8 +1175,12 @@ onUnmounted(() => {
             </template>
 
             <div v-else class="edit-panel">
-              <textarea v-model="aiBioForm" class="text-field" rows="8"
-                placeholder="AI-generated show bio..."></textarea>
+              <textarea
+                v-model="aiBioForm"
+                class="text-field"
+                rows="8"
+                placeholder="AI-generated show bio..."
+              ></textarea>
               <div class="edit-actions">
                 <BaseButton variant="ghost" size="sm" @click="editingAiBio = false">
                   Cancel
@@ -901,36 +1203,17 @@ onUnmounted(() => {
                 <span v-if="show.instagram_posted_at">📸 Posted to Instagram ✓</span>
                 <span v-else>📸 Instagram Preview</span>
               </BaseButton>
-              <BaseButton variant="secondary" size="sm" :loading="sendingTelegramPreview" @click="sendTelegramPreview">
+              <BaseButton
+                variant="secondary"
+                size="sm"
+                :loading="sendingTelegramPreview"
+                @click="sendTelegramPreview"
+              >
                 📱 Preview on Telegram
               </BaseButton>
             </div>
           </div>
           <p v-else class="empty-state">Cover appears after artists are assigned and processed.</p>
-        </div>
-
-        <!-- Cover Section (non-UNHEARD: manual upload) -->
-        <div v-else class="card cover-card">
-          <h2 class="section-title">Cover</h2>
-          <div v-if="show.cover_url" class="show-cover-preview">
-            <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
-            <div class="cover-actions">
-              <label class="upload-cover-btn">
-                <BaseButton variant="primary" size="sm" :loading="uploadingCover"
-                  @click="($refs.coverInput as HTMLInputElement)?.click()">
-                  Replace Cover
-                </BaseButton>
-              </label>
-            </div>
-          </div>
-          <div v-else class="cover-upload-area">
-            <p class="empty-state">No cover uploaded yet.</p>
-            <BaseButton variant="primary" size="sm" :loading="uploadingCover"
-              @click="($refs.coverInput as HTMLInputElement)?.click()">
-              Upload Cover
-            </BaseButton>
-          </div>
-          <input ref="coverInput" type="file" accept="image/*" class="upload-input" @change="handleCoverUpload" />
         </div>
       </div>
 
@@ -977,11 +1260,20 @@ onUnmounted(() => {
             </p>
             <AudioPlayer :key="show.recording_url" :src="show.recording_url" />
             <div class="recording-actions">
-              <BaseButton size="sm" variant="primary" :loading="uploading"
-                @click="($refs.fileInput as HTMLInputElement)?.click()">
+              <BaseButton
+                size="sm"
+                variant="primary"
+                :loading="uploading"
+                @click="($refs.fileInput as HTMLInputElement)?.click()"
+              >
                 Replace File
               </BaseButton>
-              <BaseButton size="sm" variant="danger" :loading="deletingRecording" @click="deleteRecording">
+              <BaseButton
+                size="sm"
+                variant="danger"
+                :loading="deletingRecording"
+                @click="deleteRecording"
+              >
                 Delete File
               </BaseButton>
             </div>
@@ -991,7 +1283,12 @@ onUnmounted(() => {
               <template v-if="show.soundcloud_url">
                 <div class="soundcloud-status">
                   <span class="soundcloud-label">☁️ SoundCloud</span>
-                  <a :href="show.soundcloud_url" target="_blank" rel="noopener" class="soundcloud-link">
+                  <a
+                    :href="show.soundcloud_url"
+                    target="_blank"
+                    rel="noopener"
+                    class="soundcloud-link"
+                  >
                     {{ show.soundcloud_public ? '🔓 Public' : '🔒 Private' }}
                   </a>
                   <span v-if="show.soundcloud_uploaded_at" class="text-muted soundcloud-timestamp">
@@ -999,15 +1296,28 @@ onUnmounted(() => {
                   </span>
                 </div>
                 <div class="soundcloud-actions">
-                  <BaseButton size="sm" :variant="show.soundcloud_public ? 'ghost' : 'success'"
-                    :loading="togglingSoundCloudPrivacy" @click="toggleSoundCloudPrivacy">
+                  <BaseButton
+                    size="sm"
+                    :variant="show.soundcloud_public ? 'ghost' : 'success'"
+                    :loading="togglingSoundCloudPrivacy"
+                    @click="toggleSoundCloudPrivacy"
+                  >
                     {{ show.soundcloud_public ? 'Make Private' : 'Make Public' }}
                   </BaseButton>
-                  <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
+                  <BaseButton
+                    size="sm"
+                    variant="ghost"
+                    :loading="uploadingToSoundCloud"
+                    @click="uploadToSoundCloud"
+                  >
                     Re-upload
                   </BaseButton>
-                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost"
-                    @click="disconnectAndReconnectSoundCloud">
+                  <BaseButton
+                    v-if="scStatus && scStatus.auth_url"
+                    size="sm"
+                    variant="ghost"
+                    @click="disconnectAndReconnectSoundCloud"
+                  >
                     🔗 Reconnect
                   </BaseButton>
                 </div>
@@ -1019,11 +1329,20 @@ onUnmounted(() => {
               </template>
               <template v-else>
                 <div class="soundcloud-actions">
-                  <BaseButton size="sm" variant="ghost" :loading="uploadingToSoundCloud" @click="uploadToSoundCloud">
+                  <BaseButton
+                    size="sm"
+                    variant="ghost"
+                    :loading="uploadingToSoundCloud"
+                    @click="uploadToSoundCloud"
+                  >
                     ☁️ Upload to SoundCloud
                   </BaseButton>
-                  <BaseButton v-if="scStatus && scStatus.auth_url" size="sm" variant="ghost"
-                    @click="disconnectAndReconnectSoundCloud">
+                  <BaseButton
+                    v-if="scStatus && scStatus.auth_url"
+                    size="sm"
+                    variant="ghost"
+                    @click="disconnectAndReconnectSoundCloud"
+                  >
                     🔗 Reconnect
                   </BaseButton>
                 </div>
@@ -1034,21 +1353,36 @@ onUnmounted(() => {
           <!-- Show upload if no recording -->
           <template v-else>
             <p class="upload-description">Upload the final show recording.</p>
-            <div class="upload-dropzone" :class="{ 'drag-over': uploadDragOver, 'uploading': uploading }"
-              @dragover="handleDragOver" @dragleave="handleDragLeave" @drop="handleDrop"
-              @click="($refs.fileInput as HTMLInputElement)?.click()">
+            <div
+              class="upload-dropzone"
+              :class="{ 'drag-over': uploadDragOver, uploading: uploading }"
+              @dragover="handleDragOver"
+              @dragleave="handleDragLeave"
+              @drop="handleDrop"
+              @click="($refs.fileInput as HTMLInputElement)?.click()"
+            >
               <div v-if="uploading" class="upload-status">
                 <div class="loading-spinner small"></div>
                 <div class="upload-status-text">
-                  <span class="upload-filename" v-if="uploadingFilename">{{ uploadingFilename }}</span>
+                  <span class="upload-filename" v-if="uploadingFilename">{{
+                    uploadingFilename
+                  }}</span>
                   <span v-if="uploadProgress?.phase === 'extracting'">Extracting waveform...</span>
                   <span
-                    v-else-if="uploadProgress?.phase === 'uploading' && uploadProgress.totalChunks && uploadProgress.totalChunks > 1">
-                    Uploading chunk {{ uploadProgress.chunkIndex }}/{{ uploadProgress.totalChunks }} ({{
-                      uploadProgress.percent }}%)
+                    v-else-if="
+                      uploadProgress?.phase === 'uploading' &&
+                      uploadProgress.totalChunks &&
+                      uploadProgress.totalChunks > 1
+                    "
+                  >
+                    Uploading chunk {{ uploadProgress.chunkIndex }}/{{
+                      uploadProgress.totalChunks
+                    }}
+                    ({{ uploadProgress.percent }}%)
                   </span>
-                  <span v-else-if="uploadProgress?.phase === 'uploading'">Uploading... {{ uploadProgress?.percent ?? 0
-                  }}%</span>
+                  <span v-else-if="uploadProgress?.phase === 'uploading'"
+                    >Uploading... {{ uploadProgress?.percent ?? 0 }}%</span
+                  >
                   <span v-else-if="uploadProgress?.phase === 'finalizing'">Finalizing...</span>
                   <span v-else>Uploading...</span>
                 </div>
@@ -1065,7 +1399,9 @@ onUnmounted(() => {
       <!-- Assigned Artists Section (UNHEARD only) -->
       <div v-if="isUnheard" class="card">
         <h2 class="section-title">Assigned Artists ({{ show.artists.length }})</h2>
-        <p class="slots-info">{{ artistsLeft }} slot{{ artistsLeft !== 1 ? 's' : '' }} left (max 4)</p>
+        <p class="slots-info">
+          {{ artistsLeft }} slot{{ artistsLeft !== 1 ? 's' : '' }} left (max 4)
+        </p>
 
         <!-- Assignment Form -->
         <template v-if="artistsLeft > 0 && show.available_artists.length > 0">
@@ -1076,7 +1412,12 @@ onUnmounted(() => {
                 {{ artist.name }} ({{ artist.pronouns }})
               </option>
             </select>
-            <BaseButton variant="success" :disabled="!selectedArtistId" :loading="assigning" @click="assignArtist">
+            <BaseButton
+              variant="success"
+              :disabled="!selectedArtistId"
+              :loading="assigning"
+              @click="assignArtist"
+            >
               Assign
             </BaseButton>
           </div>
@@ -1092,8 +1433,13 @@ onUnmounted(() => {
         <div v-if="show.artists.length > 0" class="artists-list">
           <div v-for="artist in show.artists" :key="artist.id" class="artist-card">
             <div class="artist-header">
-              <img v-if="artist.pic_url" :src="artist.pic_url" :alt="artist.name" class="artist-thumb"
-                crossorigin="anonymous" />
+              <img
+                v-if="artist.pic_url"
+                :src="artist.pic_url"
+                :alt="artist.name"
+                class="artist-thumb"
+                crossorigin="anonymous"
+              />
               <div v-else class="artist-thumb-placeholder"></div>
               <div class="artist-info">
                 <router-link :to="`/artists/${artist.id}`" class="artist-name">
@@ -1107,12 +1453,32 @@ onUnmounted(() => {
             </div>
 
             <div class="download-btns">
-              <a v-if="artist.voice_url || artist.track1_url || artist.track2_url"
-                :href="`/artists/${artist.id}/download/audio`" class="tbl-dl-btn audio" title="Download Audio">AUD</a>
-              <a v-if="artist.has_pic" :href="`/artists/${artist.id}/download/images`" class="tbl-dl-btn images"
-                title="Download Images">IMG</a>
-              <a :href="`/artists/${artist.id}/download/pdf`" class="tbl-dl-btn pdf" title="Download Handout">PDF</a>
-              <a :href="`/artists/${artist.id}/download`" class="tbl-dl-btn all" title="Download Full Profile">ALL</a>
+              <a
+                v-if="artist.voice_url || artist.track1_url || artist.track2_url"
+                :href="`/artists/${artist.id}/download/audio`"
+                class="tbl-dl-btn audio"
+                title="Download Audio"
+                >AUD</a
+              >
+              <a
+                v-if="artist.has_pic"
+                :href="`/artists/${artist.id}/download/images`"
+                class="tbl-dl-btn images"
+                title="Download Images"
+                >IMG</a
+              >
+              <a
+                :href="`/artists/${artist.id}/download/pdf`"
+                class="tbl-dl-btn pdf"
+                title="Download Handout"
+                >PDF</a
+              >
+              <a
+                :href="`/artists/${artist.id}/download`"
+                class="tbl-dl-btn all"
+                title="Download Full Profile"
+                >ALL</a
+              >
             </div>
 
             <div class="audio-players">
@@ -1151,9 +1517,7 @@ onUnmounted(() => {
               <span class="badge pink">🎙 {{ show.host_username }}</span>
               <router-link :to="`/users`" class="action-link">View Users</router-link>
             </div>
-            <BaseButton variant="ghost" size="sm" @click="unassignHost">
-              Remove
-            </BaseButton>
+            <BaseButton variant="ghost" size="sm" @click="unassignHost"> Remove </BaseButton>
           </div>
         </template>
 
@@ -1165,7 +1529,12 @@ onUnmounted(() => {
                 {{ host.username }}
               </option>
             </select>
-            <BaseButton variant="success" :disabled="!selectedHostId" :loading="assigningHost" @click="assignHost">
+            <BaseButton
+              variant="success"
+              :disabled="!selectedHostId"
+              :loading="assigningHost"
+              @click="assignHost"
+            >
               Assign Host
             </BaseButton>
           </div>
@@ -1198,12 +1567,11 @@ onUnmounted(() => {
           <div class="danger-zone-info">
             <h2 class="danger-zone-title">Danger Zone</h2>
             <p class="danger-zone-description">
-              Deleting this show permanently removes its assignments and cover. <strong>This cannot be undone.</strong>
+              Deleting this show permanently removes its assignments and cover.
+              <strong>This cannot be undone.</strong>
             </p>
           </div>
-          <BaseButton variant="danger" @click="showDeleteModal = true">
-            Delete Show
-          </BaseButton>
+          <BaseButton variant="danger" @click="showDeleteModal = true"> Delete Show </BaseButton>
         </div>
       </div>
     </template>
@@ -1211,21 +1579,30 @@ onUnmounted(() => {
     <!-- Delete Confirmation Modal -->
     <BaseModal :open="showDeleteModal" title="Delete Show" @close="showDeleteModal = false">
       <p>Really delete this show?</p>
-      <p class="text-muted">This will remove all artist assignments from it. This cannot be undone.</p>
+      <p class="text-muted">
+        This will remove all artist assignments from it. This cannot be undone.
+      </p>
       <template #footer>
         <BaseButton variant="ghost" @click="showDeleteModal = false">Cancel</BaseButton>
-        <BaseButton variant="danger" :loading="deleting" @click="deleteShow">
-          Delete
-        </BaseButton>
+        <BaseButton variant="danger" :loading="deleting" @click="deleteShow"> Delete </BaseButton>
       </template>
     </BaseModal>
 
-    <!-- Instagram Preview Modal (UNHEARD only) -->
-    <BaseModal v-if="isUnheard" :open="showInstagramModal" title="📸 Instagram Preview" size="lg"
-      @close="showInstagramModal = false">
+    <!-- Instagram Preview Modal (all show types) -->
+    <BaseModal
+      :open="showInstagramModal"
+      title="📸 Instagram Preview"
+      size="lg"
+      @close="showInstagramModal = false"
+    >
       <div class="ig-preview-layout">
         <div class="ig-preview-media">
-          <img v-if="show?.cover_url" :src="show.cover_url" alt="Show cover" class="ig-preview-img" />
+          <img
+            v-if="show?.cover_url"
+            :src="show.cover_url"
+            alt="Show cover"
+            class="ig-preview-img"
+          />
           <div v-else class="ig-preview-placeholder">No cover</div>
         </div>
         <div class="ig-preview-caption">
@@ -1244,16 +1621,23 @@ onUnmounted(() => {
             <option value="prod">📡 moafunk_radio</option>
           </select>
         </div>
-        <BaseButton variant="primary" :loading="postingToInstagram" :disabled="!show?.ai_bio || !show?.cover_url"
-          @click="postToInstagram()">
+        <BaseButton
+          variant="primary"
+          :loading="postingToInstagram"
+          :disabled="!show?.ai_bio || !show?.cover_url"
+          @click="postToInstagram()"
+        >
           📤 Publish
         </BaseButton>
       </template>
     </BaseModal>
 
-    <!-- Instagram Re-post Confirmation Modal (UNHEARD only) -->
-    <BaseModal v-if="isUnheard" :open="showInstagramConfirmModal" title="Post to Instagram Again?"
-      @close="showInstagramConfirmModal = false">
+    <!-- Instagram Re-post Confirmation Modal (all show types) -->
+    <BaseModal
+      :open="showInstagramConfirmModal"
+      title="Post to Instagram Again?"
+      @close="showInstagramConfirmModal = false"
+    >
       <p>This show was already posted to Instagram.</p>
       <p class="text-muted">Do you want to post it again? This will create a duplicate post.</p>
       <template #footer>
@@ -1277,6 +1661,26 @@ onUnmounted(() => {
 .page-title {
   font-size: 2.4em;
   margin: 0;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.title-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  max-width: 480px;
+}
+
+.show-meta-line {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
 }
 
 .card {
@@ -1386,7 +1790,7 @@ onUnmounted(() => {
   gap: var(--spacing-sm);
 }
 
-.recording-actions>* {
+.recording-actions > * {
   flex: 1;
 }
 
@@ -1622,7 +2026,6 @@ onUnmounted(() => {
   color: var(--color-text-muted);
   margin: 6px 0 var(--spacing-md);
 }
-
 
 .cover-card {
   height: fit-content;
@@ -1989,7 +2392,6 @@ onUnmounted(() => {
   justify-content: flex-end;
   margin-top: var(--spacing-sm);
 }
-
 
 .download-list {
   display: flex;
