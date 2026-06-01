@@ -50,6 +50,9 @@ pub type PendingShowNotifications =
 /// Active Telegram edit sessions keyed by chat_id (only one edit at a time per chat)
 pub type TelegramEditSessions = Arc<tokio::sync::Mutex<HashMap<i64, models::TelegramEditSession>>>;
 
+/// Handle to a pending grace-period recording-finalize task, if one is scheduled.
+pub type PendingFinalizer = Arc<tokio::sync::Mutex<Option<tokio::task::AbortHandle>>>;
+
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub config: Config,
@@ -57,6 +60,10 @@ pub struct AppState {
     pub stream_state: SharedStreamState,
     /// Recording session manager for show recordings
     pub recording_manager: SharedRecordingManager,
+    /// Handle to a pending grace-period finalize task (set when a live stream
+    /// drops without an explicit stop). A reconnect aborts it so a flaky
+    /// connection doesn't fragment the archive. See `stream_ws`.
+    pub recording_finalizer: PendingFinalizer,
     /// Debounce tracker for show cover regeneration (show_id -> last_request_time)
     pub cover_debounce: CoverDebounceMap,
     /// Cached default cover image (4 black tiles with UN/HEARD branding)
@@ -245,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
         s3_client,
         stream_state,
         recording_manager,
+        recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
         cover_debounce,
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot,

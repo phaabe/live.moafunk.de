@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
-import { recordingApi, hostFlowApi } from '@admin/api';
+import { hostFlowApi } from '@admin/api';
 
 const router = useRouter();
 const flow = useHostFlow();
@@ -184,24 +184,16 @@ async function handleGoLive() {
 
   try {
     if (isLive.value) {
-      // Live mode: connect WebSocket, wire audio data, navigate
-      await streamSocket.connect();
+      // Live mode: connect WebSocket, wire audio data, navigate.
+      // Recording auto-starts on the backend (keyed on show_id) so it survives
+      // a dropped tab / WS reconnect — no separate start call needed.
+      await streamSocket.connect(false, show.value?.id);
 
       // Wire audioCapture data → streamSocket using singleton's setOnData
       // Same pattern as StreamPage.vue (commit 07f39e4)
       if (audioCapture) {
         audioCapture.setOnData((data) => streamSocket.send(data));
         audioCapture.startRecording();
-      }
-
-      // Start recording if enabled
-      if (flow.recordStream.value && show.value?.id) {
-        try {
-          await recordingApi.start(show.value.id);
-        } catch (err) {
-          console.warn('[FlowWaiting] Failed to start recording:', err);
-          // Don't block going live if recording fails to start
-        }
       }
 
       // Navigation happens via onLive callback when server confirms
