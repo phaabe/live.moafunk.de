@@ -1,13 +1,22 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { showsApi, soundcloudApi, type ShowDetail, type SoundCloudStatus } from '../api';
+import {
+  showsApi,
+  soundcloudApi,
+  hostFlowApi,
+  type ShowDetail,
+  type SoundCloudStatus,
+} from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
-import ShowMediaSection from '../components/show-detail/ShowMediaSection.vue';
+import ShowDeadlineBanner from '../components/show-detail/ShowDeadlineBanner.vue';
+import ShowMediaCard from '../components/show-detail/ShowMediaCard.vue';
+import ShowSocialChannels from '../components/show-detail/ShowSocialChannels.vue';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
+import { useAuthStore } from '../stores/auth';
 import { VueDatePicker } from '@vuepic/vue-datepicker';
 import '@vuepic/vue-datepicker/dist/main.css';
 
@@ -18,6 +27,7 @@ defineOptions({
 const flash = useFlash();
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 const { invalidate, consume } = useDataInvalidation();
 
 const show = ref<ShowDetail | null>(null);
@@ -36,7 +46,6 @@ const sendingTelegramPreview = ref(false);
 const uploadingToSoundCloud = ref(false);
 const togglingSoundCloudPrivacy = ref(false);
 const scStatus = ref<SoundCloudStatus | null>(null);
-const editingTitle = ref(false);
 const editingDateTime = ref(false);
 const editingDescription = ref(false);
 const editingAiBio = ref(false);
@@ -80,8 +89,70 @@ const assigningHost = ref(false);
 const hasArtists = computed(() => show.value && show.value.artists.length > 0);
 const artistsLeft = computed(() => show.value?.artists_left ?? 0);
 const isUnheard = computed(() => !show.value?.show_type || show.value.show_type === 'unheard');
+
+// Role-based access. Backend enforces the same rules; these only gate the UI.
+const isAdmin = computed(() => auth.user?.role === 'admin' || auth.user?.role === 'superadmin');
+const canEdit = computed(
+  () => isAdmin.value || (auth.user?.role === 'host' && show.value?.host_user_id === auth.user?.id)
+);
 const hasHost = computed(() => !!show.value?.host_user_id);
 const uploadingCover = ref(false);
+
+// ── Dashboard (external/brunchtime) state ──────────────────────────────────
+const editMode = ref(false);
+const mediaMode = ref<'live' | 'upload'>('upload');
+const prerecordedProgress = ref<{
+  phase: 'uploading' | 'finalizing';
+  percent: number;
+  chunkIndex?: number;
+  totalChunks?: number;
+} | null>(null);
+const extFileInput = ref<HTMLInputElement | null>(null);
+const extCoverInput = ref<HTMLInputElement | null>(null);
+
+/** The assigned host may manage media (matches the backend require_user_show check). */
+const canManageMedia = computed(() => !!show.value && show.value.host_user_id === auth.user?.id);
+
+const hostInitials = computed(() => {
+  const name = show.value?.host_username;
+  if (!name) return '?';
+  return name
+    .split(/\s+/)
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+});
+
+/** Convert a Berlin wall-clock date + time to a UTC Date for countdown math. */
+function berlinToUtcDate(dateStr: string, timeStr: string): Date {
+  const asUtc = new Date(`${dateStr}T${timeStr}:00Z`);
+  const berlinMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'Europe/Berlin' })).getTime();
+  const utcMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'UTC' })).getTime();
+  return new Date(asUtc.getTime() - (berlinMs - utcMs));
+}
+
+const airTarget = computed(() => {
+  if (!show.value?.date || !show.value?.start_time) return null;
+  return berlinToUtcDate(show.value.date, show.value.start_time);
+});
+
+const airDateLabel = computed(() => {
+  if (!show.value?.date) return '—';
+  return new Date(show.value.date + 'T12:00:00').toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+});
+
+const airTimeRange = computed(() => {
+  if (!show.value?.start_time) return '';
+  return show.value.end_time
+    ? `${show.value.start_time} – ${show.value.end_time}`
+    : show.value.start_time;
+});
 
 /** Format a date string + time string into a readable datetime */
 function fmtDateTime(date: string, time: string): string {
@@ -225,6 +296,9 @@ async function loadShow() {
     startTimeForm.value = show.value.start_time || '';
     endTimeForm.value = show.value.end_time || '';
     descriptionForm.value = show.value.description || '';
+    // A present prerecorded file implies upload mode; otherwise keep the
+    // current selection (defaults to 'upload' to surface the upload affordance).
+    if (show.value.prerecorded_key) mediaMode.value = 'upload';
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load show';
   } finally {
@@ -264,33 +338,117 @@ async function saveDateTime() {
   }
 }
 
-// Title editing
-function startEditTitle() {
-  if (show.value) {
-    titleForm.value = show.value.title;
-  }
-  editingTitle.value = true;
+// ── Dashboard combined edit mode (external/brunchtime) ─────────────────────
+function startDashboardEdit() {
+  if (!show.value) return;
+  titleForm.value = show.value.title;
+  descriptionForm.value = show.value.description || '';
+  setEditRange(show.value.date, show.value.start_time, show.value.end_time);
+  editMode.value = true;
 }
 
-async function saveTitle() {
-  if (!show.value) return;
+function cancelDashboardEdit() {
+  editMode.value = false;
+}
 
+async function saveDashboardEdits() {
+  if (!show.value) return;
   const trimmed = titleForm.value.trim();
   if (!trimmed) {
     flash.error('Title cannot be empty');
     return;
   }
-
+  if (!editTimeValid.value) {
+    flash.error(editTimeError.value || 'Invalid date/time');
+    return;
+  }
   saving.value = true;
   try {
-    await showsApi.update(show.value.id, { title: trimmed });
-    flash.success('Title updated');
-    editingTitle.value = false;
+    await showsApi.update(show.value.id, {
+      title: trimmed,
+      description: descriptionForm.value,
+      date: editDate.value,
+      start_time: editStartTime.value || undefined,
+      end_time: editEndTime.value || undefined,
+    });
+    flash.success('Show updated');
+    editMode.value = false;
     await loadShow();
   } catch (e) {
-    flash.error(e instanceof Error ? e.message : 'Failed to update title');
+    flash.error(e instanceof Error ? e.message : 'Failed to update show');
   } finally {
     saving.value = false;
+  }
+}
+
+// ── Media (live vs upload) — reuses the host /api/my-show endpoints ─────────
+function triggerMediaUpload() {
+  extFileInput.value?.click();
+}
+
+function onMediaFileChosen(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (file) uploadPrerecorded(file);
+  input.value = '';
+}
+
+async function uploadPrerecorded(file: File) {
+  if (!show.value) return;
+  prerecordedProgress.value = { phase: 'uploading', percent: 0 };
+  try {
+    await hostFlowApi.uploadFile(show.value.id, file, (p) => {
+      prerecordedProgress.value = p;
+    });
+    flash.success('File uploaded');
+    mediaMode.value = 'upload';
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Upload failed');
+  } finally {
+    prerecordedProgress.value = null;
+  }
+}
+
+async function markUploaded() {
+  if (!show.value) return;
+  try {
+    await hostFlowApi.confirm(show.value.id);
+    flash.success('Marked as uploaded');
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to mark uploaded');
+  }
+}
+
+function selectUploadMode() {
+  mediaMode.value = 'upload';
+}
+
+async function switchToLive() {
+  if (!show.value) return;
+  if (show.value.prerecorded_key && !confirm('Switch to live? This removes the uploaded file.')) {
+    return;
+  }
+  try {
+    await hostFlowApi.goLive(show.value.id);
+    mediaMode.value = 'live';
+    flash.success('Switched to live');
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to switch to live');
+  }
+}
+
+async function removePrerecorded() {
+  if (!show.value || !show.value.prerecorded_key) return;
+  if (!confirm('Remove the uploaded file?')) return;
+  try {
+    await hostFlowApi.deleteUpload(show.value.id);
+    flash.success('Upload removed');
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to remove upload');
   }
 }
 
@@ -789,238 +947,187 @@ onUnmounted(() => {
     <div v-else-if="error" class="flash-message error">{{ error }}</div>
 
     <template v-else-if="show">
-      <!-- Header -->
-      <div class="page-header">
+      <!-- Header (UNHEARD) -->
+      <div v-if="isUnheard" class="page-header">
         <router-link to="/shows" class="back-link">← Back to Shows</router-link>
-
-        <!-- UNHEARD: static title (status/type live in the Information card below) -->
-        <h1 v-if="isUnheard" class="page-title">{{ show.title }}</h1>
-
-        <!-- External/brunchtime: editable title + compact status/type line -->
-        <template v-else>
-          <div v-if="!editingTitle" class="title-row">
-            <h1 class="page-title">{{ show.title }}</h1>
-            <button type="button" class="btn-edit" @click="startEditTitle">Edit</button>
-          </div>
-          <div v-else class="title-edit">
-            <FormInput v-model="titleForm" label="Title" required @keyup.enter="saveTitle" />
-            <div class="edit-actions">
-              <BaseButton variant="ghost" size="sm" @click="editingTitle = false"
-                >Cancel</BaseButton
-              >
-              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveTitle">
-                Save
-              </BaseButton>
-            </div>
-          </div>
-          <div class="show-meta-line">
-            <span :class="['status-badge', show.status]">{{ show.status }}</span>
-            <span :class="['show-type-badge', `type-${show.show_type || 'external'}`]">
-              {{ (show.show_type || 'external').toUpperCase() }}
-            </span>
-          </div>
-        </template>
+        <h1 class="page-title">{{ show.title }}</h1>
       </div>
 
-      <!-- ===================== External / brunchtime layout ===================== -->
-      <template v-if="!isUnheard">
-        <!-- Schedule -->
-        <div class="card">
-          <h2 class="section-title">Date &amp; Time</h2>
-          <div class="info-grid">
-            <div class="info-label">Start</div>
-            <div class="info-value">{{ formattedStart }}</div>
-            <div class="info-label">End</div>
-            <div class="info-value">{{ formattedEnd }}</div>
+      <!-- Header (external/brunchtime dashboard) -->
+      <div v-else class="page-header">
+        <router-link :to="isAdmin ? '/shows' : '/stream'" class="back-link">← Back</router-link>
+        <div class="dash-header-row">
+          <div>
+            <p class="dash-eyebrow">SHOW DASHBOARD</p>
+            <h1 class="page-title">Episode overview</h1>
           </div>
-
-          <div class="edit-toggle-container" v-if="!editingDateTime">
-            <button type="button" class="btn-edit" @click="startEditDateTime">
-              Edit Date &amp; Time
-            </button>
-          </div>
-
-          <div v-if="editingDateTime" class="edit-panel">
-            <div class="edit-row edit-row-datetime">
-              <div class="datetime-field">
-                <label class="form-label">Start</label>
-                <VueDatePicker
-                  v-model="editStart"
-                  :enable-time-picker="true"
-                  :dark="true"
-                  :minutes-increment="5"
-                  :max-date="editEnd || undefined"
-                  :flow="{ steps: ['calendar', 'time'] }"
-                  :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
-                  placeholder="Start date & time"
-                  text-input
-                  teleport="body"
-                />
-              </div>
-              <div class="datetime-field">
-                <label class="form-label">End</label>
-                <VueDatePicker
-                  v-model="editEnd"
-                  :enable-time-picker="true"
-                  :dark="true"
-                  :minutes-increment="5"
-                  :min-date="editStart || undefined"
-                  :flow="{ steps: ['calendar', 'time'] }"
-                  :action-row="{ showCancel: false, showPreview: false, selectBtnLabel: 'Confirm' }"
-                  placeholder="End date & time"
-                  text-input
-                  teleport="body"
-                />
-              </div>
-              <div class="datetime-actions">
-                <p v-if="editStart && editEnd && !editTimeValid" class="field-error">
-                  {{ editTimeError }}
-                </p>
-                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDateTime">
-                  Save
-                </BaseButton>
-                <BaseButton variant="ghost" size="sm" @click="editingDateTime = false">
-                  Cancel
-                </BaseButton>
-              </div>
-            </div>
+          <div class="dash-header-actions">
+            <BaseButton
+              v-if="canEdit && !editMode"
+              variant="ghost"
+              size="sm"
+              @click="startDashboardEdit"
+            >
+              ✎ Edit
+            </BaseButton>
+            <template v-if="editMode">
+              <BaseButton variant="ghost" size="sm" @click="cancelDashboardEdit">Cancel</BaseButton>
+              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDashboardEdits">
+                Save
+              </BaseButton>
+            </template>
           </div>
         </div>
+      </div>
 
-        <!-- Description -->
-        <div class="card">
-          <h2 class="section-title">Description</h2>
-          <template v-if="!editingDescription">
-            <div v-if="show.description" class="description-view">{{ show.description }}</div>
-            <p v-else class="empty-state">No description.</p>
-            <div class="edit-toggle-container">
-              <button type="button" class="btn-edit" @click="startEditDescription">
-                Edit Description
-              </button>
+      <!-- ===================== External / brunchtime dashboard ===================== -->
+      <template v-if="!isUnheard">
+        <!-- Deadline banner (upload mode, not yet confirmed) -->
+        <ShowDeadlineBanner
+          v-if="mediaMode === 'upload' && !show.prerecorded_confirmed_at"
+          :show="show"
+          :air-target="airTarget"
+          :can-upload="canManageMedia"
+          @upload="triggerMediaUpload"
+        />
+
+        <!-- Hero: cover + title + description -->
+        <div class="card hero-card">
+          <div class="hero-cover">
+            <img v-if="show.cover_url" :src="show.cover_url" alt="Cover" class="hero-cover-img" />
+            <div v-else class="hero-cover-placeholder">
+              <span class="hero-cover-ico">🎙</span>
+              <span>COVER</span>
             </div>
-          </template>
-          <div v-else class="edit-panel">
+            <button
+              v-if="canEdit"
+              type="button"
+              class="cover-replace"
+              :disabled="uploadingCover"
+              @click="extCoverInput?.click()"
+            >
+              ⬆ {{ show.cover_url ? 'Replace' : 'Upload' }}
+            </button>
+            <input
+              ref="extCoverInput"
+              type="file"
+              accept="image/*"
+              class="upload-input"
+              @change="handleCoverUpload"
+            />
+          </div>
+
+          <div class="hero-body">
+            <p class="dash-label">TITLE</p>
+            <FormInput v-if="editMode" v-model="titleForm" required />
+            <h2 v-else class="hero-title">{{ show.title }}</h2>
+
+            <p class="dash-label">DESCRIPTION</p>
             <textarea
+              v-if="editMode"
               v-model="descriptionForm"
               class="text-field"
               rows="4"
               placeholder="Brief description..."
             ></textarea>
-            <div class="edit-actions">
-              <BaseButton variant="ghost" size="sm" @click="editingDescription = false">
-                Cancel
-              </BaseButton>
-              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDescription">
-                Save Description
-              </BaseButton>
-            </div>
+            <p v-else-if="show.description" class="hero-desc">{{ show.description }}</p>
+            <p v-else class="empty-state">No description.</p>
           </div>
         </div>
 
-        <!-- Cover (manual upload) -->
-        <div class="card cover-card">
-          <h2 class="section-title">Cover</h2>
-          <div v-if="show.cover_url" class="show-cover-preview">
-            <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
-            <div class="cover-actions">
-              <BaseButton
-                variant="primary"
-                size="sm"
-                :loading="uploadingCover"
-                @click="($refs.extCoverInput as HTMLInputElement)?.click()"
-              >
-                Replace Cover
-              </BaseButton>
-            </div>
+        <!-- Grid: air date + assigned host -->
+        <div class="dash-grid">
+          <div class="card info-tile">
+            <h2 class="section-title"><span class="ico">📅</span> Air date</h2>
+            <template v-if="editMode">
+              <div class="edit-row edit-row-datetime">
+                <div class="datetime-field">
+                  <label class="form-label">Start</label>
+                  <VueDatePicker
+                    v-model="editStart"
+                    :enable-time-picker="true"
+                    :dark="true"
+                    :minutes-increment="5"
+                    :max-date="editEnd || undefined"
+                    :flow="{ steps: ['calendar', 'time'] }"
+                    :action-row="{
+                      showCancel: false,
+                      showPreview: false,
+                      selectBtnLabel: 'Confirm',
+                    }"
+                    placeholder="Start date & time"
+                    text-input
+                    teleport="body"
+                  />
+                </div>
+                <div class="datetime-field">
+                  <label class="form-label">End</label>
+                  <VueDatePicker
+                    v-model="editEnd"
+                    :enable-time-picker="true"
+                    :dark="true"
+                    :minutes-increment="5"
+                    :min-date="editStart || undefined"
+                    :flow="{ steps: ['calendar', 'time'] }"
+                    :action-row="{
+                      showCancel: false,
+                      showPreview: false,
+                      selectBtnLabel: 'Confirm',
+                    }"
+                    placeholder="End date & time"
+                    text-input
+                    teleport="body"
+                  />
+                </div>
+              </div>
+              <p v-if="editStart && editEnd && !editTimeValid" class="field-error">
+                {{ editTimeError }}
+              </p>
+            </template>
+            <template v-else>
+              <p class="tile-value">{{ airDateLabel }}</p>
+              <p class="tile-sub">{{ airTimeRange }}</p>
+            </template>
           </div>
-          <div v-else class="cover-upload-area">
-            <p class="empty-state">No cover uploaded yet.</p>
-            <BaseButton
-              variant="primary"
-              size="sm"
-              :loading="uploadingCover"
-              @click="($refs.extCoverInput as HTMLInputElement)?.click()"
-            >
-              Upload Cover
-            </BaseButton>
-          </div>
-          <input
-            ref="extCoverInput"
-            type="file"
-            accept="image/*"
-            class="upload-input"
-            @change="handleCoverUpload"
-          />
-        </div>
 
-        <!-- Social media (AI bio is the caption source) -->
-        <div class="card">
-          <h2 class="section-title">Social Media</h2>
-
-          <h3 class="subsection-title">AI Show Bio</h3>
-          <template v-if="!editingAiBio">
-            <div v-if="show.ai_bio" class="description-view">{{ show.ai_bio }}</div>
-            <p v-else class="empty-state">AI bio will be generated from the show description.</p>
-            <div class="edit-toggle-container">
-              <div class="button-row">
-                <button type="button" class="btn-edit" @click="startEditAiBio" v-if="show.ai_bio">
-                  Edit AI Bio
-                </button>
-                <BaseButton
-                  variant="primary"
-                  size="sm"
-                  :loading="regeneratingBio"
-                  :disabled="!show.description"
-                  @click="regenerateShowBio"
-                >
-                  Regenerate
-                </BaseButton>
+          <div class="card info-tile">
+            <h2 class="section-title"><span class="ico">👤</span> Assigned host</h2>
+            <div v-if="hasHost" class="host-row">
+              <span class="host-avatar">{{ hostInitials }}</span>
+              <div>
+                <p class="tile-value">{{ show.host_username }}</p>
+                <p class="tile-sub">Host</p>
               </div>
             </div>
-          </template>
-          <div v-else class="edit-panel">
-            <textarea
-              v-model="aiBioForm"
-              class="text-field"
-              rows="8"
-              placeholder="AI-generated show bio..."
-            ></textarea>
-            <div class="edit-actions">
-              <BaseButton variant="ghost" size="sm" @click="editingAiBio = false"
-                >Cancel</BaseButton
-              >
-              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveAiBio">
-                Save AI Bio
-              </BaseButton>
-            </div>
+            <p v-else class="empty-state">No host assigned.</p>
           </div>
-
-          <div class="section-divider"></div>
-
-          <h3 class="subsection-title">Publish</h3>
-          <template v-if="show.cover_generated_at">
-            <div class="cover-actions">
-              <BaseButton variant="primary" size="sm" @click="openInstagramPreview">
-                <span v-if="show.instagram_posted_at">📸 Posted to Instagram ✓</span>
-                <span v-else>📸 Instagram Preview</span>
-              </BaseButton>
-              <BaseButton
-                variant="secondary"
-                size="sm"
-                :loading="sendingTelegramPreview"
-                @click="sendTelegramPreview"
-              >
-                📱 Preview on Telegram
-              </BaseButton>
-            </div>
-          </template>
-          <p v-else class="empty-state">
-            Upload a cover to enable Instagram &amp; Telegram posting.
-          </p>
         </div>
 
-        <!-- Media (live vs upload) -->
-        <ShowMediaSection :show="show" />
+        <!-- Grid: media + social -->
+        <div class="dash-grid">
+          <ShowMediaCard
+            :show="show"
+            :mode="mediaMode"
+            :can-manage="canManageMedia"
+            :upload-progress="prerecordedProgress"
+            @select-live="switchToLive"
+            @select-upload="selectUploadMode"
+            @browse="triggerMediaUpload"
+            @pick-file="uploadPrerecorded"
+            @mark-uploaded="markUploaded"
+            @remove="removePrerecorded"
+          />
+          <ShowSocialChannels />
+        </div>
+
+        <!-- Hidden input for prerecorded upload (banner + media card share it) -->
+        <input
+          ref="extFileInput"
+          type="file"
+          accept="audio/*"
+          class="upload-input"
+          @change="onMediaFileChosen"
+        />
       </template>
 
       <div v-if="isUnheard" class="top-grid">
@@ -1053,7 +1160,7 @@ onUnmounted(() => {
                 type="button"
                 class="btn-edit"
                 @click="startEditDateTime"
-                v-if="!editingDateTime"
+                v-if="!editingDateTime && canEdit"
               >
                 Edit Date & Time
               </button>
@@ -1120,7 +1227,7 @@ onUnmounted(() => {
               <div v-if="show.description" class="description-view">{{ show.description }}</div>
               <p v-else class="empty-state">No description.</p>
 
-              <div class="edit-toggle-container">
+              <div v-if="canEdit" class="edit-toggle-container">
                 <button type="button" class="btn-edit" @click="startEditDescription">
                   Edit Description
                 </button>
@@ -1156,7 +1263,7 @@ onUnmounted(() => {
                 <template v-else>AI bio will be generated from the show description.</template>
               </p>
 
-              <div class="edit-toggle-container">
+              <div v-if="isAdmin" class="edit-toggle-container">
                 <div class="button-row">
                   <button type="button" class="btn-edit" @click="startEditAiBio" v-if="show.ai_bio">
                     Edit AI Bio
@@ -1198,7 +1305,7 @@ onUnmounted(() => {
           <h2 class="section-title">Cover</h2>
           <div v-if="show.cover_url" class="show-cover-preview">
             <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
-            <div class="cover-actions">
+            <div v-if="isAdmin" class="cover-actions">
               <BaseButton variant="primary" size="sm" @click="openInstagramPreview">
                 <span v-if="show.instagram_posted_at">📸 Posted to Instagram ✓</span>
                 <span v-else>📸 Instagram Preview</span>
@@ -1217,8 +1324,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Download / Upload Row (UNHEARD only) -->
-      <div v-if="isUnheard" class="download-upload-grid">
+      <!-- Download / Upload Row (UNHEARD only, admin only) -->
+      <div v-if="isUnheard && isAdmin" class="download-upload-grid">
         <!-- Download Section -->
         <div class="card">
           <h2 class="section-title">Download</h2>
@@ -1396,8 +1503,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Assigned Artists Section (UNHEARD only) -->
-      <div v-if="isUnheard" class="card">
+      <!-- Assigned Artists Section (UNHEARD only, admin only) -->
+      <div v-if="isUnheard && isAdmin" class="card">
         <h2 class="section-title">Assigned Artists ({{ show.artists.length }})</h2>
         <p class="slots-info">
           {{ artistsLeft }} slot{{ artistsLeft !== 1 ? 's' : '' }} left (max 4)
@@ -1507,8 +1614,8 @@ onUnmounted(() => {
         <p v-else class="empty-state">No artists assigned to this show yet.</p>
       </div>
 
-      <!-- Host Assignment Section (external/brunchtime shows only) -->
-      <div v-if="!isUnheard" class="card">
+      <!-- Host Assignment Section (external/brunchtime shows only, admin only) -->
+      <div v-if="!isUnheard && isAdmin" class="card">
         <h2 class="section-title">Assigned Host</h2>
 
         <template v-if="hasHost">
@@ -1562,7 +1669,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="danger-zone">
+      <div v-if="isAdmin" class="danger-zone">
         <div class="danger-zone-content">
           <div class="danger-zone-info">
             <h2 class="danger-zone-title">Danger Zone</h2>
@@ -1663,28 +1770,191 @@ onUnmounted(() => {
   margin: 0;
 }
 
-.title-row {
+.card {
+  margin-bottom: var(--spacing-lg);
+}
+
+/* ── External/brunchtime dashboard ──────────────────────────────────────── */
+.dash-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+}
+
+.dash-eyebrow {
+  margin: 0 0 2px;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.dash-header-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex: 0 0 auto;
+}
+
+.dash-label {
+  margin: 0 0 var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  align-items: stretch;
+  margin-bottom: var(--spacing-lg);
+}
+
+.dash-grid > .card {
+  margin-bottom: 0;
+}
+
+.hero-card {
+  display: flex;
+  gap: var(--spacing-xl);
+  align-items: flex-start;
+}
+
+.hero-cover {
+  position: relative;
+  flex: 0 0 auto;
+  width: 200px;
+  height: 200px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-surface-alt);
+}
+
+.hero-cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hero-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  color: #fff;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--color-primary) 0,
+    var(--color-primary) 10px,
+    var(--color-surface-alt) 10px,
+    var(--color-surface-alt) 20px
+  );
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.hero-cover-ico {
+  font-size: 2rem;
+}
+
+.cover-replace {
+  position: absolute;
+  left: var(--spacing-sm);
+  bottom: var(--spacing-sm);
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font-size: var(--font-size-sm);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  cursor: pointer;
+}
+
+.cover-replace:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.hero-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hero-title {
+  margin: 0 0 var(--spacing-lg);
+  font-size: 1.8em;
+  font-weight: 700;
+}
+
+.hero-desc {
+  margin: 0;
+  line-height: var(--line-height-relaxed, 1.6);
+  color: var(--color-text);
+}
+
+.info-tile .section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.tile-value {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.tile-sub {
+  margin: 2px 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.host-row {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
 }
 
-.title-edit {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-sm);
-  max-width: 480px;
+.host-avatar {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-success-bg);
+  color: var(--color-success);
+  font-weight: 700;
 }
 
-.show-meta-line {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  margin-top: var(--spacing-sm);
-}
+@media (max-width: 768px) {
+  .dash-grid {
+    grid-template-columns: 1fr;
+  }
 
-.card {
-  margin-bottom: var(--spacing-lg);
+  .hero-card {
+    flex-direction: column;
+  }
+
+  .hero-cover {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+  }
 }
 
 .top-grid {
