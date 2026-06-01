@@ -437,7 +437,8 @@ mod tests {
         assert_eq!(marker.artist_id, 1);
         assert_eq!(marker.track_type, "track1");
         assert_eq!(marker.duration_ms, 180000);
-        assert!(marker.offset_ms >= 0); // Should have some offset
+        // offset_ms is a u64 elapsed time; just assert it stays within a sane bound.
+        assert!(marker.offset_ms < 60_000);
 
         // Write some data
         manager.write_chunk(b"test audio data").await.unwrap();
