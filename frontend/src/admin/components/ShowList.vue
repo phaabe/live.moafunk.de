@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { Show } from '../api';
+import type { ScheduleItem } from '../api';
 import ShowListItem from './ShowListItem.vue';
 
-const props = withDefaults(defineProps<{
-  shows: Show[];
-  limit?: number;
-  filter?: 'upcoming' | 'all' | 'past';
-}>(), {
-  filter: 'upcoming',
-});
+const props = withDefaults(
+  defineProps<{
+    shows: ScheduleItem[];
+    limit?: number;
+    filter?: 'upcoming' | 'all' | 'past';
+  }>(),
+  {
+    filter: 'upcoming',
+  }
+);
 
 const emit = defineEmits<{
-  (e: 'show-click', show: Show): void;
+  (e: 'show-click', show: ScheduleItem): void;
 }>();
 
 function getDaysUntil(dateStr: string): number {
@@ -43,7 +46,7 @@ const filteredShows = computed(() => {
 });
 
 const showsByMonth = computed(() => {
-  const groups: { month: string; shows: Show[] }[] = [];
+  const groups: { month: string; shows: ScheduleItem[] }[] = [];
   let currentMonth = '';
   for (const show of filteredShows.value) {
     const d = new Date(show.date + 'T12:00:00');
@@ -67,8 +70,13 @@ const showsByMonth = computed(() => {
     <div v-for="group in showsByMonth" :key="group.month" class="show-list-month-group">
       <h3 class="show-list-month-header">{{ group.month }}</h3>
       <div class="show-list-items">
-        <ShowListItem v-for="show in group.shows" :key="show.id" :show="show" :is-past="getDaysUntil(show.date) < 0"
-          @click="emit('show-click', show)" />
+        <ShowListItem
+          v-for="show in group.shows"
+          :key="show.id"
+          :show="show"
+          :is-past="getDaysUntil(show.date) < 0"
+          @click="emit('show-click', show)"
+        />
       </div>
     </div>
   </div>

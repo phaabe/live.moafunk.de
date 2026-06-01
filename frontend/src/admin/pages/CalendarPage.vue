@@ -1,22 +1,24 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { showsApi, type Show } from '../api';
+import { showsApi, type ScheduleItem } from '../api';
+import { useAuthStore } from '../stores/auth';
 import { BaseButton } from '@shared/components';
 import MonthCalendar from '../components/MonthCalendar.vue';
 
 const router = useRouter();
 const route = useRoute();
+const authStore = useAuthStore();
 
-const shows = ref<Show[]>([]);
+const shows = ref<ScheduleItem[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
 // View mode
 type ViewMode = 'month' | 'week';
-const initialView = (['month', 'week'].includes(route.query.view as string)
-  ? route.query.view as ViewMode
-  : 'month');
+const initialView = ['month', 'week'].includes(route.query.view as string)
+  ? (route.query.view as ViewMode)
+  : 'month';
 const viewMode = ref<ViewMode>(initialView);
 
 // Selected date state
@@ -84,7 +86,7 @@ function goToCurrentWeek() {
   weekStart.value = getMonday(new Date());
 }
 
-function showsForDate(dateStr: string): Show[] {
+function showsForDate(dateStr: string): ScheduleItem[] {
   return shows.value.filter((s) => s.date === dateStr);
 }
 
@@ -110,7 +112,7 @@ function getDaysClass(days: number): string {
   return 'days-ok';
 }
 
-function getDotColor(show: Show): string {
+function getDotColor(show: ScheduleItem): string {
   const daysUntil = getDaysUntil(show.date);
   if (daysUntil < 0) return 'dot-gray';
   const type = show.show_type || 'unheard';
@@ -150,7 +152,8 @@ async function loadShows() {
   loading.value = true;
   error.value = null;
   try {
-    const response = await showsApi.list();
+    // Admins get the full editable list; hosts read the open schedule overview.
+    const response = authStore.isAdmin ? await showsApi.list() : await showsApi.overview();
     shows.value = response.shows;
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load shows';
@@ -167,8 +170,12 @@ onMounted(loadShows);
     <div class="page-header">
       <h1 class="page-title">Calendar</h1>
       <div class="view-switcher">
-        <button :class="['view-btn', { active: viewMode === 'month' }]" @click="viewMode = 'month'">Month</button>
-        <button :class="['view-btn', { active: viewMode === 'week' }]" @click="viewMode = 'week'">Week</button>
+        <button :class="['view-btn', { active: viewMode === 'month' }]" @click="viewMode = 'month'">
+          Month
+        </button>
+        <button :class="['view-btn', { active: viewMode === 'week' }]" @click="viewMode = 'week'">
+          Week
+        </button>
       </div>
       <div class="page-header-actions">
         <BaseButton variant="primary" @click="openCreateModal()">+ New Show</BaseButton>
@@ -199,32 +206,44 @@ onMounted(loadShows);
           </div>
 
           <div v-else class="day-shows-list">
-            <div v-for="show in showsOnSelectedDate" :key="show.id" class="day-show-item" @click="goToShow(show.id)">
+            <div
+              v-for="show in showsOnSelectedDate"
+              :key="show.id"
+              class="day-show-item"
+              @click="goToShow(show.id)"
+            >
               <div class="day-show-info">
                 <span class="day-show-title-row">
                   <span class="day-show-title">{{ show.title }}</span>
-                  <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
-                    'badge',
-                    'artist-badge',
-                    {
-                      'count-empty': show.artists.length === 0,
-                      'count-partial': show.artists.length > 0 && show.artists.length < 4,
-                      'count-full': show.artists.length >= 4,
-                    },
-                  ]">
+                  <span
+                    v-if="show.show_type === 'unheard' || !show.show_type"
+                    :class="[
+                      'badge',
+                      'artist-badge',
+                      {
+                        'count-empty': show.artists.length === 0,
+                        'count-partial': show.artists.length > 0 && show.artists.length < 4,
+                        'count-full': show.artists.length >= 4,
+                      },
+                    ]"
+                  >
                     {{ show.artists.length }}/4
                   </span>
                 </span>
                 <span :class="['badge', 'show-type-badge', `type-${show.show_type || 'unheard'}`]">
                   {{ (show.show_type || 'unheard').toUpperCase() }}
                 </span>
-                <span v-if="show.show_type === 'unheard' || !show.show_type" class="day-show-artists text-muted">
-                  {{show.artists.map((a) => a.name).join(', ') || 'No artists assigned'}}
+                <span
+                  v-if="show.show_type === 'unheard' || !show.show_type"
+                  class="day-show-artists text-muted"
+                >
+                  {{ show.artists.map((a) => a.name).join(', ') || 'No artists assigned' }}
                 </span>
               </div>
               <div class="day-show-meta">
                 <span :class="['badge', 'days-badge', getDaysClass(getDaysUntil(show.date))]">
-                  {{ getDaysUntil(show.date) < 0 ? 'Past' : getDaysUntil(show.date) + 'd' }} </span>
+                  {{ getDaysUntil(show.date) < 0 ? 'Past' : getDaysUntil(show.date) + 'd' }}
+                </span>
               </div>
             </div>
           </div>
@@ -248,33 +267,46 @@ onMounted(loadShows);
       </div>
 
       <div class="week-grid">
-        <div v-for="day in weekDays" :key="day.dateStr"
-          :class="['week-day-column', { 'is-today': isToday(day.dateStr) }]">
+        <div
+          v-for="day in weekDays"
+          :key="day.dateStr"
+          :class="['week-day-column', { 'is-today': isToday(day.dateStr) }]"
+        >
           <div class="week-day-header">
             <span class="week-day-name">{{ day.dayName }}</span>
             <span class="week-day-date">{{ day.label }}</span>
           </div>
           <div class="week-day-shows">
-            <div v-for="show in showsForDate(day.dateStr)" :key="show.id" class="week-show-item"
-              @click="goToShow(show.id)">
+            <div
+              v-for="show in showsForDate(day.dateStr)"
+              :key="show.id"
+              class="week-show-item"
+              @click="goToShow(show.id)"
+            >
               <span :class="['week-show-dot', getDotColor(show)]"></span>
               <div class="week-show-info">
                 <span class="week-show-title-row">
                   <span class="week-show-title">{{ show.title }}</span>
-                  <span v-if="show.show_type === 'unheard' || !show.show_type" :class="[
-                    'badge',
-                    'artist-badge',
-                    {
-                      'count-empty': show.artists.length === 0,
-                      'count-partial': show.artists.length > 0 && show.artists.length < 4,
-                      'count-full': show.artists.length >= 4,
-                    },
-                  ]">
+                  <span
+                    v-if="show.show_type === 'unheard' || !show.show_type"
+                    :class="[
+                      'badge',
+                      'artist-badge',
+                      {
+                        'count-empty': show.artists.length === 0,
+                        'count-partial': show.artists.length > 0 && show.artists.length < 4,
+                        'count-full': show.artists.length >= 4,
+                      },
+                    ]"
+                  >
                     {{ show.artists.length }}/4
                   </span>
                 </span>
-                <span v-if="show.show_type === 'unheard' || !show.show_type" class="week-show-artists text-muted">
-                  {{show.artists.map((a) => a.name).join(', ') || '—'}}
+                <span
+                  v-if="show.show_type === 'unheard' || !show.show_type"
+                  class="week-show-artists text-muted"
+                >
+                  {{ show.artists.map((a) => a.name).join(', ') || '—' }}
                 </span>
               </div>
             </div>
@@ -286,7 +318,6 @@ onMounted(loadShows);
         </div>
       </div>
     </div>
-
   </div>
 </template>
 

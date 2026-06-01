@@ -15,10 +15,10 @@ const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
 const DashboardPage = () => import('./pages/DashboardPage.vue');
+const ConfigPage = () => import('./pages/ConfigPage.vue');
 
 // Host flow pages
 const FlowLayout = () => import('./pages/flow/FlowLayout.vue');
-const FlowShowSelect = () => import('./pages/flow/FlowShowSelect.vue');
 const FlowUpload = () => import('./pages/flow/FlowUpload.vue');
 const FlowConfirm = () => import('./pages/flow/FlowConfirm.vue');
 const FlowLive = () => import('./pages/flow/FlowLive.vue');
@@ -43,7 +43,8 @@ const router = createRouter({
       path: '/dashboard',
       name: 'dashboard',
       component: DashboardPage,
-      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+      // Landing page for everyone except guests.
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
       path: '/artists',
@@ -61,7 +62,8 @@ const router = createRouter({
       path: '/shows',
       name: 'shows',
       component: ShowsPage,
-      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+      // Merged Shows + My Shows page — everyone except guests.
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
       // Multi-step create-show wizard — available to any show creator (admin + host).
@@ -74,9 +76,10 @@ const router = createRouter({
       path: '/shows/:id',
       name: 'show-detail',
       component: ShowDetailPage,
-      // Hosts may view any show and edit the ones they host; finer-grained
-      // edit gating lives in ShowDetailPage + the backend.
-      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+      // Hosts may view any show and edit the ones they host; guests reach the
+      // detail of the show they're assigned to. Finer-grained edit gating lives
+      // in ShowDetailPage + the backend (which restricts guests to their show).
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host', 'guest'] },
     },
     {
       path: '/stream',
@@ -99,31 +102,31 @@ const router = createRouter({
             }
             const stepRouteMap: Record<string, string> = {
               'not-assigned': '/stream/not-assigned',
-              select: '/stream/select',
+              select: '/shows',
               upload: '/stream/upload',
               confirm: '/stream/confirm',
               live: '/stream/live',
               'on-air': '/stream/on-air',
             };
-            const target = stepRouteMap[flow.currentStep.value] ?? '/stream/select';
+            const target = stepRouteMap[flow.currentStep.value] ?? '/shows';
             next(target);
           },
           // Placeholder component (never actually renders due to redirect)
-          component: FlowShowSelect,
+          component: FlowNotAssigned,
         },
         {
+          // Show selection now lives on the merged /shows page.
           path: 'select',
-          name: 'stream-select',
-          component: FlowShowSelect,
+          redirect: '/shows',
         },
         {
           // Legacy redirects: the info and mode steps have been removed.
           path: 'info',
-          redirect: '/stream/select',
+          redirect: '/shows',
         },
         {
           path: 'mode',
-          redirect: '/stream/select',
+          redirect: '/shows',
         },
         {
           path: 'upload',
@@ -183,6 +186,13 @@ const router = createRouter({
       path: '/calendar',
       name: 'calendar',
       component: CalendarPage,
+      // Read-only schedule — everyone except guests.
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+    },
+    {
+      path: '/config',
+      name: 'config',
+      component: ConfigPage,
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
@@ -199,6 +209,22 @@ const router = createRouter({
     },
   ],
 });
+
+/**
+ * Where an authenticated user should land. Guests go to the detail page of the
+ * show they're assigned to (falling back to the not-assigned screen); everyone
+ * else gets the dashboard.
+ */
+async function landingRoute(role: string | undefined): Promise<string> {
+  if (role === 'guest') {
+    const { useHostFlow } = await import('./composables');
+    const flow = useHostFlow();
+    await flow.fetchMyShow();
+    const first = flow.shows.value[0];
+    return first ? `/shows/${first.id}` : '/stream/not-assigned';
+  }
+  return '/dashboard';
+}
 
 // Navigation guard for auth
 router.beforeEach(async (to, _from, next) => {
@@ -228,20 +254,19 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   if (requiredRoles && authStore.user && !requiredRoles.includes(authStore.user.role)) {
-    next({ name: 'stream' }); // Redirect to stream if insufficient role
+    // Insufficient role → send the user to their natural landing page.
+    next(await landingRoute(authStore.user.role));
     return;
   }
 
   if (to.name === 'login' && authStore.isAuthenticated) {
-    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/dashboard';
-    next(defaultRoute);
+    next(await landingRoute(authStore.user?.role));
     return;
   }
 
   // Redirect '/' based on role
   if (to.path === '/' && authStore.isAuthenticated) {
-    const defaultRoute = authStore.user?.role === 'host' ? '/stream' : '/dashboard';
-    next(defaultRoute);
+    next(await landingRoute(authStore.user?.role));
     return;
   }
 

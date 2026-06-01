@@ -1,38 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { showsApi, streamApi, settingsApi, type Show, type StreamStatus } from '../api';
+import { showsApi, streamApi, type ScheduleItem, type StreamStatus } from '../api';
+import { useAuthStore } from '../stores/auth';
 import ShowList from '../components/ShowList.vue';
 import MonthCalendar from '../components/MonthCalendar.vue';
 
 const router = useRouter();
-
-// --- Notifications ---
-const notificationsEnabled = ref(true);
-const notificationsLoading = ref(true);
-
-async function loadNotificationSettings() {
-  try {
-    const response = await settingsApi.getNotifications();
-    notificationsEnabled.value = response.enabled;
-  } catch (e) {
-    console.error('Failed to load notification settings:', e);
-  } finally {
-    notificationsLoading.value = false;
-  }
-}
-
-async function toggleNotifications() {
-  const newValue = !notificationsEnabled.value;
-  notificationsEnabled.value = newValue;
-  try {
-    await settingsApi.setNotifications(newValue);
-  } catch (e) {
-    // Revert on failure
-    notificationsEnabled.value = !newValue;
-    console.error('Failed to update notification settings:', e);
-  }
-}
+const authStore = useAuthStore();
 
 // --- Stream Status ---
 const streamStatus = ref<StreamStatus>({ active: false });
@@ -50,12 +25,13 @@ async function loadStreamStatus() {
 }
 
 // --- Shows ---
-const shows = ref<Show[]>([]);
+const shows = ref<ScheduleItem[]>([]);
 const showsLoading = ref(true);
 
 async function loadShows() {
   try {
-    const response = await showsApi.list();
+    // Admins get the full editable list; hosts read the open schedule overview.
+    const response = authStore.isAdmin ? await showsApi.list() : await showsApi.overview();
     shows.value = response.shows;
   } catch (e) {
     console.error('Failed to load shows:', e);
@@ -64,13 +40,13 @@ async function loadShows() {
   }
 }
 
-function goToShow(show: Show) {
+function goToShow(show: ScheduleItem) {
   router.push(`/shows/${show.id}`);
 }
 
 onMounted(async () => {
   // Load all data in parallel
-  await Promise.all([loadNotificationSettings(), loadStreamStatus(), loadShows()]);
+  await Promise.all([loadStreamStatus(), loadShows()]);
 
   // Poll stream status every 10s
   streamPollTimer = setInterval(loadStreamStatus, 10000);
@@ -90,55 +66,38 @@ onUnmounted(() => {
       <h1 class="page-title">Dashboard</h1>
     </div>
 
+    <!-- Stream Status Banner (full width, colored by state) -->
+    <div
+      :class="[
+        'card',
+        'stream-banner',
+        streamStatus.active ? 'stream-banner-live' : 'stream-banner-off',
+      ]"
+    >
+      <div class="stream-banner-left">
+        <span class="stream-banner-icon">📡</span>
+        <h2 class="card-title">Stream</h2>
+        <span
+          v-if="!streamLoading"
+          :class="['badge', streamStatus.active ? 'badge-success' : 'badge-error']"
+        >
+          {{ streamStatus.active ? 'LIVE' : 'Off Air' }}
+        </span>
+      </div>
+      <div class="stream-banner-right">
+        <div v-if="streamLoading" class="loading-spinner"></div>
+        <template v-else>
+          <span v-if="streamStatus.active && streamStatus.user" class="stream-user">
+            {{ streamStatus.user }}
+          </span>
+          <span v-else-if="!streamStatus.active" class="text-muted stream-hint">
+            No active stream. Hosts can start streaming from their show page.
+          </span>
+        </template>
+      </div>
+    </div>
+
     <div class="dashboard-grid">
-      <!-- Moafunkbot Notifications Card -->
-      <div class="card dashboard-card">
-        <div class="card-header">
-          <h2 class="card-title">🤖 Moafunkbot</h2>
-        </div>
-        <div class="card-body">
-          <div class="notification-row">
-            <div class="notification-info">
-              <span class="notification-label">Telegram Notifications</span>
-              <span :class="['badge', notificationsEnabled ? 'badge-success' : 'badge-error']">
-                {{ notificationsEnabled ? 'Enabled' : 'Disabled' }}
-              </span>
-            </div>
-            <label class="toggle-switch" :class="{ loading: notificationsLoading }">
-              <input type="checkbox" :checked="notificationsEnabled" :disabled="notificationsLoading"
-                @change="toggleNotifications" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <p class="text-muted notification-hint">
-            Controls all bot notifications: stream alerts, artist submissions, show updates, Instagram previews.
-          </p>
-        </div>
-      </div>
-
-      <!-- Stream Status Card -->
-      <div class="card dashboard-card">
-        <div class="card-header">
-          <h2 class="card-title">📡 Stream</h2>
-        </div>
-        <div class="card-body">
-          <div v-if="streamLoading" class="loading-spinner"></div>
-          <template v-else>
-            <div class="stream-status-row">
-              <span :class="['badge', streamStatus.active ? 'badge-success' : 'badge-error']">
-                {{ streamStatus.active ? 'LIVE' : 'Off Air' }}
-              </span>
-              <span v-if="streamStatus.active && streamStatus.user" class="stream-user">
-                {{ streamStatus.user }}
-              </span>
-            </div>
-            <p v-if="!streamStatus.active" class="text-muted stream-hint">
-              No active stream. Hosts can start streaming from their show page.
-            </p>
-          </template>
-        </div>
-      </div>
-
       <!-- Month View Card -->
       <div class="card dashboard-card calendar-month-card">
         <div class="card-header">
@@ -147,8 +106,12 @@ onUnmounted(() => {
         </div>
         <div class="card-body card-body-flush">
           <div v-if="showsLoading" class="loading-spinner"></div>
-          <MonthCalendar v-else class="compact" :shows="shows"
-            @day-click="(dateStr: string) => router.push(`/calendar?date=${dateStr}`)" />
+          <MonthCalendar
+            v-else
+            class="compact"
+            :shows="shows"
+            @day-click="(dateStr: string) => router.push(`/calendar?date=${dateStr}`)"
+          />
         </div>
       </div>
 
@@ -163,7 +126,8 @@ onUnmounted(() => {
           <ShowList v-else :shows="shows" :limit="3" filter="upcoming" @show-click="goToShow" />
         </div>
       </div>
-    </div><!-- end dashboard-grid -->
+    </div>
+    <!-- end dashboard-grid -->
   </div>
 </template>
 
@@ -201,82 +165,40 @@ onUnmounted(() => {
   padding: var(--spacing-lg);
 }
 
-/* ===== Notification toggle ===== */
-.notification-row {
+/* ===== Stream banner (full width, colored by state) ===== */
+.stream-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--spacing-md);
+  flex-wrap: wrap;
+  padding: var(--spacing-md) var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
+  border-left-width: 4px;
+  border-left-style: solid;
 }
 
-.notification-info {
+.stream-banner-live {
+  background: rgba(52, 199, 89, 0.08);
+  border-left-color: #34c759;
+}
+
+.stream-banner-off {
+  background: rgba(255, 59, 48, 0.06);
+  border-left-color: #ff3b30;
+}
+
+.stream-banner-left {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: var(--spacing-md);
 }
 
-.notification-label {
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text);
+.stream-banner-icon {
+  font-size: var(--font-size-lg);
 }
 
-.notification-hint {
-  font-size: var(--font-size-sm);
-  margin-top: var(--spacing-md);
-  margin-bottom: 0;
-}
-
-/* Toggle switch */
-.toggle-switch {
-  position: relative;
-  display: inline-block;
-  width: 44px;
-  height: 24px;
-  flex-shrink: 0;
-  cursor: pointer;
-}
-
-.toggle-switch.loading {
-  opacity: 0.5;
-  pointer-events: none;
-}
-
-.toggle-switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
-.toggle-slider {
-  position: absolute;
-  inset: 0;
-  background-color: var(--color-surface-alt, #444);
-  border-radius: 12px;
-  transition: background-color var(--transition-fast);
-}
-
-.toggle-slider::before {
-  content: '';
-  position: absolute;
-  height: 18px;
-  width: 18px;
-  left: 3px;
-  bottom: 3px;
-  background-color: var(--color-text);
-  border-radius: 50%;
-  transition: transform var(--transition-fast);
-}
-
-.toggle-switch input:checked+.toggle-slider {
-  background-color: var(--color-success, #34c759);
-}
-
-.toggle-switch input:checked+.toggle-slider::before {
-  transform: translateX(20px);
-}
-
-/* ===== Stream status ===== */
-.stream-status-row {
+.stream-banner-right {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
@@ -289,8 +211,7 @@ onUnmounted(() => {
 
 .stream-hint {
   font-size: var(--font-size-sm);
-  margin-top: var(--spacing-md);
-  margin-bottom: 0;
+  margin: 0;
 }
 
 /* ===== Shows section ===== */
