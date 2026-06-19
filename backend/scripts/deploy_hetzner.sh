@@ -408,6 +408,10 @@ server {
     proxy_buffering off;
     proxy_set_header Host \$host;
     proxy_read_timeout 3600s;
+    # Icecast-KH already emits its own Access-Control-Allow-Origin on the audio
+    # mounts; hide it so our single permissive value isn't a duplicate (two ACAO
+    # headers are invalid for CORS-enforced fetchers).
+    proxy_hide_header Access-Control-Allow-Origin;
     add_header Access-Control-Allow-Origin "*" always;
   }
   location = /test.mp3 {
@@ -416,6 +420,7 @@ server {
     proxy_buffering off;
     proxy_set_header Host \$host;
     proxy_read_timeout 3600s;
+    proxy_hide_header Access-Control-Allow-Origin;
     add_header Access-Control-Allow-Origin "*" always;
   }
   location = /status-json.xsl {
