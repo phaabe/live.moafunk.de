@@ -404,6 +404,12 @@ server {
 
   client_max_body_size 260m;
 
+  # The backend's Prometheus endpoint is unauthenticated and meant for a local
+  # monitoring stack only — never expose it on the public vhost.
+  location = /metrics {
+    return 404;
+  }
+
   location / {
     proxy_pass http://127.0.0.1:8000;
     proxy_http_version 1.1;
