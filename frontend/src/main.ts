@@ -1,6 +1,13 @@
 import { config } from './config';
-import { checkStreamStatus } from './streamDetector';
+import { checkStreamStatus, checkBackendLive } from './streamDetector';
 import { initializePlayer, updateLiveStatus, destroyPlayer, restartPlayer } from './player';
+
+// Liveness signal: in Icecast mode the mount is always up (mksafe), so ask the
+// backend's authoritative on-air endpoint; otherwise HEAD-poll the NMS HLS mount.
+const isLive = (): Promise<boolean> =>
+  config.stream.statusUrl
+    ? checkBackendLive(config.stream.statusUrl)
+    : checkStreamStatus(config.stream.hls);
 
 // Only initialize if we're on a page with a player
 const hasPlayer = document.getElementById('player') || document.getElementById('videoElement');
@@ -9,7 +16,7 @@ if (hasPlayer) {
   let wasLive = false;
 
   // Initial check + player init
-  checkStreamStatus(config.stream.hls).then((live) => {
+  isLive().then((live) => {
     wasLive = live;
     updateLiveStatus(live);
     if (live) {
@@ -19,7 +26,7 @@ if (hasPlayer) {
 
   // Poll stream status every 8 seconds to detect live↔offline transitions
   setInterval(async () => {
-    const live = await checkStreamStatus(config.stream.hls);
+    const live = await isLive();
 
     if (live && !wasLive) {
       // Transition: offline → live

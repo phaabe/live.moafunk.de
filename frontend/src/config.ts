@@ -9,6 +9,16 @@ export const config = {
     // Icecast `/test` mount for the broadcaster preview player (#175). Empty by
     // default → the preview stays hidden until the Phase-2 Icecast stack is live.
     icecastTestUrl: import.meta.env.VITE_STREAM_ICECAST_TEST_URL || '',
+    // Public Icecast `/live.mp3` mount (#176). When set, the public player
+    // streams this single MP3 mount via native <audio> on every platform
+    // (iOS + desktop) instead of the legacy NMS HLS/FLV pair below. Empty →
+    // the NMS HLS/FLV path stays active, so this is a no-op env flip.
+    icecast: import.meta.env.VITE_STREAM_ICECAST_URL || '',
+    // Backend on-air endpoint (`GET /api/stream/status` → { active }). The
+    // authoritative live signal: the Icecast mount is mksafe-backed and thus
+    // always up, so mount presence can't tell "show live" from "dead air".
+    // Empty → fall back to a HEAD poll of `hls` (legacy NMS behaviour).
+    statusUrl: import.meta.env.VITE_STREAM_STATUS_URL || '',
   },
   analytics: {
     domain: import.meta.env.VITE_ANALYTICS_DOMAIN || 'live.moafunk.de',

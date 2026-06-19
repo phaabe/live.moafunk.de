@@ -11,6 +11,20 @@ let flvPlayer: ReturnType<typeof flvjs.createPlayer> | null = null;
  * Initializes the appropriate video player based on platform
  */
 export function initializePlayer(): void {
+  if (config.stream.icecast) {
+    // Icecast mode (#176): one MP3 mount via native <audio>, works on every
+    // platform (iOS + desktop), so no flv.js / HLS branch is needed.
+    console.log('Icecast mode - using native <audio> MP3 player');
+    video = document.getElementById('player') as HTMLMediaElement;
+    if (video) {
+      video.addEventListener('error', () => {
+        console.log('Icecast stream error - stream may be offline');
+      });
+      video.src = config.stream.icecast;
+    }
+    return;
+  }
+
   if (isIOSDevice()) {
     console.log('Detected iOS - using native HLS player');
     video = document.getElementById('player') as HTMLMediaElement;
@@ -73,8 +87,9 @@ export function destroyPlayer(): void {
 
   if (video) {
     video.pause();
-    // For HLS (iOS), clear the source
-    if (isIOSDevice()) {
+    // For HLS (iOS) and Icecast (<audio>), clear the source so we don't hold
+    // the connection / play dead air after the show ends.
+    if (isIOSDevice() || config.stream.icecast) {
       video.removeAttribute('src');
       video.load();
     }
