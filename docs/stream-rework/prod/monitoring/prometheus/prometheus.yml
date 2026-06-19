@@ -1,0 +1,46 @@
+# Prometheus config for the stream observability stack (#178).
+# Scrapes: icecast_exporter (Icecast stats), blackbox (synthetic stream probe),
+# and itself. All metrics/admin ports are localhost-bound (see compose).
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Icecast stats via markuslindenberg/icecast_exporter (icecast_* metrics).
+  - job_name: icecast
+    static_configs:
+      - targets: ["icecast-exporter:9146"]
+
+  # Synthetic probe of the PUBLIC stream mount — independent of server metrics,
+  # so it catches "listeners can't reach the stream" even if the box looks fine.
+  # GET (never HEAD — Icecast 400s on HEAD); see blackbox.yml module icecast_mp3.
+  # Prometheus does NOT expand env vars in this file — edit the target directly.
+  # Pre-cutover: the local mount (below). Post-cutover: change to the public TLS
+  # URL, e.g. https://radio.live.moafunk.de/live.mp3 (then the probe is truly
+  # end-to-end through the proxy).
+  - job_name: blackbox_stream
+    metrics_path: /probe
+    params:
+      module: [icecast_mp3]
+    static_configs:
+      - targets:
+          - http://host.docker.internal:8010/live.mp3
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

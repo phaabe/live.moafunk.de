@@ -1,0 +1,16 @@
+# Blackbox exporter modules (#178).
+modules:
+  # Probe an Icecast MP3 mount. MUST use GET — Icecast answers HEAD with 400,
+  # which would make the probe permanently fail. A live mount returns 200 with
+  # an audio/mpeg body; we accept 200 and the mpeg content-type.
+  icecast_mp3:
+    prober: http
+    timeout: 8s
+    http:
+      method: GET
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: [200]
+      fail_if_not_ssl: false   # local mount is plain http; public probe is https
+      preferred_ip_protocol: ip4
+      # Don't pull the whole stream — a short read is enough to confirm 200.
+      no_follow_redirects: false

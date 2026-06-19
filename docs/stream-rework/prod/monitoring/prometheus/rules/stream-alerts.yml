@@ -1,0 +1,72 @@
+# Stream alert rules (#178).
+#
+# DESIGN NOTE (the #178 landmine): NEVER write `... or on() vector(0)` inside an
+# alert expression. `vector(0)` is always present and compares `< 1`, so such a
+# rule fires PERMANENTLY. That trick is for Grafana *panels* (to show 0 when no
+# data), not for alerts. Here "stream-down" and "zero-listeners" are kept as
+# SEPARATE alerts, and absence is handled with `absent()` / `up == 0`, never
+# `or vector(0)`.
+#
+# "stream-down" is intentionally driven by the Blackbox probe (probe_success),
+# which is exporter-agnostic and certain — it fires regardless of the icecast_*
+# metric names. The icecast_*-based rules are best-effort detail; VERIFY their
+# metric names against `curl localhost:9146/metrics | grep ^icecast_` on first
+# deploy and adjust if the exporter names differ.
+groups:
+  - name: stream-availability
+    rules:
+      # The canonical "stream is down" alert: the public mount is unreachable.
+      # Independent of server-side metrics — proves listeners can't get audio.
+      - alert: StreamProbeDown
+        expr: probe_success{job="blackbox_stream"} == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Public stream mount unreachable"
+          description: "Blackbox GET probe of {{ $labels.instance }} has failed for 5m. Listeners cannot reach the stream."
+
+      # The Blackbox probe target itself stopped being scraped (Prometheus can't
+      # even run the probe) — distinct from the probe failing.
+      - alert: StreamProbeAbsent
+        expr: absent(probe_success{job="blackbox_stream"})
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Stream probe metric absent"
+          description: "No probe_success samples for blackbox_stream — Blackbox/Prometheus scrape is broken; stream health is unknown."
+
+  - name: icecast-source
+    rules:
+      # Icecast stats scrape is down (exporter unreachable or Icecast dead).
+      - alert: IcecastExporterDown
+        expr: up{job="icecast"} == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Icecast exporter/scrape down"
+          description: "Prometheus cannot scrape icecast_exporter for 5m — Icecast may be down or the exporter cannot reach it."
+
+      # No source connected to Icecast. With mksafe the Liquidsoap source is
+      # always connected, so 0 sources means Liquidsoap died → real outage.
+      # VERIFY metric name on deploy (icecast_sources is the expected name).
+      - alert: IcecastNoSource
+        expr: icecast_sources == 0
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "No source connected to Icecast"
+          description: "icecast_sources == 0 for 10m — Liquidsoap is not feeding Icecast (mksafe should keep a source connected at all times)."
+
+  - name: stream-listeners
+    rules:
+      # SEPARATE, low-severity, slow alert — NOT coupled to stream-down. Because
+      # mksafe keeps the mount up during dead air, 0 listeners is normal between
+      # shows; this is informational. Gate it on a "show-scheduled" signal once
+      # the backend exposes one (TODO #178). Kept long (1h) to avoid noise.
+      - alert: StreamZeroListenersProlonged
+        expr: sum(icecast_listeners) == 0
+        for: 1h
+        labels: { severity: info }
+        annotations:
+          summary: "No stream listeners for 1h"
+          description: "sum(icecast_listeners) == 0 for 1h. Informational — expected between shows; investigate only if a show is scheduled. (VERIFY metric name on deploy.)"
