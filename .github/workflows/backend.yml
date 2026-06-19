@@ -18,6 +18,10 @@ on:
         type: boolean
         description: "Deploy to Hetzner (greenfield #194; manual only, restarts containers)"
         default: false
+      deploy_monitoring:
+        type: boolean
+        description: "Deploy the #178 observability stack (Prometheus/Alertmanager/Grafana) to the Hetzner box"
+        default: false
       build:
         type: boolean
         description: "Build & push image to GHCR"
@@ -419,6 +423,52 @@ jobs:
           INIT_DB="${{ inputs.init_db && '1' || '0' }}" \
           RUN_TESTS="${{ inputs.run_tests == false && '0' || '1' }}" \
           ./backend/scripts/deploy_hetzner.sh
+
+  deploy-monitoring:
+    # Deploy the #178 observability stack to the Hetzner box (manual only).
+    # Additive + reversible: never touches the backend, the stream stack, or DNS.
+    # Secrets come from Bitwarden, same as the other deploy jobs. Grafana's admin
+    # password defaults to 'admin' (UI is 127.0.0.1-only, SSH-tunnelled) — set
+    # GRAFANA_ADMIN_PASSWORD in /etc/moafunk/monitoring/monitoring.env to harden.
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_monitoring == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get secrets from Bitwarden
+        uses: bitwarden/sm-action@v2
+        id: bitwarden-secrets
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            546972ad-7db9-4525-8d30-b46e00f8802a > HETZNER_IP
+            32944dfd-70f2-4f57-8274-b46e00f77c41 > HETZNER_SSH_KEY
+            2470e0a8-7e96-4113-9931-b3ed0180cf59 > TELEGRAM_BOT_TOKEN
+            3d3c982b-6933-4c23-bb11-b3ee000687d6 > TELEGRAM_ADMIN_CHAT_ID
+
+      - name: Setup SSH key
+        env:
+          HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
+          HETZNER_SSH_KEY: ${{ steps.bitwarden-secrets.outputs.HETZNER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HETZNER_SSH_KEY" > ~/.ssh/hetzner.pem
+          chmod 600 ~/.ssh/hetzner.pem
+          ssh-keyscan -H "$HETZNER_IP" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy observability stack
+        env:
+          IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
+          TELEGRAM_BOT_TOKEN: ${{ steps.bitwarden-secrets.outputs.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ steps.bitwarden-secrets.outputs.TELEGRAM_ADMIN_CHAT_ID }}
+        run: |
+          IP="$IP" \
+          SSH_KEY=~/.ssh/hetzner.pem \
+          TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+          TELEGRAM_ADMIN_CHAT_ID="$TELEGRAM_ADMIN_CHAT_ID" \
+          ./backend/scripts/deploy_monitoring.sh
 
   sync-scripts:
     # Sync backup/r2/db scripts to Lightsail without a full deploy.

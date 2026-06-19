@@ -26,9 +26,27 @@ present and `< 1`, so the rule fires forever. "stream-down" and "zero-listeners"
 are deliberately **separate** alerts; absence uses `absent()` / `up == 0`. (That
 `or vector(0)` trick is only for Grafana panels.)
 
-## Deploy (on the box)
+## Deploy
 
 > Runs upstream images (`prom/*`, `markuslindenberg/icecast_exporter`, `grafana/grafana`).
+
+### Via CI (preferred — no manual SSH)
+
+Run the **backend** workflow with `deploy_monitoring=true` (manual dispatch). It pulls
+`TELEGRAM_*` + the box IP/SSH key from Bitwarden and runs `backend/scripts/deploy_monitoring.sh`,
+which ships this dir to `/etc/moafunk/monitoring`, writes `monitoring.env`, and starts the
+systemd unit. Additive + reversible — never touches the backend, stream stack, or DNS.
+
+```bash
+gh workflow run backend.yml -f deploy_monitoring=true
+```
+
+Grafana's admin password defaults to `admin` (UI is `127.0.0.1`-only, SSH-tunnelled). To
+harden, set `GRAFANA_ADMIN_PASSWORD` in `/etc/moafunk/monitoring/monitoring.env` and
+`systemctl restart monitoring`.
+
+### Manually (on the box)
+
 > Place this dir at `/etc/moafunk/monitoring`.
 
 ```bash
