@@ -1,6 +1,17 @@
 import { config } from './config';
 import { checkStreamStatus, checkBackendLive } from './streamDetector';
 import { initializePlayer, updateLiveStatus, destroyPlayer, restartPlayer } from './player';
+import { startVersionWatcher } from './versionWatcher';
+
+// Pull stale clients onto the latest deploy without a manual refresh, but never
+// reload while audio is actively playing (would cut a live show). Runs on every
+// public page load.
+const isAudioPlaying = (): boolean =>
+  ['player', 'videoElement'].some((id) => {
+    const el = document.getElementById(id) as HTMLMediaElement | null;
+    return !!el && !el.paused && !el.ended && el.readyState > 2;
+  });
+startVersionWatcher({ isPlaying: isAudioPlaying });
 
 // Liveness signal: in Icecast mode the mount is always up (mksafe), so ask the
 // backend's authoritative on-air endpoint; otherwise HEAD-poll the NMS HLS mount.
