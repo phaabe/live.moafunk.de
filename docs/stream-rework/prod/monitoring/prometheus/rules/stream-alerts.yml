@@ -7,23 +7,27 @@
 # SEPARATE alerts, and absence is handled with `absent()` / `up == 0`, never
 # `or vector(0)`.
 #
-# "stream-down" is intentionally driven by the Blackbox probe (probe_success),
-# which is exporter-agnostic and certain — it fires regardless of the icecast_*
-# metric names. The icecast_*-based rules are best-effort detail; VERIFY their
-# metric names against `curl localhost:9146/metrics | grep ^icecast_` on first
-# deploy and adjust if the exporter names differ.
+# "stream-down" is driven by the Blackbox probe (probe_success) of the Icecast
+# STATUS endpoint — exporter-agnostic and certain. (We do NOT probe the audio
+# mount: it's an infinite stream that times out blackbox's body read.) The
+# icecast_*-based rules are detail. Metric names were reconciled against the
+# live exporter (markuslindenberg/icecast_exporter) on 2026-06-19: it emits
+# per-mount `icecast_listeners{listenurl=...}` (one series per connected source)
+# and `icecast_up`, but NO `icecast_sources` — so source presence is detected
+# via the per-mount series existing, not a source count.
 groups:
   - name: stream-availability
     rules:
-      # The canonical "stream is down" alert: the public mount is unreachable.
-      # Independent of server-side metrics — proves listeners can't get audio.
+      # The canonical "Icecast is down" alert: the status endpoint is unreachable.
+      # Independent of the exporter — if this fails, listeners can't reach the
+      # server at all. (Source-level "is the live mount fed?" = IcecastNoLiveSource.)
       - alert: StreamProbeDown
         expr: probe_success{job="blackbox_stream"} == 0
         for: 5m
         labels: { severity: critical }
         annotations:
-          summary: "Public stream mount unreachable"
-          description: "Blackbox GET probe of {{ $labels.instance }} has failed for 5m. Listeners cannot reach the stream."
+          summary: "Icecast unreachable (status probe failing)"
+          description: "Blackbox GET probe of {{ $labels.instance }} has failed for 5m — Icecast is unreachable; listeners cannot reach the stream."
 
       # The Blackbox probe target itself stopped being scraped (Prometheus can't
       # even run the probe) — distinct from the probe failing.
@@ -46,16 +50,18 @@ groups:
           summary: "Icecast exporter/scrape down"
           description: "Prometheus cannot scrape icecast_exporter for 5m — Icecast may be down or the exporter cannot reach it."
 
-      # No source connected to Icecast. With mksafe the Liquidsoap source is
-      # always connected, so 0 sources means Liquidsoap died → real outage.
-      # VERIFY metric name on deploy (icecast_sources is the expected name).
-      - alert: IcecastNoSource
-        expr: icecast_sources == 0
+      # The live source mount stopped feeding Icecast. The exporter emits a
+      # per-mount `icecast_listeners{listenurl=…/live.mp3}` series ONLY while a
+      # source is connected; mksafe keeps it connected at all times, so the series
+      # disappearing means Liquidsoap died → real outage. (There is no
+      # `icecast_sources` metric — absence of the per-mount series is the signal.)
+      - alert: IcecastNoLiveSource
+        expr: absent(icecast_listeners{listenurl=~".*/live.mp3"})
         for: 10m
         labels: { severity: critical }
         annotations:
-          summary: "No source connected to Icecast"
-          description: "icecast_sources == 0 for 10m — Liquidsoap is not feeding Icecast (mksafe should keep a source connected at all times)."
+          summary: "No source on the Icecast live mount"
+          description: "icecast_listeners for the /live.mp3 mount has been absent for 10m — Liquidsoap is not feeding Icecast (mksafe should keep a source connected at all times)."
 
   - name: stream-listeners
     rules:
@@ -69,7 +75,7 @@ groups:
         labels: { severity: info }
         annotations:
           summary: "No stream listeners for 1h"
-          description: "sum(icecast_listeners) == 0 for 1h. Informational — expected between shows; investigate only if a show is scheduled. (VERIFY metric name on deploy.)"
+          description: "sum(icecast_listeners) == 0 for 1h. Informational — expected between shows; investigate only if a show is scheduled."
 
   - name: recording-durability
     # Backend-internal recording/upload health (moafunk_* from the `backend` job,

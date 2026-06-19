@@ -6,18 +6,23 @@ to the project Telegram bot. **All UIs/metrics ports bind to `127.0.0.1`** — n
 exposed publicly.
 
 ```
-blackbox ── GET /live.mp3 (synthetic "can listeners reach the stream?") ─┐
-icecast_exporter ── Icecast /status-json.xsl (listeners, sources) ───────┤─▶ Prometheus ─▶ Alertmanager ─▶ Telegram
+blackbox ── GET /status-json.xsl (synthetic "is Icecast reachable?") ────┐
+icecast_exporter ── Icecast /status-json.xsl (per-mount listeners) ──────┤─▶ Prometheus ─▶ Alertmanager ─▶ Telegram
                                                                           │        └─▶ Grafana (127.0.0.1:3000)
 ```
+
+> Blackbox probes the **status endpoint**, not the audio mount: a live MP3 mount
+> is an infinite stream and blackbox reads the body to EOF, so probing `/live.mp3`
+> always times out (verified). "Is the live source actually feeding?" is covered
+> by `IcecastNoLiveSource` (the per-mount `icecast_listeners` series disappears).
 
 ## What it alerts on (and the #178 landmine)
 
 | Alert | Expr (severity) | Meaning |
 |-------|-----------------|---------|
-| `StreamProbeDown` | `probe_success{job="blackbox_stream"} == 0` for 5m (**critical**) | public mount unreachable — the canonical "stream down" |
+| `StreamProbeDown` | `probe_success{job="blackbox_stream"} == 0` for 5m (**critical**) | Icecast status endpoint unreachable — canonical "server down" |
 | `IcecastExporterDown` | `up{job="icecast"} == 0` for 5m (**critical**) | Icecast/exporter scrape failing |
-| `IcecastNoSource` | `icecast_sources == 0` for 10m (**critical**) | Liquidsoap stopped feeding Icecast |
+| `IcecastNoLiveSource` | `absent(icecast_listeners{listenurl=~".*/live.mp3"})` for 10m (**critical**) | Liquidsoap stopped feeding the live mount |
 | `StreamZeroListenersProlonged` | `sum(icecast_listeners) == 0` for 1h (**info**) | informational only (normal between shows) |
 | `StreamProbeAbsent` | `absent(probe_success{...})` for 10m (**warning**) | monitoring itself is broken |
 
@@ -61,22 +66,30 @@ systemctl daemon-reload && systemctl enable --now monitoring   # renders alertma
 > v2 plugin). `monitoring.service` calls `mon-compose.sh`, which resolves whichever
 > is present — so don't hardcode `docker compose` in the unit.
 
-## Verify (FIRST DEPLOY — reconcile metric names)
+## Verify
 
-`icecast_exporter` metric names can differ by version. After it's up:
+Metric names were reconciled against the live exporter on 2026-06-19 (the
+`icecast-exporter`/`blackbox` ports are NOT host-published — query via Prometheus,
+not `localhost:9146`/`:9115`):
 
 ```bash
-curl -s localhost:9146/metrics | grep ^icecast_      # confirm icecast_sources / icecast_listeners
-curl -s 'localhost:9090/api/v1/rules' | jq '.. .health? // empty' | sort -u   # all "ok"
-curl -s localhost:9090/api/v1/query?query=probe_success | jq '.data.result'   # blackbox probing the mount
+# All targets healthy (prometheus, icecast, backend, blackbox_stream → up==1):
+curl -s 'localhost:9090/api/v1/query?query=up' | jq -r '.data.result[]|"\(.metric.job)=\(.value[1])"'
+# Blackbox status probe succeeds (was 0 while probing the audio mount):
+curl -s 'localhost:9090/api/v1/query?query=probe_success' | jq '.data.result[].value[1]'
+# Live source present (per-mount series; this is what IcecastNoLiveSource watches):
+curl -s 'localhost:9090/api/v1/query?query=icecast_listeners' | jq -r '.data.result[].metric.listenurl'
+# All rules healthy:
+curl -s 'localhost:9090/api/v1/rules' | jq '[..|.health?//empty]|unique'
 ```
 
-If the exporter's names differ from `icecast_sources` / `icecast_listeners`,
-update `prometheus/rules/stream-alerts.yml` (the `StreamProbeDown` alert needs no
-change — it's blackbox-based). Then `systemctl reload`/restart `monitoring`.
+The exporter emits per-mount `icecast_listeners{listenurl=…}` + `icecast_up`, but
+**no `icecast_sources`** — hence `IcecastNoLiveSource` keys off the per-mount
+series existing. The Blackbox probe targets the **status endpoint** (finite),
+never the audio mount (infinite stream → body-read timeout).
 
-Test the page path: `systemctl stop liquidsoap` (or block the mount) → after 5m
-`StreamProbeDown` should fire exactly once to Telegram; restart → it resolves.
+Test the page path: `systemctl stop liquidsoap` (or block Icecast) → after 5m
+`StreamProbeDown`/`IcecastNoLiveSource` fire to Telegram; restart → they resolve.
 
 UIs (localhost only) — reach via SSH tunnel, e.g.
 `ssh -L 9090:localhost:9090 -L 3000:localhost:3000 root@<box>`.
