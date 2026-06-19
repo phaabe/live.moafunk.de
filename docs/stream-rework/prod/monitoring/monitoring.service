@@ -18,12 +18,21 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=true
 WorkingDirectory=/etc/moafunk/monitoring
+# Make BACKEND_NETWORK (and the rest) available to ExecStartPost. Optional ('-')
+# so a missing env file doesn't block start.
+EnvironmentFile=-/etc/moafunk/monitoring/monitoring.env
 # Re-render the alertmanager config from the template each start (picks up token
 # rotations in monitoring.env). envsubst ships in gettext-base.
 ExecStartPre=/bin/bash -c 'set -a; . monitoring.env; set +a; envsubst < alertmanager/alertmanager.yml.tmpl > alertmanager/alertmanager.yml'
 # mon-compose.sh resolves `docker compose` (v2 plugin) OR the standalone
 # `docker-compose` binary — the box may have either. See the script header.
 ExecStart=/etc/moafunk/monitoring/mon-compose.sh --env-file monitoring.env -f docker-compose.monitoring.yml up -d
+# docker-compose v2.24.6 sometimes fails to attach a service to a pre-existing
+# EXTERNAL network on recreate (verified: prometheus landed only on the project
+# default net → 'lookup unheard-api: server misbehaving'). Connect it explicitly
+# every start; idempotent (no-op if already attached), live-attach needs no
+# Prometheus restart. Runs on deploys AND reboots.
+ExecStartPost=/bin/bash -c 'cid=$(docker ps -q -f name=moafunk-monitoring-prometheus | head -1); [ -n "$cid" ] && docker network connect "${BACKEND_NETWORK:-unheard-backend_default}" "$cid" 2>/dev/null; true'
 ExecStop=/etc/moafunk/monitoring/mon-compose.sh -f docker-compose.monitoring.yml down
 
 [Install]
