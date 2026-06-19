@@ -106,8 +106,17 @@ window short and ideally outside a live show.
 - All app config/secrets — same `.env` (regenerate from Bitwarden in CI).
 
 ## CI note
-`.github/workflows/backend.yml` deploys via the Lightsail path + Bitwarden
-secrets (`LIGHTSAIL_IP`, `LIGHTSAIL_SSH_KEY`). After the cutover, add Hetzner
-equivalents (`HETZNER_IP`, `HETZNER_SSH_KEY`) and switch the deploy step to
-`deploy_hetzner.sh`. Until then, deploy to Hetzner manually with the command in
-step 1. (Tracked in the umbrella ticket.)
+`.github/workflows/backend.yml` auto-deploys to Lightsail on push (Bitwarden
+`LIGHTSAIL_IP`/`LIGHTSAIL_SSH_KEY`). A **manual** `deploy-hetzner` job is also
+wired: it runs `deploy_hetzner.sh` with the same Bitwarden app secrets and the
+same generated `.env`, but reads the box's IP + SSH key from the **GitHub repo
+secrets** `HETZNER_IP` and `HETZNER_SSH_KEY` (Settings → Secrets → Actions).
+
+To deploy to Hetzner: set those two repo secrets, then run the workflow via
+**Actions → Run workflow** with `deploy_hetzner=true` (first run: also
+`setup_nginx=true`, `init_db=true`). It never runs on push, so Lightsail stays
+the automatic prod path until the DNS cutover. The generated `.env` mirrors
+Lightsail's — the producer stays on RTMP; flipping to Icecast
+(`STREAM_OUTPUT=icecast`, `ICECAST_URL`, `ICECAST_STATUS_URL`) is a deliberate
+later step once the stream stack (`prod/`) is up. After the cutover this manual
+job can become the push default. (Tracked in the umbrella ticket.)
