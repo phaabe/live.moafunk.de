@@ -397,6 +397,34 @@ server {
     return 404;
   }
 
+  # --- Icecast public mounts (Liquidsoap -> Icecast-KH, host-networked :8010) ---
+  # TLS-front the public audio mount + status JSON so the HTTPS frontend can play
+  # them without mixed-content (plain http://...:8010 is blocked from an https page).
+  # Continuous stream: buffering MUST be off, long read timeout. CORS so the
+  # cross-origin public site can fetch the status JSON for listener counts.
+  location = /live.mp3 {
+    proxy_pass http://127.0.0.1:8010/live.mp3;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_set_header Host \$host;
+    proxy_read_timeout 3600s;
+    add_header Access-Control-Allow-Origin "*" always;
+  }
+  location = /test.mp3 {
+    proxy_pass http://127.0.0.1:8010/test.mp3;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_set_header Host \$host;
+    proxy_read_timeout 3600s;
+    add_header Access-Control-Allow-Origin "*" always;
+  }
+  location = /status-json.xsl {
+    proxy_pass http://127.0.0.1:8010/status-json.xsl;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    add_header Access-Control-Allow-Origin "*" always;
+  }
+
   location / {
     proxy_pass http://127.0.0.1:8000;
     proxy_http_version 1.1;
