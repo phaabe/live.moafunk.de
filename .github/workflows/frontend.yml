@@ -92,6 +92,18 @@ jobs:
 
       - name: Build website
         run: npm run build
+        env:
+          # Public stream flip (#176/#194): point the public player at the
+          # Hetzner Icecast `/live.mp3` mount (TLS-fronted) + the backend on-air
+          # endpoint. Sourced from repo Variables so the cutover is a Settings
+          # change + re-run, not a code edit. UNSET = empty → config.ts falls back
+          # to the legacy NMS HLS/FLV path (no-op), so merging this is safe.
+          # To go live: set both Variables, then re-run this workflow.
+          #   VITE_STREAM_ICECAST_URL = https://admin.live.moafunk.de/live.mp3
+          #   VITE_STREAM_STATUS_URL  = https://admin.live.moafunk.de/api/stream/status
+          # Rollback: clear the Variables and re-run (NMS stays warm).
+          VITE_STREAM_ICECAST_URL: ${{ vars.VITE_STREAM_ICECAST_URL }}
+          VITE_STREAM_STATUS_URL: ${{ vars.VITE_STREAM_STATUS_URL }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
