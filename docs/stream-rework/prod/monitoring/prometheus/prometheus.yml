@@ -34,20 +34,25 @@ scrape_configs:
     static_configs:
       - targets: ["unheard-api:8000"]
 
-  # Synthetic probe of the PUBLIC stream mount — independent of server metrics,
-  # so it catches "listeners can't reach the stream" even if the box looks fine.
-  # GET (never HEAD — Icecast 400s on HEAD); see blackbox.yml module icecast_mp3.
-  # Prometheus does NOT expand env vars in this file — edit the target directly.
-  # Pre-cutover: the local mount (below). Post-cutover: change to the public TLS
-  # URL, e.g. https://radio.live.moafunk.de/live.mp3 (then the probe is truly
-  # end-to-end through the proxy).
+  # Synthetic probe that Icecast is reachable and serving — independent of the
+  # exporter, so it catches "the server is unreachable" even if scrapes look ok.
+  # We probe the STATUS endpoint (/status-json.xsl), NOT the audio mount: a live
+  # MP3 mount is an infinite stream, and blackbox's HTTP prober reads the body to
+  # EOF — so probing /live.mp3 always hits the module timeout and fails (verified:
+  # 200 HTTP/1.1 but probe_duration == timeout). The status endpoint returns a
+  # finite 200. "Is the live SOURCE actually feeding?" is covered separately by
+  # the IcecastNoLiveSource alert (per-mount icecast_listeners series presence).
+  # GET (never HEAD — Icecast 400s on HEAD); see blackbox.yml module icecast_http.
+  # Prometheus does NOT expand env vars here — edit the target directly. Post-
+  # cutover, point this at the publicly-reachable status/health URL (a finite
+  # endpoint — never the raw mount).
   - job_name: blackbox_stream
     metrics_path: /probe
     params:
-      module: [icecast_mp3]
+      module: [icecast_http]
     static_configs:
       - targets:
-          - http://host.docker.internal:8010/live.mp3
+          - http://host.docker.internal:8010/status-json.xsl
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
