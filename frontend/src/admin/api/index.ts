@@ -856,8 +856,30 @@ export interface StreamStatus {
   user?: string;
 }
 
+/** Per-mount Icecast telemetry (#177). */
+export interface StreamMountMetrics {
+  mount: string;
+  listeners: number;
+  listener_peak?: number;
+  bitrate?: number;
+  samplerate?: number;
+  channels?: number;
+  server_name?: string;
+}
+
+/** Cached Icecast listener/quality snapshot from `GET /api/stream/metrics`. */
+export interface StreamMetrics {
+  online: boolean;
+  total_listeners: number;
+  mounts: StreamMountMetrics[];
+  polled_at_ms?: number;
+  error?: string;
+}
+
 export const streamApi = {
   status: () => api.get<StreamStatus>('/api/stream/status'),
+
+  metrics: () => api.get<StreamMetrics>('/api/stream/metrics'),
 
   stop: () => api.post<void>('/api/stream/stop'),
 };

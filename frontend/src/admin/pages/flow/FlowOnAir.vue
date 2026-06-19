@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
-import { streamApi, recordingApi, hostFlowApi } from '@admin/api';
+import { streamApi, recordingApi, hostFlowApi, type StreamMetrics } from '@admin/api';
 import DbMeter from '@admin/components/DbMeter.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
 import { config } from '@/config';
@@ -172,6 +172,7 @@ const streamSocket = useStreamSocket({
     if (streamActive.value && !streamEnded.value) {
       streamEnded.value = true;
       stopElapsed();
+      stopMetrics();
     }
   },
   onError: (msg) => {
@@ -227,6 +228,11 @@ function transitionToStreaming() {
     pollRecordingStatus();
     recordingPollInterval = setInterval(pollRecordingStatus, 3000);
   }
+  // Live listener/quality telemetry (#177) — only useful for a live broadcast.
+  if (isLiveMode.value) {
+    pollMetrics();
+    metricsInterval = setInterval(pollMetrics, 10000);
+  }
   if (show.value?.end_time) {
     updateEndTimeCountdown();
     endTimeInterval = setInterval(updateEndTimeCountdown, 1000);
@@ -268,6 +274,42 @@ function stopElapsed() {
   }
 }
 
+// ─── Live Icecast telemetry (#177) ───────────────────────────────────────────
+// Polled while streaming. Degrades gracefully: when the Icecast stack isn't live
+// (or offline), the panels just show a dash instead of real numbers.
+const metrics = ref<StreamMetrics | null>(null);
+let metricsInterval: ReturnType<typeof setInterval> | null = null;
+
+async function pollMetrics() {
+  try {
+    metrics.value = await streamApi.metrics();
+  } catch {
+    // Ignore — backend may not expose metrics yet / Icecast not configured.
+  }
+}
+
+function stopMetrics() {
+  if (metricsInterval) {
+    clearInterval(metricsInterval);
+    metricsInterval = null;
+  }
+}
+
+const metricsOnline = computed(() => metrics.value?.online === true);
+const listenerCount = computed(() => (metricsOnline.value ? metrics.value!.total_listeners : null));
+const primaryMount = computed(() => metrics.value?.mounts?.[0] ?? null);
+const audioQuality = computed(() => {
+  if (!metricsOnline.value) return null;
+  const m = primaryMount.value;
+  if (!m) return null;
+  const parts: string[] = [];
+  if (m.bitrate) parts.push(`${m.bitrate} kbps`);
+  if (m.samplerate) parts.push(`${(m.samplerate / 1000).toFixed(1)} kHz`);
+  if (m.channels === 2) parts.push('stereo');
+  else if (m.channels === 1) parts.push('mono');
+  return parts.length ? parts.join(' · ') : null;
+});
+
 // ─── Stop streaming ─────────────────────────────────────────────────────────
 const stopping = ref(false);
 
@@ -281,6 +323,7 @@ function handleStop() {
   }
   streamEnded.value = true;
   stopElapsed();
+  stopMetrics();
 }
 
 async function handleStopUpload() {
@@ -292,6 +335,7 @@ async function handleStopUpload() {
   }
   streamEnded.value = true;
   stopElapsed();
+  stopMetrics();
   if (statusInterval) {
     clearInterval(statusInterval);
     statusInterval = null;
@@ -311,6 +355,7 @@ async function handleStopAndChangeSettings() {
     isRecording.value = false;
   }
   stopElapsed();
+  stopMetrics();
   if (statusInterval) {
     clearInterval(statusInterval);
     statusInterval = null;
@@ -456,6 +501,7 @@ onUnmounted(() => {
     beepCtx = null;
   }
   stopElapsed();
+  stopMetrics();
   stopEndTimeInterval();
   if (statusInterval) {
     clearInterval(statusInterval);
@@ -585,17 +631,19 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <!-- Future feature placeholders -->
+      <!-- Live telemetry (#177) + remaining placeholder -->
       <div class="future-panels">
-        <div class="future-panel">
+        <div class="future-panel" :class="{ active: listenerCount !== null }">
           <span class="future-icon">👥</span>
-          <span class="future-label">Listener Count</span>
-          <span class="future-badge">Coming soon</span>
+          <span class="future-label">Listeners</span>
+          <span v-if="listenerCount !== null" class="metric-value">{{ listenerCount }}</span>
+          <span v-else class="future-badge">—</span>
         </div>
-        <div class="future-panel">
+        <div class="future-panel" :class="{ active: audioQuality !== null }">
           <span class="future-icon">📊</span>
           <span class="future-label">Audio Quality</span>
-          <span class="future-badge">Coming soon</span>
+          <span v-if="audioQuality" class="metric-value metric-value-sm">{{ audioQuality }}</span>
+          <span v-else class="future-badge">—</span>
         </div>
         <div class="future-panel">
           <span class="future-icon">💬</span>
@@ -1077,6 +1125,25 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--spacing-xs);
   opacity: 0.6;
+}
+
+/* A panel backed by real live data — solid border, full opacity. */
+.future-panel.active {
+  opacity: 1;
+  border-style: solid;
+  border-color: var(--color-border);
+}
+
+.metric-value {
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
+.metric-value-sm {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
 }
 
 .future-icon {
