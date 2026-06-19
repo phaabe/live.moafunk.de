@@ -13,7 +13,7 @@ export const config = {
     // streams this single MP3 mount via native <audio> on every platform
     // (iOS + desktop) instead of the legacy NMS HLS/FLV pair below. Empty →
     // the NMS HLS/FLV path stays active, so this is a no-op env flip.
-    icecast: import.meta.env.VITE_STREAM_ICECAST_URL || '',
+    icecast: import.meta.env.VITE_STREAM_ICECAST_LIVE_URL || '',
     // Backend on-air endpoint (`GET /api/stream/status` → { active }). The
     // authoritative live signal: the Icecast mount is mksafe-backed and thus
     // always up, so mount presence can't tell "show live" from "dead air".
