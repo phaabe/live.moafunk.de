@@ -342,6 +342,99 @@ pub fn sanitize_object_name(input: &str) -> String {
     out.trim_matches([' ', '-', '_']).to_string()
 }
 
+/// Slugify a free-text label for use in an R2 object key segment.
+///
+/// Lowercases, transliterates German umlauts/ß (ä→ae, ö→oe, ü→ue, ß→ss), maps
+/// every other non-alphanumeric run to a single `-`, and trims leading/trailing
+/// separators. Produces only `[a-z0-9-]`, so the result is safe in a key path
+/// and stable across `show_type` / `title` values like "Brunchtime", "UNHEARD",
+/// or "Café-Set Nr. 3".
+pub fn slugify(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut last_was_sep = false;
+
+    for ch in input.trim().chars() {
+        // Transliterate the German specials before lowercasing the rest.
+        let expanded: &[char] = match ch {
+            'ä' | 'Ä' => &['a', 'e'],
+            'ö' | 'Ö' => &['o', 'e'],
+            'ü' | 'Ü' => &['u', 'e'],
+            'ß' => &['s', 's'],
+            other if other.is_ascii_alphanumeric() => {
+                push_slug_char(&mut out, other.to_ascii_lowercase(), &mut last_was_sep);
+                continue;
+            }
+            _ => {
+                // Any other char (space, punctuation, accent, emoji) → separator.
+                if !last_was_sep && !out.is_empty() {
+                    out.push('-');
+                    last_was_sep = true;
+                }
+                continue;
+            }
+        };
+        for &c in expanded {
+            push_slug_char(&mut out, c, &mut last_was_sep);
+        }
+    }
+
+    out.trim_matches('-').to_string()
+}
+
+fn push_slug_char(out: &mut String, ch: char, last_was_sep: &mut bool) {
+    out.push(ch.to_ascii_lowercase());
+    *last_was_sep = false;
+}
+
+/// Normalize a stored `show.date` (`YYYY-MM-DD` or an ISO timestamp like
+/// `2026-06-19T20:00:00Z`) down to the `YYYY-MM-DD` calendar part. Falls back to
+/// a slug of whatever was stored if it doesn't start with a date.
+fn normalize_show_date(date: &str) -> String {
+    let day = date.split(['T', ' ']).next().unwrap_or(date);
+    let is_iso_date = day.len() == 10
+        && day.as_bytes().iter().enumerate().all(|(i, &b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    if is_iso_date {
+        day.to_string()
+    } else {
+        slugify(day)
+    }
+}
+
+/// Build the curated shows-archive key for a finalized recording.
+///
+/// Layout (see the `recording-shows-bucket-layout` spec): under the shows bucket
+/// `shows/{show_type}/{date}-{title}/{date}-{title}.mp3`, e.g.
+/// `shows/brunchtime/2026-06-19-morning-vibes/2026-06-19-morning-vibes.mp3`.
+/// `show_type` and `title` are slugified; `date` is normalized to `YYYY-MM-DD`.
+/// Empty slugs fall back to `untitled` / `show` so the key is always valid.
+pub fn build_show_archive_key(show_type: &str, title: &str, date: &str) -> String {
+    let type_slug = {
+        let s = slugify(show_type);
+        if s.is_empty() {
+            "untitled".to_string()
+        } else {
+            s
+        }
+    };
+    let title_slug = {
+        let s = slugify(title);
+        if s.is_empty() {
+            "show".to_string()
+        } else {
+            s
+        }
+    };
+    let day = normalize_show_date(date);
+    let stem = format!("{}-{}", day, title_slug);
+    format!("shows/{}/{}/{}.mp3", type_slug, stem, stem)
+}
+
 fn extract_ext(filename: &str) -> String {
     std::path::Path::new(filename)
         .extension()
@@ -986,6 +1079,57 @@ pub async fn upload_audio_to_pending_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slugify_lowercases_and_collapses_separators() {
+        assert_eq!(slugify("Morning Vibes"), "morning-vibes");
+        assert_eq!(slugify("  UNHEARD  "), "unheard");
+        assert_eq!(slugify("Café-Set Nr. 3!"), "caf-set-nr-3");
+        assert_eq!(slugify("a___b   c---d"), "a-b-c-d");
+    }
+
+    #[test]
+    fn slugify_transliterates_german_umlauts() {
+        assert_eq!(slugify("Frühstück"), "fruehstueck");
+        assert_eq!(slugify("Grüße aus Moabit"), "gruesse-aus-moabit");
+        assert_eq!(slugify("Öl Ärger Über"), "oel-aerger-ueber");
+    }
+
+    #[test]
+    fn slugify_empty_or_punct_only_is_empty() {
+        assert_eq!(slugify(""), "");
+        assert_eq!(slugify("   "), "");
+        assert_eq!(slugify("!!! ---"), "");
+    }
+
+    #[test]
+    fn build_show_archive_key_matches_spec_layout() {
+        assert_eq!(
+            build_show_archive_key("Brunchtime", "Morning Vibes", "2026-06-19"),
+            "shows/brunchtime/2026-06-19-morning-vibes/2026-06-19-morning-vibes.mp3"
+        );
+    }
+
+    #[test]
+    fn build_show_archive_key_normalizes_iso_timestamp_date() {
+        assert_eq!(
+            build_show_archive_key("unheard", "Set", "2026-06-19T20:00:00Z"),
+            "shows/unheard/2026-06-19-set/2026-06-19-set.mp3"
+        );
+    }
+
+    #[test]
+    fn build_show_archive_key_handles_umlauts_and_empty_fallbacks() {
+        assert_eq!(
+            build_show_archive_key("Frühstück", "Grüße", "2026-01-02"),
+            "shows/fruehstueck/2026-01-02-gruesse/2026-01-02-gruesse.mp3"
+        );
+        // Empty/punct-only inputs fall back to stable defaults, never an empty segment.
+        assert_eq!(
+            build_show_archive_key("", "", "2026-01-02"),
+            "shows/untitled/2026-01-02-show/2026-01-02-show.mp3"
+        );
+    }
 
     #[tokio::test]
     async fn cleanup_removes_old_keeps_fresh_and_tolerates_missing_dir() {
