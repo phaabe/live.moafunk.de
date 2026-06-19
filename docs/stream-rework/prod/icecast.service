@@ -1,26 +1,41 @@
 # Icecast-KH audio streaming server (issue #173 / #178).
 #
-# Runs the Icecast-KH binary (built from source per the runbook) under systemd
-# with Restart=always and a hard cgroup memory cap — the SPOF/reliability
-# hardening from #178. Assumes an `icecast` user/group exists:
-#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin icecast
+# Runs our pinned Icecast-KH image (built from source via icecast-kh.Dockerfile)
+# under systemd with Restart=always and a hard cgroup memory cap (--memory) —
+# the SPOF/reliability hardening from #178. Same docker-run pattern as
+# liquidsoap.service so the whole stream stack is supervised consistently.
 #
-# Install: copy to /etc/systemd/system/, place icecast.xml under /etc/moafunk/,
-# then: systemctl daemon-reload && systemctl enable --now icecast
+# Why KH (not stock Xiph): stock froze ~3k listeners in benchmarks; KH handles
+# ~30k and adds the master->relay support Phase 4 (#178) needs to front the
+# public mount.
+#
+# Install (on the box):
+#   docker build -f /etc/moafunk/icecast-kh.Dockerfile \
+#     -t moafunk/icecast-kh:kh22 /etc/moafunk
+#   # render /etc/moafunk/icecast.xml from the template with real passwords
+#   # (source/admin from stream.env), then:
+#   systemctl daemon-reload && systemctl enable --now icecast
 [Unit]
-Description=Icecast-KH audio streaming server
-After=network-online.target
+Description=Moafunk Icecast-KH audio streaming server
+After=docker.service network-online.target
+Requires=docker.service
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/icecast -c /etc/moafunk/icecast.xml
+# --network host: Liquidsoap (also host-networked) reaches Icecast on
+# 127.0.0.1:8010, the backend metrics poller comes via host.docker.internal:8010,
+# and public listeners arrive through the TLS reverse proxy. 8010 must stay off
+# the public internet (Cloud Firewall + bind notes in icecast.xml).
+ExecStartPre=-/usr/bin/docker rm -f moafunk-icecast
+ExecStart=/usr/bin/docker run --rm --name moafunk-icecast \
+  --network host \
+  --memory 512m --memory-swap 512m \
+  -v /etc/moafunk/icecast.xml:/etc/moafunk/icecast.xml:ro \
+  -v moafunk-icecast-logs:/var/log/icecast \
+  moafunk/icecast-kh:kh22
+ExecStop=/usr/bin/docker stop moafunk-icecast
 Restart=always
 RestartSec=3
-# Reliability hardening (#178): hard memory cap (native binary → cgroup MemoryMax applies).
-MemoryMax=512M
-User=icecast
-Group=icecast
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
