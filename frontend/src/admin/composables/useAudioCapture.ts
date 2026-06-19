@@ -10,6 +10,22 @@ export interface UseAudioCaptureOptions {
   onError?: (error: string) => void;
 }
 
+/**
+ * Pick AudioContext options that match the capture device's real sample rate.
+ *
+ * Pro interfaces (e.g. Allen & Heath Xone:23C) run at 96/44.1 kHz and ignore the
+ * 48 kHz getUserMedia hint. Firefox refuses to `createMediaStreamSource` when the
+ * context's sample rate differs from the stream's ("Connecting AudioNodes from
+ * AudioContexts with different sample-rate is currently not supported"); Chrome
+ * silently resamples, which is why it only breaks on some machines/browsers.
+ * Building the context at the track's actual rate works on both. Returns
+ * `undefined` (→ default context) when the rate is unknown.
+ */
+export function audioContextOptionsForStream(stream: MediaStream): AudioContextOptions | undefined {
+  const rate = stream.getAudioTracks()[0]?.getSettings().sampleRate;
+  return rate ? { sampleRate: rate } : undefined;
+}
+
 // ─── Singleton state (shared across components / route navigations) ─────────
 const devices = ref<AudioDevice[]>([]);
 const selectedDeviceId = ref<string>('');
@@ -159,7 +175,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     // Clean up previous audio context
     cleanupAudioProcessing();
 
-    audioContext = new AudioContext({ sampleRate: 48000 });
+    audioContext = new AudioContext(audioContextOptionsForStream(stream));
     sourceNode = audioContext.createMediaStreamSource(stream);
     gainNode = audioContext.createGain();
     destinationNode = audioContext.createMediaStreamDestination();
