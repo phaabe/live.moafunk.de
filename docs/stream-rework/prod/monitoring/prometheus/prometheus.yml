@@ -23,6 +23,17 @@ scrape_configs:
     static_configs:
       - targets: ["icecast-exporter:9146"]
 
+  # Backend-internal recording/upload durability metrics (#178). The backend
+  # publishes only on the host's 127.0.0.1:8000 (unreachable via host-gateway)
+  # and /metrics is 404'd on the public nginx vhost, so Prometheus scrapes the
+  # container directly over the shared backend network (see compose `networks`).
+  # These moafunk_* counters catch a stuck/failed recorder — invisible to the
+  # Icecast/Blackbox probes, which only see the live mount. Activates post-
+  # cutover, once the backend runs on this box (pre-cutover the target is down).
+  - job_name: backend
+    static_configs:
+      - targets: ["unheard-api:8000"]
+
   # Synthetic probe of the PUBLIC stream mount — independent of server metrics,
   # so it catches "listeners can't reach the stream" even if the box looks fine.
   # GET (never HEAD — Icecast 400s on HEAD); see blackbox.yml module icecast_mp3.

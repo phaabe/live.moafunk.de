@@ -296,12 +296,14 @@ impl StreamState {
                     tracing::error!(
                         "Recording tee queue full — dropping chunk (recorder/disk too slow); archive will be incomplete"
                     );
+                    crate::metrics::inc_recording_tee_dropped();
                     self.recording_failed.get_or_insert_with(|| {
                         "recording queue overflow (recorder/disk too slow)".to_string()
                     });
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     tracing::error!("Recording writer task stopped — recording abandoned");
+                    crate::metrics::inc_recording_writer_stopped();
                     self.recording_failed
                         .get_or_insert_with(|| "recording writer stopped".to_string());
                     self.recording_tx = None;
@@ -448,6 +450,7 @@ impl StreamState {
         if let (Some(ref dir), Some(ref out)) = (&seg_dir, &path) {
             if let Err(e) = concat_segments(dir, out).await {
                 tracing::error!("Failed to concat recording segments: {}", e);
+                crate::metrics::inc_recording_segment_concat_failure();
                 self.recording_failed = Some(format!("Segment concat failed: {}", e));
             } else {
                 tracing::info!("Concatenated recording segments into {:?}", out);

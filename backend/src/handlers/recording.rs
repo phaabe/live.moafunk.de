@@ -409,7 +409,10 @@ async fn upload_artifact_and_record(
         "audio/webm",
     )
     .await
-    .map_err(|e| AppError::Storage(format!("Failed to upload raw recording: {}", e)))?;
+    .map_err(|e| {
+        crate::metrics::inc_recording_r2_upload_failure();
+        AppError::Storage(format!("Failed to upload raw recording: {}", e))
+    })?;
 
     // Verify before delete: HEAD the object and confirm the size matches, and
     // sanity-check the duration against the scheduled show length (a recorder
@@ -427,6 +430,7 @@ async fn upload_artifact_and_record(
             local_size, remote_size
         );
         tracing::error!("{}", msg);
+        crate::metrics::inc_recording_size_mismatch();
         failure_reason.get_or_insert(msg);
     }
     if let Some(short) = detect_short_recording(state, show_id, local_duration_ms).await {
@@ -435,6 +439,9 @@ async fn upload_artifact_and_record(
     }
 
     let incomplete = failure_reason.is_some();
+    if incomplete {
+        crate::metrics::inc_recording_incomplete();
+    }
     tracing::info!(
         "Uploaded raw recording to {} ({} bytes, size_verified={}, duration_ms={:?})",
         raw_key,
