@@ -4,7 +4,7 @@
 # Install (on the box), assuming this dir lives at /etc/moafunk/monitoring:
 #   cd /etc/moafunk/monitoring
 #   cp monitoring.env.example monitoring.env   # fill from Bitwarden
-#   set -a; . monitoring.env; set +a
+#   set -a; . monitoring.env; : "${TELEGRAM_TOPIC_ID:=26}"; set +a
 #   envsubst < alertmanager/alertmanager.yml.tmpl > alertmanager/alertmanager.yml
 #   cp monitoring.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now monitoring
@@ -23,7 +23,7 @@ WorkingDirectory=/etc/moafunk/monitoring
 EnvironmentFile=-/etc/moafunk/monitoring/monitoring.env
 # Re-render the alertmanager config from the template each start (picks up token
 # rotations in monitoring.env). envsubst ships in gettext-base.
-ExecStartPre=/bin/bash -c 'set -a; . monitoring.env; set +a; envsubst < alertmanager/alertmanager.yml.tmpl > alertmanager/alertmanager.yml'
+ExecStartPre=/bin/bash -c 'set -a; . monitoring.env; : "${TELEGRAM_TOPIC_ID:=26}"; set +a; envsubst < alertmanager/alertmanager.yml.tmpl > alertmanager/alertmanager.yml'
 # mon-compose.sh resolves `docker compose` (v2 plugin) OR the standalone
 # `docker-compose` binary — the box may have either. See the script header.
 ExecStart=/etc/moafunk/monitoring/mon-compose.sh --env-file monitoring.env -f docker-compose.monitoring.yml up -d
