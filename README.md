@@ -29,22 +29,26 @@ Live streaming web radio from Moabit, Berlin.
 ### Installation
 
 1. Clone the repository:
+
 ```sh
 git clone https://github.com/yourusername/live.moafunk.de.git
 cd live.moafunk.de
 ```
 
 2. Switch into the frontend directory:
+
 ```sh
 cd frontend
 ```
 
 3. Install Node.js dependencies:
+
 ```sh
 npm install
 ```
 
 4. Copy environment variables template:
+
 ```sh
 cp .env.example .env
 ```
@@ -54,6 +58,7 @@ cp .env.example .env
 ### Running Locally
 
 1. Generate tracks data from SoundCloud:
+
 ```sh
 cd frontend
 uv run scripts/generate_relisten.py \
@@ -62,6 +67,7 @@ uv run scripts/generate_relisten.py \
 ```
 
 2. Start development server:
+
 ```sh
 cd frontend
 npm run dev
@@ -94,20 +100,21 @@ The output will be in `frontend/dist/`.
 
 Create a `.env` file with the following variables:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `VITE_STREAM_HLS_URL` | HLS stream URL (for iOS devices) | `https://stream.moafunk.de/live/stream-io/index.m3u8` |
-| `VITE_STREAM_FLV_URL` | FLV stream URL (for desktop) | `https://stream.moafunk.de/live/stream-io.flv` |
-| `VITE_ANALYTICS_DOMAIN` | Plausible analytics domain | `live.moafunk.de` |
-| `VITE_ANALYTICS_SCRIPT_URL` | Plausible script URL | `https://plausible.moafunk.de/js/plausible.js` |
+| Variable                       | Description                                                                              | Default                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `VITE_STREAM_HLS_URL`          | HLS stream URL (for iOS devices)                                                         | `https://stream.moafunk.de/live/stream-io/index.m3u8` |
+| `VITE_STREAM_FLV_URL`          | FLV stream URL (for desktop)                                                             | `https://stream.moafunk.de/live/stream-io.flv`        |
+| `VITE_STREAM_ICECAST_TEST_URL` | Icecast `/test` mount for the broadcaster preview player (#175); empty hides the preview | _(empty)_                                             |
+| `VITE_ANALYTICS_DOMAIN`        | Plausible analytics domain                                                               | `live.moafunk.de`                                     |
+| `VITE_ANALYTICS_SCRIPT_URL`    | Plausible script URL                                                                     | `https://plausible.moafunk.de/js/plausible.js`        |
 
 ### Required for SoundCloud API (CI/CD)
 
 These must be set as GitHub Secrets:
 
-| Secret | Description | How to Get |
-|--------|-------------|------------|
-| `SOUNDCLOUD_CLIENT_ID` | SoundCloud OAuth Client ID | [SoundCloud Apps](https://soundcloud.com/you/apps) |
+| Secret                     | Description                    | How to Get                                         |
+| -------------------------- | ------------------------------ | -------------------------------------------------- |
+| `SOUNDCLOUD_CLIENT_ID`     | SoundCloud OAuth Client ID     | [SoundCloud Apps](https://soundcloud.com/you/apps) |
 | `SOUNDCLOUD_CLIENT_SECRET` | SoundCloud OAuth Client Secret | [SoundCloud Apps](https://soundcloud.com/you/apps) |
 
 ## Project Structure
@@ -142,17 +149,17 @@ These must be set as GitHub Secrets:
 
 ## Available Commands
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start Vite development server |
-| `npm run build` | Build for production |
-| `npm run preview` | Preview production build locally |
-| `npm test` | Run Vitest tests |
-| `npm run test:ui` | Run tests with UI |
-| `npm run lint` | Lint code with ESLint |
-| `npm run lint:fix` | Fix linting issues automatically |
-| `npm run format` | Format code with Prettier |
-| `npm run typecheck` | Type-check TypeScript files |
+| Command                 | Description                              |
+| ----------------------- | ---------------------------------------- |
+| `npm run dev`           | Start Vite development server            |
+| `npm run build`         | Build for production                     |
+| `npm run preview`       | Preview production build locally         |
+| `npm test`              | Run Vitest tests                         |
+| `npm run test:ui`       | Run tests with UI                        |
+| `npm run lint`          | Lint code with ESLint                    |
+| `npm run lint:fix`      | Fix linting issues automatically         |
+| `npm run format`        | Format code with Prettier                |
+| `npm run typecheck`     | Type-check TypeScript files              |
 | `npm run generate:html` | Generate re-listen.html from tracks.json |
 
 ## CI/CD Pipeline
@@ -162,12 +169,13 @@ The project uses GitHub Actions for automated builds and deployment.
 ### Frontend (GitHub Pages)
 
 On push to `main`:
-   - Fetch SoundCloud tracks → `public/data/tracks.json`
-   - Generate `re-listen.html` from JSON
-   - Install Node.js dependencies
-   - Run linting and tests
-   - Build with Vite
-   - Deploy to GitHub Pages
+
+- Fetch SoundCloud tracks → `public/data/tracks.json`
+- Generate `re-listen.html` from JSON
+- Install Node.js dependencies
+- Run linting and tests
+- Build with Vite
+- Deploy to GitHub Pages
 
 See [.github/workflows/deploy.yml](.github/workflows/deploy.yml) for details.
 

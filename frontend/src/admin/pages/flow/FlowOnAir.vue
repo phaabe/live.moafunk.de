@@ -4,11 +4,17 @@ import { useRouter } from 'vue-router';
 import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
 import { streamApi, recordingApi, hostFlowApi } from '@admin/api';
 import DbMeter from '@admin/components/DbMeter.vue';
+import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
+import { config } from '@/config';
 
 const router = useRouter();
 const flow = useHostFlow();
 const show = computed(() => flow.show.value);
 const isLiveMode = computed(() => flow.uploadMode.value === 'live');
+
+// Broadcaster preview (#175): only shown for a live broadcast and only when an
+// Icecast /test mount is configured (empty until the Phase-2 stack is live).
+const previewUrl = config.stream.icecastTestUrl;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Phase: waiting (before stream starts) vs streaming (after go-live)
@@ -528,6 +534,10 @@ onUnmounted(() => {
         <div v-if="audioCapture" class="audio-level-section">
           <DbMeter :media-stream="audioCapture.mediaStream.value" label="Audio Level" />
         </div>
+
+        <!-- Broadcaster preview: hear the relay feed (#175). Hidden unless a
+             /test mount is configured. -->
+        <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" />
 
         <div class="stop-section">
           <button class="btn-stop" :disabled="stopping" @click="handleStop">
