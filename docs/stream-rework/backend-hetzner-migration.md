@@ -116,8 +116,29 @@ secrets).
 To deploy to Hetzner: ensure `HETZNER_IP`/`HETZNER_SSH_KEY` exist in the SM
 project, then run the workflow via **Actions → Run workflow** with
 `deploy_hetzner=true` (first run: also `setup_nginx=true`, `init_db=true`). It never runs on push, so Lightsail stays
-the automatic prod path until the DNS cutover. The generated `.env` mirrors
-Lightsail's — the producer stays on RTMP; flipping to Icecast
-(`STREAM_OUTPUT=icecast`, `ICECAST_URL`, `ICECAST_STATUS_URL`) is a deliberate
-later step once the stream stack (`prod/`) is up. After the cutover this manual
-job can become the push default. (Tracked in the umbrella ticket.)
+the automatic prod path until the DNS cutover.
+
+### Flipping the producer to Icecast
+
+The deploy is wired so the producer target is a **single dispatch choice**, not
+a code change. The `stream_output` input (default `rtmp`) controls the generated
+`.env`:
+
+- `stream_output=rtmp` → `STREAM_OUTPUT=rtmp` (unchanged from Lightsail; the
+  backend's config default pushes RTMP to NMS).
+- `stream_output=icecast` → writes
+  `STREAM_OUTPUT=icecast`,
+  `ICECAST_URL=icecast://source:<HARBOR_LIVE_PASSWORD>@127.0.0.1:8005/live`,
+  `ICECAST_STATUS_URL=http://127.0.0.1:8010/status-json.xsl` — i.e. ffmpeg pushes
+  MP3 to the co-located Liquidsoap harbor `live` mount and metrics poll the local
+  Icecast. The recording tee stays an independent ffmpeg, so the flip never gaps
+  the archive (#185 isolation).
+
+**One manual prerequisite before the first `stream_output=icecast` run:** create a
+secret named **`HARBOR_LIVE_PASSWORD`** in the Bitwarden SM project
+(`37a9cffb-…`, value = the box's `/etc/moafunk/stream.env` `HARBOR_LIVE_PASSWORD`)
+and paste its UUID into the `Get stream secrets from Bitwarden (icecast flip only)`
+step in `backend.yml`, replacing `REPLACE_WITH_HARBOR_LIVE_PASSWORD_UUID`. That
+step only runs on the icecast path, so the default RTMP deploy never needs it.
+After the cutover this manual job can become the push default. (Tracked in the
+umbrella ticket.)
