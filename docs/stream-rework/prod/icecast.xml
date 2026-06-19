@@ -22,8 +22,7 @@
     <clients>350</clients>          <!-- headroom over the ~300 peak (see #168); not a load test -->
     <sources>4</sources>
     <queue-size>524288</queue-size>
-    <burst-on-connect>1</burst-on-connect>
-    <burst-size>65536</burst-size>  <!-- fast start; keep modest -->
+    <burst-size>65536</burst-size>  <!-- fast start; keep modest. KH uses burst-size (no burst-on-connect). -->
   </limits>
 
   <authentication>
