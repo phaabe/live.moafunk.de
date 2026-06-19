@@ -1,8 +1,10 @@
 # Alertmanager config TEMPLATE (#178) — delivers to the project Telegram bot.
 # Alertmanager does NOT expand env vars, so render this to alertmanager.yml at
-# deploy:  set -a; . monitoring.env; set +a; envsubst < alertmanager.yml.tmpl > alertmanager.yml
+# deploy:  set -a; . monitoring.env; : "${TELEGRAM_TOPIC_ID:=26}"; set +a; envsubst < alertmanager.yml.tmpl > alertmanager.yml
 # The rendered alertmanager.yml contains the bot token → it is gitignored.
 # Token + chat id reuse the project bot (Bitwarden: TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_CHAT_ID).
+# message_thread_id pins alerts to the "MoafunkBot" forum topic (TELEGRAM_TOPIC_ID,
+# default 26) — without it Alertmanager posts into the group's "General" topic.
 global:
   resolve_timeout: 5m
 
@@ -23,6 +25,7 @@ receivers:
     telegram_configs:
       - bot_token: "${TELEGRAM_BOT_TOKEN}"
         chat_id: ${TELEGRAM_ADMIN_CHAT_ID}
+        message_thread_id: ${TELEGRAM_TOPIC_ID}
         parse_mode: HTML
         send_resolved: true
         message: |
