@@ -128,11 +128,20 @@ a code change. The `stream_output` input (default `rtmp`) controls the generated
   backend's config default pushes RTMP to NMS).
 - `stream_output=icecast` → writes
   `STREAM_OUTPUT=icecast`,
-  `ICECAST_URL=icecast://source:<HARBOR_LIVE_PASSWORD>@127.0.0.1:8005/live`,
-  `ICECAST_STATUS_URL=http://127.0.0.1:8010/status-json.xsl` — i.e. ffmpeg pushes
-  MP3 to the co-located Liquidsoap harbor `live` mount and metrics poll the local
-  Icecast. The recording tee stays an independent ffmpeg, so the flip never gaps
-  the archive (#185 isolation).
+  `ICECAST_URL=icecast://source:<HARBOR_LIVE_PASSWORD>@host.docker.internal:8005/live`,
+  `ICECAST_STATUS_URL=http://host.docker.internal:8010/status-json.xsl` — i.e.
+  ffmpeg pushes MP3 to the co-located Liquidsoap harbor `live` mount and metrics
+  poll the local Icecast. The recording tee stays an independent ffmpeg, so the
+  flip never gaps the archive (#185 isolation).
+
+> **Why `host.docker.internal`, not `127.0.0.1`** (verified on the box
+> 2026-06-19): Liquidsoap + Icecast run **host-networked** (bind `0.0.0.0:8005/8010`),
+> but `unheard-api` is **bridge-networked**, so *its* `127.0.0.1` is the container,
+> not the host — a `127.0.0.1:8005` push fails. `docker-compose.prod.yml` maps
+> `host.docker.internal` → the host gateway (`extra_hosts: host-gateway`) so the
+> producer reaches the harbor. Validated: pushing the backend's exact ffmpeg args
+> from inside the `unheard-api` container to the harbor `live` mount made
+> Liquidsoap decode + `mksafe`-switch to the live source (≈12 s harbor latency).
 
 **One manual prerequisite before the first `stream_output=icecast` run:** create a
 secret named **`HARBOR_LIVE_PASSWORD`** in the Bitwarden SM project

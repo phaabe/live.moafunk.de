@@ -374,9 +374,12 @@ jobs:
               # Flip the producer to the co-located Liquidsoap harbor → Icecast.
               # ffmpeg pushes MP3 to the local harbor 'live' mount; metrics poll
               # the local Icecast status JSON. Recording tee stays independent.
+              # host.docker.internal → host gateway (see docker-compose.prod.yml
+              # extra_hosts). The harbor/Icecast run host-networked on the box;
+              # this bridge container's own 127.0.0.1 would NOT reach them.
               echo "STREAM_OUTPUT=icecast"
-              echo "ICECAST_URL=icecast://source:${{ steps.stream-secrets.outputs.HARBOR_LIVE_PASSWORD }}@127.0.0.1:8005/live"
-              echo "ICECAST_STATUS_URL=http://127.0.0.1:8010/status-json.xsl"
+              echo "ICECAST_URL=icecast://source:${{ steps.stream-secrets.outputs.HARBOR_LIVE_PASSWORD }}@host.docker.internal:8005/live"
+              echo "ICECAST_STATUS_URL=http://host.docker.internal:8010/status-json.xsl"
             else
               # Default: unchanged from Lightsail — producer pushes RTMP to NMS
               # (backend config supplies the RTMP destination default).
