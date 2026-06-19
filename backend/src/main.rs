@@ -14,6 +14,7 @@ mod scheduler;
 mod soundcloud;
 mod storage;
 mod stream_bridge;
+mod stream_metrics;
 mod telegram;
 mod telegram_notify;
 mod video;
@@ -58,6 +59,9 @@ pub struct AppState {
     pub config: Config,
     pub s3_client: aws_sdk_s3::Client,
     pub stream_state: SharedStreamState,
+    /// Cached Icecast listener/quality telemetry, refreshed by the metrics
+    /// poller (`stream_metrics`) and served at `GET /api/stream/metrics`.
+    pub stream_metrics: stream_metrics::SharedStreamMetrics,
     /// Recording session manager for show recordings
     pub recording_manager: SharedRecordingManager,
     /// Handle to a pending grace-period finalize task (set when a live stream
@@ -95,6 +99,13 @@ async fn stream_ws_handler(
 
 async fn stream_status_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     handlers::stream_ws::stream_status(State(state.stream_state.clone())).await
+}
+
+/// Latest cached Icecast listener/quality telemetry (#177). Read-only snapshot;
+/// the poller refreshes the cache in the background.
+async fn stream_metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let metrics = state.stream_metrics.read().await.clone();
+    axum::Json(metrics)
 }
 
 async fn stream_stop_handler(
@@ -243,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         s3_client,
         stream_state,
+        stream_metrics: stream_metrics::new_shared(),
         recording_manager,
         recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
         cover_debounce,
@@ -618,6 +630,7 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::stream_test_ws::stream_test_ws_handler),
         )
         .route("/api/stream/status", get(stream_status_handler))
+        .route("/api/stream/metrics", get(stream_metrics_handler))
         .route("/api/stream/stop", post(stream_stop_handler))
         // Recording API for show recording with timecoded track markers
         .route("/api/recording/start", post(recording_start_handler))
@@ -709,6 +722,10 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+
+    // Spawn the Icecast listener/quality telemetry poller (#177). No-op if no
+    // status URL is configured (or derivable from icecast_url).
+    stream_metrics::spawn_poller(state.clone());
 
     let addr = format!("{}:{}", config.host, config.port);
     tracing::info!("Starting server on {}", addr);

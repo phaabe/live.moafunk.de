@@ -56,6 +56,13 @@ pub struct Config {
     pub icecast_bitrate: String,
     #[serde(default = "default_icecast_sample_rate")]
     pub icecast_sample_rate: u32,
+    // Icecast status endpoint for the listener/quality poller (#177), e.g.
+    // `http://127.0.0.1:8010/status-json.xsl`. If unset, it's derived from
+    // `icecast_url` (host:port → http://host:port/status-json.xsl); if neither
+    // is set, the poller stays disabled.
+    pub icecast_status_url: Option<String>,
+    #[serde(default = "default_icecast_metrics_poll_secs")]
+    pub icecast_metrics_poll_secs: u64,
 
     // Optional assets used for ZIP-time image stamping
     // If not set, the code will fall back to local paths under ./data.
@@ -161,6 +168,11 @@ fn default_icecast_sample_rate() -> u32 {
     44100
 }
 
+fn default_icecast_metrics_poll_secs() -> u64 {
+    // ~10-15s keeps the admin listener count near-live without hammering Icecast.
+    15
+}
+
 fn default_ffmpeg_bitrate() -> String {
     "320k".to_string()
 }
@@ -257,6 +269,36 @@ impl Config {
     pub fn telegram_instagram_account(&self) -> &str {
         self.telegram_instagram_account.as_deref().unwrap_or("prod")
     }
+
+    /// Icecast `/status-json.xsl` URL for the metrics poller (#177): the explicit
+    /// `icecast_status_url` if set, otherwise derived from `icecast_url`. `None`
+    /// disables the poller.
+    pub fn icecast_status_url(&self) -> Option<String> {
+        if let Some(u) = self.icecast_status_url.as_deref() {
+            let t = u.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+        self.icecast_url.as_deref().and_then(derive_status_url)
+    }
+}
+
+/// Derive `http://host:port/status-json.xsl` from a source URL like
+/// `icecast://user:pass@host:port/mount`. Returns `None` if the host:port can't
+/// be isolated.
+fn derive_status_url(icecast_url: &str) -> Option<String> {
+    let after_scheme = icecast_url.split_once("://").map(|(_, r)| r)?;
+    // Drop optional `user:pass@` credentials.
+    let after_creds = after_scheme
+        .rsplit_once('@')
+        .map(|(_, r)| r)
+        .unwrap_or(after_scheme);
+    let host_port = after_creds.split('/').next()?;
+    if host_port.is_empty() {
+        return None;
+    }
+    Some(format!("http://{host_port}/status-json.xsl"))
 }
 
 /// Validate the producer output selection. `icecast` requires a non-empty
@@ -303,5 +345,24 @@ mod tests {
     fn unknown_output_is_rejected() {
         assert!(validate_stream_output("srt", Some("x")).is_err());
         assert!(validate_stream_output("", None).is_err());
+    }
+
+    #[test]
+    fn status_url_derived_from_source_url() {
+        assert_eq!(
+            derive_status_url("icecast://source:pw@127.0.0.1:8010/live.mp3").as_deref(),
+            Some("http://127.0.0.1:8010/status-json.xsl")
+        );
+        // No credentials in the URL.
+        assert_eq!(
+            derive_status_url("icecast://radio.example.com:8000/test.mp3").as_deref(),
+            Some("http://radio.example.com:8000/status-json.xsl")
+        );
+    }
+
+    #[test]
+    fn status_url_derivation_rejects_malformed() {
+        assert_eq!(derive_status_url("no-scheme"), None);
+        assert_eq!(derive_status_url("icecast://"), None);
     }
 }

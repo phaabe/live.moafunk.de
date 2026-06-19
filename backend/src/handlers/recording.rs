@@ -1699,6 +1699,7 @@ mod tests {
             config: config.clone(),
             s3_client: s3_client.clone(),
             stream_state: crate::stream_bridge::new_shared_state(),
+            stream_metrics: crate::stream_metrics::new_shared(),
             recording_manager: crate::recording::new_shared_manager(temp_dir.clone()),
             recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
             cover_debounce: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
