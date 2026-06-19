@@ -589,11 +589,25 @@ fn is_segment_file(path: &Path) -> bool {
 }
 
 /// Build an FFmpeg concat-demuxer list from ordered segment paths.
-/// Paths are app-controlled (`seg_%05d.ts`), so no quote-escaping is needed.
+///
+/// Entries are written as **basenames**, not full paths. The list file is created
+/// inside the same `.segs/` directory as the segments, and FFmpeg's concat demuxer
+/// resolves relative entries against the *list file's own directory* — not the
+/// process CWD. Emitting a full relative path (e.g. `./data/…/x.segs/seg_0.ts`)
+/// therefore doubles the prefix (`./data/…/x.segs/./data/…/x.segs/seg_0.ts`) and
+/// fails with "No such file or directory" whenever the recordings dir is relative
+/// — which it is in production (`./data/recordings-temp`). Basenames resolve
+/// correctly whether the segment dir is absolute or relative.
+///
+/// Segment names are app-controlled (`seg_%05d.ts`), so no quote-escaping is needed.
 fn build_concat_list(segments: &[PathBuf]) -> String {
     let mut list = String::new();
     for seg in segments {
-        list.push_str(&format!("file '{}'\n", seg.to_string_lossy()));
+        let name = seg
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_else(|| seg.to_string_lossy());
+        list.push_str(&format!("file '{}'\n", name));
     }
     list
 }
@@ -731,9 +745,35 @@ mod tests {
             PathBuf::from("/r/seg_00002.ts"),
         ];
         let list = build_concat_list(&segs);
+        // Entries are basenames (resolved against the list file's own dir), ordered + quoted.
         assert_eq!(
             list,
-            "file '/r/seg_00000.ts'\nfile '/r/seg_00001.ts'\nfile '/r/seg_00002.ts'\n"
+            "file 'seg_00000.ts'\nfile 'seg_00001.ts'\nfile 'seg_00002.ts'\n"
+        );
+    }
+
+    /// Regression for the lost recording on the Hetzner box (2026-06-19): ffmpeg's
+    /// concat demuxer resolves relative entries against the list file's directory.
+    /// With the production-relative recordings dir (`./data/recordings-temp`),
+    /// emitting full paths doubled the prefix → concat failed "No such file or
+    /// directory" → the recording (system of record) was lost. Entries MUST be bare
+    /// basenames regardless of how deep or relative the segment dir is.
+    #[test]
+    fn concat_list_entries_are_basenames_for_relative_dirs() {
+        let segs = vec![
+            PathBuf::from(
+                "./data/recordings-temp/recording_23_2026-06-19T20-53-03.segs/seg_00000.ts",
+            ),
+            PathBuf::from(
+                "./data/recordings-temp/recording_23_2026-06-19T20-53-03.segs/seg_00001.ts",
+            ),
+        ];
+        let list = build_concat_list(&segs);
+        assert_eq!(list, "file 'seg_00000.ts'\nfile 'seg_00001.ts'\n");
+        // No path separators — else ffmpeg doubles the path against the list dir.
+        assert!(
+            !list.contains('/'),
+            "concat entries must be basenames, got: {list:?}"
         );
     }
 
