@@ -295,9 +295,9 @@ jobs:
 
       # Producer flip (#176/#194): only when deploying with stream_output=icecast.
       # Kept in a separate, conditional step so the default RTMP path never needs
-      # this secret. TODO(cutover): create "HARBOR_LIVE_PASSWORD" in the Bitwarden
-      # SM project (37a9cffb-…, same as the box's /etc/moafunk/stream.env value)
-      # and paste its UUID below, replacing the placeholder.
+      # this secret. HARBOR_LIVE_PASSWORD lives in the Bitwarden SM project
+      # alongside the box's /etc/moafunk/stream.env value; keep the two in sync
+      # whenever the harbor password is rotated.
       - name: Get stream secrets from Bitwarden (icecast flip only)
         if: inputs.stream_output == 'icecast'
         uses: bitwarden/sm-action@v2
@@ -305,7 +305,7 @@ jobs:
         with:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
-            REPLACE_WITH_HARBOR_LIVE_PASSWORD_UUID > HARBOR_LIVE_PASSWORD
+            ea873605-a662-4a0f-99a9-b46e011fc8d6 > HARBOR_LIVE_PASSWORD
 
       # Mirrors the Lightsail `deploy` job's .env generation exactly. Keep the two
       # in sync; the goal of the migration is an identical backend on Hetzner.
