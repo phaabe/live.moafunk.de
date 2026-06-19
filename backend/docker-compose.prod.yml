@@ -5,6 +5,13 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
+    # The Icecast producer flip (STREAM_OUTPUT=icecast) pushes to the Liquidsoap
+    # harbor, which runs host-networked on the box (0.0.0.0:8005/8010). This API
+    # container is bridge-networked, so its own 127.0.0.1 is NOT the host — it
+    # reaches the harbor/Icecast via `host.docker.internal` (mapped to the host
+    # gateway here). ICECAST_URL/ICECAST_STATUS_URL in .env use that hostname.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data # Persist SQLite database
       - ./.env:/app/.env:ro # Environment variables

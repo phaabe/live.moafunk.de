@@ -46,6 +46,13 @@ on:
         type: string
         description: "Email for Let's Encrypt certbot"
         default: "phaabe@gmail.com"
+      stream_output:
+        type: choice
+        description: "Producer target on Hetzner (icecast = flip to the local Liquidsoap harbor; needs HARBOR_LIVE_PASSWORD in Bitwarden)"
+        options:
+          - rtmp
+          - icecast
+        default: rtmp
 
 permissions:
   contents: read
@@ -286,6 +293,20 @@ jobs:
             0ede7c60-027a-45af-99ae-b3ec013f22a7 > SOUNDCLOUD_CLIENT_ID
             fb23eb6e-139b-45be-a95a-b3ec013f2eac > SOUNDCLOUD_CLIENT_SECRET
 
+      # Producer flip (#176/#194): only when deploying with stream_output=icecast.
+      # Kept in a separate, conditional step so the default RTMP path never needs
+      # this secret. TODO(cutover): create "HARBOR_LIVE_PASSWORD" in the Bitwarden
+      # SM project (37a9cffb-…, same as the box's /etc/moafunk/stream.env value)
+      # and paste its UUID below, replacing the placeholder.
+      - name: Get stream secrets from Bitwarden (icecast flip only)
+        if: inputs.stream_output == 'icecast'
+        uses: bitwarden/sm-action@v2
+        id: stream-secrets
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            REPLACE_WITH_HARBOR_LIVE_PASSWORD_UUID > HARBOR_LIVE_PASSWORD
+
       # Mirrors the Lightsail `deploy` job's .env generation exactly. Keep the two
       # in sync; the goal of the migration is an identical backend on Hetzner.
       - name: Generate production .env file
@@ -347,6 +368,23 @@ jobs:
             echo "BACKUP_BUCKET=unheard-backups"
             echo "BACKUP_RETENTION=28"
             echo "RCLONE_REMOTE=r2-backup"
+            echo ""
+            echo "# Stream producer target (#176/#194)"
+            if [ "${{ inputs.stream_output }}" = "icecast" ]; then
+              # Flip the producer to the co-located Liquidsoap harbor → Icecast.
+              # ffmpeg pushes MP3 to the local harbor 'live' mount; metrics poll
+              # the local Icecast status JSON. Recording tee stays independent.
+              # host.docker.internal → host gateway (see docker-compose.prod.yml
+              # extra_hosts). The harbor/Icecast run host-networked on the box;
+              # this bridge container's own 127.0.0.1 would NOT reach them.
+              echo "STREAM_OUTPUT=icecast"
+              echo "ICECAST_URL=icecast://source:${{ steps.stream-secrets.outputs.HARBOR_LIVE_PASSWORD }}@host.docker.internal:8005/live"
+              echo "ICECAST_STATUS_URL=http://host.docker.internal:8010/status-json.xsl"
+            else
+              # Default: unchanged from Lightsail — producer pushes RTMP to NMS
+              # (backend config supplies the RTMP destination default).
+              echo "STREAM_OUTPUT=rtmp"
+            fi
           } >> /tmp/production.env
 
       - name: Setup SSH key
