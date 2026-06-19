@@ -52,9 +52,14 @@ harden, set `GRAFANA_ADMIN_PASSWORD` in `/etc/moafunk/monitoring/monitoring.env`
 ```bash
 cd /etc/moafunk/monitoring
 cp monitoring.env.example monitoring.env      # fill TELEGRAM_*, GRAFANA_* from Bitwarden
+chmod +x mon-compose.sh                       # unit calls it to resolve docker compose vs docker-compose
 cp monitoring.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now monitoring   # renders alertmanager.yml + compose up
 ```
+
+> The box may have only the standalone `docker-compose` binary (no `docker compose`
+> v2 plugin). `monitoring.service` calls `mon-compose.sh`, which resolves whichever
+> is present — so don't hardcode `docker compose` in the unit.
 
 ## Verify (FIRST DEPLOY — reconcile metric names)
 
