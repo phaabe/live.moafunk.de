@@ -1,0 +1,38 @@
+# Alertmanager config TEMPLATE (#178) — delivers to the project Telegram bot.
+# Alertmanager does NOT expand env vars, so render this to alertmanager.yml at
+# deploy:  set -a; . monitoring.env; set +a; envsubst < alertmanager.yml.tmpl > alertmanager.yml
+# The rendered alertmanager.yml contains the bot token → it is gitignored.
+# Token + chat id reuse the project bot (Bitwarden: TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_CHAT_ID).
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: telegram
+  group_by: ["alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 3h
+  routes:
+    # Info-level (e.g. prolonged zero-listeners) → still Telegram but rarely repeats.
+    - matchers: ['severity = "info"']
+      receiver: telegram
+      repeat_interval: 24h
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token: "${TELEGRAM_BOT_TOKEN}"
+        chat_id: ${TELEGRAM_ADMIN_CHAT_ID}
+        parse_mode: HTML
+        send_resolved: true
+        message: |
+          <b>{{ .Status | toUpper }}</b> {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})
+          {{ range .Alerts }}{{ .Annotations.summary }}
+          {{ .Annotations.description }}
+          {{ end }}
+
+inhibit_rules:
+  # If the stream is down, don't also page about zero listeners.
+  - source_matchers: ['alertname = "StreamProbeDown"']
+    target_matchers: ['alertname = "StreamZeroListenersProlonged"']
+    equal: ["instance"]
