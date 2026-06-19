@@ -22,6 +22,93 @@ const SEGMENT_SECONDS: u32 = 10;
 /// WebM/Opus fragments ≈ tens of seconds of slack.
 const RECORDING_CHANNEL_CAP: usize = 1024;
 
+/// Where the live producer ffmpeg pushes the encoded audio.
+///
+/// This selects only the **output** leg of the live-stream ffmpeg (encoder +
+/// muxer + destination). The recording tee is a separate ffmpeg
+/// ([`StreamState::start_recording`]) and is unaffected by the push target, so
+/// switching `Rtmp` ↔ `Icecast` never disturbs the archive.
+#[derive(Clone, Debug)]
+pub enum PushTarget {
+    /// RTMP/FLV ingest (NodeMediaServer). `destination` includes the stream key,
+    /// e.g. `rtmp://stream.moafunk.de/live/stream-io`.
+    Rtmp { destination: String },
+    /// Icecast mount (MP3 — the iOS-safe codec validated in the Phase-2 harness).
+    /// `url` is the full source URL incl. credentials + mount, e.g.
+    /// `icecast://source:pw@127.0.0.1:8010/live.mp3`.
+    Icecast {
+        url: String,
+        bitrate: String,
+        sample_rate: u32,
+    },
+}
+
+impl PushTarget {
+    /// FFmpeg output args (encoder + muxer + destination) for this target. The
+    /// caller prepends the input args (`-f webm -i pipe:0`, or `-re -i <url>`).
+    fn output_args(&self) -> Vec<String> {
+        match self {
+            PushTarget::Rtmp { destination } => vec![
+                "-c:a".into(),
+                "aac".into(),
+                "-b:a".into(),
+                "192k".into(),
+                "-ar".into(),
+                "48000".into(),
+                "-ac".into(),
+                "2".into(),
+                "-f".into(),
+                "flv".into(),
+                destination.clone(),
+            ],
+            PushTarget::Icecast {
+                url,
+                bitrate,
+                sample_rate,
+            } => vec![
+                "-c:a".into(),
+                "libmp3lame".into(),
+                "-b:a".into(),
+                bitrate.clone(),
+                "-ar".into(),
+                sample_rate.to_string(),
+                "-ac".into(),
+                "2".into(),
+                // Drop any video track and tag the Icecast content-type as MP3.
+                "-vn".into(),
+                "-content_type".into(),
+                "audio/mpeg".into(),
+                "-f".into(),
+                "mp3".into(),
+                url.clone(),
+            ],
+        }
+    }
+
+    /// Destination string safe to log — the Icecast URL's password is redacted.
+    pub fn redacted(&self) -> String {
+        match self {
+            PushTarget::Rtmp { destination } => destination.clone(),
+            PushTarget::Icecast { url, .. } => redact_icecast_password(url),
+        }
+    }
+}
+
+/// Redact the password in an `icecast://user:pass@host:port/mount` URL for logs.
+/// Returns the input unchanged if it doesn't match that shape.
+fn redact_icecast_password(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let Some((creds, host)) = rest.split_once('@') else {
+        return url.to_string();
+    };
+    match creds.split_once(':') {
+        Some((user, _pass)) => format!("{scheme}://{user}:***@{host}"),
+        None => url.to_string(),
+    }
+}
+
 /// Current state of the audio stream.
 pub struct StreamState {
     /// Username of the currently streaming user (if any).
@@ -88,15 +175,15 @@ impl StreamState {
         self.recording_failed.as_deref()
     }
 
-    /// Start streaming for the given user to the specified RTMP destination.
+    /// Start streaming for the given user to the specified push target.
     ///
     /// # Arguments
     /// * `user` - Username of the streamer
-    /// * `rtmp_destination` - Full RTMP URL including stream key (e.g., rtmp://host/live/key)
+    /// * `target` - Where to push the encoded audio (RTMP/FLV or Icecast/MP3)
     pub async fn start_stream(
         &mut self,
         user: String,
-        rtmp_destination: &str,
+        target: &PushTarget,
     ) -> Result<(), StreamError> {
         // Clean up any existing stream first
         if self.is_active() {
@@ -106,37 +193,23 @@ impl StreamState {
         tracing::info!(
             "Starting stream for user '{}' to {}",
             user,
-            rtmp_destination
+            target.redacted()
         );
 
         // Spawn FFmpeg process:
         // - Input: WebM/Opus from stdin
-        // - Output: AAC audio to RTMP
-        // - High quality audio settings for smooth playback
+        // - Output: encoder + muxer + destination per the configured push target
         let mut child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
                 "-loglevel",
                 "warning",
-                // Input from stdin as WebM container
                 "-f",
                 "webm",
                 "-i",
                 "pipe:0",
-                // Audio codec: AAC with good quality
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                // Output format: FLV for RTMP
-                "-f",
-                "flv",
-                rtmp_destination,
             ])
+            .args(target.output_args())
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -408,7 +481,8 @@ pub fn new_shared_state() -> SharedStreamState {
     std::sync::Arc::new(Mutex::new(StreamState::new()))
 }
 
-/// Start a prerecorded stream: FFmpeg reads from a URL and outputs to RTMP.
+/// Start a prerecorded stream: FFmpeg reads from a URL and outputs to the
+/// configured push target.
 ///
 /// Unlike live streaming (where audio chunks are piped via stdin), this spawns
 /// FFmpeg with `-re` (real-time playback) reading directly from the presigned
@@ -417,7 +491,7 @@ pub async fn start_prerecorded_stream(
     stream_state: &SharedStreamState,
     user: String,
     input_url: &str,
-    rtmp_destination: &str,
+    target: &PushTarget,
 ) -> Result<(), StreamError> {
     {
         let mut state = stream_state.lock().await;
@@ -430,7 +504,7 @@ pub async fn start_prerecorded_stream(
         tracing::info!(
             "Starting prerecorded stream for user '{}' to {}",
             user,
-            rtmp_destination
+            target.redacted()
         );
 
         // Spawn FFmpeg with file/URL input:
@@ -443,18 +517,8 @@ pub async fn start_prerecorded_stream(
                 "-re",
                 "-i",
                 input_url,
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-f",
-                "flv",
-                rtmp_destination,
             ])
+            .args(target.output_args())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -667,6 +731,78 @@ mod tests {
         assert_eq!(
             list,
             "file '/r/seg_00000.ts'\nfile '/r/seg_00001.ts'\nfile '/r/seg_00002.ts'\n"
+        );
+    }
+
+    #[test]
+    fn rtmp_target_emits_flv_output_args() {
+        let t = PushTarget::Rtmp {
+            destination: "rtmp://host/live/key".to_string(),
+        };
+        let args = t.output_args();
+        // Ends with the FLV muxer + destination.
+        assert_eq!(
+            &args[args.len() - 3..],
+            &[
+                "-f".to_string(),
+                "flv".to_string(),
+                "rtmp://host/live/key".to_string()
+            ]
+        );
+        assert!(args.iter().any(|a| a == "aac"));
+    }
+
+    #[test]
+    fn icecast_target_emits_mp3_output_args() {
+        let t = PushTarget::Icecast {
+            url: "icecast://source:pw@127.0.0.1:8010/live.mp3".to_string(),
+            bitrate: "128k".to_string(),
+            sample_rate: 44100,
+        };
+        let args = t.output_args();
+        assert!(args.iter().any(|a| a == "libmp3lame"));
+        assert!(args.windows(2).any(|w| w == ["-b:a", "128k"]));
+        assert!(args.windows(2).any(|w| w == ["-ar", "44100"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["-content_type", "audio/mpeg"]));
+        // MP3 muxer + Icecast URL last.
+        assert_eq!(
+            &args[args.len() - 3..],
+            &[
+                "-f".to_string(),
+                "mp3".to_string(),
+                "icecast://source:pw@127.0.0.1:8010/live.mp3".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn icecast_password_is_redacted_for_logs() {
+        let t = PushTarget::Icecast {
+            url: "icecast://source:s3cret@127.0.0.1:8010/live.mp3".to_string(),
+            bitrate: "128k".to_string(),
+            sample_rate: 44100,
+        };
+        let r = t.redacted();
+        assert_eq!(r, "icecast://source:***@127.0.0.1:8010/live.mp3");
+        assert!(!r.contains("s3cret"));
+        // RTMP has no secret to redact.
+        assert_eq!(
+            PushTarget::Rtmp {
+                destination: "rtmp://host/live/key".to_string()
+            }
+            .redacted(),
+            "rtmp://host/live/key"
+        );
+    }
+
+    #[test]
+    fn redact_passthrough_on_non_icecast_shapes() {
+        assert_eq!(redact_icecast_password("not a url"), "not a url");
+        assert_eq!(
+            redact_icecast_password("icecast://host:8010/m"),
+            "icecast://host:8010/m"
         );
     }
 
