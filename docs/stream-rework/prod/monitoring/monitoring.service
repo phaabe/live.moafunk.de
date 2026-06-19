@@ -21,8 +21,10 @@ WorkingDirectory=/etc/moafunk/monitoring
 # Re-render the alertmanager config from the template each start (picks up token
 # rotations in monitoring.env). envsubst ships in gettext-base.
 ExecStartPre=/bin/bash -c 'set -a; . monitoring.env; set +a; envsubst < alertmanager/alertmanager.yml.tmpl > alertmanager/alertmanager.yml'
-ExecStart=/usr/bin/docker compose --env-file monitoring.env -f docker-compose.monitoring.yml up -d
-ExecStop=/usr/bin/docker compose -f docker-compose.monitoring.yml down
+# mon-compose.sh resolves `docker compose` (v2 plugin) OR the standalone
+# `docker-compose` binary — the box may have either. See the script header.
+ExecStart=/etc/moafunk/monitoring/mon-compose.sh --env-file monitoring.env -f docker-compose.monitoring.yml up -d
+ExecStop=/etc/moafunk/monitoring/mon-compose.sh -f docker-compose.monitoring.yml down
 
 [Install]
 WantedBy=multi-user.target

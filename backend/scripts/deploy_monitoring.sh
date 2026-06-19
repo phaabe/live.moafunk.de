@@ -87,25 +87,50 @@ if ! sudo docker network inspect "$BACKEND_NET" >/dev/null 2>&1; then
   sudo docker network ls --format '  {{.Name}}'
 fi
 
-# Install / refresh the systemd unit and (re)start.
+# Install / refresh the systemd unit and (re)start. The unit calls
+# mon-compose.sh (resolves `docker compose` vs `docker-compose`) — make it
+# executable before starting.
+sudo chmod +x "$REMOTE_DIR/mon-compose.sh"
 sudo cp "$REMOTE_DIR/monitoring.service" /etc/systemd/system/monitoring.service
 sudo systemctl daemon-reload
 sudo systemctl enable monitoring >/dev/null 2>&1 || true
-sudo systemctl restart monitoring
 
-echo "==> monitoring.service started; containers:"
+# Fail loudly if the unit doesn't come up — a green deploy must mean a running
+# stack (the previous version's readiness check was non-fatal and hid a failure).
+if ! sudo systemctl restart monitoring; then
+  echo "ERROR: 'systemctl restart monitoring' failed. Recent journal:" >&2
+  sudo journalctl -u monitoring -n 40 --no-pager >&2 || true
+  exit 1
+fi
+if ! sudo systemctl is-active --quiet monitoring; then
+  echo "ERROR: monitoring.service is not active after restart. Status + journal:" >&2
+  sudo systemctl status monitoring --no-pager >&2 || true
+  sudo journalctl -u monitoring -n 40 --no-pager >&2 || true
+  exit 1
+fi
+
+echo "==> monitoring.service active; containers:"
 sleep 5
-sudo docker compose -f "$REMOTE_DIR/docker-compose.monitoring.yml" ps || true
+sudo "$REMOTE_DIR/mon-compose.sh" -f "$REMOTE_DIR/docker-compose.monitoring.yml" ps || true
 REMOTE_SCRIPT
 
-# 3. Smoke-check Prometheus readiness over the localhost-bound port.
-echo "==> Checking Prometheus readiness (localhost:9090 on the box)"
-if ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
-     "curl -fsS --max-time 5 http://127.0.0.1:9090/-/ready >/dev/null"; then
+# 3. Smoke-check Prometheus readiness over the localhost-bound port. Retry for
+#    up to 60s — on a first deploy the upstream images are still being pulled.
+echo "==> Waiting for Prometheus readiness (localhost:9090 on the box, up to 60s)"
+ready=0
+for _ in $(seq 1 12); do
+  if ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
+       "curl -fsS --max-time 5 http://127.0.0.1:9090/-/ready >/dev/null 2>&1"; then
+    ready=1
+    break
+  fi
+  sleep 5
+done
+if [[ "$ready" == 1 ]]; then
   echo "==> Prometheus is ready."
 else
-  echo "WARNING: Prometheus not ready yet — check 'journalctl -u monitoring' and"
-  echo "         'docker compose -f $REMOTE_DIR/docker-compose.monitoring.yml logs' on the box."
+  echo "WARNING: Prometheus not ready after 60s — check 'journalctl -u monitoring' and"
+  echo "         'mon-compose.sh -f $REMOTE_DIR/docker-compose.monitoring.yml logs' on the box."
 fi
 
 echo "==> Done. Tunnel to view UIs, e.g.:"
