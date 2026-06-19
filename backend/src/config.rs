@@ -190,6 +190,29 @@ fn default_telegram_topic_id() -> Option<i32> {
     Some(26)
 }
 
+/// Force a valid "MoafunkBot" forum topic id.
+///
+/// A forum supergroup routes a message to its "General" topic whenever
+/// `message_thread_id` is absent. Since every Telegram send site only sets the
+/// thread id when `telegram_topic_id` is `Some(_)`, a `None`/zero/negative value
+/// here would leak every notification into "General". Any such value is coerced
+/// back to [`default_telegram_topic_id`].
+fn normalize_telegram_topic_id(configured: Option<i32>) -> Option<i32> {
+    match configured {
+        Some(tid) if tid > 0 => Some(tid),
+        other => {
+            let fallback = default_telegram_topic_id();
+            tracing::warn!(
+                "TELEGRAM_TOPIC_ID was {:?}; forcing MoafunkBot topic {:?} so the bot \
+                 does not post into the General topic",
+                other,
+                fallback,
+            );
+            fallback
+        }
+    }
+}
+
 fn default_telegram_artist_preview_hour() -> u32 {
     16 // 4:00 PM Berlin time
 }
@@ -206,6 +229,13 @@ impl Config {
     pub fn from_env() -> Result<Self, envy::Error> {
         let mut config: Config = envy::from_env()?;
         config.r2_endpoint = format!("https://{}.r2.cloudflarestorage.com", config.r2_account_id);
+
+        // Guarantee the bot only ever posts into the "MoafunkBot" forum topic.
+        // Every Telegram send site sets `message_thread_id` only when this is
+        // `Some(_)`; an absent/empty/zero `TELEGRAM_TOPIC_ID` would otherwise
+        // resolve to `None` and silently drop messages into the group's
+        // "General" topic. Coerce any invalid value back to the default.
+        config.telegram_topic_id = normalize_telegram_topic_id(config.telegram_topic_id);
 
         // Fail fast on a misconfigured producer rather than silently falling back
         // to RTMP (which would punch the live stream off the intended mount).
@@ -345,6 +375,27 @@ mod tests {
     fn unknown_output_is_rejected() {
         assert!(validate_stream_output("srt", Some("x")).is_err());
         assert!(validate_stream_output("", None).is_err());
+    }
+
+    #[test]
+    fn telegram_topic_id_falls_back_to_moafunkbot() {
+        // A valid, explicit topic is preserved.
+        assert_eq!(normalize_telegram_topic_id(Some(42)), Some(42));
+        // None / zero / negative would leak into "General" — force the default.
+        assert_eq!(
+            normalize_telegram_topic_id(None),
+            default_telegram_topic_id()
+        );
+        assert_eq!(
+            normalize_telegram_topic_id(Some(0)),
+            default_telegram_topic_id()
+        );
+        assert_eq!(
+            normalize_telegram_topic_id(Some(-1)),
+            default_telegram_topic_id()
+        );
+        // The default itself must be a usable MoafunkBot topic.
+        assert!(matches!(default_telegram_topic_id(), Some(tid) if tid > 0));
     }
 
     #[test]
