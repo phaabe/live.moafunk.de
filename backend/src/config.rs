@@ -30,6 +30,13 @@ pub struct Config {
     pub r2_secret_access_key: String,
     #[serde(default = "default_bucket_name")]
     pub r2_bucket_name: String,
+    // Curated public shows archive. Finalized recordings are *additionally*
+    // published here under a human-friendly `shows/{type}/{date}-{title}/…mp3`
+    // key (see `storage::build_show_archive_key`). Same R2 account/credentials as
+    // `r2_bucket_name`, different bucket. The primary `recordings/…/final.mp3`
+    // upload remains the system of record.
+    #[serde(default = "default_shows_bucket_name")]
+    pub r2_shows_bucket_name: String,
 
     // Computed R2 endpoint
     #[serde(skip)]
@@ -145,6 +152,10 @@ fn default_max_upload_size() -> u64 {
 
 fn default_bucket_name() -> String {
     "unheard-artists-dev".to_string()
+}
+
+fn default_shows_bucket_name() -> String {
+    "moafunk-prod".to_string()
 }
 
 fn default_stream_output() -> String {

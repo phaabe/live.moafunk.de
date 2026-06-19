@@ -1423,6 +1423,18 @@ async fn run_finalize(
 
     send_progress_msg(sender, FinalizeProgress::uploading(100, "Upload complete")).await;
 
+    // Also publish the finalized MP3 to the curated shows-archive bucket
+    // (moafunk-prod/shows/{type}/{date}-{title}/…mp3). Best-effort: the primary
+    // upload above is the system of record, so a failure here is logged but must
+    // not fail the finalize.
+    if let Err(e) = publish_to_shows_archive(state, show_id, &output_path).await {
+        tracing::error!(
+            "Failed to publish finalized recording for show {} to shows archive: {}",
+            show_id,
+            e
+        );
+    }
+
     // =========================================================================
     // Cleanup: Delete checkpoint and temp files
     // =========================================================================
@@ -1434,6 +1446,49 @@ async fn run_finalize(
     }
 
     Ok(final_key)
+}
+
+/// Publish the finalized `final.mp3` to the curated shows-archive bucket under a
+/// human-friendly `shows/{type}/{date}-{title}/…mp3` key (see
+/// [`storage::build_show_archive_key`]). Streams the file straight from disk so a
+/// large show never doubles in memory. Called best-effort from [`run_finalize`].
+async fn publish_to_shows_archive(
+    state: &Arc<AppState>,
+    show_id: i64,
+    final_path: &std::path::Path,
+) -> Result<()> {
+    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Show {} not found", show_id)))?;
+
+    let key = storage::build_show_archive_key(&show.show_type, &show.title, &show.date);
+
+    let body = aws_sdk_s3::primitives::ByteStream::from_path(final_path)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!("Failed to open final.mp3 for shows upload: {}", e))
+        })?;
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_shows_bucket_name)
+        .key(&key)
+        .body(body)
+        .content_type("audio/mpeg")
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload to shows archive: {}", e)))?;
+
+    tracing::info!(
+        "Published finalized recording for show {} to shows archive: {}/{}",
+        show_id,
+        state.config.r2_shows_bucket_name,
+        key
+    );
+    Ok(())
 }
 
 /// Build and run the FFmpeg command for merging.
