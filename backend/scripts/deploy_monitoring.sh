@@ -53,31 +53,38 @@ echo "==> Deploying observability stack to $SSH_HOST:$REMOTE_DIR"
 ssh "${SSH_OPTS[@]}" "$SSH_HOST" "rm -rf /tmp/moafunk-monitoring && mkdir -p /tmp/moafunk-monitoring"
 scp "${SSH_OPTS[@]}" -r "$LOCAL_MON_DIR/." "$SSH_HOST:/tmp/moafunk-monitoring/" >/dev/null
 
-# 2. Install: move into place, write env (chmod 600), enable the unit. The env
-#    values are piped over stdin (never on the command line / process list).
+# 2. Send the env to a temp file on the box in its OWN ssh call. This MUST be
+#    separate from the install heredoc below: piping stdin into `ssh … bash -s`
+#    while also feeding the script via `<<HEREDOC` makes the two fight over the
+#    remote stdin (the heredoc wins, the piped env is lost) — that silently broke
+#    an earlier version. One stdin use per ssh call.
 printf '%s\n' \
   "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" \
   "TELEGRAM_ADMIN_CHAT_ID=$TELEGRAM_ADMIN_CHAT_ID" \
   "ICECAST_STATUS_URI=$ICECAST_STATUS_URI" \
   "BACKEND_NETWORK=$BACKEND_NETWORK" \
   "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD" \
-  | ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
-      "REMOTE_DIR='$REMOTE_DIR' bash -s" <<'REMOTE_SCRIPT'
+  | ssh "${SSH_OPTS[@]}" "$SSH_HOST" "cat > /tmp/moafunk-monitoring.env"
+
+# 3. Install: move config into place, write env (chmod 600), enable + start the
+#    unit, fail loudly if it doesn't come up. Heredoc is the ONLY stdin here.
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" "REMOTE_DIR='$REMOTE_DIR' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
-# Capture the env piped on stdin before anything else reads it.
-ENV_CONTENT="$(cat)"
+if [[ ! -s /tmp/moafunk-monitoring.env ]]; then
+  echo "ERROR: /tmp/moafunk-monitoring.env missing or empty — env transfer failed." >&2
+  exit 1
+fi
 
 sudo mkdir -p "$REMOTE_DIR"
-# Sync config (preserve the gitignored monitoring.env / rendered alertmanager.yml
-# across redeploys by writing env separately below; --delete would wipe them, so
-# copy without deleting and let the env write be authoritative).
+# Sync config (no --delete, so the gitignored rendered alertmanager.yml survives;
+# monitoring.env is written authoritatively just below).
 sudo cp -r /tmp/moafunk-monitoring/. "$REMOTE_DIR/"
 rm -rf /tmp/moafunk-monitoring
 
-# Write monitoring.env (root:600 — holds the Telegram token).
-printf '%s\n' "$ENV_CONTENT" | sudo tee "$REMOTE_DIR/monitoring.env" >/dev/null
-sudo chmod 600 "$REMOTE_DIR/monitoring.env"
+# Move env into place (root:600 — holds the Telegram token).
+sudo install -m 600 /tmp/moafunk-monitoring.env "$REMOTE_DIR/monitoring.env"
+rm -f /tmp/moafunk-monitoring.env
 
 # Verify the backend network exists (Prometheus joins it to scrape unheard-api).
 BACKEND_NET="$(grep -E '^BACKEND_NETWORK=' "$REMOTE_DIR/monitoring.env" | cut -d= -f2-)"
@@ -114,7 +121,7 @@ sleep 5
 sudo "$REMOTE_DIR/mon-compose.sh" -f "$REMOTE_DIR/docker-compose.monitoring.yml" ps || true
 REMOTE_SCRIPT
 
-# 3. Smoke-check Prometheus readiness over the localhost-bound port. Retry for
+# 4. Smoke-check Prometheus readiness over the localhost-bound port. Retry for
 #    up to 60s — on a first deploy the upstream images are still being pulled.
 echo "==> Waiting for Prometheus readiness (localhost:9090 on the box, up to 60s)"
 ready=0
