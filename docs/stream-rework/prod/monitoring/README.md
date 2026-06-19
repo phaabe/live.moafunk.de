@@ -116,7 +116,10 @@ a stuck recorder leaves the live mount healthy while the **archive** breaks:
 
 Prometheus scrapes `unheard-api:8000` **directly over the backend's docker network**
 (joined as the external `backend` network — set `BACKEND_NETWORK` if its name isn't
-`unheard-backend_default`). The backend publishes only on the host's `127.0.0.1:8000`,
+`unheard-backend_default`). Compose v2.24.6 on the box doesn't reliably attach the
+container to that pre-existing external net on recreate, so `monitoring.service` has
+an idempotent `ExecStartPost` that `docker network connect`s Prometheus to it on
+every start. The backend publishes only on the host's `127.0.0.1:8000`,
 and `/metrics` is `404`'d on the public nginx vhost, so it's never reachable from the
 internet. All recording alerts are `increase()`-based, so they stay silent until the
 backend is on this box; `BackendMetricsDown` (`up == 0`) is expected to fire pre-cutover.
