@@ -63,11 +63,30 @@ UIs (localhost only) — reach via SSH tunnel, e.g.
 - **systemd `Restart=always` + memory cap** for Liquidsoap and Icecast-KH: in
   `../liquidsoap.service` / `../icecast.service` (docker `--memory`).
 
+## Backend recording-durability metrics (`backend` scrape job)
+
+The backend exposes a Prometheus `/metrics` endpoint (port 8000, localhost-only by
+deployment) with `moafunk_*` counters/gauges the Icecast/Blackbox probes can't see —
+a stuck recorder leaves the live mount healthy while the **archive** breaks:
+
+| Metric | Type | Alert |
+|--------|------|-------|
+| `moafunk_recording_tee_dropped_total` | counter | `RecordingTeeDropping` (chunks dropped now → archive corrupting) |
+| `moafunk_recording_incomplete_total` | counter | `RecordingFinalizedIncomplete` |
+| `moafunk_recording_r2_upload_failures_total` | counter | `RecordingR2UploadFailing` |
+| `moafunk_recording_{writer_stopped,segment_concat_failures,size_mismatch}_total` | counter | (detail for the above) |
+| `moafunk_stream_active` / `moafunk_recording_active` | gauge | live state |
+| `moafunk_icecast_*` | gauge | mirrors the cached `/api/stream/metrics` poll |
+
+Prometheus scrapes `unheard-api:8000` **directly over the backend's docker network**
+(joined as the external `backend` network — set `BACKEND_NETWORK` if its name isn't
+`unheard-backend_default`). The backend publishes only on the host's `127.0.0.1:8000`,
+and `/metrics` is `404`'d on the public nginx vhost, so it's never reachable from the
+internet. All recording alerts are `increase()`-based, so they stay silent until the
+backend is on this box; `BackendMetricsDown` (`up == 0`) is expected to fire pre-cutover.
+
 ## TODO / follow-ups (out of scope here)
 
-- **Backend Prometheus metrics**: the backend exposes only `GET /api/stream/metrics`
-  (JSON). For recording-failure alerts (`r2_upload_failures_total`, tee restarts,
-  byte-rate stalls) it needs a `/metrics` endpoint — a separate backend change.
 - **Dead-air / silence (EBU-R128) probe**: byte/listener metrics look nominal
   during silence; add a loudness tap for true dead-air alerting.
 - **SPOF / CDN**: put a CDN or Icecast-KH master→relay in front of the public

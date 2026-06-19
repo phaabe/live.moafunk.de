@@ -7,6 +7,7 @@ mod error;
 mod handlers;
 mod image_overlay;
 mod instagram;
+mod metrics;
 mod models;
 mod pdf;
 mod recording;
@@ -106,6 +107,31 @@ async fn stream_status_handler(State(state): State<Arc<AppState>>) -> impl IntoR
 async fn stream_metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let metrics = state.stream_metrics.read().await.clone();
     axum::Json(metrics)
+}
+
+/// Prometheus text-format metrics (#178). Exposes backend-internal recording/
+/// upload durability counters plus live stream/recording state and the cached
+/// Icecast snapshot. Unauthenticated by design — scraped only over the box's
+/// loopback by the local Prometheus; never expose this port publicly.
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let snapshot = state.stream_metrics.read().await.clone();
+    let stream_active = state.stream_state.lock().await.is_active();
+    let recording_active = state.recording_manager.lock().await.is_recording();
+    let body = metrics::render(
+        &snapshot,
+        &metrics::Gauges {
+            stream_active,
+            recording_active,
+        },
+        chrono::Utc::now().timestamp_millis(),
+    );
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
 }
 
 async fn stream_stop_handler(
@@ -631,6 +657,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/stream/status", get(stream_status_handler))
         .route("/api/stream/metrics", get(stream_metrics_handler))
+        .route("/metrics", get(metrics_handler))
         .route("/api/stream/stop", post(stream_stop_handler))
         // Recording API for show recording with timecoded track markers
         .route("/api/recording/start", post(recording_start_handler))

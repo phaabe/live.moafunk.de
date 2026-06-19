@@ -31,6 +31,10 @@ services:
     ports:
       - "127.0.0.1:9090:9090"   # UI/API — localhost only
     extra_hosts: *host-gw
+    # Also join the backend's network so Prometheus can scrape unheard-api:8000
+    # directly (the backend publishes only on the host's 127.0.0.1, unreachable
+    # via host-gateway; and /metrics is 404'd on the public nginx vhost).
+    networks: [default, backend]
     depends_on: [icecast-exporter, blackbox-exporter, alertmanager]
 
   alertmanager:
@@ -74,6 +78,16 @@ services:
     ports:
       - "127.0.0.1:3000:3000"   # localhost only; tunnel via SSH to view
     depends_on: [prometheus]
+
+networks:
+  default:
+  # The backend compose project's default network, joined so Prometheus can
+  # reach unheard-api:8000 directly. The name is `<backend-project>_default`
+  # (verify on the box with `docker network ls` — typically
+  # `unheard-backend_default`); override via ${BACKEND_NETWORK} if it differs.
+  backend:
+    external: true
+    name: ${BACKEND_NETWORK:-unheard-backend_default}
 
 volumes:
   prom-data:

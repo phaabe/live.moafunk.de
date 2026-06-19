@@ -70,3 +70,50 @@ groups:
         annotations:
           summary: "No stream listeners for 1h"
           description: "sum(icecast_listeners) == 0 for 1h. Informational — expected between shows; investigate only if a show is scheduled. (VERIFY metric name on deploy.)"
+
+  - name: recording-durability
+    # Backend-internal recording/upload health (moafunk_* from the `backend` job,
+    # see prometheus.yml). The recording is the system of record; these failures
+    # are INVISIBLE to the Icecast/Blackbox probes — the live mount stays healthy
+    # while the archive silently breaks. All increase()-based, so they stay quiet
+    # until the backend is scraped (no false fire pre-cutover).
+    rules:
+      # Chunks being dropped right now → recorder/disk can't keep up; the archive
+      # for the show in progress is being corrupted. Actionable mid-show.
+      - alert: RecordingTeeDropping
+        expr: increase(moafunk_recording_tee_dropped_total[5m]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "Recording tee dropping chunks"
+          description: "moafunk_recording_tee_dropped_total increased in the last 5m — the recorder/disk is too slow and the in-progress archive is incomplete."
+
+      # A finalized recording was flagged incomplete (overflow, concat failure,
+      # size mismatch, or short duration). One page per occurrence.
+      - alert: RecordingFinalizedIncomplete
+        expr: increase(moafunk_recording_incomplete_total[15m]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "A recording finalized incomplete"
+          description: "moafunk_recording_incomplete_total increased — check moafunk_recording_{segment_concat_failures,size_mismatch}_total and the recording logs. Live stream is unaffected; the archive is at risk."
+
+      # R2 uploads of recordings are failing — the local file is kept, but the
+      # archive isn't durable until this clears.
+      - alert: RecordingR2UploadFailing
+        expr: increase(moafunk_recording_r2_upload_failures_total[1h]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "Recording upload to R2 failing"
+          description: "moafunk_recording_r2_upload_failures_total increased in the last hour — recordings are not reaching R2; local copies are retained pending retry."
+
+      # The backend (stream ingest + recorder) stopped being scraped. Meaningful
+      # only once the backend runs on this box (post-cutover).
+      - alert: BackendMetricsDown
+        expr: up{job="backend"} == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Backend /metrics scrape down"
+          description: "Prometheus cannot scrape the backend `/metrics` for 10m — recording-durability alerting is blind. (Expected pre-cutover; investigate once the backend is on this box.)"
