@@ -108,13 +108,14 @@ window short and ideally outside a live show.
 ## CI note
 `.github/workflows/backend.yml` auto-deploys to Lightsail on push (Bitwarden
 `LIGHTSAIL_IP`/`LIGHTSAIL_SSH_KEY`). A **manual** `deploy-hetzner` job is also
-wired: it runs `deploy_hetzner.sh` with the same Bitwarden app secrets and the
-same generated `.env`, but reads the box's IP + SSH key from the **GitHub repo
-secrets** `HETZNER_IP` and `HETZNER_SSH_KEY` (Settings → Secrets → Actions).
+wired: it runs `deploy_hetzner.sh` with the same generated `.env`, reading
+everything — including the box's `HETZNER_IP` and `HETZNER_SSH_KEY` — from
+**Bitwarden Secrets Manager** (single source of truth, same project as the app
+secrets).
 
-To deploy to Hetzner: set those two repo secrets, then run the workflow via
-**Actions → Run workflow** with `deploy_hetzner=true` (first run: also
-`setup_nginx=true`, `init_db=true`). It never runs on push, so Lightsail stays
+To deploy to Hetzner: ensure `HETZNER_IP`/`HETZNER_SSH_KEY` exist in the SM
+project, then run the workflow via **Actions → Run workflow** with
+`deploy_hetzner=true` (first run: also `setup_nginx=true`, `init_db=true`). It never runs on push, so Lightsail stays
 the automatic prod path until the DNS cutover. The generated `.env` mirrors
 Lightsail's — the producer stays on RTMP; flipping to Icecast
 (`STREAM_OUTPUT=icecast`, `ICECAST_URL`, `ICECAST_STATUS_URL`) is a deliberate

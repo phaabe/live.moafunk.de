@@ -247,10 +247,10 @@ jobs:
   deploy-hetzner:
     # Greenfield Hetzner deploy (#194 Phase B). MANUAL ONLY — never runs on push,
     # so the Lightsail `deploy` job stays the automatic prod path until cutover.
-    # IP + SSH key come from GitHub repo secrets (Settings → Secrets → Actions):
-    # HETZNER_IP, HETZNER_SSH_KEY. App secrets are reused from Bitwarden.
-    # The generated .env mirrors the Lightsail one — the producer stays on RTMP;
-    # flipping to Icecast (STREAM_OUTPUT/ICECAST_URL) is a deliberate later step.
+    # Everything (incl. the box IP + SSH key) comes from Bitwarden SM — single
+    # source of truth, same as the rest of CI. The generated .env mirrors the
+    # Lightsail one — the producer stays on RTMP; flipping to Icecast
+    # (STREAM_OUTPUT/ICECAST_URL) is a deliberate later step.
     if: github.event_name == 'workflow_dispatch' && inputs.deploy_hetzner == true
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -259,22 +259,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify Hetzner secrets are configured
-        env:
-          HETZNER_IP: ${{ secrets.HETZNER_IP }}
-          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
-        run: |
-          if [[ -z "$HETZNER_IP" || -z "$HETZNER_SSH_KEY" ]]; then
-            echo "::error::Set the HETZNER_IP and HETZNER_SSH_KEY repo secrets (Settings → Secrets → Actions) before deploying."
-            exit 1
-          fi
-
       - name: Get secrets from Bitwarden
         uses: bitwarden/sm-action@v2
         id: bitwarden-secrets
         with:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
+            546972ad-7db9-4525-8d30-b46e00f8802a > HETZNER_IP
+            32944dfd-70f2-4f57-8274-b46e00f77c41 > HETZNER_SSH_KEY
             780bf50d-98fd-4bd4-b470-b3e701001e63 > GHCR_DEPLOY_TOKEN
             41363d58-f866-4c70-b8e6-b3e70100636b > GHCR_USERNAME
             eeda2f4a-6fb9-470d-a909-b3ec01488545 > SECRET_KEY
@@ -359,8 +351,8 @@ jobs:
 
       - name: Setup SSH key
         env:
-          HETZNER_IP: ${{ secrets.HETZNER_IP }}
-          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
+          HETZNER_SSH_KEY: ${{ steps.bitwarden-secrets.outputs.HETZNER_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
           echo "$HETZNER_SSH_KEY" > ~/.ssh/hetzner.pem
@@ -371,7 +363,7 @@ jobs:
         env:
           GHCR_TOKEN: ${{ steps.bitwarden-secrets.outputs.GHCR_DEPLOY_TOKEN }}
           GHCR_USER: ${{ steps.bitwarden-secrets.outputs.GHCR_USERNAME || github.repository_owner }}
-          HETZNER_IP: ${{ secrets.HETZNER_IP }}
+          HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
         run: |
           echo "$GHCR_TOKEN" > /tmp/ghcr-token.key
 
