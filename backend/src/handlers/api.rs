@@ -5408,7 +5408,7 @@ pub async fn api_my_show_go_live(
 
     // Generate a long-lived presigned URL for FFmpeg to read from (4 hours)
     let presigned_url = storage::get_presigned_url(&state, key, 4 * 3600).await?;
-    let rtmp_destination = state.config.rtmp_destination();
+    let push_target = state.config.producer_target();
 
     tracing::info!(
         "Starting prerecorded stream for show_id={}, user='{}', key='{}'",
@@ -5422,7 +5422,7 @@ pub async fn api_my_show_go_live(
         &state.stream_state,
         user.username.clone(),
         &presigned_url,
-        &rtmp_destination,
+        &push_target,
     )
     .await
     .map_err(|e| AppError::Internal(format!("Failed to start prerecorded stream: {}", e)))?;

@@ -61,6 +61,26 @@ Find your LAN IP: `ipconfig getifaddr en0` (macOS Wi-Fi).
 If the iPhone plays `/test.mp3`, the **codec + transport decision is validated** — MP3
 over Icecast reaches iOS, exactly as the migration needs.
 
+## Greenfield (no-NMS) rehearsal — the #194 target chain
+
+The default harness above mirrors the *parallel-run* (NMS still in the loop). To rehearse
+the **end state** from issue #194 — where NodeMediaServer and RTMP are gone and the backend
+pushes straight into Liquidsoap (decision **B**) — use the no-NMS compose file:
+
+```bash
+cd docs/stream-rework/local-test-harness
+docker compose -f docker-compose.no-nms.yml up --build
+```
+
+Chain: `producer (ffmpeg) ──icecast SOURCE──▶ Liquidsoap harbor ─▶ Icecast /live.mp3`.
+The `producer` service runs the **exact** ffmpeg output args the Rust backend emits for
+`PushTarget::Icecast` (`backend/src/stream_bridge.rs`), so a green run validates the real
+backend→Liquidsoap→Icecast leg — no NMS, no RTMP. Validate with the same gates as above,
+but against **`/live.mp3`** (e.g. `http://localhost:8010/live.mp3`, and the iPhone-on-LAN
+Safari check). `mksafe` still fills silence until the producer connects.
+
+Tear down with `docker compose -f docker-compose.no-nms.yml down -v`.
+
 ## Tear down
 
 ```bash

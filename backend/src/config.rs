@@ -1,3 +1,4 @@
+use serde::de::Error as _; // brings `envy::Error::custom` (serde::de::Error) into scope
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -34,11 +35,27 @@ pub struct Config {
     #[serde(skip)]
     pub r2_endpoint: String,
 
-    // RTMP streaming settings
+    // Live producer output target.
+    // "rtmp" (default) pushes FLV to NodeMediaServer; "icecast" pushes MP3 to an
+    // Icecast mount (the Hetzner stream stack). See `producer_target()`.
+    #[serde(default = "default_stream_output")]
+    pub stream_output: String,
+
+    // RTMP streaming settings (used when stream_output = "rtmp")
     #[serde(default = "default_rtmp_url")]
     pub rtmp_url: String,
     #[serde(default = "default_rtmp_stream_key")]
     pub rtmp_stream_key: String,
+
+    // Icecast streaming settings (used when stream_output = "icecast").
+    // Full source URL incl. credentials + mount, e.g.
+    // `icecast://source:hackme@127.0.0.1:8010/live.mp3`. Required when
+    // stream_output = "icecast" (validated at load).
+    pub icecast_url: Option<String>,
+    #[serde(default = "default_icecast_bitrate")]
+    pub icecast_bitrate: String,
+    #[serde(default = "default_icecast_sample_rate")]
+    pub icecast_sample_rate: u32,
 
     // Optional assets used for ZIP-time image stamping
     // If not set, the code will fall back to local paths under ./data.
@@ -123,12 +140,25 @@ fn default_bucket_name() -> String {
     "unheard-artists-dev".to_string()
 }
 
+fn default_stream_output() -> String {
+    "rtmp".to_string()
+}
+
 fn default_rtmp_url() -> String {
     "rtmp://stream.moafunk.de/live".to_string()
 }
 
 fn default_rtmp_stream_key() -> String {
     "stream-io".to_string()
+}
+
+fn default_icecast_bitrate() -> String {
+    // 128 kbps MP3 — the codec/bitrate validated on iOS in the Phase-2 harness.
+    "128k".to_string()
+}
+
+fn default_icecast_sample_rate() -> u32 {
+    44100
 }
 
 fn default_ffmpeg_bitrate() -> String {
@@ -164,6 +194,12 @@ impl Config {
     pub fn from_env() -> Result<Self, envy::Error> {
         let mut config: Config = envy::from_env()?;
         config.r2_endpoint = format!("https://{}.r2.cloudflarestorage.com", config.r2_account_id);
+
+        // Fail fast on a misconfigured producer rather than silently falling back
+        // to RTMP (which would punch the live stream off the intended mount).
+        validate_stream_output(&config.stream_output, config.icecast_url.as_deref())
+            .map_err(envy::Error::custom)?;
+
         Ok(config)
     }
 
@@ -200,7 +236,72 @@ impl Config {
         format!("{}/{}", self.rtmp_url, self.rtmp_stream_key)
     }
 
+    /// Where the live producer ffmpeg pushes the encoded audio. Validated at load
+    /// (see [`Config::from_env`]), so this is infallible: `icecast` is only
+    /// returned when `icecast_url` is present.
+    pub fn producer_target(&self) -> crate::stream_bridge::PushTarget {
+        use crate::stream_bridge::PushTarget;
+        match self.stream_output.as_str() {
+            "icecast" => PushTarget::Icecast {
+                url: self.icecast_url.clone().unwrap_or_default(),
+                bitrate: self.icecast_bitrate.clone(),
+                sample_rate: self.icecast_sample_rate,
+            },
+            // Default + "rtmp": validated to be the only other accepted value.
+            _ => PushTarget::Rtmp {
+                destination: self.rtmp_destination(),
+            },
+        }
+    }
+
     pub fn telegram_instagram_account(&self) -> &str {
         self.telegram_instagram_account.as_deref().unwrap_or("prod")
+    }
+}
+
+/// Validate the producer output selection. `icecast` requires a non-empty
+/// `ICECAST_URL`; any value other than `rtmp`/`icecast` is rejected. Pure (no
+/// env access) so it's unit-testable without building a full [`Config`].
+fn validate_stream_output(stream_output: &str, icecast_url: Option<&str>) -> Result<(), String> {
+    match stream_output {
+        "rtmp" => Ok(()),
+        "icecast" => {
+            if icecast_url.map(str::trim).unwrap_or("").is_empty() {
+                Err("STREAM_OUTPUT=icecast requires ICECAST_URL (icecast://source:pw@host:port/mount)"
+                    .to_string())
+            } else {
+                Ok(())
+            }
+        }
+        other => Err(format!(
+            "invalid STREAM_OUTPUT '{other}' (expected 'rtmp' or 'icecast')"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rtmp_output_is_valid_without_icecast_url() {
+        assert!(validate_stream_output("rtmp", None).is_ok());
+    }
+
+    #[test]
+    fn icecast_output_requires_a_url() {
+        assert!(validate_stream_output("icecast", None).is_err());
+        assert!(validate_stream_output("icecast", Some("   ")).is_err());
+        assert!(validate_stream_output(
+            "icecast",
+            Some("icecast://source:pw@127.0.0.1:8010/live.mp3")
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn unknown_output_is_rejected() {
+        assert!(validate_stream_output("srt", Some("x")).is_err());
+        assert!(validate_stream_output("", None).is_err());
     }
 }

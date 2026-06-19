@@ -1,0 +1,64 @@
+# Greenfield (no-NMS) rehearsal of the #194 target chain — decision (B):
+#
+#   producer (ffmpeg) ──icecast SOURCE──▶ Liquidsoap harbor ─▶ Icecast /live.mp3
+#
+# There is NO NodeMediaServer and NO RTMP here — this is the architecture that
+# replaces them. The `producer` runs the EXACT ffmpeg output args the Rust
+# backend emits for `PushTarget::Icecast` (see backend/src/stream_bridge.rs),
+# only swapping the WebM-on-stdin input for a synthetic test tone. So a green run
+# proves the backend→Liquidsoap→Icecast leg end-to-end, codec and all.
+#
+#   docker compose -f docker-compose.no-nms.yml up --build
+#   open http://localhost:8010/live.mp3        # desktop; iPhone uses http://<LAN-ip>:8010/live.mp3
+#
+# Nothing here touches prod, the relay box, or R2.
+name: moafunk-stream-test-no-nms
+
+services:
+  # Icecast — serves the public /live.mp3 mount (host 8010 → container 8000).
+  icecast:
+    build: ./icecast
+    ports:
+      - "8010:8000"
+    restart: unless-stopped
+
+  # Liquidsoap — harbor input (receives the producer push) → mksafe → Icecast.
+  liquidsoap:
+    image: savonet/liquidsoap:v2.2.5
+    depends_on: [icecast]
+    volumes:
+      - ./liquidsoap/moafunk-harbor.liq:/moafunk.liq:ro
+    command: ["liquidsoap", "/moafunk.liq"]
+    restart: unless-stopped
+
+  # Producer — stands in for the backend. Pushes a 440 Hz tone to the Liquidsoap
+  # harbor using the SAME ffmpeg output chain as PushTarget::Icecast::output_args:
+  #   -c:a libmp3lame -b:a 128k -ar 44100 -ac 2 -vn -content_type audio/mpeg -f mp3 icecast://…
+  # restart keeps it retrying until the harbor is listening (no ordering dance).
+  producer:
+    image: jrottenberg/ffmpeg:6.1-alpine
+    depends_on: [liquidsoap]
+    command:
+      - "-hide_banner"
+      - "-loglevel"
+      - "warning"
+      - "-re"
+      - "-f"
+      - "lavfi"
+      - "-i"
+      - "sine=frequency=440:sample_rate=48000"
+      - "-c:a"
+      - "libmp3lame"
+      - "-b:a"
+      - "128k"
+      - "-ar"
+      - "44100"
+      - "-ac"
+      - "2"
+      - "-vn"
+      - "-content_type"
+      - "audio/mpeg"
+      - "-f"
+      - "mp3"
+      - "icecast://source:harborpw@liquidsoap:8005/live"
+    restart: unless-stopped

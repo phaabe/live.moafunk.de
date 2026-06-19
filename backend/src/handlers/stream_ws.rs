@@ -160,13 +160,10 @@ async fn handle_stream_socket(
     let (mut sender, mut receiver) = socket.split();
 
     // Start the stream
-    let rtmp_destination = state.config.rtmp_destination();
+    let push_target = state.config.producer_target();
     {
         let mut stream = stream_state.lock().await;
-        if let Err(e) = stream
-            .start_stream(username.clone(), &rtmp_destination)
-            .await
-        {
+        if let Err(e) = stream.start_stream(username.clone(), &push_target).await {
             tracing::error!("Failed to start stream: {}", e);
             let _ = sender
                 .send(Message::Text(format!("error: {}", e).into()))
