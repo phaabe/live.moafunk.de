@@ -1,0 +1,32 @@
+# Moafunk Liquidsoap producer (issue #194 / #178).
+#
+# Runs the validated savonet image (pinned 2.4.4) so we avoid the apt-1.4.x
+# (no input.ffmpeg/harbor knobs) and opam-on-a-small-box landmines from #173.
+# systemd supervises with Restart=always; the hard memory cap is enforced via
+# docker --memory (the cgroup cap that matters for the container).
+#
+# Install: copy to /etc/systemd/system/, place moafunk.liq + stream.env under
+# /etc/moafunk/, then: systemctl daemon-reload && systemctl enable --now liquidsoap
+[Unit]
+Description=Moafunk Liquidsoap producer (harbor -> Icecast)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/moafunk/stream.env
+# --network host: harbor :8005 is reachable by the backend on localhost, and
+# Liquidsoap reaches Icecast on 127.0.0.1:8010.
+ExecStartPre=-/usr/bin/docker rm -f moafunk-liquidsoap
+ExecStart=/usr/bin/docker run --rm --name moafunk-liquidsoap \
+  --network host \
+  --memory 512m --memory-swap 512m \
+  --env-file /etc/moafunk/stream.env \
+  -v /etc/moafunk/moafunk.liq:/moafunk.liq:ro \
+  savonet/liquidsoap:v2.4.4 liquidsoap /moafunk.liq
+ExecStop=/usr/bin/docker stop moafunk-liquidsoap
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

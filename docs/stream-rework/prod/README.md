@@ -1,0 +1,68 @@
+# Production stream stack — Icecast-KH + Liquidsoap (no NMS)
+
+Deploy-ready configs for the **greenfield #194 target**: the backend pushes audio
+into a Liquidsoap **harbor**, Liquidsoap re-emits MP3 to **Icecast-KH**. No
+NodeMediaServer, no RTMP. These are the production counterparts to the validated
+[`../local-test-harness/`](../local-test-harness/) (decision **B**), and the
+on-box steps live in [`../phase-2-icecast-runbook.md`](../phase-2-icecast-runbook.md).
+
+```
+backend ffmpeg (STREAM_OUTPUT=icecast)
+   ├─ ICECAST_URL=…@127.0.0.1:8005/test ─▶ harbor "test" ─▶ mksafe ─▶ Icecast /test.mp3  (preview)
+   └─ ICECAST_URL=…@127.0.0.1:8005/live ─▶ harbor "live" ─▶ mksafe ─▶ Icecast /live.mp3  (public)
+                                                                          │ nginx/Caddy TLS
+                                                                          ▼  listeners (incl. iOS)
+```
+
+## Files
+
+| File | Goes to | Purpose |
+|------|---------|---------|
+| `icecast.xml` | `/etc/moafunk/icecast.xml` | Icecast-KH: `/live.mp3` + `/test.mp3` mounts, port 8010 |
+| `moafunk.liq` | `/etc/moafunk/moafunk.liq` | Liquidsoap: harbor inputs → Icecast, secrets from env |
+| `stream.env.example` | `/etc/moafunk/stream.env` (filled) | harbor + Icecast passwords (Bitwarden-injected) |
+| `liquidsoap.service` | `/etc/systemd/system/` | supervises Liquidsoap (docker, `Restart=always`, mem cap) |
+| `icecast.service` | `/etc/systemd/system/` | supervises Icecast-KH (`Restart=always`, `MemoryMax`) |
+
+## Deploy (on the Hetzner box)
+
+1. Build Icecast-KH from source (runbook Step 1a) and create its user:
+   `sudo useradd --system --no-create-home --shell /usr/sbin/nologin icecast`.
+2. `sudo mkdir -p /etc/moafunk && sudo cp icecast.xml moafunk.liq /etc/moafunk/`.
+3. Create `/etc/moafunk/stream.env` from `stream.env.example` with **real**
+   passwords (Bitwarden) — `chmod 600`, owned by root. The `ICECAST_SOURCE_PASSWORD`
+   must match `<source-password>` in `icecast.xml`.
+4. `sudo cp *.service /etc/systemd/system/ && sudo systemctl daemon-reload`.
+5. `sudo systemctl enable --now icecast liquidsoap`.
+6. Point the backend at the stack (its own `.env`):
+   ```
+   STREAM_OUTPUT=icecast
+   ICECAST_URL=icecast://source:<HARBOR_LIVE_PASSWORD>@127.0.0.1:8005/live
+   ICECAST_STATUS_URL=http://127.0.0.1:8010/status-json.xsl
+   ```
+7. TLS-front the public mount (nginx/Caddy → `127.0.0.1:8010`), e.g. `radio.live.moafunk.de`.
+
+## Validate (GET, never HEAD — Icecast 400s on HEAD)
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' http://127.0.0.1:8010/live.mp3   # 200 audio/mpeg
+curl -s http://127.0.0.1:8010/status-json.xsl | jq '.icestats.source'                      # listeners, bitrate…
+```
+The backend's `/api/stream/metrics` (#177) surfaces the same numbers to the admin UI.
+
+## test → live ("go live")
+
+The broadcaster previews on `/test.mp3` (the #175 preview player), then "goes live"
+by switching the producer's target mount **test → live** (`ICECAST_URL` `.../test`
+→ `.../live` + stream restart). The recording tee is a separate ffmpeg, so the
+switch never gaps the archive.
+
+## Notes / landmines (from #173/#178)
+
+- **MP3 only** on public mounts — iOS Safari can't decode Opus/Ogg.
+- **Icecast-KH**, not stock Xiph (stock froze ~3k listeners; KH ~30k + relays for Phase 4).
+- **Liquidsoap 2.4.4** (skip 2.4.3 — shared-encoder crash).
+- **Do NOT** pair `blank.strip` with `mksafe` on one source (CPU-spike breakups). Dead-air
+  auto-fill, when added, is a fallback to a `single`/playlist — not `blank.strip`.
+- Phase 4 (#178) still to do: CDN / KH master→relay in front of the public mount
+  (~300 listeners ≈ 38 Mbps off one box), Prometheus/Grafana/Alertmanager/Blackbox.

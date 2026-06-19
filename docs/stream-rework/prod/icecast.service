@@ -1,0 +1,26 @@
+# Icecast-KH audio streaming server (issue #173 / #178).
+#
+# Runs the Icecast-KH binary (built from source per the runbook) under systemd
+# with Restart=always and a hard cgroup memory cap — the SPOF/reliability
+# hardening from #178. Assumes an `icecast` user/group exists:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin icecast
+#
+# Install: copy to /etc/systemd/system/, place icecast.xml under /etc/moafunk/,
+# then: systemctl daemon-reload && systemctl enable --now icecast
+[Unit]
+Description=Icecast-KH audio streaming server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/icecast -c /etc/moafunk/icecast.xml
+Restart=always
+RestartSec=3
+# Reliability hardening (#178): hard memory cap (native binary → cgroup MemoryMax applies).
+MemoryMax=512M
+User=icecast
+Group=icecast
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

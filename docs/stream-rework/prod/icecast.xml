@@ -1,0 +1,73 @@
+<!-- Production Icecast-KH config (issue #173 / #194). Serves the public /live.mp3
+     and broadcaster-preview /test.mp3 mounts, fed by Liquidsoap (moafunk.liq).
+
+     Icecast-KH (karlheyes fork), NOT stock Xiph Icecast — stock froze ~3k
+     listeners in benchmarks, KH handles ~30k and adds the master→relay support
+     Phase 4 (#178) needs to front the public mount.
+
+     PORT 8010 (NMS, while it still exists, owns 8000). Plain HTTP here; a TLS
+     reverse proxy (nginx/Caddy) terminates HTTPS in front — the public site is
+     https, so a plain-http mount is blocked as mixed content. Bind the admin
+     interface to localhost only.
+
+     SECRETS: the CHANGE_ME_* values below are placeholders. Inject the real
+     passwords at deploy time (Bitwarden Secrets Manager, same as the backend) —
+     do NOT commit real credentials. The Liquidsoap source password here must
+     match ICECAST_SOURCE_PASSWORD in stream.env. -->
+<icecast>
+  <location>Berlin</location>
+  <admin>admin@moafunk.de</admin>
+
+  <limits>
+    <clients>350</clients>          <!-- headroom over the ~300 peak (see #168); not a load test -->
+    <sources>4</sources>
+    <queue-size>524288</queue-size>
+    <burst-on-connect>1</burst-on-connect>
+    <burst-size>65536</burst-size>  <!-- fast start; keep modest -->
+  </limits>
+
+  <authentication>
+    <!-- Liquidsoap connects as a source with this password (== ICECAST_SOURCE_PASSWORD). -->
+    <source-password>CHANGE_ME_SOURCE</source-password>
+    <relay-password>CHANGE_ME_RELAY</relay-password>   <!-- for Phase-4 KH master→relay -->
+    <admin-user>admin</admin-user>
+    <admin-password>CHANGE_ME_ADMIN</admin-password>
+  </authentication>
+
+  <!-- Single HTTP socket on 8010. Firewall it so only the TLS reverse proxy and
+       localhost reach it (the backend metrics poller hits 127.0.0.1:8010/status-json.xsl;
+       public listeners come via the proxy). Never expose 8010 to the internet directly. -->
+  <listen-socket>
+    <port>8010</port>
+  </listen-socket>
+
+  <!-- Public live mount. -->
+  <mount type="normal">
+    <mount-name>/live.mp3</mount-name>
+    <max-listeners>350</max-listeners>
+    <public>1</public>
+  </mount>
+
+  <!-- Broadcaster preview mount — kept small + unlisted. -->
+  <mount type="normal">
+    <mount-name>/test.mp3</mount-name>
+    <max-listeners>10</max-listeners>
+    <public>0</public>
+  </mount>
+
+  <fileserve>1</fileserve>
+
+  <paths>
+    <logdir>/var/log/icecast</logdir>
+    <webroot>/usr/local/share/icecast/web</webroot>
+    <adminroot>/usr/local/share/icecast/admin</adminroot>
+  </paths>
+
+  <logging>
+    <loglevel>3</loglevel>
+  </logging>
+
+  <security>
+    <chroot>0</chroot>
+  </security>
+</icecast>
