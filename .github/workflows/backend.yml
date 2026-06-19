@@ -257,15 +257,27 @@ jobs:
           ./backend/scripts/deploy_lightsail.sh
 
   deploy-hetzner:
-    # Greenfield Hetzner deploy (#194 Phase B). MANUAL ONLY — never runs on push,
-    # so the Lightsail `deploy` job stays the automatic prod path until cutover.
-    # Everything (incl. the box IP + SSH key) comes from Bitwarden SM — single
-    # source of truth, same as the rest of CI. The generated .env mirrors the
-    # Lightsail one — the producer stays on RTMP; flipping to Icecast
-    # (STREAM_OUTPUT/ICECAST_URL) is a deliberate later step.
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy_hetzner == true
+    # Greenfield Hetzner deploy (#194). Hetzner is now the production backend, so
+    # a push to main auto-deploys here (like the Lightsail `deploy` job did before
+    # cutover); manual workflow_dispatch with deploy_hetzner=true still works for
+    # ad-hoc runs (e.g. setup_nginx/init_db/a pinned tag). Everything (box IP, SSH
+    # key, secrets) comes from Bitwarden SM.
+    #
+    # PRODUCER MODE: the box runs on Icecast (Liquidsoap harbor), so an automatic
+    # push MUST regenerate .env with STREAM_OUTPUT=icecast — a push has no
+    # stream_output input, and defaulting to rtmp would point the producer at the
+    # retired NMS and take the live stream down. STREAM_OUTPUT_MODE forces icecast
+    # on push; manual runs still honor the stream_output choice.
+    #
+    # NOTE: this restarts unheard-api → drops any in-progress broadcast WS. Merging
+    # backend changes to main during a live show will interrupt it.
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      || (github.event_name == 'workflow_dispatch' && inputs.deploy_hetzner == true)
     needs: build-and-push
     runs-on: ubuntu-latest
+    env:
+      STREAM_OUTPUT_MODE: ${{ (github.event_name == 'push' || inputs.stream_output == 'icecast') && 'icecast' || 'rtmp' }}
 
     steps:
       - name: Checkout
@@ -304,7 +316,7 @@ jobs:
       # alongside the box's /etc/moafunk/stream.env value; keep the two in sync
       # whenever the harbor password is rotated.
       - name: Get stream secrets from Bitwarden (icecast flip only)
-        if: inputs.stream_output == 'icecast'
+        if: env.STREAM_OUTPUT_MODE == 'icecast'
         uses: bitwarden/sm-action@v2
         id: stream-secrets
         with:
@@ -376,7 +388,7 @@ jobs:
             echo "RCLONE_REMOTE=r2-backup"
             echo ""
             echo "# Stream producer target (#176/#194)"
-            if [ "${{ inputs.stream_output }}" = "icecast" ]; then
+            if [ "$STREAM_OUTPUT_MODE" = "icecast" ]; then
               # Flip the producer to the co-located Liquidsoap harbor → Icecast.
               # ffmpeg pushes MP3 to the local harbor 'live' mount; metrics poll
               # the local Icecast status JSON. Recording tee stays independent.
