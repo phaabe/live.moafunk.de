@@ -19,6 +19,7 @@ import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
 import { useHostFlow } from '../composables/useHostFlow';
 import { useAuthStore } from '../stores/auth';
+import { resolveMediaMode } from '../showMediaMode';
 import { VueDatePicker } from '@vuepic/vue-datepicker';
 import '@vuepic/vue-datepicker/dist/main.css';
 
@@ -307,9 +308,9 @@ async function loadShow() {
     startTimeForm.value = show.value.start_time || '';
     endTimeForm.value = show.value.end_time || '';
     descriptionForm.value = show.value.description || '';
-    // A present prerecorded file implies upload mode; otherwise keep the
-    // current selection (defaults to 'upload' to surface the upload affordance).
-    if (show.value.prerecorded_key) mediaMode.value = 'upload';
+    // A present prerecorded file implies upload mode; otherwise honour the
+    // delivery mode the show was created with (defaults to 'upload').
+    mediaMode.value = resolveMediaMode(show.value);
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load show';
   } finally {
@@ -402,8 +403,14 @@ async function enterFlow(mode: 'prerecorded' | 'live') {
   if (!show.value) return;
   const id = show.value.id;
   try {
-    if (!hostFlow.shows.value.length) await hostFlow.fetchMyShow();
-    const mine = hostFlow.shows.value.find((s) => s.id === id);
+    // The host flow caches a show list that may predate this show (e.g. it was
+    // created after the host last opened the stream flow). If the show isn't in
+    // the cache, refetch once before deciding it really isn't ours.
+    let mine = hostFlow.shows.value.find((s) => s.id === id);
+    if (!mine) {
+      await hostFlow.fetchMyShow();
+      mine = hostFlow.shows.value.find((s) => s.id === id);
+    }
     if (!mine) {
       flash.error('This show is not assigned to you.');
       return;
