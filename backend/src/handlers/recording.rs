@@ -511,6 +511,25 @@ async fn upload_artifact_and_record(
         }
     }
 
+    // Auto-publish the streamed broadcast to the curated shows archive
+    // (moafunk-prod/shows/{type}/{date}-{title}/…mp3). Best-effort convenience
+    // copy — any failure is logged but never fails the recording (the raw capture
+    // in `r2_bucket_name` stays the system of record). Skip known-bad captures so a
+    // truncated/failed show never lands in the public archive. Must run before the
+    // cleanup below, which deletes the local artifact we transcode from.
+    if incomplete {
+        tracing::warn!(
+            "Skipping shows-archive publish for show {} — recording marked incomplete",
+            show_id
+        );
+    } else if let Err(e) = publish_stream_to_shows_archive(state, show_id, artifact_path).await {
+        tracing::error!(
+            "Failed to publish streamed show {} to shows archive: {}",
+            show_id,
+            e
+        );
+    }
+
     // Verify-before-delete: only remove the local artifact once R2 confirms the
     // object landed intact (size match). On a mismatch we keep it for recovery.
     if size_verified {
@@ -1423,17 +1442,10 @@ async fn run_finalize(
 
     send_progress_msg(sender, FinalizeProgress::uploading(100, "Upload complete")).await;
 
-    // Also publish the finalized MP3 to the curated shows-archive bucket
-    // (moafunk-prod/shows/{type}/{date}-{title}/…mp3). Best-effort: the primary
-    // upload above is the system of record, so a failure here is logged but must
-    // not fail the finalize.
-    if let Err(e) = publish_to_shows_archive(state, show_id, &output_path).await {
-        tracing::error!(
-            "Failed to publish finalized recording for show {} to shows archive: {}",
-            show_id,
-            e
-        );
-    }
+    // Note: the curated shows archive (moafunk-prod/shows/…) is populated from the
+    // *streamed broadcast* on stream-end (see `publish_stream_to_shows_archive`),
+    // NOT from this UNHEARD multi-track merge. UNHEARD finalize stays out of the
+    // shows archive — its `final.mp3` lives only under `recordings/…` above.
 
     // =========================================================================
     // Cleanup: Delete checkpoint and temp files
@@ -1448,14 +1460,20 @@ async fn run_finalize(
     Ok(final_key)
 }
 
-/// Publish the finalized `final.mp3` to the curated shows-archive bucket under a
-/// human-friendly `shows/{type}/{date}-{title}/…mp3` key (see
-/// [`storage::build_show_archive_key`]). Streams the file straight from disk so a
-/// large show never doubles in memory. Called best-effort from [`run_finalize`].
-async fn publish_to_shows_archive(
+/// Transcode a streamed broadcast to MP3 and publish it to the curated
+/// shows-archive bucket (`r2_shows_bucket_name`) under a human-friendly
+/// `shows/{type}/{date}-{title}/…mp3` key (see [`storage::build_show_archive_key`]).
+///
+/// The recorded artifact is whatever the browser captured (WebM/Opus), so it is
+/// transcoded to MP3 first. The transcode runs file→file and the MP3 is streamed
+/// to R2 via `ByteStream::from_path`, so a multi-hour show never doubles in
+/// memory. Called best-effort from [`upload_artifact_and_record`] when a streamed
+/// show ends — a failure here never affects the raw capture (the system of record
+/// under `recordings/…`).
+async fn publish_stream_to_shows_archive(
     state: &Arc<AppState>,
     show_id: i64,
-    final_path: &std::path::Path,
+    artifact_path: &Path,
 ) -> Result<()> {
     let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
         .bind(show_id)
@@ -1465,25 +1483,39 @@ async fn publish_to_shows_archive(
 
     let key = storage::build_show_archive_key(&show.show_type, &show.title, &show.date);
 
-    let body = aws_sdk_s3::primitives::ByteStream::from_path(final_path)
-        .await
-        .map_err(|e| {
-            AppError::Internal(format!("Failed to open final.mp3 for shows upload: {}", e))
-        })?;
+    // Transcode the captured broadcast (WebM/Opus) to a temp MP3 on disk.
+    let mp3_path = audio::convert_file_to_mp3(artifact_path, &state.config).await?;
 
-    state
-        .s3_client
-        .put_object()
-        .bucket(&state.config.r2_shows_bucket_name)
-        .key(&key)
-        .body(body)
-        .content_type("audio/mpeg")
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("Failed to upload to shows archive: {}", e)))?;
+    // Upload, then always clean up the temp MP3 regardless of upload outcome.
+    let upload = async {
+        let body = aws_sdk_s3::primitives::ByteStream::from_path(&mp3_path)
+            .await
+            .map_err(|e| {
+                AppError::Internal(format!(
+                    "Failed to open transcoded mp3 for shows upload: {}",
+                    e
+                ))
+            })?;
+
+        state
+            .s3_client
+            .put_object()
+            .bucket(&state.config.r2_shows_bucket_name)
+            .key(&key)
+            .body(body)
+            .content_type("audio/mpeg")
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to upload to shows archive: {}", e)))?;
+        Ok::<(), AppError>(())
+    }
+    .await;
+
+    let _ = tokio::fs::remove_file(&mp3_path).await;
+    upload?;
 
     tracing::info!(
-        "Published finalized recording for show {} to shows archive: {}/{}",
+        "Published streamed show {} to shows archive: {}/{}",
         show_id,
         state.config.r2_shows_bucket_name,
         key
