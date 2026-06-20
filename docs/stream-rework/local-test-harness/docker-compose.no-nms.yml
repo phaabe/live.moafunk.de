@@ -4,9 +4,10 @@
 #
 # There is NO NodeMediaServer and NO RTMP here — this is the architecture that
 # replaces them. The `producer` runs the EXACT ffmpeg output args the Rust
-# backend emits for `PushTarget::Icecast` (see backend/src/stream_bridge.rs),
-# only swapping the WebM-on-stdin input for a synthetic test tone. So a green run
-# proves the backend→Liquidsoap→Icecast leg end-to-end, codec and all.
+# backend emits for `PushTarget::Icecast` (see backend/src/stream_bridge.rs):
+# it copies a simulated browser Opus/WebM stream straight into the harbor
+# (`-c:a copy -f ogg`), no re-encode. Liquidsoap does the one MP3 encode (256k).
+# So a green run proves the backend→Liquidsoap→Icecast leg end-to-end, codec and all.
 #
 #   docker compose -f docker-compose.no-nms.yml up --build
 #   open http://localhost:8010/live.mp3        # desktop; iPhone uses http://<LAN-ip>:8010/live.mp3
@@ -31,34 +32,27 @@ services:
     command: ["liquidsoap", "/moafunk.liq"]
     restart: unless-stopped
 
-  # Producer — stands in for the backend. Pushes a 440 Hz tone to the Liquidsoap
-  # harbor using the SAME ffmpeg output chain as PushTarget::Icecast::output_args:
-  #   -c:a libmp3lame -b:a 128k -ar 44100 -ac 2 -vn -content_type audio/mpeg -f mp3 icecast://…
-  # restart keeps it retrying until the harbor is listening (no ordering dance).
+  # Producer — stands in for the backend. Faithfully rehearses BOTH legs of the
+  # real chain in two piped ffmpegs:
+  #   1. simulate the browser MediaRecorder: 440 Hz tone → Opus 192k in WebM
+  #      (matches useAudioCapture.ts: audioBitsPerSecond 192000, webm/opus).
+  #   2. the EXACT backend leg: `-f webm -i pipe:0` (start_stream input) +
+  #      PushTarget::Icecast::output_args (`-c:a copy -vn -content_type audio/ogg
+  #      -f ogg icecast://…`). No re-encode — copies the Opus straight through.
+  # A green run proves ffmpeg's live WebM/Opus→Ogg copy is clean enough for the
+  # harbor AND that Liquidsoap decodes it and emits the single 256k MP3. `restart`
+  # keeps it retrying until the harbor is listening (no ordering dance).
   producer:
     image: jrottenberg/ffmpeg:6.1-alpine
     depends_on: [liquidsoap]
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - "-hide_banner"
-      - "-loglevel"
-      - "warning"
-      - "-re"
-      - "-f"
-      - "lavfi"
-      - "-i"
-      - "sine=frequency=440:sample_rate=48000"
-      - "-c:a"
-      - "libmp3lame"
-      - "-b:a"
-      - "128k"
-      - "-ar"
-      - "44100"
-      - "-ac"
-      - "2"
-      - "-vn"
-      - "-content_type"
-      - "audio/mpeg"
-      - "-f"
-      - "mp3"
-      - "icecast://source:harborpw@liquidsoap:8005/live"
+      - >
+        ffmpeg -hide_banner -loglevel warning -re
+        -f lavfi -i sine=frequency=440:sample_rate=48000
+        -c:a libopus -b:a 192k -f webm pipe:1
+        | ffmpeg -hide_banner -loglevel warning
+        -f webm -i pipe:0
+        -c:a copy -vn -content_type audio/ogg -f ogg
+        icecast://source:harborpw@liquidsoap:8005/live
     restart: unless-stopped

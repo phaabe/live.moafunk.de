@@ -59,10 +59,10 @@ pub struct Config {
     // `icecast://source:hackme@127.0.0.1:8010/live.mp3`. Required when
     // stream_output = "icecast" (validated at load).
     pub icecast_url: Option<String>,
-    #[serde(default = "default_icecast_bitrate")]
-    pub icecast_bitrate: String,
-    #[serde(default = "default_icecast_sample_rate")]
-    pub icecast_sample_rate: u32,
+    // NOTE: the backend no longer transcodes on the Icecast/harbor leg — it
+    // copies the browser's Opus through untouched (`-c:a copy`). The public
+    // bitrate/sample-rate are set by Liquidsoap's `enc` in moafunk.liq, so
+    // there are deliberately no `icecast_bitrate`/`icecast_sample_rate` knobs.
     // Icecast status endpoint for the listener/quality poller (#177), e.g.
     // `http://127.0.0.1:8010/status-json.xsl`. If unset, it's derived from
     // `icecast_url` (host:port → http://host:port/status-json.xsl); if neither
@@ -168,15 +168,6 @@ fn default_rtmp_url() -> String {
 
 fn default_rtmp_stream_key() -> String {
     "stream-io".to_string()
-}
-
-fn default_icecast_bitrate() -> String {
-    // 128 kbps MP3 — the codec/bitrate validated on iOS in the Phase-2 harness.
-    "128k".to_string()
-}
-
-fn default_icecast_sample_rate() -> u32 {
-    44100
 }
 
 fn default_icecast_metrics_poll_secs() -> u64 {
@@ -297,8 +288,6 @@ impl Config {
         match self.stream_output.as_str() {
             "icecast" => PushTarget::Icecast {
                 url: self.icecast_url.clone().unwrap_or_default(),
-                bitrate: self.icecast_bitrate.clone(),
-                sample_rate: self.icecast_sample_rate,
             },
             // Default + "rtmp": validated to be the only other accepted value.
             _ => PushTarget::Rtmp {

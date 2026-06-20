@@ -130,7 +130,8 @@ a code change. The `stream_output` input (default `rtmp`) controls the generated
   `STREAM_OUTPUT=icecast`,
   `ICECAST_URL=icecast://source:<HARBOR_LIVE_PASSWORD>@host.docker.internal:8005/live`,
   `ICECAST_STATUS_URL=http://host.docker.internal:8010/status-json.xsl` — i.e.
-  ffmpeg pushes MP3 to the co-located Liquidsoap harbor `live` mount and metrics
+  ffmpeg copies Opus (no re-encode, Ogg) to the co-located Liquidsoap harbor
+  `live` mount — Liquidsoap does the one MP3 encode — and metrics
   poll the local Icecast. The recording tee stays an independent ffmpeg, so the
   flip never gaps the archive (#185 isolation).
 
