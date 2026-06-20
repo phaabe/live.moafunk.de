@@ -21,6 +21,14 @@ function onDeviceChange() {
 onMounted(async () => {
   // First refresh prompts for permission so device labels are populated.
   await audioCapture.refreshDevices();
+  // The capture singleton persists across navigations (so audio survives into
+  // the Stream step). If we re-enter setup while a device is still being
+  // captured, mirror it in the dropdown — otherwise the UI shows "no input
+  // selected" while actually recording that stale device on Start Test.
+  const activeId = audioCapture.selectedDeviceId.value;
+  if (audioCapture.isCapturing.value && activeId && activeId !== 'screen') {
+    selectedDevice.value = activeId;
+  }
   // Keep the list fresh: react to hot-plug events, plus a slow timer fallback.
   navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
   deviceRefreshInterval = setInterval(() => audioCapture.listDevices(), 3000);
