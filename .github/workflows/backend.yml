@@ -115,6 +115,12 @@ jobs:
           context: .
           file: backend/Dockerfile
           platforms: linux/amd64
+          # Bake the stream URLs into the admin SPA (Vite inlines them at build
+          # time). Same repo Variables the Pages build uses; empty → no-op.
+          build-args: |
+            VITE_STREAM_ICECAST_LIVE_URL=${{ vars.VITE_STREAM_ICECAST_LIVE_URL }}
+            VITE_STREAM_ICECAST_TEST_URL=${{ vars.VITE_STREAM_ICECAST_TEST_URL }}
+            VITE_STREAM_STATUS_URL=${{ vars.VITE_STREAM_STATUS_URL }}
           # Always push — workflow only runs on main or manual dispatch
           push: true
           tags: ${{ steps.meta.outputs.tags }}
