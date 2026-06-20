@@ -1,8 +1,8 @@
 # Production stream stack — Icecast-KH + Liquidsoap (no NMS)
 
-Deploy-ready configs for the **greenfield #194 target**: the backend pushes audio
-into a Liquidsoap **harbor**, Liquidsoap re-emits MP3 to **Icecast-KH**. No
-NodeMediaServer, no RTMP. These are the production counterparts to the validated
+Deploy-ready configs for the **greenfield #194 target**: the backend copies the
+broadcaster's Opus (no re-encode) into a Liquidsoap **harbor**, and Liquidsoap
+performs the single lossy MP3 encode to **Icecast-KH**. No NodeMediaServer, no RTMP. These are the production counterparts to the validated
 [`../local-test-harness/`](../local-test-harness/) (decision **B**), and the
 on-box steps live in [`../phase-2-icecast-runbook.md`](../phase-2-icecast-runbook.md).
 

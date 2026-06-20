@@ -33,14 +33,14 @@ pub enum PushTarget {
     /// RTMP/FLV ingest (NodeMediaServer). `destination` includes the stream key,
     /// e.g. `rtmp://stream.moafunk.de/live/stream-io`.
     Rtmp { destination: String },
-    /// Icecast mount (MP3 — the iOS-safe codec validated in the Phase-2 harness).
+    /// Icecast SOURCE / Liquidsoap harbor mount. The browser's Opus is pushed
+    /// through *without re-encoding* (`-c:a copy` into Ogg): the harbor hop is
+    /// localhost and Liquidsoap re-encodes to the public MP3 mount anyway, so
+    /// transcoding here would only add a second lossy stage. The single lossy
+    /// MP3 encode (the iOS-safe public codec) lives in `moafunk.liq`'s `enc`.
     /// `url` is the full source URL incl. credentials + mount, e.g.
-    /// `icecast://source:pw@127.0.0.1:8010/live.mp3`.
-    Icecast {
-        url: String,
-        bitrate: String,
-        sample_rate: u32,
-    },
+    /// `icecast://source:pw@127.0.0.1:8005/live`.
+    Icecast { url: String },
 }
 
 impl PushTarget {
@@ -61,25 +61,24 @@ impl PushTarget {
                 "flv".into(),
                 destination.clone(),
             ],
-            PushTarget::Icecast {
-                url,
-                bitrate,
-                sample_rate,
-            } => vec![
+            PushTarget::Icecast { url } => vec![
+                // No re-encode: copy the browser's Opus straight through and
+                // rewrap it into Ogg for the Icecast SOURCE (harbor) protocol.
+                // Liquidsoap owns the single lossy MP3 encode downstream, so the
+                // internal leg stays lossless — one fewer transcode than before.
+                //
+                // Fallback if `-c:a copy` ever streams unclean Ogg to the harbor
+                // (granulepos/timestamp issues on a live WebM/Opus source):
+                // encode lossless FLAC instead — still one lossy stage total —
+                //   "-c:a", "flac", "-content_type", "audio/ogg", "-f", "ogg".
                 "-c:a".into(),
-                "libmp3lame".into(),
-                "-b:a".into(),
-                bitrate.clone(),
-                "-ar".into(),
-                sample_rate.to_string(),
-                "-ac".into(),
-                "2".into(),
-                // Drop any video track and tag the Icecast content-type as MP3.
+                "copy".into(),
+                // Drop any video track and tag the harbor content-type as Ogg.
                 "-vn".into(),
                 "-content_type".into(),
-                "audio/mpeg".into(),
+                "audio/ogg".into(),
                 "-f".into(),
-                "mp3".into(),
+                "ogg".into(),
                 url.clone(),
             ],
         }
@@ -89,7 +88,7 @@ impl PushTarget {
     pub fn redacted(&self) -> String {
         match self {
             PushTarget::Rtmp { destination } => destination.clone(),
-            PushTarget::Icecast { url, .. } => redact_icecast_password(url),
+            PushTarget::Icecast { url } => redact_icecast_password(url),
         }
     }
 }
@@ -796,26 +795,22 @@ mod tests {
     }
 
     #[test]
-    fn icecast_target_emits_mp3_output_args() {
+    fn icecast_target_copies_opus_to_ogg() {
         let t = PushTarget::Icecast {
-            url: "icecast://source:pw@127.0.0.1:8010/live.mp3".to_string(),
-            bitrate: "128k".to_string(),
-            sample_rate: 44100,
+            url: "icecast://source:pw@127.0.0.1:8005/live".to_string(),
         };
         let args = t.output_args();
-        assert!(args.iter().any(|a| a == "libmp3lame"));
-        assert!(args.windows(2).any(|w| w == ["-b:a", "128k"]));
-        assert!(args.windows(2).any(|w| w == ["-ar", "44100"]));
-        assert!(args
-            .windows(2)
-            .any(|w| w == ["-content_type", "audio/mpeg"]));
-        // MP3 muxer + Icecast URL last.
+        // No re-encode on the harbor leg — Liquidsoap owns the final MP3.
+        assert!(args.windows(2).any(|w| w == ["-c:a", "copy"]));
+        assert!(!args.iter().any(|a| a == "libmp3lame"));
+        assert!(args.windows(2).any(|w| w == ["-content_type", "audio/ogg"]));
+        // Ogg muxer + Icecast URL last.
         assert_eq!(
             &args[args.len() - 3..],
             &[
                 "-f".to_string(),
-                "mp3".to_string(),
-                "icecast://source:pw@127.0.0.1:8010/live.mp3".to_string()
+                "ogg".to_string(),
+                "icecast://source:pw@127.0.0.1:8005/live".to_string()
             ]
         );
     }
@@ -823,12 +818,10 @@ mod tests {
     #[test]
     fn icecast_password_is_redacted_for_logs() {
         let t = PushTarget::Icecast {
-            url: "icecast://source:s3cret@127.0.0.1:8010/live.mp3".to_string(),
-            bitrate: "128k".to_string(),
-            sample_rate: 44100,
+            url: "icecast://source:s3cret@127.0.0.1:8005/live".to_string(),
         };
         let r = t.redacted();
-        assert_eq!(r, "icecast://source:***@127.0.0.1:8010/live.mp3");
+        assert_eq!(r, "icecast://source:***@127.0.0.1:8005/live");
         assert!(!r.contains("s3cret"));
         // RTMP has no secret to redact.
         assert_eq!(

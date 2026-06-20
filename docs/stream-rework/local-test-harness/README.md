@@ -72,12 +72,28 @@ cd docs/stream-rework/local-test-harness
 docker compose -f docker-compose.no-nms.yml up --build
 ```
 
-Chain: `producer (ffmpeg) ──icecast SOURCE──▶ Liquidsoap harbor ─▶ Icecast /live.mp3`.
+Chain: `producer (ffmpeg) ──Ogg/Opus SOURCE──▶ Liquidsoap harbor ─▶ Icecast /live.mp3`.
 The `producer` service runs the **exact** ffmpeg output args the Rust backend emits for
-`PushTarget::Icecast` (`backend/src/stream_bridge.rs`), so a green run validates the real
-backend→Liquidsoap→Icecast leg — no NMS, no RTMP. Validate with the same gates as above,
-but against **`/live.mp3`** (e.g. `http://localhost:8010/live.mp3`, and the iPhone-on-LAN
-Safari check). `mksafe` still fills silence until the producer connects.
+`PushTarget::Icecast` (`backend/src/stream_bridge.rs`) — `-c:a copy -f ogg`, i.e. it
+**copies** a simulated browser Opus/WebM stream through the harbor with no re-encode, and
+Liquidsoap performs the single 256 kbps MP3 encode. So a green run validates the real
+backend→Liquidsoap→Icecast leg — no NMS, no RTMP, no double transcode. Validate with the
+same gates as above, but against **`/live.mp3`** (e.g. `http://localhost:8010/live.mp3`,
+and the iPhone-on-LAN Safari check). `mksafe` still fills silence until the producer connects.
+
+**Extra gate for the quality change — confirm the public bitrate is actually 256k:**
+
+```bash
+ffprobe -v error -show_entries stream=bit_rate,codec_name -of default=nw=1 \
+  http://localhost:8010/live.mp3              # → codec_name=mp3, bit_rate≈256000
+```
+
+(If `bit_rate` reads empty for the live mount, sample it instead:
+`curl -s --max-time 6 http://localhost:8010/live.mp3 -o /tmp/l.mp3 && ffprobe -v error -show_entries format=bit_rate -of default=nw=1 /tmp/l.mp3` → ~256000.)
+
+If `producer` exits or the harbor logs a decode error, ffmpeg's live WebM/Opus→Ogg copy
+isn't clean enough — switch the producer's second ffmpeg (and `output_args`) to the FLAC
+fallback: `-c:a flac -content_type audio/ogg -f ogg`. Same single-lossy-stage result.
 
 Tear down with `docker compose -f docker-compose.no-nms.yml down -v`.
 
