@@ -21,6 +21,12 @@ pub struct StreamQuery {
     /// Show being broadcast. When present, recording auto-starts for this show
     /// on go-live (no separate frontend call) and finalizes when the stream ends.
     pub show_id: Option<i64>,
+    /// Rehearsal mode: push to the private `/test` Icecast mount instead of
+    /// `/live`. No recording, no Telegram, and excluded from the public on-air
+    /// signal — the broadcaster can hear exactly what listeners would, privately,
+    /// before going live. Requires `ICECAST_TEST_URL` to be configured.
+    #[serde(default)]
+    pub test: bool,
 }
 
 /// Grace period after a live WS drops before the recording is finalized.
@@ -81,11 +87,13 @@ pub async fn stream_ws_handler(
         }
     }
 
-    let show_id = query.show_id;
+    // A test broadcast never records, so it ignores show_id entirely.
+    let test = query.test;
+    let show_id = if test { None } else { query.show_id };
 
     // Upgrade to WebSocket
     Ok(ws.on_upgrade(move |socket| {
-        handle_stream_socket(socket, state, stream_state, username, show_id)
+        handle_stream_socket(socket, state, stream_state, username, show_id, test)
     }))
 }
 
@@ -156,14 +164,38 @@ async fn handle_stream_socket(
     stream_state: SharedStreamState,
     username: String,
     show_id: Option<i64>,
+    test: bool,
 ) {
     let (mut sender, mut receiver) = socket.split();
 
+    // Pick the producer target. A test broadcast pushes to the private `/test`
+    // mount; if no test mount is configured, reject rather than leak the
+    // rehearsal onto the public `/live`.
+    let push_target = if test {
+        match state.config.test_producer_target() {
+            Some(t) => t,
+            None => {
+                tracing::warn!("Rejected test broadcast: ICECAST_TEST_URL not configured");
+                let _ = sender
+                    .send(Message::Text(
+                        "error: test stream is not configured on this server".into(),
+                    ))
+                    .await;
+                let _ = sender.close().await;
+                return;
+            }
+        }
+    } else {
+        state.config.producer_target()
+    };
+
     // Start the stream
-    let push_target = state.config.producer_target();
     {
         let mut stream = stream_state.lock().await;
-        if let Err(e) = stream.start_stream(username.clone(), &push_target).await {
+        if let Err(e) = stream
+            .start_stream(username.clone(), &push_target, test)
+            .await
+        {
             tracing::error!("Failed to start stream: {}", e);
             let _ = sender
                 .send(Message::Text(format!("error: {}", e).into()))
@@ -192,10 +224,17 @@ async fn handle_stream_socket(
         return;
     }
 
-    tracing::info!("Stream started for user '{}'", username);
+    tracing::info!(
+        "Stream started for user '{}'{}",
+        username,
+        if test { " (test)" } else { "" }
+    );
 
-    // Notify admin via Telegram (fire-and-forget)
-    crate::telegram_notify::notify_stream_start(&state, &username);
+    // Notify admin via Telegram (fire-and-forget). A test broadcast stays silent
+    // — no point pinging the group for a private rehearsal.
+    if !test {
+        crate::telegram_notify::notify_stream_start(&state, &username);
+    }
 
     // Process incoming messages (audio chunks). `explicit_stop` distinguishes a
     // deliberate end (finalize immediately) from a network drop (grace period).
@@ -274,8 +313,10 @@ async fn handle_stream_socket(
 
     tracing::info!("Stream ended for user '{}'", username);
 
-    // Notify admin via Telegram (fire-and-forget)
-    crate::telegram_notify::notify_stream_stop(&state, &username);
+    // Notify admin via Telegram (fire-and-forget). Suppressed for a test.
+    if !test {
+        crate::telegram_notify::notify_stream_stop(&state, &username);
+    }
 }
 
 /// Get current stream status.

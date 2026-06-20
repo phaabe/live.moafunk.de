@@ -323,6 +323,7 @@ jobs:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
             ea873605-a662-4a0f-99a9-b46e011fc8d6 > HARBOR_LIVE_PASSWORD
+            110bdca6-3a7b-477e-bce6-b46e011fb511 > HARBOR_TEST_PASSWORD
 
       # Mirrors the Lightsail `deploy` job's .env generation exactly. Keep the two
       # in sync; the goal of the migration is an identical backend on Hetzner.
@@ -398,6 +399,10 @@ jobs:
               echo "STREAM_OUTPUT=icecast"
               echo "ICECAST_URL=icecast://source:${{ steps.stream-secrets.outputs.HARBOR_LIVE_PASSWORD }}@host.docker.internal:8005/live"
               echo "ICECAST_STATUS_URL=http://host.docker.internal:8010/status-json.xsl"
+              # Private `/test` mount for the broadcaster's "Test Your Stream"
+              # step (?test=true): same harbor, separate mount + password. Lets a
+              # host rehearse through the real path without going public.
+              echo "ICECAST_TEST_URL=icecast://source:${{ steps.stream-secrets.outputs.HARBOR_TEST_PASSWORD }}@host.docker.internal:8005/test"
             else
               # Default: unchanged from Lightsail — producer pushes RTMP to NMS
               # (backend config supplies the RTMP destination default).

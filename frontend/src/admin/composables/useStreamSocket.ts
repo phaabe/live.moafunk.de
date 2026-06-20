@@ -19,6 +19,10 @@ let socket: WebSocket | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 // Remembered across reconnects so the backend keeps auto-recording the same show.
 let currentShowId: number | null = null;
+// Remembered across reconnects so a rehearsal stays on the private `/test` mount.
+// Without this, an auto-reconnect (which calls connect() with no flags) would
+// silently fall back to the public `/live` producer.
+let currentTest = false;
 let currentCallbacks: {
   onConnected?: () => void;
   onDisconnected?: () => void;
@@ -42,7 +46,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
   // Update callbacks so the currently-mounted component receives events
   currentCallbacks = { onConnected, onDisconnected, onError, onLive };
 
-  function connect(force = false, showId?: number): Promise<void> {
+  function connect(force = false, showId?: number, test?: boolean): Promise<void> {
     return new Promise((resolve, reject) => {
       if (socket && socket.readyState === WebSocket.OPEN) {
         resolve();
@@ -53,6 +57,10 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       if (showId != null) {
         currentShowId = showId;
       }
+      // Remember test mode for reconnects (auto-reconnect passes no flags).
+      if (test != null) {
+        currentTest = test;
+      }
 
       error.value = null;
       state.value = 'connecting';
@@ -61,6 +69,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       const params = new URLSearchParams();
       if (force) params.set('force', 'true');
       if (currentShowId != null) params.set('show_id', String(currentShowId));
+      if (currentTest) params.set('test', 'true');
       const qs = params.toString();
       const wsUrl = `${protocol}//${window.location.host}/ws/stream${qs ? `?${qs}` : ''}`;
 
@@ -149,6 +158,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     }
 
     currentShowId = null;
+    currentTest = false;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
     error.value = null;
@@ -171,6 +181,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     }
 
     currentShowId = null;
+    currentTest = false;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
     error.value = null;

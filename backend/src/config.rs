@@ -68,6 +68,14 @@ pub struct Config {
     // `icecast_url` (host:port → http://host:port/status-json.xsl); if neither
     // is set, the poller stays disabled.
     pub icecast_status_url: Option<String>,
+    // Optional Icecast `/test` mount source URL, e.g.
+    // `icecast://source:hackme@127.0.0.1:8005/test`. When set, the broadcaster's
+    // "Test Your Stream" step pushes through the SAME producer→harbor→Icecast
+    // path as live but onto the private `/test` mount, so a rehearsal sounds
+    // exactly like `/live.mp3` without being public. Unset → the in-product test
+    // is unavailable (the WS rejects `?test=true`). Independent of the live
+    // `icecast_url`; never required.
+    pub icecast_test_url: Option<String>,
     #[serde(default = "default_icecast_metrics_poll_secs")]
     pub icecast_metrics_poll_secs: u64,
 
@@ -296,6 +304,15 @@ impl Config {
         }
     }
 
+    /// Where a *test* broadcast pushes — the private `/test` Icecast mount. Some
+    /// only when `icecast_test_url` is configured (non-empty); `None` disables
+    /// the in-product test (the stream WS rejects `?test=true`). The test always
+    /// uses Icecast regardless of `stream_output`, so a rehearsal exercises the
+    /// real harbor path even while the live producer is still on RTMP.
+    pub fn test_producer_target(&self) -> Option<crate::stream_bridge::PushTarget> {
+        test_producer_target_from_url(self.icecast_test_url.as_deref())
+    }
+
     pub fn telegram_instagram_account(&self) -> &str {
         self.telegram_instagram_account.as_deref().unwrap_or("prod")
     }
@@ -329,6 +346,16 @@ fn derive_status_url(icecast_url: &str) -> Option<String> {
         return None;
     }
     Some(format!("http://{host_port}/status-json.xsl"))
+}
+
+/// Build the *test* producer target from an optional `ICECAST_TEST_URL`. `Some`
+/// only for a non-empty (trimmed) URL; `None` disables the in-product test. Pure
+/// (no env / Config) so it's unit-testable without a full [`Config`].
+fn test_producer_target_from_url(url: Option<&str>) -> Option<crate::stream_bridge::PushTarget> {
+    let url = url.map(str::trim).filter(|u| !u.is_empty())?;
+    Some(crate::stream_bridge::PushTarget::Icecast {
+        url: url.to_string(),
+    })
 }
 
 /// Validate the producer output selection. `icecast` requires a non-empty
@@ -375,6 +402,24 @@ mod tests {
     fn unknown_output_is_rejected() {
         assert!(validate_stream_output("srt", Some("x")).is_err());
         assert!(validate_stream_output("", None).is_err());
+    }
+
+    #[test]
+    fn test_producer_target_present_only_when_url_set() {
+        use crate::stream_bridge::PushTarget;
+
+        // Unset / blank / whitespace → no test mount (in-product test disabled).
+        assert!(test_producer_target_from_url(None).is_none());
+        assert!(test_producer_target_from_url(Some("")).is_none());
+        assert!(test_producer_target_from_url(Some("   ")).is_none());
+
+        // Set → Icecast target carrying the trimmed URL.
+        match test_producer_target_from_url(Some(" icecast://source:pw@127.0.0.1:8005/test ")) {
+            Some(PushTarget::Icecast { url }) => {
+                assert_eq!(url, "icecast://source:pw@127.0.0.1:8005/test");
+            }
+            other => panic!("expected Icecast test target, got {other:?}"),
+        }
     }
 
     #[test]
