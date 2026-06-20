@@ -3,7 +3,7 @@
 //! This module provides functions to convert audio files to MP3 format using ffmpeg.
 
 use crate::{config::Config, AppError, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 /// Supported audio file extensions that can be converted to MP3.
@@ -127,6 +127,53 @@ pub async fn convert_to_mp3(
     );
 
     Ok(mp3_data)
+}
+
+/// Transcode an on-disk audio file to a temporary MP3 file and return its path.
+///
+/// Unlike [`convert_to_mp3`] (which works on in-memory bytes), this streams
+/// file→file through ffmpeg, so a multi-hour show never doubles in RAM. Uses the
+/// same LAME settings (`ffmpeg_mp3_bitrate`/`ffmpeg_mp3_sample_rate`). The caller
+/// owns the returned temp file and must delete it after use.
+pub async fn convert_file_to_mp3(input_path: &Path, config: &Config) -> Result<PathBuf> {
+    let input_str = input_path
+        .to_str()
+        .ok_or_else(|| AppError::Internal("Invalid input path encoding".to_string()))?;
+    let output_path =
+        std::env::temp_dir().join(format!("shows_archive_{}.mp3", uuid::Uuid::new_v4()));
+    let sample_rate_str = config.ffmpeg_mp3_sample_rate.to_string();
+
+    let output = Command::new("ffmpeg")
+        .args([
+            "-i",
+            input_str,
+            "-vn",
+            "-acodec",
+            "libmp3lame",
+            "-ab",
+            &config.ffmpeg_mp3_bitrate,
+            "-ar",
+            &sample_rate_str,
+            "-y",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!("Failed to run ffmpeg (is it installed?): {}", e))
+        })?;
+
+    if !output.status.success() {
+        let _ = tokio::fs::remove_file(&output_path).await;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!("ffmpeg file conversion failed: {}", stderr);
+        return Err(AppError::Internal(format!(
+            "Audio conversion failed: {}",
+            stderr.lines().last().unwrap_or("Unknown error")
+        )));
+    }
+
+    Ok(output_path)
 }
 
 /// Get the duration of an audio file in milliseconds using ffprobe.
