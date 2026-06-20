@@ -20,7 +20,7 @@ backend ffmpeg (STREAM_OUTPUT=icecast)
 |------|---------|---------|
 | `icecast.xml` | `/etc/moafunk/icecast.xml` | Icecast-KH: `/live.mp3` + `/test.mp3` mounts, port 8010 |
 | `icecast-kh.Dockerfile` | `/etc/moafunk/icecast-kh.Dockerfile` | builds the pinned Icecast-KH image from source |
-| `moafunk.liq` | `/etc/moafunk/moafunk.liq` | Liquidsoap: harbor inputs → Icecast, secrets from env |
+| `moafunk.liq` | `/etc/moafunk/moafunk.liq` | Liquidsoap: harbor inputs → Icecast, secrets from env. **Auto-synced by the `deploy-hetzner` CI job** (restarts Liquidsoap only on change) — edit it in the repo, not on the box |
 | `stream.env.example` | `/etc/moafunk/stream.env` (filled) | harbor + Icecast passwords (Bitwarden-injected) |
 | `liquidsoap.service` | `/etc/systemd/system/` | supervises Liquidsoap (docker, `Restart=always`, mem cap) |
 | `icecast.service` | `/etc/systemd/system/` | supervises Icecast-KH (docker, `Restart=always`, mem cap) |
@@ -30,7 +30,9 @@ backend ffmpeg (STREAM_OUTPUT=icecast)
 Both Icecast-KH and Liquidsoap run as **docker containers** supervised by systemd
 (`--network host`, `Restart=always`, hard `--memory` cap) — one consistent pattern.
 
-1. `sudo mkdir -p /etc/moafunk && sudo cp icecast.xml icecast-kh.Dockerfile moafunk.liq /etc/moafunk/`.
+1. `sudo mkdir -p /etc/moafunk && sudo cp icecast.xml icecast-kh.Dockerfile moafunk.liq /etc/moafunk/`
+   (first-time bootstrap only — thereafter `moafunk.liq` is kept current by the
+   `deploy-hetzner` CI job, which re-syncs it and restarts Liquidsoap on change).
 2. Build the pinned Icecast-KH image (no official image exists; we build our own
    from source — see the Dockerfile):
    ```
