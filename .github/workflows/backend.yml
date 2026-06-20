@@ -438,6 +438,50 @@ jobs:
           RUN_TESTS="${{ inputs.run_tests == false && '0' || '1' }}" \
           ./backend/scripts/deploy_hetzner.sh
 
+      # Sync the Liquidsoap producer config (#194). The .liq is NOT baked into
+      # the backend image — it's bind-mounted into the host's liquidsoap
+      # container at /etc/moafunk/moafunk.liq (see docs/stream-rework/prod/
+      # liquidsoap.service). Without this, repo edits to the encoder (e.g. the
+      # 256k output bitrate) never reach the box and the stream silently keeps
+      # the old settings. Restart Liquidsoap ONLY when the file actually changed,
+      # so routine backend pushes don't gap the stream. (The deploy step above
+      # already restarts unheard-api and drops any in-progress broadcast WS, so a
+      # same-deploy Liquidsoap restart adds no new live-show hazard.)
+      - name: Sync Liquidsoap config to Hetzner (icecast only)
+        if: env.STREAM_OUTPUT_MODE == 'icecast'
+        env:
+          HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
+        run: |
+          set -euo pipefail
+          KEY=~/.ssh/hetzner.pem
+          HOST="root@${HETZNER_IP}"   # Hetzner Cloud Ubuntu images log in as root
+
+          scp -i "$KEY" -o StrictHostKeyChecking=no \
+            docs/stream-rework/prod/moafunk.liq "$HOST:/tmp/moafunk.liq.new"
+
+          ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          DEST=/etc/moafunk/moafunk.liq
+          NEW=/tmp/moafunk.liq.new
+          if [[ -f "$DEST" ]] && cmp -s "$NEW" "$DEST"; then
+            echo "Liquidsoap config unchanged — skipping restart."
+            rm -f "$NEW"
+            exit 0
+          fi
+          echo "Liquidsoap config changed — installing and restarting."
+          install -m 644 "$NEW" "$DEST"
+          rm -f "$NEW"
+          systemctl restart liquidsoap
+          sleep 5
+          if systemctl is-active --quiet liquidsoap; then
+            echo "liquidsoap active after restart."
+          else
+            echo "ERROR: liquidsoap failed to start after config sync." >&2
+            systemctl status liquidsoap --no-pager -l | tail -30 >&2
+            exit 1
+          fi
+          REMOTE
+
   deploy-monitoring:
     # Deploy the #178 observability stack to the Hetzner box (manual only).
     # Additive + reversible: never touches the backend, the stream stack, or DNS.
