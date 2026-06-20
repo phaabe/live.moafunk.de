@@ -134,6 +134,10 @@ pub struct StreamState {
     /// FFmpeg died). The recording is abandoned but the live stream keeps
     /// running. Surfaced via [`StreamStatus`] so it's never silently swallowed.
     recording_failed: Option<String>,
+    /// True while this is a *test* broadcast (pushing to the private `/test`
+    /// mount, no recording). The public on-air signal ([`StreamStatus::active`])
+    /// excludes it, so a rehearsal never flips listeners onto a silent `/live`.
+    is_test: bool,
 }
 
 impl Default for StreamState {
@@ -154,6 +158,7 @@ impl StreamState {
             recording_seg_dir: None,
             recording_path: None,
             recording_failed: None,
+            is_test: false,
         }
     }
 
@@ -179,10 +184,13 @@ impl StreamState {
     /// # Arguments
     /// * `user` - Username of the streamer
     /// * `target` - Where to push the encoded audio (RTMP/FLV or Icecast/MP3)
+    /// * `is_test` - True for a rehearsal to the private `/test` mount; kept out
+    ///   of the public on-air signal (see [`StreamState::is_test`]).
     pub async fn start_stream(
         &mut self,
         user: String,
         target: &PushTarget,
+        is_test: bool,
     ) -> Result<(), StreamError> {
         // Clean up any existing stream first
         if self.is_active() {
@@ -221,6 +229,7 @@ impl StreamState {
         self.current_user = Some(user);
         self.ffmpeg_stdin = Some(stdin);
         self.ffmpeg_handle = Some(child);
+        self.is_test = is_test;
 
         Ok(())
     }
@@ -232,6 +241,7 @@ impl StreamState {
     pub async fn stop_stream(&mut self) -> Result<(), StreamError> {
         let user = self.current_user.take();
         let had_stdin = self.ffmpeg_stdin.is_some();
+        self.is_test = false;
 
         // Close stdin to signal EOF to FFmpeg (live streams only)
         if let Some(mut stdin) = self.ffmpeg_stdin.take() {
@@ -464,9 +474,13 @@ impl StreamState {
     }
 
     /// Get status information about the current stream.
+    ///
+    /// `active` is the *public* on-air signal and deliberately excludes a test
+    /// broadcast: a rehearsal pushes only to the private `/test` mount, so the
+    /// public player must stay off-air rather than connect to a silent `/live`.
     pub fn get_status(&self) -> StreamStatus {
         StreamStatus {
-            active: self.is_active(),
+            active: self.is_active() && !self.is_test,
             user: self.current_user.clone(),
             recording: self.is_recording(),
             recording_path: self.recording_path.clone(),

@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, shallowRef, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { useHostFlow, useAudioCapture, useStreamTest } from '@admin/composables';
+import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
 import DbMeter from '@admin/components/DbMeter.vue';
-import AudioPlayer from '@admin/components/AudioPlayer.vue';
+import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
+import { config } from '@/config';
 
 const router = useRouter();
 const flow = useHostFlow();
+
+// The private Icecast `/test` mount the rehearsal plays back from. Same MP3 the
+// public `/live.mp3` would serve, but non-public. Empty (e.g. local dev) → the
+// real test can't run; the dev-skip below covers that case.
+const previewUrl = config.stream.icecastTestUrl;
 
 // ─── Device selection ────────────────────────────────────────────────────────
 const audioCapture = useAudioCapture();
@@ -49,76 +55,56 @@ const capturedLabel = computed(() => {
   );
 });
 
-// ─── Test stream (server round-trip) ─────────────────────────────────────────
-type TestPhase = 'ready' | 'recording' | 'waiting' | 'playing' | 'done' | 'error';
+// ─── Test broadcast (real producer → /test harbour → Icecast /test.mp3) ───────
+// This is the *same* pipeline as going live (browser → WS → backend ffmpeg →
+// Liquidsoap harbor → Icecast), just pushed to the private `/test` mount. The
+// host plays it back below to confirm it sounds exactly like `/live.mp3` would —
+// without anything reaching the public. No recording, no Telegram (backend skips
+// both for `?test=true`).
+type TestPhase = 'ready' | 'connecting' | 'live' | 'error';
 const testPhase = ref<TestPhase>('ready');
 const testError = ref<string | null>(null);
-const recordProgress = ref(0);
-let recordInterval: ReturnType<typeof setInterval> | null = null;
+const sentChunks = ref(0);
+// Guards onUnmounted so passing the test (which already stops the rehearsal)
+// doesn't race with cleanup.
+const testActive = computed(() => testPhase.value === 'connecting' || testPhase.value === 'live');
 
-const sentChunks = shallowRef<ArrayBuffer[]>([]);
-const playbackChunks = shallowRef<ArrayBuffer[]>([]);
-const playbackUrl = ref<string | null>(null);
-
-const streamTest = useStreamTest({
-  recordDuration: 10_000,
-  onPlaybackData: (data: ArrayBuffer) => {
-    playbackChunks.value = [...playbackChunks.value, data];
+const streamSocket = useStreamSocket({
+  onLive: () => {
+    testPhase.value = 'live';
   },
-  onError: (msg: string) => {
+  onError: (msg) => {
     testPhase.value = 'error';
     testError.value = msg;
-    clearRecordProgress();
+    stopTestRecording();
+  },
+  onDisconnected: () => {
+    // The rehearsal ended (server-side or dropped) before the host accepted it.
+    if (testPhase.value === 'live' || testPhase.value === 'connecting') {
+      testPhase.value = 'ready';
+      stopTestRecording();
+    }
   },
 });
 
-watch(
-  () => streamTest.state.value,
-  (s) => {
-    if (s === 'idle') return;
-    if (s === 'recording') {
-      testPhase.value = 'recording';
-      return;
-    }
-    if (s === 'waiting') {
-      testPhase.value = 'waiting';
-      stopTestRecording();
-      return;
-    }
-    if (s === 'playing') {
-      testPhase.value = 'playing';
-      return;
-    }
-    if (s === 'done') {
-      testPhase.value = 'done';
-      clearRecordProgress();
-      buildPlaybackBlob();
-      return;
-    }
-    if (s === 'error') {
-      testPhase.value = 'error';
-      testError.value = streamTest.error.value;
-      clearRecordProgress();
-    }
-  }
-);
-
 // ─── Test recorder (dedicated MediaRecorder on the capture stream) ──────────
+// Independent of the singleton capture's main onData wiring, so it never
+// disturbs the real go-live pipeline in the next step.
 let testRecorder: MediaRecorder | null = null;
 
-function startTestRecording() {
+function startTestRecording(): boolean {
   const stream = audioCapture.processedStream.value || audioCapture.mediaStream.value;
   if (!stream) {
     testPhase.value = 'error';
     testError.value = 'No audio stream available. Select an audio device first.';
-    return;
+    return false;
   }
 
   const tracks = stream.getAudioTracks();
   if (tracks.length === 0 || tracks.every((t) => t.readyState !== 'live')) {
     testPhase.value = 'error';
     testError.value = 'Audio device is no longer active. Re-select your device.';
-    return;
+    return false;
   }
 
   const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
@@ -130,8 +116,8 @@ function startTestRecording() {
   testRecorder.ondataavailable = async (event) => {
     if (event.data.size > 0) {
       const buffer = await event.data.arrayBuffer();
-      sentChunks.value = [...sentChunks.value, buffer];
-      streamTest.sendChunk(buffer);
+      streamSocket.send(buffer);
+      sentChunks.value++;
     }
   };
 
@@ -141,75 +127,54 @@ function startTestRecording() {
   };
 
   testRecorder.start(250);
+  return true;
 }
 
 function stopTestRecording() {
   if (testRecorder && testRecorder.state !== 'inactive') {
     testRecorder.stop();
-    testRecorder = null;
   }
+  testRecorder = null;
 }
 
 // ─── Test flow ────────────────────────────────────────────────────────────────
 async function runTest() {
-  testError.value = null;
-  testPhase.value = 'ready';
-  sentChunks.value = [];
-  playbackChunks.value = [];
-  revokePlaybackUrl();
-
-  try {
-    await streamTest.connect();
-    streamTest.startRecording();
-    testPhase.value = 'recording';
-    startTestRecording();
-
-    recordProgress.value = 0;
-    const start = Date.now();
-    recordInterval = setInterval(() => {
-      const elapsed = Date.now() - start;
-      recordProgress.value = Math.min(100, (elapsed / 10_000) * 100);
-    }, 100);
-  } catch {
+  if (!previewUrl) {
     testPhase.value = 'error';
-    testError.value = 'Failed to connect to test server';
-  }
-}
-
-function clearRecordProgress() {
-  if (recordInterval) {
-    clearInterval(recordInterval);
-    recordInterval = null;
-  }
-}
-
-function buildPlaybackBlob() {
-  if (playbackChunks.value.length === 0) {
-    testError.value = `No audio data received from server (sent: ${sentChunks.value.length} chunks)`;
+    testError.value = 'Test stream is not configured on this server.';
     return;
   }
-  const blob = new Blob(playbackChunks.value, { type: 'audio/webm;codecs=opus' });
-  playbackUrl.value = URL.createObjectURL(blob);
+
+  testError.value = null;
+  testPhase.value = 'connecting';
+  sentChunks.value = 0;
+
+  try {
+    // Connect in TEST mode → backend pushes to `/test`, not `/live`.
+    await streamSocket.connect(false, undefined, true);
+    // Stream live audio through the real pipeline. `onLive` flips to 'live'.
+    if (!startTestRecording()) {
+      streamSocket.stopStream();
+    }
+  } catch {
+    testPhase.value = 'error';
+    testError.value = 'Failed to connect to the test stream.';
+    stopTestRecording();
+  }
 }
 
-function revokePlaybackUrl() {
-  if (playbackUrl.value) {
-    URL.revokeObjectURL(playbackUrl.value);
-    playbackUrl.value = null;
-  }
+/** Stop the rehearsal broadcast (keeps the audio capture for the next step). */
+function stopTestBroadcast() {
+  stopTestRecording();
+  streamSocket.stopStream();
 }
 
 /** Reset test state (e.g. after switching inputs). */
 function resetTest() {
-  streamTest.stop();
-  stopTestRecording();
-  clearRecordProgress();
-  revokePlaybackUrl();
+  stopTestBroadcast();
   testPhase.value = 'ready';
   testError.value = null;
-  recordProgress.value = 0;
-  sentChunks.value = [];
-  playbackChunks.value = [];
+  sentChunks.value = 0;
   flow.setLiveTestPassed(false);
 }
 
@@ -218,6 +183,7 @@ function retryTest() {
 }
 
 function markTestPassed() {
+  stopTestBroadcast();
   flow.setLiveTestPassed(true);
   goToStream();
 }
@@ -240,10 +206,12 @@ onUnmounted(() => {
     clearInterval(deviceRefreshInterval);
     deviceRefreshInterval = null;
   }
-  streamTest.cleanup();
-  stopTestRecording();
-  clearRecordProgress();
-  revokePlaybackUrl();
+  // Stop a still-running rehearsal so we never leave a producer pushing to
+  // `/test` after navigating away. Passing the test already stopped it (this is
+  // then a no-op); a fresh go-live in FlowOnAir reconnects to `/live`.
+  if (testActive.value) {
+    stopTestBroadcast();
+  }
   // NOTE: do NOT call audioCapture.stopCapture() here —
   // the singleton capture persists into the Stream step (FlowOnAir).
 });
@@ -296,14 +264,16 @@ onUnmounted(() => {
     <div class="test-panel">
       <h3>Test Your Stream</h3>
       <p class="panel-hint">
-        We record 10 seconds and round-trip it through the server, then show it back as a waveform.
+        This sends your audio through the real broadcast path to a <strong>private</strong> test
+        mount — exactly what listeners would hear on the live stream, but not public. Press play
+        below to check it before going live.
       </p>
 
       <!-- Ready -->
       <div v-if="testPhase === 'ready'" class="test-state">
         <button
           class="btn-primary btn-lg"
-          :disabled="!audioCapture.isCapturing.value"
+          :disabled="!audioCapture.isCapturing.value || !previewUrl"
           @click="runTest"
         >
           🎤 Start Test
@@ -311,48 +281,32 @@ onUnmounted(() => {
         <p v-if="!audioCapture.isCapturing.value" class="text-muted">
           Select an audio input first.
         </p>
+        <p v-else-if="!previewUrl" class="text-muted">
+          Test stream isn’t configured on this server.
+        </p>
       </div>
 
-      <!-- Recording -->
-      <div v-else-if="testPhase === 'recording'" class="test-state">
+      <!-- Connecting -->
+      <div v-else-if="testPhase === 'connecting'" class="test-state">
+        <p class="text-muted">Connecting to the test stream…</p>
+      </div>
+
+      <!-- Live (test broadcast running) -->
+      <div v-else-if="testPhase === 'live'" class="test-state">
         <div class="test-recording-indicator">
           <span class="recording-dot"></span>
-          Recording... <span class="chunk-counter">({{ sentChunks.length }} chunks)</span>
-        </div>
-        <div class="progress-bar">
-          <div class="progress-fill" :style="{ width: `${recordProgress}%` }"></div>
-        </div>
-        <p class="text-muted">{{ Math.ceil((100 - recordProgress) / 10) }}s remaining</p>
-      </div>
-
-      <!-- Waiting -->
-      <div v-else-if="testPhase === 'waiting'" class="test-state">
-        <p>Sent {{ sentChunks.length }} chunks. Waiting for server...</p>
-      </div>
-
-      <!-- Playing (receiving) -->
-      <div v-else-if="testPhase === 'playing'" class="test-state">
-        <div class="test-playing-indicator">
-          <span class="playing-icon">🔊</span>
-          Receiving... <span class="chunk-counter">({{ playbackChunks.length }} chunks)</span>
-        </div>
-      </div>
-
-      <!-- Done -->
-      <div v-else-if="testPhase === 'done'" class="test-state">
-        <div v-if="playbackUrl" class="playback-section">
-          <AudioPlayer :src="playbackUrl" label="Your test recording" />
-        </div>
-        <div v-else class="playback-section">
-          <p class="error-text">
-            No audio data received from server. Sent {{ sentChunks.length }} chunks.
-          </p>
+          Test broadcast live
+          <span class="chunk-counter">({{ sentChunks }} chunks sent)</span>
         </div>
 
-        <p>Did you hear your audio clearly?</p>
+        <!-- Play back the private /test mount. Same component as the on-air
+             preview; runs a few seconds behind, so use headphones. -->
+        <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" />
+
+        <p>Does it sound clear on the test stream?</p>
         <div class="test-result-actions">
-          <button class="btn-success" @click="markTestPassed">✓ Yes, it sounds good!</button>
-          <button class="btn-secondary" @click="retryTest">Try Again</button>
+          <button class="btn-success" @click="markTestPassed">✓ Yes, go live</button>
+          <button class="btn-secondary" @click="retryTest">⏹ Stop test</button>
         </div>
       </div>
 
