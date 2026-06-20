@@ -25,6 +25,30 @@ const FlowLive = () => import('./pages/flow/FlowLive.vue');
 const FlowOnAir = () => import('./pages/flow/FlowOnAir.vue');
 const FlowNotAssigned = () => import('./pages/flow/FlowNotAssigned.vue');
 
+/**
+ * Guard for the stateful flow steps (upload / confirm / live / on-air). These
+ * read the selected show from the `useHostFlow` singleton, which is lost on a
+ * hard reload or when the step URL is opened directly. Without a show the page
+ * renders blank (no date, frozen countdown, no auto-start). Refetch once; if a
+ * show still can't be resolved, bounce through the smart `/stream` redirect.
+ */
+export async function ensureFlowReady(
+  _to: unknown,
+  _from: unknown,
+  next: (target?: string) => void
+): Promise<void> {
+  const { useHostFlow } = await import('./composables');
+  const flow = useHostFlow();
+  if (!flow.show.value) {
+    await flow.fetchMyShow();
+  }
+  if (!flow.show.value) {
+    next('/stream');
+    return;
+  }
+  next();
+}
+
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -132,21 +156,25 @@ const router = createRouter({
           path: 'upload',
           name: 'stream-upload',
           component: FlowUpload,
+          beforeEnter: ensureFlowReady,
         },
         {
           path: 'confirm',
           name: 'stream-confirm',
           component: FlowConfirm,
+          beforeEnter: ensureFlowReady,
         },
         {
           path: 'live',
           name: 'stream-live',
           component: FlowLive,
+          beforeEnter: ensureFlowReady,
         },
         {
           path: 'on-air',
           name: 'stream-on-air',
           component: FlowOnAir,
+          beforeEnter: ensureFlowReady,
         },
         {
           // Legacy redirects
