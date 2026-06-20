@@ -1481,7 +1481,16 @@ async fn publish_stream_to_shows_archive(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Show {} not found", show_id)))?;
 
-    let key = storage::build_show_archive_key(&show.show_type, &show.title, &show.date);
+    // Build the human-friendly key, then number it (`…-2.mp3`, `…-3.mp3`, …) if a
+    // recording for this show already exists, so repeat broadcasts of the same
+    // show never overwrite each other.
+    let base_key = storage::build_show_archive_key(&show.show_type, &show.title, &show.date);
+    let key = storage::unique_object_key(
+        &state.s3_client,
+        &state.config.r2_shows_bucket_name,
+        &base_key,
+    )
+    .await;
 
     // Transcode the captured broadcast (WebM/Opus) to a temp MP3 on disk.
     let mp3_path = audio::convert_file_to_mp3(artifact_path, &state.config).await?;

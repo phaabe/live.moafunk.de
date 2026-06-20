@@ -435,6 +435,59 @@ pub fn build_show_archive_key(show_type: &str, title: &str, date: &str) -> Strin
     format!("shows/{}/{}/{}.mp3", type_slug, stem, stem)
 }
 
+/// Insert a `-{n}` suffix before the extension of an object key's filename,
+/// keeping its directory. `shows/x/stem.mp3`, 2 → `shows/x/stem-2.mp3`. A key
+/// with no extension just gets the suffix appended.
+pub fn numbered_key(key: &str, n: u32) -> String {
+    let (dir, file) = match key.rsplit_once('/') {
+        Some((d, f)) => (Some(d), f),
+        None => (None, key),
+    };
+    let numbered = match file.rsplit_once('.') {
+        Some((stem, ext)) => format!("{}-{}.{}", stem, n, ext),
+        None => format!("{}-{}", file, n),
+    };
+    match dir {
+        Some(d) => format!("{}/{}", d, numbered),
+        None => numbered,
+    }
+}
+
+/// Resolve `desired_key` to a key that does not yet exist in `bucket`: the base
+/// key if it's free, otherwise `…-2`, `…-3`, … (see [`numbered_key`]) so repeated
+/// recordings of the same show never overwrite each other. Probes via HEAD; a
+/// successful HEAD means the object exists. The probe is bounded — on the
+/// (practically impossible) miss it falls back to the base key.
+pub async fn unique_object_key(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    desired_key: &str,
+) -> String {
+    if !object_exists(client, bucket, desired_key).await {
+        return desired_key.to_string();
+    }
+    for n in 2..=999 {
+        let candidate = numbered_key(desired_key, n);
+        if !object_exists(client, bucket, &candidate).await {
+            return candidate;
+        }
+    }
+    desired_key.to_string()
+}
+
+/// Whether `key` exists in `bucket`. A successful HEAD ⇒ exists; any error
+/// (NotFound or transient) ⇒ treated as absent, matching prior overwrite
+/// behaviour on the base key.
+async fn object_exists(client: &aws_sdk_s3::Client, bucket: &str, key: &str) -> bool {
+    client
+        .head_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .is_ok()
+}
+
 fn extract_ext(filename: &str) -> String {
     std::path::Path::new(filename)
         .extension()
@@ -1129,6 +1182,28 @@ mod tests {
             build_show_archive_key("", "", "2026-01-02"),
             "shows/untitled/2026-01-02-show/2026-01-02-show.mp3"
         );
+    }
+
+    #[test]
+    fn numbered_key_suffixes_filename_before_extension() {
+        // Numbers the filename stem, keeps the directory and extension.
+        assert_eq!(
+            numbered_key(
+                "shows/external/2026-06-20-testshow/2026-06-20-testshow.mp3",
+                2
+            ),
+            "shows/external/2026-06-20-testshow/2026-06-20-testshow-2.mp3"
+        );
+        assert_eq!(
+            numbered_key(
+                "shows/external/2026-06-20-testshow/2026-06-20-testshow.mp3",
+                10
+            ),
+            "shows/external/2026-06-20-testshow/2026-06-20-testshow-10.mp3"
+        );
+        // No directory and no extension are both handled.
+        assert_eq!(numbered_key("stem.mp3", 3), "stem-3.mp3");
+        assert_eq!(numbered_key("noext", 2), "noext-2");
     }
 
     #[tokio::test]
