@@ -21,16 +21,16 @@
 .tracks-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 1px;
-  background: var(--hair);
-  border-top: 1px solid var(--hair);
-  border-bottom: 1px solid var(--hair);
+  gap: 24px;
   max-width: 1200px;
   margin: 0 auto 80px;
+  padding: 0 24px;
 }
 
 .track-tile {
   background: var(--paper);
+  border: 1px solid var(--hair);
+  border-radius: 2px;
   padding: 0;
   cursor: pointer;
   transition: background .12s ease;
@@ -92,7 +92,8 @@
   .re-header { padding: 44px 20px 36px; }
   .tracks-grid {
     grid-template-columns: 1fr 1fr;
-    gap: 1px;
+    gap: 16px;
+    padding: 0 16px;
   }
   .track-info { padding: 10px 12px 14px; }
   .track-title { font-size: 12px; }
