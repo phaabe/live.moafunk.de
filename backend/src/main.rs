@@ -201,6 +201,15 @@ async fn list_recording_versions_handler(
     handlers::recording::list_recording_versions(State(state), headers, path).await
 }
 
+async fn reexport_recording_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    path: axum::extract::Path<i64>,
+    body: Option<axum::Json<handlers::recording::ReexportRequest>>,
+) -> Result<impl IntoResponse> {
+    handlers::recording::reexport_recording_to_archive(State(state), headers, path, body).await
+}
+
 // Recording finalize WebSocket handler wrapper
 async fn recording_finalize_ws_handler(
     ws: WebSocketUpgrade,
@@ -667,6 +676,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/recordings",
             get(list_recording_versions_handler),
+        )
+        .route(
+            "/api/shows/:id/recordings/reexport",
+            post(reexport_recording_handler),
         )
         // Recording finalize WebSocket for merging tracks with progress
         .route("/ws/recording/finalize", get(recording_finalize_ws_handler))
