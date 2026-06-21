@@ -11,6 +11,13 @@
       data-domain="live.moafunk.de"
       src="https://plausible.moafunk.de/js/plausible.js"
     ></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" type="text/css" href="/main.css" media="screen" />
 
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
@@ -19,58 +26,116 @@
     <link rel="manifest" href="/icons/site.webmanifest" />
     <link rel="mask-icon" href="/icons/safari-pinned-tab.svg" color="#333333" />
     <link rel="shortcut icon" href="/icons/favicon.ico" />
-    <meta name="msapplication-TileColor" content="#2b5797" />
+    <meta name="msapplication-TileColor" content="#F4EBC6" />
     <meta name="msapplication-config" content="/icons/browserconfig.xml" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#F4EBC6" />
     <meta
       http-equiv="Content-Security-Policy"
       content="connect-src 'self' https://admin.live.moafunk.de https://stream.moafunk.de https://plausible.moafunk.de/api/event;"
     />
   </head>
   <body>
-    <div class="container">
-      <!-- TOP -->
-      <br /><br />
-      <img class="logo" src="/moafunk.png" alt="Moafunk Logo" />
-      <h2>Moafunk Radio</h2>
-      We broadcast music<br />from Moabit.<br />
+    <main class="page">
+      <!-- top bar: local clock + coordinates -->
+      <div class="topline">
+        <span class="now"><span id="clock">--:--</span>&nbsp;· moabit</span>
+        <span><span id="coords"></span><span class="cursor" id="coordCursor"></span></span>
+      </div>
 
-      <!-- PLAY BUTTON -->
+      <!-- globe — .logo keeps the emoji-explosion click handler from main.ts -->
+      <div class="globe-wrap logo">
+        <div class="sun"></div>
+        <div class="disc">
+          <svg
+            viewBox="0 0 184 124"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            aria-label="moafunk globe"
+          >
+            <ellipse cx="92" cy="62" rx="84" ry="54" />
+            <ellipse cx="92" cy="62" rx="55" ry="54" stroke-width="1.5" />
+            <ellipse cx="92" cy="62" rx="27" ry="54" stroke-width="1.5" />
+            <line x1="92" y1="8" x2="92" y2="116" stroke-width="1.5" />
+            <line x1="8" y1="62" x2="176" y2="62" stroke-width="1.5" />
+            <line x1="12.8" y1="44" x2="171.2" y2="44" stroke-width="1.5" />
+            <line x1="12.8" y1="80" x2="171.2" y2="80" stroke-width="1.5" />
+            <line x1="29.4" y1="26" x2="154.6" y2="26" stroke-width="1.5" />
+            <line x1="29.4" y1="98" x2="154.6" y2="98" stroke-width="1.5" />
+            <circle class="pin" cx="118" cy="40" r="5" fill="currentColor" stroke="none" />
+            <circle cx="118" cy="40" r="10" stroke-width="1.8" />
+          </svg>
+        </div>
+      </div>
+
+      <h1 class="wordmark">moafunk</h1>
+      <p class="tagline">community radio&nbsp;moabit worldwide</p>
+
+      <!-- player elements — sources set dynamically by player.ts -->
       <video id="videoElement" class="video-element"></video>
-      <!-- No static <source>: player.ts sets the source dynamically when a show
-           goes live (Icecast /live.mp3, or NMS HLS/FLV in legacy mode). A static
-           source made the browser probe the now-retired NMS on every load and spam
-           the console with x-mpegURL decode errors. -->
       <audio id="player"></audio>
-      <div class="actions">
-        <button id="btn-play" class="btn" onclick="play()"></button>
-        <script type="module" src="/main.ts"></script>
-      </div>
-      <br /><br />
 
-      <!-- TEXT 
-        <h3>Hello World!</h3>
-        Moafunk Radio is a new living project under construction.<br/>
-        We are constantly improving the concept, the web page, the moderations, the music.<br/>
-        However, this is all about music and about giving people<br/>
-        a place to broadcast their music. Get in touch!<br/><br/>-->
-      <br />
+      <!-- tune-in button — player.ts sets className to "btn" or "btn btn-pause" -->
+      <button id="btn-play" class="btn" onclick="play()" aria-label="tune in">
+        <span class="knob">
+          <svg class="tri" width="64" height="74" viewBox="0 0 26 28" aria-hidden="true">
+            <path d="M2 2 L24 14 L2 26 Z" fill="currentColor" />
+          </svg>
+          <span class="pause" aria-hidden="true"><span></span><span></span></span>
+        </span>
+      </button>
+
       <div id="status"></div>
-      <br /><br />
-      <h3>Recorded Shows</h3>
-      <div class="links">
-        Listen to our <a href="/pages/re-listen.html">recordings</a>.<br /><br />
-      <br />
-      </div>
-      <h3>Links</h3>
-      <div class="links">
-        Show some love on <a href="https://www.instagram.com/moafunk_radio/">The Gram</a>.<br />
-        Stay tuned on <a href="https://2a5.de/h7JV">Telegram</a>.<br />
-        <a href="/pages/tech-rider.html">Tech Rider</a><br />
-        <!-- <a href="/pages/unheard-artists-form.html">UNHEARD Artists Form</a> -->
-      </div>
-      <br /><br />
-      <br /><br /><br /><br /><br /><br />
-    </div>
+      <p class="announce">
+        we announce shows on <a href="https://2a5.de/h7JV">telegram</a> &amp;
+        <a href="https://www.instagram.com/moafunk_radio/">insta</a>
+      </p>
+
+      <nav class="links">
+        <a href="/pages/re-listen.html">recordings</a>
+      </nav>
+    </main>
+
+    <script type="module" src="/main.ts"></script>
+
+    <script>
+      /* live clock */
+      (function () {
+        var el = document.getElementById('clock');
+        function tick() {
+          var d = new Date();
+          el.textContent =
+            String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        }
+        tick();
+        setInterval(tick, 10000);
+      })();
+
+      /* coordinate typewriter */
+      (function () {
+        var COORDS = '52.53°N  13.34°E';
+        var el = document.getElementById('coords');
+        var cur = document.getElementById('coordCursor');
+        var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (reduced) {
+          el.textContent = COORDS;
+          hideCursor();
+          return;
+        }
+        var i = 0;
+        setTimeout(function step() {
+          el.textContent = COORDS.slice(0, i);
+          if (i++ <= COORDS.length) {
+            setTimeout(step, 55);
+          } else {
+            setTimeout(hideCursor, 700);
+          }
+        }, 600);
+        function hideCursor() {
+          cur.style.animation = 'none';
+          cur.style.visibility = 'hidden';
+        }
+      })();
+    </script>
   </body>
 </html>

@@ -114,10 +114,9 @@ export function updateLiveStatus(live: boolean): void {
 
   if (statusElement) {
     if (live) {
-      statusElement.innerHTML = 'Live now';
+      statusElement.innerHTML = 'on air';
     } else {
-      statusElement.innerHTML =
-        'Off air<br/><span style="font-size:13pt;">(we announce shows via Tele- and Instagram)</span>';
+      statusElement.innerHTML = 'off air';
     }
   }
 }

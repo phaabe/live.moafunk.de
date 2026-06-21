@@ -1,124 +1,103 @@
+/* recordings page — inherits --paper, --ink, --logo, --muted, --hair from main.css */
+
+.re-header {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 64px 28px 48px;
+  text-align: center;
+}
+.re-header h1 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  margin: 0 0 8px;
+}
+.re-header .back {
+  font-size: 13px;
+  color: var(--muted);
+}
+.re-header .back a { color: var(--muted); }
+
 .tracks-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 20px;
-  margin: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1px;
+  background: var(--hair);
+  border-top: 1px solid var(--hair);
+  border-bottom: 1px solid var(--hair);
   max-width: 1200px;
-  margin: 0 auto;
-  padding: 20px;
-}
-
-@media (max-width: 768px) {
-  .tracks-grid {
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 15px;
-    margin: 15px;
-    padding: 15px;
-  }
-}
-
-@media (max-width: 480px) {
-  .tracks-grid {
-    grid-template-columns: 1fr;
-    gap: 0;
-    margin: 0;
-    padding: 0;
-  }
-
-  .track-tile {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    text-align: center;
-    padding: 40px 20px;
-    margin: 0;
-    border-radius: 0;
-  }
-
-  .track-artwork {
-    width: 80%;
-    max-width: 280px;
-    aspect-ratio: 1;
-    margin-bottom: 30px;
-  }
-
-  .track-title {
-    font-size: 24px !important;
-    margin-bottom: 15px;
-  }
-
-  .track-date {
-    font-size: 18px !important;
-    margin-bottom: 10px;
-  }
-
-  .track-duration {
-    font-size: 16px !important;
-    margin-bottom: 15px;
-  }
-
-  .track-description {
-    font-size: 14px !important;
-    max-width: 300px;
-  }
+  margin: 0 auto 80px;
 }
 
 .track-tile {
+  background: var(--paper);
+  padding: 0;
   cursor: pointer;
-  border: 2px solid #000;
-  transition: all 0.3s ease;
-  background: white;
-  padding: 15px;
-  text-align: left;
+  transition: background .12s ease;
+  display: flex;
+  flex-direction: column;
 }
-
-.track-tile:hover {
-  transform: scale(1.02);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-}
+.track-tile:hover { background: var(--paper-2); }
 
 .track-artwork {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
-  background: #f0f0f0;
   display: block;
-  margin-bottom: 10px;
+  background: var(--paper-2);
+}
+
+.track-info {
+  padding: 14px 16px 18px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 
 .track-title {
-  margin: 10px 0 5px 0;
-  font-size: 14pt;
-  font-weight: bold;
-  line-height: 1.2;
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0 0 6px;
+  color: var(--ink);
 }
 
-.track-date {
-  font-size: 12pt;
-  color: #666;
-  margin-bottom: 5px;
-}
-
-.track-duration {
-  font-size: 11pt;
-  color: #999;
+.track-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  letter-spacing: .02em;
 }
 
 .track-description {
-  font-size: 10pt;
-  color: #777;
-  margin-top: 5px;
-  line-height: 1.3;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
 }
 
-.container {
+.re-footer {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 0 28px 64px;
   text-align: center;
-  padding: 20px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.re-footer a { color: var(--muted); }
+
+@media (max-width: 540px) {
+  .re-header { padding: 44px 20px 36px; }
+  .tracks-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+  }
+  .track-info { padding: 10px 12px 14px; }
+  .track-title { font-size: 12px; }
 }
 
-.logo {
-  width: 150px;
-  margin-bottom: 20px;
+@media (max-width: 360px) {
+  .tracks-grid { grid-template-columns: 1fr; }
 }
