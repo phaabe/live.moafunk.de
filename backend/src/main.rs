@@ -299,6 +299,40 @@ async fn main() -> anyhow::Result<()> {
         telegram_edit_sessions,
     });
 
+    // One-shot admin subcommands: run against the same config/db/R2 as the server,
+    // then exit before any background tasks or the listener start. Invoked locally
+    // on the box (e.g. `docker exec unheard-api ./unheard-backend reexport-archive 18`),
+    // so they carry no HTTP auth. No args → fall through and serve normally.
+    let cli_args: Vec<String> = std::env::args().collect();
+    if let Some(subcommand) = cli_args.get(1) {
+        match subcommand.as_str() {
+            "reexport-archive" => {
+                let show_id: i64 = cli_args
+                    .get(2)
+                    .and_then(|s| s.parse().ok())
+                    .expect("usage: unheard-backend reexport-archive <show_id> [version]");
+                let version = cli_args.get(3).cloned();
+                match handlers::recording::reexport_to_archive(&state, show_id, version).await {
+                    Ok(r) => {
+                        println!(
+                            "re-exported show {} (version {}) -> {}",
+                            r.show_id, r.version, r.archive_key
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("re-export failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            other => {
+                eprintln!("unknown subcommand: {}", other);
+                std::process::exit(2);
+            }
+        }
+    }
+
     // Pre-generate and upload default cover to S3 at startup
     {
         let state_clone = state.clone();
