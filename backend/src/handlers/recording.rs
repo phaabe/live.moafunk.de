@@ -861,9 +861,22 @@ pub async fn reexport_recording_to_archive(
 ) -> Result<impl IntoResponse> {
     let _user = require_admin(&state, &headers).await?;
     let req = body.map(|Json(b)| b).unwrap_or_default();
+    let resp = reexport_to_archive(&state, show_id, req.version).await?;
+    Ok(Json(resp))
+}
 
+/// Core of the archive re-export, shared by the HTTP handler and the
+/// `reexport-archive` CLI subcommand (which carries no auth — it runs locally on
+/// the box via `docker exec`). Resolves the target version (explicit or latest),
+/// pulls the raw capture from R2, re-derives the archive mp3, and clears any
+/// stale `failed` status.
+pub async fn reexport_to_archive(
+    state: &Arc<AppState>,
+    show_id: i64,
+    version_filter: Option<String>,
+) -> Result<ReexportResponse> {
     // Resolve the target version: the explicit one, else the most recent.
-    let version = match req.version {
+    let version = match version_filter {
         Some(ref v) => crate::db::get_recording_version(&state.db, show_id, v)
             .await?
             .ok_or_else(|| {
@@ -886,7 +899,7 @@ pub async fn reexport_recording_to_archive(
     // Pull the raw capture (system of record) back from R2 to a temp file so the
     // existing transcode→publish path can run file→file. ./data/recordings-temp
     // is the same scratch dir the live recorder uses.
-    let (raw_data, _content_type) = storage::download_file(&state, &raw_key).await?;
+    let (raw_data, _content_type) = storage::download_file(state, &raw_key).await?;
     let temp_path = PathBuf::from("./data/recordings-temp")
         .join(format!("reexport_{}_{}.webm", show_id, version.version));
     if let Some(parent) = temp_path.parent() {
@@ -897,7 +910,7 @@ pub async fn reexport_recording_to_archive(
         .map_err(|e| AppError::Internal(format!("Failed to stage raw recording: {}", e)))?;
 
     // Re-derive the archive mp3, always cleaning up the staged webm afterwards.
-    let publish = publish_stream_to_shows_archive(&state, show_id, &temp_path).await;
+    let publish = publish_stream_to_shows_archive(state, show_id, &temp_path).await;
     let _ = tokio::fs::remove_file(&temp_path).await;
     let archive_key = publish?;
 
@@ -922,11 +935,11 @@ pub async fn reexport_recording_to_archive(
         archive_key
     );
 
-    Ok(Json(ReexportResponse {
+    Ok(ReexportResponse {
         show_id,
         version: version.version,
         archive_key,
-    }))
+    })
 }
 
 /// Helper to convert RecordingError to AppError
