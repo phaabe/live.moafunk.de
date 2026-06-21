@@ -264,53 +264,34 @@ pub struct FinalizedRecording {
     pub incomplete: bool,
 }
 
-/// Fraction of the scheduled show length below which a recording is treated as
-/// suspiciously short (recorder likely died early). 50% is a generous floor.
-const SHORT_RECORDING_FRACTION: f64 = 0.5;
+/// A recording shorter than this is treated as essentially empty — the recorder
+/// started but produced no usable audio (e.g. it died seconds in). No real show
+/// is under a minute, so this floor never fails a legitimate broadcast.
+const MIN_RECORDING_SECS: u64 = 60;
 
-/// If the recorded duration is implausibly short versus the show's scheduled
-/// length, return a human-readable reason; otherwise `None`. Returns `None` when
-/// the duration or schedule is unknown (can't judge).
-async fn detect_short_recording(
-    state: &Arc<AppState>,
-    show_id: i64,
-    local_duration_ms: Option<u64>,
-) -> Option<String> {
+/// If the recorded duration is implausibly short, return a human-readable reason;
+/// otherwise `None`. Returns `None` when the duration is unknown (can't judge).
+///
+/// We deliberately do NOT compare against the show's *scheduled* slot. Slots are
+/// routinely padded (a 3 h show booked into a 12 h block), so a schedule-relative
+/// floor fails legitimate short shows — and the recorder runs exactly as long as
+/// the broadcast, so on a normal stop the recording is complete by definition.
+/// Duration alone cannot distinguish a short show from a truncated one; real
+/// truncation is caught by the structural checks (mid-recording write failure,
+/// segment-concat failure, R2 size mismatch). This leaves only an absolute floor
+/// to catch a recorder that produced essentially nothing.
+fn detect_short_recording(show_id: i64, local_duration_ms: Option<u64>) -> Option<String> {
     let duration_ms = local_duration_ms?;
-    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-        .bind(show_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()??;
-    let scheduled_secs = scheduled_duration_secs(&show)?;
-    let threshold_ms = (scheduled_secs as f64 * SHORT_RECORDING_FRACTION * 1000.0) as u64;
-    if duration_ms < threshold_ms {
-        Some(format!(
-            "recording is {}s but show was scheduled for {}s",
-            duration_ms / 1000,
-            scheduled_secs
-        ))
+    if duration_ms < MIN_RECORDING_SECS * 1000 {
+        let reason = format!(
+            "recording for show {} is only {}s — essentially empty",
+            show_id,
+            duration_ms / 1000
+        );
+        Some(reason)
     } else {
         None
     }
-}
-
-/// Scheduled show length in seconds from `start_time`/`end_time` ("HH:MM").
-/// Handles overnight shows (end ≤ start → next day). `None` if times are unset
-/// or unparseable.
-fn scheduled_duration_secs(show: &models::Show) -> Option<u64> {
-    let parse = |t: &str| -> Option<i64> {
-        let (h, m) = t.split_once(':')?;
-        Some(h.parse::<i64>().ok()? * 3600 + m.parse::<i64>().ok()? * 60)
-    };
-    let start = parse(show.start_time.as_deref()?)?;
-    let end = parse(show.end_time.as_deref()?)?;
-    let secs = if end > start {
-        end - start
-    } else {
-        end + 24 * 3600 - start
-    };
-    (secs > 0).then_some(secs as u64)
 }
 
 /// Stop the active recording (if any), upload the raw recording + markers to R2,
@@ -433,7 +414,7 @@ async fn upload_artifact_and_record(
         crate::metrics::inc_recording_size_mismatch();
         failure_reason.get_or_insert(msg);
     }
-    if let Some(short) = detect_short_recording(state, show_id, local_duration_ms).await {
+    if let Some(short) = detect_short_recording(show_id, local_duration_ms) {
         tracing::warn!("Recording for show {} looks short: {}", show_id, short);
         failure_reason.get_or_insert(short);
     }
@@ -846,6 +827,106 @@ pub async fn list_recording_versions(
     }
 
     Ok(Json(ListRecordingVersionsResponse { recordings }))
+}
+
+/// Request body for [`reexport_recording_to_archive`]. Empty body is fine.
+#[derive(Debug, Default, Deserialize)]
+pub struct ReexportRequest {
+    /// Version to re-export. Defaults to the show's most recent recording.
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+/// Response for a successful re-export to the shows archive.
+#[derive(Debug, Serialize)]
+pub struct ReexportResponse {
+    pub show_id: i64,
+    pub version: String,
+    pub archive_key: String,
+}
+
+/// POST /api/shows/:id/recordings/reexport
+///
+/// Re-derive the curated archive mp3 (`moafunk-prod/shows/…mp3`) from a finished
+/// raw capture and clear a stale `failed` status. Recovery tool for a recording
+/// the verifier wrongly flagged (e.g. a normal-length show in a padded slot) or
+/// whose best-effort archive publish was skipped/failed. The raw capture under
+/// `recordings/…` is the system of record and is never touched — this only pulls
+/// it back, transcodes a fresh mp3 to the archive, and un-fails the row. Admin only.
+pub async fn reexport_recording_to_archive(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(show_id): axum::extract::Path<i64>,
+    body: Option<Json<ReexportRequest>>,
+) -> Result<impl IntoResponse> {
+    let _user = require_admin(&state, &headers).await?;
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+
+    // Resolve the target version: the explicit one, else the most recent.
+    let version = match req.version {
+        Some(ref v) => crate::db::get_recording_version(&state.db, show_id, v)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("No recording '{}' for show {}", v, show_id))
+            })?,
+        None => crate::db::list_recording_versions(&state.db, show_id)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::NotFound(format!("No recordings for show {}", show_id)))?,
+    };
+
+    let raw_key = version.raw_key.clone().ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "Recording '{}' for show {} has no raw capture to re-export",
+            version.version, show_id
+        ))
+    })?;
+
+    // Pull the raw capture (system of record) back from R2 to a temp file so the
+    // existing transcode→publish path can run file→file. ./data/recordings-temp
+    // is the same scratch dir the live recorder uses.
+    let (raw_data, _content_type) = storage::download_file(&state, &raw_key).await?;
+    let temp_path = PathBuf::from("./data/recordings-temp")
+        .join(format!("reexport_{}_{}.webm", show_id, version.version));
+    if let Some(parent) = temp_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    tokio::fs::write(&temp_path, &raw_data)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to stage raw recording: {}", e)))?;
+
+    // Re-derive the archive mp3, always cleaning up the staged webm afterwards.
+    let publish = publish_stream_to_shows_archive(&state, show_id, &temp_path).await;
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    let archive_key = publish?;
+
+    // The capture is a complete raw recording — clear any stale `failed` status so
+    // it stops counting as a missing archive (the dead-man's-switch).
+    if version.status == "failed" {
+        if let Err(e) =
+            crate::db::update_recording_version_status(&state.db, version.id, "raw", None).await
+        {
+            tracing::error!(
+                "Re-export: failed to clear failed status on version {}: {}",
+                version.id,
+                e
+            );
+        }
+    }
+
+    tracing::info!(
+        "Re-exported show {} recording '{}' to shows archive: {}",
+        show_id,
+        version.version,
+        archive_key
+    );
+
+    Ok(Json(ReexportResponse {
+        show_id,
+        version: version.version,
+        archive_key,
+    }))
 }
 
 /// Helper to convert RecordingError to AppError
@@ -1474,7 +1555,7 @@ async fn publish_stream_to_shows_archive(
     state: &Arc<AppState>,
     show_id: i64,
     artifact_path: &Path,
-) -> Result<()> {
+) -> Result<String> {
     let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
         .bind(show_id)
         .fetch_optional(&state.db)
@@ -1529,7 +1610,7 @@ async fn publish_stream_to_shows_archive(
         state.config.r2_shows_bucket_name,
         key
     );
-    Ok(())
+    Ok(key)
 }
 
 /// Build and run the FFmpeg command for merging.
@@ -1677,6 +1758,25 @@ async fn send_progress_msg(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_recording_flags_only_essentially_empty_captures() {
+        // Unknown duration → can't judge → never flagged.
+        assert_eq!(detect_short_recording(18, None), None);
+        // A normal-length broadcast in a padded slot must NOT be flagged
+        // (regression: Küssen #18 — 3.5 h show in a 12 h slot was failed).
+        assert_eq!(detect_short_recording(18, Some(12_564_000)), None);
+        // A couple of minutes is a real (if short) show — keep it.
+        assert_eq!(detect_short_recording(18, Some(120_000)), None);
+        // Right at the floor is still acceptable.
+        assert_eq!(
+            detect_short_recording(18, Some(MIN_RECORDING_SECS * 1000)),
+            None
+        );
+        // Below the absolute floor → essentially empty → flagged.
+        assert!(detect_short_recording(18, Some(5_000)).is_some());
+        assert!(detect_short_recording(18, Some(0)).is_some());
+    }
 
     #[test]
     fn parses_well_formed_seg_dir_names() {
