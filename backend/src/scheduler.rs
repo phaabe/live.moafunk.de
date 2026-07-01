@@ -10,6 +10,11 @@ use crate::{models, telegram_notify, AppState};
 /// finalize still in flight.
 const RECORDING_ALERT_GRACE_MINS: i64 = 15;
 
+/// If a pre-recorded show has no `end_time` recorded, how long past its
+/// scheduled start we'll still auto-start it. Bounds how far a long server
+/// outage can reach back and kick off a stale, long-past show.
+const PRERECORDED_START_GRACE_HOURS: i64 = 6;
+
 /// Check if any artist Instagram previews need to be sent today.
 ///
 /// Logic:
@@ -134,6 +139,18 @@ fn parse_hhmm(s: &str) -> Option<NaiveTime> {
     NaiveTime::parse_from_str(s, "%H:%M").ok()
 }
 
+/// Compute a show's scheduled start as a UTC instant, interpreting `date`+`start_time`
+/// in Europe/Berlin. Returns `None` if the date/time can't be parsed or the
+/// local time is invalid (DST gap).
+fn show_start_utc(date: &str, start_time: &str) -> Option<DateTime<Utc>> {
+    let day = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let start = parse_hhmm(start_time)?;
+    Berlin
+        .from_local_datetime(&day.and_time(start))
+        .single()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
 /// Compute a show's scheduled end as a UTC instant, interpreting `date`+`end_time`
 /// in Europe/Berlin. Handles overnight shows (end ≤ start → next calendar day).
 /// Returns `None` if the date/time can't be parsed or the local time is invalid
@@ -246,9 +263,139 @@ pub async fn check_missing_recordings(state: Arc<AppState>) {
     }
 }
 
+/// Resolve the username to stream as for a show: the directly-assigned host
+/// (`host_user_id`, external/brunchtime shows), or failing that the first
+/// assigned artist's linked user (UNHEARD shows). Mirrors the two lookup paths
+/// in `handlers::api::resolve_user_shows`.
+async fn resolve_show_host_username(state: &Arc<AppState>, show: &models::Show) -> Option<String> {
+    if let Some(host_user_id) = show.host_user_id {
+        if let Ok(Some(username)) =
+            sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = ?")
+                .bind(host_user_id)
+                .fetch_optional(&state.db)
+                .await
+        {
+            return Some(username);
+        }
+    }
+
+    sqlx::query_scalar::<_, String>(
+        "SELECT u.username FROM artist_show_assignments asa \
+         INNER JOIN artists a ON a.id = asa.artist_id \
+         INNER JOIN users u ON u.id = a.user_id \
+         WHERE asa.show_id = ? \
+         ORDER BY asa.sort_order LIMIT 1",
+    )
+    .bind(show.id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Auto-start a pre-recorded show's stream once its scheduled start time
+/// arrives, so going live doesn't depend on an admin having the waiting-room
+/// page open in a browser tab (see issue #240). Scoped to confirmed uploads
+/// that haven't been started yet, and bounded so a show that's already ended
+/// (or, lacking an end time, is well past its start) is never resurrected.
+pub async fn check_prerecorded_show_start(state: Arc<AppState>) {
+    let now = Utc::now();
+
+    let shows: Vec<models::Show> = match sqlx::query_as(
+        "SELECT * FROM shows \
+         WHERE stream_mode = 'prerecorded' \
+           AND prerecorded_confirmed_at IS NOT NULL \
+           AND prerecorded_started_at IS NULL \
+           AND start_time IS NOT NULL \
+           AND date >= date('now', '-2 days')",
+    )
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("Prerecorded auto-start: failed to query shows: {e}");
+            return;
+        }
+    };
+
+    for show in &shows {
+        let Some(start_time) = show.start_time.as_deref() else {
+            continue;
+        };
+        let Some(start) = show_start_utc(&show.date, start_time) else {
+            tracing::warn!(
+                "Prerecorded auto-start: cannot parse start time for show {}",
+                show.id
+            );
+            continue;
+        };
+        if now < start {
+            continue; // not time yet
+        }
+
+        // Never resurrect a show that has already ended, or that's well past
+        // its start with no recorded end time.
+        let past_grace = match show.end_time.as_deref() {
+            Some(end_time) => match show_end_utc(&show.date, Some(start_time), end_time) {
+                Some(end) => now >= end,
+                None => now >= start + chrono::Duration::hours(PRERECORDED_START_GRACE_HOURS),
+            },
+            None => now >= start + chrono::Duration::hours(PRERECORDED_START_GRACE_HOURS),
+        };
+        if past_grace {
+            tracing::warn!(
+                "Prerecorded auto-start: show {} ('{}') is stale, skipping",
+                show.id,
+                show.title
+            );
+            continue;
+        }
+
+        let Some(username) = resolve_show_host_username(&state, show).await else {
+            tracing::error!(
+                "Prerecorded auto-start: no host user found for show {} ('{}')",
+                show.id,
+                show.title
+            );
+            continue;
+        };
+
+        tracing::info!(
+            "Prerecorded auto-start: starting show {} ('{}') for user '{}'",
+            show.id,
+            show.title,
+            username
+        );
+
+        if let Err(e) =
+            crate::handlers::api::start_prerecorded_show_stream(&state, show, &username).await
+        {
+            tracing::error!(
+                "Prerecorded auto-start: failed to start show {} ('{}'): {e}",
+                show.id,
+                show.title
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_start_utc_handles_evening_show() {
+        // 18:00 Berlin (CEST, summer) → 16:00 UTC.
+        let start = show_start_utc("2026-06-01", "18:00").unwrap();
+        assert_eq!(start.to_rfc3339(), "2026-06-01T16:00:00+00:00");
+    }
+
+    #[test]
+    fn show_start_utc_rejects_garbage() {
+        assert!(show_start_utc("not-a-date", "18:00").is_none());
+        assert!(show_start_utc("2026-06-01", "nope").is_none());
+    }
 
     #[test]
     fn show_end_utc_handles_evening_show() {

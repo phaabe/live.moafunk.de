@@ -197,6 +197,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // who assigns a guest as the host still retains edit rights over the show.
     add_column_if_missing(pool, "shows", "created_by", "INTEGER REFERENCES users(id)").await?;
 
+    // When the pre-recorded-show auto-start scheduler fired go-live for this
+    // show. Ensures it starts exactly once (a manual "Go Live" click also stamps
+    // this so the scheduler doesn't restart an already-running stream).
+    add_column_if_missing(pool, "shows", "prerecorded_started_at", "TEXT").await?;
+
     // App settings table for storing OAuth tokens and other key-value config
     sqlx::query(
         r#"

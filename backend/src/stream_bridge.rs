@@ -525,7 +525,7 @@ pub async fn start_prerecorded_stream(
 
         // Spawn FFmpeg with file/URL input:
         // -re: read at native frame rate (essential for streaming prerecorded content)
-        let child = Command::new("ffmpeg")
+        let mut child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -542,9 +542,26 @@ pub async fn start_prerecorded_stream(
             .spawn()
             .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
 
+        // Surface FFmpeg's warnings/errors (bad URL, unreachable Icecast, bad
+        // codec, ...) to the logs instead of silently discarding them — a failed
+        // prerecorded stream previously exited with no visible reason.
+        if let Some(stderr) = child.stderr.take() {
+            let log_user = user.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::warn!("ffmpeg (prerecorded, user '{}'): {}", log_user, line);
+                }
+            });
+        }
+
         state.current_user = Some(user.clone());
         state.ffmpeg_handle = Some(child);
-        // No ffmpeg_stdin for prerecorded streams
+        // No ffmpeg_stdin for prerecorded streams.
+        // Not a test broadcast: make sure a stale `is_test = true` from an
+        // earlier rehearsal never leaks in and flips the public status off.
+        state.is_test = false;
     }
 
     // Spawn a background task to monitor when FFmpeg exits
@@ -564,6 +581,7 @@ pub async fn start_prerecorded_stream(
                         );
                         state.current_user = None;
                         state.ffmpeg_handle = None;
+                        state.is_test = false;
                         true
                     }
                     Ok(None) => false, // still running
@@ -575,6 +593,7 @@ pub async fn start_prerecorded_stream(
                         );
                         state.current_user = None;
                         state.ffmpeg_handle = None;
+                        state.is_test = false;
                         true
                     }
                 }

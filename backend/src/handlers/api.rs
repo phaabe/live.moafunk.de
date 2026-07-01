@@ -5392,48 +5392,64 @@ pub async fn api_my_show_go_live(
 ) -> Result<impl IntoResponse> {
     let (user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
+    start_prerecorded_show_stream(&state, &show, &user.username).await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Prerecorded stream started",
+    })))
+}
+
+/// Start a show's pre-recorded stream: presign the uploaded file, push it
+/// through FFmpeg via the stream bridge, and stamp `prerecorded_started_at` so
+/// it's never auto-started twice. Shared by the manual "Go Live" button
+/// (`api_my_show_go_live`) and [`crate::scheduler::check_prerecorded_show_start`].
+pub async fn start_prerecorded_show_stream(
+    state: &Arc<AppState>,
+    show: &models::Show,
+    username: &str,
+) -> Result<()> {
     // Must have a confirmed prerecorded file
-    if show.prerecorded_key.is_none() {
-        return Err(AppError::BadRequest(
-            "No prerecorded file uploaded".to_string(),
-        ));
-    }
+    let key = show
+        .prerecorded_key
+        .as_ref()
+        .ok_or_else(|| AppError::BadRequest("No prerecorded file uploaded".to_string()))?;
     if show.prerecorded_confirmed_at.is_none() {
         return Err(AppError::BadRequest(
             "Prerecorded file not confirmed yet".to_string(),
         ));
     }
 
-    let key = show.prerecorded_key.as_ref().unwrap();
-
     // Generate a long-lived presigned URL for FFmpeg to read from (4 hours)
-    let presigned_url = storage::get_presigned_url(&state, key, 4 * 3600).await?;
+    let presigned_url = storage::get_presigned_url(state, key, 4 * 3600).await?;
     let push_target = state.config.producer_target();
 
     tracing::info!(
         "Starting prerecorded stream for show_id={}, user='{}', key='{}'",
         show.id,
-        user.username,
+        username,
         key
     );
 
     // Start the prerecorded stream via stream bridge
     crate::stream_bridge::start_prerecorded_stream(
         &state.stream_state,
-        user.username.clone(),
+        username.to_string(),
         &presigned_url,
         &push_target,
     )
     .await
     .map_err(|e| AppError::Internal(format!("Failed to start prerecorded stream: {}", e)))?;
 
-    // Notify via Telegram
-    telegram_notify::notify_stream_start(&state, &user.username);
+    sqlx::query("UPDATE shows SET prerecorded_started_at = datetime('now') WHERE id = ?")
+        .bind(show.id)
+        .execute(&state.db)
+        .await?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "Prerecorded stream started",
-    })))
+    // Notify via Telegram
+    telegram_notify::notify_stream_start(state, username);
+
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
