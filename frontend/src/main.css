@@ -110,6 +110,7 @@ a:hover {
   height: 138px;
   margin: 0 auto 30px;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 .sun {
   position: absolute;
