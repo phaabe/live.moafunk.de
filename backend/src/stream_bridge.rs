@@ -46,7 +46,15 @@ pub enum PushTarget {
 impl PushTarget {
     /// FFmpeg output args (encoder + muxer + destination) for this target. The
     /// caller prepends the input args (`-f webm -i pipe:0`, or `-re -i <url>`).
-    fn output_args(&self) -> Vec<String> {
+    ///
+    /// `transcode_audio`: the Icecast/Ogg leg can only skip re-encoding
+    /// (`-c:a copy`) when the source is *known* to already be Opus/Vorbis/FLAC
+    /// — true for the live browser path (MediaRecorder always emits WebM/Opus),
+    /// but not for a pre-recorded upload, which can be any codec the host
+    /// uploaded (MP3, AAC, WAV, ...). Muxing an incompatible codec straight into
+    /// Ogg fails outright, so pass `true` there to force a real encode. The RTMP
+    /// leg always transcodes to AAC regardless, so this only affects Icecast.
+    fn output_args(&self, transcode_audio: bool) -> Vec<String> {
         match self {
             PushTarget::Rtmp { destination } => vec![
                 "-c:a".into(),
@@ -61,26 +69,41 @@ impl PushTarget {
                 "flv".into(),
                 destination.clone(),
             ],
-            PushTarget::Icecast { url } => vec![
-                // No re-encode: copy the browser's Opus straight through and
-                // rewrap it into Ogg for the Icecast SOURCE (harbor) protocol.
-                // Liquidsoap owns the single lossy MP3 encode downstream, so the
-                // internal leg stays lossless — one fewer transcode than before.
-                //
-                // Fallback if `-c:a copy` ever streams unclean Ogg to the harbor
-                // (granulepos/timestamp issues on a live WebM/Opus source):
-                // encode lossless FLAC instead — still one lossy stage total —
-                //   "-c:a", "flac", "-content_type", "audio/ogg", "-f", "ogg".
-                "-c:a".into(),
-                "copy".into(),
+            PushTarget::Icecast { url } => {
+                let mut args: Vec<String> = if transcode_audio {
+                    // Source codec isn't guaranteed Opus/Vorbis/FLAC (pre-recorded
+                    // upload) — re-encode to Opus so the Ogg mux is always valid.
+                    vec![
+                        "-c:a".into(),
+                        "libopus".into(),
+                        "-b:a".into(),
+                        "128k".into(),
+                    ]
+                } else {
+                    // No re-encode: copy the browser's Opus straight through and
+                    // rewrap it into Ogg for the Icecast SOURCE (harbor) protocol.
+                    // Liquidsoap owns the single lossy MP3 encode downstream, so
+                    // the internal leg stays lossless — one fewer transcode than
+                    // before.
+                    //
+                    // Fallback if `-c:a copy` ever streams unclean Ogg to the
+                    // harbor (granulepos/timestamp issues on a live WebM/Opus
+                    // source): encode lossless FLAC instead — still one lossy
+                    // stage total — "-c:a", "flac", "-content_type", "audio/ogg",
+                    // "-f", "ogg".
+                    vec!["-c:a".into(), "copy".into()]
+                };
                 // Drop any video track and tag the harbor content-type as Ogg.
-                "-vn".into(),
-                "-content_type".into(),
-                "audio/ogg".into(),
-                "-f".into(),
-                "ogg".into(),
-                url.clone(),
-            ],
+                args.extend([
+                    "-vn".into(),
+                    "-content_type".into(),
+                    "audio/ogg".into(),
+                    "-f".into(),
+                    "ogg".into(),
+                    url.clone(),
+                ]);
+                args
+            }
         }
     }
 
@@ -216,7 +239,9 @@ impl StreamState {
                 "-i",
                 "pipe:0",
             ])
-            .args(target.output_args())
+            // Live browser capture is always WebM/Opus, so the Icecast leg can
+            // skip re-encoding.
+            .args(target.output_args(false))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -534,7 +559,9 @@ pub async fn start_prerecorded_stream(
                 "-i",
                 input_url,
             ])
-            .args(target.output_args())
+            // Uploaded file's codec is arbitrary — force a real encode instead
+            // of the live path's `-c:a copy` (which requires a known Opus source).
+            .args(target.output_args(true))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -814,7 +841,8 @@ mod tests {
         let t = PushTarget::Rtmp {
             destination: "rtmp://host/live/key".to_string(),
         };
-        let args = t.output_args();
+        // transcode_audio is a no-op for RTMP — always transcodes to AAC.
+        let args = t.output_args(false);
         // Ends with the FLV muxer + destination.
         assert_eq!(
             &args[args.len() - 3..],
@@ -832,12 +860,33 @@ mod tests {
         let t = PushTarget::Icecast {
             url: "icecast://source:pw@127.0.0.1:8005/live".to_string(),
         };
-        let args = t.output_args();
+        let args = t.output_args(false);
         // No re-encode on the harbor leg — Liquidsoap owns the final MP3.
         assert!(args.windows(2).any(|w| w == ["-c:a", "copy"]));
         assert!(!args.iter().any(|a| a == "libmp3lame"));
         assert!(args.windows(2).any(|w| w == ["-content_type", "audio/ogg"]));
         // Ogg muxer + Icecast URL last.
+        assert_eq!(
+            &args[args.len() - 3..],
+            &[
+                "-f".to_string(),
+                "ogg".to_string(),
+                "icecast://source:pw@127.0.0.1:8005/live".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn icecast_target_transcodes_arbitrary_prerecorded_codec_to_opus() {
+        let t = PushTarget::Icecast {
+            url: "icecast://source:pw@127.0.0.1:8005/live".to_string(),
+        };
+        let args = t.output_args(true);
+        // A pre-recorded upload's codec isn't guaranteed Opus/Vorbis/FLAC, so
+        // this must never fall back to a raw copy into the Ogg container.
+        assert!(!args.windows(2).any(|w| w == ["-c:a", "copy"]));
+        assert!(args.windows(2).any(|w| w == ["-c:a", "libopus"]));
+        assert!(args.windows(2).any(|w| w == ["-content_type", "audio/ogg"]));
         assert_eq!(
             &args[args.len() - 3..],
             &[
