@@ -119,6 +119,10 @@ pub struct Show {
     /// creates a show may assign a guest they created as the host, yet retains
     /// edit rights over the show via this field.
     pub created_by: Option<i64>,
+    /// When go-live was triggered for this show's pre-recorded stream (manual
+    /// button or the auto-start scheduler). Guards against the scheduler
+    /// re-starting an already-started show.
+    pub prerecorded_started_at: Option<String>,
 }
 
 /// Reusable show template: a per-user bundle of presentation content

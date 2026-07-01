@@ -797,6 +797,21 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Spawn the pre-recorded show auto-start scheduler: fires go-live once a
+    // confirmed pre-recorded show reaches its scheduled start, so it doesn't
+    // depend on an admin having the waiting-room page open (issue #240). Runs
+    // every 30s; self-guards via the `prerecorded_started_at` column.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                scheduler::check_prerecorded_show_start(state.clone()).await;
+            }
+        });
+    }
+
     // Spawn the Icecast listener/quality telemetry poller (#177). No-op if no
     // status URL is configured (or derivable from icecast_url).
     stream_metrics::spawn_poller(state.clone());
