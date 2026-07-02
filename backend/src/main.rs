@@ -271,15 +271,29 @@ async fn main() -> anyhow::Result<()> {
     // Initialize cover regeneration debounce tracker
     let cover_debounce = Arc::new(RwLock::new(HashMap::new()));
 
-    // Initialize Telegram bot (if configured)
-    let telegram_bot = config.telegram_bot_token.as_ref().map(|token| {
+    // Initialize Telegram bot (only when enabled and configured).
+    // `telegram_enabled` is the master kill-switch (default off): when the bot is
+    // inactive we leave `telegram_bot` as `None`, which no-ops the long-polling
+    // dispatcher and every send site — the single choke point for the whole
+    // integration.
+    let telegram_bot = if config::telegram_bot_active(
+        config.telegram_enabled,
+        config.telegram_bot_token.is_some(),
+    ) {
+        let token = config
+            .telegram_bot_token
+            .as_ref()
+            .expect("active implies a configured token");
         tracing::info!(
             chat_id = ?config.telegram_admin_chat_id,
             topic_id = ?config.telegram_topic_id,
             "Telegram bot configured"
         );
-        teloxide::Bot::new(token)
-    });
+        Some(teloxide::Bot::new(token))
+    } else {
+        tracing::info!("Telegram bot disabled (set TELEGRAM_ENABLED=true to enable)");
+        None
+    };
 
     // Initialize pending show notifications tracker (for debouncing)
     let pending_show_notifications = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
