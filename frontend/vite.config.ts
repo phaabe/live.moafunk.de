@@ -36,17 +36,18 @@ function emitVersionManifest(): Plugin {
 }
 
 const BUGDROP_ORIGIN = 'https://bugdrop.neonwatty.workers.dev';
+// Repo that feedback issues are filed into. Requires the BugDrop GitHub App
+// installed on it. Override per build with VITE_FEEDBACK_WIDGET=other/repo.
+const FEEDBACK_REPO = 'phaabe/live.moafunk.de';
 
 // Inject the BugDrop feedback widget (https://github.com/mean-weasel/bugdrop)
-// into the admin dashboard only — and only for dev/review builds. The target repo
-// is read from VITE_FEEDBACK_WIDGET (e.g. "phaabe/live.moafunk.de"); feedback
-// becomes a GitHub issue with a screenshot + page/browser context. Production
-// pipelines (GitHub Pages, admin Docker) never set the var, so nothing is injected
-// and the prod bundles stay clean. Emits BugDrop's documented synchronous tag —
-// deliberately no async/defer, so the widget can read data-repo off its own tag.
+// into the admin dashboard — in every environment, production included. Feedback
+// becomes a GitHub issue with a screenshot + page/browser context. Emits BugDrop's
+// documented synchronous tag — deliberately no async/defer, so the widget can read
+// data-repo off its own tag.
 //
 // Scope: admin SPA (src/admin/index.html) only. The public pages are intentionally
-// left untouched, so visitors never see the widget.
+// left untouched, so site visitors never see the widget.
 function bugdropFeedbackWidget(repo: string | undefined): Plugin {
   return {
     name: 'bugdrop-feedback-widget',
@@ -71,10 +72,13 @@ function bugdropFeedbackWidget(repo: string | undefined): Plugin {
 }
 
 export default defineConfig(({ mode }) => {
-  // Read .env files (and CLI/process env) so review builds can opt in via
-  // VITE_FEEDBACK_WIDGET=owner/repo in .env.local or on the command line.
+  // The admin feedback widget is ON by default in every environment. Override the
+  // target repo with VITE_FEEDBACK_WIDGET=other/repo, or disable it entirely with
+  // VITE_FEEDBACK_WIDGET=off (also: false/none/0). Read from .env files + CLI/env.
   const env = loadEnv(mode, process.cwd(), '');
-  const feedbackRepo = env.VITE_FEEDBACK_WIDGET || process.env.VITE_FEEDBACK_WIDGET;
+  const feedbackEnv = env.VITE_FEEDBACK_WIDGET || process.env.VITE_FEEDBACK_WIDGET || '';
+  const feedbackOff = ['off', 'false', 'none', '0'].includes(feedbackEnv.toLowerCase());
+  const feedbackRepo = feedbackOff ? undefined : feedbackEnv || FEEDBACK_REPO;
 
   return {
     define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
