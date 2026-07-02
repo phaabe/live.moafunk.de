@@ -1,9 +1,9 @@
 # Feedback widget (dev/review)
 
-A drop-in **feedback layer** for the dev/review process, mounted on the **admin
-dashboard only**. Reviewers click a bug button, annotate a screenshot, and submit —
-it becomes a **GitHub issue** with the screenshot plus page URL and browser/viewport
-context. The public pages are intentionally never touched.
+A drop-in **feedback layer** mounted on the **admin dashboard**, in **every
+environment (production included)**. Admins/reviewers click a bug button, annotate a
+screenshot, and submit — it becomes a **GitHub issue** with the screenshot plus page
+URL and browser/viewport context. The public pages are intentionally never touched.
 
 - **Tool:** [BugDrop](https://github.com/mean-weasel/bugdrop) — MIT, open source.
 - **Where feedback lands:** GitHub Issues in a target repo (default: `phaabe/live.moafunk.de`).
@@ -23,26 +23,24 @@ context. The public pages are intentionally never touched.
 
 A conditional Vite plugin (`bugdropFeedbackWidget` in `frontend/vite.config.ts`)
 injects the widget's `<script>` tag into the **admin SPA** (`src/admin/index.html`)
-only — never the public pages — and only when `VITE_FEEDBACK_WIDGET` is set to a
-GitHub `owner/repo`. Production builds (GitHub Pages, admin Docker) never set the
-var, so the tag is absent from those bundles.
+only — never the public pages. It is **on by default** in all builds, filing into
+`phaabe/live.moafunk.de`. The admin SPA is built and served by the backend
+(`backend/Dockerfile` → `/static/admin`), so production admin gets it too; the
+public GitHub Pages build is untouched.
 
-## Enabling it
+## Configuring it
 
-**Local dev** — add to `frontend/.env.local` (gitignored):
+On by default — nothing to enable. Control it via `VITE_FEEDBACK_WIDGET`:
 
-```
-VITE_FEEDBACK_WIDGET=phaabe/live.moafunk.de
-```
-
-Then `npm run dev` (or `npm run build` for a static review build). Unset it to turn
-the widget off.
-
-**Review/preview build** — set the var for that build only, e.g.:
+- **Change target repo:** `VITE_FEEDBACK_WIDGET=owner/other-repo` (build/env or `.env.local`).
+- **Disable entirely:** `VITE_FEEDBACK_WIDGET=off` (also `false` / `none` / `0`).
 
 ```
-VITE_FEEDBACK_WIDGET=phaabe/live.moafunk.de npm run build
+# disable for a build
+VITE_FEEDBACK_WIDGET=off npm run build
 ```
+
+The default target repo is the `FEEDBACK_REPO` constant in `frontend/vite.config.ts`.
 
 ## Triaging incoming feedback
 
@@ -61,8 +59,9 @@ wizard (`WizardHost.vue`). Apply masks as those become reachable in review build
 
 ## Verifying
 
-- Local: `npm run dev` with the var set → open `/admin/`, the bug button appears (and is absent on the public `/`); submit → issue lands in the repo with screenshot + context.
-- Prod guard: `npm run build` **without** the var, then `grep -r bugdrop dist` → no matches.
+- Default build: `npm run build`, then `grep -rl bugdrop dist` → **only** `dist/admin/index.html` (never the public pages).
+- Disable: `VITE_FEEDBACK_WIDGET=off npm run build`, then `grep -r bugdrop dist` → no matches.
+- Local: `npm run dev` → open `/admin/`, the bug button appears (and is absent on the public `/`); submit → issue lands in the repo with screenshot + context.
 
 ## Self-host upgrade path (optional)
 
