@@ -126,6 +126,11 @@ pub struct Config {
     pub soundcloud_redirect_uri: String,
 
     // Telegram Bot settings (optional - for admin notifications and control)
+    /// Master kill-switch for the Telegram bot. Defaults to `false` (off): the
+    /// long-polling dispatcher never starts and every send site no-ops, even if
+    /// a token is configured. Set `TELEGRAM_ENABLED=true` to turn it back on.
+    #[serde(default)]
+    pub telegram_enabled: bool,
     pub telegram_bot_token: Option<String>,
     pub telegram_admin_chat_id: Option<i64>,
     #[serde(default = "default_telegram_topic_id")]
@@ -235,6 +240,13 @@ fn normalize_telegram_topic_id(configured: Option<i32>) -> Option<i32> {
 
 fn default_telegram_artist_preview_hour() -> u32 {
     16 // 4:00 PM Berlin time
+}
+
+/// The Telegram bot runs only when explicitly enabled via the kill-switch AND a
+/// token is configured. Gating both the long-polling dispatcher and every send
+/// site on this keeps the whole integration silent when `enabled` is false.
+pub fn telegram_bot_active(enabled: bool, has_token: bool) -> bool {
+    enabled && has_token
 }
 
 fn default_admin_base_url() -> String {
@@ -446,6 +458,17 @@ mod tests {
             }
             other => panic!("expected Icecast test target, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn telegram_bot_active_requires_enabled_and_token() {
+        // Off by default: disabled kill-switch keeps the bot silent even with a token.
+        assert!(!telegram_bot_active(false, false));
+        assert!(!telegram_bot_active(false, true));
+        // Enabled but no token → nothing to run.
+        assert!(!telegram_bot_active(true, false));
+        // Only enabled AND configured brings the bot up.
+        assert!(telegram_bot_active(true, true));
     }
 
     #[test]
