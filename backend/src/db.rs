@@ -615,6 +615,57 @@ pub async fn seed_superadmin(pool: &SqlitePool, config: &Config) -> Result<(), s
     Ok(())
 }
 
+/// Username/password for the development-only convenience login.
+const DEV_USERNAME: &str = "dev";
+const DEV_PASSWORD: &str = "dev";
+
+/// Keep the always-available `dev` login in sync with the environment.
+///
+/// When `is_dev` is true (from `Config::is_dev()`) this upserts a
+/// `dev` / `dev` superadmin on **every** startup, so the account is always usable
+/// regardless of any prior password drift (unlike [`seed_superadmin`], which only
+/// inserts when the table is empty). Outside development it actively deletes any
+/// stray `dev` user — so a production DB cloned from a dev one can never carry the
+/// backdoor — making the account strictly dev-only.
+pub async fn seed_dev_user(pool: &SqlitePool, is_dev: bool) -> Result<(), sqlx::Error> {
+    if !is_dev {
+        let deleted = sqlx::query("DELETE FROM users WHERE username = ?")
+            .bind(DEV_USERNAME)
+            .execute(pool)
+            .await?
+            .rows_affected();
+        if deleted > 0 {
+            tracing::warn!(
+                "Removed {deleted} stray '{DEV_USERNAME}' user(s): APP_ENV is not development"
+            );
+        }
+        return Ok(());
+    }
+
+    let password_hash = crate::auth::hash_password(DEV_PASSWORD)
+        .map_err(|_| sqlx::Error::Protocol("failed to hash dev password".into()))?;
+
+    // Upsert so the dev login is always present and never drifts. Reset the
+    // mutable bits a prior session might have changed (role/expiry/forced change).
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'superadmin') \
+         ON CONFLICT(username) DO UPDATE SET \
+         password_hash = excluded.password_hash, \
+         role = 'superadmin', \
+         must_change_password = 0, \
+         expires_at = NULL",
+    )
+    .bind(DEV_USERNAME)
+    .bind(&password_hash)
+    .execute(pool)
+    .await?;
+
+    tracing::warn!(
+        "DEV MODE: '{DEV_USERNAME}' / '{DEV_PASSWORD}' login is enabled (APP_ENV=development)"
+    );
+    Ok(())
+}
+
 // ============================================================================
 // Recording Versions CRUD
 // ============================================================================
@@ -789,6 +840,50 @@ mod tests {
             .await
             .unwrap()
             .last_insert_rowid()
+    }
+
+    async fn count_user(pool: &SqlitePool, username: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = ?")
+            .bind(username)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// In development the `dev` login is created (and re-created idempotently on
+    /// every startup) as a superadmin.
+    #[tokio::test]
+    async fn seed_dev_user_creates_dev_login_in_development() {
+        let pool = mem_db().await;
+        seed_dev_user(&pool, true).await.unwrap();
+        assert_eq!(count_user(&pool, DEV_USERNAME).await, 1);
+
+        let role: String = sqlx::query_scalar("SELECT role FROM users WHERE username = ?")
+            .bind(DEV_USERNAME)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(role, "superadmin");
+
+        // Idempotent: a second run does not duplicate the account.
+        seed_dev_user(&pool, true).await.unwrap();
+        assert_eq!(count_user(&pool, DEV_USERNAME).await, 1);
+    }
+
+    /// Outside development the `dev` login is actively removed — so a prod DB
+    /// cloned from a dev one can never carry the backdoor.
+    #[tokio::test]
+    async fn seed_dev_user_removes_dev_login_outside_development() {
+        let pool = mem_db().await;
+        insert_user(&pool, DEV_USERNAME).await; // simulate a stray dev account
+        assert_eq!(count_user(&pool, DEV_USERNAME).await, 1);
+
+        seed_dev_user(&pool, false).await.unwrap();
+        assert_eq!(count_user(&pool, DEV_USERNAME).await, 0);
+
+        // Idempotent when already absent.
+        seed_dev_user(&pool, false).await.unwrap();
+        assert_eq!(count_user(&pool, DEV_USERNAME).await, 0);
     }
 
     async fn insert_template(pool: &SqlitePool, owner: i64, name: &str) -> i64 {

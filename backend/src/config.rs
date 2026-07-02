@@ -10,6 +10,12 @@ pub struct Config {
 
     pub secret_key: String,
 
+    // Deployment environment. "development" (or "dev") enables the always-available
+    // `dev` / `dev` login seeded by `db::seed_dev_user`; anything else (the default)
+    // is treated as production and that account is actively removed if present.
+    #[serde(default = "default_app_env")]
+    pub app_env: String,
+
     // Superadmin credentials (seeded on first run if no users exist)
     #[serde(default = "default_superadmin_username")]
     pub superadmin_username: String,
@@ -142,6 +148,10 @@ fn default_port() -> u16 {
     8000
 }
 
+fn default_app_env() -> String {
+    "production".to_string()
+}
+
 fn default_superadmin_username() -> String {
     "superadmin".to_string()
 }
@@ -255,6 +265,12 @@ impl Config {
         Ok(config)
     }
 
+    /// True when running in a development environment (`APP_ENV=development|dev`).
+    /// Gates the always-available `dev` login; defaults to false (production).
+    pub fn is_dev(&self) -> bool {
+        app_env_is_dev(&self.app_env)
+    }
+
     pub fn max_file_size_bytes(&self) -> u64 {
         self.max_file_size_mb * 1024 * 1024
     }
@@ -358,6 +374,16 @@ fn test_producer_target_from_url(url: Option<&str>) -> Option<crate::stream_brid
     })
 }
 
+/// Whether an `APP_ENV` value denotes a development environment. Case-insensitive
+/// and whitespace-tolerant; anything other than `development`/`dev` is production.
+/// Pure (no env / Config) so it's unit-testable.
+fn app_env_is_dev(app_env: &str) -> bool {
+    matches!(
+        app_env.trim().to_ascii_lowercase().as_str(),
+        "development" | "dev"
+    )
+}
+
 /// Validate the producer output selection. `icecast` requires a non-empty
 /// `ICECAST_URL`; any value other than `rtmp`/`icecast` is rejected. Pure (no
 /// env access) so it's unit-testable without building a full [`Config`].
@@ -454,6 +480,16 @@ mod tests {
             derive_status_url("icecast://radio.example.com:8000/test.mp3").as_deref(),
             Some("http://radio.example.com:8000/status-json.xsl")
         );
+    }
+
+    #[test]
+    fn is_dev_only_for_development_values() {
+        assert!(app_env_is_dev("development"));
+        assert!(app_env_is_dev("dev"));
+        assert!(app_env_is_dev("  Development  ")); // trimmed + case-insensitive
+        assert!(!app_env_is_dev("production"));
+        assert!(!app_env_is_dev("prod"));
+        assert!(!app_env_is_dev(""));
     }
 
     #[test]

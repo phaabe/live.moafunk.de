@@ -248,6 +248,10 @@ async fn main() -> anyhow::Result<()> {
     // Seed superadmin if no users exist
     db::seed_superadmin(&db, &config).await?;
 
+    // Keep the dev-only `dev` login in sync: created in development, removed
+    // otherwise (see `seed_dev_user`).
+    db::seed_dev_user(&db, config.is_dev()).await?;
+
     // Initialize S3 client for R2 (avoid aws-config to reduce dependencies/compile time).
     // Client construction (incl. the R2 checksum-behavior fix) lives in storage.rs
     // so it's shared with integration tests.
