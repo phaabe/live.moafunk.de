@@ -725,6 +725,36 @@ pub async fn list_recording_versions(
     .await
 }
 
+/// Get the most recent recording version for a show (any status), or `None`.
+/// Ordered by `id` DESC so the newest take wins even for versions created within
+/// the same second (`created_at` has 1s resolution).
+pub async fn get_latest_recording_version(
+    pool: &SqlitePool,
+    show_id: i64,
+) -> Result<Option<RecordingVersion>, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>(
+        "SELECT * FROM recording_versions WHERE show_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .bind(show_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Map each show to the `status` of its most recent recording version, in a single
+/// query (avoids an N+1 over the shows list). Shows with no recording are absent
+/// from the map.
+pub async fn latest_recording_status_by_show(
+    pool: &SqlitePool,
+) -> Result<std::collections::HashMap<i64, String>, sqlx::Error> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT show_id, status FROM recording_versions \
+         WHERE id IN (SELECT MAX(id) FROM recording_versions GROUP BY show_id)",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// Update recording version status
 pub async fn update_recording_version_status(
     pool: &SqlitePool,
