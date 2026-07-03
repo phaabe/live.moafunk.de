@@ -130,6 +130,12 @@ excluded=()
   # 3) Non-secret local defaults (the app also has built-in defaults; pinned here for clarity).
   echo "# --- local non-secret defaults ---"
   cat <<'DEFAULTS'
+# This script bootstraps LOCAL DEV, so force development mode. The app's built-in
+# default for APP_ENV is `production` (safe for real deploys); without this line a
+# freshly generated .env runs in production mode, which triggers the startup
+# dev-user purge (seed_dev_user) — and that FK-fails against any shows the dev user
+# created. Override APP_ENV in .env.local to deliberately test production mode.
+APP_ENV=development
 R2_BUCKET_NAME=unheard-artists-dev
 SOUNDCLOUD_REDIRECT_URI=http://localhost:8000/api/soundcloud/callback
 GITHUB_REPO=phaabe/live.moafunk.de
