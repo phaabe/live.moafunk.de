@@ -343,6 +343,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         .await
         .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud response: {}", e)))?;
 
+    let track_numeric_id = track.id;
     let track_id = track.id.to_string();
     let track_url = track
         .permalink_url
@@ -365,12 +366,299 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
     .execute(&state.db)
     .await?;
 
+    // Group the track under a per-show-title playlist so every recording of a
+    // recurring show lands in the same SoundCloud playlist. Best-effort: a
+    // failure here must not fail the upload that already succeeded.
+    if let Err(e) =
+        ensure_track_in_show_playlist(&access_token, &show.title, track_numeric_id).await
+    {
+        tracing::error!(
+            show_id = show_id,
+            playlist = show.title.as_str(),
+            error = %e,
+            "Uploaded track but failed to add it to the show playlist"
+        );
+    }
+
     Ok(SoundCloudUploadResult {
         success: true,
         track_id: Some(track_id),
         track_url: Some(track_url),
         error: None,
     })
+}
+
+/// Whether a just-finalized recording should be auto-uploaded to SoundCloud.
+/// Pure decision so the policy is testable: upload only when the feature is
+/// enabled, the integration is configured, and the show hasn't been uploaded yet
+/// (re-finalizing must not create a duplicate track).
+pub(crate) fn should_auto_upload(enabled: bool, configured: bool, already_uploaded: bool) -> bool {
+    enabled && configured && !already_uploaded
+}
+
+/// Best-effort automatic SoundCloud upload, fired when a recording finishes
+/// finalizing (see `handle_finalize_socket`). Uploads as a private track with the
+/// show's title + description via [`upload_track`]. Never returns an error: every
+/// failure is logged and swallowed so it can run detached without affecting the
+/// finalize flow. No-ops when disabled, unconfigured, or already uploaded.
+pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
+    // Cheap gate before touching the DB.
+    if !should_auto_upload(
+        state.config.soundcloud_auto_upload,
+        is_configured(state),
+        false,
+    ) {
+        tracing::debug!(
+            show_id = show_id,
+            enabled = state.config.soundcloud_auto_upload,
+            configured = is_configured(state),
+            "Skipping SoundCloud auto-upload (disabled or not configured)"
+        );
+        return;
+    }
+
+    // Skip if this show already has a SoundCloud track (avoid duplicates on re-finalize).
+    let show: models::Show = match sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(show)) => show,
+        Ok(None) => {
+            tracing::warn!(show_id, "SoundCloud auto-upload: show not found");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(show_id, error = %e, "SoundCloud auto-upload: failed to load show");
+            return;
+        }
+    };
+    if show.soundcloud_track_id.is_some() {
+        tracing::info!(
+            show_id,
+            "SoundCloud auto-upload: show already uploaded, skipping"
+        );
+        return;
+    }
+
+    tracing::info!(show_id, "Auto-uploading finalized recording to SoundCloud");
+    match upload_track(state, show_id).await {
+        Ok(result) if result.success => {
+            if let Some(ref url) = result.track_url {
+                let title = build_title(state, &show)
+                    .await
+                    .unwrap_or_else(|_| format!("Show #{show_id}"));
+                crate::telegram_notify::notify_soundcloud_upload(state, show_id, &title, url);
+            }
+            tracing::info!(show_id, "SoundCloud auto-upload succeeded");
+        }
+        Ok(result) => {
+            tracing::error!(
+                show_id,
+                error = result.error.as_deref().unwrap_or("unknown"),
+                "SoundCloud auto-upload failed"
+            );
+        }
+        Err(e) => {
+            tracing::error!(show_id, error = %e, "SoundCloud auto-upload errored");
+        }
+    }
+}
+
+// ============================================================================
+// Playlists (one per show title)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct PlaylistSummary {
+    id: i64,
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistDetail {
+    #[serde(default)]
+    tracks: Vec<PlaylistTrackRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistTrackRef {
+    id: i64,
+}
+
+/// Ensure a playlist named exactly `show_title` exists and contains `track_id`.
+/// Finds the caller's playlist by title (case-insensitive), otherwise creates a
+/// private one. Adding to an existing playlist re-sends the union of its current
+/// tracks and the new one (SoundCloud replaces the whole track list on update).
+async fn ensure_track_in_show_playlist(
+    access_token: &str,
+    show_title: &str,
+    track_id: i64,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+
+    match find_playlist_by_title(&client, access_token, show_title).await? {
+        Some(playlist_id) => {
+            let mut ids = get_playlist_track_ids(&client, access_token, playlist_id).await?;
+            if ids.contains(&track_id) {
+                tracing::debug!(playlist_id, track_id, "Track already in show playlist");
+                return Ok(());
+            }
+            ids.push(track_id);
+            set_playlist_tracks(&client, access_token, playlist_id, &ids).await?;
+            tracing::info!(
+                playlist_id,
+                track_id,
+                "Added track to existing show playlist"
+            );
+        }
+        None => {
+            let playlist_id = create_playlist(&client, access_token, show_title, track_id).await?;
+            tracing::info!(
+                playlist_id,
+                track_id,
+                playlist = show_title,
+                "Created show playlist"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Find one of the caller's playlists whose title matches `title` (case-insensitive).
+async fn find_playlist_by_title(
+    client: &reqwest::Client,
+    access_token: &str,
+    title: &str,
+) -> Result<Option<i64>> {
+    let resp = client
+        .get(format!("{}/me/playlists", SOUNDCLOUD_API_BASE))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .query(&[("limit", "200"), ("linked_partitioning", "false")])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("List playlists request failed: {}", e)))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "List playlists failed ({}): {}",
+            status, body
+        )));
+    }
+
+    let playlists: Vec<PlaylistSummary> = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse playlists: {}", e)))?;
+
+    let wanted = title.trim().to_lowercase();
+    Ok(playlists
+        .into_iter()
+        .find(|p| {
+            p.title
+                .as_deref()
+                .map(|t| t.trim().to_lowercase() == wanted)
+                .unwrap_or(false)
+        })
+        .map(|p| p.id))
+}
+
+/// Fetch the current track ids of a playlist.
+async fn get_playlist_track_ids(
+    client: &reqwest::Client,
+    access_token: &str,
+    playlist_id: i64,
+) -> Result<Vec<i64>> {
+    let resp = client
+        .get(format!("{}/playlists/{}", SOUNDCLOUD_API_BASE, playlist_id))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Get playlist request failed: {}", e)))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "Get playlist failed ({}): {}",
+            status, body
+        )));
+    }
+
+    let detail: PlaylistDetail = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse playlist: {}", e)))?;
+    Ok(detail.tracks.into_iter().map(|t| t.id).collect())
+}
+
+/// Replace a playlist's track list (SoundCloud PUT semantics).
+async fn set_playlist_tracks(
+    client: &reqwest::Client,
+    access_token: &str,
+    playlist_id: i64,
+    track_ids: &[i64],
+) -> Result<()> {
+    let tracks: Vec<serde_json::Value> = track_ids
+        .iter()
+        .map(|id| serde_json::json!({ "id": id }))
+        .collect();
+    let resp = client
+        .put(format!("{}/playlists/{}", SOUNDCLOUD_API_BASE, playlist_id))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .json(&serde_json::json!({ "playlist": { "tracks": tracks } }))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Update playlist request failed: {}", e)))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "Update playlist failed ({}): {}",
+            status, body
+        )));
+    }
+    Ok(())
+}
+
+/// Create a private playlist with a single initial track. Returns its id.
+async fn create_playlist(
+    client: &reqwest::Client,
+    access_token: &str,
+    title: &str,
+    track_id: i64,
+) -> Result<i64> {
+    let resp = client
+        .post(format!("{}/playlists", SOUNDCLOUD_API_BASE))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .json(&serde_json::json!({
+            "playlist": {
+                "title": title,
+                "sharing": "private",
+                "tracks": [{ "id": track_id }],
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Create playlist request failed: {}", e)))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "Create playlist failed ({}): {}",
+            status, body
+        )));
+    }
+
+    let created: PlaylistSummary = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse created playlist: {}", e)))?;
+    Ok(created.id)
 }
 
 // ============================================================================
@@ -557,5 +845,24 @@ pub async fn get_status(state: &Arc<AppState>) -> SoundCloudStatus {
         configured,
         authorized,
         auth_url,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_auto_upload;
+
+    #[test]
+    fn auto_upload_only_when_enabled_configured_and_fresh() {
+        // Happy path: on, configured, not yet uploaded.
+        assert!(should_auto_upload(true, true, false));
+
+        // Any single blocker prevents the upload.
+        assert!(!should_auto_upload(false, true, false)); // kill-switch off
+        assert!(!should_auto_upload(true, false, false)); // not configured
+        assert!(!should_auto_upload(true, true, true)); // already uploaded (no dup)
+
+        // Fully off stays off.
+        assert!(!should_auto_upload(false, false, true));
     }
 }

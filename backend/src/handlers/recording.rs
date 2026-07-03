@@ -1269,6 +1269,15 @@ async fn handle_finalize_socket(socket: WebSocket, state: Arc<AppState>, query: 
                         recording.id,
                         final_key
                     );
+
+                    // Fire-and-forget: auto-publish the finalized take to SoundCloud
+                    // (private, with title + description). Detached so it neither
+                    // delays the finalize socket nor fails the finalize on error.
+                    let sc_state = Arc::clone(&state);
+                    let sc_show_id = query.show_id;
+                    tokio::spawn(async move {
+                        crate::soundcloud::auto_upload_on_finalize(&sc_state, sc_show_id).await;
+                    });
                 }
             } else {
                 tracing::warn!(
