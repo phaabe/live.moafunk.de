@@ -500,7 +500,8 @@ export interface ShowDetail {
   /**
    * Most recent live-stream recording (from `recording_versions`), distinct from
    * the manual `recording_*`/`prerecorded_*` uploads. Absent if never recorded.
-   * `download_url` is present only when `status === 'finalized'`.
+   * `download_url` is present as soon as the archive mp3 exists (right after stop)
+   * — the finalized mp3 is preferred when available, else the auto-published one.
    */
   latest_recording?: LatestRecording;
 }

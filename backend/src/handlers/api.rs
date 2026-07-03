@@ -2059,8 +2059,9 @@ pub struct ShowDetailResponse {
 }
 
 /// The most recent live-stream recording for a show, surfaced on the detail page so
-/// the frontend can show capture/finalize status and a download for finalized takes.
-/// `download_url` is a presigned URL, present only when `status == "finalized"`.
+/// the frontend can show capture status and a download. `download_url` is a
+/// presigned URL, present as soon as the archive MP3 exists (right after stop) — no
+/// manual finalize required.
 #[derive(Debug, Serialize)]
 pub struct LatestRecordingInfo {
     id: i64,
@@ -2073,15 +2074,30 @@ pub struct LatestRecordingInfo {
     download_url: Option<String>,
 }
 
-/// The R2 key to offer as a download for a recording version, if any: the finalized
-/// MP3, and only once the take is actually `finalized`. Pure so the mapping is
-/// unit-testable; the caller turns the key into a presigned URL.
-fn recording_download_key(v: &models::RecordingVersion) -> Option<&str> {
+/// Which bucket a recording's downloadable audio lives in — they differ: the
+/// finalized merge sits in the default recordings bucket, the auto-published
+/// archive MP3 in the shows bucket.
+enum RecordingBucket {
+    /// Default recordings bucket (`r2_bucket_name`).
+    Default,
+    /// Shows archive bucket (`r2_shows_bucket_name`).
+    Shows,
+}
+
+/// The download to offer for a recording version, if any. Prefers the finalized
+/// `final.mp3` (the merged/mastered take) when present, else the auto-published
+/// archive MP3 — so a plain streamed show is downloadable right after stop, with
+/// no manual finalize. Pure so the selection is unit-testable; the caller presigns
+/// the key against the returned bucket.
+fn recording_download(v: &models::RecordingVersion) -> Option<(RecordingBucket, &str)> {
     if v.status == "finalized" {
-        v.final_key.as_deref()
-    } else {
-        None
+        if let Some(key) = v.final_key.as_deref() {
+            return Some((RecordingBucket::Default, key));
+        }
     }
+    v.archive_key
+        .as_deref()
+        .map(|key| (RecordingBucket::Shows, key))
 }
 
 /// Rich artist info for show detail page (includes pic_url and audio URLs)
@@ -2822,14 +2838,25 @@ pub async fn api_show_detail(
     };
 
     // Latest live-stream recording (distinct from the manual `recording_key` upload
-    // above): surfaced so the show page can show capture/finalize status and a
-    // download for finalized takes. A load failure must not break the detail page.
+    // above): surfaced so the show page can show capture status and a download. The
+    // download comes from the finalized mp3 when present, else the auto-published
+    // archive mp3 (a different bucket). A load failure must not break the page.
     let latest_recording = match crate::db::get_latest_recording_version(&state.db, id).await {
         Ok(Some(v)) => {
-            let download_url = match recording_download_key(&v) {
-                Some(key) => storage::get_presigned_url(&state, key, 3600 * 24)
-                    .await
-                    .ok(),
+            let download_url = match recording_download(&v) {
+                Some((RecordingBucket::Default, key)) => {
+                    storage::get_presigned_url(&state, key, 3600 * 24)
+                        .await
+                        .ok()
+                }
+                Some((RecordingBucket::Shows, key)) => storage::get_presigned_url_from_bucket(
+                    &state,
+                    &state.config.r2_shows_bucket_name,
+                    key,
+                    3600 * 24,
+                )
+                .await
+                .ok(),
                 None => None,
             };
             Some(LatestRecordingInfo {
@@ -5715,7 +5742,11 @@ mod tests {
         assert!(!time_windows_overlap("22:00", None, "20:00", Some("22:00")));
     }
 
-    fn recording_version(status: &str, final_key: Option<&str>) -> crate::models::RecordingVersion {
+    fn recording_version(
+        status: &str,
+        final_key: Option<&str>,
+        archive_key: Option<&str>,
+    ) -> crate::models::RecordingVersion {
         crate::models::RecordingVersion {
             id: 15,
             show_id: 27,
@@ -5726,6 +5757,7 @@ mod tests {
             raw_key: Some("recordings/27/2026-07-01T18-32-48/raw.webm".to_string()),
             markers_key: None,
             final_key: final_key.map(str::to_string),
+            archive_key: archive_key.map(str::to_string),
             error_message: None,
             created_at: "2026-07-01T18:32:48".to_string(),
             updated_at: None,
@@ -5733,33 +5765,46 @@ mod tests {
         }
     }
 
+    // Collapse the download selection to a comparable tag for assertions.
+    fn download_tag(v: &crate::models::RecordingVersion) -> Option<(&'static str, String)> {
+        super::recording_download(v).map(|(bucket, key)| {
+            let tag = match bucket {
+                super::RecordingBucket::Default => "default",
+                super::RecordingBucket::Shows => "shows",
+            };
+            (tag, key.to_string())
+        })
+    }
+
     #[test]
-    fn download_key_only_for_finalized_with_final_key() {
-        // Finalized with a stored final_key → downloadable.
+    fn download_prefers_finalized_then_archive() {
+        // Finalized with a final_key → the merged mp3 in the default bucket wins.
         assert_eq!(
-            super::recording_download_key(&recording_version(
+            download_tag(&recording_version(
                 "finalized",
-                Some("recordings/27/v/final.mp3")
+                Some("recordings/27/v/final.mp3"),
+                Some("shows/external/2026-07-01-x/x.mp3")
             )),
-            Some("recordings/27/v/final.mp3")
+            Some(("default", "recordings/27/v/final.mp3".to_string()))
         );
-        // Finalized but no final_key recorded → nothing to offer.
+        // Plain streamed take (raw) with an archive mp3 → downloadable from the
+        // shows bucket, no finalize needed. This is the #239 fix.
         assert_eq!(
-            super::recording_download_key(&recording_version("finalized", None)),
-            None
+            download_tag(&recording_version(
+                "raw",
+                None,
+                Some("shows/external/2026-07-01-x/x.mp3")
+            )),
+            Some(("shows", "shows/external/2026-07-01-x/x.mp3".to_string()))
         );
-        // In-progress / failed / raw are never downloadable, even if a key lingers.
+        // Finalized but no final_key yet → fall back to the archive mp3.
         assert_eq!(
-            super::recording_download_key(&recording_version("finalizing", Some("x"))),
-            None
+            download_tag(&recording_version("finalized", None, Some("shows/x.mp3"))),
+            Some(("shows", "shows/x.mp3".to_string()))
         );
-        assert_eq!(
-            super::recording_download_key(&recording_version("failed", Some("x"))),
-            None
-        );
-        assert_eq!(
-            super::recording_download_key(&recording_version("raw", None)),
-            None
-        );
+        // Nothing published yet (archive upload failed / in flight) → no download.
+        assert_eq!(download_tag(&recording_version("raw", None, None)), None);
+        // Failed capture with no archive → nothing to offer.
+        assert_eq!(download_tag(&recording_version("failed", None, None)), None);
     }
 }
