@@ -354,6 +354,18 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
     )
     .await?;
 
+    // Auto-publish a completed streamed broadcast to SoundCloud (private, into the
+    // show's playlist). Streamed shows finalize here — not via handle_finalize_socket
+    // — so this is where their auto-upload fires. Detached + best-effort; skip known-
+    // incomplete captures (they're marked `failed` and never reach the archive).
+    if !finalized.incomplete {
+        let sc_state = Arc::clone(state);
+        let sc_show_id = finalized.show_id;
+        tokio::spawn(async move {
+            crate::soundcloud::auto_upload_on_finalize(&sc_state, sc_show_id).await;
+        });
+    }
+
     Ok(Some(finalized))
 }
 

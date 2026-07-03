@@ -762,6 +762,24 @@ pub async fn get_latest_finalized_recording_version(
     .await
 }
 
+/// Latest recording version for a show that has a shows-archive MP3
+/// (`archive_key`, set on stream-end) and isn't marked `failed`, newest first.
+/// Streamed shows stay `raw` with only an `archive_key` (no `final_key`), so this
+/// is the SoundCloud source when a show was never manually finalized.
+pub async fn get_latest_archived_recording_version(
+    pool: &SqlitePool,
+    show_id: i64,
+) -> Result<Option<RecordingVersion>, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>(
+        "SELECT * FROM recording_versions \
+         WHERE show_id = ? AND archive_key IS NOT NULL AND status != 'failed' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(show_id)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Map each show to the `status` of its most recent recording version, in a single
 /// query (avoids an N+1 over the shows list). Shows with no recording are absent
 /// from the map.
@@ -1120,6 +1138,47 @@ mod tests {
         insert_recording_version(&pool, show, "v1", "raw", None).await;
 
         assert!(get_latest_finalized_recording_version(&pool, show)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    async fn insert_archived_version(pool: &SqlitePool, show_id: i64, version: &str, status: &str) {
+        sqlx::query(
+            "INSERT INTO recording_versions (show_id, version, status, archive_key) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(show_id)
+        .bind(version)
+        .bind(status)
+        .bind(format!("shows/{show_id}/{version}.mp3"))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Streamed shows keep only an `archive_key` (status `raw`); the archive
+    /// fallback picks the newest such take and ignores `failed` ones.
+    #[tokio::test]
+    async fn latest_archived_recording_version_prefers_newest_non_failed() {
+        let pool = mem_db().await;
+        let show = insert_show(&pool, "Streamed Show").await;
+
+        insert_archived_version(&pool, show, "v1", "raw").await;
+        insert_archived_version(&pool, show, "v2", "raw").await; // newest good → wins
+        insert_archived_version(&pool, show, "v3", "failed").await; // newer but failed → ignored
+
+        let picked = get_latest_archived_recording_version(&pool, show)
+            .await
+            .unwrap()
+            .expect("an archived take exists");
+        assert_eq!(picked.version, "v2");
+        assert_eq!(picked.archive_key, Some(format!("shows/{show}/v2.mp3")));
+
+        // A show whose only take is raw-without-archive has no archived source.
+        let other = insert_show(&pool, "No Archive").await;
+        insert_recording_version(&pool, other, "v1", "raw", None).await;
+        assert!(get_latest_archived_recording_version(&pool, other)
             .await
             .unwrap()
             .is_none());

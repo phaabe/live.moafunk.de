@@ -572,10 +572,20 @@ pub async fn upload_file(
 }
 
 pub async fn download_file(state: &Arc<AppState>, key: &str) -> Result<(Vec<u8>, String)> {
+    download_file_from_bucket(state, &state.config.r2_bucket_name, key).await
+}
+
+/// Like [`download_file`] but against an explicit bucket — used to pull the
+/// shows-archive MP3 (in `r2_shows_bucket_name`) for SoundCloud upload.
+pub async fn download_file_from_bucket(
+    state: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+) -> Result<(Vec<u8>, String)> {
     let response = state
         .s3_client
         .get_object()
-        .bucket(&state.config.r2_bucket_name)
+        .bucket(bucket)
         .key(key)
         .send()
         .await
