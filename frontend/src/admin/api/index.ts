@@ -407,6 +407,11 @@ export interface Show {
   /** Username of the assigned host (external/brunchtime shows), if any. */
   host_username?: string;
   artists: { id: number; name: string }[];
+  /**
+   * Status of the show's most recent live-stream recording, or absent if never
+   * recorded. Lets the list badge a recording without fetching its versions.
+   */
+  recording_status?: RecordingVersionStatus;
 }
 
 /**
@@ -492,6 +497,25 @@ export interface ShowDetail {
   available_hosts?: { id: number; username: string }[];
   /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */
   stream_mode?: 'live' | 'prerecorded';
+  /**
+   * Most recent live-stream recording (from `recording_versions`), distinct from
+   * the manual `recording_*`/`prerecorded_*` uploads. Absent if never recorded.
+   * `download_url` is present as soon as the archive mp3 exists (right after stop)
+   * — the finalized mp3 is preferred when available, else the auto-published one.
+   */
+  latest_recording?: LatestRecording;
+}
+
+export type RecordingVersionStatus = 'raw' | 'finalizing' | 'finalized' | 'failed';
+
+export interface LatestRecording {
+  id: number;
+  version: string;
+  status: RecordingVersionStatus;
+  duration_ms?: number | null;
+  finalized_at?: string | null;
+  error_message?: string | null;
+  download_url?: string | null;
 }
 
 export const showsApi = {

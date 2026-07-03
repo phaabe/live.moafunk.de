@@ -602,6 +602,18 @@ pub async fn get_presigned_url(
     key: &str,
     expires_in_secs: u64,
 ) -> Result<String> {
+    get_presigned_url_from_bucket(state, &state.config.r2_bucket_name, key, expires_in_secs).await
+}
+
+/// Like [`get_presigned_url`] but against an explicit bucket — used to serve the
+/// shows-archive MP3 (in `r2_shows_bucket_name`) which lives outside the default
+/// bucket.
+pub async fn get_presigned_url_from_bucket(
+    state: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    expires_in_secs: u64,
+) -> Result<String> {
     let presigning_config = aws_sdk_s3::presigning::PresigningConfig::builder()
         .expires_in(std::time::Duration::from_secs(expires_in_secs))
         .build()
@@ -610,7 +622,7 @@ pub async fn get_presigned_url(
     let presigned = state
         .s3_client
         .get_object()
-        .bucket(&state.config.r2_bucket_name)
+        .bucket(bucket)
         .key(key)
         .presigned(presigning_config)
         .await

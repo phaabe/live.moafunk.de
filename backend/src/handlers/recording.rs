@@ -458,7 +458,7 @@ async fn upload_artifact_and_record(
     tracing::info!("Uploaded markers to {}", markers_key);
 
     // Create recording version entry in database
-    match crate::db::create_recording_version(
+    let recording_id: Option<i64> = match crate::db::create_recording_version(
         &state.db,
         show_id,
         version,
@@ -493,30 +493,46 @@ async fn upload_artifact_and_record(
                     tracing::error!("Failed to mark recording version as failed: {}", e);
                 }
             }
+            Some(recording.id)
         }
         Err(e) => {
             tracing::error!("Failed to create recording version in database: {}", e);
             // Don't fail the finalize - the recording was uploaded successfully.
+            None
         }
-    }
+    };
 
     // Auto-publish the streamed broadcast to the curated shows archive
     // (moafunk-prod/shows/{type}/{date}-{title}/…mp3). Best-effort convenience
     // copy — any failure is logged but never fails the recording (the raw capture
     // in `r2_bucket_name` stays the system of record). Skip known-bad captures so a
     // truncated/failed show never lands in the public archive. Must run before the
-    // cleanup below, which deletes the local artifact we transcode from.
+    // cleanup below, which deletes the local artifact we transcode from. On success,
+    // record the archive key so the API can offer a download without a finalize.
     if incomplete {
         tracing::warn!(
             "Skipping shows-archive publish for show {} — recording marked incomplete",
             show_id
         );
-    } else if let Err(e) = publish_stream_to_shows_archive(state, show_id, artifact_path).await {
-        tracing::error!(
-            "Failed to publish streamed show {} to shows archive: {}",
-            show_id,
-            e
-        );
+    } else {
+        match publish_stream_to_shows_archive(state, show_id, artifact_path).await {
+            Ok(archive_key) => {
+                if let Some(rid) = recording_id {
+                    if let Err(e) =
+                        crate::db::set_recording_archive_key(&state.db, rid, &archive_key).await
+                    {
+                        tracing::error!("Failed to store archive key for recording {}: {}", rid, e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to publish streamed show {} to shows archive: {}",
+                    show_id,
+                    e
+                );
+            }
+        }
     }
 
     // Verify-before-delete: only remove the local artifact once R2 confirms the

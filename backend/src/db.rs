@@ -584,6 +584,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
+    // Key of the auto-published archive MP3 in the shows bucket
+    // (`r2_shows_bucket_name`), set on stream-end for every captured broadcast.
+    // Lets the API offer a download immediately, without a manual finalize.
+    add_column_if_missing(pool, "recording_versions", "archive_key", "TEXT").await?;
+
     tracing::info!("Database migrations completed");
     Ok(())
 }
@@ -723,6 +728,53 @@ pub async fn list_recording_versions(
     .bind(show_id)
     .fetch_all(pool)
     .await
+}
+
+/// Get the most recent recording version for a show (any status), or `None`.
+/// Ordered by `id` DESC so the newest take wins even for versions created within
+/// the same second (`created_at` has 1s resolution).
+pub async fn get_latest_recording_version(
+    pool: &SqlitePool,
+    show_id: i64,
+) -> Result<Option<RecordingVersion>, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>(
+        "SELECT * FROM recording_versions WHERE show_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .bind(show_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Map each show to the `status` of its most recent recording version, in a single
+/// query (avoids an N+1 over the shows list). Shows with no recording are absent
+/// from the map.
+pub async fn latest_recording_status_by_show(
+    pool: &SqlitePool,
+) -> Result<std::collections::HashMap<i64, String>, sqlx::Error> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT show_id, status FROM recording_versions \
+         WHERE id IN (SELECT MAX(id) FROM recording_versions GROUP BY show_id)",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Record the shows-bucket archive key for a recording version (set on stream-end,
+/// so a streamed show is downloadable without a manual finalize).
+pub async fn set_recording_archive_key(
+    pool: &SqlitePool,
+    id: i64,
+    archive_key: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE recording_versions SET archive_key = ?, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(archive_key)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Update recording version status

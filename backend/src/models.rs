@@ -283,6 +283,10 @@ pub struct RecordingVersion {
     pub markers_key: Option<String>,
     /// R2 key for final.mp3 file (after finalize)
     pub final_key: Option<String>,
+    /// Key of the auto-published archive MP3 in the shows bucket
+    /// (`r2_shows_bucket_name`), set on stream-end. Downloadable without a manual
+    /// finalize; lives in a different bucket than `final_key`/`raw_key`.
+    pub archive_key: Option<String>,
     /// Error message if finalize failed
     pub error_message: Option<String>,
     pub created_at: String,
