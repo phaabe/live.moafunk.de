@@ -224,11 +224,28 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         .await?
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    // Ensure recording exists
-    let recording_key = show
-        .recording_key
-        .as_ref()
-        .ok_or_else(|| AppError::BadRequest("Show has no recording to upload".to_string()))?;
+    // Resolve the audio source: a manually attached recording takes precedence
+    // (pre-recorded / UNHEARD shows); otherwise fall back to the latest finalized
+    // live recording version so streamed shows can be published too (#251).
+    let (recording_key, source_filename) = match show.recording_key.as_ref() {
+        Some(key) => (
+            key.clone(),
+            show.recording_filename
+                .clone()
+                .unwrap_or_else(|| "recording.mp3".to_string()),
+        ),
+        None => {
+            let version = crate::db::get_latest_finalized_recording_version(&state.db, show_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::BadRequest("Show has no recording to upload".to_string())
+                })?;
+            let final_key = version.final_key.clone().ok_or_else(|| {
+                AppError::BadRequest("Finalized recording has no file to upload".to_string())
+            })?;
+            (final_key, format!("{}.mp3", version.version))
+        }
+    };
 
     tracing::info!(
         show_id = show_id,
@@ -248,7 +265,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
 
     // Download recording from R2
     let (recording_bytes, recording_content_type) =
-        storage::download_file(state, recording_key).await?;
+        storage::download_file(state, &recording_key).await?;
     tracing::info!(
         show_id = show_id,
         size_mb = recording_bytes.len() as f64 / 1_048_576.0,
@@ -257,10 +274,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
     );
 
     // Determine filename for the upload
-    let filename = show
-        .recording_filename
-        .as_deref()
-        .unwrap_or("recording.mp3");
+    let filename = source_filename.as_str();
 
     // Build multipart form
     let recording_part = reqwest::multipart::Part::bytes(recording_bytes)

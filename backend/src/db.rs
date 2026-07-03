@@ -745,6 +745,23 @@ pub async fn get_latest_recording_version(
     .await
 }
 
+/// Latest *finalized* recording version for a show (status `finalized` with a
+/// `final_key`), newest first. This is the curated take the SoundCloud upload
+/// falls back to when a show has no manually attached `recording_key`.
+pub async fn get_latest_finalized_recording_version(
+    pool: &SqlitePool,
+    show_id: i64,
+) -> Result<Option<RecordingVersion>, sqlx::Error> {
+    sqlx::query_as::<_, RecordingVersion>(
+        "SELECT * FROM recording_versions \
+         WHERE show_id = ? AND status = 'finalized' AND final_key IS NOT NULL \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(show_id)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Map each show to the `status` of its most recent recording version, in a single
 /// query (avoids an N+1 over the shows list). Shows with no recording are absent
 /// from the map.
@@ -1042,5 +1059,69 @@ mod tests {
         .await
         .unwrap();
         assert!(other_row.is_none());
+    }
+
+    async fn insert_show(pool: &SqlitePool, title: &str) -> i64 {
+        sqlx::query("INSERT INTO shows (title, date) VALUES (?, '2026-01-01')")
+            .bind(title)
+            .execute(pool)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+    }
+
+    async fn insert_recording_version(
+        pool: &SqlitePool,
+        show_id: i64,
+        version: &str,
+        status: &str,
+        final_key: Option<&str>,
+    ) {
+        sqlx::query(
+            "INSERT INTO recording_versions (show_id, version, status, final_key) VALUES (?, ?, ?, ?)",
+        )
+        .bind(show_id)
+        .bind(version)
+        .bind(status)
+        .bind(final_key)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// The SoundCloud fallback picks the newest *finalized* take with a `final_key`,
+    /// skipping raw/failed versions and finalized rows that never got a file.
+    #[tokio::test]
+    async fn latest_finalized_recording_version_skips_non_finalized() {
+        let pool = mem_db().await;
+        let show = insert_show(&pool, "Live Show").await;
+
+        insert_recording_version(&pool, show, "v1", "raw", None).await;
+        insert_recording_version(&pool, show, "v2", "finalized", Some("shows/1/v2.mp3")).await;
+        insert_recording_version(&pool, show, "v3", "finalized", Some("shows/1/v3.mp3")).await;
+        // A newer raw take must not shadow the finalized one.
+        insert_recording_version(&pool, show, "v4", "raw", None).await;
+        // A finalized row without a file is not a valid source.
+        insert_recording_version(&pool, show, "v5", "finalized", None).await;
+
+        let picked = get_latest_finalized_recording_version(&pool, show)
+            .await
+            .unwrap()
+            .expect("a finalized version with a final_key exists");
+        assert_eq!(picked.version, "v3");
+        assert_eq!(picked.final_key.as_deref(), Some("shows/1/v3.mp3"));
+    }
+
+    /// A show whose only takes are raw has no SoundCloud-eligible recording.
+    #[tokio::test]
+    async fn latest_finalized_recording_version_none_when_only_raw() {
+        let pool = mem_db().await;
+        let show = insert_show(&pool, "Unfinalized Show").await;
+        insert_recording_version(&pool, show, "v1", "raw", None).await;
+
+        assert!(get_latest_finalized_recording_version(&pool, show)
+            .await
+            .unwrap()
+            .is_none());
     }
 }
