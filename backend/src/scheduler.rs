@@ -230,20 +230,46 @@ pub async fn check_missing_recordings(state: Arc<AppState>) {
             continue; // still live, just ended, or unparseable schedule
         }
 
+        // A qualifying show has no successful recording, but the cause matters:
+        // a capture rejected purely for being under the minimum length is benign
+        // (someone tested / aborted quickly) and shouldn't read like a broken
+        // recorder. Inspect the latest version row to word the alert accordingly.
+        let latest: Option<(String, Option<String>)> = match sqlx::query_as(
+            "SELECT status, error_message FROM recording_versions \
+             WHERE show_id = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(show.id)
+        .fetch_optional(&state.db)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::error!(
+                    "Dead-man's-switch: failed to query recording versions for show {}: {e}",
+                    show.id
+                );
+                None
+            }
+        };
+        let too_short = latest
+            .as_ref()
+            .is_some_and(|(status, msg)| is_short_capture(status, msg.as_deref()));
+
         tracing::warn!(
-            "Dead-man's-switch: show {} ('{}') ended with no recording — alerting",
+            "Dead-man's-switch: show {} ('{}') ended with no usable recording (too_short={}) — alerting",
             show.id,
-            show.title
+            show.title,
+            too_short
         );
 
         telegram_notify::notify(
             &state,
-            &format!(
-                "⚠️ No recording for show \"{}\" (#{}) on {}{}. The live archive may be missing — check the recorder.",
-                show.title,
+            &missing_recording_alert(
+                &show.title,
                 show.id,
-                show.date,
-                show.end_time.as_deref().map(|t| format!(" ending {t}")).unwrap_or_default(),
+                &show.date,
+                show.end_time.as_deref(),
+                too_short,
             ),
         )
         .await;
@@ -260,6 +286,39 @@ pub async fn check_missing_recordings(state: Arc<AppState>) {
                 show.id
             );
         }
+    }
+}
+
+/// True when a `recording_versions` row represents a capture rejected purely for
+/// being under [`crate::handlers::recording::MIN_RECORDING_SECS`] (an "essentially
+/// empty" broadcast), as opposed to a write failure, R2 size mismatch, or no
+/// recording at all. Keyed on the shared marker so wording stays in sync.
+fn is_short_capture(status: &str, error_message: Option<&str>) -> bool {
+    status == "failed"
+        && error_message
+            .is_some_and(|m| m.contains(crate::handlers::recording::SHORT_RECORDING_MARKER))
+}
+
+/// Build the dead-man's-switch Telegram alert. A sub-threshold capture gets an
+/// informational message explaining it was intentionally not archived; anything
+/// else keeps the "archive may be missing — check the recorder" alarm.
+fn missing_recording_alert(
+    title: &str,
+    id: i64,
+    date: &str,
+    end_time: Option<&str>,
+    too_short: bool,
+) -> String {
+    let ending = end_time.map(|t| format!(" ending {t}")).unwrap_or_default();
+    if too_short {
+        format!(
+            "ℹ️ No archive for show \"{title}\" (#{id}) on {date}{ending}: the live recording was under the {min}s minimum, so it was treated as empty and not archived. If you expected a full recording, check the recorder.",
+            min = crate::handlers::recording::MIN_RECORDING_SECS,
+        )
+    } else {
+        format!(
+            "⚠️ No recording for show \"{title}\" (#{id}) on {date}{ending}. The live archive may be missing — check the recorder."
+        )
     }
 }
 
@@ -445,5 +504,44 @@ mod tests {
             end + chrono::Duration::minutes(60),
             15
         ));
+    }
+
+    #[test]
+    fn is_short_capture_only_matches_sub_threshold_failures() {
+        // The exact reason the upload verifier writes for a too-short capture.
+        assert!(is_short_capture(
+            "failed",
+            Some("recording for show 27 is only 29s — essentially empty")
+        ));
+        // Other failure reasons are genuine problems, not the benign short case.
+        assert!(!is_short_capture(
+            "failed",
+            Some("R2 size mismatch after upload (local 5 != remote 0)")
+        ));
+        // A non-failed row is never the short case.
+        assert!(!is_short_capture("raw", None));
+        assert!(!is_short_capture("finalized", None));
+        // Failed with no reason recorded → treat as a real gap, not too-short.
+        assert!(!is_short_capture("failed", None));
+    }
+
+    #[test]
+    fn missing_recording_alert_words_short_vs_missing() {
+        let short =
+            missing_recording_alert("phils test show", 27, "2026-07-01", Some("19:52"), true);
+        assert!(short.starts_with("ℹ️"));
+        assert!(short.contains("under the 60s minimum"));
+        assert!(short.contains("not archived"));
+        assert!(short.contains("ending 19:52"));
+
+        let missing =
+            missing_recording_alert("phils test show", 27, "2026-07-01", Some("19:52"), false);
+        assert!(missing.starts_with("⚠️"));
+        assert!(missing.contains("check the recorder"));
+        assert!(!missing.contains("minimum"));
+
+        // No end_time → no "ending …" suffix.
+        let no_end = missing_recording_alert("x", 1, "2026-07-01", None, true);
+        assert!(!no_end.contains("ending"));
     }
 }

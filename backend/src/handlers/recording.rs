@@ -267,7 +267,14 @@ pub struct FinalizedRecording {
 /// A recording shorter than this is treated as essentially empty — the recorder
 /// started but produced no usable audio (e.g. it died seconds in). No real show
 /// is under a minute, so this floor never fails a legitimate broadcast.
-const MIN_RECORDING_SECS: u64 = 60;
+pub(crate) const MIN_RECORDING_SECS: u64 = 60;
+
+/// Stable token embedded in the failure reason of a sub-threshold capture so the
+/// dead-man's-switch ([`crate::scheduler::check_missing_recordings`]) can word its
+/// alert accurately — "under the minimum, not archived" vs. "recorder may be
+/// broken" — without re-deriving the duration. Do not reword without updating the
+/// scheduler classifier (and note existing `failed` rows carry the old text).
+pub(crate) const SHORT_RECORDING_MARKER: &str = "essentially empty";
 
 /// If the recorded duration is implausibly short, return a human-readable reason;
 /// otherwise `None`. Returns `None` when the duration is unknown (can't judge).
@@ -284,9 +291,10 @@ fn detect_short_recording(show_id: i64, local_duration_ms: Option<u64>) -> Optio
     let duration_ms = local_duration_ms?;
     if duration_ms < MIN_RECORDING_SECS * 1000 {
         let reason = format!(
-            "recording for show {} is only {}s — essentially empty",
+            "recording for show {} is only {}s — {}",
             show_id,
-            duration_ms / 1000
+            duration_ms / 1000,
+            SHORT_RECORDING_MARKER
         );
         Some(reason)
     } else {
