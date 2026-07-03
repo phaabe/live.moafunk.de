@@ -214,16 +214,21 @@ const recordingFilename = computed(() => show.value?.recording_filename || null)
 // `recording_*` upload above. Present for any streamed show once a capture exists.
 const latestRecording = computed(() => show.value?.latest_recording ?? null);
 
-const RECORDING_STATUS_LABELS: Record<string, string> = {
-  raw: 'Captured — awaiting finalize',
-  finalizing: 'Processing…',
-  finalized: 'Ready',
+// Display state, decoupled from the raw DB status: a streamed take is `raw` yet
+// already downloadable via the archive mp3, so key "ready" off download_url.
+const recordingState = computed<'ready' | 'processing' | 'failed' | null>(() => {
+  const r = latestRecording.value;
+  if (!r) return null;
+  if (r.status === 'failed') return 'failed';
+  if (r.download_url) return 'ready';
+  return 'processing';
+});
+
+const RECORDING_STATE_LABELS: Record<'ready' | 'processing' | 'failed', string> = {
+  ready: 'Ready',
+  processing: 'Processing…',
   failed: 'Failed',
 };
-
-function recordingStatusLabel(status: string): string {
-  return RECORDING_STATUS_LABELS[status] ?? status;
-}
 
 function formatDurationMs(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -1585,11 +1590,11 @@ onUnmounted(() => {
       </div>
 
       <!-- Live Recording (streamed shows, any type) -->
-      <div v-if="latestRecording" class="card">
+      <div v-if="latestRecording && recordingState" class="card">
         <h2 class="section-title">Live Recording</h2>
         <div class="live-recording-head">
-          <span :class="['rec-badge', latestRecording.status]">
-            {{ recordingStatusLabel(latestRecording.status) }}
+          <span :class="['rec-badge', recordingState]">
+            {{ RECORDING_STATE_LABELS[recordingState] }}
           </span>
           <span class="live-recording-meta">
             {{ latestRecording.version }}
@@ -1599,17 +1604,14 @@ onUnmounted(() => {
           </span>
         </div>
 
-        <p v-if="latestRecording.status === 'failed'" class="live-recording-error">
+        <p v-if="recordingState === 'failed'" class="live-recording-error">
           {{ latestRecording.error_message || 'Recording failed.' }}
         </p>
-        <p
-          v-else-if="latestRecording.status === 'raw' || latestRecording.status === 'finalizing'"
-          class="text-muted live-recording-hint"
-        >
+        <p v-else-if="recordingState === 'processing'" class="text-muted live-recording-hint">
           The recording is being processed. A download will appear here once it's ready.
         </p>
 
-        <template v-if="latestRecording.status === 'finalized' && latestRecording.download_url">
+        <template v-else-if="latestRecording.download_url">
           <AudioPlayer :key="latestRecording.download_url" :src="latestRecording.download_url" />
           <div class="recording-actions">
             <a :href="latestRecording.download_url" class="dl-btn recording" download>
@@ -1617,12 +1619,6 @@ onUnmounted(() => {
             </a>
           </div>
         </template>
-        <p
-          v-else-if="latestRecording.status === 'finalized'"
-          class="text-muted live-recording-hint"
-        >
-          Recording is ready, but the download link isn't available right now. Try reloading.
-        </p>
       </div>
 
       <!-- Assigned Artists Section (UNHEARD only, admin only) -->
@@ -2186,8 +2182,8 @@ onUnmounted(() => {
   color: #ef4444;
 }
 
-/* Recording-version status badge (mirrors RecordingPage). Named distinctly from
-   `.status-badge` so it doesn't collide with the show-status badge above. */
+/* Live-recording display-state badge. Named distinctly from `.status-badge` so it
+   doesn't collide with the show-status badge above. */
 .rec-badge {
   font-size: 0.75rem;
   padding: 2px 8px;
@@ -2195,19 +2191,14 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.rec-badge.raw {
-  background: rgba(234, 179, 8, 0.1);
-  color: #eab308;
-}
-
-.rec-badge.finalizing {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
-}
-
-.rec-badge.finalized {
+.rec-badge.ready {
   background: rgba(34, 197, 94, 0.1);
   color: #22c55e;
+}
+
+.rec-badge.processing {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
 }
 
 .rec-badge.failed {
