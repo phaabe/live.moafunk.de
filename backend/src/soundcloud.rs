@@ -224,31 +224,53 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         .await?
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    // Resolve the audio source: a manually attached recording takes precedence
-    // (pre-recorded / UNHEARD shows); otherwise fall back to the latest finalized
-    // live recording version so streamed shows can be published too (#251).
-    let (recording_key, source_filename) = match show.recording_key.as_ref() {
+    // Resolve the audio source, in priority order:
+    //   1. a manually attached recording (pre-recorded / UNHEARD shows),
+    //   2. the latest *finalized* live recording (final.mp3, default bucket),
+    //   3. the latest streamed *archive* MP3 (shows bucket) — streamed shows stay
+    //      `raw` with only an archive_key, so this is the auto-upload source (#251).
+    let (recording_bucket, recording_key, source_filename) = match show.recording_key.as_ref() {
         Some(key) => (
+            state.config.r2_bucket_name.clone(),
             key.clone(),
             show.recording_filename
                 .clone()
                 .unwrap_or_else(|| "recording.mp3".to_string()),
         ),
         None => {
-            let version = crate::db::get_latest_finalized_recording_version(&state.db, show_id)
-                .await?
-                .ok_or_else(|| {
-                    AppError::BadRequest("Show has no recording to upload".to_string())
+            if let Some(version) =
+                crate::db::get_latest_finalized_recording_version(&state.db, show_id).await?
+            {
+                let final_key = version.final_key.clone().ok_or_else(|| {
+                    AppError::BadRequest("Finalized recording has no file to upload".to_string())
                 })?;
-            let final_key = version.final_key.clone().ok_or_else(|| {
-                AppError::BadRequest("Finalized recording has no file to upload".to_string())
-            })?;
-            (final_key, format!("{}.mp3", version.version))
+                (
+                    state.config.r2_bucket_name.clone(),
+                    final_key,
+                    format!("{}.mp3", version.version),
+                )
+            } else if let Some(version) =
+                crate::db::get_latest_archived_recording_version(&state.db, show_id).await?
+            {
+                let archive_key = version.archive_key.clone().ok_or_else(|| {
+                    AppError::BadRequest("Archived recording has no file to upload".to_string())
+                })?;
+                (
+                    state.config.r2_shows_bucket_name.clone(),
+                    archive_key,
+                    format!("{}.mp3", version.version),
+                )
+            } else {
+                return Err(AppError::BadRequest(
+                    "Show has no recording to upload".to_string(),
+                ));
+            }
         }
     };
 
     tracing::info!(
         show_id = show_id,
+        bucket = recording_bucket.as_str(),
         recording_key = recording_key.as_str(),
         "Starting SoundCloud upload"
     );
@@ -263,9 +285,9 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         "SoundCloud track title built"
     );
 
-    // Download recording from R2
+    // Download recording from R2 (from whichever bucket the source lives in)
     let (recording_bytes, recording_content_type) =
-        storage::download_file(state, &recording_key).await?;
+        storage::download_file_from_bucket(state, &recording_bucket, &recording_key).await?;
     tracing::info!(
         show_id = show_id,
         size_mb = recording_bytes.len() as f64 / 1_048_576.0,
@@ -311,8 +333,30 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         }
     }
 
-    // Upload to SoundCloud
+    // The SoundCloud API cannot replace a track's audio in place (asset_data is
+    // upload-only; PUT changes metadata/artwork only). To make a newer recording
+    // supersede the show's track without piling up duplicates, delete the old track
+    // first, then create a fresh one. Tradeoff: the new track gets a new URL and
+    // drops the old track's plays/comments — acceptable for auto-archived private
+    // shows. Deleting the old track also removes it from the show playlist, so the
+    // playlist step below just adds the replacement.
     let client = reqwest::Client::new();
+    if let Some(old_track_id) = show.soundcloud_track_id.as_deref() {
+        match delete_track(&client, &access_token, old_track_id).await {
+            Ok(()) => tracing::info!(
+                show_id = show_id,
+                old_track_id = old_track_id,
+                "Deleted previous SoundCloud track before re-upload"
+            ),
+            Err(e) => tracing::warn!(
+                show_id = show_id,
+                old_track_id = old_track_id,
+                error = %e,
+                "Failed to delete previous SoundCloud track (continuing with a new upload)"
+            ),
+        }
+    }
+
     let resp = client
         .post(format!("{}/tracks", SOUNDCLOUD_API_BASE))
         .header("Authorization", format!("OAuth {}", access_token))
@@ -388,26 +432,46 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
     })
 }
 
+/// Delete a SoundCloud track by id. Used to supersede a show's previous track when
+/// a newer recording is uploaded (the API can't replace audio in place). A 404 is
+/// treated as success — the track is already gone.
+async fn delete_track(client: &reqwest::Client, access_token: &str, track_id: &str) -> Result<()> {
+    let resp = client
+        .delete(format!("{}/tracks/{}", SOUNDCLOUD_API_BASE, track_id))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Delete track request failed: {}", e)))?;
+
+    if resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_FOUND {
+        Ok(())
+    } else {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        Err(AppError::Internal(format!(
+            "Delete track failed ({}): {}",
+            status, body
+        )))
+    }
+}
+
 /// Whether a just-finalized recording should be auto-uploaded to SoundCloud.
 /// Pure decision so the policy is testable: upload only when the feature is
-/// enabled, the integration is configured, and the show hasn't been uploaded yet
-/// (re-finalizing must not create a duplicate track).
-pub(crate) fn should_auto_upload(enabled: bool, configured: bool, already_uploaded: bool) -> bool {
-    enabled && configured && !already_uploaded
+/// enabled and the integration is configured. Not gated on "already uploaded":
+/// a newer recording deliberately *replaces* the show's existing track audio.
+pub(crate) fn should_auto_upload(enabled: bool, configured: bool) -> bool {
+    enabled && configured
 }
 
 /// Best-effort automatic SoundCloud upload, fired when a recording finishes
-/// finalizing (see `handle_finalize_socket`). Uploads as a private track with the
-/// show's title + description via [`upload_track`]. Never returns an error: every
-/// failure is logged and swallowed so it can run detached without affecting the
-/// finalize flow. No-ops when disabled, unconfigured, or already uploaded.
+/// finalizing (streamed shows via `finalize_and_upload`, UNHEARD via
+/// `handle_finalize_socket`). Uploads as a private track with the show's title +
+/// description via [`upload_track`] — which, if the show already has a track,
+/// replaces that track's audio in place so a re-recording updates the same
+/// SoundCloud track. Never returns an error: every failure is logged and swallowed
+/// so it can run detached. No-ops when disabled or unconfigured.
 pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
-    // Cheap gate before touching the DB.
-    if !should_auto_upload(
-        state.config.soundcloud_auto_upload,
-        is_configured(state),
-        false,
-    ) {
+    if !should_auto_upload(state.config.soundcloud_auto_upload, is_configured(state)) {
         tracing::debug!(
             show_id = show_id,
             enabled = state.config.soundcloud_auto_upload,
@@ -417,7 +481,6 @@ pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
         return;
     }
 
-    // Skip if this show already has a SoundCloud track (avoid duplicates on re-finalize).
     let show: models::Show = match sqlx::query_as("SELECT * FROM shows WHERE id = ?")
         .bind(show_id)
         .fetch_optional(&state.db)
@@ -433,15 +496,15 @@ pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
             return;
         }
     };
+
     if show.soundcloud_track_id.is_some() {
         tracing::info!(
             show_id,
-            "SoundCloud auto-upload: show already uploaded, skipping"
+            "Auto-upload: superseding show's SoundCloud track (delete + re-upload)"
         );
-        return;
+    } else {
+        tracing::info!(show_id, "Auto-uploading finalized recording to SoundCloud");
     }
-
-    tracing::info!(show_id, "Auto-uploading finalized recording to SoundCloud");
     match upload_track(state, show_id).await {
         Ok(result) if result.success => {
             if let Some(ref url) = result.track_url {
@@ -853,16 +916,14 @@ mod tests {
     use super::should_auto_upload;
 
     #[test]
-    fn auto_upload_only_when_enabled_configured_and_fresh() {
-        // Happy path: on, configured, not yet uploaded.
-        assert!(should_auto_upload(true, true, false));
+    fn auto_upload_only_when_enabled_and_configured() {
+        // Happy path: on + configured (fires even if the show already has a
+        // track — a new recording replaces that track's audio).
+        assert!(should_auto_upload(true, true));
 
-        // Any single blocker prevents the upload.
-        assert!(!should_auto_upload(false, true, false)); // kill-switch off
-        assert!(!should_auto_upload(true, false, false)); // not configured
-        assert!(!should_auto_upload(true, true, true)); // already uploaded (no dup)
-
-        // Fully off stays off.
-        assert!(!should_auto_upload(false, false, true));
+        // Either blocker prevents the upload.
+        assert!(!should_auto_upload(false, true)); // kill-switch off
+        assert!(!should_auto_upload(true, false)); // not configured
+        assert!(!should_auto_upload(false, false));
     }
 }
