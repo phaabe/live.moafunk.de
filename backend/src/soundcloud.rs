@@ -373,6 +373,83 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
     })
 }
 
+/// Whether a just-finalized recording should be auto-uploaded to SoundCloud.
+/// Pure decision so the policy is testable: upload only when the feature is
+/// enabled, the integration is configured, and the show hasn't been uploaded yet
+/// (re-finalizing must not create a duplicate track).
+pub(crate) fn should_auto_upload(enabled: bool, configured: bool, already_uploaded: bool) -> bool {
+    enabled && configured && !already_uploaded
+}
+
+/// Best-effort automatic SoundCloud upload, fired when a recording finishes
+/// finalizing (see `handle_finalize_socket`). Uploads as a private track with the
+/// show's title + description via [`upload_track`]. Never returns an error: every
+/// failure is logged and swallowed so it can run detached without affecting the
+/// finalize flow. No-ops when disabled, unconfigured, or already uploaded.
+pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
+    // Cheap gate before touching the DB.
+    if !should_auto_upload(
+        state.config.soundcloud_auto_upload,
+        is_configured(state),
+        false,
+    ) {
+        tracing::debug!(
+            show_id = show_id,
+            enabled = state.config.soundcloud_auto_upload,
+            configured = is_configured(state),
+            "Skipping SoundCloud auto-upload (disabled or not configured)"
+        );
+        return;
+    }
+
+    // Skip if this show already has a SoundCloud track (avoid duplicates on re-finalize).
+    let show: models::Show = match sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(show)) => show,
+        Ok(None) => {
+            tracing::warn!(show_id, "SoundCloud auto-upload: show not found");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(show_id, error = %e, "SoundCloud auto-upload: failed to load show");
+            return;
+        }
+    };
+    if show.soundcloud_track_id.is_some() {
+        tracing::info!(
+            show_id,
+            "SoundCloud auto-upload: show already uploaded, skipping"
+        );
+        return;
+    }
+
+    tracing::info!(show_id, "Auto-uploading finalized recording to SoundCloud");
+    match upload_track(state, show_id).await {
+        Ok(result) if result.success => {
+            if let Some(ref url) = result.track_url {
+                let title = build_title(state, &show)
+                    .await
+                    .unwrap_or_else(|_| format!("Show #{show_id}"));
+                crate::telegram_notify::notify_soundcloud_upload(state, show_id, &title, url);
+            }
+            tracing::info!(show_id, "SoundCloud auto-upload succeeded");
+        }
+        Ok(result) => {
+            tracing::error!(
+                show_id,
+                error = result.error.as_deref().unwrap_or("unknown"),
+                "SoundCloud auto-upload failed"
+            );
+        }
+        Err(e) => {
+            tracing::error!(show_id, error = %e, "SoundCloud auto-upload errored");
+        }
+    }
+}
+
 // ============================================================================
 // Privacy Toggle
 // ============================================================================
@@ -557,5 +634,24 @@ pub async fn get_status(state: &Arc<AppState>) -> SoundCloudStatus {
         configured,
         authorized,
         auth_url,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_auto_upload;
+
+    #[test]
+    fn auto_upload_only_when_enabled_configured_and_fresh() {
+        // Happy path: on, configured, not yet uploaded.
+        assert!(should_auto_upload(true, true, false));
+
+        // Any single blocker prevents the upload.
+        assert!(!should_auto_upload(false, true, false)); // kill-switch off
+        assert!(!should_auto_upload(true, false, false)); // not configured
+        assert!(!should_auto_upload(true, true, true)); // already uploaded (no dup)
+
+        // Fully off stays off.
+        assert!(!should_auto_upload(false, false, true));
     }
 }

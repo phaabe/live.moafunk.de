@@ -124,6 +124,13 @@ pub struct Config {
     /// OAuth redirect URI (defaults to http://localhost:8000/api/soundcloud/callback)
     #[serde(default = "default_soundcloud_redirect_uri")]
     pub soundcloud_redirect_uri: String,
+    /// When true (the default), a recording that finishes finalizing is
+    /// automatically uploaded to SoundCloud as a private track (title +
+    /// description built from the show). Set `SOUNDCLOUD_AUTO_UPLOAD=false` to
+    /// disable and keep uploads manual. Still requires SoundCloud to be
+    /// configured and authorized; otherwise the auto-upload silently no-ops.
+    #[serde(default = "default_true")]
+    pub soundcloud_auto_upload: bool,
 
     // Telegram Bot settings (optional - for admin notifications and control)
     /// Master kill-switch for the Telegram bot. Defaults to `false` (off): the
@@ -255,6 +262,10 @@ fn default_admin_base_url() -> String {
 
 fn default_soundcloud_redirect_uri() -> String {
     "http://localhost:8000/api/soundcloud/callback".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Config {
