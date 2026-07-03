@@ -502,6 +502,14 @@ onUnmounted(() => {
               <div v-if="rec.download_url" class="recording-player">
                 <AudioPlayer :src="rec.download_url" :show-volume="true" :initial-volume="100" />
               </div>
+              <a
+                v-if="rec.download_url"
+                :href="rec.download_url"
+                class="download-btn"
+                :download="`${rec.version}.mp3`"
+              >
+                ⬇️ Download
+              </a>
             </div>
           </div>
         </div>
