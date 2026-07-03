@@ -210,6 +210,28 @@ const formattedEnd = computed(() => {
 // Use recording filename from API
 const recordingFilename = computed(() => show.value?.recording_filename || null);
 
+// Live-stream recording (from `recording_versions`), distinct from the manual
+// `recording_*` upload above. Present for any streamed show once a capture exists.
+const latestRecording = computed(() => show.value?.latest_recording ?? null);
+
+const RECORDING_STATUS_LABELS: Record<string, string> = {
+  raw: 'Captured — awaiting finalize',
+  finalizing: 'Processing…',
+  finalized: 'Ready',
+  failed: 'Failed',
+};
+
+function recordingStatusLabel(status: string): string {
+  return RECORDING_STATUS_LABELS[status] ?? status;
+}
+
+function formatDurationMs(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
 // Cover refresh polling - uses cover_generated_at timestamp for reliable detection
 let coverRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let coverPollCount = 0;
@@ -1562,6 +1584,47 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- Live Recording (streamed shows, any type) -->
+      <div v-if="latestRecording" class="card">
+        <h2 class="section-title">Live Recording</h2>
+        <div class="live-recording-head">
+          <span :class="['rec-badge', latestRecording.status]">
+            {{ recordingStatusLabel(latestRecording.status) }}
+          </span>
+          <span class="live-recording-meta">
+            {{ latestRecording.version }}
+            <span v-if="latestRecording.duration_ms">
+              · {{ formatDurationMs(latestRecording.duration_ms) }}</span
+            >
+          </span>
+        </div>
+
+        <p v-if="latestRecording.status === 'failed'" class="live-recording-error">
+          {{ latestRecording.error_message || 'Recording failed.' }}
+        </p>
+        <p
+          v-else-if="latestRecording.status === 'raw' || latestRecording.status === 'finalizing'"
+          class="text-muted live-recording-hint"
+        >
+          The recording is being processed. A download will appear here once it's ready.
+        </p>
+
+        <template v-if="latestRecording.status === 'finalized' && latestRecording.download_url">
+          <AudioPlayer :key="latestRecording.download_url" :src="latestRecording.download_url" />
+          <div class="recording-actions">
+            <a :href="latestRecording.download_url" class="dl-btn recording" download>
+              ⬇️ Download recording
+            </a>
+          </div>
+        </template>
+        <p
+          v-else-if="latestRecording.status === 'finalized'"
+          class="text-muted live-recording-hint"
+        >
+          Recording is ready, but the download link isn't available right now. Try reloading.
+        </p>
+      </div>
+
       <!-- Assigned Artists Section (UNHEARD only, admin only) -->
       <div v-if="isUnheard && isAdmin" class="card">
         <h2 class="section-title">Assigned Artists ({{ show.artists.length }})</h2>
@@ -2099,6 +2162,57 @@ onUnmounted(() => {
 
 .recording-actions > * {
   flex: 1;
+}
+
+/* Live-stream recording (recording_versions) status + download */
+.live-recording-head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.live-recording-meta {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.live-recording-hint,
+.live-recording-error {
+  margin-top: var(--spacing-sm);
+}
+
+.live-recording-error {
+  color: #ef4444;
+}
+
+/* Recording-version status badge (mirrors RecordingPage). Named distinctly from
+   `.status-badge` so it doesn't collide with the show-status badge above. */
+.rec-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+}
+
+.rec-badge.raw {
+  background: rgba(234, 179, 8, 0.1);
+  color: #eab308;
+}
+
+.rec-badge.finalizing {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
+.rec-badge.finalized {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+}
+
+.rec-badge.failed {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
 }
 
 .soundcloud-section {
