@@ -185,6 +185,7 @@ h1.wordmark {
   padding: 0;
   margin: 64px 0 22px;
   transition: opacity 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
 }
 #btn-play:hover {
   opacity: 0.75;
