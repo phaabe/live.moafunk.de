@@ -1621,6 +1621,86 @@ onUnmounted(() => {
         </template>
       </div>
 
+      <!-- SoundCloud (non-UNHEARD shows; UNHEARD has its own in the recording card) -->
+      <div v-if="isAdmin && scStatus && !isUnheard" class="card">
+        <h2 class="section-title">SoundCloud</h2>
+        <div class="soundcloud-section">
+          <template v-if="!scStatus.configured">
+            <p class="empty-state">
+              SoundCloud isn't configured. Set SOUNDCLOUD_CLIENT_ID / SOUNDCLOUD_CLIENT_SECRET.
+            </p>
+          </template>
+          <template v-else-if="!scStatus.authorized">
+            <p class="text-muted soundcloud-hint">
+              Connect the station's SoundCloud account to enable uploads.
+            </p>
+            <BaseButton size="sm" variant="primary" @click="connectSoundCloud">
+              🔗 Connect SoundCloud
+            </BaseButton>
+          </template>
+          <template v-else-if="show.soundcloud_url">
+            <div class="soundcloud-status">
+              <span class="soundcloud-label">☁️ SoundCloud</span>
+              <a :href="show.soundcloud_url" target="_blank" rel="noopener" class="soundcloud-link">
+                {{ show.soundcloud_public ? '🔓 Public' : '🔒 Private' }}
+              </a>
+              <span v-if="show.soundcloud_uploaded_at" class="text-muted soundcloud-timestamp">
+                Uploaded {{ show.soundcloud_uploaded_at }}
+              </span>
+            </div>
+            <div class="soundcloud-actions">
+              <BaseButton
+                size="sm"
+                :variant="show.soundcloud_public ? 'ghost' : 'success'"
+                :loading="togglingSoundCloudPrivacy"
+                @click="toggleSoundCloudPrivacy"
+              >
+                {{ show.soundcloud_public ? 'Make Private' : 'Make Public' }}
+              </BaseButton>
+              <BaseButton
+                size="sm"
+                variant="ghost"
+                :loading="uploadingToSoundCloud"
+                @click="uploadToSoundCloud"
+              >
+                Re-upload
+              </BaseButton>
+              <BaseButton
+                v-if="scStatus.auth_url"
+                size="sm"
+                variant="ghost"
+                @click="disconnectAndReconnectSoundCloud"
+              >
+                🔗 Reconnect
+              </BaseButton>
+            </div>
+          </template>
+          <template v-else>
+            <p class="text-muted soundcloud-hint">
+              Finalized recordings upload here automatically. You can also upload now.
+            </p>
+            <div class="soundcloud-actions">
+              <BaseButton
+                size="sm"
+                variant="ghost"
+                :loading="uploadingToSoundCloud"
+                @click="uploadToSoundCloud"
+              >
+                ☁️ Upload to SoundCloud
+              </BaseButton>
+              <BaseButton
+                v-if="scStatus.auth_url"
+                size="sm"
+                variant="ghost"
+                @click="disconnectAndReconnectSoundCloud"
+              >
+                🔗 Reconnect
+              </BaseButton>
+            </div>
+          </template>
+        </div>
+      </div>
+
       <!-- Assigned Artists Section (UNHEARD only, admin only) -->
       <div v-if="isUnheard && isAdmin" class="card">
         <h2 class="section-title">Assigned Artists ({{ show.artists.length }})</h2>
