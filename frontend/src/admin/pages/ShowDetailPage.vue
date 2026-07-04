@@ -14,7 +14,9 @@ import AudioPlayer from '../components/AudioPlayer.vue';
 import ShowDeadlineBanner from '../components/show-detail/ShowDeadlineBanner.vue';
 import ShowMediaCard from '../components/show-detail/ShowMediaCard.vue';
 import ShowSocialChannels from '../components/show-detail/ShowSocialChannels.vue';
-import { IdentityPanel, ScheduleHostPanel } from '../components/show-cockpit/panels';
+import { IdentityPanel, ScheduleHostPanel, WrapUpPanel } from '../components/show-cockpit/panels';
+import { CockpitShell, TabbedShell, type ShellLayout } from './show-cockpit';
+import { useShowPhase } from '../composables/useShowPhase';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
@@ -126,6 +128,34 @@ const mediaMode = ref<'live' | 'upload'>('upload');
 
 /** The assigned host may manage media (matches the backend require_user_show check). */
 const canManageMedia = computed(() => !!show.value && show.value.host_user_id === auth.user?.id);
+
+// ── Dashboard shell A/B (cockpit vs tabs) ──────────────────────────────────
+// docs/stream-rework/show-cockpit-plan.md — the layout is chosen via ?layout=,
+// remembered in localStorage, and toggleable from the header. Guests get a
+// trimmed view (no promotion / wrap-up).
+const LAYOUT_STORAGE_KEY = 'showDashboardLayout';
+
+function initialLayout(): ShellLayout {
+  const q = route.query.layout;
+  if (q === 'cockpit' || q === 'tabs') return q;
+  const stored = localStorage.getItem(LAYOUT_STORAGE_KEY);
+  return stored === 'cockpit' || stored === 'tabs' ? stored : 'cockpit';
+}
+
+const layout = ref<ShellLayout>(initialLayout());
+const shellComponent = computed(() => (layout.value === 'tabs' ? TabbedShell : CockpitShell));
+
+function setLayout(next: ShellLayout) {
+  layout.value = next;
+  localStorage.setItem(LAYOUT_STORAGE_KEY, next);
+  // Keep the URL shareable/refresh-stable without polluting history.
+  router.replace({ query: { ...route.query, layout: next } });
+}
+
+const { phase } = useShowPhase(show);
+
+/** Guests see a trimmed dashboard: no promotion / wrap-up surfaces. */
+const isGuest = computed(() => auth.user?.role === 'guest');
 
 const airTarget = computed(() => {
   if (!show.value?.date || !show.value?.start_time) return null;
@@ -950,6 +980,22 @@ onUnmounted(() => {
             <h1 class="page-title">Episode overview</h1>
           </div>
           <div class="dash-header-actions">
+            <div class="layout-toggle" role="group" aria-label="Dashboard layout">
+              <button
+                type="button"
+                :class="['layout-chip', { active: layout === 'cockpit' }]"
+                @click="setLayout('cockpit')"
+              >
+                Cockpit
+              </button>
+              <button
+                type="button"
+                :class="['layout-chip', { active: layout === 'tabs' }]"
+                @click="setLayout('tabs')"
+              >
+                Tabs
+              </button>
+            </div>
             <BaseButton
               v-if="canEdit && !editMode"
               variant="ghost"
@@ -969,49 +1015,54 @@ onUnmounted(() => {
       </div>
 
       <!-- ===================== External / brunchtime dashboard ===================== -->
-      <template v-if="!isUnheard">
-        <!-- Deadline banner: countdown to air for live, or upload-status for upload mode -->
-        <ShowDeadlineBanner
-          v-if="mediaMode === 'live' || !show.prerecorded_confirmed_at"
-          :show="show"
-          :mode="mediaMode"
-          :air-target="airTarget"
-          :can-act="canManageMedia"
-          @action="launchFlow"
-        />
+      <!-- One route, two swappable layouts over the same shared panels (see
+           docs/stream-rework/show-cockpit-plan.md). The shell only arranges
+           slots + drives phase emphasis; all state/handlers stay here. -->
+      <component :is="shellComponent" v-if="!isUnheard" :phase="phase" :hide-aftershow="isGuest">
+        <template #banner>
+          <ShowDeadlineBanner
+            v-if="mediaMode === 'live' || !show.prerecorded_confirmed_at"
+            :show="show"
+            :mode="mediaMode"
+            :air-target="airTarget"
+            :can-act="canManageMedia"
+            @action="launchFlow"
+          />
+        </template>
 
-        <!-- Hero: cover + title + description -->
-        <IdentityPanel
-          v-model:title="titleForm"
-          v-model:description="descriptionForm"
-          :show="show"
-          :edit-mode="editMode"
-          :can-edit="canEdit"
-          :uploading-cover="uploadingCover"
-          @cover-selected="uploadCoverFile"
-        />
+        <template #identity>
+          <IdentityPanel
+            v-model:title="titleForm"
+            v-model:description="descriptionForm"
+            :show="show"
+            :edit-mode="editMode"
+            :can-edit="canEdit"
+            :uploading-cover="uploadingCover"
+            @cover-selected="uploadCoverFile"
+          />
+        </template>
 
-        <!-- Grid: air date + assigned host -->
-        <ScheduleHostPanel
-          v-model:edit-start="editStart"
-          v-model:edit-end="editEnd"
-          v-model:selected-host-id="selectedHostId"
-          v-model:host-edit-mode="hostEditMode"
-          v-model:new-guest-username="newGuestUsername"
-          :show="show"
-          :edit-mode="editMode"
-          :can-edit-host="canEditHost"
-          :assigning-host="assigningHost"
-          :guest-creds="guestCreds"
-          :edit-time-valid="editTimeValid"
-          :edit-time-error="editTimeError"
-          @assign-host="assignHost"
-          @create-guest="createGuestHost"
-          @unassign-host="unassignHost"
-        />
+        <template #schedule>
+          <ScheduleHostPanel
+            v-model:edit-start="editStart"
+            v-model:edit-end="editEnd"
+            v-model:selected-host-id="selectedHostId"
+            v-model:host-edit-mode="hostEditMode"
+            v-model:new-guest-username="newGuestUsername"
+            :show="show"
+            :edit-mode="editMode"
+            :can-edit-host="canEditHost"
+            :assigning-host="assigningHost"
+            :guest-creds="guestCreds"
+            :edit-time-valid="editTimeValid"
+            :edit-time-error="editTimeError"
+            @assign-host="assignHost"
+            @create-guest="createGuestHost"
+            @unassign-host="unassignHost"
+          />
+        </template>
 
-        <!-- Grid: media + social -->
-        <div class="dash-grid">
+        <template #media>
           <ShowMediaCard
             :show="show"
             :mode="mediaMode"
@@ -1020,9 +1071,28 @@ onUnmounted(() => {
             @select-upload="mediaMode = 'upload'"
             @launch="launchFlow"
           />
+        </template>
+
+        <template #promotion>
           <ShowSocialChannels />
-        </div>
-      </template>
+        </template>
+
+        <template #wrapup>
+          <WrapUpPanel
+            :show="show"
+            :latest-recording="latestRecording"
+            :recording-state="recordingState"
+            :can-use-soundcloud="canUseSoundcloud"
+            :sc-status="scStatus"
+            :uploading-to-sound-cloud="uploadingToSoundCloud"
+            :toggling-sound-cloud-privacy="togglingSoundCloudPrivacy"
+            @upload-soundcloud="uploadToSoundCloud"
+            @toggle-privacy="toggleSoundCloudPrivacy"
+            @connect-soundcloud="connectSoundCloud"
+            @reconnect-soundcloud="disconnectAndReconnectSoundCloud"
+          />
+        </template>
+      </component>
 
       <div v-if="isUnheard" class="top-grid">
         <div class="main-column">
@@ -1397,8 +1467,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Live Recording (streamed shows, any type) -->
-      <div v-if="latestRecording && recordingState" class="card">
+      <!-- Live Recording (UNHEARD only; external shows surface it in WrapUpPanel) -->
+      <div v-if="isUnheard && latestRecording && recordingState" class="card">
         <h2 class="section-title">Live Recording</h2>
         <div class="live-recording-head">
           <span :class="['rec-badge', recordingState]">
@@ -1427,86 +1497,6 @@ onUnmounted(() => {
             </a>
           </div>
         </template>
-      </div>
-
-      <!-- SoundCloud (non-UNHEARD shows; UNHEARD has its own in the recording card) -->
-      <div v-if="canUseSoundcloud && scStatus && !isUnheard" class="card">
-        <h2 class="section-title">SoundCloud</h2>
-        <div class="soundcloud-section">
-          <template v-if="!scStatus.configured">
-            <p class="empty-state">
-              SoundCloud isn't configured. Set SOUNDCLOUD_CLIENT_ID / SOUNDCLOUD_CLIENT_SECRET.
-            </p>
-          </template>
-          <template v-else-if="!scStatus.authorized">
-            <p class="text-muted soundcloud-hint">
-              Connect the station's SoundCloud account to enable uploads.
-            </p>
-            <BaseButton size="sm" variant="primary" @click="connectSoundCloud">
-              🔗 Connect SoundCloud
-            </BaseButton>
-          </template>
-          <template v-else-if="show.soundcloud_url">
-            <div class="soundcloud-status">
-              <span class="soundcloud-label">☁️ SoundCloud</span>
-              <a :href="show.soundcloud_url" target="_blank" rel="noopener" class="soundcloud-link">
-                {{ show.soundcloud_public ? '🔓 Public' : '🔒 Private' }}
-              </a>
-              <span v-if="show.soundcloud_uploaded_at" class="text-muted soundcloud-timestamp">
-                Uploaded {{ show.soundcloud_uploaded_at }}
-              </span>
-            </div>
-            <div class="soundcloud-actions">
-              <BaseButton
-                size="sm"
-                :variant="show.soundcloud_public ? 'ghost' : 'success'"
-                :loading="togglingSoundCloudPrivacy"
-                @click="toggleSoundCloudPrivacy"
-              >
-                {{ show.soundcloud_public ? 'Make Private' : 'Make Public' }}
-              </BaseButton>
-              <BaseButton
-                size="sm"
-                variant="ghost"
-                :loading="uploadingToSoundCloud"
-                @click="uploadToSoundCloud"
-              >
-                Re-upload
-              </BaseButton>
-              <BaseButton
-                v-if="scStatus.auth_url"
-                size="sm"
-                variant="ghost"
-                @click="disconnectAndReconnectSoundCloud"
-              >
-                🔗 Reconnect
-              </BaseButton>
-            </div>
-          </template>
-          <template v-else>
-            <p class="text-muted soundcloud-hint">
-              Finalized recordings upload here automatically. You can also upload now.
-            </p>
-            <div class="soundcloud-actions">
-              <BaseButton
-                size="sm"
-                variant="ghost"
-                :loading="uploadingToSoundCloud"
-                @click="uploadToSoundCloud"
-              >
-                ☁️ Upload to SoundCloud
-              </BaseButton>
-              <BaseButton
-                v-if="scStatus.auth_url"
-                size="sm"
-                variant="ghost"
-                @click="disconnectAndReconnectSoundCloud"
-              >
-                🔗 Reconnect
-              </BaseButton>
-            </div>
-          </template>
-        </div>
       </div>
 
       <!-- Assigned Artists Section (UNHEARD only, admin only) -->
@@ -1776,8 +1766,33 @@ onUnmounted(() => {
 
 .dash-header-actions {
   display: flex;
+  align-items: center;
   gap: var(--spacing-sm);
   flex: 0 0 auto;
+}
+
+.layout-toggle {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.layout-chip {
+  padding: 4px 12px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  font-family: var(--font-family);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.layout-chip.active {
+  background: var(--color-primary);
+  color: var(--color-bg);
 }
 
 .dash-grid {

@@ -11,5 +11,6 @@
  */
 export { default as IdentityPanel } from './IdentityPanel.vue';
 export { default as ScheduleHostPanel } from './ScheduleHostPanel.vue';
+export { default as WrapUpPanel } from './WrapUpPanel.vue';
 export { default as MediaPanel } from '../../show-detail/ShowMediaCard.vue';
 export { default as PromotionPanel } from '../../show-detail/ShowSocialChannels.vue';
