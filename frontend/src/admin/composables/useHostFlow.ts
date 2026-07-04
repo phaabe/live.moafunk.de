@@ -1,5 +1,6 @@
 import { ref, computed, readonly } from 'vue';
 import { hostFlowApi, streamApi, type MyShowInfo, type UploadResult } from '../api';
+import { berlinToUtcDate, isShowEnded, isShowRunning } from '../showTime';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -135,51 +136,9 @@ async function fetchMyShow(): Promise<void> {
   }
 }
 
-/**
- * Get the current Berlin wall-clock time as an ISO-comparable string (YYYY-MM-DDTHH:MM:SS).
- * Uses sv-SE locale which formats as "YYYY-MM-DD HH:MM:SS".
- */
-function getBerlinNowISO(): string {
-  return new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' }).replace(' ', 'T');
-}
-
-/**
- * Convert a Berlin wall-clock date + time to a proper UTC Date object.
- * Useful for countdown arithmetic (target.getTime() - Date.now()).
- */
-function berlinToUtcDate(dateStr: string, timeStr: string): Date {
-  // Interpret as UTC first, then adjust by the Berlin-UTC offset
-  const asUtc = new Date(`${dateStr}T${timeStr}:00Z`);
-  const berlinMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'Europe/Berlin' })).getTime();
-  const utcMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'UTC' })).getTime();
-  const berlinOffsetMs = berlinMs - utcMs;
-  return new Date(asUtc.getTime() - berlinOffsetMs);
-}
-
-function nextDayDateStr(dateStr: string): string {
-  const d = new Date(`${dateStr}T00:00:00`);
-  d.setDate(d.getDate() + 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-/** Check if a show is currently running (between start and end time in Berlin TZ) */
-function isShowRunning(s: MyShowInfo): boolean {
-  if (!s.date || !s.start_time || !s.end_time) return false;
-  const nowStr = getBerlinNowISO();
-  const startStr = `${s.date}T${s.start_time}:00`;
-  const endDateStr = s.end_time <= s.start_time ? nextDayDateStr(s.date) : s.date;
-  const endStr = `${endDateStr}T${s.end_time}:00`;
-  return nowStr >= startStr && nowStr <= endStr;
-}
-
-/** Check if a show has ended (end date/time is past) */
-function isShowEnded(s: MyShowInfo): boolean {
-  if (!s.date || !s.end_time) return false;
-  const nowStr = getBerlinNowISO();
-  const endDateStr = s.start_time && s.end_time <= s.start_time ? nextDayDateStr(s.date) : s.date;
-  const endStr = `${endDateStr}T${s.end_time}:00`;
-  return nowStr > endStr;
-}
+// Berlin-time schedule helpers (getBerlinNowISO / berlinToUtcDate / isShowRunning /
+// isShowEnded) now live in ../showTime and are re-exported from this composable's
+// return object unchanged.
 
 /** Select a show and determine the starting step based on its state */
 function selectShow(selectedShow: MyShowInfo): void {
