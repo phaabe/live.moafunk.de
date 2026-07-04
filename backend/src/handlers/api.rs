@@ -5511,6 +5511,28 @@ pub async fn api_my_show_go_live(
 /// through FFmpeg via the stream bridge, and stamp `prerecorded_started_at` so
 /// it's never auto-started twice. Shared by the manual "Go Live" button
 /// (`api_my_show_go_live`) and [`crate::scheduler::check_prerecorded_show_start`].
+///
+/// The two callers can race (the client-side countdown in `FlowWaiting.vue`
+/// firing at the same moment the scheduler's poll picks up the same show), so
+/// the `prerecorded_started_at` claim is an atomic `UPDATE ... WHERE
+/// prerecorded_started_at IS NULL` done *before* FFmpeg is spawned, not after.
+/// Whoever affects the row wins; the loser no-ops instead of starting a second
+/// FFmpeg process (which previously produced a doubled/looped playback).
+/// Atomically claim a show's pre-recorded go-live: sets `prerecorded_started_at`
+/// only if it's still NULL, returning whether *this* call won the claim. Used to
+/// serialize the manual "Go Live" button against the auto-start scheduler, which
+/// can otherwise both observe `NULL` and both start FFmpeg for the same show.
+async fn claim_prerecorded_start(db: &sqlx::SqlitePool, show_id: i64) -> Result<bool> {
+    let claim = sqlx::query(
+        "UPDATE shows SET prerecorded_started_at = datetime('now') \
+         WHERE id = ? AND prerecorded_started_at IS NULL",
+    )
+    .bind(show_id)
+    .execute(db)
+    .await?;
+    Ok(claim.rows_affected() > 0)
+}
+
 pub async fn start_prerecorded_show_stream(
     state: &Arc<AppState>,
     show: &models::Show,
@@ -5527,6 +5549,34 @@ pub async fn start_prerecorded_show_stream(
         ));
     }
 
+    if !claim_prerecorded_start(&state.db, show.id).await? {
+        tracing::info!(
+            "Prerecorded stream for show_id={} already started elsewhere; skipping",
+            show.id
+        );
+        return Ok(());
+    }
+
+    // From here on, any failure must release the claim so a later retry
+    // (manual button or next scheduler tick) isn't permanently locked out.
+    if let Err(e) = start_claimed_prerecorded_stream(state, show, username, key).await {
+        sqlx::query("UPDATE shows SET prerecorded_started_at = NULL WHERE id = ?")
+            .bind(show.id)
+            .execute(&state.db)
+            .await
+            .ok();
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+async fn start_claimed_prerecorded_stream(
+    state: &Arc<AppState>,
+    show: &models::Show,
+    username: &str,
+    key: &str,
+) -> Result<()> {
     // Generate a long-lived presigned URL for FFmpeg to read from (4 hours)
     let presigned_url = storage::get_presigned_url(state, key, 4 * 3600).await?;
     let push_target = state.config.producer_target();
@@ -5547,11 +5597,6 @@ pub async fn start_prerecorded_show_stream(
     )
     .await
     .map_err(|e| AppError::Internal(format!("Failed to start prerecorded stream: {}", e)))?;
-
-    sqlx::query("UPDATE shows SET prerecorded_started_at = datetime('now') WHERE id = ?")
-        .bind(show.id)
-        .execute(&state.db)
-        .await?;
 
     // Notify via Telegram
     telegram_notify::notify_stream_start(state, username);
@@ -5692,7 +5737,39 @@ pub async fn require_show_editor(
 
 #[cfg(test)]
 mod tests {
-    use super::time_windows_overlap;
+    use super::{claim_prerecorded_start, time_windows_overlap};
+
+    async fn shows_test_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE shows (id INTEGER PRIMARY KEY, prerecorded_started_at TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO shows (id, prerecorded_started_at) VALUES (1, NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn only_one_of_two_racing_claims_wins() {
+        let pool = shows_test_pool().await;
+
+        // Simulates the manual "Go Live" button and the scheduler tick both
+        // observing `prerecorded_started_at IS NULL` and racing to claim it.
+        let first = claim_prerecorded_start(&pool, 1).await.unwrap();
+        let second = claim_prerecorded_start(&pool, 1).await.unwrap();
+
+        assert!(first, "the first caller should win the claim");
+        assert!(!second, "the second caller must not also start the stream");
+    }
+
+    #[tokio::test]
+    async fn claim_fails_gracefully_for_unknown_show() {
+        let pool = shows_test_pool().await;
+        assert!(!claim_prerecorded_start(&pool, 999).await.unwrap());
+    }
 
     #[test]
     fn distinct_windows_do_not_overlap() {
