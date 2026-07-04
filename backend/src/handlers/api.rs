@@ -4673,7 +4673,9 @@ pub async fn api_soundcloud_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // Hosts and admins can view SoundCloud status (needed to render the card on
+    // their show's detail page).
+    require_show_creator(&state, &headers).await?;
     let status = crate::soundcloud::get_status(&state).await;
     Ok(Json(status))
 }
@@ -4684,7 +4686,8 @@ pub async fn api_soundcloud_auth(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // Hosts may connect the station's SoundCloud account too.
+    require_show_creator(&state, &headers).await?;
     let url = crate::soundcloud::get_auth_url(&state)?;
     Ok(axum::response::Redirect::temporary(&url))
 }
@@ -4726,7 +4729,8 @@ pub async fn api_upload_to_soundcloud(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // The show's host (or its creator, or an admin) may upload its recording.
+    require_show_editor(&state, &headers, id).await?;
 
     if !crate::soundcloud::is_configured(&state) {
         return Err(AppError::BadRequest(
@@ -4764,7 +4768,8 @@ pub async fn api_set_soundcloud_privacy(
     headers: HeaderMap,
     Json(req): Json<SoundCloudPrivacyRequest>,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // The show's host (or its creator, or an admin) may toggle its track privacy.
+    require_show_editor(&state, &headers, id).await?;
 
     if !crate::soundcloud::is_configured(&state) {
         return Err(AppError::BadRequest(
@@ -4783,7 +4788,9 @@ pub async fn api_soundcloud_disconnect(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    // Hosts and admins can reset the station's SoundCloud connection (used by the
+    // reconnect flow).
+    require_show_creator(&state, &headers).await?;
     crate::soundcloud::delete_stored_token(&state).await?;
     Ok(Json(serde_json::json!({ "success": true })))
 }

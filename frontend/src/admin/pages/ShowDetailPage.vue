@@ -101,6 +101,8 @@ const isUnheard = computed(() => !show.value?.show_type || show.value.show_type 
 
 // Role-based access. Backend enforces the same rules; these only gate the UI.
 const isAdmin = computed(() => auth.user?.role === 'admin' || auth.user?.role === 'superadmin');
+// Hosts and admins can use SoundCloud (connect + upload their show's recording).
+const canUseSoundcloud = computed(() => isAdmin.value || auth.user?.role === 'host');
 const canEdit = computed(
   () =>
     isAdmin.value ||
@@ -1622,7 +1624,7 @@ onUnmounted(() => {
       </div>
 
       <!-- SoundCloud (non-UNHEARD shows; UNHEARD has its own in the recording card) -->
-      <div v-if="isAdmin && scStatus && !isUnheard" class="card">
+      <div v-if="canUseSoundcloud && scStatus && !isUnheard" class="card">
         <h2 class="section-title">SoundCloud</h2>
         <div class="soundcloud-section">
           <template v-if="!scStatus.configured">
