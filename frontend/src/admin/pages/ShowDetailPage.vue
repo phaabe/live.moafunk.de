@@ -11,10 +11,14 @@ import {
 } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
-import ShowDeadlineBanner from '../components/show-detail/ShowDeadlineBanner.vue';
-import ShowMediaCard from '../components/show-detail/ShowMediaCard.vue';
-import ShowSocialChannels from '../components/show-detail/ShowSocialChannels.vue';
-import { IdentityPanel, ScheduleHostPanel } from '../components/show-cockpit/panels';
+import {
+  IdentityPanel,
+  LiveCard,
+  ScheduleHostPanel,
+  SocialMediaCard,
+} from '../components/show-cockpit/panels';
+import { GridShell } from './show-cockpit';
+import { useShowPhase } from '../composables/useShowPhase';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
@@ -126,6 +130,11 @@ const mediaMode = ref<'live' | 'upload'>('upload');
 
 /** The assigned host may manage media (matches the backend require_user_show check). */
 const canManageMedia = computed(() => !!show.value && show.value.host_user_id === auth.user?.id);
+
+// ── Dashboard: soft lifecycle phase drives the Live card's state machine ────
+// docs/stream-rework/show-cockpit-plan.md — the show host dashboard is a fixed
+// 2×2 grid (metadata · live · schedule+host · social).
+const { phase } = useShowPhase(show);
 
 const airTarget = computed(() => {
   if (!show.value?.date || !show.value?.start_time) return null;
@@ -969,60 +978,68 @@ onUnmounted(() => {
       </div>
 
       <!-- ===================== External / brunchtime dashboard ===================== -->
-      <template v-if="!isUnheard">
-        <!-- Deadline banner: countdown to air for live, or upload-status for upload mode -->
-        <ShowDeadlineBanner
-          v-if="mediaMode === 'live' || !show.prerecorded_confirmed_at"
-          :show="show"
-          :mode="mediaMode"
-          :air-target="airTarget"
-          :can-act="canManageMedia"
-          @action="launchFlow"
-        />
-
-        <!-- Hero: cover + title + description -->
-        <IdentityPanel
-          v-model:title="titleForm"
-          v-model:description="descriptionForm"
-          :show="show"
-          :edit-mode="editMode"
-          :can-edit="canEdit"
-          :uploading-cover="uploadingCover"
-          @cover-selected="uploadCoverFile"
-        />
-
-        <!-- Grid: air date + assigned host -->
-        <ScheduleHostPanel
-          v-model:edit-start="editStart"
-          v-model:edit-end="editEnd"
-          v-model:selected-host-id="selectedHostId"
-          v-model:host-edit-mode="hostEditMode"
-          v-model:new-guest-username="newGuestUsername"
-          :show="show"
-          :edit-mode="editMode"
-          :can-edit-host="canEditHost"
-          :assigning-host="assigningHost"
-          :guest-creds="guestCreds"
-          :edit-time-valid="editTimeValid"
-          :edit-time-error="editTimeError"
-          @assign-host="assignHost"
-          @create-guest="createGuestHost"
-          @unassign-host="unassignHost"
-        />
-
-        <!-- Grid: media + social -->
-        <div class="dash-grid">
-          <ShowMediaCard
+      <!-- Fixed 2×2 grid of cards (docs/stream-rework/show-cockpit-plan.md).
+           GridShell only arranges the named slots; all state/handlers stay here. -->
+      <GridShell v-if="!isUnheard">
+        <template #identity>
+          <IdentityPanel
+            v-model:title="titleForm"
+            v-model:description="descriptionForm"
             :show="show"
+            :edit-mode="editMode"
+            :can-edit="canEdit"
+            :uploading-cover="uploadingCover"
+            @cover-selected="uploadCoverFile"
+          />
+        </template>
+
+        <template #live>
+          <LiveCard
+            :show="show"
+            :phase="phase"
             :mode="mediaMode"
+            :air-target="airTarget"
+            :latest-recording="latestRecording"
+            :recording-state="recordingState"
             :can-manage="canManageMedia"
+            :can-publish="canUseSoundcloud"
+            :sc-status="scStatus"
+            :uploading-to-sound-cloud="uploadingToSoundCloud"
+            :toggling-sound-cloud-privacy="togglingSoundCloudPrivacy"
             @select-live="mediaMode = 'live'"
             @select-upload="mediaMode = 'upload'"
-            @launch="launchFlow"
+            @prep="launchFlow"
+            @live-panel="enterFlow('live')"
+            @publish="toggleSoundCloudPrivacy"
+            @upload-soundcloud="uploadToSoundCloud"
+            @connect-soundcloud="connectSoundCloud"
           />
-          <ShowSocialChannels />
-        </div>
-      </template>
+        </template>
+
+        <template #schedule>
+          <ScheduleHostPanel
+            v-model:edit-start="editStart"
+            v-model:edit-end="editEnd"
+            v-model:selected-host-id="selectedHostId"
+            v-model:host-edit-mode="hostEditMode"
+            v-model:new-guest-username="newGuestUsername"
+            :show="show"
+            :edit-mode="editMode"
+            :can-edit-host="canEditHost"
+            :assigning-host="assigningHost"
+            :guest-creds="guestCreds"
+            :edit-time-valid="editTimeValid"
+            :edit-time-error="editTimeError"
+            @assign-host="assignHost"
+            @create-guest="createGuestHost"
+            @unassign-host="unassignHost"
+          />
+        </template>
+
+        <template #social>
+          <SocialMediaCard />
+        </template>
+      </GridShell>
 
       <div v-if="isUnheard" class="top-grid">
         <div class="main-column">
@@ -1397,8 +1414,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Live Recording (streamed shows, any type) -->
-      <div v-if="latestRecording && recordingState" class="card">
+      <!-- Live Recording (UNHEARD only; external shows surface it in WrapUpPanel) -->
+      <div v-if="isUnheard && latestRecording && recordingState" class="card">
         <h2 class="section-title">Live Recording</h2>
         <div class="live-recording-head">
           <span :class="['rec-badge', recordingState]">
@@ -1427,86 +1444,6 @@ onUnmounted(() => {
             </a>
           </div>
         </template>
-      </div>
-
-      <!-- SoundCloud (non-UNHEARD shows; UNHEARD has its own in the recording card) -->
-      <div v-if="canUseSoundcloud && scStatus && !isUnheard" class="card">
-        <h2 class="section-title">SoundCloud</h2>
-        <div class="soundcloud-section">
-          <template v-if="!scStatus.configured">
-            <p class="empty-state">
-              SoundCloud isn't configured. Set SOUNDCLOUD_CLIENT_ID / SOUNDCLOUD_CLIENT_SECRET.
-            </p>
-          </template>
-          <template v-else-if="!scStatus.authorized">
-            <p class="text-muted soundcloud-hint">
-              Connect the station's SoundCloud account to enable uploads.
-            </p>
-            <BaseButton size="sm" variant="primary" @click="connectSoundCloud">
-              🔗 Connect SoundCloud
-            </BaseButton>
-          </template>
-          <template v-else-if="show.soundcloud_url">
-            <div class="soundcloud-status">
-              <span class="soundcloud-label">☁️ SoundCloud</span>
-              <a :href="show.soundcloud_url" target="_blank" rel="noopener" class="soundcloud-link">
-                {{ show.soundcloud_public ? '🔓 Public' : '🔒 Private' }}
-              </a>
-              <span v-if="show.soundcloud_uploaded_at" class="text-muted soundcloud-timestamp">
-                Uploaded {{ show.soundcloud_uploaded_at }}
-              </span>
-            </div>
-            <div class="soundcloud-actions">
-              <BaseButton
-                size="sm"
-                :variant="show.soundcloud_public ? 'ghost' : 'success'"
-                :loading="togglingSoundCloudPrivacy"
-                @click="toggleSoundCloudPrivacy"
-              >
-                {{ show.soundcloud_public ? 'Make Private' : 'Make Public' }}
-              </BaseButton>
-              <BaseButton
-                size="sm"
-                variant="ghost"
-                :loading="uploadingToSoundCloud"
-                @click="uploadToSoundCloud"
-              >
-                Re-upload
-              </BaseButton>
-              <BaseButton
-                v-if="scStatus.auth_url"
-                size="sm"
-                variant="ghost"
-                @click="disconnectAndReconnectSoundCloud"
-              >
-                🔗 Reconnect
-              </BaseButton>
-            </div>
-          </template>
-          <template v-else>
-            <p class="text-muted soundcloud-hint">
-              Finalized recordings upload here automatically. You can also upload now.
-            </p>
-            <div class="soundcloud-actions">
-              <BaseButton
-                size="sm"
-                variant="ghost"
-                :loading="uploadingToSoundCloud"
-                @click="uploadToSoundCloud"
-              >
-                ☁️ Upload to SoundCloud
-              </BaseButton>
-              <BaseButton
-                v-if="scStatus.auth_url"
-                size="sm"
-                variant="ghost"
-                @click="disconnectAndReconnectSoundCloud"
-              >
-                🔗 Reconnect
-              </BaseButton>
-            </div>
-          </template>
-        </div>
       </div>
 
       <!-- Assigned Artists Section (UNHEARD only, admin only) -->
@@ -1620,8 +1557,9 @@ onUnmounted(() => {
         <p v-else class="empty-state">No artists assigned to this show yet.</p>
       </div>
 
-      <!-- Metadata Section (full width) -->
-      <div class="card">
+      <!-- Metadata Section (full width) — legacy UNHEARD only; on the external
+           dashboard the show id + creation date live in the identity card. -->
+      <div v-if="isUnheard" class="card">
         <h2 class="section-title">Metadata</h2>
         <div class="info-grid">
           <div class="info-label">Created</div>
@@ -1776,6 +1714,7 @@ onUnmounted(() => {
 
 .dash-header-actions {
   display: flex;
+  align-items: center;
   gap: var(--spacing-sm);
   flex: 0 0 auto;
 }
