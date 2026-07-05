@@ -1557,8 +1557,9 @@ onUnmounted(() => {
         <p v-else class="empty-state">No artists assigned to this show yet.</p>
       </div>
 
-      <!-- Metadata Section (full width) -->
-      <div class="card">
+      <!-- Metadata Section (full width) — legacy UNHEARD only; on the external
+           dashboard the show id + creation date live in the identity card. -->
+      <div v-if="isUnheard" class="card">
         <h2 class="section-title">Metadata</h2>
         <div class="info-grid">
           <div class="info-label">Created</div>
