@@ -80,8 +80,8 @@ const airTimeRange = computed(() => {
 </script>
 
 <template>
-  <div class="dash-grid">
-    <div class="card info-tile">
+  <div class="card info-card">
+    <div class="info-block">
       <h2 class="section-title"><span class="ico">📅</span> Air date</h2>
       <template v-if="editMode">
         <div class="edit-row edit-row-datetime">
@@ -136,7 +136,9 @@ const airTimeRange = computed(() => {
       </template>
     </div>
 
-    <div class="card info-tile">
+    <div class="info-divider"></div>
+
+    <div class="info-block">
       <h2 class="section-title"><span class="ico">👤</span> Assigned host</h2>
       <div v-if="hasHost" class="host-row">
         <span class="host-avatar">{{ hostInitials }}</span>
@@ -236,36 +238,27 @@ const airTimeRange = computed(() => {
 </template>
 
 <style scoped>
-.dash-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.info-card {
+  display: flex;
+  flex-direction: column;
   gap: var(--spacing-lg);
-  align-items: stretch;
-  margin-bottom: var(--spacing-lg);
 }
 
-.dash-grid > .card {
-  margin-bottom: 0;
+.info-divider {
+  height: 1px;
+  background: var(--color-border);
 }
 
 .section-title {
-  font-size: 1.2em;
-  margin-bottom: var(--spacing-md);
-  padding-bottom: var(--spacing-sm);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.info-tile .section-title {
   display: flex;
   align-items: center;
   gap: var(--spacing-xs);
+  margin: 0 0 var(--spacing-md);
   font-size: var(--font-size-sm);
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--color-text-muted);
-  border-bottom: none;
-  padding-bottom: 0;
 }
 
 .tile-value {
@@ -393,11 +386,5 @@ const airTimeRange = computed(() => {
   color: var(--color-text-muted);
   font-style: italic;
   padding: var(--spacing-md) 0;
-}
-
-@media (max-width: 768px) {
-  .dash-grid {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import type { ShowDetail } from '../../../api';
 import { FormInput } from '@shared/components';
 
@@ -33,6 +33,18 @@ const emit = defineEmits<{
 }>();
 
 const coverInput = ref<HTMLInputElement | null>(null);
+
+const showTypeLabel = computed(() => (props.show.show_type || 'unheard').toUpperCase());
+
+/** Creation date as a short, unobtrusive label (admin trivia — kept small/gray). */
+const createdLabel = computed(() => {
+  if (!props.show.created_at) return '';
+  return new Date(props.show.created_at).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+});
 
 function onCoverChange(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -71,6 +83,10 @@ function onCoverChange(event: Event) {
     </div>
 
     <div class="hero-body">
+      <span class="hero-type" :class="`type-${show.show_type || 'unheard'}`">{{
+        showTypeLabel
+      }}</span>
+
       <p class="dash-label">TITLE</p>
       <FormInput
         v-if="editMode"
@@ -91,6 +107,11 @@ function onCoverChange(event: Event) {
       ></textarea>
       <p v-else-if="show.description" class="hero-desc">{{ show.description }}</p>
       <p v-else class="empty-state">No description.</p>
+
+      <!-- Admin trivia, deliberately small + gray at the very bottom. -->
+      <p class="hero-meta">
+        Show #{{ show.id }}<template v-if="createdLabel"> · Created {{ createdLabel }}</template>
+      </p>
     </div>
   </div>
 </template>
@@ -163,12 +184,44 @@ function onCoverChange(event: Event) {
 .hero-body {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hero-type {
+  align-self: flex-start;
+  margin-bottom: var(--spacing-md);
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-alt);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.hero-type.type-external {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+
+.hero-type.type-brunchtime {
+  background: rgba(245, 158, 11, 0.14);
+  color: #f59e0b;
 }
 
 .hero-title {
   margin: 0 0 var(--spacing-lg);
   font-size: 1.8em;
   font-weight: 700;
+}
+
+.hero-meta {
+  margin: var(--spacing-lg) 0 0;
+  margin-top: auto;
+  padding-top: var(--spacing-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
 }
 
 .hero-desc {
