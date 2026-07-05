@@ -11,11 +11,13 @@ import {
 } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
-import ShowDeadlineBanner from '../components/show-detail/ShowDeadlineBanner.vue';
-import ShowMediaCard from '../components/show-detail/ShowMediaCard.vue';
-import ShowSocialChannels from '../components/show-detail/ShowSocialChannels.vue';
-import { IdentityPanel, ScheduleHostPanel, WrapUpPanel } from '../components/show-cockpit/panels';
-import { CockpitShell, TabbedShell, type ShellLayout } from './show-cockpit';
+import {
+  IdentityPanel,
+  LiveCard,
+  ScheduleHostPanel,
+  SocialMediaCard,
+} from '../components/show-cockpit/panels';
+import { GridShell } from './show-cockpit';
 import { useShowPhase } from '../composables/useShowPhase';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
@@ -129,33 +131,10 @@ const mediaMode = ref<'live' | 'upload'>('upload');
 /** The assigned host may manage media (matches the backend require_user_show check). */
 const canManageMedia = computed(() => !!show.value && show.value.host_user_id === auth.user?.id);
 
-// ── Dashboard shell A/B (cockpit vs tabs) ──────────────────────────────────
-// docs/stream-rework/show-cockpit-plan.md — the layout is chosen via ?layout=,
-// remembered in localStorage, and toggleable from the header. Guests get a
-// trimmed view (no promotion / wrap-up).
-const LAYOUT_STORAGE_KEY = 'showDashboardLayout';
-
-function initialLayout(): ShellLayout {
-  const q = route.query.layout;
-  if (q === 'cockpit' || q === 'tabs') return q;
-  const stored = localStorage.getItem(LAYOUT_STORAGE_KEY);
-  return stored === 'cockpit' || stored === 'tabs' ? stored : 'cockpit';
-}
-
-const layout = ref<ShellLayout>(initialLayout());
-const shellComponent = computed(() => (layout.value === 'tabs' ? TabbedShell : CockpitShell));
-
-function setLayout(next: ShellLayout) {
-  layout.value = next;
-  localStorage.setItem(LAYOUT_STORAGE_KEY, next);
-  // Keep the URL shareable/refresh-stable without polluting history.
-  router.replace({ query: { ...route.query, layout: next } });
-}
-
+// ── Dashboard: soft lifecycle phase drives the Live card's state machine ────
+// docs/stream-rework/show-cockpit-plan.md — the show host dashboard is a fixed
+// 2×2 grid (metadata · live · schedule+host · social).
 const { phase } = useShowPhase(show);
-
-/** Guests see a trimmed dashboard: no promotion / wrap-up surfaces. */
-const isGuest = computed(() => auth.user?.role === 'guest');
 
 const airTarget = computed(() => {
   if (!show.value?.date || !show.value?.start_time) return null;
@@ -980,22 +959,6 @@ onUnmounted(() => {
             <h1 class="page-title">Episode overview</h1>
           </div>
           <div class="dash-header-actions">
-            <div class="layout-toggle" role="group" aria-label="Dashboard layout">
-              <button
-                type="button"
-                :class="['layout-chip', { active: layout === 'cockpit' }]"
-                @click="setLayout('cockpit')"
-              >
-                Cockpit
-              </button>
-              <button
-                type="button"
-                :class="['layout-chip', { active: layout === 'tabs' }]"
-                @click="setLayout('tabs')"
-              >
-                Tabs
-              </button>
-            </div>
             <BaseButton
               v-if="canEdit && !editMode"
               variant="ghost"
@@ -1015,21 +978,9 @@ onUnmounted(() => {
       </div>
 
       <!-- ===================== External / brunchtime dashboard ===================== -->
-      <!-- One route, two swappable layouts over the same shared panels (see
-           docs/stream-rework/show-cockpit-plan.md). The shell only arranges
-           slots + drives phase emphasis; all state/handlers stay here. -->
-      <component :is="shellComponent" v-if="!isUnheard" :phase="phase" :hide-aftershow="isGuest">
-        <template #banner>
-          <ShowDeadlineBanner
-            v-if="mediaMode === 'live' || !show.prerecorded_confirmed_at"
-            :show="show"
-            :mode="mediaMode"
-            :air-target="airTarget"
-            :can-act="canManageMedia"
-            @action="launchFlow"
-          />
-        </template>
-
+      <!-- Fixed 2×2 grid of cards (docs/stream-rework/show-cockpit-plan.md).
+           GridShell only arranges the named slots; all state/handlers stay here. -->
+      <GridShell v-if="!isUnheard">
         <template #identity>
           <IdentityPanel
             v-model:title="titleForm"
@@ -1039,6 +990,29 @@ onUnmounted(() => {
             :can-edit="canEdit"
             :uploading-cover="uploadingCover"
             @cover-selected="uploadCoverFile"
+          />
+        </template>
+
+        <template #live>
+          <LiveCard
+            :show="show"
+            :phase="phase"
+            :mode="mediaMode"
+            :air-target="airTarget"
+            :latest-recording="latestRecording"
+            :recording-state="recordingState"
+            :can-manage="canManageMedia"
+            :can-publish="canUseSoundcloud"
+            :sc-status="scStatus"
+            :uploading-to-sound-cloud="uploadingToSoundCloud"
+            :toggling-sound-cloud-privacy="togglingSoundCloudPrivacy"
+            @select-live="mediaMode = 'live'"
+            @select-upload="mediaMode = 'upload'"
+            @prep="launchFlow"
+            @live-panel="enterFlow('live')"
+            @publish="toggleSoundCloudPrivacy"
+            @upload-soundcloud="uploadToSoundCloud"
+            @connect-soundcloud="connectSoundCloud"
           />
         </template>
 
@@ -1062,37 +1036,10 @@ onUnmounted(() => {
           />
         </template>
 
-        <template #media>
-          <ShowMediaCard
-            :show="show"
-            :mode="mediaMode"
-            :can-manage="canManageMedia"
-            @select-live="mediaMode = 'live'"
-            @select-upload="mediaMode = 'upload'"
-            @launch="launchFlow"
-          />
+        <template #social>
+          <SocialMediaCard />
         </template>
-
-        <template #promotion>
-          <ShowSocialChannels />
-        </template>
-
-        <template #wrapup>
-          <WrapUpPanel
-            :show="show"
-            :latest-recording="latestRecording"
-            :recording-state="recordingState"
-            :can-use-soundcloud="canUseSoundcloud"
-            :sc-status="scStatus"
-            :uploading-to-sound-cloud="uploadingToSoundCloud"
-            :toggling-sound-cloud-privacy="togglingSoundCloudPrivacy"
-            @upload-soundcloud="uploadToSoundCloud"
-            @toggle-privacy="toggleSoundCloudPrivacy"
-            @connect-soundcloud="connectSoundCloud"
-            @reconnect-soundcloud="disconnectAndReconnectSoundCloud"
-          />
-        </template>
-      </component>
+      </GridShell>
 
       <div v-if="isUnheard" class="top-grid">
         <div class="main-column">
@@ -1769,30 +1716,6 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--spacing-sm);
   flex: 0 0 auto;
-}
-
-.layout-toggle {
-  display: inline-flex;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.layout-chip {
-  padding: 4px 12px;
-  background: transparent;
-  border: none;
-  color: var(--color-text-muted);
-  font-family: var(--font-family);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-}
-
-.layout-chip.active {
-  background: var(--color-primary);
-  color: var(--color-bg);
 }
 
 .dash-grid {
