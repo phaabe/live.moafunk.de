@@ -834,6 +834,28 @@ pub async fn update_recording_version_status(
     Ok(())
 }
 
+/// Store the probed duration (ms) on a recording version. Best-effort, called
+/// after finalize so the dashboard can render the show length — including for
+/// `failed`/short captures, whose length is the whole point of the alert.
+pub async fn set_recording_duration(
+    pool: &SqlitePool,
+    id: i64,
+    duration_ms: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE recording_versions
+        SET duration_ms = ?, updated_at = datetime('now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(duration_ms)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Mark a recording version as finalized
 pub async fn finalize_recording_version(
     pool: &SqlitePool,

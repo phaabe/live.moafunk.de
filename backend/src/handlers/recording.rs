@@ -514,6 +514,15 @@ async fn upload_artifact_and_record(
         }
     };
 
+    // Persist the probed duration (best-effort) so the dashboard can show the
+    // show length — including for `failed`/short captures, whose length is
+    // exactly what the "essentially empty" alert is about.
+    if let (Some(rid), Some(ms)) = (recording_id, local_duration_ms) {
+        if let Err(e) = crate::db::set_recording_duration(&state.db, rid, ms as i64).await {
+            tracing::warn!("Failed to store duration for recording {}: {}", rid, e);
+        }
+    }
+
     // Auto-publish the streamed broadcast to the curated shows archive
     // (moafunk-prod/shows/{type}/{date}-{title}/…mp3). Best-effort convenience
     // copy — any failure is logged but never fails the recording (the raw capture
