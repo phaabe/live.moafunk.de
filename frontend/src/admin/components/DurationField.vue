@@ -14,14 +14,15 @@ const emit = defineEmits<{
   'update:modelValue': [value: number];
 }>();
 
-const PRESETS = [30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240];
+const PRESETS = [30, 60, 90, 120, 180, 240, 300, 360, 420, 480, 540, 720];
 
 function label(min: number): string {
+  // Clean half-hour steps read as decimal hours (0.5h, 1.5h, 2h); anything
+  // off-grid (an injected loaded value) falls back to "Xh Ym".
+  if (min % 30 === 0) return `${min / 60}h`;
   const h = Math.floor(min / 60);
   const m = min % 60;
-  if (h && m) return `${h}h ${m}m`;
-  if (h) return `${h}h`;
-  return `${m}m`;
+  return h ? `${h}h ${m}m` : `${m}m`;
 }
 
 /** Presets plus the current value if it isn't one, so any loaded show fits. */
