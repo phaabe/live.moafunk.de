@@ -79,10 +79,26 @@ const elapsed = computed(() =>
   props.airTarget ? fmtDuration(now.value - props.airTarget.getTime()) : '—'
 );
 
-/** Duration of the finished show — recording length if known, else scheduled length. */
+/** "HH:MM:SS" clock — used for the finished-show duration. */
+function fmtClock(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+/**
+ * Duration of the finished show. Prefers the recording's stored length; for
+ * legacy rows that predate duration persistence, a failed short capture still
+ * carries its length in the reason string ("… is only 3s …").
+ */
 const duration = computed(() => {
   const rec = props.latestRecording?.duration_ms;
-  if (rec) return fmtDuration(rec);
+  if (rec) return fmtClock(rec);
+  const shortMatch = props.latestRecording?.error_message?.match(/only (\d+)s/);
+  if (shortMatch) return fmtClock(Number(shortMatch[1]) * 1000);
   return '—';
 });
 

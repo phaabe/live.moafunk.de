@@ -397,6 +397,7 @@ export function useShowWizard() {
     coverPreviewUrl: readonly(coverPreviewUrl),
     startDateTime: range.startDateTime,
     endDateTime: range.endDateTime,
+    durationMinutes: range.durationMinutes,
     rangeValid: range.isValid,
     rangeError: range.validationError,
     scheduledShows: readonly(scheduledShows),

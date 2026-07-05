@@ -1,9 +1,16 @@
 import { ref, computed } from 'vue';
 
+/** Default show length when none is known yet (2 hours). */
+export const DEFAULT_DURATION_MIN = 120;
+
 /**
- * Composable to manage a start/end datetime range with validation.
- * Converts between Date objects (for the picker) and the API format
- * (date: YYYY-MM-DD, start_time: HH:MM, end_time: HH:MM).
+ * Composable to manage a show's air window as **start + duration**.
+ *
+ * Duration (minutes) is the source of truth; the end is derived
+ * (`end = start + duration`), so moving the start keeps the length fixed.
+ * Still converts to/from the API format (date: YYYY-MM-DD, start_time: HH:MM,
+ * end_time: HH:MM) — `apiEndTime` is computed from the derived end, so callers
+ * and the backend contract are unchanged.
  */
 export function useDateTimeRange(options?: {
   initialDate?: string;
@@ -11,22 +18,7 @@ export function useDateTimeRange(options?: {
   initialEndTime?: string;
 }) {
   const startDateTime = ref<Date | null>(null);
-  const endDateTime = ref<Date | null>(null);
-
-  // Initialize from API format if provided
-  if (options?.initialDate) {
-    const datePart = options.initialDate;
-    if (options.initialStartTime) {
-      startDateTime.value = parseDateTime(datePart, options.initialStartTime);
-    }
-    if (options.initialEndTime) {
-      endDateTime.value = parseDateTime(datePart, options.initialEndTime);
-      // If end is before or equal to start, assume next day
-      if (startDateTime.value && endDateTime.value && endDateTime.value <= startDateTime.value) {
-        endDateTime.value = new Date(endDateTime.value.getTime() + 24 * 60 * 60 * 1000);
-      }
-    }
-  }
+  const durationMinutes = ref<number>(DEFAULT_DURATION_MIN);
 
   /** Parse "YYYY-MM-DD" + "HH:MM" into a Date */
   function parseDateTime(date: string, time: string): Date {
@@ -50,65 +42,89 @@ export function useDateTimeRange(options?: {
     return `${hh}:${mm}`;
   }
 
-  /** Validation: start must be before end */
-  const isValid = computed(() => {
-    if (!startDateTime.value || !endDateTime.value) return false;
-    return startDateTime.value < endDateTime.value;
-  });
+  /**
+   * Minutes from `start` to `end`, wrapping past midnight: an end at or before
+   * the start is treated as the next day (overnight show).
+   */
+  function diffMinutes(start: Date, end: Date): number {
+    let ms = end.getTime() - start.getTime();
+    if (ms <= 0) ms += 24 * 60 * 60 * 1000;
+    return Math.round(ms / 60000);
+  }
 
-  const validationError = computed(() => {
-    if (!startDateTime.value || !endDateTime.value) return 'Both start and end are required';
-    if (startDateTime.value >= endDateTime.value) return 'Start must be before end';
-    return null;
-  });
-
-  /** API-ready values derived from the datetime pickers */
-  const apiDate = computed(() => {
-    if (!startDateTime.value) return '';
-    return formatDate(startDateTime.value);
-  });
-
-  const apiStartTime = computed(() => {
-    if (!startDateTime.value) return '';
-    return formatTime(startDateTime.value);
-  });
-
-  const apiEndTime = computed(() => {
-    if (!endDateTime.value) return '';
-    return formatTime(endDateTime.value);
-  });
-
-  /** Bulk set from API data */
-  function setFromApi(date: string, startTime?: string, endTime?: string) {
-    if (date && startTime) {
-      startDateTime.value = parseDateTime(date, startTime);
-    } else {
-      startDateTime.value = null;
-    }
-    if (date && endTime) {
-      endDateTime.value = parseDateTime(date, endTime);
-      if (startDateTime.value && endDateTime.value && endDateTime.value <= startDateTime.value) {
-        endDateTime.value = new Date(endDateTime.value.getTime() + 24 * 60 * 60 * 1000);
-      }
-    } else {
-      endDateTime.value = null;
+  // Initialize from API format if provided.
+  if (options?.initialDate && options.initialStartTime) {
+    startDateTime.value = parseDateTime(options.initialDate, options.initialStartTime);
+    if (options.initialEndTime) {
+      const end = parseDateTime(options.initialDate, options.initialEndTime);
+      durationMinutes.value = diffMinutes(startDateTime.value, end);
     }
   }
 
-  /** Reset both values */
+  /**
+   * The end of the window, derived from start + duration. Writable: assigning a
+   * Date back-computes the duration (used by the timeline drag + legacy pickers).
+   */
+  const endDateTime = computed<Date | null>({
+    get() {
+      if (!startDateTime.value) return null;
+      return new Date(startDateTime.value.getTime() + durationMinutes.value * 60000);
+    },
+    set(value: Date | null) {
+      if (!value || !startDateTime.value) return;
+      durationMinutes.value = diffMinutes(startDateTime.value, value);
+    },
+  });
+
+  /** Validation: a start must be set and the duration positive. */
+  const isValid = computed(() => !!startDateTime.value && durationMinutes.value > 0);
+
+  const validationError = computed(() => {
+    if (!startDateTime.value) return 'Start date & time is required';
+    if (durationMinutes.value <= 0) return 'Duration must be greater than zero';
+    return null;
+  });
+
+  /** API-ready values derived from the start + duration. */
+  const apiDate = computed(() => (startDateTime.value ? formatDate(startDateTime.value) : ''));
+
+  const apiStartTime = computed(() => (startDateTime.value ? formatTime(startDateTime.value) : ''));
+
+  const apiEndTime = computed(() => (endDateTime.value ? formatTime(endDateTime.value) : ''));
+
+  /** Set the show length in minutes (clamped to a non-negative whole number). */
+  function setDuration(minutes: number) {
+    durationMinutes.value = Math.max(0, Math.round(minutes));
+  }
+
+  /** Bulk set from API data. Duration is inferred from start/end. */
+  function setFromApi(date: string, startTime?: string, endTime?: string) {
+    if (date && startTime) {
+      startDateTime.value = parseDateTime(date, startTime);
+      if (endTime) {
+        durationMinutes.value = diffMinutes(startDateTime.value, parseDateTime(date, endTime));
+      }
+    } else {
+      startDateTime.value = null;
+    }
+  }
+
+  /** Reset to no start and the default duration. */
   function reset() {
     startDateTime.value = null;
-    endDateTime.value = null;
+    durationMinutes.value = DEFAULT_DURATION_MIN;
   }
 
   return {
     startDateTime,
     endDateTime,
+    durationMinutes,
     isValid,
     validationError,
     apiDate,
     apiStartTime,
     apiEndTime,
+    setDuration,
     setFromApi,
     reset,
   };

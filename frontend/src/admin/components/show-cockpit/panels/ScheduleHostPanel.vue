@@ -4,6 +4,7 @@ import type { GuestCredentials, ShowDetail } from '../../../api';
 import { BaseButton } from '@shared/components';
 import { VueDatePicker } from '@vuepic/vue-datepicker';
 import '@vuepic/vue-datepicker/dist/main.css';
+import DurationField from '../../DurationField.vue';
 
 /**
  * Air-date + assigned-host tile pair, extracted verbatim from ShowDetailPage's
@@ -23,9 +24,10 @@ const props = defineProps<{
   assigningHost: boolean;
   /** Credentials of a freshly created guest host (shown once). */
   guestCreds: GuestCredentials | null;
-  /** Datetime range editing state (from useDateTimeRange on the page). */
+  /** Datetime editing state (from useDateTimeRange on the page). */
   editStart: Date | null;
-  editEnd: Date | null;
+  /** Show length in minutes; the end is derived from start + duration. */
+  editDuration: number;
   editTimeValid: boolean;
   editTimeError: string | null;
   /** Host-assignment form state. */
@@ -36,7 +38,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:editStart': [value: Date | null];
-  'update:editEnd': [value: Date | null];
+  'update:editDuration': [value: number];
   'update:selectedHostId': [value: number | null];
   'update:hostEditMode': [value: 'existing' | 'guest'];
   'update:newGuestUsername': [value: string];
@@ -71,11 +73,24 @@ const airDateLabel = computed(() => {
   });
 });
 
+function durationLabel(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h && m) return `${h}h ${m}m`;
+  if (h) return `${h}h`;
+  return `${m}m`;
+}
+
+/** Read-only air time as "start · duration" (duration inferred from start/end). */
 const airTimeRange = computed(() => {
-  if (!props.show.start_time) return '';
-  return props.show.end_time
-    ? `${props.show.start_time} – ${props.show.end_time}`
-    : props.show.start_time;
+  const start = props.show.start_time;
+  if (!start) return '';
+  if (!props.show.end_time) return start;
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = props.show.end_time.split(':').map(Number);
+  let mins = eh * 60 + em - (sh * 60 + sm);
+  if (mins <= 0) mins += 24 * 60; // overnight
+  return `${start} · ${durationLabel(mins)}`;
 });
 </script>
 
@@ -92,7 +107,6 @@ const airTimeRange = computed(() => {
               :enable-time-picker="true"
               :dark="true"
               :minutes-increment="5"
-              :max-date="props.editEnd || undefined"
               :flow="{ steps: ['calendar', 'time'] }"
               :action-row="{
                 showCancel: false,
@@ -106,27 +120,14 @@ const airTimeRange = computed(() => {
             />
           </div>
           <div class="datetime-field">
-            <label class="form-label">End</label>
-            <VueDatePicker
-              :model-value="props.editEnd"
-              :enable-time-picker="true"
-              :dark="true"
-              :minutes-increment="5"
-              :min-date="props.editStart || undefined"
-              :flow="{ steps: ['calendar', 'time'] }"
-              :action-row="{
-                showCancel: false,
-                showPreview: false,
-                selectBtnLabel: 'Confirm',
-              }"
-              placeholder="End date & time"
-              text-input
-              teleport="body"
-              @update:model-value="emit('update:editEnd', $event)"
+            <label class="form-label">Duration</label>
+            <DurationField
+              :model-value="props.editDuration"
+              @update:model-value="emit('update:editDuration', $event)"
             />
           </div>
         </div>
-        <p v-if="props.editStart && props.editEnd && !props.editTimeValid" class="field-error">
+        <p v-if="props.editStart && !props.editTimeValid" class="field-error">
           {{ props.editTimeError }}
         </p>
       </template>
