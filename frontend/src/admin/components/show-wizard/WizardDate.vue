@@ -3,9 +3,10 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 import { useShowWizard } from '../../composables';
 import MonthCalendar from '../MonthCalendar.vue';
 import DayTimeline from './DayTimeline.vue';
+import DurationField from '../DurationField.vue';
 
 const wizard = useShowWizard();
-const { startDateTime, endDateTime, scheduledShows, conflictingShow } = wizard;
+const { startDateTime, endDateTime, durationMinutes, scheduledShows, conflictingShow } = wizard;
 
 // Match the timeline's height to the calendar's (which changes with 5/6-week
 // months) by measuring it live.
@@ -70,9 +71,9 @@ const endMinutes = computed(() =>
 function onDayClick(dateStr: string) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const s = startDateTime.value;
-  const e = endDateTime.value;
+  // Move to the clicked day, preserving the start time (default 20:00). The
+  // duration — and thus the derived end — is left unchanged.
   startDateTime.value = new Date(y, m - 1, d, s ? s.getHours() : 20, s ? s.getMinutes() : 0);
-  endDateTime.value = new Date(y, m - 1, d, e ? e.getHours() : 22, e ? e.getMinutes() : 0);
 }
 
 /** Apply a window dragged/clicked on the timeline back onto the Date refs. */
@@ -82,25 +83,19 @@ function onTimelineUpdate({ start, end }: { start: number; end: number }) {
   endDateTime.value = new Date(dayBase.value + end * 60000);
 }
 
-function timeModel(target: 'start' | 'end') {
-  return computed<string>({
-    get() {
-      const d = target === 'start' ? startDateTime.value : endDateTime.value;
-      return d ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : '';
-    },
-    set(value: string) {
-      if (!value || !selectedDateStr.value) return;
-      const [hh, mm] = value.split(':').map(Number);
-      const [y, m, d] = selectedDateStr.value.split('-').map(Number);
-      const next = new Date(y, m - 1, d, hh, mm);
-      if (target === 'start') startDateTime.value = next;
-      else endDateTime.value = next;
-    },
-  });
-}
-
-const startTime = timeModel('start');
-const endTime = timeModel('end');
+/** Start-time input (HH:MM); the end derives from start + duration. */
+const startTime = computed<string>({
+  get() {
+    const d = startDateTime.value;
+    return d ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : '';
+  },
+  set(value: string) {
+    if (!value || !selectedDateStr.value) return;
+    const [hh, mm] = value.split(':').map(Number);
+    const [y, m, d] = selectedDateStr.value.split('-').map(Number);
+    startDateTime.value = new Date(y, m - 1, d, hh, mm);
+  },
+});
 </script>
 
 <template>
@@ -133,8 +128,8 @@ const endTime = timeModel('end');
           <input v-model="startTime" type="time" class="time-input" />
         </label>
         <label class="time-field">
-          <span>End</span>
-          <input v-model="endTime" type="time" class="time-input" />
+          <span>Duration</span>
+          <DurationField v-model="durationMinutes" />
         </label>
       </div>
       <p v-if="conflictingShow" class="field-error">

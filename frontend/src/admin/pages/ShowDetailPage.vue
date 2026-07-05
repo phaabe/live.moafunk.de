@@ -79,6 +79,7 @@ const endTimeForm = ref('');
 const {
   startDateTime: editStart,
   endDateTime: editEnd,
+  durationMinutes: editDuration,
   isValid: editTimeValid,
   validationError: editTimeError,
   apiDate: editDate,
@@ -1019,7 +1020,7 @@ onUnmounted(() => {
         <template #schedule>
           <ScheduleHostPanel
             v-model:edit-start="editStart"
-            v-model:edit-end="editEnd"
+            v-model:edit-duration="editDuration"
             v-model:selected-host-id="selectedHostId"
             v-model:host-edit-mode="hostEditMode"
             v-model:new-guest-username="newGuestUsername"
