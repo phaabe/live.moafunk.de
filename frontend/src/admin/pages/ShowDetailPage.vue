@@ -14,12 +14,14 @@ import AudioPlayer from '../components/AudioPlayer.vue';
 import ShowDeadlineBanner from '../components/show-detail/ShowDeadlineBanner.vue';
 import ShowMediaCard from '../components/show-detail/ShowMediaCard.vue';
 import ShowSocialChannels from '../components/show-detail/ShowSocialChannels.vue';
+import { IdentityPanel, ScheduleHostPanel } from '../components/show-cockpit/panels';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
 import { useHostFlow } from '../composables/useHostFlow';
 import { useAuthStore } from '../stores/auth';
 import { resolveMediaMode } from '../showMediaMode';
+import { berlinToUtcDate } from '../showTime';
 import { VueDatePicker } from '@vuepic/vue-datepicker';
 import '@vuepic/vue-datepicker/dist/main.css';
 
@@ -109,7 +111,6 @@ const canEdit = computed(
     show.value?.host_user_id === auth.user?.id ||
     show.value?.created_by === auth.user?.id
 );
-const hasHost = computed(() => !!show.value?.host_user_id);
 const uploadingCover = ref(false);
 
 // The show's creator (a host) may toggle the host between themselves and a
@@ -122,50 +123,13 @@ const canEditHost = computed(
 // ── Dashboard (external/brunchtime) state ──────────────────────────────────
 const editMode = ref(false);
 const mediaMode = ref<'live' | 'upload'>('upload');
-const extCoverInput = ref<HTMLInputElement | null>(null);
 
 /** The assigned host may manage media (matches the backend require_user_show check). */
 const canManageMedia = computed(() => !!show.value && show.value.host_user_id === auth.user?.id);
 
-const hostInitials = computed(() => {
-  const name = show.value?.host_username;
-  if (!name) return '?';
-  return name
-    .split(/\s+/)
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
-});
-
-/** Convert a Berlin wall-clock date + time to a UTC Date for countdown math. */
-function berlinToUtcDate(dateStr: string, timeStr: string): Date {
-  const asUtc = new Date(`${dateStr}T${timeStr}:00Z`);
-  const berlinMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'Europe/Berlin' })).getTime();
-  const utcMs = new Date(asUtc.toLocaleString('en-US', { timeZone: 'UTC' })).getTime();
-  return new Date(asUtc.getTime() - (berlinMs - utcMs));
-}
-
 const airTarget = computed(() => {
   if (!show.value?.date || !show.value?.start_time) return null;
   return berlinToUtcDate(show.value.date, show.value.start_time);
-});
-
-const airDateLabel = computed(() => {
-  if (!show.value?.date) return '—';
-  return new Date(show.value.date + 'T12:00:00').toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-});
-
-const airTimeRange = computed(() => {
-  if (!show.value?.start_time) return '';
-  return show.value.end_time
-    ? `${show.value.start_time} – ${show.value.end_time}`
-    : show.value.start_time;
 });
 
 /** Format a date string + time string into a readable datetime */
@@ -901,11 +865,9 @@ async function deleteRecording() {
   }
 }
 
-// Manual cover upload (for non-UNHEARD shows)
-async function handleCoverUpload(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file || !show.value) return;
+// Manual cover upload (for non-UNHEARD shows); the panel owns the file input.
+async function uploadCoverFile(file: File) {
+  if (!show.value) return;
 
   uploadingCover.value = true;
   try {
@@ -919,7 +881,6 @@ async function handleCoverUpload(event: Event) {
     flash.error(e instanceof Error ? e.message : 'Failed to upload cover');
   } finally {
     uploadingCover.value = false;
-    input.value = '';
   }
 }
 
@@ -1020,189 +981,34 @@ onUnmounted(() => {
         />
 
         <!-- Hero: cover + title + description -->
-        <div class="card hero-card">
-          <div class="hero-cover">
-            <img v-if="show.cover_url" :src="show.cover_url" alt="Cover" class="hero-cover-img" />
-            <div v-else class="hero-cover-placeholder">
-              <span class="hero-cover-ico">🎙</span>
-              <span>COVER</span>
-            </div>
-            <button
-              v-if="canEdit"
-              type="button"
-              class="cover-replace"
-              :disabled="uploadingCover"
-              @click="extCoverInput?.click()"
-            >
-              ⬆ {{ show.cover_url ? 'Replace' : 'Upload' }}
-            </button>
-            <input
-              ref="extCoverInput"
-              type="file"
-              accept="image/*"
-              class="upload-input"
-              @change="handleCoverUpload"
-            />
-          </div>
-
-          <div class="hero-body">
-            <p class="dash-label">TITLE</p>
-            <FormInput v-if="editMode" v-model="titleForm" required />
-            <h2 v-else class="hero-title">{{ show.title }}</h2>
-
-            <p class="dash-label">DESCRIPTION</p>
-            <textarea
-              v-if="editMode"
-              v-model="descriptionForm"
-              class="text-field"
-              rows="4"
-              placeholder="Brief description..."
-            ></textarea>
-            <p v-else-if="show.description" class="hero-desc">{{ show.description }}</p>
-            <p v-else class="empty-state">No description.</p>
-          </div>
-        </div>
+        <IdentityPanel
+          v-model:title="titleForm"
+          v-model:description="descriptionForm"
+          :show="show"
+          :edit-mode="editMode"
+          :can-edit="canEdit"
+          :uploading-cover="uploadingCover"
+          @cover-selected="uploadCoverFile"
+        />
 
         <!-- Grid: air date + assigned host -->
-        <div class="dash-grid">
-          <div class="card info-tile">
-            <h2 class="section-title"><span class="ico">📅</span> Air date</h2>
-            <template v-if="editMode">
-              <div class="edit-row edit-row-datetime">
-                <div class="datetime-field">
-                  <label class="form-label">Start</label>
-                  <VueDatePicker
-                    v-model="editStart"
-                    :enable-time-picker="true"
-                    :dark="true"
-                    :minutes-increment="5"
-                    :max-date="editEnd || undefined"
-                    :flow="{ steps: ['calendar', 'time'] }"
-                    :action-row="{
-                      showCancel: false,
-                      showPreview: false,
-                      selectBtnLabel: 'Confirm',
-                    }"
-                    placeholder="Start date & time"
-                    text-input
-                    teleport="body"
-                  />
-                </div>
-                <div class="datetime-field">
-                  <label class="form-label">End</label>
-                  <VueDatePicker
-                    v-model="editEnd"
-                    :enable-time-picker="true"
-                    :dark="true"
-                    :minutes-increment="5"
-                    :min-date="editStart || undefined"
-                    :flow="{ steps: ['calendar', 'time'] }"
-                    :action-row="{
-                      showCancel: false,
-                      showPreview: false,
-                      selectBtnLabel: 'Confirm',
-                    }"
-                    placeholder="End date & time"
-                    text-input
-                    teleport="body"
-                  />
-                </div>
-              </div>
-              <p v-if="editStart && editEnd && !editTimeValid" class="field-error">
-                {{ editTimeError }}
-              </p>
-            </template>
-            <template v-else>
-              <p class="tile-value">{{ airDateLabel }}</p>
-              <p class="tile-sub">{{ airTimeRange }}</p>
-            </template>
-          </div>
-
-          <div class="card info-tile">
-            <h2 class="section-title"><span class="ico">👤</span> Assigned host</h2>
-            <div v-if="hasHost" class="host-row">
-              <span class="host-avatar">{{ hostInitials }}</span>
-              <div>
-                <p class="tile-value">{{ show.host_username }}</p>
-                <p class="tile-sub">Host</p>
-              </div>
-            </div>
-            <p v-else class="empty-state">No host assigned.</p>
-
-            <!-- Admins and the show's creator may (re)assign the host inline,
-                 either to an existing user or to a freshly created guest. -->
-            <div v-if="canEditHost && editMode" class="host-edit">
-              <div class="host-edit-toggle">
-                <button
-                  type="button"
-                  :class="['toggle-chip', { active: hostEditMode === 'existing' }]"
-                  @click="hostEditMode = 'existing'"
-                >
-                  Existing user
-                </button>
-                <button
-                  type="button"
-                  :class="['toggle-chip', { active: hostEditMode === 'guest' }]"
-                  @click="hostEditMode = 'guest'"
-                >
-                  Create guest
-                </button>
-              </div>
-
-              <template v-if="hostEditMode === 'existing'">
-                <template v-if="show.available_hosts && show.available_hosts.length > 0">
-                  <select v-model="selectedHostId" class="select-input">
-                    <option :value="null" disabled>
-                      {{ hasHost ? '-- Reassign host --' : '-- Select a host --' }}
-                    </option>
-                    <option v-for="h in show.available_hosts" :key="h.id" :value="h.id">
-                      {{ h.username }}
-                    </option>
-                  </select>
-                  <BaseButton
-                    variant="success"
-                    size="sm"
-                    :disabled="!selectedHostId || assigningHost"
-                    :loading="assigningHost"
-                    @click="assignHost"
-                  >
-                    {{ hasHost ? 'Reassign' : 'Assign' }}
-                  </BaseButton>
-                  <BaseButton v-if="hasHost" variant="ghost" size="sm" @click="unassignHost">
-                    Remove
-                  </BaseButton>
-                </template>
-                <p v-else class="text-muted assign-note">No assignable users available.</p>
-              </template>
-
-              <template v-else>
-                <input
-                  v-model="newGuestUsername"
-                  type="text"
-                  class="select-input"
-                  placeholder="Guest username"
-                  autocomplete="off"
-                />
-                <BaseButton
-                  variant="success"
-                  size="sm"
-                  :disabled="!newGuestUsername.trim() || assigningHost"
-                  :loading="assigningHost"
-                  @click="createGuestHost"
-                >
-                  Create &amp; assign
-                </BaseButton>
-                <p class="text-muted assign-note">
-                  The guest can only log in on the show date and is deleted afterwards.
-                </p>
-                <p v-if="guestCreds" class="guest-creds">
-                  Username <code>{{ guestCreds.username }}</code> · one-time password
-                  <code>{{ guestCreds.password }}</code> (shown once)
-                </p>
-              </template>
-            </div>
-          </div>
-        </div>
+        <ScheduleHostPanel
+          v-model:edit-start="editStart"
+          v-model:edit-end="editEnd"
+          v-model:selected-host-id="selectedHostId"
+          v-model:host-edit-mode="hostEditMode"
+          v-model:new-guest-username="newGuestUsername"
+          :show="show"
+          :edit-mode="editMode"
+          :can-edit-host="canEditHost"
+          :assigning-host="assigningHost"
+          :guest-creds="guestCreds"
+          :edit-time-valid="editTimeValid"
+          :edit-time-error="editTimeError"
+          @assign-host="assignHost"
+          @create-guest="createGuestHost"
+          @unassign-host="unassignHost"
+        />
 
         <!-- Grid: media + social -->
         <div class="dash-grid">
@@ -1974,14 +1780,6 @@ onUnmounted(() => {
   flex: 0 0 auto;
 }
 
-.dash-label {
-  margin: 0 0 var(--spacing-xs);
-  font-size: var(--font-size-xs);
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--color-text-muted);
-}
-
 .dash-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1994,144 +1792,12 @@ onUnmounted(() => {
   margin-bottom: 0;
 }
 
-.hero-card {
-  display: flex;
-  gap: var(--spacing-xl);
-  align-items: flex-start;
-}
-
-.hero-cover {
-  position: relative;
-  flex: 0 0 auto;
-  width: 200px;
-  height: 200px;
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  background: var(--color-surface-alt);
-}
-
-.hero-cover-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.hero-cover-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--spacing-sm);
-  color: #fff;
-  background: repeating-linear-gradient(
-    45deg,
-    var(--color-primary) 0,
-    var(--color-primary) 10px,
-    var(--color-surface-alt) 10px,
-    var(--color-surface-alt) 20px
-  );
-  font-weight: 700;
-  letter-spacing: 0.1em;
-}
-
-.hero-cover-ico {
-  font-size: 2rem;
-}
-
-.cover-replace {
-  position: absolute;
-  left: var(--spacing-sm);
-  bottom: var(--spacing-sm);
-  border: none;
-  border-radius: var(--radius-md);
-  padding: 6px 10px;
-  font-size: var(--font-size-sm);
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  cursor: pointer;
-}
-
-.cover-replace:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.hero-body {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.hero-title {
-  margin: 0 0 var(--spacing-lg);
-  font-size: 1.8em;
-  font-weight: 700;
-}
-
-.hero-desc {
-  margin: 0;
-  line-height: var(--line-height-relaxed, 1.6);
-  color: var(--color-text);
-}
-
-.info-tile .section-title {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-xs);
-  font-size: var(--font-size-sm);
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.tile-value {
-  margin: 0;
-  font-size: var(--font-size-xl);
-  font-weight: 700;
-  color: var(--color-text);
-}
-
-.tile-sub {
-  margin: 2px 0 0;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.host-row {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-}
-
-.host-avatar {
-  flex: 0 0 auto;
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--radius-full);
-  background: var(--color-success-bg);
-  color: var(--color-success);
-  font-weight: 700;
-}
+/* Hero + air-date/host tile styles moved into
+   components/show-cockpit/panels/{IdentityPanel,ScheduleHostPanel}.vue */
 
 @media (max-width: 768px) {
   .dash-grid {
     grid-template-columns: 1fr;
-  }
-
-  .hero-card {
-    flex-direction: column;
-  }
-
-  .hero-cover {
-    width: 100%;
-    height: auto;
-    aspect-ratio: 1;
   }
 }
 
@@ -2553,50 +2219,7 @@ onUnmounted(() => {
   margin-bottom: var(--spacing-md);
 }
 
-.host-edit {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--spacing-sm);
-  margin-top: var(--spacing-md);
-}
-
-.host-edit-toggle {
-  display: flex;
-  gap: var(--spacing-xs);
-  flex-basis: 100%;
-}
-
-.toggle-chip {
-  padding: 4px 12px;
-  background: var(--color-surface-alt);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text-muted);
-  font-family: var(--font-family);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-}
-
-.toggle-chip.active {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-
-.guest-creds {
-  flex-basis: 100%;
-  margin: 0;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.guest-creds code {
-  font-family: monospace;
-  background: var(--color-surface-alt);
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-}
+/* Host-assignment editor styles moved into ScheduleHostPanel.vue */
 
 .select-input {
   flex: 1;
