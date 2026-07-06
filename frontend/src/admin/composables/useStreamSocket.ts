@@ -17,6 +17,10 @@ const reconnectAttempts = ref(0);
 
 let socket: WebSocket | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+// Total binary payload bytes handed to socket.send() since (re)connect.
+// Together with bufferedAmount this is the browser-side upload-health signal
+// (#275): egress = Δqueued − Δbuffered, buffer-seconds = buffered / byte-rate.
+let bytesQueued = 0;
 // Remembered across reconnects so the backend keeps auto-recording the same show.
 let currentShowId: number | null = null;
 // Remembered across reconnects so a rehearsal stays on the private `/test` mount.
@@ -38,6 +42,31 @@ if (typeof window !== 'undefined') {
       socket.close(1000, 'Page unload');
     }
   });
+}
+
+export interface StreamSocketStats {
+  /** Whether a socket exists and is OPEN. */
+  connected: boolean;
+  /** Bytes accepted by send() but not yet handed to the OS/network. */
+  bufferedAmount: number;
+  /** Total binary payload bytes queued since the socket (re)connected. */
+  bytesQueued: number;
+}
+
+/**
+ * Read-only upload counters for the singleton stream socket (#275).
+ *
+ * A standalone export (NOT part of useStreamSocket()) so telemetry consumers
+ * can poll it without calling the composable — calling useStreamSocket()
+ * replaces the singleton's event callbacks, which would break the component
+ * that owns the connection.
+ */
+export function getStreamSocketStats(): StreamSocketStats {
+  return {
+    connected: socket !== null && socket.readyState === WebSocket.OPEN,
+    bufferedAmount: socket?.bufferedAmount ?? 0,
+    bytesQueued,
+  };
 }
 
 export function useStreamSocket(options: UseStreamSocketOptions = {}) {
@@ -75,6 +104,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
       socket = new WebSocket(wsUrl);
       socket.binaryType = 'arraybuffer';
+      bytesQueued = 0;
 
       socket.onopen = () => {
         console.log('[StreamSocket] Connected');
@@ -136,6 +166,9 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       return false;
     }
     socket.send(data);
+    if (data instanceof ArrayBuffer) {
+      bytesQueued += data.byteLength;
+    }
     return true;
   }
 

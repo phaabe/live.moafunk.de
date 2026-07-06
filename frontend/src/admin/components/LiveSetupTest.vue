@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
+import {
+  useHostFlow,
+  useAudioCapture,
+  useStreamSocket,
+  useUploadHealth,
+  STREAM_AUDIO_BITS_PER_SECOND,
+} from '@admin/composables';
 import DbMeter from '@admin/components/DbMeter.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
 import { config } from '@/config';
@@ -121,7 +127,10 @@ function startTestRecording(): boolean {
     ? 'audio/webm;codecs=opus'
     : 'audio/webm';
 
-  testRecorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 192000 });
+  testRecorder = new MediaRecorder(stream, {
+    mimeType,
+    audioBitsPerSecond: STREAM_AUDIO_BITS_PER_SECOND,
+  });
 
   testRecorder.ondataavailable = async (event) => {
     if (event.data.size > 0) {
@@ -195,6 +204,15 @@ function markTestPassed() {
   flow.setLiveTestPassed(true);
   emit('passed');
 }
+
+// ─── Rehearsal connection verdict (#275) ─────────────────────────────────────
+// The same browser-side upload telemetry as the on-air connection card runs
+// against the test broadcast, so the host knows "connection good enough"
+// BEFORE air time.
+const testHealth = useUploadHealth(
+  computed(() => testPhase.value === 'live'),
+  ref(STREAM_AUDIO_BITS_PER_SECOND)
+);
 
 const isDev = import.meta.env.DEV;
 
@@ -280,6 +298,14 @@ onUnmounted(() => {
           <span class="ls-dot rec"></span>
           Test broadcast live
           <span class="ls-muted">· {{ sentChunks }} chunks sent</span>
+        </p>
+
+        <!-- Same upload telemetry as the on-air connection card (#275). -->
+        <p class="ls-conn">
+          <span :class="['ls-conn-pill', `ls-conn-${testHealth.verdict.value}`]">
+            {{ testHealth.verdictText.value }}
+          </span>
+          <span class="ls-muted">· {{ testHealth.uploadKbps.value }} kbps up</span>
         </p>
 
         <!-- Runs a few seconds behind — use headphones. -->
@@ -452,6 +478,37 @@ onUnmounted(() => {
   margin: 0;
   font-size: var(--font-size-sm);
   font-weight: 600;
+  color: var(--color-error);
+}
+
+.ls-conn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.ls-conn-pill {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.ls-conn-good {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.ls-conn-tight {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+
+.ls-conn-slow {
+  background: var(--color-error-bg);
   color: var(--color-error);
 }
 

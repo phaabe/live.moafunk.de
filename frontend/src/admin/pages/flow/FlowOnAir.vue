@@ -8,8 +8,10 @@ import {
   useSpectrum,
   useDbMeter,
   DB_FLOOR,
+  STREAM_AUDIO_BITS_PER_SECOND,
 } from '@admin/composables';
 import { streamApi, recordingApi, hostFlowApi, type StreamMetrics } from '@admin/api';
+import ConnectionCard from '@admin/components/ConnectionCard.vue';
 import DbMeter from '@admin/components/DbMeter.vue';
 import SpectrumBars from '@admin/components/SpectrumBars.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
@@ -765,17 +767,12 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 3 · Connection & upload (live mode) — metrics land with the
-           connection-card issue. -->
-      <div v-if="isLiveMode" class="panel-card slot-card slot-placeholder">
-        <div class="slot-head">
-          <span class="slot-title">📶 Connection &amp; upload</span>
-          <span class="slot-badge">Coming soon</span>
-        </div>
-        <p class="slot-hint">
-          Throughput vs. target, send buffer, RTT and the upload-quality selector will live here.
-        </p>
-      </div>
+      <!-- 3 · Connection & upload (live mode, browser-side telemetry #275) -->
+      <ConnectionCard
+        v-if="isLiveMode"
+        :active="streamActive"
+        :target-bits-per-second="STREAM_AUDIO_BITS_PER_SECOND"
+      />
 
       <!-- 4 · Live chat — Telegram bridge lands with the chat issue. -->
       <div class="panel-card slot-card slot-placeholder">
