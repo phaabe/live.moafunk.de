@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onActivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   showsApi,
@@ -9,23 +9,25 @@ import {
   type SoundCloudStatus,
   type GuestCredentials,
 } from '../api';
-import { BaseButton, BaseModal, FormInput } from '@shared/components';
+import { BaseButton, BaseModal } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
-import {
-  IdentityPanel,
-  LiveCard,
-  ScheduleHostPanel,
-  SocialMediaCard,
-} from '../components/show-cockpit/panels';
-import { GridShell } from './show-cockpit';
+import LiveSetupTest from '../components/LiveSetupTest.vue';
+import { ScheduleHostPanel } from '../components/show-cockpit/panels';
+import ShowHeader from '../components/show-detail/ShowHeader.vue';
+import StatusStrip from '../components/show-detail/StatusStrip.vue';
+import PrepUploadInline from '../components/show-detail/PrepUploadInline.vue';
+import WrapupPipeline from '../components/show-detail/WrapupPipeline.vue';
+import AnnouncementsCard from '../components/show-detail/AnnouncementsCard.vue';
+import TelegramComposerModal from '../components/show-detail/TelegramComposerModal.vue';
 import { useShowPhase } from '../composables/useShowPhase';
+import { useShowClocks } from '../composables/useShowClocks';
 import { useFlash } from '../composables/useFlash';
 import { useDataInvalidation } from '../composables/useDataInvalidation';
 import { useDateTimeRange } from '../composables/useDateTimeRange';
 import { useHostFlow } from '../composables/useHostFlow';
 import { useAuthStore } from '../stores/auth';
 import { resolveMediaMode } from '../showMediaMode';
-import { berlinToUtcDate } from '../showTime';
+import { berlinToUtcDate, isShowEnded } from '../showTime';
 import { VueDatePicker } from '@vuepic/vue-datepicker';
 import '@vuepic/vue-datepicker/dist/main.css';
 
@@ -132,15 +134,62 @@ const mediaMode = ref<'live' | 'upload'>('upload');
 /** The assigned host may manage media (matches the backend require_user_show check). */
 const canManageMedia = computed(() => !!show.value && show.value.host_user_id === auth.user?.id);
 
-// ── Dashboard: soft lifecycle phase drives the Live card's state machine ────
-// docs/stream-rework/show-cockpit-plan.md — the show host dashboard is a fixed
-// 2×2 grid (metadata · live · schedule+host · social).
+// ── Dashboard: soft lifecycle phase drives the layout's state machine ───────
+// docs/stream-rework/show-cockpit-plan.md — header → status strip → phase
+// panel (preparation / launchpad / post-production) + announcements.
 const { phase } = useShowPhase(show);
 
 const airTarget = computed(() => {
   if (!show.value?.date || !show.value?.start_time) return null;
   return berlinToUtcDate(show.value.date, show.value.start_time);
 });
+
+/** Still inside the show's air window → offer to resume streaming. */
+const canGoLiveAgain = computed(() => (show.value ? !isShowEnded(show.value) : false));
+
+// ── Inline preparation (absorbs /stream/upload · /stream/confirm · /stream/live)
+// The dashboard renders the prep panels directly; useHostFlow stays the source
+// of truth, so the fullscreen flow keeps working from the same state.
+const showTelegramModal = ref(false);
+
+/**
+ * Make sure the host-flow singleton has this show selected (and the current
+ * media mode set) so the inline prep panels can upload/confirm/test against it.
+ */
+async function ensureFlowSelection() {
+  if (!show.value || !canManageMedia.value) return;
+  const id = show.value.id;
+  let mine = hostFlow.shows.value.find((s) => s.id === id);
+  if (!mine) {
+    await hostFlow.fetchMyShow();
+    mine = hostFlow.shows.value.find((s) => s.id === id);
+  }
+  if (!mine) return;
+  if (hostFlow.show.value?.id !== id) {
+    hostFlow.selectShow(mine);
+  }
+  hostFlow.selectMode(mediaMode.value === 'live' ? 'live' : 'prerecorded');
+}
+
+watch(mediaMode, () => {
+  void ensureFlowSelection();
+});
+
+/** Inline prep changed something (upload/confirm/delete) — resync the show. */
+function onPrepChanged() {
+  void loadShow();
+}
+
+/** The inline live test passed — continue to the fullscreen live panel. */
+function goLivePanel() {
+  hostFlow.goToStep('on-air');
+  router.push('/stream/on-air');
+}
+
+async function sendTelegramFromModal() {
+  await sendTelegramPreview();
+  showTelegramModal.value = false;
+}
 
 /** Format a date string + time string into a readable datetime */
 function fmtDateTime(date: string, time: string): string {
@@ -205,6 +254,9 @@ const RECORDING_STATE_LABELS: Record<'ready' | 'processing' | 'failed', string> 
   processing: 'Processing…',
   failed: 'Failed',
 };
+
+// ── Status-strip clocks (countdown / elapsed / finished duration) ───────────
+const { countdown, elapsed, duration } = useShowClocks(airTarget, latestRecording);
 
 function formatDurationMs(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -314,6 +366,9 @@ async function loadShow() {
     // A present prerecorded file implies upload mode; otherwise honour the
     // delivery mode the show was created with (defaults to 'upload').
     mediaMode.value = resolveMediaMode(show.value);
+    // Prime the host-flow singleton so the inline prep panels work directly
+    // on this show (fire-and-forget; only relevant for the assigned host).
+    void ensureFlowSelection();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load show';
   } finally {
@@ -426,9 +481,6 @@ async function enterFlow(mode: 'prerecorded' | 'live') {
     flash.error(e instanceof Error ? e.message : 'Failed to open the streaming flow');
   }
 }
-
-/** Launch the user story for the currently selected media type. */
-const launchFlow = () => enterFlow(mediaMode.value === 'live' ? 'live' : 'prerecorded');
 
 // Description editing
 function startEditDescription() {
@@ -945,102 +997,190 @@ onUnmounted(() => {
     <div v-else-if="error" class="flash-message error">{{ error }}</div>
 
     <template v-else-if="show">
-      <!-- Header (UNHEARD) -->
-      <div v-if="isUnheard" class="page-header">
-        <router-link to="/shows" class="back-link">← Back to Shows</router-link>
-        <h1 class="page-title">{{ show.title }}</h1>
-      </div>
+      <!-- ===================== Unified show dashboard =====================
+           New layout (all show types): back link → identity header → status
+           strip → phase panel + announcements → details. -->
+      <router-link :to="isUnheard || isAdmin ? '/shows' : '/stream'" class="back-link">
+        ← Back
+      </router-link>
 
-      <!-- Header (external/brunchtime dashboard) -->
-      <div v-else class="page-header dash-header">
-        <router-link :to="isAdmin ? '/shows' : '/stream'" class="back-link">← Back</router-link>
-        <div class="dash-header-row">
-          <div>
-            <p class="dash-eyebrow">SHOW DASHBOARD</p>
-            <h1 class="page-title">Episode overview</h1>
-          </div>
-          <div class="dash-header-actions">
-            <BaseButton
-              v-if="canEdit && !editMode"
-              variant="ghost"
-              size="sm"
-              @click="startDashboardEdit"
-            >
-              ✎ Edit
-            </BaseButton>
-            <template v-if="editMode">
-              <BaseButton variant="ghost" size="sm" @click="cancelDashboardEdit">Cancel</BaseButton>
-              <BaseButton variant="primary" size="sm" :loading="saving" @click="saveDashboardEdits">
-                Save
-              </BaseButton>
+      <ShowHeader
+        v-model:title="titleForm"
+        :show="show"
+        :phase="phase"
+        :edit-mode="editMode"
+        :can-edit="!isUnheard && canEdit"
+        :uploading-cover="uploadingCover"
+        :saving="saving"
+        @cover-selected="uploadCoverFile"
+        @start-edit="startDashboardEdit"
+        @save="saveDashboardEdits"
+        @cancel="cancelDashboardEdit"
+      />
+
+      <StatusStrip
+        :show="show"
+        :phase="phase"
+        :mode="mediaMode"
+        :can-manage="!isUnheard && canManageMedia"
+        :countdown="countdown"
+        :elapsed="elapsed"
+        :duration="duration"
+        :recording-state="recordingState"
+        :sc-status="scStatus"
+        :announcements-ready="0"
+        :mode-card="!isUnheard"
+        @select-live="mediaMode = 'live'"
+        @select-upload="mediaMode = 'upload'"
+      />
+
+      <!-- ── Phase panel + announcements (external / brunchtime) ─────────── -->
+      <div v-if="!isUnheard" class="dash-main">
+        <div class="dash-phase">
+          <!-- PREP: inline preparation for the selected streaming mode -->
+          <div v-if="phase === 'prep'" class="card phase-card">
+            <h2 class="phase-title">
+              Preparation · {{ mediaMode === 'live' ? 'live' : 'pre-recorded' }}
+            </h2>
+            <template v-if="canManageMedia">
+              <PrepUploadInline
+                v-if="mediaMode === 'upload'"
+                :show-id="show.id"
+                @changed="onPrepChanged"
+              />
+              <LiveSetupTest v-else @passed="goLivePanel" />
             </template>
+            <p v-else class="phase-muted">
+              Only the assigned host can prepare the stream.
+              {{ show.host_username ? `Assigned host: ${show.host_username}.` : 'No host assigned yet.' }}
+            </p>
           </div>
-        </div>
-      </div>
 
-      <!-- ===================== External / brunchtime dashboard ===================== -->
-      <!-- Fixed 2×2 grid of cards (docs/stream-rework/show-cockpit-plan.md).
-           GridShell only arranges the named slots; all state/handlers stay here. -->
-      <GridShell v-if="!isUnheard">
-        <template #identity>
-          <IdentityPanel
-            v-model:title="titleForm"
-            v-model:description="descriptionForm"
-            :show="show"
-            :edit-mode="editMode"
-            :can-edit="canEdit"
-            :uploading-cover="uploadingCover"
-            @cover-selected="uploadCoverFile"
-          />
-        </template>
+          <!-- BROADCAST: launchpad — live controls stay in the fullscreen panel -->
+          <div v-else-if="phase === 'broadcast'" class="card phase-card launchpad">
+            <h2 class="phase-title">On air</h2>
+            <p class="launchpad-status">
+              <span class="launchpad-dot"></span>
+              On air · <span class="launchpad-elapsed">{{ elapsed }}</span>
+            </p>
+            <p class="phase-muted">
+              {{
+                mediaMode === 'live'
+                  ? 'Level meters, self-monitor and stop controls live in the panel.'
+                  : 'The backend plays your pre-recorded set automatically.'
+              }}
+            </p>
+            <BaseButton
+              v-if="canManageMedia"
+              variant="primary"
+              class="launchpad-action"
+              @click="enterFlow('live')"
+            >
+              🎛 Open live panel
+            </BaseButton>
+          </div>
 
-        <template #live>
-          <LiveCard
+          <!-- WRAP-UP: post-production pipeline -->
+          <WrapupPipeline
+            v-else
             :show="show"
-            :phase="phase"
-            :mode="mediaMode"
-            :air-target="airTarget"
             :latest-recording="latestRecording"
             :recording-state="recordingState"
             :can-manage="canManageMedia"
             :can-publish="canUseSoundcloud"
+            :can-go-live-again="canGoLiveAgain"
             :sc-status="scStatus"
             :uploading-to-sound-cloud="uploadingToSoundCloud"
             :toggling-sound-cloud-privacy="togglingSoundCloudPrivacy"
-            @select-live="mediaMode = 'live'"
-            @select-upload="mediaMode = 'upload'"
-            @prep="launchFlow"
-            @live-panel="enterFlow('live')"
             @publish="toggleSoundCloudPrivacy"
             @upload-soundcloud="uploadToSoundCloud"
             @connect-soundcloud="connectSoundCloud"
+            @live-panel="enterFlow('live')"
           />
-        </template>
+        </div>
 
-        <template #schedule>
-          <ScheduleHostPanel
-            v-model:edit-start="editStart"
-            v-model:edit-duration="editDuration"
-            v-model:selected-host-id="selectedHostId"
-            v-model:host-edit-mode="hostEditMode"
-            v-model:new-guest-username="newGuestUsername"
-            :show="show"
-            :edit-mode="editMode"
-            :can-edit-host="canEditHost"
-            :assigning-host="assigningHost"
-            :guest-creds="guestCreds"
-            :edit-time-valid="editTimeValid"
-            :edit-time-error="editTimeError"
-            @assign-host="assignHost"
-            @create-guest="createGuestHost"
-            @unassign-host="unassignHost"
-          />
-        </template>
+        <AnnouncementsCard
+          :show="show"
+          :phase="phase"
+          :can-post="isAdmin"
+          :sending-telegram-preview="sendingTelegramPreview"
+          @compose-instagram="openInstagramPreview"
+          @compose-telegram="showTelegramModal = true"
+        />
+      </div>
 
-        <template #social>
-          <SocialMediaCard />
-        </template>
-      </GridShell>
+      <!-- ── Details: description + schedule & host (external / brunchtime) ─ -->
+      <div v-if="!isUnheard" class="dash-second">
+        <div class="card desc-card">
+          <h2 class="phase-title">Description</h2>
+          <textarea
+            v-if="editMode"
+            v-model="descriptionForm"
+            class="text-field"
+            rows="4"
+            placeholder="Brief description..."
+          ></textarea>
+          <p v-else-if="show.description" class="desc-view">{{ show.description }}</p>
+          <p v-else class="empty-state">No description yet — listeners see this on the show page.</p>
+
+          <template v-if="isAdmin">
+            <div class="section-divider"></div>
+            <h3 class="phase-title">AI show bio</h3>
+            <template v-if="!editingAiBio">
+              <div v-if="show.ai_bio" class="desc-view">{{ show.ai_bio }}</div>
+              <p v-else class="empty-state">AI bio will be generated from the show description.</p>
+              <div class="button-row">
+                <BaseButton v-if="show.ai_bio" variant="ghost" size="sm" @click="startEditAiBio">
+                  Edit
+                </BaseButton>
+                <BaseButton
+                  variant="ghost"
+                  size="sm"
+                  :loading="regeneratingBio"
+                  :disabled="!show.description"
+                  @click="regenerateShowBio"
+                >
+                  ↻ Regenerate
+                </BaseButton>
+              </div>
+            </template>
+            <div v-else class="edit-panel">
+              <textarea
+                v-model="aiBioForm"
+                class="text-field"
+                rows="8"
+                placeholder="AI-generated show bio..."
+              ></textarea>
+              <div class="edit-actions">
+                <BaseButton variant="ghost" size="sm" @click="editingAiBio = false">
+                  Cancel
+                </BaseButton>
+                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveAiBio">
+                  Save
+                </BaseButton>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <ScheduleHostPanel
+          v-model:edit-start="editStart"
+          v-model:edit-duration="editDuration"
+          v-model:selected-host-id="selectedHostId"
+          v-model:host-edit-mode="hostEditMode"
+          v-model:new-guest-username="newGuestUsername"
+          :show="show"
+          :edit-mode="editMode"
+          :can-edit-host="canEditHost"
+          :assigning-host="assigningHost"
+          :guest-creds="guestCreds"
+          :edit-time-valid="editTimeValid"
+          :edit-time-error="editTimeError"
+          @assign-host="assignHost"
+          @create-guest="createGuestHost"
+          @unassign-host="unassignHost"
+        />
+      </div>
 
       <div v-if="isUnheard" class="top-grid">
         <div class="main-column">
@@ -1217,23 +1357,22 @@ onUnmounted(() => {
           <h2 class="section-title">Cover</h2>
           <div v-if="show.cover_url" class="show-cover-preview">
             <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
-            <div v-if="isAdmin" class="cover-actions">
-              <BaseButton variant="primary" size="sm" @click="openInstagramPreview">
-                <span v-if="show.instagram_posted_at">📸 Posted to Instagram ✓</span>
-                <span v-else>📸 Instagram Preview</span>
-              </BaseButton>
-              <BaseButton
-                variant="secondary"
-                size="sm"
-                :loading="sendingTelegramPreview"
-                @click="sendTelegramPreview"
-              >
-                📱 Preview on Telegram
-              </BaseButton>
-            </div>
           </div>
           <p v-else class="empty-state">Cover appears after artists are assigned and processed.</p>
         </div>
+      </div>
+
+      <!-- Announcements (UNHEARD) — the Instagram/Telegram actions moved here
+           from the old cover card so all show types share the same card. -->
+      <div v-if="isUnheard" class="unheard-announcements">
+        <AnnouncementsCard
+          :show="show"
+          :phase="phase"
+          :can-post="isAdmin"
+          :sending-telegram-preview="sendingTelegramPreview"
+          @compose-instagram="openInstagramPreview"
+          @compose-telegram="showTelegramModal = true"
+        />
       </div>
 
       <!-- Download / Upload Row (UNHEARD only, admin only) -->
@@ -1649,6 +1788,16 @@ onUnmounted(() => {
       </template>
     </BaseModal>
 
+    <!-- Telegram Composer Modal (all show types) -->
+    <TelegramComposerModal
+      v-if="show"
+      :open="showTelegramModal"
+      :show="show"
+      :sending="sendingTelegramPreview"
+      @close="showTelegramModal = false"
+      @send="sendTelegramFromModal"
+    />
+
     <!-- Instagram Re-post Confirmation Modal (all show types) -->
     <BaseModal
       :open="showInstagramConfirmModal"
@@ -1687,6 +1836,121 @@ onUnmounted(() => {
 
 .card {
   margin-bottom: var(--spacing-lg);
+}
+
+/* ── Redesigned dashboard layout (all show types) ───────────────────────── */
+.dash-main {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: var(--spacing-lg);
+  align-items: stretch;
+  margin-bottom: var(--spacing-lg);
+}
+
+.dash-phase {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dash-phase > .card,
+.dash-main > :deep(.card) {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+  min-height: 100%;
+}
+
+.dash-second {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  align-items: stretch;
+  margin-bottom: var(--spacing-lg);
+}
+
+.dash-second > .card,
+.dash-second > :deep(.card) {
+  margin-bottom: 0;
+}
+
+.phase-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.phase-title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.phase-muted {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.launchpad-status {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-error);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.launchpad-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-error);
+  animation: launchpad-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes launchpad-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.launchpad-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.launchpad-action {
+  margin-top: auto;
+  width: 100%;
+}
+
+.desc-view {
+  margin: 0;
+  font-family: var(--font-ui);
+  line-height: var(--line-height-relaxed, 1.6);
+  color: var(--color-text);
+  white-space: pre-line;
+}
+
+.unheard-announcements {
+  margin-bottom: var(--spacing-lg);
+}
+
+@media (max-width: 900px) {
+  .dash-main,
+  .dash-second {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── External/brunchtime dashboard ──────────────────────────────────────── */
