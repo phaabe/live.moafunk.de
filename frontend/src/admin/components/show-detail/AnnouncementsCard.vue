@@ -1,25 +1,21 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { ShowDetail } from '../../api';
-import { BaseButton } from '@shared/components';
 import type { ShowPhase } from '../../composables/useShowPhase';
 
 /**
  * Announcements checklist of the redesigned show dashboard: the four
- * scheduled slots (IG/TG × pre/post) as an actionable list, plus the two
- * immediate legacy actions the backend supports today (Instagram post,
- * Telegram preview).
+ * scheduled slots (IG/TG × pre/post) as clickable rows that open the
+ * matching composer (Instagram preview modal / Telegram composer).
  *
- * The slot rows stay inert until the scheduled-announcements backend lands
- * (docs/adr/0001-scheduled-announcements-model.md); the chips and hint make
- * that state explicit instead of hiding it.
+ * Scheduling stays inert until the scheduled-announcements backend lands
+ * (docs/adr/0001-scheduled-announcements-model.md); until then composing
+ * offers the immediate legacy actions inside the modals, and the chips make
+ * the not-yet-scheduled state explicit.
  */
 const props = defineProps<{
   show: ShowDetail;
   phase: ShowPhase;
-  /** Admin-only legacy actions (matches the backend require_admin gate). */
-  canPost: boolean;
-  sendingTelegramPreview: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -32,55 +28,58 @@ const emit = defineEmits<{
 interface SlotRow {
   icon: string;
   label: string;
+  channel: 'instagram' | 'telegram';
 }
 
 const slots: SlotRow[] = [
-  { icon: '📸', label: 'Story · pre-announcement' },
-  { icon: '📸', label: 'Story · post-announcement' },
-  { icon: '📱', label: 'Post · pre-announcement' },
-  { icon: '📱', label: 'Post · post-announcement' },
+  { icon: '📸', label: 'Story · pre-announcement', channel: 'instagram' },
+  { icon: '📸', label: 'Story · post-announcement', channel: 'instagram' },
+  { icon: '📱', label: 'Post · pre-announcement', channel: 'telegram' },
+  { icon: '📱', label: 'Post · post-announcement', channel: 'telegram' },
 ];
 
-const chipLabel = computed(() => (props.phase === 'wrapup' ? 'Not sent' : 'Not scheduled'));
-
+/** Legacy immediate IG post — surfaced on the Instagram rows. */
 const igPosted = computed(() => !!props.show.instagram_posted_at);
+
+function chipFor(row: SlotRow): { label: string; sent: boolean } {
+  if (row.channel === 'instagram' && igPosted.value) {
+    return { label: 'Posted ✓', sent: true };
+  }
+  return { label: props.phase === 'wrapup' ? 'Not sent' : 'Not scheduled', sent: false };
+}
+
+function compose(row: SlotRow) {
+  if (row.channel === 'instagram') {
+    emit('compose-instagram');
+  } else {
+    emit('compose-telegram');
+  }
+}
 </script>
 
 <template>
   <div class="card ann-card">
     <div class="ann-head">
       <h2 class="ann-title">Announcements</h2>
-      <span class="ann-count">0 / 4</span>
+      <span class="ann-count">{{ igPosted ? '1' : '0' }} / 4</span>
     </div>
 
-    <div v-for="row in slots" :key="row.label" class="ann-row">
+    <button
+      v-for="row in slots"
+      :key="row.label"
+      type="button"
+      class="ann-row"
+      :title="`Compose ${row.channel} announcement`"
+      @click="compose(row)"
+    >
       <span class="ann-label">{{ row.icon }} {{ row.label }}</span>
-      <span class="ann-chip">{{ chipLabel }}</span>
-    </div>
+      <span class="ann-chip" :class="{ sent: chipFor(row).sent }">{{ chipFor(row).label }}</span>
+      <span class="ann-chevron">›</span>
+    </button>
 
-    <p class="ann-hint">Scheduling &amp; composing announcements arrives in a later update.</p>
-
-    <template v-if="canPost">
-      <div class="ann-divider"></div>
-      <p class="ann-subtitle">Post now</p>
-      <div class="ann-row">
-        <span class="ann-label">📸 Instagram</span>
-        <BaseButton size="sm" :variant="igPosted ? 'ghost' : 'primary'" @click="emit('compose-instagram')">
-          {{ igPosted ? 'Posted ✓ · again?' : 'Compose' }}
-        </BaseButton>
-      </div>
-      <div class="ann-row">
-        <span class="ann-label">📱 Telegram</span>
-        <BaseButton
-          size="sm"
-          variant="ghost"
-          :loading="sendingTelegramPreview"
-          @click="emit('compose-telegram')"
-        >
-          Compose
-        </BaseButton>
-      </div>
-    </template>
+    <p class="ann-hint">
+      Click a slot to compose &amp; preview. Scheduling arrives in a later update.
+    </p>
   </div>
 </template>
 
@@ -120,15 +119,27 @@ const igPosted = computed(() => !!props.show.instagram_posted_at);
   align-items: center;
   justify-content: space-between;
   gap: var(--spacing-sm);
-  padding: var(--spacing-xs) 0;
+  padding: var(--spacing-sm) var(--spacing-xs);
+  border: none;
   border-bottom: 1px solid var(--color-border);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
 }
 
-.ann-row:last-child {
+.ann-row:hover {
+  background: var(--color-surface-hover);
+}
+
+.ann-row:last-of-type {
   border-bottom: none;
 }
 
 .ann-label {
+  flex: 1 1 auto;
+  font-family: var(--font-ui);
   font-size: var(--font-size-sm);
   color: var(--color-text);
 }
@@ -143,24 +154,22 @@ const igPosted = computed(() => !!props.show.instagram_posted_at);
   color: var(--color-text-muted);
 }
 
+.ann-chip.sent {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.ann-chevron {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-lg);
+  line-height: 1;
+}
+
 .ann-hint {
   margin: var(--spacing-xs) 0 0;
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   font-style: italic;
-}
-
-.ann-divider {
-  border-top: 1px solid var(--color-border);
-  margin: var(--spacing-sm) 0;
-}
-
-.ann-subtitle {
-  margin: 0 0 var(--spacing-xs);
-  font-size: var(--font-size-xs);
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
 }
 </style>

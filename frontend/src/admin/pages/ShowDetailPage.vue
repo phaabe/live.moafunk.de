@@ -151,6 +151,39 @@ const canGoLiveAgain = computed(() => (show.value ? !isShowEnded(show.value) : f
 // The dashboard renders the prep panels directly; useHostFlow stays the source
 // of truth, so the fullscreen flow keeps working from the same state.
 const showTelegramModal = ref(false);
+const showScheduleModal = ref(false);
+
+/** Open the schedule & host editor (from the header meta line). */
+function openScheduleModal() {
+  if (!show.value) return;
+  setEditRange(show.value.date, show.value.start_time, show.value.end_time);
+  guestCreds.value = null;
+  showScheduleModal.value = true;
+}
+
+/** Save date/time edits made in the schedule modal, then close it. */
+async function saveScheduleFromModal() {
+  if (!show.value) return;
+  if (!editTimeValid.value) {
+    flash.error(editTimeError.value || 'Invalid date/time');
+    return;
+  }
+  saving.value = true;
+  try {
+    await showsApi.update(show.value.id, {
+      date: editDate.value,
+      start_time: editStartTime.value || undefined,
+      end_time: editEndTime.value || undefined,
+    });
+    flash.success('Date & time updated');
+    showScheduleModal.value = false;
+    await loadShow();
+  } catch (e) {
+    flash.error(e instanceof Error ? e.message : 'Failed to update date & time');
+  } finally {
+    saving.value = false;
+  }
+}
 
 /**
  * Make sure the host-flow singleton has this show selected (and the current
@@ -1006,14 +1039,18 @@ onUnmounted(() => {
 
       <ShowHeader
         v-model:title="titleForm"
+        v-model:description="descriptionForm"
         :show="show"
         :phase="phase"
         :edit-mode="editMode"
         :can-edit="!isUnheard && canEdit"
+        :can-edit-schedule="!isUnheard && (canEdit || canEditHost)"
+        :hide-description="isUnheard"
         :uploading-cover="uploadingCover"
         :saving="saving"
         @cover-selected="uploadCoverFile"
         @start-edit="startDashboardEdit"
+        @edit-schedule="openScheduleModal"
         @save="saveDashboardEdits"
         @cancel="cancelDashboardEdit"
       />
@@ -1102,83 +1139,8 @@ onUnmounted(() => {
         <AnnouncementsCard
           :show="show"
           :phase="phase"
-          :can-post="isAdmin"
-          :sending-telegram-preview="sendingTelegramPreview"
           @compose-instagram="openInstagramPreview"
           @compose-telegram="showTelegramModal = true"
-        />
-      </div>
-
-      <!-- ── Details: description + schedule & host (external / brunchtime) ─ -->
-      <div v-if="!isUnheard" class="dash-second">
-        <div class="card desc-card">
-          <h2 class="phase-title">Description</h2>
-          <textarea
-            v-if="editMode"
-            v-model="descriptionForm"
-            class="text-field"
-            rows="4"
-            placeholder="Brief description..."
-          ></textarea>
-          <p v-else-if="show.description" class="desc-view">{{ show.description }}</p>
-          <p v-else class="empty-state">No description yet — listeners see this on the show page.</p>
-
-          <template v-if="isAdmin">
-            <div class="section-divider"></div>
-            <h3 class="phase-title">AI show bio</h3>
-            <template v-if="!editingAiBio">
-              <div v-if="show.ai_bio" class="desc-view">{{ show.ai_bio }}</div>
-              <p v-else class="empty-state">AI bio will be generated from the show description.</p>
-              <div class="button-row">
-                <BaseButton v-if="show.ai_bio" variant="ghost" size="sm" @click="startEditAiBio">
-                  Edit
-                </BaseButton>
-                <BaseButton
-                  variant="ghost"
-                  size="sm"
-                  :loading="regeneratingBio"
-                  :disabled="!show.description"
-                  @click="regenerateShowBio"
-                >
-                  ↻ Regenerate
-                </BaseButton>
-              </div>
-            </template>
-            <div v-else class="edit-panel">
-              <textarea
-                v-model="aiBioForm"
-                class="text-field"
-                rows="8"
-                placeholder="AI-generated show bio..."
-              ></textarea>
-              <div class="edit-actions">
-                <BaseButton variant="ghost" size="sm" @click="editingAiBio = false">
-                  Cancel
-                </BaseButton>
-                <BaseButton variant="primary" size="sm" :loading="saving" @click="saveAiBio">
-                  Save
-                </BaseButton>
-              </div>
-            </div>
-          </template>
-        </div>
-
-        <ScheduleHostPanel
-          v-model:edit-start="editStart"
-          v-model:edit-duration="editDuration"
-          v-model:selected-host-id="selectedHostId"
-          v-model:host-edit-mode="hostEditMode"
-          v-model:new-guest-username="newGuestUsername"
-          :show="show"
-          :edit-mode="editMode"
-          :can-edit-host="canEditHost"
-          :assigning-host="assigningHost"
-          :guest-creds="guestCreds"
-          :edit-time-valid="editTimeValid"
-          :edit-time-error="editTimeError"
-          @assign-host="assignHost"
-          @create-guest="createGuestHost"
-          @unassign-host="unassignHost"
         />
       </div>
 
@@ -1368,8 +1330,6 @@ onUnmounted(() => {
         <AnnouncementsCard
           :show="show"
           :phase="phase"
-          :can-post="isAdmin"
-          :sending-telegram-preview="sendingTelegramPreview"
           @compose-instagram="openInstagramPreview"
           @compose-telegram="showTelegramModal = true"
         />
@@ -1780,10 +1740,50 @@ onUnmounted(() => {
         <BaseButton
           variant="primary"
           :loading="postingToInstagram"
-          :disabled="!show?.ai_bio || !show?.cover_url"
+          :disabled="!show?.ai_bio || !show?.cover_url || !isAdmin"
+          :title="isAdmin ? undefined : 'Only admins can post to Instagram'"
           @click="postToInstagram()"
         >
           📤 Publish
+        </BaseButton>
+      </template>
+    </BaseModal>
+
+    <!-- Schedule & Host Modal (external/brunchtime) — opened from the header
+         meta line; wraps the existing panel with its own Save for the dates. -->
+    <BaseModal
+      :open="showScheduleModal"
+      title="Schedule & host"
+      @close="showScheduleModal = false"
+    >
+      <ScheduleHostPanel
+        v-if="show"
+        v-model:edit-start="editStart"
+        v-model:edit-duration="editDuration"
+        v-model:selected-host-id="selectedHostId"
+        v-model:host-edit-mode="hostEditMode"
+        v-model:new-guest-username="newGuestUsername"
+        class="schedule-modal-panel"
+        :show="show"
+        :edit-mode="canEdit"
+        :can-edit-host="canEditHost"
+        :assigning-host="assigningHost"
+        :guest-creds="guestCreds"
+        :edit-time-valid="editTimeValid"
+        :edit-time-error="editTimeError"
+        @assign-host="assignHost"
+        @create-guest="createGuestHost"
+        @unassign-host="unassignHost"
+      />
+      <template #footer>
+        <BaseButton variant="ghost" @click="showScheduleModal = false">Close</BaseButton>
+        <BaseButton
+          v-if="canEdit"
+          variant="primary"
+          :loading="saving"
+          @click="saveScheduleFromModal"
+        >
+          Save date &amp; time
         </BaseButton>
       </template>
     </BaseModal>
@@ -1794,6 +1794,7 @@ onUnmounted(() => {
       :open="showTelegramModal"
       :show="show"
       :sending="sendingTelegramPreview"
+      :can-send="isAdmin"
       @close="showTelegramModal = false"
       @send="sendTelegramFromModal"
     />
@@ -1944,6 +1945,14 @@ onUnmounted(() => {
 
 .unheard-announcements {
   margin-bottom: var(--spacing-lg);
+}
+
+/* The schedule & host panel rendered inside the modal: strip the card chrome. */
+.schedule-modal-panel {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 0;
 }
 
 @media (max-width: 900px) {

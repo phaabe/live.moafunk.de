@@ -14,6 +14,8 @@ const props = defineProps<{
   open: boolean;
   show: ShowDetail;
   sending: boolean;
+  /** Only admins may trigger the bot (matches the backend gate). */
+  canSend: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -57,7 +59,13 @@ const timeLabel = computed(() => props.show.start_time || '');
     </p>
     <template #footer>
       <BaseButton variant="ghost" @click="emit('close')">Cancel</BaseButton>
-      <BaseButton variant="primary" :loading="sending" @click="emit('send')">
+      <BaseButton
+        variant="primary"
+        :loading="sending"
+        :disabled="!canSend"
+        :title="canSend ? undefined : 'Only admins can send the Telegram preview'"
+        @click="emit('send')"
+      >
         Send preview to channel
       </BaseButton>
     </template>

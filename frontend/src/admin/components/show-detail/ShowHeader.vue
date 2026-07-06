@@ -17,16 +17,25 @@ const props = defineProps<{
   phase: ShowPhase;
   editMode: boolean;
   canEdit: boolean;
+  /** Whether the date/host meta segments open the schedule & host editor. */
+  canEditSchedule: boolean;
   uploadingCover: boolean;
   saving: boolean;
   /** Title form value while editing. */
   title: string;
+  /** Description form value while editing. */
+  description: string;
+  /** Hide the description block (UNHEARD keeps it in its info card). */
+  hideDescription?: boolean;
 }>();
 
 const emit = defineEmits<{
   'update:title': [value: string];
+  'update:description': [value: string];
   'cover-selected': [file: File];
   'start-edit': [];
+  /** Open the schedule & host editor (clicked date/time or host in the meta line). */
+  'edit-schedule': [];
   save: [];
   cancel: [];
 }>();
@@ -118,8 +127,47 @@ function onCoverChange(event: Event) {
         </span>
       </div>
       <p class="sh-meta">
-        Show #{{ show.id }}<template v-if="airLabel"> · {{ airLabel }}</template>
-        <template v-if="show.host_username"> · Hosted by {{ show.host_username }}</template>
+        Show #{{ show.id }}
+        <template v-if="airLabel">
+          ·
+          <button
+            v-if="canEditSchedule"
+            type="button"
+            class="sh-meta-edit"
+            title="Edit date & time"
+            @click="emit('edit-schedule')"
+          >
+            {{ airLabel }} <span class="sh-pencil">✎</span>
+          </button>
+          <template v-else>{{ airLabel }}</template>
+        </template>
+        ·
+        <button
+          v-if="canEditSchedule"
+          type="button"
+          class="sh-meta-edit"
+          title="Edit host"
+          @click="emit('edit-schedule')"
+        >
+          {{ show.host_username ? `Hosted by ${show.host_username}` : 'No host assigned' }}
+          <span class="sh-pencil">✎</span>
+        </button>
+        <template v-else-if="show.host_username">Hosted by {{ show.host_username }}</template>
+      </p>
+
+      <textarea
+        v-if="editMode && !hideDescription"
+        :value="props.description"
+        class="sh-desc-input"
+        rows="3"
+        placeholder="Brief description... (listeners see this on the show page)"
+        @input="emit('update:description', ($event.target as HTMLTextAreaElement).value)"
+      ></textarea>
+      <p v-else-if="show.description && !hideDescription" class="sh-desc">
+        {{ show.description }}
+      </p>
+      <p v-else-if="canEdit && !hideDescription" class="sh-desc empty">
+        No description yet — listeners see this on the show page.
       </p>
     </div>
 
@@ -290,6 +338,59 @@ function onCoverChange(event: Event) {
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
+}
+
+.sh-meta-edit {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-bottom: 1px dashed var(--color-border-light);
+}
+
+.sh-meta-edit:hover {
+  color: var(--color-text);
+  border-bottom-color: var(--color-text-muted);
+}
+
+.sh-pencil {
+  font-size: 0.75em;
+  opacity: 0.7;
+}
+
+.sh-desc {
+  margin: var(--spacing-sm) 0 0;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--color-text);
+  white-space: pre-line;
+}
+
+.sh-desc.empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.sh-desc-input {
+  width: 100%;
+  margin-top: var(--spacing-sm);
+  padding: 8px 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.sh-desc-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
 }
 
 .sh-actions {
