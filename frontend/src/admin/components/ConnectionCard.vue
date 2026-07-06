@@ -5,17 +5,46 @@
 // RTT arrives with the backend ack telemetry (#277); the quality selector
 // with the bitrate issue (#276).
 import { ref, computed, watch, onMounted, onUnmounted, toRef } from 'vue';
-import { useUploadHealth, HISTORY_SECONDS, type UploadVerdict } from '@admin/composables';
+import {
+  useUploadHealth,
+  useAutoBitrate,
+  HISTORY_SECONDS,
+  QUALITY_STEPS_KBPS,
+  type UploadVerdict,
+  type UploadQualityMode,
+} from '@admin/composables';
 
 const props = defineProps<{
   /** Poll the socket while true (i.e. while live / rehearsing). */
   active: boolean;
-  /** Encoder target in bits/s (fixed 192k until #276). */
+  /** Currently applied encoder target in bits/s. */
   targetBitsPerSecond: number;
+}>();
+
+const emit = defineEmits<{
+  /** Ask the owner to switch the encoder to this target (bits/s). */
+  (e: 'select-bitrate', bitsPerSecond: number): void;
 }>();
 
 const health = useUploadHealth(toRef(props, 'active'), toRef(props, 'targetBitsPerSecond'));
 const { uploadKbps, bufferSeconds, lateCount, history, neededKbps, verdict, verdictText } = health;
+
+// ─── Upload quality selector (#276) ─────────────────────────────────────────
+const qualityMode = ref<UploadQualityMode>('auto');
+const currentKbps = computed(() => Math.round(props.targetBitsPerSecond / 1000));
+
+useAutoBitrate({
+  mode: qualityMode,
+  currentKbps,
+  bufferSeconds,
+  ticks: health.ticks,
+  onChange: (kbps) => emit('select-bitrate', kbps * 1000),
+});
+
+function selectQuality(step: UploadQualityMode) {
+  qualityMode.value = step;
+  if (step !== 'auto') emit('select-bitrate', step * 1000);
+}
 
 const VERDICT_CLASS: Record<UploadVerdict, string> = {
   good: 'verdict-good',
@@ -135,6 +164,34 @@ onUnmounted(() => resizeObserver?.disconnect());
           <p class="conn-tile-value">{{ lateCount }}</p>
         </div>
       </div>
+    </div>
+
+    <div class="conn-quality">
+      <span class="conn-quality-label">Upload quality</span>
+      <div class="conn-quality-steps" role="group" aria-label="Upload quality">
+        <button
+          type="button"
+          :class="['conn-step', { 'conn-step-active': qualityMode === 'auto' }]"
+          @click="selectQuality('auto')"
+        >
+          Auto
+        </button>
+        <button
+          v-for="step in QUALITY_STEPS_KBPS"
+          :key="step"
+          type="button"
+          :class="['conn-step', { 'conn-step-active': qualityMode === step }]"
+          @click="selectQuality(step)"
+        >
+          {{ step }}
+        </button>
+        <span class="conn-step-unit">kbps</span>
+      </div>
+      <p class="conn-quality-note">
+        <template v-if="qualityMode === 'auto'">Auto · currently {{ currentKbps }} kbps · </template
+        >Auto steps down when the buffer grows · switch = &lt;1 s encoder restart, covered by the
+        relay
+      </p>
     </div>
   </div>
 </template>
@@ -268,6 +325,65 @@ onUnmounted(() => resizeObserver?.disconnect());
 }
 
 .conn-tile-muted {
+  color: var(--color-text-muted);
+}
+
+.conn-quality {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+  margin-top: var(--spacing-sm);
+  padding-top: var(--spacing-sm);
+  border-top: 1px solid var(--color-border);
+}
+
+.conn-quality-label {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.conn-quality-steps {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.conn-step {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  padding: 3px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.conn-step:hover {
+  color: var(--color-text);
+}
+
+.conn-step-active {
+  background: var(--color-surface-alt);
+  border-color: var(--color-text-muted);
+  color: var(--color-text);
+}
+
+.conn-step-unit {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  margin-left: 2px;
+}
+
+.conn-quality-note {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  font-family: var(--font-ui);
+  font-size: 0.625rem;
   color: var(--color-text-muted);
 }
 </style>

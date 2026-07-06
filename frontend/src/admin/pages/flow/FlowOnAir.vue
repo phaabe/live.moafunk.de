@@ -192,6 +192,15 @@ function onInputGain(event: Event) {
   audioCapture?.setInputVolume(pct / 100);
 }
 
+// ─── Upload bitrate (selectable + auto, #276) ───────────────────────────────
+const uploadBitsPerSecond = computed(
+  () => audioCapture?.streamBitsPerSecond.value ?? STREAM_AUDIO_BITS_PER_SECOND
+);
+
+function onSelectBitrate(bitsPerSecond: number) {
+  audioCapture?.setStreamBitsPerSecond(bitsPerSecond);
+}
+
 // ─── Stream socket ──────────────────────────────────────────────────────────
 const streamSocket = useStreamSocket({
   onLive: () => {
@@ -771,7 +780,8 @@ onUnmounted(() => {
       <ConnectionCard
         v-if="isLiveMode"
         :active="streamActive"
-        :target-bits-per-second="STREAM_AUDIO_BITS_PER_SECOND"
+        :target-bits-per-second="uploadBitsPerSecond"
+        @select-bitrate="onSelectBitrate"
       />
 
       <!-- 4 · Live chat — Telegram bridge lands with the chat issue. -->

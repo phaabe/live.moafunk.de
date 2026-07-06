@@ -25,6 +25,18 @@ export {
   type UploadTick,
 } from './useUploadHealth';
 export {
+  useAutoBitrate,
+  decideBitrate,
+  initialAutoState,
+  QUALITY_STEPS_KBPS,
+  AUTO_CEILING_KBPS,
+  STEP_DOWN_BUFFER_S,
+  STEP_DOWN_TICKS,
+  STEP_UP_TICKS,
+  type UploadQualityMode,
+  type AutoBitrateState,
+} from './useAutoBitrate';
+export {
   useRecordingSession,
   type TrackType,
   type TrackState,
