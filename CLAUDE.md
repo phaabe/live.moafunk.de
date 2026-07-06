@@ -32,7 +32,7 @@ GitNexus clusters: Handlers (backend), Pages / Composables / Components (Vue adm
 - **Commits**: Conventional Commits with scope — `feat(stream): …`, `fix(imgGen): …`. Subject ≤ 72 chars, imperative. Use `/git.commit`.
 - **Branches**: never commit on `main` — branch first (`/git.branch` or `git switch -c <type>/<slug>`). Enforced by `branch-guard.sh`.
 - **Merging is PR-only.** Never `git merge <ref>` locally — open a PR (`/git.pr`) and squash-merge (`gh pr merge --squash --delete-branch`). Enforced by `merge-guard.sh`.
-- **Issues**: one ticket → `/project.issue "<task>"`; a big task → the `decompose-issue` workflow. Label taxonomy: exactly one `type::backend` / `type::admin_dashboard`, plus the most specific `project::*` (Stream, recording, Instagram, Telegram, Soundcloud, ImgGen, Upload, Backup, Infrastructure, ExternalShows, Ai, unheard-artist-form, UNHEARD).
+- **Issues**: one ticket → `/project.issue "<task>"`; a big task → the `decompose-issue` workflow. **Labels:** one or more `type::*` (layer) — `backend` / `frontend` / `ci` — plus the most specific `project::*` (area): `Stream`, `recording`, `Instagram`, `Telegram`, `Soundcloud`, `ImgGen`, `Upload`, `Backup`, `Infrastructure`, `ExternalShows`, `Ai`, `unheard-artist-form`, `UNHEARD`, `auth`, `calendar`, `public-pages`, `downloads`, `admin_dashboard`. Use `later` for deferred/backlog items. **Milestones** are the epics: *Webbased Streaming*, *Webbased Recording (UNHEARD)*, *UNHEARD User Story*, *External Shows User Story*, *Infrastructure & Secrets*, *Public Website*.
 - **GitNexus-first**: before grepping, query the graph (see the managed block below). Impact-analyse before editing a symbol; `detect_changes` before committing.
 
 ## GitNexus index — fresh & clean (how it works here)
