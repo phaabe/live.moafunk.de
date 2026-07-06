@@ -1483,11 +1483,17 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
     let chat_id = msg.chat.id.0;
 
     // Live-chat bridge: forward listener messages to the panel. Only real
-    // (non-bot) senders with text — service messages, channel auto-forwards
-    // and other bots stay out of the panel feed.
-    if state.config.telegram_live_chat_id == Some(chat_id) {
+    // (non-bot) senders with text — service messages, other bots, channel
+    // auto-forwards (from = service account 777000, is_bot false — needs the
+    // is_automatic_forward check) and anonymous "post as group/channel"
+    // messages (sender_chat set) stay out of the panel feed. If the live
+    // group is misconfigured to the admin group, admin behavior (edit
+    // sessions below) wins and the bridge is skipped.
+    if state.config.telegram_live_chat_id == Some(chat_id)
+        && state.config.telegram_admin_chat_id != Some(chat_id)
+    {
         if let (Some(user), Some(text)) = (msg.from.as_ref(), msg.text()) {
-            if !user.is_bot {
+            if !user.is_bot && !msg.is_automatic_forward() && msg.sender_chat.is_none() {
                 state
                     .chat_hub
                     .publish(crate::chat_bridge::ChatMessage {

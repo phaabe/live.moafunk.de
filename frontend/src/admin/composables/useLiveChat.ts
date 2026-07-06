@@ -74,6 +74,9 @@ export function useLiveChat(active: Ref<boolean>) {
   let reconnectAttempts = 0;
 
   function append(msg: ChatMessage) {
+    // Dedupe by id: the server subscribes before snapshotting history, so a
+    // message published in between arrives via both paths.
+    if (messages.value.some((m) => m.id === msg.id)) return;
     messages.value = [...messages.value.slice(-(MESSAGE_CAP - 1)), msg];
   }
 
