@@ -11,6 +11,13 @@ export interface UseAudioCaptureOptions {
 }
 
 /**
+ * Encoder target for live/test broadcasts. Fixed at MediaRecorder construction
+ * for now — the selectable/auto bitrate (#276) will turn this into state.
+ * Also feeds the connection card's "needed for target" math (#275).
+ */
+export const STREAM_AUDIO_BITS_PER_SECOND = 192_000;
+
+/**
  * Pick AudioContext options that match the capture device's real sample rate.
  *
  * Pro interfaces (e.g. Allen & Heath Xone:23C) run at 96/44.1 kHz and ignore the
@@ -291,7 +298,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
 
       mediaRecorder = new MediaRecorder(streamToRecord, {
         mimeType,
-        audioBitsPerSecond: 192000,
+        audioBitsPerSecond: STREAM_AUDIO_BITS_PER_SECOND,
       });
 
       mediaRecorder.ondataavailable = async (event) => {

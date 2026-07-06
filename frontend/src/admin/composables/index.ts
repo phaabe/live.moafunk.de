@@ -1,13 +1,29 @@
 export { useFlash, type FlashMessage } from './useFlash';
 export {
   useStreamSocket,
+  getStreamSocketStats,
   type StreamConnectionState,
+  type StreamSocketStats,
   type UseStreamSocketOptions,
 } from './useStreamSocket';
-export { useAudioCapture, type AudioDevice, type UseAudioCaptureOptions } from './useAudioCapture';
+export {
+  useAudioCapture,
+  STREAM_AUDIO_BITS_PER_SECOND,
+  type AudioDevice,
+  type UseAudioCaptureOptions,
+} from './useAudioCapture';
 export { useAudioMeter } from './useAudioMeter';
 export { useDbMeter, dbToLevel, DB_FLOOR, DB_CEIL } from './useDbMeter';
 export { useSpectrum, groupBands, SPECTRUM_BANDS } from './useSpectrum';
+export {
+  useUploadHealth,
+  computeTick,
+  verdictFor,
+  HISTORY_SECONDS,
+  CONTAINER_OVERHEAD,
+  type UploadVerdict,
+  type UploadTick,
+} from './useUploadHealth';
 export {
   useRecordingSession,
   type TrackType,
