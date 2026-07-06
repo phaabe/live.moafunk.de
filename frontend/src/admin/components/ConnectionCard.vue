@@ -4,7 +4,7 @@
 // metric tiles, and the good/tight/slow verdict pill from useUploadHealth.
 // RTT arrives with the backend ack telemetry (#277); the quality selector
 // with the bitrate issue (#276).
-import { ref, computed, watch, onMounted, toRef } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, toRef } from 'vue';
 import { useUploadHealth, HISTORY_SECONDS, type UploadVerdict } from '@admin/composables';
 
 const props = defineProps<{
@@ -69,14 +69,14 @@ function draw() {
   ctx.font = '10px monospace';
   ctx.fillText(`${Math.round(needed)} kbps`, 6, Math.max(10, ny - 4));
 
-  // Measured egress line
+  // Measured egress line, right-anchored so the newest sample sits at "now"
   const data = history.value;
   if (data.length >= 2) {
     ctx.strokeStyle = '#1d9e75';
     ctx.lineWidth = 2;
     ctx.beginPath();
     data.forEach((v, i) => {
-      const x = (i / (HISTORY_SECONDS - 1)) * w;
+      const x = w - ((data.length - 1 - i) / (HISTORY_SECONDS - 1)) * w;
       if (i === 0) ctx.moveTo(x, y(v));
       else ctx.lineTo(x, y(v));
     });
@@ -85,7 +85,14 @@ function draw() {
 }
 
 watch(history, draw, { deep: false });
-onMounted(draw);
+
+let resizeObserver: ResizeObserver | null = null;
+onMounted(() => {
+  draw();
+  resizeObserver = new ResizeObserver(draw);
+  if (canvas.value) resizeObserver.observe(canvas.value);
+});
+onUnmounted(() => resizeObserver?.disconnect());
 </script>
 
 <template>

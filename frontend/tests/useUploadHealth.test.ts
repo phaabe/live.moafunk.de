@@ -1,5 +1,18 @@
-import { describe, it, expect } from 'vitest';
-import { computeTick, verdictFor, CONTAINER_OVERHEAD } from '../src/admin/composables/useUploadHealth';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { createApp, defineComponent, nextTick, ref, type Ref } from 'vue';
+
+const { statsMock } = vi.hoisted(() => ({ statsMock: vi.fn() }));
+vi.mock('../src/admin/composables/useStreamSocket', () => ({
+  getStreamSocketStats: statsMock,
+}));
+
+import {
+  computeTick,
+  verdictFor,
+  useUploadHealth,
+  CONTAINER_OVERHEAD,
+  HISTORY_SECONDS,
+} from '../src/admin/composables/useUploadHealth';
 
 const TARGET = 192_000; // bits/s
 const TARGET_BYTES_PER_S = (TARGET * CONTAINER_OVERHEAD) / 8;
@@ -50,6 +63,80 @@ describe('computeTick', () => {
   it('yields a zero tick for non-positive elapsed time', () => {
     const t = computeTick(stats(0), stats(27_600), TARGET, 0);
     expect(t).toEqual({ encodedKbps: 0, egressKbps: 0, bufferSeconds: 0 });
+  });
+});
+
+describe('useUploadHealth (stateful)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    statsMock.mockReset();
+  });
+
+  /** Mount the composable inside a throwaway component for lifecycle hooks. */
+  function mountHealth(active: Ref<boolean>) {
+    let health!: ReturnType<typeof useUploadHealth>;
+    const app = createApp(
+      defineComponent({
+        setup() {
+          health = useUploadHealth(active, ref(TARGET));
+          return () => null;
+        },
+      })
+    );
+    app.mount(document.createElement('div'));
+    return { health, unmount: () => app.unmount() };
+  }
+
+  it('caps history at HISTORY_SECONDS and counts each slow tick as late', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    // Steady 27,600 bytes/s queued, 60,000 bytes stuck in the buffer
+    // (≈ 2.2 s at the target rate → every tick is "late").
+    let queued = 0;
+    statsMock.mockImplementation(() => ({
+      connected: true,
+      bufferedAmount: 60_000,
+      bytesQueued: (queued += 27_600),
+    }));
+
+    const { health, unmount } = mountHealth(ref(true));
+    const ticks = HISTORY_SECONDS + 10;
+    vi.advanceTimersByTime(ticks * 1000);
+
+    expect(health.history.value.length).toBe(HISTORY_SECONDS);
+    // First tick only seeds prev; every following tick is late.
+    expect(health.lateCount.value).toBe(ticks - 1);
+    expect(health.verdict.value).toBe('slow');
+    unmount();
+  });
+
+  it('skips ticks while disconnected and stops polling on unmount', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    statsMock.mockImplementation(() => ({
+      connected: false,
+      bufferedAmount: 0,
+      bytesQueued: 0,
+    }));
+
+    const active = ref(true);
+    const { health, unmount } = mountHealth(active);
+    vi.advanceTimersByTime(5000);
+    expect(health.history.value).toEqual([]);
+    expect(health.uploadKbps.value).toBe(0);
+
+    // Deactivating clears the interval — no further polls.
+    active.value = false;
+    await nextTick();
+    const polls = statsMock.mock.calls.length;
+    vi.advanceTimersByTime(5000);
+    expect(statsMock.mock.calls.length).toBe(polls);
+
+    // Reactivate, then unmount must also stop the timer.
+    active.value = true;
+    await nextTick();
+    unmount();
+    const pollsAfterUnmount = statsMock.mock.calls.length;
+    vi.advanceTimersByTime(5000);
+    expect(statsMock.mock.calls.length).toBe(pollsAfterUnmount);
   });
 });
 
