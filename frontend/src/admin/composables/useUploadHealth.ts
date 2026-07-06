@@ -76,6 +76,8 @@ export function useUploadHealth(active: Ref<boolean>, targetBitsPerSecond: Ref<n
   const lateCount = ref(0);
   /** Last HISTORY_SECONDS egress samples (kbps), oldest first. */
   const history = ref<number[]>([]);
+  /** Completed telemetry ticks — watch this to react once per second (#276). */
+  const ticks = ref(0);
 
   const neededKbps = computed(() => (targetBitsPerSecond.value * CONTAINER_OVERHEAD) / 1000);
   const verdict = computed<UploadVerdict>(() => verdictFor(bufferSeconds.value));
@@ -105,6 +107,7 @@ export function useUploadHealth(active: Ref<boolean>, targetBitsPerSecond: Ref<n
       bufferSeconds.value = t.bufferSeconds;
       if (t.bufferSeconds > LATE_BUFFER_S) lateCount.value++;
       history.value = [...history.value.slice(-(HISTORY_SECONDS - 1)), t.egressKbps];
+      ticks.value++;
     }
 
     prev = cur;
@@ -117,6 +120,7 @@ export function useUploadHealth(active: Ref<boolean>, targetBitsPerSecond: Ref<n
     bufferSeconds.value = 0;
     lateCount.value = 0;
     history.value = [];
+    ticks.value = 0;
     prev = null;
     prevTs = 0;
   }
@@ -148,6 +152,7 @@ export function useUploadHealth(active: Ref<boolean>, targetBitsPerSecond: Ref<n
     bufferSeconds,
     lateCount,
     history,
+    ticks,
     neededKbps,
     verdict,
     verdictText,

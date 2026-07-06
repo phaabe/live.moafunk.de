@@ -11,9 +11,9 @@ export interface UseAudioCaptureOptions {
 }
 
 /**
- * Encoder target for live/test broadcasts. Fixed at MediaRecorder construction
- * for now — the selectable/auto bitrate (#276) will turn this into state.
- * Also feeds the connection card's "needed for target" math (#275).
+ * Default encoder target for live/test broadcasts. The live target is the
+ * `streamBitsPerSecond` ref (selectable/auto, #276); this constant seeds it
+ * and stays the fixed rate for the prep rehearsal.
  */
 export const STREAM_AUDIO_BITS_PER_SECOND = 192_000;
 
@@ -42,6 +42,11 @@ const error = ref<string | null>(null);
 
 // Volume control (0-2, where 1 is normal, 0 is muted, 2 is 2x gain)
 const inputVolume = ref(1);
+
+// Encoder target (bits/s). audioBitsPerSecond is fixed at MediaRecorder
+// construction, so changing this mid-broadcast restarts the recorder — the
+// sub-second gap is covered by the harbor's mksafe (#276).
+const streamBitsPerSecond = ref(STREAM_AUDIO_BITS_PER_SECOND);
 
 // Use shallowRef for non-reactive objects
 const mediaStream = shallowRef<MediaStream | null>(null);
@@ -83,6 +88,20 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
    */
   function setOnError(callback: ((error: string) => void) | null): void {
     currentOnError = callback;
+  }
+
+  /**
+   * Change the encoder target. If a recorder is running it is restarted with
+   * the new rate (fresh WebM header, <1 s gap — the relay's mksafe covers it,
+   * same mechanism restartRecording() already uses for file recordings).
+   */
+  function setStreamBitsPerSecond(bitsPerSecond: number): void {
+    if (bitsPerSecond === streamBitsPerSecond.value) return;
+    streamBitsPerSecond.value = bitsPerSecond;
+    if (isRecording.value) {
+      console.log('[AudioCapture] Encoder target →', bitsPerSecond, 'bps; restarting recorder');
+      restartRecording();
+    }
   }
 
   function setInputVolume(volume: number): void {
@@ -298,7 +317,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
 
       mediaRecorder = new MediaRecorder(streamToRecord, {
         mimeType,
-        audioBitsPerSecond: STREAM_AUDIO_BITS_PER_SECOND,
+        audioBitsPerSecond: streamBitsPerSecond.value,
       });
 
       mediaRecorder.ondataavailable = async (event) => {
@@ -371,6 +390,8 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
 
     isCapturing.value = false;
     selectedDeviceId.value = '';
+    // Auto/manual bitrate choices are per-broadcast — next show starts fresh.
+    streamBitsPerSecond.value = STREAM_AUDIO_BITS_PER_SECOND;
     console.log('[AudioCapture] Capture stopped');
   }
 
@@ -389,6 +410,8 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     processedStream,
     analyserNode,
     inputVolume,
+    streamBitsPerSecond,
+    setStreamBitsPerSecond,
     setInputVolume,
     setOnData,
     setOnError,
