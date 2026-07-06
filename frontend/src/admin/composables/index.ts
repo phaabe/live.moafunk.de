@@ -7,6 +7,7 @@ export {
 export { useAudioCapture, type AudioDevice, type UseAudioCaptureOptions } from './useAudioCapture';
 export { useAudioMeter } from './useAudioMeter';
 export { useDbMeter, dbToLevel, DB_FLOOR, DB_CEIL } from './useDbMeter';
+export { useSpectrum, groupBands, SPECTRUM_BANDS } from './useSpectrum';
 export {
   useRecordingSession,
   type TrackType,

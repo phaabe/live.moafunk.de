@@ -40,6 +40,9 @@ const inputVolume = ref(1);
 const mediaStream = shallowRef<MediaStream | null>(null);
 // The processed stream (with gain applied) for MediaRecorder
 const processedStream = shallowRef<MediaStream | null>(null);
+// Post-gain analyser for the input spectrum display (#274) — taps the same
+// signal that is recorded/streamed, so the gain fader shapes what you see.
+const analyserNode = shallowRef<AnalyserNode | null>(null);
 
 // Private singleton vars
 let mediaRecorder: MediaRecorder | null = null;
@@ -183,9 +186,15 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     // Apply current volume
     gainNode.gain.value = inputVolume.value;
 
-    // Connect: source -> gain -> destination
+    // Connect: source -> gain -> destination (+ analyser tap, post-gain)
     sourceNode.connect(gainNode);
     gainNode.connect(destinationNode);
+
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.7;
+    gainNode.connect(analyser);
+    analyserNode.value = analyser;
 
     // Use the processed stream for recording
     processedStream.value = destinationNode.stream;
@@ -200,6 +209,10 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     if (gainNode) {
       gainNode.disconnect();
       gainNode = null;
+    }
+    if (analyserNode.value) {
+      analyserNode.value.disconnect();
+      analyserNode.value = null;
     }
     if (destinationNode) {
       destinationNode = null;
@@ -367,6 +380,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     error,
     mediaStream,
     processedStream,
+    analyserNode,
     inputVolume,
     setInputVolume,
     setOnData,

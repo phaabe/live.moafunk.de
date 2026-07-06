@@ -1,9 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { useHostFlow, useAudioCapture, useStreamSocket } from '@admin/composables';
+import {
+  useHostFlow,
+  useAudioCapture,
+  useStreamSocket,
+  useSpectrum,
+  useDbMeter,
+  DB_FLOOR,
+} from '@admin/composables';
 import { streamApi, recordingApi, hostFlowApi, type StreamMetrics } from '@admin/api';
 import DbMeter from '@admin/components/DbMeter.vue';
+import SpectrumBars from '@admin/components/SpectrumBars.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
 import { config } from '@/config';
 
@@ -161,6 +169,26 @@ function playBeep() {
 // ─── Audio device status (live mode, waiting + streaming phases) ────────────
 const audioCapture = isLiveMode.value ? useAudioCapture() : null;
 const audioDeviceOk = computed(() => audioCapture?.isCapturing.value ?? false);
+
+// ─── Input spectrum + gain fader (Live Panel 2.0 analyzers, #274) ───────────
+// Spectrum + peak both tap the post-gain signal, so the fader shapes exactly
+// what is recorded/streamed. Gated on the streaming phase — the waiting room
+// has its own DbMeter, and each meter costs an AudioContext + rAF loop.
+const { bands: inputBands } = useSpectrum(
+  computed(() => (streamActive.value ? (audioCapture?.analyserNode.value ?? null) : null))
+);
+const { peakDb: inputPeakDb } = useDbMeter(
+  computed(() => (streamActive.value ? (audioCapture?.processedStream.value ?? null) : null))
+);
+const inputPeakText = computed(() =>
+  inputPeakDb.value <= DB_FLOOR + 0.5 ? '−∞ dB' : `${inputPeakDb.value.toFixed(1)} dB`
+);
+const inputGainPct = computed(() => Math.round((audioCapture?.inputVolume.value ?? 1) * 100));
+
+function onInputGain(event: Event) {
+  const pct = Number((event.target as HTMLInputElement).value);
+  audioCapture?.setInputVolume(pct / 100);
+}
 
 // ─── Stream socket ──────────────────────────────────────────────────────────
 const streamSocket = useStreamSocket({
@@ -687,12 +715,23 @@ onUnmounted(() => {
         <div class="panel-card slot-card">
           <div class="slot-head">
             <span class="slot-title">🎙 Input — your source</span>
+            <span class="slot-readout">{{ inputPeakText }}</span>
           </div>
-          <DbMeter
-            v-if="audioCapture"
-            :media-stream="audioCapture.mediaStream.value"
-            label="Level"
-          />
+          <SpectrumBars :bands="inputBands" variant="input" />
+          <div class="fader-row">
+            <label class="fader-label" for="input-gain">Input gain</label>
+            <input
+              id="input-gain"
+              class="fader-range"
+              type="range"
+              min="0"
+              max="150"
+              step="1"
+              :value="inputGainPct"
+              @input="onInputGain"
+            />
+            <span class="fader-value">{{ inputGainPct }}%</span>
+          </div>
         </div>
         <div class="panel-card slot-card">
           <div class="slot-head">
@@ -1148,18 +1187,45 @@ onUnmounted(() => {
   color: var(--color-text-muted);
 }
 
+.slot-readout {
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* Fader row under an analyzer (input gain / monitor volume). */
+.fader-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+}
+
+.fader-label {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.fader-range {
+  flex: 1 1 auto;
+  accent-color: var(--color-primary);
+}
+
+.fader-value {
+  min-width: 42px;
+  text-align: right;
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
 /* Slot waiting on a later Live Panel 2.0 issue. */
 .slot-placeholder {
   border-style: dashed;
   opacity: 0.7;
-}
-
-/* Flatten the preview player's own card chrome inside the slot card. */
-.slot-card :deep(.preview-player) {
-  background: none;
-  border: none;
-  padding: 0;
-  margin: 0;
 }
 
 /* dB meter shown during the waiting countdown */
