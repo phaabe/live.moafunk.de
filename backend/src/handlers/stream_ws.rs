@@ -34,6 +34,11 @@ pub struct StreamQuery {
 /// a new one — so a flaky connection doesn't fragment the recording.
 const FINALIZE_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Inter-chunk arrival gap above which a chunk counts as "late" (#277).
+/// The browser's MediaRecorder emits every 250 ms; a gap this large means
+/// chunks stalled in the network and arrived bunched up.
+const LATE_CHUNK_GAP: std::time::Duration = std::time::Duration::from_millis(1000);
+
 /// WebSocket upgrade handler for streaming.
 ///
 /// Authentication is done via session cookie.
@@ -238,12 +243,33 @@ async fn handle_stream_socket(
 
     // Process incoming messages (audio chunks). `explicit_stop` distinguishes a
     // deliberate end (finalize immediately) from a network drop (grace period).
+    //
+    // Per-connection delivery telemetry (#277): browsers can't send protocol
+    // pings from JS, so the panel sends `ping:<client-timestamp>` text frames
+    // and we echo `pong:{...}` with the counters piggybacked — that both
+    // measures RTT and confirms how much audio actually arrived.
     let mut explicit_stop = false;
+    let mut chunks_received: u64 = 0;
+    let mut bytes_received: u64 = 0;
+    let mut late_chunks: u64 = 0;
+    let mut dropped_chunks: u64 = 0;
+    let mut last_chunk_at: Option<std::time::Instant> = None;
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Binary(data)) => {
+                let now = std::time::Instant::now();
+                if let Some(prev) = last_chunk_at {
+                    if now.duration_since(prev) > LATE_CHUNK_GAP {
+                        late_chunks += 1;
+                    }
+                }
+                last_chunk_at = Some(now);
+                chunks_received += 1;
+                bytes_received += data.len() as u64;
+
                 let mut stream = stream_state.lock().await;
                 if let Err(e) = stream.write_chunk(&data).await {
+                    dropped_chunks += 1;
                     tracing::error!("Failed to write audio chunk: {}", e);
                     let _ = sender
                         .send(Message::Text(format!("error: {}", e).into()))
@@ -257,6 +283,25 @@ async fn handle_stream_socket(
                     tracing::info!("Received stop command from '{}'", username);
                     explicit_stop = true;
                     break;
+                } else if let Some(echo) = text.as_str().strip_prefix("ping:") {
+                    // Parse-and-reformat instead of echoing raw text so a
+                    // malformed payload can't inject into the JSON reply.
+                    if let Ok(echo_ms) = echo.parse::<f64>() {
+                        let payload = serde_json::json!({
+                            "echo": echo_ms,
+                            "chunks": chunks_received,
+                            "bytes": bytes_received,
+                            "late": late_chunks,
+                            "dropped": dropped_chunks,
+                        });
+                        if sender
+                            .send(Message::Text(format!("pong:{}", payload).into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
             }
             Ok(Message::Close(_)) => {
@@ -311,7 +356,14 @@ async fn handle_stream_socket(
         }
     }
 
-    tracing::info!("Stream ended for user '{}'", username);
+    tracing::info!(
+        "Stream ended for user '{}': {} chunks / {} bytes received, {} late, {} dropped",
+        username,
+        chunks_received,
+        bytes_received,
+        late_chunks,
+        dropped_chunks
+    );
 
     // Notify admin via Telegram (fire-and-forget). Suppressed for a test.
     if !test {

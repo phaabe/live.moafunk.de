@@ -21,6 +21,13 @@ let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 // Together with bufferedAmount this is the browser-side upload-health signal
 // (#275): egress = Δqueued − Δbuffered, buffer-seconds = buffered / byte-rate.
 let bytesQueued = 0;
+// App-level ping/pong telemetry (#277) — browsers can't send protocol pings
+// from JS, so `ping:<performance.now()>` text frames measure RTT and carry
+// back the server's per-connection delivery counters.
+const PING_INTERVAL_MS = 2000;
+let pingInterval: ReturnType<typeof setInterval> | null = null;
+let rttMs: number | null = null;
+let serverStats = { chunks: 0, bytes: 0, late: 0, dropped: 0 };
 // Remembered across reconnects so the backend keeps auto-recording the same show.
 let currentShowId: number | null = null;
 // Remembered across reconnects so a rehearsal stays on the private `/test` mount.
@@ -51,6 +58,60 @@ export interface StreamSocketStats {
   bufferedAmount: number;
   /** Total binary payload bytes queued since the socket (re)connected. */
   bytesQueued: number;
+  /** Last measured round-trip time (ms), or null before the first pong (#277). */
+  rttMs: number | null;
+  /** Chunks the server confirmed received on this connection. */
+  serverChunks: number;
+  /** Payload bytes the server confirmed received on this connection. */
+  serverBytes: number;
+  /** Chunks that arrived after a >1 s inter-chunk gap (server-side). */
+  serverLate: number;
+  /** Chunks the server failed to relay (write errors). */
+  serverDropped: number;
+}
+
+/** Server pong frame: `pong:{"echo":…,"chunks":…,"bytes":…,"late":…,"dropped":…}` */
+export interface PongStats {
+  echoMs: number;
+  chunks: number;
+  bytes: number;
+  late: number;
+  dropped: number;
+}
+
+/** Parse a pong text frame; null for anything malformed. Pure — unit tested. */
+export function parsePong(msg: string): PongStats | null {
+  if (!msg.startsWith('pong:')) return null;
+  try {
+    const o = JSON.parse(msg.slice(5)) as Record<string, unknown>;
+    if (typeof o.echo !== 'number') return null;
+    return {
+      echoMs: o.echo,
+      chunks: typeof o.chunks === 'number' ? o.chunks : 0,
+      bytes: typeof o.bytes === 'number' ? o.bytes : 0,
+      late: typeof o.late === 'number' ? o.late : 0,
+      dropped: typeof o.dropped === 'number' ? o.dropped : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function startPings(): void {
+  stopPings();
+  pingInterval = setInterval(() => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(`ping:${performance.now()}`);
+    }
+  }, PING_INTERVAL_MS);
+}
+
+function stopPings(): void {
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
+  rttMs = null;
 }
 
 /**
@@ -66,6 +127,11 @@ export function getStreamSocketStats(): StreamSocketStats {
     connected: socket !== null && socket.readyState === WebSocket.OPEN,
     bufferedAmount: socket?.bufferedAmount ?? 0,
     bytesQueued,
+    rttMs,
+    serverChunks: serverStats.chunks,
+    serverBytes: serverStats.bytes,
+    serverLate: serverStats.late,
+    serverDropped: serverStats.dropped,
   };
 }
 
@@ -105,10 +171,13 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       socket = new WebSocket(wsUrl);
       socket.binaryType = 'arraybuffer';
       bytesQueued = 0;
+      rttMs = null;
+      serverStats = { chunks: 0, bytes: 0, late: 0, dropped: 0 };
 
       socket.onopen = () => {
         console.log('[StreamSocket] Connected');
         state.value = 'connected';
+        startPings();
         currentCallbacks.onConnected?.();
         resolve();
       };
@@ -118,6 +187,17 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
         if (msg === 'connected') {
           state.value = 'live';
           currentCallbacks.onLive?.();
+        } else if (typeof msg === 'string' && msg.startsWith('pong:')) {
+          const pong = parsePong(msg);
+          if (pong) {
+            rttMs = Math.max(0, Math.round(performance.now() - pong.echoMs));
+            serverStats = {
+              chunks: pong.chunks,
+              bytes: pong.bytes,
+              late: pong.late,
+              dropped: pong.dropped,
+            };
+          }
         } else if (typeof msg === 'string' && msg.startsWith('error:')) {
           const errMsg = msg.substring(7);
           error.value = errMsg;
@@ -135,6 +215,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
       socket.onclose = (event) => {
         console.log('[StreamSocket] Closed:', event.code, event.reason);
+        stopPings();
         const wasLive = state.value === 'live';
 
         if (event.code !== 1000 && reconnectAttempts.value < maxReconnectAttempts && wasLive) {
@@ -177,6 +258,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
    * Use this ONLY for the explicit "Stop Streaming" user action.
    */
   function stopStream() {
+    stopPings();
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
       reconnectTimeout = null;
@@ -202,6 +284,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
    * The stream continues on the backend until explicitly stopped.
    */
   function cleanup() {
+    stopPings();
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
       reconnectTimeout = null;
