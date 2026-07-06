@@ -265,6 +265,22 @@ function updateElapsed() {
     h > 0
       ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
       : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  updateProgress();
+}
+
+// Show-progress bar under the status bar: on-air elapsed vs scheduled duration.
+const progressPct = ref<number | null>(null);
+
+function updateProgress() {
+  const start = getTargetDate();
+  const end = getEndTargetDate();
+  if (!start || !end || end.getTime() <= start.getTime()) {
+    progressPct.value = null;
+    return;
+  }
+  const totalSec = (end.getTime() - start.getTime()) / 1000;
+  const elapsedSec = (Date.now() - startedAt.value) / 1000;
+  progressPct.value = Math.max(0, Math.min(100, (elapsedSec / totalSec) * 100));
 }
 
 function stopElapsed() {
@@ -402,12 +418,48 @@ async function pollRecordingStatus() {
   }
 }
 
-async function stopRecording() {
+// The REC chip in the status bar is the record toggle (Live Panel 2.0 shell):
+// no separate recording control card.
+const recToggling = ref(false);
+
+async function toggleRecording() {
+  if (recToggling.value) return;
+  recToggling.value = true;
   try {
-    await recordingApi.stop();
-    isRecording.value = false;
+    if (isRecording.value) {
+      await recordingApi.stop();
+      isRecording.value = false;
+      recordingElapsed.value = '';
+    } else {
+      if (!show.value?.id) throw new Error('No show selected');
+      await recordingApi.start(show.value.id);
+      isRecording.value = true;
+      if (!recordingPollInterval) {
+        pollRecordingStatus();
+        recordingPollInterval = setInterval(pollRecordingStatus, 3000);
+      }
+    }
   } catch (err) {
-    console.warn('[FlowOnAir] Failed to stop recording:', err);
+    console.warn('[FlowOnAir] Failed to toggle recording:', err);
+  } finally {
+    recToggling.value = false;
+  }
+}
+
+// ─── Reconnect stream (status-bar icon button) ──────────────────────────────
+const reconnecting = ref(false);
+
+async function handleReconnect() {
+  if (reconnecting.value || !isLiveMode.value) return;
+  reconnecting.value = true;
+  goLiveError.value = null;
+  try {
+    streamSocket.resetReconnect();
+    await streamSocket.connect(true, show.value?.id);
+  } catch (err) {
+    goLiveError.value = err instanceof Error ? err.message : 'Reconnect failed';
+  } finally {
+    reconnecting.value = false;
   }
 }
 
@@ -542,112 +594,149 @@ onUnmounted(() => {
     <!-- STREAMING PHASE (stream is active)                                 -->
     <!-- ═══════════════════════════════════════════════════════════════════ -->
     <template v-else-if="streamActive">
-      <!-- One on-air card: status header → end-time banner → body → actions -->
-      <div class="panel-card">
-        <div class="onair-header">
+      <!-- Live Panel 2.0 shell (#273). Reading order: status bar → analyzers →
+           connection & upload → live chat. Stop is the only prominent control. -->
+
+      <!-- 1 · Status bar -->
+      <div class="panel-card status-card">
+        <div class="status-bar">
           <span class="status-dot live"></span>
           <span class="status-label">LIVE</span>
-          <span v-if="isRecording" class="rec-chip">
-            <span class="rec-dot"></span>
+          <button
+            v-if="isLiveMode"
+            :class="['rec-chip', isRecording ? 'on' : 'off']"
+            :disabled="recToggling"
+            :title="isRecording ? 'Stop recording' : 'Start recording'"
+            @click="toggleRecording"
+          >
+            <span v-if="isRecording" class="rec-dot"></span>
             REC
-            <template v-if="recordingElapsed">{{ recordingElapsed }}</template>
-          </span>
-          <button v-if="isRecording" class="btn-stop-rec" @click="stopRecording">
-            Stop recording
+            <template v-if="isRecording && recordingElapsed">&nbsp;{{ recordingElapsed }}</template>
+            <template v-else-if="!isRecording">&nbsp;off</template>
           </button>
-          <span class="onair-spacer"></span>
-          <span class="elapsed-timer">{{ elapsedText }}</span>
-        </div>
-
-        <div
-          v-if="remainingText !== null"
-          :class="['end-time-banner', { warning: endTimeWarning }]"
-        >
-          <span class="end-time-label">{{ endTimeWarning ? '⚠ Ending in' : 'Time remaining' }}</span>
-          <span class="end-time-value">{{ remainingText }}</span>
-        </div>
-
-        <div class="onair-body">
-          <p class="onair-show">
-            {{ show?.title }}
-            <span class="onair-meta">
-              {{ formattedDate }}
-              <template v-if="show?.start_time"> · {{ show.start_time }}</template>
-              <template v-if="show?.end_time"> – {{ show.end_time }}</template>
+          <span
+            v-if="isLiveMode"
+            class="listener-chip"
+            :class="{ muted: listenerCount === null }"
+            title="Current listeners"
+          >
+            👥 {{ listenerCount ?? '—' }}
+          </span>
+          <span class="status-spacer"></span>
+          <span class="clock-group">
+            <span class="clock-label">On air</span>
+            <span class="clock-value">{{ elapsedText }}</span>
+          </span>
+          <template v-if="remainingText !== null">
+            <span class="clock-sep">·</span>
+            <span :class="['clock-group', { warning: endTimeWarning }]">
+              <span class="clock-label">{{ endTimeWarning ? '⚠ Ends in' : 'Ends in' }}</span>
+              <span class="clock-value">{{ remainingText }}</span>
             </span>
-          </p>
-
-          <!-- Live mode: level meter + self-monitor -->
-          <template v-if="isLiveMode">
-            <div v-if="audioCapture" class="audio-level-section">
-              <DbMeter :media-stream="audioCapture.mediaStream.value" label="Audio Level" />
-            </div>
-
-            <!-- Broadcaster preview: hear the relay feed (#175). Hidden unless a
-                 /test mount is configured. -->
-            <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" />
           </template>
+          <button
+            v-if="isLiveMode"
+            class="btn-icon"
+            title="Reconnect stream"
+            aria-label="Reconnect stream"
+            :disabled="reconnecting || stopping"
+            @click="handleReconnect"
+          >
+            ⟳
+          </button>
+          <button
+            class="btn-icon"
+            title="Stop and change settings"
+            aria-label="Stop and change settings"
+            :disabled="stopping || changingSettings"
+            @click="handleStopAndChangeSettings"
+          >
+            ⚙
+          </button>
+          <button
+            v-if="isLiveMode"
+            class="btn-stop-danger"
+            :disabled="stopping"
+            @click="handleStop"
+          >
+            {{ stopping ? 'Stopping…' : '⏹ Stop' }}
+          </button>
+          <button v-else class="btn-stop-danger" :disabled="stopping" @click="handleStopUpload">
+            {{ stopping ? 'Stopping…' : '⏹ Stop' }}
+          </button>
+        </div>
+        <p v-if="goLiveError" class="stream-error">{{ goLiveError }}</p>
+        <div v-if="progressPct !== null" class="show-progress">
+          <div class="show-progress-fill" :style="{ width: progressPct + '%' }"></div>
+        </div>
+      </div>
 
-          <!-- Upload mode: passive monitoring -->
-          <div v-else class="upload-streaming-status">
-            <span :class="['status-dot', uploadStreamActive ? 'live' : 'offline']"></span>
-            <div class="upload-status-body">
-              <p class="upload-status-text">
-                {{
-                  uploadStreamActive
-                    ? 'Your pre-recorded set is playing'
-                    : 'Waiting for stream to start...'
-                }}
-              </p>
-              <p class="upload-status-hint">
-                The backend is handling playback automatically. You can close this page safely.
-              </p>
-            </div>
+      <!-- 2 · Analyzers (live mode): input | stream. Spectra + faders land with
+           the analyzer issue; the slots host the existing meter & preview. -->
+      <div v-if="isLiveMode" class="analyzer-grid">
+        <div class="panel-card slot-card">
+          <div class="slot-head">
+            <span class="slot-title">🎙 Input — your source</span>
           </div>
+          <DbMeter
+            v-if="audioCapture"
+            :media-stream="audioCapture.mediaStream.value"
+            label="Level"
+          />
+        </div>
+        <div class="panel-card slot-card">
+          <div class="slot-head">
+            <span class="slot-title">📡 Stream — what listeners hear</span>
+            <span class="slot-badge">~6 s behind</span>
+          </div>
+          <!-- Broadcaster preview: hear the relay feed (#175). Hidden unless a
+               /test mount is configured. -->
+          <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" class="slot-preview" />
+          <p v-else class="slot-hint">No relay preview mount configured.</p>
+          <p v-if="audioQuality" class="slot-meta">{{ audioQuality }}</p>
+        </div>
+      </div>
 
-          <div class="onair-actions">
-            <button
-              class="btn-change-settings"
-              :disabled="stopping || changingSettings"
-              :title="'Stop the current stream and reconfigure your show'"
-              @click="handleStopAndChangeSettings"
-            >
-              {{ changingSettings ? 'Stopping...' : '⚠ Stop & change settings' }}
-            </button>
-            <button
-              v-if="isLiveMode"
-              class="btn-stop"
-              :disabled="stopping"
-              @click="handleStop"
-            >
-              {{ stopping ? 'Stopping...' : '⏹ Stop streaming' }}
-            </button>
-            <button v-else class="btn-stop" :disabled="stopping" @click="handleStopUpload">
-              {{ stopping ? 'Stopping...' : '⏹ Stop show' }}
-            </button>
+      <!-- Upload mode: passive monitoring -->
+      <div v-if="!isLiveMode" class="panel-card slot-card">
+        <div class="upload-streaming-status">
+          <span :class="['status-dot', uploadStreamActive ? 'live' : 'offline']"></span>
+          <div class="upload-status-body">
+            <p class="upload-status-text">
+              {{
+                uploadStreamActive
+                  ? 'Your pre-recorded set is playing'
+                  : 'Waiting for stream to start...'
+              }}
+            </p>
+            <p class="upload-status-hint">
+              The backend is handling playback automatically. You can close this page safely.
+            </p>
           </div>
         </div>
       </div>
 
-      <!-- Live telemetry (#177) + remaining placeholder -->
-      <div class="future-panels">
-        <div class="future-panel" :class="{ active: listenerCount !== null }">
-          <span class="future-icon">👥</span>
-          <span class="future-label">Listeners</span>
-          <span v-if="listenerCount !== null" class="metric-value">{{ listenerCount }}</span>
-          <span v-else class="future-badge">—</span>
+      <!-- 3 · Connection & upload (live mode) — metrics land with the
+           connection-card issue. -->
+      <div v-if="isLiveMode" class="panel-card slot-card slot-placeholder">
+        <div class="slot-head">
+          <span class="slot-title">📶 Connection &amp; upload</span>
+          <span class="slot-badge">Coming soon</span>
         </div>
-        <div class="future-panel" :class="{ active: audioQuality !== null }">
-          <span class="future-icon">📊</span>
-          <span class="future-label">Audio Quality</span>
-          <span v-if="audioQuality" class="metric-value metric-value-sm">{{ audioQuality }}</span>
-          <span v-else class="future-badge">—</span>
+        <p class="slot-hint">
+          Throughput vs. target, send buffer, RTT and the upload-quality selector will live here.
+        </p>
+      </div>
+
+      <!-- 4 · Live chat — Telegram bridge lands with the chat issue. -->
+      <div class="panel-card slot-card slot-placeholder">
+        <div class="slot-head">
+          <span class="slot-title">💬 Live chat · Moafunk channel</span>
+          <span class="slot-badge">Coming soon</span>
         </div>
-        <div class="future-panel">
-          <span class="future-icon">💬</span>
-          <span class="future-label">Live Chat</span>
-          <span class="future-badge">Coming soon</span>
-        </div>
+        <p class="slot-hint">
+          Messages from the channel's discussion group will appear here — reply as host.
+        </p>
       </div>
     </template>
 
@@ -660,8 +749,8 @@ onUnmounted(() => {
         <p class="waiting-meta">
           {{ show?.title }} · {{ formattedDate
           }}<template v-if="show?.start_time"> · {{ show.start_time }}</template
-          ><template v-if="show?.end_time">–{{ show.end_time }}</template>
-          · {{ isLiveMode ? '🎙 Live' : '📁 Pre-recorded' }} · Berlin time
+          ><template v-if="show?.end_time">–{{ show.end_time }}</template> ·
+          {{ isLiveMode ? '🎙 Live' : '📁 Pre-recorded' }} · Berlin time
         </p>
 
         <p class="countdown-label">
@@ -732,7 +821,7 @@ onUnmounted(() => {
 
 <style scoped>
 .flow-on-air {
-  max-width: 600px;
+  max-width: 720px;
   margin: 0 auto;
 }
 
@@ -777,17 +866,121 @@ onUnmounted(() => {
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /* STREAMING PHASE                                                           */
 /* ═══════════════════════════════════════════════════════════════════════════ */
-.streaming-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--spacing-xl);
-}
-
-.stream-status {
+/* ── Status bar (Live Panel 2.0) ── */
+.status-bar {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
+  flex-wrap: wrap;
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.status-spacer {
+  flex: 1 1 auto;
+}
+
+.listener-chip {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.listener-chip.muted {
+  color: var(--color-text-muted);
+}
+
+.clock-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--spacing-xs);
+}
+
+.clock-label {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.clock-value {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
+.clock-sep {
+  color: var(--color-border-light);
+}
+
+/* Amber warning carries over from the old end-time banner (< 5 min). */
+.clock-group.warning .clock-label,
+.clock-group.warning .clock-value {
+  color: var(--color-warning);
+}
+
+.btn-icon {
+  background: none;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  padding: 4px 10px;
+  font-size: var(--font-size-md);
+  line-height: 1.2;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-icon:hover:not(:disabled) {
+  background: var(--color-surface-alt);
+}
+
+.btn-icon:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The only prominent stream control (locked design decision). */
+.btn-stop-danger {
+  background: var(--color-error);
+  color: #fff;
+  border: none;
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-radius: var(--radius-md);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+
+.btn-stop-danger:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.btn-stop-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.stream-error {
+  margin: 0;
+  padding: 0 var(--spacing-md) var(--spacing-sm);
+  font-size: var(--font-size-xs);
+  color: var(--color-error);
+}
+
+/* 4 px show-progress bar: on-air elapsed vs scheduled duration. */
+.show-progress {
+  height: 4px;
+  background: var(--color-surface-alt);
+}
+
+.show-progress-fill {
+  height: 100%;
+  background: var(--color-error);
+  transition: width 1s linear;
 }
 
 .status-dot {
@@ -839,23 +1032,37 @@ onUnmounted(() => {
   letter-spacing: 0.08em;
 }
 
-.elapsed-timer {
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-bold);
+/* REC chip = the record toggle (no separate control card). */
+.rec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 2px 10px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--color-text);
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
 }
 
-/* Recording banner */
-.recording-banner {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-sm) var(--spacing-md);
-  margin-bottom: var(--spacing-xl);
+.rec-chip.off {
+  background: var(--color-surface-alt);
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-medium);
+}
+
+.rec-chip:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+.rec-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .rec-dot {
@@ -877,112 +1084,72 @@ onUnmounted(() => {
   }
 }
 
-.rec-label {
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-bold);
-  color: #ef4444;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+/* ── Card slots (analyzers · connection & upload · live chat) ── */
+.analyzer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
 }
 
-.rec-elapsed {
-  font-size: var(--font-size-xs);
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-muted);
+.analyzer-grid .panel-card {
+  margin-bottom: 0;
 }
 
-.btn-stop-rec {
-  margin-left: auto;
-  background: none;
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  color: #ef4444;
-  padding: 2px var(--spacing-sm);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-family);
-  font-size: var(--font-size-xs);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.btn-stop-rec:hover {
-  background: rgba(239, 68, 68, 0.1);
-}
-
-/* End time countdown banner */
-.end-time-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-sm) var(--spacing-md);
-  margin-bottom: var(--spacing-xl);
-}
-
-.end-time-banner.warning {
-  background: rgba(245, 158, 11, 0.08);
-  border-color: rgba(245, 158, 11, 0.4);
-  animation: pulse-warning 2s ease-in-out infinite;
-}
-
-@keyframes pulse-warning {
-  0%,
-  100% {
-    border-color: rgba(245, 158, 11, 0.4);
-  }
-
-  50% {
-    border-color: rgba(245, 158, 11, 0.8);
-  }
-}
-
-.end-time-label {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.end-time-banner.warning .end-time-label {
-  color: #f59e0b;
-  font-weight: var(--font-weight-bold);
-}
-
-.end-time-value {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-bold);
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text);
-}
-
-.end-time-banner.warning .end-time-value {
-  color: #f59e0b;
-}
-
-/* Show card (streaming) */
-.show-card-compact {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+.slot-card {
   padding: var(--spacing-md) var(--spacing-lg);
+}
+
+.slot-head {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: var(--spacing-xl);
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
 }
 
-.show-title {
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text);
-}
-
-.show-meta {
-  color: var(--color-text-muted);
+.slot-title {
+  font-family: var(--font-ui);
   font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-muted);
 }
 
-/* Audio level (dB meter) */
-.audio-level-section {
-  margin-bottom: var(--spacing-xl);
+.slot-badge {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.slot-hint {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.slot-meta {
+  margin: var(--spacing-sm) 0 0;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* Slot waiting on a later Live Panel 2.0 issue. */
+.slot-placeholder {
+  border-style: dashed;
+  opacity: 0.7;
+}
+
+/* Flatten the preview player's own card chrome inside the slot card. */
+.slot-card :deep(.preview-player) {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
 }
 
 /* dB meter shown during the waiting countdown */
@@ -993,163 +1160,28 @@ onUnmounted(() => {
   margin-right: auto;
 }
 
-/* Stop button */
-.stop-section {
-  margin-bottom: var(--spacing-xl);
-  text-align: center;
-}
-
-.btn-stop {
-  background: none;
-  border: 2px solid #ef4444;
-  color: #ef4444;
-  padding: var(--spacing-sm) var(--spacing-2xl);
-  border-radius: var(--radius-md);
-  font-family: var(--font-family);
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-bold);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.btn-stop:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.1);
-}
-
-.btn-stop:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Upload streaming status */
+/* Upload streaming status (pre-recorded monitoring row) */
 .upload-streaming-status {
-  text-align: center;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-xl);
-  margin-bottom: var(--spacing-xl);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
 }
 
-.upload-status-dot {
-  margin-bottom: var(--spacing-md);
+.upload-status-body {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .upload-status-text {
   font-weight: var(--font-weight-bold);
   color: var(--color-text);
-  margin: 0 0 var(--spacing-sm);
+  margin: 0;
 }
 
 .upload-status-hint {
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
   margin: 0;
-}
-
-/* Change settings */
-.change-settings-section {
-  margin-top: var(--spacing-2xl);
-  padding-top: var(--spacing-xl);
-  border-top: 1px solid var(--color-border);
-  text-align: center;
-}
-
-.btn-change-settings {
-  background: transparent;
-  color: #ef4444;
-  border: 2px solid #ef4444;
-  padding: var(--spacing-sm) var(--spacing-xl);
-  border-radius: var(--radius-md);
-  font-family: var(--font-family);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-bold);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.btn-change-settings:hover:not(:disabled) {
-  background: #ef4444;
-  color: #fff;
-}
-
-.btn-change-settings:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.change-settings-hint {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  margin: var(--spacing-sm) 0 0;
-}
-
-/* Future panels */
-.future-panels {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--spacing-md);
-  margin-top: var(--spacing-xl);
-}
-
-@media (max-width: 480px) {
-  .future-panels {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* Metric-card styling, matching the show dashboard's status strip. */
-.future-panel {
-  background: var(--color-surface);
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-md) var(--spacing-lg);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--spacing-xs);
-  opacity: 0.6;
-}
-
-/* A panel backed by real live data — solid border, full opacity. */
-.future-panel.active {
-  opacity: 1;
-  border-style: solid;
-  border-color: var(--color-border);
-}
-
-.metric-value {
-  font-size: var(--font-size-2xl);
-  font-weight: var(--font-weight-bold);
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text);
-}
-
-.metric-value-sm {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-}
-
-.future-icon {
-  font-size: 1.1rem;
-}
-
-.future-label {
-  font-family: var(--font-ui);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
-}
-
-.future-badge {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  background: var(--color-surface);
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--color-border);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -1404,94 +1436,6 @@ onUnmounted(() => {
   border-radius: var(--radius-xl);
   overflow: hidden;
   margin-bottom: var(--spacing-lg);
-}
-
-.onair-header {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  padding: var(--spacing-md) var(--spacing-lg);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.onair-spacer {
-  flex: 1 1 auto;
-}
-
-.rec-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--spacing-xs);
-  padding: 2px 10px;
-  border-radius: var(--radius-full);
-  background: var(--color-error-bg);
-  color: var(--color-error);
-  font-family: var(--font-ui);
-  font-size: var(--font-size-xs);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-/* The banner sits flush inside the card, under the header. */
-.panel-card .end-time-banner {
-  border-radius: 0;
-  margin: 0;
-  border-left: none;
-  border-right: none;
-}
-
-.onair-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
-}
-
-.onair-show {
-  margin: 0;
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text);
-}
-
-.onair-meta {
-  font-family: var(--font-ui);
-  font-size: var(--font-size-sm);
-  font-weight: 400;
-  color: var(--color-text-muted);
-}
-
-.onair-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: var(--spacing-sm);
-  flex-wrap: wrap;
-}
-
-/* New horizontal layout for the pre-recorded monitoring row. */
-.panel-card .upload-streaming-status {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-  text-align: left;
-  padding: 0;
-  margin: 0;
-  background: none;
-  border: none;
-}
-
-.upload-status-body {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.panel-card .upload-status-text {
-  margin: 0;
-}
-
-.panel-card .upload-status-hint {
-  margin: 0;
 }
 
 /* ── Waiting room card ── */
