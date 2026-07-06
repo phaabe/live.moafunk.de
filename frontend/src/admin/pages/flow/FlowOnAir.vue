@@ -542,93 +542,91 @@ onUnmounted(() => {
     <!-- STREAMING PHASE (stream is active)                                 -->
     <!-- ═══════════════════════════════════════════════════════════════════ -->
     <template v-else-if="streamActive">
-      <!-- Header with status -->
-      <div class="streaming-header">
-        <div class="stream-status">
+      <!-- One on-air card: status header → end-time banner → body → actions -->
+      <div class="panel-card">
+        <div class="onair-header">
           <span class="status-dot live"></span>
           <span class="status-label">LIVE</span>
-        </div>
-        <div class="elapsed-timer">{{ elapsedText }}</div>
-      </div>
-
-      <!-- End time countdown banner -->
-      <div v-if="remainingText !== null" :class="['end-time-banner', { warning: endTimeWarning }]">
-        <span class="end-time-label">{{ endTimeWarning ? '⚠ Ending in' : 'Time remaining' }}</span>
-        <span class="end-time-value">{{ remainingText }}</span>
-      </div>
-
-      <!-- Recording indicator -->
-      <div v-if="isRecording" class="recording-banner">
-        <span class="rec-dot"></span>
-        <span class="rec-label">REC</span>
-        <span v-if="recordingElapsed" class="rec-elapsed">{{ recordingElapsed }}</span>
-        <button class="btn-stop-rec" @click="stopRecording">Stop Recording</button>
-      </div>
-
-      <!-- Show info -->
-      <div class="show-card-compact">
-        <span class="show-title">{{ show?.title }}</span>
-        <span class="show-meta">
-          {{ formattedDate }}
-          <template v-if="show?.start_time"> · {{ show.start_time }}</template>
-          <template v-if="show?.end_time"> – {{ show.end_time }}</template>
-        </span>
-      </div>
-
-      <!-- Live mode controls -->
-      <template v-if="isLiveMode">
-        <div v-if="audioCapture" class="audio-level-section">
-          <DbMeter :media-stream="audioCapture.mediaStream.value" label="Audio Level" />
-        </div>
-
-        <!-- Broadcaster preview: hear the relay feed (#175). Hidden unless a
-             /test mount is configured. -->
-        <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" />
-
-        <div class="stop-section">
-          <button class="btn-stop" :disabled="stopping" @click="handleStop">
-            {{ stopping ? 'Stopping...' : '⏹ Stop Streaming' }}
+          <span v-if="isRecording" class="rec-chip">
+            <span class="rec-dot"></span>
+            REC
+            <template v-if="recordingElapsed">{{ recordingElapsed }}</template>
+          </span>
+          <button v-if="isRecording" class="btn-stop-rec" @click="stopRecording">
+            Stop recording
           </button>
-        </div>
-      </template>
-
-      <!-- Upload mode: passive monitoring -->
-      <template v-else>
-        <div class="upload-streaming-status">
-          <div class="upload-status-dot">
-            <span :class="['status-dot', uploadStreamActive ? 'live' : 'offline']"></span>
-          </div>
-          <p class="upload-status-text">
-            {{
-              uploadStreamActive
-                ? 'Your pre-recorded set is playing'
-                : 'Waiting for stream to start...'
-            }}
-          </p>
-          <p class="upload-status-hint">
-            The backend is handling playback automatically. You can close this page safely.
-          </p>
+          <span class="onair-spacer"></span>
+          <span class="elapsed-timer">{{ elapsedText }}</span>
         </div>
 
-        <div class="stop-section">
-          <button class="btn-stop" :disabled="stopping" @click="handleStopUpload">
-            {{ stopping ? 'Stopping...' : '⏹ Stop Show' }}
-          </button>
-        </div>
-      </template>
-
-      <!-- Stop stream & change settings -->
-      <div class="change-settings-section">
-        <button
-          class="btn-change-settings"
-          :disabled="stopping || changingSettings"
-          @click="handleStopAndChangeSettings"
+        <div
+          v-if="remainingText !== null"
+          :class="['end-time-banner', { warning: endTimeWarning }]"
         >
-          {{ changingSettings ? 'Stopping...' : '⚠ Stop Stream & Change Settings' }}
-        </button>
-        <p class="change-settings-hint">
-          This will stop the current stream and let you reconfigure your show.
-        </p>
+          <span class="end-time-label">{{ endTimeWarning ? '⚠ Ending in' : 'Time remaining' }}</span>
+          <span class="end-time-value">{{ remainingText }}</span>
+        </div>
+
+        <div class="onair-body">
+          <p class="onair-show">
+            {{ show?.title }}
+            <span class="onair-meta">
+              {{ formattedDate }}
+              <template v-if="show?.start_time"> · {{ show.start_time }}</template>
+              <template v-if="show?.end_time"> – {{ show.end_time }}</template>
+            </span>
+          </p>
+
+          <!-- Live mode: level meter + self-monitor -->
+          <template v-if="isLiveMode">
+            <div v-if="audioCapture" class="audio-level-section">
+              <DbMeter :media-stream="audioCapture.mediaStream.value" label="Audio Level" />
+            </div>
+
+            <!-- Broadcaster preview: hear the relay feed (#175). Hidden unless a
+                 /test mount is configured. -->
+            <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" />
+          </template>
+
+          <!-- Upload mode: passive monitoring -->
+          <div v-else class="upload-streaming-status">
+            <span :class="['status-dot', uploadStreamActive ? 'live' : 'offline']"></span>
+            <div class="upload-status-body">
+              <p class="upload-status-text">
+                {{
+                  uploadStreamActive
+                    ? 'Your pre-recorded set is playing'
+                    : 'Waiting for stream to start...'
+                }}
+              </p>
+              <p class="upload-status-hint">
+                The backend is handling playback automatically. You can close this page safely.
+              </p>
+            </div>
+          </div>
+
+          <div class="onair-actions">
+            <button
+              class="btn-change-settings"
+              :disabled="stopping || changingSettings"
+              :title="'Stop the current stream and reconfigure your show'"
+              @click="handleStopAndChangeSettings"
+            >
+              {{ changingSettings ? 'Stopping...' : '⚠ Stop & change settings' }}
+            </button>
+            <button
+              v-if="isLiveMode"
+              class="btn-stop"
+              :disabled="stopping"
+              @click="handleStop"
+            >
+              {{ stopping ? 'Stopping...' : '⏹ Stop streaming' }}
+            </button>
+            <button v-else class="btn-stop" :disabled="stopping" @click="handleStopUpload">
+              {{ stopping ? 'Stopping...' : '⏹ Stop show' }}
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Live telemetry (#177) + remaining placeholder -->
@@ -657,90 +655,76 @@ onUnmounted(() => {
     <!-- WAITING PHASE (before stream starts)                               -->
     <!-- ═══════════════════════════════════════════════════════════════════ -->
     <template v-else>
-      <h1 class="waiting-title">Waiting Room</h1>
+      <!-- Waiting room: one centered card — meta line → countdown → status row -->
+      <div class="panel-card waiting-card">
+        <p class="waiting-meta">
+          {{ show?.title }} · {{ formattedDate
+          }}<template v-if="show?.start_time"> · {{ show.start_time }}</template
+          ><template v-if="show?.end_time">–{{ show.end_time }}</template>
+          · {{ isLiveMode ? '🎙 Live' : '📁 Pre-recorded' }} · Berlin time
+        </p>
 
-      <!-- Show info card -->
-      <div class="show-card">
-        <div class="show-card-row">
-          <span class="show-card-label">Show</span>
-          <span class="show-card-value">{{ show?.title }}</span>
-        </div>
-        <div class="show-card-row">
-          <span class="show-card-label">Start</span>
-          <span class="show-card-value">{{ formattedStart }} (Berlin)</span>
-        </div>
-        <div class="show-card-row">
-          <span class="show-card-label">End</span>
-          <span class="show-card-value">{{ formattedEnd }} (Berlin)</span>
-        </div>
-        <div class="show-card-row">
-          <span class="show-card-label">Mode</span>
-          <span class="show-card-value">{{ isLiveMode ? '🎙️ Live' : '📁 Pre-recorded' }}</span>
-        </div>
-      </div>
-
-      <!-- Countdown -->
-      <div :class="['countdown-section', alertState]">
         <p class="countdown-label">
           {{ remaining > 0 ? 'Show starts in' : 'Show time!' }}
         </p>
-        <div class="countdown-display">{{ countdownText }}</div>
+        <div :class="['countdown-box', alertState]">
+          <span class="countdown-display">{{ countdownText }}</span>
+        </div>
         <p v-if="alertState === 'warning'" class="countdown-alert warning-text">
-          Less than 1 minute!
+          Less than 1 minute — goes live automatically
         </p>
         <p v-if="alertState === 'critical' && remaining > 0" class="countdown-alert critical-text">
           Starting soon!
         </p>
-      </div>
 
-      <!-- Recording option (live mode) -->
-      <div v-if="isLiveMode" class="record-option">
-        <label class="record-checkbox-label" @click="toggleRecordStream">
-          <span :class="['checkbox-icon', { checked: flow.recordStream.value }]">
-            {{ flow.recordStream.value ? '☑' : '☐' }}
-          </span>
-          <span>Record this show</span>
-        </label>
-        <p class="record-hint">Audio will be saved for later download &amp; editing</p>
-      </div>
-
-      <!-- Mode-specific status -->
-      <div class="mode-status">
-        <template v-if="isLiveMode">
-          <div class="audio-status">
-            <span :class="['status-dot', audioDeviceOk ? 'ok' : 'lost']"></span>
-            <span v-if="audioDeviceOk">Audio device active</span>
-            <span v-else class="status-lost-text">Audio device disconnected — return to setup</span>
-          </div>
-          <!-- dB meter stays live throughout the countdown -->
-          <div v-if="audioCapture && audioDeviceOk" class="waiting-meter">
-            <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input Level" />
-          </div>
-        </template>
-        <template v-else>
-          <div class="upload-status">
+        <!-- Recording toggle + device / upload readiness -->
+        <div class="waiting-status-row">
+          <template v-if="isLiveMode">
+            <label class="record-checkbox-label" @click="toggleRecordStream">
+              <span :class="['checkbox-icon', { checked: flow.recordStream.value }]">
+                {{ flow.recordStream.value ? '☑' : '☐' }}
+              </span>
+              <span>Record this show</span>
+            </label>
+            <span class="audio-status">
+              <span :class="['status-dot', audioDeviceOk ? 'ok' : 'lost']"></span>
+              <span v-if="audioDeviceOk">Audio device active</span>
+              <span v-else class="status-lost-text">
+                Audio device disconnected — return to setup
+              </span>
+            </span>
+          </template>
+          <span v-else class="upload-status">
             <span class="upload-ready-icon">✓</span>
             <span>Your pre-recorded set is ready to go</span>
-          </div>
-        </template>
-      </div>
-
-      <!-- Auto-start status -->
-      <div class="go-live-section">
-        <p v-if="goLiveLoading" class="go-live-status">Connecting...</p>
-        <p v-if="goLiveError" class="go-live-error">
-          {{ goLiveError }}
-          <button class="btn-retry" @click="autoStarted = false">Retry</button>
+          </span>
+        </div>
+        <p v-if="isLiveMode" class="record-hint">
+          Audio will be saved for later download &amp; editing
         </p>
 
-        <!-- Dev-only: start stream without waiting for countdown -->
-        <button
-          v-if="isDev && !goLiveLoading && remaining > 0"
-          class="btn-dev-start"
-          @click="handleGoLive"
-        >
-          🛠 Start Stream Now (dev)
-        </button>
+        <!-- dB meter stays live throughout the countdown -->
+        <div v-if="isLiveMode && audioCapture && audioDeviceOk" class="waiting-meter">
+          <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input Level" />
+        </div>
+
+        <!-- Auto-start status -->
+        <div class="go-live-section">
+          <p v-if="goLiveLoading" class="go-live-status">Connecting...</p>
+          <p v-if="goLiveError" class="go-live-error">
+            {{ goLiveError }}
+            <button class="btn-retry" @click="autoStarted = false">Retry</button>
+          </p>
+
+          <!-- Dev-only: start stream without waiting for countdown -->
+          <button
+            v-if="isDev && !goLiveLoading && remaining > 0"
+            class="btn-dev-start"
+            @click="handleGoLive"
+          >
+            🛠 Start stream now (dev)
+          </button>
+        </div>
       </div>
     </template>
   </div>
@@ -1411,5 +1395,156 @@ onUnmounted(() => {
 
 .btn-primary:hover {
   opacity: 0.9;
+}
+
+/* ── Redesigned live panel (matches the show dashboard's design language) ── */
+.panel-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  margin-bottom: var(--spacing-lg);
+}
+
+.onair-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.onair-spacer {
+  flex: 1 1 auto;
+}
+
+.rec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The banner sits flush inside the card, under the header. */
+.panel-card .end-time-banner {
+  border-radius: 0;
+  margin: 0;
+  border-left: none;
+  border-right: none;
+}
+
+.onair-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
+}
+
+.onair-show {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+}
+
+.onair-meta {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.onair-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+/* New horizontal layout for the pre-recorded monitoring row. */
+.panel-card .upload-streaming-status {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  text-align: left;
+  padding: 0;
+  margin: 0;
+  background: none;
+  border: none;
+}
+
+.upload-status-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.panel-card .upload-status-text {
+  margin: 0;
+}
+
+.panel-card .upload-status-hint {
+  margin: 0;
+}
+
+/* ── Waiting room card ── */
+.waiting-card {
+  padding: var(--spacing-xl);
+  text-align: center;
+}
+
+.waiting-meta {
+  margin: 0 0 var(--spacing-lg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.countdown-box {
+  display: inline-block;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-md) var(--spacing-2xl);
+  margin-bottom: var(--spacing-sm);
+  transition: border-color 0.3s ease;
+}
+
+.countdown-box.warning {
+  border-color: #eab308;
+  animation: pulse-yellow 1.5s ease-in-out infinite;
+}
+
+.countdown-box.critical {
+  border-color: #ef4444;
+  animation: pulse-red 1s ease-in-out infinite;
+}
+
+.waiting-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xl);
+  flex-wrap: wrap;
+  margin-top: var(--spacing-lg);
+}
+
+.waiting-card .record-checkbox-label {
+  margin: 0;
+}
+
+.waiting-card .record-hint {
+  margin: var(--spacing-xs) 0 0;
+}
+
+.waiting-card .waiting-meter {
+  margin-top: var(--spacing-lg);
+  text-align: left;
 }
 </style>
