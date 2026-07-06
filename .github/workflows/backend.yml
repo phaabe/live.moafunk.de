@@ -162,6 +162,7 @@ jobs:
             782620cd-7d54-4cef-95b5-b3eb01660ff9 > OPENAI_API_KEY
             2470e0a8-7e96-4113-9931-b3ed0180cf59 > TELEGRAM_BOT_TOKEN
             3d3c982b-6933-4c23-bb11-b3ee000687d6 > TELEGRAM_ADMIN_CHAT_ID
+            e7dd127f-7e64-4cef-9ff0-b47f00a6e740 > TELEGRAM_LIVE_CHAT_ID
             0ede7c60-027a-45af-99ae-b3ec013f22a7 > SOUNDCLOUD_CLIENT_ID
             fb23eb6e-139b-45be-a95a-b3ec013f2eac > SOUNDCLOUD_CLIENT_SECRET
 
@@ -217,6 +218,7 @@ jobs:
             echo "# Telegram bot"
             echo "TELEGRAM_BOT_TOKEN=${{ steps.bitwarden-secrets.outputs.TELEGRAM_BOT_TOKEN }}"
             echo "TELEGRAM_ADMIN_CHAT_ID=${{ steps.bitwarden-secrets.outputs.TELEGRAM_ADMIN_CHAT_ID }}"
+            echo "TELEGRAM_LIVE_CHAT_ID=${{ steps.bitwarden-secrets.outputs.TELEGRAM_LIVE_CHAT_ID }}"
             echo "TELEGRAM_INSTAGRAM_ACCOUNT=prod"
             echo "TELEGRAM_ARTIST_PREVIEW_HOUR=16"
             echo ""
@@ -313,6 +315,7 @@ jobs:
             782620cd-7d54-4cef-95b5-b3eb01660ff9 > OPENAI_API_KEY
             2470e0a8-7e96-4113-9931-b3ed0180cf59 > TELEGRAM_BOT_TOKEN
             3d3c982b-6933-4c23-bb11-b3ee000687d6 > TELEGRAM_ADMIN_CHAT_ID
+            e7dd127f-7e64-4cef-9ff0-b47f00a6e740 > TELEGRAM_LIVE_CHAT_ID
             0ede7c60-027a-45af-99ae-b3ec013f22a7 > SOUNDCLOUD_CLIENT_ID
             fb23eb6e-139b-45be-a95a-b3ec013f2eac > SOUNDCLOUD_CLIENT_SECRET
 
@@ -381,6 +384,7 @@ jobs:
             echo "# Telegram bot"
             echo "TELEGRAM_BOT_TOKEN=${{ steps.bitwarden-secrets.outputs.TELEGRAM_BOT_TOKEN }}"
             echo "TELEGRAM_ADMIN_CHAT_ID=${{ steps.bitwarden-secrets.outputs.TELEGRAM_ADMIN_CHAT_ID }}"
+            echo "TELEGRAM_LIVE_CHAT_ID=${{ steps.bitwarden-secrets.outputs.TELEGRAM_LIVE_CHAT_ID }}"
             echo "TELEGRAM_INSTAGRAM_ACCOUNT=prod"
             echo "TELEGRAM_ARTIST_PREVIEW_HOUR=16"
             echo ""
