@@ -33,6 +33,7 @@ export {
   STEP_DOWN_BUFFER_S,
   STEP_DOWN_TICKS,
   STEP_UP_TICKS,
+  STEP_SETTLE_TICKS,
   type UploadQualityMode,
   type AutoBitrateState,
 } from './useAutoBitrate';

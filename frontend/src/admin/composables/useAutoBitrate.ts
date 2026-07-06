@@ -18,6 +18,13 @@ export const STEP_DOWN_BUFFER_S = 0.5;
 export const STEP_DOWN_TICKS = 3;
 /** Consecutive clean ticks (≈ seconds) before stepping back up a notch. */
 export const STEP_UP_TICKS = 30;
+/**
+ * Ticks skipped after every switch. bufferSeconds is relative to the target,
+ * so a step-down makes the same backlog read as MORE seconds against a lower
+ * bar — without a settle window one congestion event could cascade two
+ * notches before the buffer had a chance to drain at the new rate.
+ */
+export const STEP_SETTLE_TICKS = 5;
 
 /** 'auto' or a fixed kbps value from QUALITY_STEPS_KBPS. */
 export type UploadQualityMode = 'auto' | number;
@@ -25,39 +32,57 @@ export type UploadQualityMode = 'auto' | number;
 export interface AutoBitrateState {
   congestedTicks: number;
   stableTicks: number;
+  /** Remaining post-switch ticks during which no decision is made. */
+  settleTicks: number;
 }
 
 export function initialAutoState(): AutoBitrateState {
-  return { congestedTicks: 0, stableTicks: 0 };
+  return { congestedTicks: 0, stableTicks: 0, settleTicks: 0 };
+}
+
+function afterStep(): AutoBitrateState {
+  return { congestedTicks: 0, stableTicks: 0, settleTicks: STEP_SETTLE_TICKS };
 }
 
 /**
  * One auto-mode decision per telemetry tick. Pure — unit tested.
  * Returns the kbps to switch to (or null to stay) plus the carried state;
- * any step decision resets both counters so switches can't cascade.
+ * any step starts a settle window so switches can't cascade.
  */
 export function decideBitrate(
   currentKbps: number,
   bufferSeconds: number,
   state: AutoBitrateState
 ): { nextKbps: number | null; state: AutoBitrateState } {
+  if (state.settleTicks > 0) {
+    return { nextKbps: null, state: { ...state, settleTicks: state.settleTicks - 1 } };
+  }
+
+  // Entering auto from a manual 320: come back to the ceiling right away —
+  // above it there is no congestion escape hatch (step-up is ceiling-capped).
+  if (currentKbps > AUTO_CEILING_KBPS) {
+    return { nextKbps: AUTO_CEILING_KBPS, state: afterStep() };
+  }
+
   if (bufferSeconds > STEP_DOWN_BUFFER_S) {
     const congestedTicks = state.congestedTicks + 1;
     if (congestedTicks >= STEP_DOWN_TICKS) {
       // Ladder is sorted high→low, so the first smaller entry is one notch down.
       const lower = QUALITY_STEPS_KBPS.find((k) => k < currentKbps) ?? null;
-      return { nextKbps: lower, state: initialAutoState() };
+      return { nextKbps: lower, state: lower === null ? initialAutoState() : afterStep() };
     }
-    return { nextKbps: null, state: { congestedTicks, stableTicks: 0 } };
+    return { nextKbps: null, state: { ...state, congestedTicks, stableTicks: 0 } };
   }
 
   const stableTicks = state.stableTicks + 1;
   if (stableTicks >= STEP_UP_TICKS && currentKbps < AUTO_CEILING_KBPS) {
     const higher = [...QUALITY_STEPS_KBPS].reverse().find((k) => k > currentKbps);
     const next = Math.min(higher ?? currentKbps, AUTO_CEILING_KBPS);
-    return { nextKbps: next !== currentKbps ? next : null, state: initialAutoState() };
+    return next !== currentKbps
+      ? { nextKbps: next, state: afterStep() }
+      : { nextKbps: null, state: initialAutoState() };
   }
-  return { nextKbps: null, state: { congestedTicks: 0, stableTicks } };
+  return { nextKbps: null, state: { ...state, congestedTicks: 0, stableTicks } };
 }
 
 /**

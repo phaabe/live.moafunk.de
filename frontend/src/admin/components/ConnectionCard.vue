@@ -172,6 +172,7 @@ onUnmounted(() => resizeObserver?.disconnect());
         <button
           type="button"
           :class="['conn-step', { 'conn-step-active': qualityMode === 'auto' }]"
+          :aria-pressed="qualityMode === 'auto'"
           @click="selectQuality('auto')"
         >
           Auto
@@ -181,6 +182,7 @@ onUnmounted(() => resizeObserver?.disconnect());
           :key="step"
           type="button"
           :class="['conn-step', { 'conn-step-active': qualityMode === step }]"
+          :aria-pressed="qualityMode === step"
           @click="selectQuality(step)"
         >
           {{ step }}
