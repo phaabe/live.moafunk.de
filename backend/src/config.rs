@@ -146,6 +146,10 @@ pub struct Config {
     /// Hour of day (0-23) in Berlin time when artist Instagram previews should be sent
     #[serde(default = "default_telegram_artist_preview_hour")]
     pub telegram_artist_preview_hour: u32,
+    /// Chat id of the public channel's discussion group for the live-chat
+    /// bridge (#278). Unset = bridge inactive; the panel card shows an error
+    /// on reply and no messages are forwarded. Distinct from the admin group.
+    pub telegram_live_chat_id: Option<i64>,
 
     // Admin panel base URL (used in Telegram notifications to link to artist profiles)
     #[serde(default = "default_admin_base_url")]

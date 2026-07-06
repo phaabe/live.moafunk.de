@@ -12,6 +12,7 @@ import {
 } from '@admin/composables';
 import { streamApi, recordingApi, hostFlowApi, type StreamMetrics } from '@admin/api';
 import ConnectionCard from '@admin/components/ConnectionCard.vue';
+import LiveChatCard from '@admin/components/LiveChatCard.vue';
 import DbMeter from '@admin/components/DbMeter.vue';
 import SpectrumBars from '@admin/components/SpectrumBars.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
@@ -784,16 +785,8 @@ onUnmounted(() => {
         @select-bitrate="onSelectBitrate"
       />
 
-      <!-- 4 · Live chat — Telegram bridge lands with the chat issue. -->
-      <div class="panel-card slot-card slot-placeholder">
-        <div class="slot-head">
-          <span class="slot-title">💬 Live chat · Moafunk channel</span>
-          <span class="slot-badge">Coming soon</span>
-        </div>
-        <p class="slot-hint">
-          Messages from the channel's discussion group will appear here — reply as host.
-        </p>
-      </div>
+      <!-- 4 · Live chat — Telegram discussion group bridge (#278) -->
+      <LiveChatCard :active="streamActive" />
     </template>
 
     <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -1227,12 +1220,6 @@ onUnmounted(() => {
   font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
   color: var(--color-text);
-}
-
-/* Slot waiting on a later Live Panel 2.0 issue. */
-.slot-placeholder {
-  border-style: dashed;
-  opacity: 0.7;
 }
 
 /* dB meter shown during the waiting countdown */

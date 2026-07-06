@@ -1,6 +1,7 @@
 mod ai;
 mod audio;
 mod auth;
+mod chat_bridge;
 mod config;
 mod db;
 mod error;
@@ -79,6 +80,8 @@ pub struct AppState {
     pub pending_show_notifications: PendingShowNotifications,
     /// Active Telegram edit sessions (chat_id -> session)
     pub telegram_edit_sessions: TelegramEditSessions,
+    /// Live-chat bridge hub: Telegram discussion group ⇄ panel WS (#278)
+    pub chat_hub: Arc<chat_bridge::ChatHub>,
 }
 
 // Stream handler wrappers that extract stream_state from AppState
@@ -315,6 +318,7 @@ async fn main() -> anyhow::Result<()> {
         telegram_bot,
         pending_show_notifications,
         telegram_edit_sessions,
+        chat_hub: Arc::new(chat_bridge::ChatHub::new()),
     });
 
     // One-shot admin subcommands: run against the same config/db/R2 as the server,
@@ -712,6 +716,7 @@ async fn main() -> anyhow::Result<()> {
         )
         // Stream WebSocket and API
         .route("/ws/stream", get(stream_ws_handler))
+        .route("/ws/chat", get(handlers::chat_ws::chat_ws_handler))
         .route(
             "/ws/stream-test",
             get(handlers::stream_test_ws::stream_test_ws_handler),

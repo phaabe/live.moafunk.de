@@ -1977,6 +1977,7 @@ mod tests {
             telegram_bot: None,
             pending_show_notifications: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             telegram_edit_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            chat_hub: Arc::new(crate::chat_bridge::ChatHub::new()),
         });
 
         let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);

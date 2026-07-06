@@ -1473,12 +1473,35 @@ async fn handle_aig_sort(
     Ok(())
 }
 
-/// Handle non-command messages: check for active edit sessions.
+/// Handle non-command messages: live-chat bridge, then edit sessions.
 ///
-/// If an edit session is active for this chat, the message is treated as
-/// the new caption (text) or new image (photo). Otherwise, silently ignored.
+/// A text message in the configured live-chat group is fanned out to the
+/// panel WebSockets (#278). Otherwise, if an edit session is active for this
+/// chat, the message is treated as the new caption (text) or new image
+/// (photo). Anything else is silently ignored.
 async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>) -> HandlerResult {
     let chat_id = msg.chat.id.0;
+
+    // Live-chat bridge: forward listener messages to the panel. Only real
+    // (non-bot) senders with text — service messages, channel auto-forwards
+    // and other bots stay out of the panel feed.
+    if state.config.telegram_live_chat_id == Some(chat_id) {
+        if let (Some(user), Some(text)) = (msg.from.as_ref(), msg.text()) {
+            if !user.is_bot {
+                state
+                    .chat_hub
+                    .publish(crate::chat_bridge::ChatMessage {
+                        id: msg.id.0 as i64,
+                        author: user.full_name(),
+                        text: text.to_string(),
+                        ts: msg.date.timestamp(),
+                        host: false,
+                    })
+                    .await;
+            }
+        }
+        return Ok(());
+    }
 
     // Check for active edit session
     let session = {

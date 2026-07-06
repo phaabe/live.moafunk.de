@@ -1,5 +1,6 @@
 pub mod api;
 pub mod backup_trigger;
+pub mod chat_ws;
 pub mod download;
 pub mod recording;
 pub mod settings;

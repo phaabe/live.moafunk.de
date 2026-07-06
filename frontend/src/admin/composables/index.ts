@@ -40,6 +40,12 @@ export {
   type AutoBitrateState,
 } from './useAutoBitrate';
 export {
+  useLiveChat,
+  parseChatFrame,
+  type ChatMessage,
+  type ChatFrame,
+} from './useLiveChat';
+export {
   useRecordingSession,
   type TrackType,
   type TrackState,
