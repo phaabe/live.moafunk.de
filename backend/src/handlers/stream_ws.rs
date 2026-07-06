@@ -34,9 +34,11 @@ pub struct StreamQuery {
 /// a new one — so a flaky connection doesn't fragment the recording.
 const FINALIZE_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Inter-chunk arrival gap above which a chunk counts as "late" (#277).
-/// The browser's MediaRecorder emits every 250 ms; a gap this large means
-/// chunks stalled in the network and arrived bunched up.
+/// Inter-chunk cadence gap above which a chunk counts as "late" (#277).
+/// The browser's MediaRecorder emits every 250 ms. Note this measures the
+/// receive cadence as seen by this task — network stall AND server-side
+/// processing (relay write / lock contention) both widen it — so treat it
+/// as "delivery fell behind", not as a pure network metric.
 const LATE_CHUNK_GAP: std::time::Duration = std::time::Duration::from_millis(1000);
 
 /// WebSocket upgrade handler for streaming.
@@ -287,12 +289,14 @@ async fn handle_stream_socket(
                     // Parse-and-reformat instead of echoing raw text so a
                     // malformed payload can't inject into the JSON reply.
                     if let Ok(echo_ms) = echo.parse::<f64>() {
+                        // No `dropped` here: a write error breaks the loop, so
+                        // a live pong could only ever report 0. It surfaces in
+                        // the end-of-stream log instead.
                         let payload = serde_json::json!({
                             "echo": echo_ms,
                             "chunks": chunks_received,
                             "bytes": bytes_received,
                             "late": late_chunks,
-                            "dropped": dropped_chunks,
                         });
                         if sender
                             .send(Message::Text(format!("pong:{}", payload).into()))

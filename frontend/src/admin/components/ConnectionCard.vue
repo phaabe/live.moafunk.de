@@ -156,7 +156,13 @@ onUnmounted(() => resizeObserver?.disconnect());
         </div>
         <div class="conn-tile">
           <p class="conn-tile-label">RTT</p>
-          <p v-if="rttMs !== null" class="conn-tile-value">{{ rttMs }} ms</p>
+          <p
+            v-if="rttMs !== null"
+            class="conn-tile-value"
+            title="Message round-trip incl. send-buffer wait — rises with congestion, not pure network latency"
+          >
+            {{ rttMs }} ms
+          </p>
           <p v-else class="conn-tile-value conn-tile-muted" title="Waiting for the first pong">—</p>
         </div>
         <div class="conn-tile">

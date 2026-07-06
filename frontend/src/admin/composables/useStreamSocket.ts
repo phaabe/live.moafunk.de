@@ -27,7 +27,7 @@ let bytesQueued = 0;
 const PING_INTERVAL_MS = 2000;
 let pingInterval: ReturnType<typeof setInterval> | null = null;
 let rttMs: number | null = null;
-let serverStats = { chunks: 0, bytes: 0, late: 0, dropped: 0 };
+let serverStats = { chunks: 0, bytes: 0, late: 0 };
 // Remembered across reconnects so the backend keeps auto-recording the same show.
 let currentShowId: number | null = null;
 // Remembered across reconnects so a rehearsal stays on the private `/test` mount.
@@ -64,19 +64,16 @@ export interface StreamSocketStats {
   serverChunks: number;
   /** Payload bytes the server confirmed received on this connection. */
   serverBytes: number;
-  /** Chunks that arrived after a >1 s inter-chunk gap (server-side). */
+  /** Chunks that arrived after a >1 s cadence gap (server-side). */
   serverLate: number;
-  /** Chunks the server failed to relay (write errors). */
-  serverDropped: number;
 }
 
-/** Server pong frame: `pong:{"echo":…,"chunks":…,"bytes":…,"late":…,"dropped":…}` */
+/** Server pong frame: `pong:{"echo":…,"chunks":…,"bytes":…,"late":…}` */
 export interface PongStats {
   echoMs: number;
   chunks: number;
   bytes: number;
   late: number;
-  dropped: number;
 }
 
 /** Parse a pong text frame; null for anything malformed. Pure — unit tested. */
@@ -90,7 +87,6 @@ export function parsePong(msg: string): PongStats | null {
       chunks: typeof o.chunks === 'number' ? o.chunks : 0,
       bytes: typeof o.bytes === 'number' ? o.bytes : 0,
       late: typeof o.late === 'number' ? o.late : 0,
-      dropped: typeof o.dropped === 'number' ? o.dropped : 0,
     };
   } catch {
     return null;
@@ -131,7 +127,6 @@ export function getStreamSocketStats(): StreamSocketStats {
     serverChunks: serverStats.chunks,
     serverBytes: serverStats.bytes,
     serverLate: serverStats.late,
-    serverDropped: serverStats.dropped,
   };
 }
 
@@ -172,7 +167,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       socket.binaryType = 'arraybuffer';
       bytesQueued = 0;
       rttMs = null;
-      serverStats = { chunks: 0, bytes: 0, late: 0, dropped: 0 };
+      serverStats = { chunks: 0, bytes: 0, late: 0 };
 
       socket.onopen = () => {
         console.log('[StreamSocket] Connected');
@@ -191,12 +186,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
           const pong = parsePong(msg);
           if (pong) {
             rttMs = Math.max(0, Math.round(performance.now() - pong.echoMs));
-            serverStats = {
-              chunks: pong.chunks,
-              bytes: pong.bytes,
-              late: pong.late,
-              dropped: pong.dropped,
-            };
+            serverStats = { chunks: pong.chunks, bytes: pong.bytes, late: pong.late };
           }
         } else if (typeof msg === 'string' && msg.startsWith('error:')) {
           const errMsg = msg.substring(7);

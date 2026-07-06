@@ -3,13 +3,12 @@ import { parsePong } from '../src/admin/composables/useStreamSocket';
 
 describe('parsePong', () => {
   it('parses a full server pong frame', () => {
-    const msg = 'pong:{"echo":12345.678,"chunks":40,"bytes":276000,"late":2,"dropped":0}';
+    const msg = 'pong:{"echo":12345.678,"chunks":40,"bytes":276000,"late":2}';
     expect(parsePong(msg)).toEqual({
       echoMs: 12345.678,
       chunks: 40,
       bytes: 276000,
       late: 2,
-      dropped: 0,
     });
   });
 
@@ -19,7 +18,6 @@ describe('parsePong', () => {
       chunks: 0,
       bytes: 0,
       late: 0,
-      dropped: 0,
     });
   });
 
