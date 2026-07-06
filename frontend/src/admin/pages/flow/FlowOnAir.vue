@@ -165,11 +165,14 @@ const audioDeviceOk = computed(() => audioCapture?.isCapturing.value ?? false);
 // ─── Stream socket ──────────────────────────────────────────────────────────
 const streamSocket = useStreamSocket({
   onLive: () => {
-    // Socket connected — transition from waiting → streaming
-    transitionToStreaming();
+    // Socket connected — transition from waiting → streaming. A manual
+    // reconnect fires this again; don't reset timers / duplicate intervals.
+    if (!streamActive.value) transitionToStreaming();
   },
   onDisconnected: () => {
-    if (streamActive.value && !streamEnded.value) {
+    // Suppressed during a manual reconnect — its teardown closes the socket
+    // on purpose and must not route to the "Stream Ended" screen.
+    if (streamActive.value && !streamEnded.value && !reconnecting.value) {
       streamEnded.value = true;
       stopElapsed();
       stopMetrics();
@@ -404,8 +407,11 @@ const recordingElapsed = ref('');
 let recordingPollInterval: ReturnType<typeof setInterval> | null = null;
 
 async function pollRecordingStatus() {
+  // Don't let a poll race the REC-chip toggle and flip the state back.
+  if (recToggling.value) return;
   try {
     const status = await recordingApi.status();
+    if (recToggling.value) return;
     isRecording.value = status.is_recording;
     if (status.is_recording && status.elapsed_ms) {
       const sec = Math.floor(status.elapsed_ms / 1000);
@@ -454,6 +460,10 @@ async function handleReconnect() {
   reconnecting.value = true;
   goLiveError.value = null;
   try {
+    // connect() no-ops while the socket is open — tear it down first so the
+    // reconnect actually reopens. onDisconnected is suppressed via
+    // `reconnecting`; the sub-second chunk gap is covered by the relay.
+    streamSocket.cleanup();
     streamSocket.resetReconnect();
     await streamSocket.connect(true, show.value?.id);
   } catch (err) {
@@ -598,7 +608,7 @@ onUnmounted(() => {
            connection & upload → live chat. Stop is the only prominent control. -->
 
       <!-- 1 · Status bar -->
-      <div class="panel-card status-card">
+      <div class="panel-card">
         <div class="status-bar">
           <span class="status-dot live"></span>
           <span class="status-label">LIVE</span>
@@ -691,7 +701,7 @@ onUnmounted(() => {
           </div>
           <!-- Broadcaster preview: hear the relay feed (#175). Hidden unless a
                /test mount is configured. -->
-          <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" class="slot-preview" />
+          <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" />
           <p v-else class="slot-hint">No relay preview mount configured.</p>
           <p v-if="audioQuality" class="slot-meta">{{ audioQuality }}</p>
         </div>
