@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Live Panel 2.0 — interactive prototype</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.30.0/dist/tabler-icons.min.css" />
+<style>
+  /* Dark-theme tokens mapped from frontend/src/shared/styles/tokens.css */
+  :root {
+    --surface-0: #000;
+    --surface-1: #1a1a2e;
+    --surface-2: #0f0f23;
+    --border: #333;
+    --border-strong: #444;
+    --border-stronger: #555;
+    --text-primary: #eee;
+    --text-secondary: #9a9ab0;
+    --text-muted: #777;
+    --text-accent: #3b82f6;
+    --text-danger: #ef4444;
+    --text-success: #22c55e;
+    --text-warning: #f59e0b;
+    --bg-accent: rgba(59, 130, 246, 0.15);
+    --bg-danger: #3b1818;
+    --bg-success: #183b18;
+    --bg-warning: #3b2f18;
+    --fill-danger: #ef4444;
+    --fill-success: #22c55e;
+    --fill-primary: #eee;
+    --on-danger: #fff;
+    --font-mono: 'Courier New', Courier, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2rem 1rem 4rem;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  .note { font-size: 12px; color: var(--text-muted); margin: 0 0 1rem; }
+  button {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  button:hover { background: var(--surface-1); }
+  input[type='text'] {
+    background: var(--surface-1);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    padding: 7px 10px;
+  }
+  input[type='range'] { accent-color: #ffec44; }
+  input[type='checkbox'] { accent-color: #ffec44; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="note">Live Panel 2.0 prototype (design session 2026-07-06) — everything animates:
+  faders shape the analyzers, "Simulate congestion" drives the verdict &amp; auto bitrate
+  step-down, timers tick, chat input posts as host. Spec: <code>live-panel-2.0.md</code></p>
+
+  <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:12px;">
+    <div style="display:flex; align-items:center; gap:10px; padding:10px 16px; flex-wrap:wrap;">
+      <span style="width:10px; height:10px; border-radius:50%; background:var(--fill-danger); flex-shrink:0;" id="liveDot"></span>
+      <span style="font-size:14px; font-weight:500; color:var(--text-danger); letter-spacing:1px;">LIVE</span>
+      <span style="font-size:12px; padding:2px 10px; border-radius:999px; background:var(--bg-danger); color:var(--text-danger);">REC <span id="recT" style="font-family:var(--font-mono);">42:13</span></span>
+      <span style="font-size:12px; color:var(--text-secondary);"><i class="ti ti-users"></i> 23</span>
+      <span style="flex:1;"></span>
+      <span style="font-size:12px; color:var(--text-secondary);">On air</span>
+      <span style="font-size:17px; font-family:var(--font-mono);" id="elapsed">0:42:13</span>
+      <span style="color:var(--border-stronger);">·</span>
+      <span style="font-size:12px; color:var(--text-secondary);">Ends in</span>
+      <span style="font-size:17px; font-family:var(--font-mono);" id="remaining">1:17:47</span>
+      <button style="padding:5px 8px;" aria-label="Reconnect stream" title="Reconnect stream"><i class="ti ti-refresh"></i></button>
+      <button style="padding:5px 8px;" aria-label="Stream settings" title="Stop and change settings"><i class="ti ti-settings"></i></button>
+      <button style="background:var(--fill-danger); color:var(--on-danger); border:none;"><i class="ti ti-player-stop"></i> Stop</button>
+    </div>
+    <div style="height:4px; background:var(--surface-1);">
+      <div id="progress" style="width:35%; height:4px; background:var(--fill-danger);"></div>
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; margin-bottom:12px;">
+    <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:1rem 1.25rem;">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px;">
+        <p style="margin:0; font-size:13px; font-weight:500; color:var(--text-secondary);"><i class="ti ti-microphone"></i> Input — your source</p>
+        <span style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted);" id="inPeak">-8.2 dB</span>
+      </div>
+      <div id="eqIn" style="display:flex; align-items:flex-end; gap:2px; height:56px;" role="img" aria-label="Input spectrum analyzer"></div>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:12px;">
+        <label for="gainIn" style="font-size:12px; color:var(--text-secondary); white-space:nowrap;">Input gain</label>
+        <input id="gainIn" type="range" min="0" max="150" value="100" step="1" style="flex:1;" />
+        <span style="font-size:12px; font-family:var(--font-mono); min-width:38px; text-align:right;" id="gainInVal">100%</span>
+      </div>
+    </div>
+
+    <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:1rem 1.25rem;">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px;">
+        <p style="margin:0; font-size:13px; font-weight:500; color:var(--text-secondary);"><i class="ti ti-broadcast"></i> Stream — what listeners hear</p>
+        <span style="font-size:11px; color:var(--text-muted);">~6 s behind</span>
+      </div>
+      <div id="eqOut" style="display:flex; align-items:flex-end; gap:2px; height:56px;" role="img" aria-label="Stream spectrum analyzer"></div>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:12px;">
+        <label for="volMon" style="font-size:12px; color:var(--text-secondary); white-space:nowrap;"><i class="ti ti-headphones"></i> Monitor</label>
+        <input id="volMon" type="range" min="0" max="100" value="70" step="1" style="flex:1;" />
+        <span style="font-size:12px; font-family:var(--font-mono); min-width:38px; text-align:right;" id="volMonVal">70%</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:1rem 1.25rem; margin-bottom:12px;">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <p style="margin:0; flex:1; font-size:13px; font-weight:500; color:var(--text-secondary);"><i class="ti ti-wifi"></i> Connection &amp; upload</p>
+      <span id="verdict" style="font-size:12px; padding:2px 10px; border-radius:999px; background:var(--bg-success); color:var(--text-success);">Good — 4.1× headroom</span>
+      <button id="simBtn" style="font-size:11px; padding:3px 8px;">Simulate congestion</button>
+    </div>
+
+    <div style="display:grid; grid-template-columns:2fr 1fr; gap:14px; align-items:stretch;">
+      <div>
+        <canvas id="tpChart" width="420" height="96" style="width:100%; height:96px; display:block;"></canvas>
+        <div style="display:flex; justify-content:space-between; margin-top:2px;">
+          <span style="font-size:10px; color:var(--text-muted); font-family:var(--font-mono);">-60 s</span>
+          <span style="font-size:11px; color:var(--text-muted);"><span style="display:inline-block; width:12px; height:2px; background:#1D9E75; vertical-align:middle; margin-right:4px;"></span>upload · <span style="display:inline-block; width:12px; border-top:2px dashed #D85A30; vertical-align:middle; margin:0 4px 3px;"></span>needed</span>
+          <span style="font-size:10px; color:var(--text-muted); font-family:var(--font-mono);">now</span>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; align-content:start;">
+        <div style="background:var(--surface-1); border-radius:8px; padding:6px 10px;">
+          <p style="margin:0; font-size:10px; color:var(--text-secondary);">Upload</p>
+          <p style="margin:1px 0 0; font-size:14px; font-weight:500; font-family:var(--font-mono);" id="mRate">812k</p>
+        </div>
+        <div style="background:var(--surface-1); border-radius:8px; padding:6px 10px;">
+          <p style="margin:0; font-size:10px; color:var(--text-secondary);">Buffer</p>
+          <p style="margin:1px 0 0; font-size:14px; font-weight:500; font-family:var(--font-mono);" id="mBuf">0.2 s</p>
+        </div>
+        <div style="background:var(--surface-1); border-radius:8px; padding:6px 10px;">
+          <p style="margin:0; font-size:10px; color:var(--text-secondary);">RTT</p>
+          <p style="margin:1px 0 0; font-size:14px; font-weight:500; font-family:var(--font-mono);" id="mRtt">38 ms</p>
+        </div>
+        <div style="background:var(--surface-1); border-radius:8px; padding:6px 10px;">
+          <p style="margin:0; font-size:10px; color:var(--text-secondary);">Late</p>
+          <p style="margin:1px 0 0; font-size:14px; font-weight:500; font-family:var(--font-mono);" id="mDrop">0</p>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; border-top:1px solid var(--border); padding-top:12px; margin-top:12px;">
+      <span style="font-size:12px; color:var(--text-secondary); white-space:nowrap;">Upload quality</span>
+      <div id="qSeg" style="display:inline-flex; border:1px solid var(--border-strong); border-radius:8px; overflow:hidden;">
+        <button data-q="auto" style="border:none; border-radius:0; font-size:12px; padding:5px 12px; background:var(--bg-accent); color:var(--text-accent);">Auto</button>
+        <button data-q="320" style="border:none; border-radius:0; font-size:12px; padding:5px 12px; background:transparent; color:var(--text-secondary);">320</button>
+        <button data-q="192" style="border:none; border-radius:0; font-size:12px; padding:5px 12px; background:transparent; color:var(--text-secondary);">192</button>
+        <button data-q="128" style="border:none; border-radius:0; font-size:12px; padding:5px 12px; background:transparent; color:var(--text-secondary);">128</button>
+        <button data-q="96" style="border:none; border-radius:0; font-size:12px; padding:5px 12px; background:transparent; color:var(--text-secondary);">96 kbps</button>
+      </div>
+      <span id="qNote" style="flex:1; min-width:150px; font-size:11px; color:var(--text-muted);">Auto steps down when the buffer grows · switch = &lt;1 s encoder restart, covered by the relay</span>
+    </div>
+  </div>
+
+  <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:12px; display:flex; flex-direction:column; overflow:hidden;">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 16px; border-bottom:1px solid var(--border);">
+      <i class="ti ti-brand-telegram" style="font-size:16px; color:var(--text-accent);"></i>
+      <p style="margin:0; flex:1; font-size:13px; font-weight:500;">Live chat · Moafunk channel</p>
+      <span style="font-size:11px; padding:2px 8px; border-radius:999px; background:var(--bg-success); color:var(--text-success);">Connected</span>
+    </div>
+    <div id="chatLog" style="min-height:150px; max-height:200px; overflow-y:auto; padding:10px 16px; display:flex; flex-direction:column; gap:8px;">
+      <div><p style="margin:0; font-size:11px; color:var(--text-accent); font-weight:500;">nadja</p><p style="margin:0; font-size:13px;">this track is insane 🔥</p></div>
+      <div><p style="margin:0; font-size:11px; color:var(--text-accent); font-weight:500;">kojo_b</p><p style="margin:0; font-size:13px;">track ID please?</p></div>
+      <div><p style="margin:0; font-size:11px; color:var(--text-accent); font-weight:500;">esra.wav</p><p style="margin:0; font-size:13px;">greetings from Wedding ✌️</p></div>
+    </div>
+    <div style="display:flex; gap:8px; padding:10px 16px; border-top:1px solid var(--border);">
+      <input id="chatInput" type="text" placeholder="Reply as host…" style="flex:1;" />
+      <button id="chatSend" aria-label="Send message"><i class="ti ti-send"></i></button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var N = 28;
+  function buildBars(id, color) {
+    var el = document.getElementById(id);
+    var bars = [];
+    for (var i = 0; i < N; i++) {
+      var b = document.createElement('div');
+      b.style.cssText = 'flex:1; height:8%; background:' + color + '; border-radius:1px; transition:height 90ms linear;';
+      el.appendChild(b);
+      bars.push(b);
+    }
+    return bars;
+  }
+  var inBars = buildBars('eqIn', '#1D9E75');
+  var outBars = buildBars('eqOut', '#7F77DD');
+  var t = 0, outQueue = [], gain = 1, mon = 0.7;
+
+  function frame() {
+    t += 0.09;
+    var snap = [];
+    for (var i = 0; i < N; i++) {
+      var base = Math.max(0.06, Math.sin(t + i * 0.55) * 0.3 + 0.42 - i * 0.008 + Math.random() * 0.22);
+      var v = Math.min(1, base * gain);
+      snap.push(v);
+      inBars[i].style.height = Math.round(v * 100) + '%';
+    }
+    outQueue.push(snap);
+    if (outQueue.length > 14) {
+      var old = outQueue.shift();
+      for (var j = 0; j < N; j++) outBars[j].style.height = Math.round(Math.min(1, old[j]) * mon * 100 + 4) + '%';
+    }
+    document.getElementById('inPeak').textContent = (Math.sin(t * 0.7) * 4 - 7).toFixed(1) + ' dB';
+    setTimeout(frame, 100);
+  }
+  frame();
+
+  var gi = document.getElementById('gainIn'), gv = document.getElementById('gainInVal');
+  gi.addEventListener('input', function () { gain = gi.value / 100; gv.textContent = gi.value + '%'; });
+  var vm = document.getElementById('volMon'), vv = document.getElementById('volMonVal');
+  vm.addEventListener('input', function () { mon = vm.value / 100; vv.textContent = vm.value + '%'; });
+
+  var el = 2533, rem = 4667, total = 7200, recS = 2533;
+  function fmt(s) {
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return h + ':' + String(m).padStart(2, '0') + ':' + String(x).padStart(2, '0');
+  }
+  function fmtM(s) { return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+
+  var canvas = document.getElementById('tpChart');
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height, MAX = 1000;
+  var data = [];
+  for (var k = 0; k < 60; k++) data.push(780 + Math.random() * 80);
+  var mode = 'auto', target = 192, congested = false, congestTicks = 0, buf = 0.2, drops = 0;
+
+  function need() { return target * 1.15; }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+    ctx.lineWidth = 1;
+    [0.25, 0.5, 0.75].forEach(function (f) { ctx.beginPath(); ctx.moveTo(0, H * f); ctx.lineTo(W, H * f); ctx.stroke(); });
+    var ny = H - (need() / MAX) * H;
+    ctx.strokeStyle = '#D85A30'; ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(0, ny); ctx.lineTo(W, ny); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = '#1D9E75'; ctx.lineWidth = 2; ctx.beginPath();
+    data.forEach(function (v, i) {
+      var x = (i / (data.length - 1)) * W;
+      var y = H - (Math.min(v, MAX) / MAX) * H;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.fillStyle = '#777'; ctx.font = '10px monospace';
+    ctx.fillText(Math.round(need()) + ' kbps', 6, ny - 4);
+  }
+
+  function setSeg(active) {
+    document.querySelectorAll('#qSeg button').forEach(function (b) {
+      var on = b.dataset.q === active;
+      b.style.background = on ? 'var(--bg-accent)' : 'transparent';
+      b.style.color = on ? 'var(--text-accent)' : 'var(--text-secondary)';
+    });
+  }
+  document.querySelectorAll('#qSeg button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      mode = b.dataset.q;
+      if (mode !== 'auto') target = Number(mode);
+      setSeg(mode);
+      document.getElementById('qNote').textContent = mode === 'auto'
+        ? 'Auto steps down when the buffer grows · switch = <1 s encoder restart, covered by the relay'
+        : 'Fixed ' + target + ' kbps Opus · encoder restarted (<1 s gap, covered by the relay)';
+    });
+  });
+  document.getElementById('simBtn').addEventListener('click', function () {
+    congested = !congested; congestTicks = 0;
+    this.textContent = congested ? 'End congestion' : 'Simulate congestion';
+    if (!congested && mode === 'auto') target = 192;
+  });
+
+  setInterval(function () {
+    el++; rem = Math.max(0, rem - 1); recS++;
+    document.getElementById('elapsed').textContent = fmt(el);
+    document.getElementById('remaining').textContent = fmt(rem);
+    document.getElementById('recT').textContent = fmtM(recS);
+    document.getElementById('progress').style.width = Math.round((el / total) * 100) + '%';
+    document.getElementById('liveDot').style.opacity = el % 2 ? '0.35' : '1';
+
+    var v;
+    if (congested) {
+      congestTicks++;
+      v = 120 + Math.random() * 90;
+      buf = Math.min(9.9, buf + 0.4 + Math.random() * 0.4);
+      if (buf > 1.5) drops++;
+      if (mode === 'auto' && congestTicks === 6 && target > 96) {
+        target = target === 320 ? 192 : target === 192 ? 128 : 96;
+        congestTicks = 0;
+      }
+    } else {
+      v = 760 + Math.random() * 120;
+      buf = Math.max(0.1, buf - 0.6);
+    }
+    data.push(v); data.shift();
+    var rate = Math.round(data[data.length - 1]);
+    var headroom = rate / need();
+    document.getElementById('mRate').textContent = rate + 'k';
+    document.getElementById('mBuf').textContent = buf.toFixed(1) + ' s';
+    document.getElementById('mRtt').textContent = (congested ? 180 + Math.round(Math.random() * 120) : 30 + Math.round(Math.random() * 15)) + ' ms';
+    document.getElementById('mDrop').textContent = drops;
+    var vd = document.getElementById('verdict');
+    if (headroom > 2 && buf < 0.5) {
+      vd.textContent = 'Good — ' + headroom.toFixed(1) + '× headroom';
+      vd.style.background = 'var(--bg-success)'; vd.style.color = 'var(--text-success)';
+    } else if (headroom > 1.1) {
+      vd.textContent = 'Tight — ' + headroom.toFixed(1) + '× headroom';
+      vd.style.background = 'var(--bg-warning)'; vd.style.color = 'var(--text-warning)';
+    } else {
+      vd.textContent = 'Too slow — lower the quality';
+      vd.style.background = 'var(--bg-danger)'; vd.style.color = 'var(--text-danger)';
+    }
+    if (mode === 'auto') setSeg('auto');
+    draw();
+  }, 1000);
+  draw();
+
+  var log = document.getElementById('chatLog'), inp = document.getElementById('chatInput');
+  function send() {
+    var text = inp.value.trim();
+    if (!text) return;
+    var d = document.createElement('div');
+    var name = document.createElement('p');
+    name.style.cssText = 'margin:0; font-size:11px; color:var(--text-success); font-weight:500;';
+    name.textContent = 'anton-host (host)';
+    var msg = document.createElement('p');
+    msg.style.cssText = 'margin:0; font-size:13px;';
+    msg.textContent = text;
+    d.appendChild(name); d.appendChild(msg);
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+    inp.value = '';
+  }
+  document.getElementById('chatSend').addEventListener('click', send);
+  inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
+})();
+</script>
+</body>
+</html>
