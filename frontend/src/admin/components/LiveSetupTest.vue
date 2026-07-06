@@ -268,9 +268,7 @@ onUnmounted(() => {
           🎤 Start test
         </button>
         <p v-if="!audioCapture.isCapturing.value" class="ls-muted">Select an audio input first.</p>
-        <p v-else-if="!previewUrl" class="ls-muted">
-          Test stream isn't configured on this server.
-        </p>
+        <p v-else-if="!previewUrl" class="ls-muted">Test stream isn't configured on this server.</p>
       </div>
 
       <div v-else-if="testPhase === 'connecting'" class="ls-test-state">
@@ -436,6 +434,15 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
+}
+
+/* The preview player is chrome-less since the analyzer rework (#274) — give
+   it back an inset card inside the test panel. */
+.ls-test-state :deep(.preview-player) {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-md) var(--spacing-lg);
 }
 
 .ls-onair {
