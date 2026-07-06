@@ -172,10 +172,13 @@ const audioDeviceOk = computed(() => audioCapture?.isCapturing.value ?? false);
 
 // ─── Input spectrum + gain fader (Live Panel 2.0 analyzers, #274) ───────────
 // Spectrum + peak both tap the post-gain signal, so the fader shapes exactly
-// what is recorded/streamed.
-const { bands: inputBands } = useSpectrum(computed(() => audioCapture?.analyserNode.value ?? null));
+// what is recorded/streamed. Gated on the streaming phase — the waiting room
+// has its own DbMeter, and each meter costs an AudioContext + rAF loop.
+const { bands: inputBands } = useSpectrum(
+  computed(() => (streamActive.value ? (audioCapture?.analyserNode.value ?? null) : null))
+);
 const { peakDb: inputPeakDb } = useDbMeter(
-  computed(() => audioCapture?.processedStream.value ?? null)
+  computed(() => (streamActive.value ? (audioCapture?.processedStream.value ?? null) : null))
 );
 const inputPeakText = computed(() =>
   inputPeakDb.value <= DB_FLOOR + 0.5 ? '−∞ dB' : `${inputPeakDb.value.toFixed(1)} dB`

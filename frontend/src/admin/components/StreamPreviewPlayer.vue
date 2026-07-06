@@ -89,11 +89,14 @@ async function startPlayback(withCors: boolean): Promise<void> {
       analyser.value = node;
     } catch (e) {
       console.warn('[StreamPreview] Web-Audio graph failed, plain playback only:', e);
+      corsBlocked.value = true;
     }
   }
 
   await el.play();
   playing.value = true;
+  // Clear any error a raced CORS attempt set before this (fallback) play won.
+  playError.value = null;
 }
 
 async function toggle() {
@@ -101,6 +104,7 @@ async function toggle() {
   if (playing.value) {
     teardownElement();
     playing.value = false;
+    playError.value = null;
     return;
   }
   starting.value = true;
@@ -158,8 +162,8 @@ onUnmounted(() => {
 
     <p v-if="playError" class="preview-error">{{ playError }}</p>
     <p v-else-if="corsBlocked" class="preview-warn">
-      Spectrum unavailable — the mount doesn't send CORS headers
-      (<code>Access-Control-Allow-Origin</code>). Audio preview still works.
+      Spectrum unavailable — usually a missing <code>Access-Control-Allow-Origin</code> header on
+      the mount. Audio preview still works.
     </p>
     <p class="preview-hint">
       Use <strong>headphones</strong> — the relay feed runs a few seconds behind live, so speakers
