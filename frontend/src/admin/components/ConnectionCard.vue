@@ -27,7 +27,8 @@ const emit = defineEmits<{
 }>();
 
 const health = useUploadHealth(toRef(props, 'active'), toRef(props, 'targetBitsPerSecond'));
-const { uploadKbps, bufferSeconds, lateCount, history, neededKbps, verdict, verdictText } = health;
+const { uploadKbps, bufferSeconds, lateCount, history, rttMs, neededKbps, verdict, verdictText } =
+  health;
 
 // ─── Upload quality selector (#276) ─────────────────────────────────────────
 const qualityMode = ref<UploadQualityMode>('auto');
@@ -155,9 +156,14 @@ onUnmounted(() => resizeObserver?.disconnect());
         </div>
         <div class="conn-tile">
           <p class="conn-tile-label">RTT</p>
-          <p class="conn-tile-value conn-tile-muted" title="Arrives with the stream WS telemetry">
-            —
+          <p
+            v-if="rttMs !== null"
+            class="conn-tile-value"
+            title="Message round-trip incl. send-buffer wait — rises with congestion, not pure network latency"
+          >
+            {{ rttMs }} ms
           </p>
+          <p v-else class="conn-tile-value conn-tile-muted" title="Waiting for the first pong">—</p>
         </div>
         <div class="conn-tile">
           <p class="conn-tile-label">Late</p>

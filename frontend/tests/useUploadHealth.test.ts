@@ -106,6 +106,24 @@ describe('useUploadHealth (stateful)', () => {
     // First tick only seeds prev; every following tick is late.
     expect(health.lateCount.value).toBe(ticks - 1);
     expect(health.verdict.value).toBe('slow');
+    // No rttMs in the stats → stays null (pre-#277 socket or no pong yet).
+    expect(health.rttMs.value).toBeNull();
+    unmount();
+  });
+
+  it('passes the socket RTT through on each tick', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    let queued = 0;
+    statsMock.mockImplementation(() => ({
+      connected: true,
+      bufferedAmount: 0,
+      bytesQueued: (queued += 27_600),
+      rttMs: 42,
+    }));
+
+    const { health, unmount } = mountHealth(ref(true));
+    vi.advanceTimersByTime(2000);
+    expect(health.rttMs.value).toBe(42);
     unmount();
   });
 

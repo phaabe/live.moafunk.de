@@ -2,8 +2,10 @@ export { useFlash, type FlashMessage } from './useFlash';
 export {
   useStreamSocket,
   getStreamSocketStats,
+  parsePong,
   type StreamConnectionState,
   type StreamSocketStats,
+  type PongStats,
   type UseStreamSocketOptions,
 } from './useStreamSocket';
 export {
