@@ -1473,12 +1473,41 @@ async fn handle_aig_sort(
     Ok(())
 }
 
-/// Handle non-command messages: check for active edit sessions.
+/// Handle non-command messages: live-chat bridge, then edit sessions.
 ///
-/// If an edit session is active for this chat, the message is treated as
-/// the new caption (text) or new image (photo). Otherwise, silently ignored.
+/// A text message in the configured live-chat group is fanned out to the
+/// panel WebSockets (#278). Otherwise, if an edit session is active for this
+/// chat, the message is treated as the new caption (text) or new image
+/// (photo). Anything else is silently ignored.
 async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>) -> HandlerResult {
     let chat_id = msg.chat.id.0;
+
+    // Live-chat bridge: forward listener messages to the panel. Only real
+    // (non-bot) senders with text — service messages, other bots, channel
+    // auto-forwards (from = service account 777000, is_bot false — needs the
+    // is_automatic_forward check) and anonymous "post as group/channel"
+    // messages (sender_chat set) stay out of the panel feed. If the live
+    // group is misconfigured to the admin group, admin behavior (edit
+    // sessions below) wins and the bridge is skipped.
+    if state.config.telegram_live_chat_id == Some(chat_id)
+        && state.config.telegram_admin_chat_id != Some(chat_id)
+    {
+        if let (Some(user), Some(text)) = (msg.from.as_ref(), msg.text()) {
+            if !user.is_bot && !msg.is_automatic_forward() && msg.sender_chat.is_none() {
+                state
+                    .chat_hub
+                    .publish(crate::chat_bridge::ChatMessage {
+                        id: msg.id.0 as i64,
+                        author: user.full_name(),
+                        text: text.to_string(),
+                        ts: msg.date.timestamp(),
+                        host: false,
+                    })
+                    .await;
+            }
+        }
+        return Ok(());
+    }
 
     // Check for active edit session
     let session = {
