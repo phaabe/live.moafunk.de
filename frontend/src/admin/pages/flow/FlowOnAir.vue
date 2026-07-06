@@ -1114,15 +1114,15 @@ onUnmounted(() => {
   }
 }
 
+/* Metric-card styling, matching the show dashboard's status strip. */
 .future-panel {
-  background: var(--color-surface-alt);
+  background: var(--color-surface);
   border: 1px dashed var(--color-border);
   border-radius: var(--radius-lg);
-  padding: var(--spacing-lg) var(--spacing-md);
-  text-align: center;
+  padding: var(--spacing-md) var(--spacing-lg);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--spacing-xs);
   opacity: 0.6;
 }
@@ -1135,7 +1135,7 @@ onUnmounted(() => {
 }
 
 .metric-value {
-  font-size: var(--font-size-xl);
+  font-size: var(--font-size-2xl);
   font-weight: var(--font-weight-bold);
   font-variant-numeric: tabular-nums;
   color: var(--color-text);
@@ -1147,13 +1147,16 @@ onUnmounted(() => {
 }
 
 .future-icon {
-  font-size: 1.5rem;
+  font-size: 1.1rem;
 }
 
 .future-label {
-  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
   font-weight: var(--font-weight-medium);
-  color: var(--color-text);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
 }
 
 .future-badge {
