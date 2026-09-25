@@ -1,6 +1,6 @@
 #!/bin/bash
-# Setup rclone on Lightsail for R2 backups
-# Run this on the Lightsail instance after initial provisioning
+# Setup rclone on the backend box for R2 backups
+# Run on the box after provisioning. The BACKUP workflow runs it before every backup.
 #
 # Usage: ./setup_rclone.sh
 #

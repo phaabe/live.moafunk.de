@@ -44,8 +44,8 @@ jobs:
         with:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
-            b97681cf-bf60-49d5-9186-b3e701004d75 > LIGHTSAIL_SSH_KEY
-            429acaa6-d722-4882-b072-b3e701003070 > LIGHTSAIL_HOST
+            546972ad-7db9-4525-8d30-b46e00f8802a > HETZNER_IP
+            32944dfd-70f2-4f57-8274-b46e00f77c41 > HETZNER_SSH_KEY
 
       - name: Determine backup type
         id: backup-type
@@ -80,33 +80,44 @@ jobs:
 
       - name: Setup SSH key
         env:
-          LIGHTSAIL_HOST: ${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_HOST }}
+          HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
+          HETZNER_SSH_KEY: ${{ steps.bitwarden-secrets.outputs.HETZNER_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$LIGHTSAIL_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          echo "$HETZNER_SSH_KEY" > ~/.ssh/hetzner.pem
+          chmod 600 ~/.ssh/hetzner.pem
+          ssh-keyscan -H "$HETZNER_IP" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      # The box gets the backup scripts from deploy_hetzner.sh, but rclone has no
+      # config there until this runs. setup_rclone.sh reads the R2 keys from the
+      # deployed .env and writes /root/.config/rclone/rclone.conf. Idempotent.
+      - name: Ensure rclone is configured on the box
+        env:
+          HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
+        run: |
+          ssh -i ~/.ssh/hetzner.pem -o StrictHostKeyChecking=no root@"$HETZNER_IP" \
+            "cd /opt/unheard-backend && ./scripts/backup/setup_rclone.sh"
 
       - name: Run database backup
         if: steps.backup-type.outputs.backup_db == 'true'
         env:
-          LIGHTSAIL_HOST: ${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_HOST }}
+          HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
         run: |
-          echo "Running database backup on Lightsail..."
-          ssh -o StrictHostKeyChecking=no ubuntu@"$LIGHTSAIL_HOST" \
+          echo "Running database backup on the Hetzner box..."
+          ssh -i ~/.ssh/hetzner.pem -o StrictHostKeyChecking=no root@"$HETZNER_IP" \
             "cd /opt/unheard-backend && ./scripts/backup/backup-db.sh"
 
       - name: Run R2 backup
         if: steps.backup-type.outputs.backup_r2 == 'true'
         env:
-          LIGHTSAIL_HOST: ${{ steps.bitwarden-secrets.outputs.LIGHTSAIL_HOST }}
+          HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
         run: |
-          echo "Running R2 backup on Lightsail..."
+          echo "Running R2 backup on the Hetzner box..."
           FULL_FLAG=""
           if [[ "${{ steps.backup-type.outputs.full_r2 }}" == "true" ]]; then
             FULL_FLAG="--full"
           fi
-          ssh -o StrictHostKeyChecking=no ubuntu@"$LIGHTSAIL_HOST" \
+          ssh -i ~/.ssh/hetzner.pem -o StrictHostKeyChecking=no root@"$HETZNER_IP" \
             "cd /opt/unheard-backend && ./scripts/backup/backup-r2.sh $FULL_FLAG"
 
       - name: Backup summary
