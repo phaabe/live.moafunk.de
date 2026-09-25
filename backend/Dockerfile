@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.92-slim-bookworm AS builder
+FROM rust:1.98-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -7,18 +7,18 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 # Copy manifests
-COPY backend/Cargo.toml ./
+COPY backend/Cargo.toml backend/Cargo.lock ./
 
 # Create dummy source to cache dependencies
 RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release
+RUN cargo build --release --locked
 RUN rm -rf src
 
 # Copy actual source
 COPY backend/src ./src
 
 # Build the actual binary
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs && cargo build --release --locked
 
 # Frontend build stage for admin SPA
 FROM node:20-slim AS frontend-builder
