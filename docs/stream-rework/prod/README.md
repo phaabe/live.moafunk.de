@@ -24,6 +24,8 @@ backend ffmpeg (STREAM_OUTPUT=icecast)
 | `stream.env.example` | `/etc/moafunk/stream.env` (filled) | harbor + Icecast passwords (Bitwarden-injected) |
 | `liquidsoap.service` | `/etc/systemd/system/` | supervises Liquidsoap (docker, `Restart=always`, mem cap) |
 | `icecast.service` | `/etc/systemd/system/` | supervises Icecast-KH (docker, `Restart=always`, mem cap) |
+| `needrestart-moafunk.conf` | `/etc/needrestart/conf.d/moafunk.conf` | stops needrestart (unattended-upgrades) from restarting the two stream units. **Installed by `deploy_hetzner.sh`** |
+| `docker-daemon.json` | merged into `/etc/docker/daemon.json` | `live-restore: true` so containers survive a dockerd restart. **Installed by `deploy_hetzner.sh`** (reloads dockerd, no restart) |
 
 ## Deploy (on the Hetzner box)
 
