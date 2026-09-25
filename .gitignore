@@ -44,7 +44,6 @@ venv/
 
 # Rust
 backend/target/
-backend/Cargo.lock
 backend/data/
 backend/.env
 
