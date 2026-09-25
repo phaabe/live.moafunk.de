@@ -177,6 +177,12 @@ scp -i "$PEM" -o StrictHostKeyChecking=accept-new -r "$REPO_ROOT/backend/scripts
 scp -i "$PEM" -o StrictHostKeyChecking=accept-new -r "$REPO_ROOT/backend/scripts/r2" "$SSH_HOST:/tmp/scripts-r2" >/dev/null
 scp -i "$PEM" -o StrictHostKeyChecking=accept-new -r "$REPO_ROOT/backend/scripts/db" "$SSH_HOST:/tmp/scripts-db" >/dev/null
 
+# Host config that protects the running stream from OS upgrades
+# (see docs/stream-rework/prod/README.md).
+echo "Uploading needrestart and docker daemon config..."
+scp -i "$PEM" -o StrictHostKeyChecking=accept-new "$REPO_ROOT/docs/stream-rework/prod/needrestart-moafunk.conf" "$SSH_HOST:/tmp/needrestart-moafunk.conf" >/dev/null
+scp -i "$PEM" -o StrictHostKeyChecking=accept-new "$REPO_ROOT/docs/stream-rework/prod/docker-daemon.json" "$SSH_HOST:/tmp/docker-daemon.json" >/dev/null
+
 if [[ -n "$ENV_FILE_PATH" ]]; then
   if [[ ! -f "$ENV_FILE_PATH" ]]; then
     echo "ENV_FILE_PATH is set but not found: $ENV_FILE_PATH"
@@ -216,6 +222,28 @@ sudo apt-get install -y docker.io curl ca-certificates locales sqlite3 jq >/dev/
 sudo locale-gen en_US.UTF-8 >/dev/null 2>&1 || true
 sudo update-locale LANG=en_US.UTF-8 >/dev/null 2>&1 || true
 sudo systemctl enable --now docker >/dev/null
+
+# needrestart must never restart the stream units after a library upgrade
+# (both are `docker run --rm`; a restart cuts the stream).
+sudo mkdir -p /etc/needrestart/conf.d
+sudo install -m 644 /tmp/needrestart-moafunk.conf /etc/needrestart/conf.d/moafunk.conf
+rm -f /tmp/needrestart-moafunk.conf
+
+# Docker live-restore: containers keep running while dockerd restarts.
+# Merge into an existing daemon.json instead of replacing it. dockerd re-reads
+# live-restore on SIGHUP, so a reload is enough; no docker restart, no downtime.
+DAEMON_JSON=/etc/docker/daemon.json
+current_daemon_json="{}"
+if sudo test -s "$DAEMON_JSON"; then
+  current_daemon_json=$(sudo cat "$DAEMON_JSON")
+fi
+merged_daemon_json=$(jq -s '.[0] + .[1]' <(echo "$current_daemon_json") /tmp/docker-daemon.json)
+rm -f /tmp/docker-daemon.json
+if [[ "$(echo "$current_daemon_json" | jq -cS .)" != "$(echo "$merged_daemon_json" | jq -cS .)" ]]; then
+  echo "Updating $DAEMON_JSON and reloading dockerd..."
+  echo "$merged_daemon_json" | sudo tee "$DAEMON_JSON" >/dev/null
+  sudo systemctl reload docker
+fi
 
 # Install rclone for R2 backups (if not already installed)
 if ! command -v rclone &> /dev/null; then
