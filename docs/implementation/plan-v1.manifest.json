@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "status": "Codex v1 submitted for Claude review; not joint acceptance",
+  "code_baseline": "13e73de53f02248feede47e1eced6ac2086e38dd",
+  "inputs": {
+    "../architecture/live-moafunk.proposal-v5.md": "38df0550f439b96064f9e42c43a11ce036543b63db994b2c13ce75da6db4fa3b",
+    "../stream-rework/streaming-design.md": "6616a17e64046f124986bab9031f8eedae66c512235024ab7dd0021e7be480a7",
+    "../stream-rework/streaming-design-decisions.md": "90deb22847bcb6864170268836416bae7c0949243adcb2a80d369b1d75dc976c"
+  },
+  "files": {
+    "plan-v1.md": {
+      "sha256": "dd956b7f7c726c2acc8aad0494ef0058840f2234ada1e148ae04ce4bea5bbbd5",
+      "tasks": 5,
+      "subtasks": 12,
+      "leaves": 35
+    },
+    "backend-v1.md": {
+      "sha256": "7a853270413f79224a962a7d56cb93a1f285c841e79b014fcc30094c1f29307e",
+      "tasks": 6,
+      "subtasks": 16,
+      "leaves": 67
+    },
+    "frontend-v1.md": {
+      "sha256": "042a5123ca515507d6317a56ce5ac32962202556a835c2be699ce0425392836e",
+      "tasks": 7,
+      "subtasks": 14,
+      "leaves": 35
+    },
+    "operations-v1.md": {
+      "sha256": "9eda8faf9c54388b7dd6be3d08ab6a70e580a77921a9148467fabb834b47e658",
+      "tasks": 7,
+      "subtasks": 20,
+      "leaves": 61
+    }
+  },
+  "totals": {
+    "tasks": 25,
+    "subtasks": 62,
+    "leaves": 198
+  },
+  "dependency_scope": "Coding/interface dependencies only. Granular O3/O4 nodes avoid conflating pre-contract spikes with later implementation. Activation gates and test prerequisites are in plan-v1.md and taskbooks; R2 is deliberately not a single all-or-nothing code dependency. Parent/child membership is task hierarchy, not a dependency edge.",
+  "coding_dependencies": {
+    "P1": [],
+    "O1": [],
+    "O1.1": [],
+    "O3.1.1": [
+      "P1",
+      "O1.1"
+    ],
+    "P2": [
+      "P1",
+      "O1.1",
+      "O3.1.1"
+    ],
+    "B1": [
+      "P2"
+    ],
+    "B2": [
+      "P2",
+      "B1"
+    ],
+    "B3": [
+      "P2",
+      "B1"
+    ],
+    "B4": [
+      "P2",
+      "B1",
+      "B2",
+      "O3.1.2"
+    ],
+    "B5": [
+      "P2",
+      "B1"
+    ],
+    "B6": [
+      "P2"
+    ],
+    "F1": [
+      "P2"
+    ],
+    "F2": [
+      "F1"
+    ],
+    "F3": [
+      "F1",
+      "F2",
+      "P2"
+    ],
+    "F4": [
+      "F2",
+      "F3",
+      "P2"
+    ],
+    "F5": [
+      "F1",
+      "F2",
+      "P2"
+    ],
+    "F6": [
+      "P2"
+    ],
+    "F7": [],
+    "O2": [
+      "P2"
+    ],
+    "O3.1.2": [
+      "P2",
+      "O3.1.1"
+    ],
+    "O3.2": [
+      "P2",
+      "O3.1.1"
+    ],
+    "O3.3": [
+      "P2",
+      "O3.2"
+    ],
+    "O4.1": [
+      "O3.1.2",
+      "O3.2"
+    ],
+    "O4.2": [
+      "P2"
+    ],
+    "O5": [
+      "O1.1"
+    ],
+    "O6": [
+      "O1.1"
+    ],
+    "O7": [
+      "O1.1"
+    ],
+    "R1": [
+      "P2"
+    ],
+    "R3": [
+      "R2"
+    ]
+  },
+  "checked": [
+    "unique IDs",
+    "exactly three task levels",
+    "parent prefixes",
+    "all referenced task IDs resolve",
+    "relative Markdown links resolve",
+    "no bare issue/PR references",
+    "no trailing whitespace",
+    "listed coding dependencies have no cycle"
+  ],
+  "reviewed_manually": [
+    "meaningful verification per leaf",
+    "coding versus activation order",
+    "rollback boundaries",
+    "cross-component requirement coverage"
+  ]
+}
