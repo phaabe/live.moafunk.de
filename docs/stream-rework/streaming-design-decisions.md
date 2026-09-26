@@ -3,7 +3,7 @@
 > Why each decision in [streaming-design.md](streaming-design.md) was made.
 > Codex and Claude reviewed the design in turns on 2026-09-26. This record
 > merges both review logs. Codex approved it and Claude confirmed.
-> The full logs and earlier drafts are in the commits of PR_URL.
+> The full logs and earlier drafts are in the commits of https://github.com/phaabe/live.moafunk.de/pull/309.
 > This file does not change the design. If the two differ,
 > streaming-design.md wins.
 
