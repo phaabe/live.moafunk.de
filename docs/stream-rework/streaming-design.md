@@ -1,6 +1,6 @@
-# Streaming design v2 — native HLS, direct MP3, shared programme metadata
+# Streaming design — continuous station, native HLS and direct MP3
 
-Submitted by Codex on 2026-09-26 after Claude rounds 1–2 and Codex rounds 1–4. Awaiting explicit acceptance from both reviewers. Supersedes v1 as the review candidate; v1 remains unchanged.
+**Status:** accepted by Codex and Claude on 2026-09-26 (reviewed as draft v3). Not built yet. Why each decision was made: [streaming-design-decisions.md](streaming-design-decisions.md).
 
 ## Decision and limits
 
@@ -14,19 +14,20 @@ One origin remains a single point of failure. This release improves playback and
 
 ## 1. Stable public interface
 
-Use `https://stream.moafunk.de` subject to DNS/old-service inventory before changing that hostname:
+Proposed public host: `https://stream.moafunk.de`. The final name and DNS changes require domain-owner coordination and retired-NMS inventory using the existing DNS handoff process. Design agreement is not a DNS deployment. Keep existing public URLs working as aliases. The proposed route contract is:
 
 | Path | Meaning |
 | --- | --- |
 | `/live.mp3` | Permanent direct MP3 stream |
 | `/live.m3u8` | HLS master with an audio-only AAC rendition |
-| `/hls/<epoch>/...` | Media playlists and uniquely named segments |
+| `/hls/live.m3u8` | Stable media-playlist URL retained across process restarts |
+| `/hls/segments/<epoch>/...` | Uniquely named immutable media segments |
 | `/live.m3u`, `/live.pls` | External player playlists pointing to permanent MP3 |
 | `/now-playing.json` | Public JSON, proxy to the backend |
 | `/artwork/shows/<id>/<revision>/<transform>/<size>.jpg` | Exact immutable public show artwork |
 | `/artwork/station/<revision>/<size>.jpg` | Versioned station artwork |
 
-Serve old working MP3 URLs as proxy aliases throughout migration; do not break bookmarks or cached app bundles. Do not reuse retired NMS paths as implicit defaults. HLS media paths must resolve directly, without redirect chains. All endpoints use HTTPS and public CORS without credentials. Expose relevant ICY response headers for clients that request them. Restrict public artwork access to published artwork records; never accept arbitrary private object keys.
+The master references the stable media-playlist URL and declares measured BANDWIDTH plus AAC-LC CODECS="mp4a.40.2". Existing clients must not need to reload the master to discover an encoder restart. Serve old working MP3 URLs as proxy aliases throughout migration; do not break bookmarks or cached app bundles. Do not reuse retired NMS paths as implicit defaults. HLS media paths must resolve directly, without redirect chains. All endpoints use HTTPS and public CORS without credentials. Expose relevant ICY response headers for clients that request them. Restrict public artwork access to published artwork records; never accept arbitrary private object keys.
 
 Publish a short contract with examples. Register directory listings only as a later authorized operational task, not during this planning exchange.
 
@@ -46,11 +47,11 @@ Publish a short contract with examples. Register directory listings only as a la
 
 Four-second segments and a short history deliberately depart from Apple's six-second and 15-minute SHOULD recommendations. Reasons: station listening near live and reduced seekable history. These choices do not guarantee that every OS hides seek controls. Verify both Apple MUST requirements and RFC 8216. A single rendition is not adaptive bitrate streaming. ADTS is an alternative only if the exact Liquidsoap version and clients validate it better than TS.
 
-Segment retention is an origin requirement, not something satisfied by cache TTL. Test a client requesting an older published segment after the playlist advances. With a ~40-second window, 120-second removal retention meets the nominal RFC minimum; enforce using actual durations if settings change. Preserve recently referenced files during process restart. After full disk loss, publish a new epoch and test client recovery; do not claim seamless continuity.
+Segment retention is an origin requirement, not something satisfied by cache TTL. Test a client requesting an older published segment after the playlist advances. With a ~40-second window, 120-second removal retention meets the nominal RFC minimum; enforce using actual durations if settings change. Preserve recently referenced files and stable media-playlist URLs during process restart. Persist sequence/publication state and continue monotonically increasing media sequence with correct discontinuity sequence; put only new segment files under a new epoch. Do not silently freeze the old playlist, reset sequence numbers, or rely on ENDLIST/404 making native clients rediscover the master. Test both graceful restart and process crash while a real iPhone is locked. If installed Liquidsoap cannot satisfy continuity with its persistence support, the publication adapter must supply it before HLS passes the release gate. After full disk loss, test recovery as an explicitly nonseamless case; changing segment epoch alone does not guarantee it.
 
 Encode AAC from the upstream decoded source alongside MP3, not from the public MP3 output. No additional lossy intermediate encode. Measure the pipeline's resampling and clipping behavior. Validate actual Liquidsoap 2.4.4 output.file.hls options in the harness; nearby-version documentation is not execution evidence.
 
-The player tries native HLS when configured and supported. After three failed recovery attempts in a listening session, switch once to MP3; never oscillate back automatically during that session. Handle rejection of the new play request with tap-to-resume. This fallback depends on JS executing and covers media-path problems, not shared-origin loss.
+The player uses native HLS only when enabled by rollout configuration, canPlayType for application/vnd.apple.mpegurl is non-empty, and the client falls within the device-qualified eligibility rule. First release: tested Apple WebKit environments using native HLS; an AirPlay capability check such as webkitShowPlaybackTargetPicker on HTMLMediaElement.prototype is a conservative feature filter, not proof of device, browser engine version or reliability. Treat unrecognized, ungated and nonqualifying clients as MP3 clients. Do not assume all iOS browsers use the same engine. Add Android or other desktop native-HLS paths only after their own gates; canPlayType alone does not opt them in. After three failed recovery attempts in a listening session, switch once to MP3; never oscillate back automatically during that session. Handle rejection of the new play request with tap-to-resume. This fallback depends on JS executing and covers media-path problems, not shared-origin loss.
 
 ## 3. Player lifecycle and recovery
 
@@ -73,9 +74,9 @@ StreamState owns a restart-safe broadcast UUID, monotonic runtime generation, op
 
 Authorization: authenticated admin/superadmin, directly assigned host, or a user linked to an artist assigned to the show. Query all linked artist profiles using EXISTS. Creator/edit permission alone does not grant new broadcast permission. Show ID must exist and pass this rule before public streaming metadata uses it. Share a dedicated broadcast authorization helper between browser and prerecorded paths. Force takeover is a separate check limited to the current stream owner or an administrator. Add regression tests for legitimate UNHEARD artists and unrelated accounts.
 
-Producer active, selected output and delivery health are separate facts. Liquidsoap's final source selector reports ordered events and snapshots to an authenticated loopback endpoint. Include a Liquidsoap process epoch, event sequence, delivery generation, selected programme mode, associated broadcast UUID when known, and effective UTC time. Harbor connect/disconnect is connectivity evidence, not proof of audible programme. The backend reconciles periodic snapshots every five seconds; after fifteen seconds without an authoritative update, output knowledge is unknown. Exact callback/RPC integration must pass the installed-version harness.
+Producer active, selected output and delivery health are separate facts. Liquidsoap's final source selector reports ordered events and snapshots to an authenticated internal endpoint through the backend's existing published 127.0.0.1:8000 port (verify deployment wiring). No new public callback port is needed; deny the internal route at public reverse proxies as well as requiring service authentication. Include a Liquidsoap process epoch, event sequence, delivery generation, selected programme mode, associated broadcast UUID when known, and effective UTC time. Harbor connect/disconnect is connectivity evidence, not proof of audible programme. The backend reconciles periodic snapshots every five seconds; after fifteen seconds without an authoritative update, output knowledge is unknown. Exact callback/RPC integration must pass the installed-version harness.
 
-Programme modes: live, prerecorded, fallback, off_air, unknown. Keep recent boundaries for at least ten minutes initially, longer than the initial HLS playlist plus removed-segment retention. Ignore out-of-order epochs/sequences and stale producer exits. Do not display a producer's show as current when output has selected fallback.
+Programme modes: live, prerecorded, fallback, off_air, unknown. Keep recent boundaries for at least ten minutes initially, longer than the initial HLS playlist plus removed-segment retention. Random UUID epochs are identities, not sortable counters. Backend activation binds the current supervised Liquidsoap process epoch using a fresh startup/reconciliation handshake verified against the running service, and retires the previous epoch. Ordinary callbacks from unknown or retired epochs cannot activate themselves. Within the active epoch, accept only increasing event sequence. After backend restart, output mode stays unknown until current-service handshake/snapshot re-establishes authority. Reject responses from superseded reconciliation attempts and stale producer exits. Do not display a producer's show as current when output has selected fallback.
 
 An example public response shape:
 
@@ -106,7 +107,7 @@ One publication helper handles uploaded, copied, generated and Telegram-replaced
 
 Lazy derivatives read only the immutable source revision. Generate 512/256/96 square JPEGs, quality about 85, on a blocking worker with single-flight per key and bounded concurrency. Include transform version in the route; persist a generated derivative under an immutable private key before long-cache publication so cache eviction/deployment cannot change bytes for an old URL. Use a bounded in-memory cache, initially 64 entries. Expose only these approved public derivatives through the public host; the bucket remains private.
 
-Return `Cache-Control: public, max-age=31536000, immutable` only for a found exact revision. Never redirect an old show revision to a new cover. Retain referenced versions; if unavailable, return a non-cacheable error and let the client use the separate station artwork. Never cache an error or substitute station bytes for a year under a show-artwork URL. Metadata advertises a new revision only after its immutable source is stored and committed. A newly published revision's first render failure must preserve prior valid metadata or station fallback until a successful render is available; enforce an initial derivative readiness check at publication.
+Return `Cache-Control: public, max-age=31536000, immutable` only for a found exact revision. Never redirect an old show revision to a new cover. For the initial deployment, retain published immutable source versions and persisted derivatives indefinitely; only the in-memory cache is evicted. A future deletion policy must define public URL lifetime and respect current/referenced artifacts. If an exact version is unavailable, return a non-cacheable error and let the client use the separate station artwork. Never cache an error or substitute station bytes for a year under a show-artwork URL. Metadata advertises a new revision only after its immutable source is stored and committed. A newly published revision's first render failure must preserve prior valid metadata or station fallback until a successful render is available; enforce an initial derivative readiness check at publication.
 
 ## 6. System metadata and programme transitions
 
@@ -114,13 +115,19 @@ Page and Media Session share one displayed programme snapshot. Map title to show
 
 Metadata API describes selected output at a timestamp, not exact currentTime on every listener. For the initial show-level feature, document transition tolerance bounded by measured delivery lag while JS runs. Preserve recent boundaries and program timestamps for a later playback-synchronized adapter. If exact locked-screen track freshness becomes mandatory and cannot be validated on supported iOS, add a native client; do not promise that polling, SSE or timed tags alone solves it.
 
-Publish ICY title/presenter from the same selected-output metadata source; reset for fallback/off-air. Test with a direct client that requests ICY metadata. Optional HLS timed metadata must use supported Liquidsoap/container encoding and be verified in clients; it does not replace explicit website Media Session publication.
+Publish title/presenter into Liquidsoap's selected-source metadata, so its output owns ICY updates consistently across programme changes; verify the installed-version insertion/control interface in the harness. Do not race direct Icecast admin updates against Liquidsoap's later metadata emissions. Reset metadata for fallback/off-air. Test with a direct client that requests ICY metadata. Optional HLS timed metadata must use supported Liquidsoap/container encoding and be verified in clients; it does not replace explicit website Media Session publication.
 
-### Between shows — explicit product choice
+### Continuous station playback — confirmed by Anton
 
-Joint technical recommendation: continuous station-listening mode, with an operator-approved station loop or archive programme between shows. The output mode changes to fallback/off_air; source changes happen at delivery, so tails are not cut by polling and no locked-page stop timer is needed. Only an explicit listener stop ends the station session. Show the ongoing data-use implication. Enabling this requires suitable approved fallback content; silence is not an acceptable claimed programme.
+Anton explicitly chose continuous station playback. Between shows the public mounts carry an operator-approved station loop or archive programme. Source selection and matching programme metadata happen on the server. Listeners stay in the station session until they pause or stop; producer disconnect and failed status polling do not tear down the player. No finite-show endpoint, ENDLIST at every show end, or off-air JS drain timer is part of this release.
 
-Anton has been asked whether to use this behavior or stop after shows. No production behavior is changed by this document. If he chooses finite shows, use a separate finite-delivery mode: close HLS with ENDLIST after final media and close the MP3 programme stream after its tail. Test native completion, metadata display, directory reconnects and next-show startup. Keeping mksafe silence plus a JS drain timer is a limited transitional behavior, not the robust finite-show solution. Native end does not by itself guarantee all lock-screen fields clear. The common programme model and codecs support either choice; programme-end delivery is a release gate for the chosen mode.
+Source priority is explicit: qualified public producer (live or prerecorded) → locally available approved fallback playlist → locally available emergency station ident. Rehearsal can never enter this chain. Keep the public input fallible until this selection occurs; wrapping the primary input in mksafe before fallback would make silence appear permanently available and prevent proper fallback. A final safety silence source may prevent a broken mount only as an alerted failure state, never as the claimed fallback programme.
+
+Keep fallback assets on local storage so a backend/R2 metadata outage does not stop between-show audio. Validate assets before activation and prepare their public title/artwork. Start with a three-second producer-loss grace for short handovers and require two seconds of valid source availability before return; tune in the harness. Signal presence alone is not proof of programme sound: silence monitoring is a separate health signal. Preserve encoded tails through the shared output pipeline; do not cut buffered listeners when source mode changes. The final selector publishes the effective programme boundary and delivery generation.
+
+Approved fallback content and an emergency station ident are release prerequisites, not a reason to invent or select third-party audio. Fallback may repeat while there is no live show; its identity must say fallback/rerun and must not retain the former live show's title. Website lock-screen changes remain subject to the stated background-JS limit.
+
+Document ongoing data use for listeners who leave the station playing: approximately 115 MB/hour for 256 kbps MP3 and 58 MB/hour for 128 kbps AAC payload, before transport overhead. Planned pauses and long-resume behavior remain explicit user controls. Finite-show playback is outside this design unless requested separately.
 
 ## 7. Operations and future independent availability
 
@@ -138,16 +145,16 @@ One unrecovered origin outage during an announced show triggers a standby review
 2. Fix status uncertainty, playback state, recovery deduplication/cancellation and deployment reload. Add regressions before delivery changes.
 3. Implement broadcast authorization/identity, output reconciliation, presenter/artwork publication, public/admin contract migration and Media Session.
 4. Add stable public host aliases and HLS/ICY harness. Validate restart continuity, retention, source transitions, discontinuities and exact codec/container.
-5. Test the chosen between-shows mode and native HLS on real devices. Switch the planned default only if gates pass; otherwise keep MP3 and report the failed gate. Keep transport setting changes explicit in Vite configuration and CI; rollback requires rebuild/deploy. Preserve old URLs.
+5. Test continuous fallback transitions and native HLS on real devices. Switch the planned default only if gates pass; otherwise keep MP3 and report the failed gate. Keep transport setting changes explicit in Vite configuration and CI; rollback requires rebuild/deploy. Preserve old URLs.
 6. Measure at least two full shows plus fault injection before wider rollout. Record actual outcomes, not just a checklist.
 
-Required tests: metadata API failure with working audio; out-of-order responses; stalled media; concurrent error events; pause during recovery; rejected/late play promises; backend/Liquidsoap restart; natural prerecorded completion; wrong-show authorization; missing/changed cover; artwork fetched after a show transition; rehearsal-to-live handover; old producer cleanup after replacement; source active but output failed.
+Required tests: metadata API failure with working audio; out-of-order responses; stalled media; concurrent error events; pause during recovery; rejected/late play promises; backend/Liquidsoap restart including a locked native-HLS client; natural prerecorded completion into fallback; wrong-show authorization; missing/changed cover; artwork fetched after a show transition; rehearsal-to-live handover; old producer cleanup after replacement; source active but output failed.
 
 Real iPhone tests: thirty-minute locked playback, show/cover change while locked, Wi-Fi/cellular handover, temporary loss while locked, long pause/resume, call/Siri interruption, headphone removal, deployment during buffering, HLS→MP3 fallback, AirPlay and CarPlay where claimed. Repeat applicable tests in home-screen mode, Android and desktop; VLC/direct clients cover URL and ICY interoperability.
 
 Initial qualification targets, not current guarantees: healthy-network tap-to-audio p95 under five seconds; short network loss recovery within fifteen seconds after connectivity returns in at least 19/20 controlled trials; no uncommanded restart after user pause; no audio interruption from metadata/API faults; measure HLS end-to-end delay and seek approval if it exceeds thirty seconds or degrades the actual live-chat workflow. Adjust only with recorded baseline/device evidence. Long-outage and origin-loss recovery have separate limits above. Define supported minimum iOS from these results, rather than assuming all versions behave identically.
 
-## References and remaining agreement
+## References
 
 - [NTS inspected web implementation](https://www.nts.live/js/app.min.a98998a3aafb663e.js): HLS, direct fallback and explicit Media Session; not evidence for actual locked-iPhone behavior.
 - [Apple HLS authoring specification](https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices/): distinguish MUST from SHOULD.
@@ -155,5 +162,3 @@ Initial qualification targets, not current guarantees: healthy-network tap-to-au
 - [Liquidsoap HLS documentation](https://www.liquidsoap.info/doc-2.4.5/hls_output): verify against installed 2.4.4 in the harness.
 - [WebKit background execution](https://webkit.org/blog/8970/how-web-content-can-affect-power-usage/) and [Media Session](https://w3c.github.io/mediasession/): system metadata and background limitations.
 - [WebKit ManagedMediaSource notes](https://webkit.org/blog/14735/webkit-features-in-safari-17-1/): native HLS avoids the documented alternative-AirPlay-source restriction; actual routes still need testing.
-
-Claude: please review v2 against your blocking items, especially immutable artwork, authorization, finite versus continuous behavior and HLS retention. Record acceptance or specific remaining changes in claude.md. Codex has not yet accepted v2 pending your review.

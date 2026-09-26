@@ -1,17 +1,16 @@
-# Streaming design review record
+# Streaming design — decision record
 
-> Combined record of [codex.md](codex.md) and [claude-review.md](claude-review.md).
-> Written by Claude on 2026-09-26. **Status: approved by Codex, approval
-> confirmed by Claude.**
-> The design itself is [design-v3.md](design-v3.md) (accepted by both,
-> SHA-256 `765dac2bb330c32e4d52d822d2ac441870933609a25a9d23d462ba307ebca3e3`).
-> This file does not change the design. If it and design-v3.md differ,
-> design-v3.md wins.
+> Why each decision in [streaming-design.md](streaming-design.md) was made.
+> Codex and Claude reviewed the design in turns on 2026-09-26. This record
+> merges both review logs. Codex approved it and Claude confirmed.
+> The full logs and earlier drafts are in the commits of PR_URL.
+> This file does not change the design. If the two differ,
+> streaming-design.md wins.
 
 ## 1. Outcome
 
 Codex and Claude reviewed the design in turns until both accepted the same
-draft (design-v3.md). The agreed design:
+draft (v3, now streaming-design.md). The agreed design:
 
 - **Continuous station stream** (Anton's choice). Between shows the public
   mounts play approved station content. The player stops only when the
@@ -30,25 +29,25 @@ draft (design-v3.md). The agreed design:
 
 | Round | Who | What |
 |---|---|---|
-| Start | Claude | First plan: [mobile-playback-plan.md](../stream-rework/mobile-playback-plan.md) |
-| Start | Codex | Own research (`docs/stream-rework/mobile-listening-plan.md` in the main checkout), then review of Claude's plan and design-v1.md |
+| Start | Claude | First plan (`mobile-playback-plan.md`) |
+| Start | Codex | Own research, then review of Claude's plan and design v1 |
 | C1 | Claude | CHANGES REQUESTED v1: HLS as the planned iOS default, stable host, generation counter, presenter, artwork, concrete values, broadcast auth |
 | X2 | Codex | Internal challenge: Apple HLS rules, background limits, programme end, failover, delivered identity |
 | C2 | Claude | Reply to X2: 4 s segments, short window, continuous vs finite as Anton's choice, Liquidsoap as output truth |
 | X3–X4 | Codex | Accepts most points; finds the artwork race; RFC 8216 retention; narrower auth policy |
 | C3 | Claude | Accepts; new item: HLS must not rely on `canPlayType` alone |
-| X5 | Codex | Submits design-v2.md |
+| X5 | Codex | Submits design v2 |
 | C4 | Claude | CHANGES REQUESTED v2: HLS selection rule, restart behind a cached master |
 | X6 | Codex | Anton chooses continuous; stable media playlist URL; epoch handshake |
 | C5 | Claude | Accepts; fallback content becomes a launch prerequisite |
-| X7 / C6 | both | **ACCEPT design-v3.md** |
+| X7 / C6 | both | **Accept design v3** (now streaming-design.md) |
 
-(C = Claude round in claude-review.md, X = Codex round in codex.md.)
+(C = Claude round, X = Codex round, in the review logs linked above. "v3 §N" means section N of streaming-design.md.)
 
 ## 3. Decisions by topic
 
 Each row gives the starting positions, how the topic was settled, and where
-the result lives in design-v3.md.
+the result lives in streaming-design.md.
 
 ### 3.1 Delivery: HLS or MP3
 
@@ -256,10 +255,5 @@ Verified during the review against commit `1934e6b`:
 
 ## 7. Approval of this record
 
-- Codex: **APPROVE review-record.md** (codex.md Round 9, reviewed
-  SHA-256 `e012fb17b6d8cdcfc85ebe49743915f161bc4d84a59201a388bb55d746c75bba`).
-  The approval also covers the §3.5 attribution fix Codex asked for and
-  this status update.
-- Claude: **approval confirmed.** Codex's approval is recorded and matches
-  the reviewed text. After it, only the §3.5 attribution fix and this
-  section changed.
+- Codex: approved (Codex log, Round 9).
+- Claude: confirmed Codex's approval (Claude log, Round 9).
