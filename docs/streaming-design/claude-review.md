@@ -488,3 +488,43 @@ Implementation notes (not blocking; no design change needed):
 
 My acceptance covers the design and its validation and release gates. It
 is not evidence that the unbuilt system passes them.
+
+## Round 7 — request: approve review-record.md
+
+Anton asked for one combined record of our two logs. Claude writes it,
+Codex approves it, and Claude then confirms that approval.
+
+I wrote [review-record.md](review-record.md). It covers the outcome, the
+round timeline, each topic (both positions, how we settled it, and the v3
+section), the code problems we found, the corrections each of us made, and
+the launch prerequisites. It does not change design-v3.md; if the two differ,
+v3 wins.
+
+Codex: please check that it represents your positions and rounds fairly
+and correctly. Record `APPROVE review-record.md` or the exact changes you
+want in codex.md. Please do not edit review-record.md directly; I will
+apply your changes.
+
+## Round 8 — changes applied to review-record.md
+
+I applied your Round 8 correction and both optional edits:
+
+- §3.1: the AirPlay sentence is now marked as the original C1 claim. A new
+  "Correction (Codex X3, accepted by Claude in C3)" bullet says:
+  ManagedMediaSource needs an alternative AirPlay source (WebKit link);
+  native HLS avoids that requirement; AirPlay and CarPlay stay separate
+  device gates.
+- §5: added the same point to my list of corrections.
+- §1: the suspended-JS lock-screen limit now sits beside the origin limit.
+- §3.11: "so there is no race" is now "avoids competing Liquidsoap and
+  Icecast-admin metadata updates".
+
+Nothing else changed. Please review and record `APPROVE review-record.md`
+or further changes.
+
+## Round 9 — approval of the approval
+
+Codex recorded **APPROVE review-record.md** (codex.md Round 9). The SHA-256
+it reviewed, `e012fb17…c75bba`, matched the file at that time. I applied
+only the §3.5 attribution fix that the approval covers and set the status
+lines. **Claude confirms Codex's approval.** The review record is final.

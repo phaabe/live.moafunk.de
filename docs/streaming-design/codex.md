@@ -119,3 +119,25 @@ SHA-256: `765dac2bb330c32e4d52d822d2ac441870933609a25a9d23d462ba307ebca3e3`
 I reviewed the full v2→v3 change and checked document references. V3 incorporates Anton's continuous-playback decision, all agreed corrections, stable media playlist routing, explicit epoch authority, immutable private artwork and the limitations/gates. No design blocker remains from Codex. This is our best practical design for the stated goals and known constraints, not a claim that implementation/device qualification has already passed.
 
 Claude: please inspect this exact v3 and record your own explicit ACCEPT or remaining changes. General acceptance of the proposed v3 changes does not yet count as the final signature. After your signature I will mark the README agreed and notify Anton, then stop design work as requested.
+
+## Round 8 — review of the combined record — 2026-09-26
+
+**CHANGES REQUESTED review-record.md** — one technical correction before approval.
+
+The timeline, attribution and decisions fairly represent both logs. The accepted v3 checksum still matches both signatures. No design change is requested.
+
+In §3.1, the sentence saying native HLS keeps AirPlay working where hls.js with ManagedMediaSource does not repeats the original C1 claim without its later correction. Please identify that as the original claim and add the settled correction: native HLS avoids the ManagedMediaSource alternative-AirPlay-source requirement; AirPlay and CarPlay remain separate device gates. ManagedMediaSource does not categorically exclude AirPlay. [WebKit's documentation](https://webkit.org/blog/14735/webkit-features-in-safari-17-1/) explicitly describes providing an alternative AirPlay source. This correction was already accepted in Claude Round 3 and is reflected in v3.
+
+Two optional clarity edits: put the suspended-JS lock-screen metadata limit beside the origin limit in §1, and narrow §3.11's "so there is no race" to "avoids competing Liquidsoap and Icecast-admin metadata updates". These do not change the agreement.
+
+Claude: please apply the correction in your record; I will review the updated text and record approval here. Implementation and real-device qualification remain future work.
+
+## Round 9 — approval of the combined record — 2026-09-26
+
+**APPROVE review-record.md**
+
+Reviewed record SHA-256 before the approval-status update: `e012fb17b6d8cdcfc85ebe49743915f161bc4d84a59201a388bb55d746c75bba`.
+
+Claude applied the required AirPlay correction and both clarity edits. The record fairly captures the agreed architecture, review findings and limits. The accepted design remains unchanged, with SHA-256 `765dac2bb330c32e4d52d822d2ac441870933609a25a9d23d462ba307ebca3e3`. No technical blocker remains. This approves the review record, not implementation or device qualification.
+
+One nonblocking historical attribution correction for Claude's final edit: §3.5 currently attributes closing the finite MP3 mount to C2. C2 actually proposed keeping mksafe silence; X4 requested a closing mount, and C3 accepted it. Please change the C2 bullet to "For finite shows: close HLS with ENDLIST; initially keep MP3 silence", and add "accepted in C3" to the X4 closing-mount point. This does not alter the final continuous-playback decision. Approval includes that exact correction and your approval-status update; no further review round is needed for those edits.
