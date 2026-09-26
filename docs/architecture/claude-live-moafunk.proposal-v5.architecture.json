@@ -1,0 +1,603 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Moafunk v5 · continuous radio on one server",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/phaabe/live.moafunk.de",
+      "provider": "github",
+      "revision": "13e73de53f02248feede47e1eced6ac2086e38dd"
+    },
+    "views": [
+      {
+        "id": "listeners",
+        "label": "Station audio without the API",
+        "focus": [
+          "pages",
+          "nginx",
+          "icecast",
+          "hls",
+          "liquidsoap",
+          "assets",
+          "probe"
+        ],
+        "note": "MP3 via Icecast, HLS via nginx. Delivery and local fallback survive API downtime; live and prerecorded input do not."
+      },
+      {
+        "id": "metadata",
+        "label": "Now-playing metadata",
+        "focus": [
+          "liquidsoap",
+          "api",
+          "nginx",
+          "pages",
+          "assets"
+        ],
+        "note": "Liquidsoap reports output to the API; the API serves /now-playing.json. API down: JSON stale or missing, audio plays on."
+      },
+      {
+        "id": "maintenance",
+        "label": "Gated API replacement",
+        "focus": [
+          "deploy",
+          "api",
+          "sqlite",
+          "liquidsoap",
+          "admin"
+        ],
+        "note": "Persistent gate + host lock. Refused during capture or if a show starts inside the deploy + rollback window (≥30 min)."
+      },
+      {
+        "id": "recovery",
+        "label": "Recordings and backups",
+        "focus": [
+          "api",
+          "spool",
+          "r2",
+          "sqlite",
+          "backups"
+        ],
+        "note": "Manifest per recording; delete after verified upload + DB commit. Back up both buckets, artwork and SQLite."
+      }
+    ],
+    "subtitle": "Companion to live-moafunk.proposal-v5.md (authoritative text) · NEW/CHANGE = proposed",
+    "legend": {
+      "mode": "hidden"
+    },
+    "viewBox": [
+      1366,
+      552
+    ]
+  },
+  "components": [
+    {
+      "id": "probe",
+      "type": "external",
+      "label": "External observer",
+      "sublabel": "NEW · MP3 + HLS 24/7",
+      "pos": [
+        250,
+        36
+      ],
+      "size": [
+        156,
+        72
+      ]
+    },
+    {
+      "id": "deploy",
+      "type": "cloud",
+      "label": "Build + deploy",
+      "sublabel": "CHANGE · gated deploys",
+      "pos": [
+        710,
+        36
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "sources": [
+        {
+          "path": ".github/workflows/backend.yml",
+          "line": 3,
+          "end_line": 5,
+          "label": "today: push deploys"
+        }
+      ]
+    },
+    {
+      "id": "providers",
+      "type": "external",
+      "label": "Publishing APIs",
+      "sublabel": "SoundCloud · IG · TG",
+      "pos": [
+        940,
+        36
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "sources": [
+        {
+          "path": "backend/src/soundcloud.rs",
+          "line": 216,
+          "end_line": 432,
+          "label": "upload_track"
+        }
+      ]
+    },
+    {
+      "id": "admin",
+      "type": "frontend",
+      "label": "Admin SPA",
+      "sublabel": "hosts + admins",
+      "pos": [
+        20,
+        171
+      ],
+      "size": [
+        156,
+        72
+      ]
+    },
+    {
+      "id": "nginx",
+      "type": "security",
+      "label": "nginx + TLS",
+      "sublabel": "NEW public stream host",
+      "pos": [
+        250,
+        171
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "sources": [
+        {
+          "path": "backend/scripts/deploy_hetzner.sh",
+          "line": 433,
+          "end_line": 436,
+          "label": "/live.mp3 proxy"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API process",
+      "sublabel": "ingest · capture · API",
+      "pos": [
+        710,
+        171
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "tag": "docker bridge",
+      "sources": [
+        {
+          "path": "backend/src/handlers/stream_ws.rs",
+          "line": 70,
+          "end_line": 104,
+          "label": "stream socket"
+        }
+      ]
+    },
+    {
+      "id": "spool",
+      "type": "database",
+      "label": "Recording spool",
+      "sublabel": "NEW · manifests",
+      "pos": [
+        940,
+        171
+      ],
+      "size": [
+        156,
+        72
+      ]
+    },
+    {
+      "id": "r2",
+      "type": "cloud",
+      "label": "Cloudflare R2",
+      "sublabel": "private · immutable",
+      "pos": [
+        1170,
+        171
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "sources": [
+        {
+          "path": "backend/src/storage.rs",
+          "line": 741,
+          "end_line": 746,
+          "label": "cover upload"
+        }
+      ]
+    },
+    {
+      "id": "pages",
+      "type": "frontend",
+      "label": "Public site",
+      "sublabel": "GitHub Pages · player",
+      "pos": [
+        20,
+        306
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "sources": [
+        {
+          "path": "frontend/src/player.ts",
+          "line": 13,
+          "end_line": 26,
+          "label": "Icecast player"
+        }
+      ]
+    },
+    {
+      "id": "icecast",
+      "type": "messagebus",
+      "label": "Icecast-KH",
+      "sublabel": "permanent /live.mp3",
+      "pos": [
+        480,
+        306
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "tag": "host net",
+      "sources": [
+        {
+          "path": "docs/stream-rework/prod/icecast.xml",
+          "line": 21,
+          "end_line": 26,
+          "label": "350 clients"
+        }
+      ]
+    },
+    {
+      "id": "liquidsoap",
+      "type": "backend",
+      "label": "Liquidsoap",
+      "sublabel": "CHANGE · MP3 + AAC out",
+      "pos": [
+        710,
+        306
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "tag": "host net",
+      "sources": [
+        {
+          "path": "docs/stream-rework/prod/moafunk.liq",
+          "line": 57,
+          "label": "today: mksafe only"
+        }
+      ]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "+ maintenance gate",
+      "pos": [
+        940,
+        306
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "sources": [
+        {
+          "path": "backend/src/main.rs",
+          "line": 243,
+          "end_line": 246,
+          "label": "pool"
+        }
+      ]
+    },
+    {
+      "id": "backups",
+      "type": "cloud",
+      "label": "Off-site backups",
+      "sublabel": "CHANGE · both buckets",
+      "pos": [
+        1170,
+        306
+      ],
+      "size": [
+        156,
+        72
+      ],
+      "sources": [
+        {
+          "path": "backend/scripts/backup/backup-r2.sh",
+          "line": 24,
+          "label": "today: artists only"
+        }
+      ]
+    },
+    {
+      "id": "hls",
+      "type": "database",
+      "label": "HLS files",
+      "sublabel": "NEW · persistent",
+      "pos": [
+        250,
+        306
+      ],
+      "size": [
+        156,
+        72
+      ]
+    },
+    {
+      "id": "assets",
+      "type": "database",
+      "label": "Programme assets",
+      "sublabel": "NEW · fallback + prerec.",
+      "pos": [
+        710,
+        441
+      ],
+      "size": [
+        156,
+        72
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Hetzner · one host · one failure domain",
+      "wraps": [
+        "nginx",
+        "icecast",
+        "api",
+        "liquidsoap",
+        "spool",
+        "sqlite",
+        "hls",
+        "assets"
+      ],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "media stack · outlives API deploys",
+      "wraps": [
+        "icecast",
+        "liquidsoap",
+        "hls",
+        "assets"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "admin",
+      "to": "nginx",
+      "label": "REST + WSS",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "pages",
+      "to": "nginx",
+      "label": "MP3 · HLS · JSON"
+    },
+    {
+      "from": "nginx",
+      "to": "api",
+      "label": "admin · ingest · JSON",
+      "variant": "security",
+      "route": "straight"
+    },
+    {
+      "from": "nginx",
+      "to": "hls",
+      "label": "read-only",
+      "labelAt": [
+        278,
+        274
+      ],
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "nginx",
+      "to": "icecast",
+      "label": "MP3 proxy",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "api",
+      "to": "liquidsoap",
+      "label": "live Opus · lossless prerec.",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": -91,
+      "labelDy": 44
+    },
+    {
+      "from": "liquidsoap",
+      "to": "api",
+      "label": "events · snapshots",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": -95,
+      "labelDy": -41
+    },
+    {
+      "from": "assets",
+      "to": "api",
+      "label": "pinned prerec. file",
+      "fromSide": "right",
+      "toSide": "right",
+      "labelDy": 53
+    },
+    {
+      "from": "liquidsoap",
+      "to": "icecast",
+      "label": "MP3 256k",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right",
+      "route": "straight"
+    },
+    {
+      "from": "liquidsoap",
+      "to": "hls",
+      "label": "AAC 128k",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    },
+    {
+      "from": "assets",
+      "to": "liquidsoap",
+      "label": "fallback · ident",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "api",
+      "to": "spool",
+      "label": "capture",
+      "labelAt": [
+        918,
+        230
+      ],
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "api",
+      "to": "sqlite",
+      "label": "SQLx",
+      "fromSide": "right",
+      "toSide": "top",
+      "labelDx": 70,
+      "labelDy": 38
+    },
+    {
+      "from": "spool",
+      "to": "r2",
+      "label": "API uploads + verifies",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelAt": [
+        1133,
+        256
+      ]
+    },
+    {
+      "from": "api",
+      "to": "providers",
+      "label": "optional publish",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "from": "sqlite",
+      "to": "backups",
+      "label": "backup process snapshots",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    },
+    {
+      "from": "r2",
+      "to": "backups",
+      "label": "retained copies",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [
+        1248,
+        274
+      ]
+    },
+    {
+      "from": "deploy",
+      "to": "api",
+      "label": "gated · host lock",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [
+        788,
+        140
+      ]
+    },
+    {
+      "from": "probe",
+      "to": "nginx",
+      "label": "decode checks",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [
+        328,
+        140
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Continuous station",
+      "items": [
+        "Producer → fallback → ident → alerted mksafe",
+        "HLS for tested Apple clients; MP3 permanent",
+        "Delivery + fallback survive API downtime; live and prerecorded input do not"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Safe maintenance",
+      "items": [
+        "Gate + host lock + fencing; no timed reopen",
+        "Refused during capture or if a show starts in the deploy + rollback window (≥30 min)",
+        "API down: live input stops, metadata goes stale"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Recovery and limits",
+      "items": [
+        "Spool deleted only after verified upload + DB commit",
+        "Backups: both buckets, artwork, SQLite; restore tests",
+        "Observer adds to local host alerts"
+      ]
+    }
+  ]
+}

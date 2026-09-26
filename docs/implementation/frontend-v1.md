@@ -1,0 +1,112 @@
+# Frontend implementation tasks — draft v1
+
+Baseline: `13e73de`. Paths below were checked in the architecture worktree after GitNexus consultation; the graph can describe another checkout. NEW paths are proposed modules, not existing files. Backend route names and schemas must use the coordinating plan's frozen contracts. Tests use `npm test -- --run` in `frontend/`; also run `npm run typecheck`, `npm run lint`, and `npm run build`. Record pre-existing failures separately. A jsdom test verifies application decisions, never native iOS playback.
+
+All tasks have one frontend owner. F1–F5 share public player files and must be integrated sequentially; F6 can proceed in parallel after API contracts freeze, with one designated editor for `admin/api/index.ts`. Each task is one logical PR unless its stated boundary separates a deployable change. Implementation starts only after the plan review, not as part of writing this taskbook.
+
+## F1 — Separate listener intent, media state and status uncertainty
+
+Owner: public-player implementer. Files: `frontend/src/{player,main,streamDetector}.ts`, `frontend/src/index.html`; NEW `frontend/src/playbackController.ts` and focused tests under `frontend/src/__tests__/`. Update existing detector tests in both `frontend/src/__tests__/` and `frontend/tests/` where affected.
+
+Coding dependencies: legacy/current public status schema and initial rollout-profile contract. Rollout dependencies: verified production MP3 route; remain on the legacy profile until F3's continuous-server gate. PR boundary: lifecycle plus regressions. Rollback: preceding frontend artifact/configuration, with existing server aliases intact.
+
+### F1.1 — Establish one audio lifecycle
+
+- [ ] **F1.1.1** Introduce an audio-controller interface with intent separate from `idle`, `starting`, `playing`, `buffering`, `recovering`, `user-paused`, `interrupted`, and `failed`; feed the play button from media events and handled `play()` promises instead of CSS class inspection. **Verify:** event/promise tests cover successful start, rejected start, buffering, ended/error and explicit pause; UI never claims playing solely because a click occurred.
+- [ ] **F1.1.2** Route the listener's button through the controller and reuse one `<audio>` element with owned listener teardown. In the verified MP3 profile retire the obsolete video/FLV initialization; remove the FLV dependency only after inventory confirms no remaining consumer and no supported deployment needs the legacy path. **Verify:** repeated initialization/disposal produces one element and one handler set; preview/admin audio remains separate and unchanged.
+
+### F1.2 — Preserve compatibility while removing false off-air results
+
+- [ ] **F1.2.1** Change status decoding from boolean failure to `known-active`, `known-inactive`, or `unknown`; validate response shape and map timeout, invalid JSON and non-success HTTP to unknown. Retain last good display separately from freshness. **Verify:** valid `{active:false}` remains distinct from offline network, empty response and malformed `{active}` values.
+- [ ] **F1.2.2** Replace overlapping status intervals with one cancellable request loop and five-second timeout. Request every ten seconds while visible and on foreground/user-media actions; invalidate stale completion on disposal or profile change. **Verify:** delayed response never overwrites a newer generation; at most one request is in flight; first failure marks stale, third may warn, and working audio is not torn down.
+- [ ] **F1.2.3** Keep the initial legacy profile's confirmed off-air stop/start rules while preventing unknown from causing teardown. Model this policy explicitly so the later continuous profile does not inherit it. **Verify:** regressions exercise active→unknown→active without source reset and active→confirmed-inactive with legacy behavior; no automatic autoplay appears on a fresh page.
+
+## F2 — Add bounded recovery without overriding user or system pause
+
+Owner: public-player implementer. Files: F1 controller, `frontend/src/player.ts`; NEW `frontend/src/playbackRecovery.ts` and focused tests. Coding dependencies: F1. Rollout dependencies: current MP3 path; native-HLS behavior remains disabled until F4/F7 qualify it. PR boundary: recovery engine and event integration. Rollback: preceding F1 artifact with recovery disabled; preserve user intent and status fixes.
+
+### F2.1 — Serialize progress checks and retries
+
+- [ ] **F2.1.1** Implement one progress-check scheduler, initially eight seconds without `currentTime` progress while listening is intended and the element is not intentionally/system-paused. Treat `error`, `waiting`, `stalled` and `online` as early-check requests. Let native loading recover before resetting its source. **Verify:** concurrent events cause one check/recovery, transient waiting with resumed progress causes none, and paused time does not trigger recovery.
+- [ ] **F2.1.2** Add one pending timer and one active recovery operation with delays 1/2/4/8/16/30 seconds and ±20% jitter, resetting only after thirty seconds of healthy progress. Inject clock/jitter/media boundary for deterministic tests. **Verify:** sustained errors follow bounded cadence, brief recovery does not reset the budget, and no event storm increases operation count.
+
+### F2.2 — Cancel obsolete work and respect interruptions
+
+- [ ] **F2.2.1** Use generation tokens around retries, source replacement and pending play promises; explicit pause/stop/disposal invalidates all obsolete work. A late successful promise must not revive a stopped generation. **Verify:** pause during timer, fetch/source change and pending play each remain stopped after every callback settles.
+- [ ] **F2.2.2** Treat unexpected OS pause as interrupted and `NotAllowedError` as requiring a new user action; show a clear retry control. Do not resume solely on `online` or visibility return. **Verify:** simulated call/headphone/other-app pause cannot trigger automated play; explicit page or system play can begin a new attempt.
+- [ ] **F2.2.3** Define long-pause resume at the live edge using a fresh source when needed; retain the same audio element and avoid metadata-driven reload. Add bounded diagnostic events for transport, startup, stalls, retries and outcome, without account identity or sensitive URLs. **Verify:** long resume discards stale buffered time, metadata changes never set `src`, and telemetry failure does not affect audio. Device behavior still requires F7.
+
+## F3 — Enable continuous listening and safe frontend updates
+
+Owner: public-player implementer; workflow edits coordinated with operations owner. Files: `frontend/src/{config,main,player,versionWatcher}.ts`, `frontend/vite.config.ts`, `frontend/src/index.html`, `frontend/tests/versionWatcher.test.ts`; public deployment workflow wiring owned by operations. Coding dependencies: F1/F2 and agreed configuration contract. Rollout dependencies: F3.2.1–F3.2.2 update protection is legacy-compatible and ships with F1/F2; only continuous activation waits for approved fallback and ident, final-selector behavior, local assets and external MP3 health. PR boundary: update protection first; continuous profile in a separate feature/configuration deployment. Rollback: rebuild/deploy the last tested profile and transport settings; do not assume editing a server variable changes an existing Vite bundle.
+
+### F3.1 — Make continuous mode an explicit release profile
+
+- [ ] **F3.1.1** Add validated, explicit legacy/continuous profile configuration. Continuous mode allows user-initiated station playback between shows and never destroys working audio on producer disconnect, scheduled end, fallback selection or status unknown. **Verify:** live→fallback→prerecorded→fallback and failed metadata requests keep one listening session; legacy fixtures retain F1.2.3 behavior before the server cutover.
+- [ ] **F3.1.2** Update station labels from selected-output mode and freshness, separately from producer ownership. Label fallback/rerun truthfully, stale information as stale, and expose pause/stop plus approximate payload use (115 MB/hour MP3; 58 MB/hour AAC). Mark internal links that interrupt playback while cross-page persistence is absent. **Verify:** fallback is not described as a live host, unavailable information is not confirmed off-air, and controls work with keyboard/accessibility names.
+
+### F3.2 — Protect sessions across static deployments
+
+- [ ] **F3.2.1** Replace the version watcher's ready-state-based guard with active listening intent, including starting/buffering/recovering. Defer reload until the session is inactive and never interrupt an outstanding start. **Verify:** deployment during buffering or retry does not reload; idle listener gets the new build; failed version fetch never reloads.
+- [ ] **F3.2.2** Replace Git-SHA-only deployment identity with an explicit deployment/configuration digest covering public transport/profile settings and the artifact revision; use the identical identifier in the bundle and `version.json`. Include only allowlisted public configuration, never secrets. **Verify:** two builds of the same commit with different HLS/profile settings yield different identities; each emitted manifest matches its bundle.
+- [ ] **F3.2.3** Define the rollout/rollback artifact matrix with operations: legacy MP3, continuous MP3, and qualified continuous HLS. Keep old audio URLs and legacy `{active}` available for cached bundles; do not reinterpret `active` as station fallback activity to force old pages to listen. **Verify:** a cached pre-change bundle still plays announced shows, the continuous bundle persists across show end, and a same-commit config rollback is detected after listening ends.
+
+## F4 — Select qualified native HLS with permanent MP3 fallback
+
+Owner: public-player implementer. Files: `frontend/src/{config,player,playbackController,playbackRecovery}.ts`; NEW `frontend/src/streamTransport.ts` and tests. Coding dependencies: F2/F3 and stable public URL contract. Rollout dependencies: HLS server harness, stable media URL/restart/retention proof, F7 device evidence. PR boundary: transport selection behind disabled rollout configuration. Rollback: continuous MP3 artifact/configuration with permanent MP3 routes preserved.
+
+### F4.1 — Make eligibility conservative and explicit
+
+- [ ] **F4.1.1** Add explicit optional HLS URL/enablement and qualified-client policy; allow native HLS only with rollout enabled, nonempty native `canPlayType` and the device-qualified eligibility rule. A tested AirPlay capability filter may support that rule; neither it nor user-agent string alone proves qualification. **Verify:** disabled, blank, unsupported and unrecognized clients select MP3; no retired NMS URL silently returns as a default.
+- [ ] **F4.1.2** Keep Android/desktop or alternative iOS engines on MP3 unless their own recorded gates permit HLS. Use the existing native audio element without hls.js or Web Audio. **Verify:** the selector matrix covers supported, unsupported and ambiguous capabilities; browser emulation is labelled a policy test, not native-decoder evidence.
+
+### F4.2 — Fail over within a listening session
+
+- [ ] **F4.2.1** Count failed HLS recovery attempts in the listening session; after three, switch once to MP3 and never oscillate back automatically until a new session. Preserve pause-generation checks across that switch. **Verify:** three failures cause exactly one switch, later MP3 errors never restore HLS, and pause during switch prevents play.
+- [ ] **F4.2.2** Surface tap-to-resume if MP3 play is rejected and retain ordinary bounded recovery for transport errors. Do not represent this client switch as protection against shared-origin failure or suspended-JavaScript failure. **Verify:** blocked play ends automatic attempts and an origin-down exercise records both paths unavailable.
+- [ ] **F4.2.3** Add route-specific recovery settings only when real tests require them, especially if AirPlay does not advance page `currentTime` reliably. Record the evidence and safe behavior for each exception. **Verify:** AirPlay tests cannot cause continuous watchdog resets; unknown route behavior defaults to conservative intervention rather than invented support.
+
+## F5 — Publish one now-playing snapshot to the page and Media Session
+
+Owner: public-player implementer. Files: `frontend/src/{main,config,player}.ts`, `frontend/src/index.html`; NEW `frontend/src/{nowPlaying,mediaSession}.ts`, focused tests and versioned static station artwork under `frontend/public/`. Coding dependencies: F1/F2 plus frozen public JSON/artwork contracts; mocks permit coding before backend delivery. Rollout dependencies: backend output reconciliation, immutable artwork publication and public routes. PR boundary: now-playing client plus Media Session, metadata disabled or station-only until contracts are deployed. Rollback: previous frontend artifact; audio continues with station identity.
+
+### F5.1 — Consume authoritative, revisioned output metadata
+
+- [ ] **F5.1.1** Decode the public schema with nullable broadcast/show/output fields and an opaque revision. Reuse the serialized ten-second/five-second-timeout polling lifecycle rather than adding a second racing interval; compare only within the contract's valid revision/order scope, never sort UUID epochs. **Verify:** malformed/unsupported schemas preserve last valid data as stale, 304 uses the cached representation, and delayed old-generation responses cannot regress current display.
+- [ ] **F5.1.2** Resolve one displayed snapshot from selected delivery mode, approved title/presenter/artwork and freshness; never infer selected programme from `producer_live` alone. Retain stale previous values on failure and refresh on foreground/media action without touching audio. **Verify:** producer-live plus selected-fallback shows fallback; same-show presenter/artwork revision refreshes; unknown output does not relabel a former show as verified current.
+
+### F5.2 — Apply metadata and artwork safely
+
+- [ ] **F5.2.1** Apply the same snapshot to page text and `MediaMetadata` (title, public presenter, station/programme album, immutable 512/256/96 artwork). Render text safely and use versioned static station art when a show revision fails; never rewrite an old artwork URL to different content. **Verify:** hostile text stays text, broken/stale art falls back locally, and late image completion cannot replace a newer programme's art.
+- [ ] **F5.2.2** Detect Media Session and each supported action individually; route system play/pause/stop through F1/F2, derive playbackState from actual controller state, and clear obsolete position state without fake duration. **Verify:** absent/partially implemented APIs do not break playback; system pause cancels recovery; no finite-show duration is emitted for the continuous station.
+- [ ] **F5.2.3** Add tests and support text distinguishing output-time metadata from listener-time audio and suspended-JavaScript limits. Refresh immediately on return; no HLS-tag, background timer or service-worker freshness promise. **Verify:** foreground show/cover transitions update without a media reload; F7 measures actual foreground lag and captures locked-screen staleness separately.
+
+## F6 — Migrate admin consumers and edit public presenter
+
+Owner: admin-frontend implementer. Files: `frontend/src/admin/api/index.ts`, `pages/{StreamPage,DashboardPage,RecordingPage,ShowDetailPage}.vue`, `pages/flow/{FlowOnAir,FlowStreaming}.vue`, `components/show-detail/ShowHeader.vue`; NEW focused contract/form tests. Coding dependencies: frozen authenticated stream-detail and show-update contracts; may run alongside public-player work. Rollout dependencies: additive backend endpoints/field first, then admin bundle; public-field removal comes only after consumer migration evidence. PR boundary: F6.1 status migration and F6.2 presenter editing may be separate feature PRs. Rollback: preceding admin/API-compatible image pair; retain additive endpoints/schema and delay public privacy cutover.
+
+### F6.1 — Keep producer controls separate from station delivery
+
+- [ ] **F6.1.1** Add distinct typed admin stream-detail and public station-status clients. Migrate StreamPage and DashboardPage away from public `status.user`; preserve authenticated ownership/takeover behavior using the backend's explicit authorization fields and errors. **Verify:** session-expired/unauthorized users receive no private producer information; own/other/admin producer views remain correct.
+- [ ] **F6.1.2** Audit FlowOnAir, FlowStreaming and RecordingPage: keep their `active` checks tied to producer completion, never continuous fallback or listener delivery health. Show station-output state separately where useful. **Verify:** prerecorded completion ends the producer workflow while fallback continues; active producer with failed output does not look healthy; stale output does not falsely complete capture.
+- [ ] **F6.1.3** Record deployed-admin compatibility evidence before backend removes public user/private fields. Exercise cached old public listeners and authenticated admin pages against the transitional contract; document how stale admin bundles refresh or fail safely. **Verify:** old public `{active}` behavior survives, new admin gets authorized detail, and the privacy switch has no remaining current admin reader of public private fields.
+
+### F6.2 — Edit an editorial public name without exposing login names
+
+- [ ] **F6.2.1** Add nullable `public_presenter` to typed show models/update payloads and the existing ShowDetailPage/ShowHeader edit flow. Show the resolved public preview and distinguish override, cleared override and unsaved input; keep host assignment separate. **Verify:** save/cancel/reload and clear-to-derived behavior round-trip through the real show API; forbidden editor receives an actionable error without a false saved state.
+- [ ] **F6.2.2** Integrate backend-resolved UNHEARD assigned-artist names or station fallback and same-show artwork/presenter revision changes. Do not derive public identity from account usernames or duplicate backend authorization rules in UI. **Verify:** assignment/cover/presenter updates produce matching public preview and Media Session snapshot; existing show-edit permission remains intact and does not imply broadcast permission.
+
+## F7 — Qualify native devices and approve the frontend release profile
+
+Owner: frontend qualification lead with an operator supplying physical devices and approved test broadcasts. Files: NEW dated evidence under `docs/implementation/evidence/mobile/`, device matrix and release report; fixture/tool changes only where required. Coding dependencies: none for baseline collection; complete candidate requires F1–F6. Rollout dependencies: deployed staging/server harness, operator windows, approved programme assets and operations fault controls. PR boundary: reproducible test protocol first, measured release evidence second. Rollback: disable HLS using a rebuilt MP3 artifact; keep continuous mode only if its server gate remains passed. Tests do not authorize production fault injection.
+
+### F7.1 — Establish a reproducible device baseline
+
+- [ ] **F7.1.1** Record physical device model, OS/browser versions, normal Safari versus home-screen mode, network, route (speaker/headphone/AirPlay/CarPlay), artifact/configuration ID and stream endpoint. Capture pre-change tap-to-audio and producer-to-ear delay, then rerun identical scenarios on the candidate. **Verify:** every claimed platform has a traceable result; user-agent emulation and jsdom results are excluded from device pass counts.
+- [ ] **F7.1.2** Measure healthy-network startup p95 against the under-five-second target and short-network-loss recovery within fifteen seconds of connectivity return in at least 19/20 controlled trials per supported path. Measure HLS end-to-end delay; obtain a recorded decision if over thirty seconds or live-chat use is degraded. **Verify:** report sample count, timing method and failures, not only averages; choose supported minimum iOS from evidence.
+
+### F7.2 — Exercise interruptions, transitions and release rollback
+
+- [ ] **F7.2.1** Test thirty-minute locked playback, programme/cover change while locked, Wi-Fi↔cellular, temporary loss while locked, long pause/resume, call/Siri, headphone removal, deployment during buffering and HLS→MP3 fallback. Test AirPlay/CarPlay/home-screen separately wherever claimed. **Verify:** no unintended restart after pause, no metadata/API failure interrupts healthy audio, and lock-screen stale values are reported honestly.
+- [ ] **F7.2.2** With operations, test locked native-HLS graceful restart/crash, stable playlist/retained segment behavior, live/prerecorded→fallback handover and API replacement. Run Android/desktop MP3 and VLC/direct URL/ICY checks, then observe at least two full shows. **Verify:** correlate player logs with output generations/probes and distinguish producer interruption from station-delivery interruption; the evidence names every failed or unsupported route.
+- [ ] **F7.2.3** Publish the go/no-go matrix and exact allowlisted profile/configuration; retain MP3 if native HLS fails any required gate. Rehearse frontend configuration-only rollback at the same Git commit and session-safe update detection. **Verify:** operator can identify and restore the tested artifact, cached URLs still work, and release notes state single-origin and background-metadata limits without promising untested behavior.

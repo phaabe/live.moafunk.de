@@ -1,0 +1,502 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "live.moafunk.de architecture",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/phaabe/live.moafunk.de",
+      "provider": "github",
+      "revision": "d879abfa5dd8653a4821152a40fa0ec4828ccf2f"
+    },
+    "views": [
+      {
+        "id": "listener-path",
+        "label": "Listener path",
+        "focus": [
+          "listeners",
+          "pages",
+          "nginx",
+          "icecast"
+        ],
+        "note": "Public site on GitHub Pages plays the TLS-fronted Icecast /live.mp3 mount."
+      },
+      {
+        "id": "broadcast-path",
+        "label": "Broadcast path",
+        "focus": [
+          "hosts",
+          "admin_spa",
+          "nginx",
+          "api",
+          "liquidsoap",
+          "icecast"
+        ],
+        "note": "Host mic → WebSocket → Rust ffmpeg producer → Liquidsoap harbor → Icecast."
+      },
+      {
+        "id": "archive-social",
+        "label": "Archive and social",
+        "focus": [
+          "api",
+          "sqlite",
+          "r2",
+          "soundcloud",
+          "social"
+        ],
+        "note": "Recording is the system of record; SoundCloud, Instagram and Telegram hang off it."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "listeners",
+      "type": "external",
+      "label": "Listeners",
+      "sublabel": "browser · iOS",
+      "pos": [
+        20,
+        170
+      ],
+      "size": [
+        156,
+        64
+      ]
+    },
+    {
+      "id": "hosts",
+      "type": "external",
+      "label": "Hosts and admins",
+      "sublabel": "browser mic",
+      "pos": [
+        20,
+        370
+      ],
+      "size": [
+        156,
+        64
+      ]
+    },
+    {
+      "id": "pages",
+      "type": "frontend",
+      "label": "Public site",
+      "sublabel": "Vite · vanilla TS",
+      "tag": "GitHub Pages",
+      "pos": [
+        292,
+        170
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "frontend/src/player.ts",
+          "line": 14,
+          "end_line": 17,
+          "label": "Icecast player"
+        },
+        {
+          "path": "frontend/src/config.ts",
+          "line": 4,
+          "end_line": 22,
+          "label": "stream URLs"
+        },
+        {
+          "path": ".github/workflows/frontend.yml",
+          "line": 117,
+          "end_line": 128,
+          "label": "Pages deploy"
+        }
+      ]
+    },
+    {
+      "id": "admin_spa",
+      "type": "frontend",
+      "label": "Admin SPA",
+      "sublabel": "Vue 3 · Pinia",
+      "pos": [
+        292,
+        370
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "frontend/src/admin/main.ts",
+          "line": 1,
+          "end_line": 22,
+          "label": "SPA entry"
+        },
+        {
+          "path": "frontend/src/admin/api/index.ts",
+          "line": 1,
+          "end_line": 67,
+          "label": "API client"
+        }
+      ]
+    },
+    {
+      "id": "nginx",
+      "type": "security",
+      "label": "nginx + Let's Encrypt",
+      "sublabel": "admin.live.moafunk.de",
+      "pos": [
+        564,
+        270
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "backend/scripts/deploy_hetzner.sh",
+          "line": 405,
+          "end_line": 406,
+          "label": "/live.mp3 proxy"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "Rust API",
+      "sublabel": "Axum · :8000",
+      "tag": "docker bridge",
+      "pos": [
+        836,
+        270
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "backend/src/main.rs",
+          "line": 718,
+          "end_line": 742,
+          "label": "WS + API routes"
+        },
+        {
+          "path": "backend/src/handlers/stream_ws.rs",
+          "line": 167,
+          "end_line": 375,
+          "label": "stream socket"
+        },
+        {
+          "path": "backend/docker-compose.prod.yml",
+          "line": 1,
+          "end_line": 28,
+          "label": "compose"
+        }
+      ]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "data/unheard.db",
+      "pos": [
+        564,
+        60
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "backend/src/db.rs",
+          "line": 28,
+          "label": "migrations"
+        },
+        {
+          "path": "backend/src/main.rs",
+          "line": 243,
+          "label": "pool"
+        }
+      ]
+    },
+    {
+      "id": "liquidsoap",
+      "type": "backend",
+      "label": "Liquidsoap harbor",
+      "sublabel": "harbor :8005",
+      "tag": "docker host net",
+      "pos": [
+        836,
+        480
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "docs/stream-rework/prod/moafunk.liq",
+          "line": 1,
+          "end_line": 67,
+          "label": "harbor script"
+        }
+      ]
+    },
+    {
+      "id": "icecast",
+      "type": "messagebus",
+      "label": "Icecast-KH",
+      "sublabel": "/live.mp3 :8010",
+      "tag": "docker host net",
+      "pos": [
+        564,
+        480
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "docs/stream-rework/prod/icecast.xml",
+          "line": 40,
+          "end_line": 52,
+          "label": "mounts"
+        }
+      ]
+    },
+    {
+      "id": "r2",
+      "type": "cloud",
+      "label": "Cloudflare R2",
+      "sublabel": "recordings · media",
+      "pos": [
+        1108,
+        270
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "backend/src/storage.rs",
+          "line": 18,
+          "end_line": 24,
+          "label": "S3 client"
+        },
+        {
+          "path": "backend/src/handlers/recording.rs",
+          "line": 403,
+          "end_line": 422,
+          "label": "multipart upload"
+        }
+      ]
+    },
+    {
+      "id": "soundcloud",
+      "type": "external",
+      "label": "SoundCloud API",
+      "sublabel": "upload after finalize",
+      "pos": [
+        1108,
+        60
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "backend/src/soundcloud.rs",
+          "line": 216,
+          "end_line": 432,
+          "label": "upload_track"
+        }
+      ]
+    },
+    {
+      "id": "social",
+      "type": "external",
+      "label": "Telegram + Instagram",
+      "sublabel": "Bot API · Graph API",
+      "pos": [
+        1108,
+        480
+      ],
+      "size": [
+        156,
+        64
+      ],
+      "sources": [
+        {
+          "path": "backend/src/telegram.rs",
+          "line": 70,
+          "label": "bot loop"
+        },
+        {
+          "path": "backend/src/chat_bridge.rs",
+          "line": 30,
+          "label": "chat hub"
+        },
+        {
+          "path": "backend/src/instagram.rs",
+          "line": 904,
+          "label": "post show"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Hetzner Cloud · moafunk (nbg1)",
+      "wraps": [
+        "nginx",
+        "api",
+        "sqlite",
+        "liquidsoap",
+        "icecast"
+      ],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "host-networked stream stack (systemd + docker)",
+      "wraps": [
+        "liquidsoap",
+        "icecast"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "listeners",
+      "to": "pages",
+      "label": "HTTPS (static)"
+    },
+    {
+      "from": "pages",
+      "to": "nginx",
+      "label": "/live.mp3 + status",
+      "variant": "emphasis"
+    },
+    {
+      "from": "hosts",
+      "to": "admin_spa",
+      "label": "HTTPS"
+    },
+    {
+      "from": "admin_spa",
+      "to": "nginx",
+      "label": "REST + WSS",
+      "variant": "emphasis"
+    },
+    {
+      "from": "nginx",
+      "to": "api",
+      "label": "proxy :8000",
+      "variant": "security",
+      "route": "straight"
+    },
+    {
+      "from": "icecast",
+      "to": "nginx",
+      "label": "proxy /live.mp3",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "route": "straight",
+      "labelAt": [
+        642,
+        407
+      ]
+    },
+    {
+      "from": "api",
+      "to": "liquidsoap",
+      "label": "ffmpeg → harbor :8005",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 70,
+      "labelDx": -62
+    },
+    {
+      "from": "liquidsoap",
+      "to": "icecast",
+      "label": "mksafe → MP3 256k",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right",
+      "route": "straight"
+    },
+    {
+      "from": "api",
+      "to": "sqlite",
+      "label": "SQLx",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "api",
+      "to": "r2",
+      "label": "S3 multipart",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight"
+    },
+    {
+      "from": "api",
+      "to": "soundcloud",
+      "label": "OAuth · upload MP3",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "api",
+      "to": "social",
+      "label": "notify · chat bridge · post",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "One box, two networks",
+      "items": [
+        "unheard-api on the docker bridge net; Liquidsoap + Icecast-KH host-networked",
+        "The producer reaches the harbor via host.docker.internal",
+        "nginx TLS-fronts the API, the admin SPA and /live.mp3"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Recording is the system of record",
+      "items": [
+        "WS chunks → ffmpeg tee → segments → concat → R2 multipart",
+        "Finalize also uploads a private SoundCloud track",
+        "Orphaned segments recovered at startup; failures on /metrics"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Delivery and ops",
+      "items": [
+        "main → GHCR image → deploy-hetzner over SSH",
+        "Public site → GitHub Pages; clients self-update via /version.json",
+        "Weekly SQLite + R2 backup; Prometheus + Grafana on the box"
+      ]
+    }
+  ]
+}
