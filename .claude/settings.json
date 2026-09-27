@@ -175,6 +175,23 @@
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/merge-guard.sh\"",
             "timeout": 5,
             "statusMessage": "Merge-guard: PR-only merging..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/epic-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Epic-guard: checking epic PR rules..."
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__github__add_issue_comment|mcp__github__create_pull_request_review|mcp__github__create_pull_request|mcp__github__update_issue|mcp__github__update_pull_request|mcp__github__merge_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/epic-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Epic-guard: checking epic PR rules..."
           }
         ]
       }

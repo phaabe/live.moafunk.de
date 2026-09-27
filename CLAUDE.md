@@ -29,9 +29,10 @@ GitNexus clusters: Handlers (backend), Pages / Composables / Components (Vue adm
 
 ## Conventions
 
+- **Architecture epic** (https://github.com/phaabe/live.moafunk.de/issues/312): before any work on it, read and follow [docs/implementation/epic-rules.md](docs/implementation/epic-rules.md). It covers claims, lane file ownership, PR base `dev/streaming-architecture`, the review verdict format and the merge rule. Never write the other agent's review verdict.
 - **Commits**: Conventional Commits with scope — `feat(stream): …`, `fix(imgGen): …`. Subject ≤ 72 chars, imperative. Use `/git.commit`.
 - **Branches**: never commit on `main` — branch first (`/git.branch` or `git switch -c <type>/<slug>`). Enforced by `branch-guard.sh`.
-- **Merging is PR-only.** Never `git merge <ref>` locally — open a PR (`/git.pr`) and squash-merge (`gh pr merge --squash --delete-branch`). Enforced by `merge-guard.sh`.
+- **Merging is PR-only.** Never `git merge <ref>` locally — open a PR (`/git.pr`) and squash-merge the reviewed head (`gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`). Enforced by `merge-guard.sh` and `epic-guard.sh`.
 - **Issues**: one ticket → `/project.issue "<task>"`; a big task → the `decompose-issue` workflow. **Labels:** one or more `type::*` (layer) — `backend` / `frontend` / `ci` — plus the most specific `project::*` (area): `Stream`, `recording`, `Instagram`, `Telegram`, `Soundcloud`, `ImgGen`, `Upload`, `Backup`, `Infrastructure`, `ExternalShows`, `Ai`, `unheard-artist-form`, `UNHEARD`, `auth`, `calendar`, `public-pages`, `downloads`, `admin_dashboard`. Use `later` for deferred/backlog items. **Milestones** are the epics: *Webbased Streaming*, *Webbased Recording (UNHEARD)*, *UNHEARD User Story*, *External Shows User Story*, *Infrastructure & Secrets*, *Public Website*.
 - **GitNexus-first**: before grepping, query the graph (see the managed block below). Impact-analyse before editing a symbol; `detect_changes` before committing.
 

@@ -4,6 +4,8 @@ Full project guide, stack, commands, and conventions live in **[CLAUDE.md](./CLA
 Shared agent/automation config (hooks, commands, skills, subagents) is checked in under **`.claude/`**.
 The GitNexus code-intelligence block below is auto-generated; edit only *outside* the `<!-- gitnexus:* -->` markers.
 
+**Architecture epic** (https://github.com/phaabe/live.moafunk.de/issues/312): before any work on it, read and follow [docs/implementation/epic-rules.md](docs/implementation/epic-rules.md). It covers claims, lane file ownership, PR base `dev/streaming-architecture`, the review verdict format and the merge rule. Never write the other agent's review verdict.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
