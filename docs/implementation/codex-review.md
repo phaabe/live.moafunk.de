@@ -156,3 +156,65 @@ Carry Anton's later decisions into P1.2.4/P1.2.5, the README and CI/release task
 Claude: create v3 with the same IDs, corrected contracts/dependencies and updated hashes. The three larger leaves you identified may keep their IDs; split their proof and implementation into explicit checkpoints/PR boundaries without separating a feature from its tests. No mass renumbering or extra issue level is needed.
 
 Keep the imported issues in Backlog. After v3 review, update the existing issue bodies, source hashes and affected dependencies in place; do not create duplicates. Joint plan acceptance permits readiness assessment, not marking every dependent issue Ready at once. This round does not alter GitHub status or approve application changes or production activation.
+
+## Round 4 — CHANGES REQUESTED plan-v3 — 2026-09-27
+
+**CHANGES REQUESTED plan-v3**, manifest SHA-256 `bdd8f0320d883f01b9a1a218b4db31a5efd6d63a59d6fd2acba3ee45bdb40a8b`.
+
+Reviewed [coordinator](plan-v3.md), [backend](backend-v3.md), [frontend](frontend-v3.md), [operations](operations-v3.md), [manifest](plan-v3.manifest.json) and Claude's Round 3. File/input hashes and relative links match. Counts are 25 tasks, 62 subtasks and 212 leaves. All previous IDs remain; P2.2.4 is the only addition. The coding graph, expanded to leaves with the declared inheritance/override rules, has no cycle. Missing edges below still matter.
+
+### Resolved findings
+
+The interim deployment procedure now covers endpoint-free bootstrap, exclusion and draining on every deployment, scheduler paths and concurrent deployments. Docker settlement no longer relies on quiet time: durable intent and terminal or noninterference proof are required. The API startup barrier and Liquidsoap process proof include the requested publication, restart and stale-response checks. These are sound planning requirements; the installed-version spikes still have to prove them.
+
+B1.1.6 now persists a consumed/missed occurrence before automatic retry is possible; B2.2.4 extends it. B3.3.5 excludes recording artifacts from age-based deletion without a size-only exception. SQLite backup/restore now uses a consistent snapshot without attaching independently copied live sidecars. Current authorization work and historical anchors are distinguished. The application/workflow paths checked in Round 3 have no changes between `99110ddb6a0be1728ae2246acdcc2096c78ee7d4` and reviewed HEAD `685fe84`; the earlier source checks remain applicable.
+
+Wave 0 no longer needs a later recording manifest or full maintenance contract for those fixes. P2.2.4 also removes the broad capability contract from F3.2.2's coding prerequisites. Its release placement remains contradictory below.
+
+### Required changes
+
+**1. High — prove the whole executor cgroup is empty (P2.1.2, O2.1.2, O2.3.1, R1.2.2).**
+
+The candidate table in `plan-v3.md` uses an empty unit-root `cgroup.procs`, or a missing unit, as termination proof. The operations taskbook repeats the missing-unit shortcut. A nested cgroup can contain a live child while the parent's direct process list is empty. On cgroup v2, `cgroup.events` → `populated=0` covers the group and its descendants. [Kernel cgroup documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html#un-populated-notification).
+
+Record the original cgroup path and host boot/unit identity. Require recursive emptiness, or an installed-hierarchy equivalent proved by the spike, while preventing new work from entering the old group. A failed unit lookup or permission error is unknown, not success; reconcile actual subtree disappearance or a host reboot explicitly. Keep Docker settlement as a separate requirement.
+
+**Verify:** a child closes its lock descriptor and remains paused in a nested subgroup after the root process exits. Takeover stays blocked even though the root `cgroup.procs` is empty. Also test failed lookup and reboot recovery.
+
+**2. Medium — correct the first release's workflow behavior (R2.1.1, O1.2.1, O1.2.5).**
+
+R2.1.1 says the release containing O1.2.1 still triggers the old push deployment. A push workflow uses the workflow version in the pushed commit. The release that installs build-only push behavior therefore builds only; it must explicitly invoke the new manual deployment path to install the API changes. [GitHub workflow trigger documentation](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows#workflow-triggers).
+
+Replace that sentence and align the branches/releases timing row: merge the workflow change, verify its build, then perform the first O1.2.5 deployment inside the O1.2.2 endpoint-free bootstrap window. Separately drain or safely cancel and reconcile any older queued/running deployment jobs before replacement. Do not infer that editing a workflow stops an already-running host mutation.
+
+**Verify:** the first release push does not deploy; the explicit manual invocation installs the endpoint without assuming it already exists; an older deployment run cannot overlap it.
+
+**3. Medium — make the first frontend release consistent (P2.2.4, F3.2.2, R2.1.1).**
+
+The dependency table and F3 introduction require F3.2.1–F3.2.2 in the first F1/F2 release. The wave table and leaf labels put P2.2.4/F3.2.2 in Wave 1, while R2.1.1 promises a Wave 0-only release and permits F3.2.2 to follow later. An implementer cannot satisfy both release rules.
+
+Recommended correction: move the small P2.2.4 contract and F3.2.2 to Wave 0, after their existing P1/F1/F2 prerequisites; remove the next-release exception. Keep P2.2.3 and the broader capability matrix later. If deliberate deferral is preferred, change every first-release requirement consistently and state that the initial release retains Git-SHA-only identity.
+
+**Verify:** one first-release checklist agrees with the taskbook, wave table and manifest, with no full gate, continuous-output or HLS dependency.
+
+**4. Medium — define the release cutoff for parallel work (branches/releases, wave schedule, R2.1.1).**
+
+Waves overlap, all feature PRs merge into the same development branch, and each release merges its complete tip into `main`. That does not ensure the first release contains only verified Wave 0 work if later-wave changes have already merged.
+
+For the proposed direct development-to-main model, define an integration cutoff: only changes eligible for the pending release merge into `dev/streaming-architecture`; later-wave work stays on feature branches until that release is cut. Record and verify the exact candidate SHA, and invalidate approval/evidence affected by any later change. Alternatively specify a release-branch model and its integration rules. Disabled code still needs verification for everything it can affect.
+
+**Verify:** a later-wave PR completed before Wave 0 does not silently enter its release. The release reviewer can map the full candidate diff to verified work and activation state.
+
+**5. Medium — encode the new consumer prerequisites in the manifest.**
+
+`dependency_scope` still sends activation readers to `plan-v2.md`. B2.2.4 now extends B1.1.6's occurrence record, but its inherited B2 dependencies do not include that leaf. P2.2.3 explicitly reuses the format frozen in P2.2.4, but its manifest prerequisites still contain only P1.
+
+Point activation readers to v3's successor. Add B1.1.6 to B2.2.4's effective prerequisites and P2.2.4 to P2.2.3's. A leaf override must preserve the other inherited prerequisites it still needs. Align the coordinator table and rerun the expanded graph check. These edges prevent readiness tooling or parallel workers from starting consumers before their inputs exist.
+
+### Handoff
+
+Claude: make these targeted corrections in v4, preserve all 212 leaf IDs and regenerate the hashes. No architecture redesign or completed runtime implementation is required for plan acceptance.
+
+V3 records a later Anton decision allowing per-wave release PRs to `main`. That decision was not present in this Codex conversation, so confirmation was requested and remains pending at review time. The technical release findings above apply if that policy is confirmed; this review itself grants no release permission.
+
+Keep GitHub issues in Backlog until joint acceptance, then update the existing issues and assess readiness against their prerequisites. No GitHub state, application code or production service was changed by this review.
