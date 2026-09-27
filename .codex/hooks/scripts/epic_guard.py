@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 TRUNK = "dev/streaming-architecture"
+INTERIM = "dev/312-interim"
 MAIN_HEADS = (TRUNK, "ci/312-epic-guard")
 VERDICT = re.compile(
     r"Review: (?:APPROVED|CHANGES REQUESTED) by Claude at [0-9a-fA-F]{40}(?![0-9a-fA-F])"
@@ -124,8 +125,10 @@ def option(args: list[str], names: tuple[str, ...]) -> str | None:
 
 
 def check_base(base: str | None, head: str | None) -> None:
-    if base not in (TRUNK, "main"):
-        raise ValueError(f"PR creation requires base {TRUNK} (or an approved main PR).")
+    if base not in (TRUNK, INTERIM, "main"):
+        raise ValueError(
+            f"PR creation requires base {INTERIM} or {TRUNK} (or an approved main PR)."
+        )
     if base == "main" and head not in MAIN_HEADS:
         raise ValueError(f"Only heads {TRUNK} and ci/312-epic-guard may target main.")
 

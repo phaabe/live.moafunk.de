@@ -51,6 +51,8 @@ class EpicGuardTest(unittest.TestCase):
             ("gh pr create --base main --head ci/312-epic-guard --title x --body y", 0),
             ("gh pr create --base main --head ci/312-epic-guard-other", 2),
             ("gh pr create --base other", 2),
+            ("gh pr create --base dev/312-interim --head feat/x", 0),
+            ("gh pr create --base main --head dev/312-interim", 2),
             (
                 "gh pr create --base main --head feat/x --body 'use --base dev/streaming-architecture'",
                 2,
@@ -162,6 +164,8 @@ class EpicGuardTest(unittest.TestCase):
             ("main", "ci/312-epic-guard", 0),
             ("main", TRUNK, 0),
             (TRUNK, "feat/x", 0),
+            ("dev/312-interim", "feat/x", 0),
+            ("main", "dev/312-interim", 2),
             (None, "feat/x", 2),
         ):
             with self.subTest(base=base, head=head):

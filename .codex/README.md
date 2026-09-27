@@ -20,8 +20,10 @@ The guard blocks:
   body file or a typed API field file (`-F key=@path` / `--field key=@path`).
   Codex may only write its own verdict. API field paths resolve against the
   command's working directory; unreadable files and `@-` (stdin) are refused.
-- PR creation without an explicit base. Feature PRs target
-  `dev/streaming-architecture`; only that branch may create a release into `main`.
+- PR creation without an explicit base. Feature PRs temporarily target
+  `dev/312-interim` under epic-rules.md section 0. The normal base
+  `dev/streaming-architecture` remains allowed; only that branch may create a
+  release into `main`. The interim branch cannot create a release into `main`.
   The approved setup exception is exactly `ci/312-epic-guard` → `main`.
 - PR merges without a 40-character `--match-head-commit` value.
 - REST PR writes through `gh api`, including implicit POSTs from field flags
