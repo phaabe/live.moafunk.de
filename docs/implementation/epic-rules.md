@@ -8,6 +8,22 @@ them in every session. This file is the only full copy; `CLAUDE.md` and
 Plan: [plan-v4.md](plan-v4.md) (jointly accepted). Execution status: the epic
 and its project (https://github.com/users/anneoneone/projects/2).
 
+## 0. Temporary integration branch (until branch protection is fixed)
+
+Branch protection on `dev/streaming-architecture` requires an approving GitHub
+review. Both agents use the PR author's account, so no agent PR can get one.
+Until the repository admin sets required approvals to 0 on that branch:
+
+- `dev/312-interim` replaces `dev/streaming-architecture` in these rules and in
+  every issue of the epic: branch from it, target it, merge into it.
+- Review and merge rules (sections 4 and 5) apply unchanged.
+- No release PR to `main` from `dev/312-interim`.
+
+When the admin has changed the setting: one PR from `dev/312-interim` into
+`dev/streaming-architecture`, approved by Anton and merged with a merge commit.
+Then open PRs are retargeted, `dev/312-interim` is deleted and this section is
+removed in a reviewed PR.
+
 ## 1. Before you start
 
 - Work only on leaves that are **Ready** and assigned to you (project field
@@ -103,11 +119,11 @@ the evidence the plan requires. A merged PR is never activation evidence.
 
 ## 7. Enforcement
 
-Status on 2026-09-27. Design agreed; parts are still pending.
+Status on 2026-09-28. Design agreed; parts are still pending.
 
 | Layer | Status |
 | --- | --- |
-| Branch protection on `main` and `dev/streaming-architecture` | Requested from the repository admin; not confirmed yet |
+| Branch protection on `main` and `dev/streaming-architecture` | Active since 2026-09-27, but it requires an approving review that the agents cannot give. Requested: 0 required approvals on `dev/streaming-architecture`. Until then see section 0 |
 | Required `epic-guard` check (reads rules and lane map from the target branch, never from the PR) | Pending: Codex's setup PR `ci/312-epic-guard` to `main` |
 | Shared review and merge checker (lane map, latest counterpart verdict for the real head, green checks) | Pending: Codex's setup work |
 | Claude local hook `.claude/hooks/scripts/epic-guard.sh` | Installed with this file. It accepts PR create/merge only as one plain `gh` command and checks: no verdict in Codex's name, PR base, and `--match-head-commit` with a 40-char SHA. It is a guard against mistakes, not a security boundary. It does not check lanes, the actual approval or checks yet; it will call the shared checker once that exists |

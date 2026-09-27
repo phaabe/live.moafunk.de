@@ -44,6 +44,7 @@ import sys
 from typing import NoReturn
 
 RELEASE_HEAD = "dev/streaming-architecture"
+INTERIM = "dev/312-interim"  # temporary feature base, epic-rules.md section 0
 SETUP_HEADS = {"ci/312-epic-guard"}  # approved epic-guard setup PR to main
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 FORGED_VERDICT = re.compile(
@@ -277,14 +278,15 @@ def check_base(base: str | None, head: str | None) -> None:
     if not base:
         block(
             "A pull request needs an explicit base.",
-            f"Epic feature PRs: --base {RELEASE_HEAD}. Release PRs: --head {RELEASE_HEAD} --base main.",
+            f"Epic feature PRs: --base {INTERIM} (until protection is fixed, then {RELEASE_HEAD}). "
+            f"Release PRs: --head {RELEASE_HEAD} --base main.",
         )
     if base == "main" and os.environ.get("CLAUDE_ALLOW_MAIN_PR") != "1":
         if head != RELEASE_HEAD and head not in SETUP_HEADS:
             block(
                 f"Only release PRs from {RELEASE_HEAD} (or the approved setup PR) may target main "
                 f"(head was '{head or 'unknown'}').",
-                f"Target {RELEASE_HEAD} instead.",
+                f"Target {INTERIM} instead (epic-rules.md section 0).",
                 "An approved main hotfix needs the operator to set CLAUDE_ALLOW_MAIN_PR=1 "
                 "in the hook environment (.claude/settings.local.json env).",
             )
