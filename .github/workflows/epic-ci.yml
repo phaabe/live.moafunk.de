@@ -1,0 +1,86 @@
+name: EPIC - Integration checks
+
+on:
+  pull_request:
+    branches:
+      - dev/312-interim
+      - dev/streaming-architecture
+
+# Both checks must exist for every PR, including documentation-only changes.
+# Keep path filters out of this workflow so these names can be required.
+permissions:
+  contents: read
+
+concurrency:
+  group: epic-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend-ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev ffmpeg
+
+      - name: Install Rust
+        id: toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
+
+      - name: Run backend tests
+        run: cargo test --locked --all-targets
+
+      - name: Run Clippy
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo clippy --locked --all-targets
+
+  frontend:
+    name: frontend-ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        id: dependencies
+        run: npm ci
+
+      - name: Run frontend lint
+        run: npm run lint
+
+      - name: Run frontend typecheck
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: npm run typecheck
+
+      - name: Run frontend tests
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: npm test -- --run
