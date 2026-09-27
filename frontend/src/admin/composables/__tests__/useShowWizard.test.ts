@@ -14,6 +14,14 @@ describe('useShowWizard step machine', () => {
     wizard.start({ isAdmin: false });
   });
 
+  it('lets a host assign themselves without an admin user record', async () => {
+    wizard.start({ isAdmin: false, currentUser: { id: 42, username: 'host' } });
+    await wizard.loadAssignableUsers();
+    expect(wizard.assignableUsers.value).toEqual([{ id: 42, username: 'host', role: 'host' }]);
+    expect(wizard.assigneeUserId.value).toBe(42);
+    expect(wizard.summaryHost.value).toBe('host');
+  });
+
   it('admin "new template" branch walks through to confirm', () => {
     wizard.start({ isAdmin: true });
     expect(wizard.currentStep.value).toBe('choice');

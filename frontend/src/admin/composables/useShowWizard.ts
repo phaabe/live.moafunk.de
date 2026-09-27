@@ -63,7 +63,7 @@ const range = useDateTimeRange();
 const scheduledShows = ref<ScheduleItem[]>([]);
 
 // Host step: assign an existing user, or create a guest who becomes the host.
-const assignableUsers = ref<AdminUser[]>([]);
+const assignableUsers = ref<Pick<AdminUser, 'id' | 'username' | 'role'>[]>([]);
 const assigneeLoading = ref(false);
 const assigneeUserId = ref<number | null>(null);
 
