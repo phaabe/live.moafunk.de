@@ -1,0 +1,55 @@
+name: Epic guard
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review, converted_to_draft]
+  issue_comment:
+    types: [created, edited, deleted]
+  status:
+  check_run:
+    types: [completed, rerequested]
+  workflow_run:
+    workflows: ["*"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number (empty refreshes all open epic PRs)
+        required: false
+        type: string
+  schedule:
+    - cron: "7,17,27,37,47,57 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: epic-guard-publisher
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: epic-guard-runner
+    if: >-
+      (github.event_name != 'issue_comment' || github.event.issue.pull_request) &&
+      (github.event_name != 'status' || github.event.context != 'epic-guard') &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'Epic guard') &&
+      (github.event_name != 'check_run' || github.event.check_run.name != 'epic-guard-runner')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      checks: read
+      statuses: write
+    steps:
+      - name: Read trusted default branch dispatcher
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Publish gate from immutable PR base policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/epic_guard/run.py --event "$GITHUB_EVENT_PATH" --publish

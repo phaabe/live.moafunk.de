@@ -1,26 +1,28 @@
-<!--
-Conventional-Commit title please, e.g.  feat(stream): add pre-listen page
-Merging is PR-only (squash + delete branch). Never merge locally.
+<!-- Use a concrete Conventional Commit title. Replace each placeholder. -->
+
+<!-- One sentence: what changes and why. -->
+
+Issue: https://github.com/phaabe/live.moafunk.de/issues/REPLACE
+
+Validation: <!-- Commands and results; mention unresolved failures. -->
+
+<details>
+<summary>Implementation and review</summary>
+
+<!-- For architecture work, keep exactly one value per field.
+Choose Codex or Claude as executor and the other agent as reviewer.
+Choose setup, ops, backend, frontend or coordination as lane.
+Use comma-separated leaf IDs such as O1.2.4, or setup for assigned setup work.
+For architecture work, fill in its full epic issue URL below.
+Branch from and target dev/312-interim while epic-rules.md section 0 applies.
 -->
 
-## What
-<!-- A one/two-line summary of the change. -->
+Epic: https://github.com/phaabe/live.moafunk.de/issues/REPLACE
+Executor: REPLACE
+Lane: REPLACE
+Reviewer: REPLACE
+Leaf IDs: REPLACE
 
-## Why
-<!-- The problem this solves / the issue it closes. -->
-Closes #
+<!-- Implementation, affected files, evidence, risks and GitNexus impact. -->
 
-## How
-<!-- Key implementation decisions. What + why, not a line-by-line diff. -->
-
-## Test plan
-<!-- How you verified this. -->
-- [ ] `cd frontend && npm run lint && npm run typecheck && npm test`
-- [ ] `cd backend && cargo clippy && cargo test`
-- [ ] Manually exercised the affected flow
-
-## Risk / impact
-<!-- Blast radius. Paste the GitNexus impact summary for changed symbols:
-     gitnexus_impact({ target: "<symbol>", direction: "upstream", repo: "live.moafunk.de" }) -->
-- Affected area(s):
-- Risk level:
+</details>
