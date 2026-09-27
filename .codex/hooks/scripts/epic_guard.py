@@ -192,6 +192,9 @@ def check_api(args: list[str], cwd: Path) -> None:
                 method = value.upper()
             elif flag == "--input":
                 body_input = True
+                if value == "-":
+                    raise ValueError("Use a readable API input file, not stdin.")
+                check_verdict((cwd / value).read_text())
         elif arg not in switches:
             if arg.startswith("-"):
                 raise ValueError(

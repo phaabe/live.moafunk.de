@@ -215,6 +215,31 @@ class EpicGuardTest(unittest.TestCase):
             with self.subTest(field=field):
                 self.run_hook(f"gh api graphql {field}", 2)
 
+    def test_api_input_files(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            path = Path(directory) / "request body.json"
+            relative = path.relative_to(ROOT)
+            for verdict in (
+                CLAUDE_VERDICT,
+                CLAUDE_VERDICT.replace("APPROVED", "CHANGES REQUESTED"),
+            ):
+                path.write_text(json.dumps({"body": verdict}))
+                for endpoint in ("repos/o/r/issues/5/comments", "graphql", "repos/o/r"):
+                    for option in (f"--input '{relative}'", f"--input='{path}'"):
+                        with self.subTest(
+                            endpoint=endpoint, option=option, verdict=verdict
+                        ):
+                            self.run_hook(f"gh api {endpoint} {option}", 2)
+            path.write_text(json.dumps({"body": "Review: APPROVED by Codex at " + SHA}))
+            self.run_hook(f"gh api repos/o/r/issues/5/comments --input '{relative}'", 0)
+            self.run_hook(f"gh api graphql --input='{path}'", 0)
+            self.run_hook(f"gh api repos/o/r/pulls --input '{path}'", 2)
+            self.run_hook(f"gh api graphql --input '{relative}.missing'", 2)
+        for endpoint in ("repos/o/r/issues/5/comments", "graphql"):
+            for option in ("--input -", "--input=-"):
+                with self.subTest(endpoint=endpoint, option=option):
+                    self.run_hook(f"gh api {endpoint} {option}", 2)
+
     def test_dash_prefixed_option_values(self) -> None:
         self.run_hook(
             f"gh pr create --base {TRUNK} --body '- fix workflow' --title x", 0
