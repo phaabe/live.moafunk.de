@@ -21,6 +21,9 @@ mod telegram;
 mod telegram_notify;
 mod video;
 
+#[cfg(test)]
+mod broadcast_tests;
+
 use axum::{
     extract::{DefaultBodyLimit, Query, State, WebSocketUpgrade},
     http::HeaderMap,

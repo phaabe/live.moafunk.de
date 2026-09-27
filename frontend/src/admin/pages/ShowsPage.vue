@@ -5,6 +5,8 @@ import { showsApi, type ScheduleItem, type MyShowInfo } from '../api';
 import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '@admin/composables';
 import { BaseButton } from '@shared/components';
+import { useMetadataRefresh } from '../composables/useMetadataRefresh';
+import { useHostLoginWarnings } from '../composables/useHostLoginWarnings';
 import ShowList from '../components/ShowList.vue';
 
 const router = useRouter();
@@ -30,6 +32,16 @@ function pickShow(s: MyShowInfo) {
 
 // ─── All Shows (full schedule) ───
 const shows = ref<ScheduleItem[]>([]);
+const hostLoginWarnings = useHostLoginWarnings(shows);
+const { error: hostMetadataError } = useMetadataRefresh(showsApi.overview, (response) => {
+  const metadata = new Map(response.shows.map((show) => [show.id, show]));
+  for (const show of shows.value) {
+    const updated = metadata.get(show.id);
+    if (!updated) continue;
+    show.host_username = updated.host_username;
+    show.host_has_logged_in = updated.host_has_logged_in;
+  }
+});
 const loading = ref(true);
 const error = ref<string | null>(null);
 
@@ -132,6 +144,15 @@ function showTypeBadge(type: string): string {
         <BaseButton variant="primary" @click="openCreateWizard">+ New Show</BaseButton>
       </div>
     </div>
+
+    <p v-if="hostMetadataError" class="flash-message warning" role="status">
+      Host login status could not be refreshed. It may be out of date.
+    </p>
+    <p v-for="show in hostLoginWarnings" :key="show.id" class="flash-message warning" role="alert">
+      <router-link :to="`/shows/${show.id}`">{{ show.title }}</router-link>
+      — Assigned host {{ show.host_username }} has no login recorded. This show starts within 60
+      minutes.
+    </p>
 
     <!-- My Shows — own assignments with streaming-prep actions -->
     <section v-if="myShows.length > 0" class="my-shows">

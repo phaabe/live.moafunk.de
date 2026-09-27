@@ -57,6 +57,12 @@ body {
   color: var(--color-error);
 }
 
+.flash-message.warning {
+  background-color: var(--color-warning-bg);
+  border: 1px solid var(--color-warning);
+  color: var(--color-warning);
+}
+
 /* Page headers */
 .page-header {
   display: flex;

@@ -317,7 +317,7 @@ fn analyze_bottom_brightness(data: &[u8]) -> u8 {
         return 0;
     }
 
-    let quarter_start = height - (height / 4);
+    let quarter_start = height - (height / 4).max(1);
     let mut total_luma: u64 = 0;
     let mut pixel_count: u64 = 0;
 
@@ -600,6 +600,25 @@ mod tests {
             .write_to(&mut buf2, image::ImageFormat::Png)
             .unwrap();
         assert_eq!(analyze_bottom_brightness(buf2.get_ref()), 255);
+    }
+
+    #[test]
+    fn brightness_samples_bottom_rows_even_for_small_images() {
+        for (height, first_bright_row) in [(1, 0), (2, 1), (3, 2), (4, 3), (8, 6)] {
+            let mut img = image::RgbaImage::from_pixel(2, height, image::Rgba([0, 0, 0, 255]));
+            for y in first_bright_row..height {
+                for x in 0..2 {
+                    img.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
+                }
+            }
+            let mut buf = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+            assert_eq!(
+                analyze_bottom_brightness(buf.get_ref()),
+                255,
+                "height {height}"
+            );
+        }
     }
 
     #[test]

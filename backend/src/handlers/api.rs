@@ -1991,6 +1991,25 @@ pub async fn api_update_artist_audio(
 // Shows API
 // ============================================================================
 
+/// Fetch host identity and login history together for show responses.
+async fn show_host_info(
+    pool: &sqlx::SqlitePool,
+    host_id: Option<i64>,
+) -> Result<(Option<String>, Option<bool>)> {
+    let Some(host_id) = host_id else {
+        return Ok((None, None));
+    };
+    let host: Option<(String, bool)> =
+        sqlx::query_as("SELECT username, first_login_at IS NOT NULL FROM users WHERE id = ?")
+            .bind(host_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(match host {
+        Some((name, logged_in)) => (Some(name), Some(logged_in)),
+        None => (None, None),
+    })
+}
+
 #[derive(Debug, Serialize)]
 pub struct ShowListItem {
     id: i64,
@@ -2003,6 +2022,7 @@ pub struct ShowListItem {
     show_type: String,
     /// Username of the assigned host (external/brunchtime shows), if any.
     host_username: Option<String>,
+    host_has_logged_in: Option<bool>,
     artists: Vec<ArtistBrief>,
     /// Status of the show's most recent live-stream recording
     /// (`raw`|`finalizing`|`finalized`|`failed`), or `None` if never recorded.
@@ -2047,6 +2067,7 @@ pub struct ShowDetailResponse {
     // Host assignment (external/brunchtime shows)
     host_user_id: Option<i64>,
     host_username: Option<String>,
+    host_has_logged_in: Option<bool>,
     available_hosts: Vec<AvailableHost>,
     /// Intended delivery: "live" or "prerecorded" (changeable after creation).
     stream_mode: Option<String>,
@@ -2154,6 +2175,7 @@ pub struct ShowOverviewItem {
     show_type: String,
     /// Username of the assigned host (external/brunchtime shows), if any.
     host_username: Option<String>,
+    host_has_logged_in: Option<bool>,
     artists: Vec<ArtistBrief>,
 }
 
@@ -2191,14 +2213,8 @@ pub async fn api_shows_overview(
         .fetch_all(&state.db)
         .await?;
 
-        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
-            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
-                .bind(hid)
-                .fetch_optional(&state.db)
-                .await?
-        } else {
-            None
-        };
+        let (host_username, host_has_logged_in) =
+            show_host_info(&state.db, show.host_user_id).await?;
 
         items.push(ShowOverviewItem {
             id: show.id,
@@ -2210,6 +2226,7 @@ pub async fn api_shows_overview(
             status: show.status,
             show_type: show.show_type,
             host_username,
+            host_has_logged_in,
             artists,
         });
     }
@@ -2248,14 +2265,8 @@ pub async fn api_shows_list(
         .fetch_all(&state.db)
         .await?;
 
-        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
-            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
-                .bind(hid)
-                .fetch_optional(&state.db)
-                .await?
-        } else {
-            None
-        };
+        let (host_username, host_has_logged_in) =
+            show_host_info(&state.db, show.host_user_id).await?;
 
         let recording_status = recording_statuses.get(&show.id).cloned();
         show_items.push(ShowListItem {
@@ -2268,6 +2279,7 @@ pub async fn api_shows_list(
             status: show.status,
             show_type: show.show_type,
             host_username,
+            host_has_logged_in,
             artists,
             recording_status,
         });
@@ -2744,15 +2756,9 @@ pub async fn api_show_detail(
         };
 
     // Resolve host user for non-UNHEARD shows
-    let (host_user_id, host_username, available_hosts) = if !is_unheard {
-        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
-            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
-                .bind(hid)
-                .fetch_optional(&state.db)
-                .await?
-        } else {
-            None
-        };
+    let (host_user_id, host_username, host_has_logged_in, available_hosts) = if !is_unheard {
+        let (host_username, host_has_logged_in) =
+            show_host_info(&state.db, show.host_user_id).await?;
 
         // Available hosts depend on who's viewing:
         //  - admins may assign any host/admin user;
@@ -2785,9 +2791,9 @@ pub async fn api_show_detail(
             Vec::new()
         };
 
-        (show.host_user_id, host_username, hosts)
+        (show.host_user_id, host_username, host_has_logged_in, hosts)
     } else {
-        (None, None, Vec::new())
+        (None, None, None, Vec::new())
     };
 
     // Only return cover URL if cover was actually generated
@@ -2910,6 +2916,7 @@ pub async fn api_show_detail(
         prerecorded_url,
         host_user_id,
         host_username,
+        host_has_logged_in,
         available_hosts,
         stream_mode: show.stream_mode,
         created_by: show.created_by,
@@ -4884,51 +4891,12 @@ pub struct MyShowResponse {
     shows: Vec<MyShowInfo>,
 }
 
-/// Helper: resolve ALL shows assigned to the current user.
-/// Returns shows where the user is either directly assigned as host,
-/// or linked via their artist profile.
+/// Resolve shows the user can broadcast, including every show for admins.
 async fn resolve_user_shows(
     state: &Arc<AppState>,
     user: &models::User,
 ) -> Result<Vec<models::Show>> {
-    let mut all_shows: Vec<models::Show> = Vec::new();
-
-    // Path 1: Direct host assignments (external/brunchtime shows)
-    let direct_shows: Vec<models::Show> =
-        sqlx::query_as("SELECT * FROM shows WHERE host_user_id = ? ORDER BY date DESC")
-            .bind(user.id)
-            .fetch_all(&state.db)
-            .await?;
-    all_shows.extend(direct_shows);
-
-    // Path 2: Linked via artist profile (UNHEARD shows)
-    let artist: Option<models::Artist> = sqlx::query_as("SELECT * FROM artists WHERE user_id = ?")
-        .bind(user.id)
-        .fetch_optional(&state.db)
-        .await?;
-
-    if let Some(artist) = artist {
-        let artist_shows: Vec<models::Show> = sqlx::query_as(
-            "SELECT s.* FROM shows s \
-             INNER JOIN artist_show_assignments asa ON asa.show_id = s.id \
-             WHERE asa.artist_id = ? \
-             ORDER BY s.date DESC",
-        )
-        .bind(artist.id)
-        .fetch_all(&state.db)
-        .await?;
-
-        // Deduplicate (a show could match both paths)
-        for show in artist_shows {
-            if !all_shows.iter().any(|s| s.id == show.id) {
-                all_shows.push(show);
-            }
-        }
-    }
-
-    // Sort by date descending
-    all_shows.sort_by(|a, b| b.date.cmp(&a.date));
-    Ok(all_shows)
+    auth::broadcast_shows(&state.db, user).await
 }
 
 #[derive(Debug, Serialize)]
@@ -4960,14 +4928,8 @@ pub async fn api_my_shows_list(
         .fetch_all(&state.db)
         .await?;
 
-        let host_username: Option<String> = if let Some(hid) = show.host_user_id {
-            sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
-                .bind(hid)
-                .fetch_optional(&state.db)
-                .await?
-        } else {
-            None
-        };
+        let (host_username, host_has_logged_in) =
+            show_host_info(&state.db, show.host_user_id).await?;
 
         show_items.push(ShowListItem {
             id: show.id,
@@ -4979,6 +4941,7 @@ pub async fn api_my_shows_list(
             status: show.status,
             show_type: show.show_type,
             host_username,
+            host_has_logged_in,
             artists,
             // Host/artist "my shows" view doesn't badge recordings (yet).
             recording_status: None,

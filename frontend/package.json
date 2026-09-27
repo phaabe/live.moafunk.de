@@ -19,6 +19,7 @@
   "dependencies": {
     "@vuepic/vue-datepicker": "^12.1.0",
     "cropperjs": "^1.6.2",
+    "date-fns": "2.30.0",
     "flv.js": "^1.6.2",
     "pinia": "^2.1.7",
     "v-calendar": "^3.1.2",

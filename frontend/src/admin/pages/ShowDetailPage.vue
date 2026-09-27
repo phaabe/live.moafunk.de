@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onActivated, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onActivated, onDeactivated, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   showsApi,
@@ -19,6 +19,9 @@ import PrepUploadInline from '../components/show-detail/PrepUploadInline.vue';
 import WrapupPipeline from '../components/show-detail/WrapupPipeline.vue';
 import AnnouncementsCard from '../components/show-detail/AnnouncementsCard.vue';
 import TelegramComposerModal from '../components/show-detail/TelegramComposerModal.vue';
+import { canManageShowBroadcast } from '../showBroadcastAccess';
+import { useMetadataRefresh } from '../composables/useMetadataRefresh';
+import { useHostLoginWarnings } from '../composables/useHostLoginWarnings';
 import { useShowPhase } from '../composables/useShowPhase';
 import { useShowClocks } from '../composables/useShowClocks';
 import { useFlash } from '../composables/useFlash';
@@ -43,6 +46,28 @@ const hostFlow = useHostFlow();
 const { invalidate, consume } = useDataInvalidation();
 
 const show = ref<ShowDetail | null>(null);
+const hostLoginWarnings = useHostLoginWarnings(computed(() => (show.value ? [show.value] : [])));
+const { refresh: refreshHostMetadata, error: hostMetadataError } = useMetadataRefresh(
+  async () => {
+    const target = show.value;
+    if (!target) return null;
+    const hostId = target.host_user_id;
+    const updated = await showsApi.get(target.id);
+    return { target, hostId, updated };
+  },
+  (snapshot) => {
+    if (
+      !snapshot ||
+      show.value !== snapshot.target ||
+      show.value.host_user_id !== snapshot.hostId
+    ) {
+      return;
+    }
+    show.value.host_user_id = snapshot.updated.host_user_id;
+    show.value.host_username = snapshot.updated.host_username;
+    show.value.host_has_logged_in = snapshot.updated.host_has_logged_in;
+  }
+);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
@@ -131,8 +156,19 @@ const canEditHost = computed(
 const editMode = ref(false);
 const mediaMode = ref<'live' | 'upload'>('upload');
 
-/** The assigned host may manage media (matches the backend require_user_show check). */
-const canManageMedia = computed(() => !!show.value && show.value.host_user_id === auth.user?.id);
+/** Admins and the assigned host may prepare and broadcast this show. */
+const canManageMedia = computed(() => canManageShowBroadcast(auth.user, show.value));
+const pageActive = ref(true);
+const flowSelectionReady = ref(false);
+let flowSelectionGeneration = 0;
+const canPrepareMedia = computed(
+  () =>
+    pageActive.value &&
+    canManageMedia.value &&
+    flowSelectionReady.value &&
+    hostFlow.showId.value === show.value?.id &&
+    hostFlow.uploadMode.value === (mediaMode.value === 'live' ? 'live' : 'prerecorded')
+);
 
 // ── Dashboard: soft lifecycle phase drives the layout's state machine ───────
 // docs/stream-rework/show-cockpit-plan.md — header → status strip → phase
@@ -190,21 +226,35 @@ async function saveScheduleFromModal() {
  * media mode set) so the inline prep panels can upload/confirm/test against it.
  */
 async function ensureFlowSelection() {
-  if (!show.value || !canManageMedia.value) return;
+  const generation = ++flowSelectionGeneration;
+  flowSelectionReady.value = false;
+  if (!pageActive.value || !show.value || !canManageMedia.value) return;
   const id = show.value.id;
+  const previousShowId = hostFlow.showId.value;
   let mine = hostFlow.shows.value.find((s) => s.id === id);
   if (!mine) {
     await hostFlow.fetchMyShow();
     mine = hostFlow.shows.value.find((s) => s.id === id);
   }
-  if (!mine) return;
-  if (hostFlow.show.value?.id !== id) {
+  if (
+    !mine ||
+    generation !== flowSelectionGeneration ||
+    !pageActive.value ||
+    !canManageMedia.value ||
+    show.value?.id !== id
+  )
+    return;
+  if (previousShowId !== id || hostFlow.showId.value !== id) {
+    hostFlow.setLiveTestPassed(false);
+  }
+  if (hostFlow.showId.value !== id) {
     hostFlow.selectShow(mine);
   }
   hostFlow.selectMode(mediaMode.value === 'live' ? 'live' : 'prerecorded');
+  flowSelectionReady.value = true;
 }
 
-watch(mediaMode, () => {
+watch([() => show.value?.id, canManageMedia, mediaMode, pageActive], () => {
   void ensureFlowSelection();
 });
 
@@ -215,7 +265,14 @@ function onPrepChanged() {
 
 /** The inline live test passed — continue to the fullscreen live panel. */
 function goLivePanel() {
-  hostFlow.goToStep('on-air');
+  if (
+    !canPrepareMedia.value ||
+    hostFlow.uploadMode.value !== 'live' ||
+    !hostFlow.goToStep('on-air')
+  ) {
+    flash.error('Select this show and complete its live test before going on air.');
+    return;
+  }
   router.push('/stream/on-air');
 }
 
@@ -399,9 +456,6 @@ async function loadShow() {
     // A present prerecorded file implies upload mode; otherwise honour the
     // delivery mode the show was created with (defaults to 'upload').
     mediaMode.value = resolveMediaMode(show.value);
-    // Prime the host-flow singleton so the inline prep panels work directly
-    // on this show (fire-and-forget; only relevant for the assigned host).
-    void ensureFlowSelection();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load show';
   } finally {
@@ -487,11 +541,11 @@ async function saveDashboardEdits() {
 // ── Media (live vs upload) — hand off to the existing host user stories ─────
 /**
  * Enter the host streaming flow for this show at the chosen mode's step:
- * 'prerecorded' → upload story, 'live' → live story. Only the assigned host
- * (canManageMedia) can reach these; the show is then among their `my-shows`.
+ * 'prerecorded' → upload story, 'live' → live story.
+ * The API includes all shows for admins and assigned shows for hosts.
  */
 async function enterFlow(mode: 'prerecorded' | 'live') {
-  if (!show.value) return;
+  if (!show.value || !canManageMedia.value) return;
   const id = show.value.id;
   try {
     // The host flow caches a show list that may predate this show (e.g. it was
@@ -691,6 +745,8 @@ async function assignHost() {
     // Update local state
     show.value.host_user_id = response.host_user_id;
     show.value.host_username = response.host_username;
+    show.value.host_has_logged_in = null;
+    await refreshHostMetadata();
     selectedHostId.value = null;
     flash.success(`Host "${response.host_username}" assigned to show`);
   } catch (e) {
@@ -713,6 +769,8 @@ async function createGuestHost() {
 
     show.value.host_user_id = response.host_user_id;
     show.value.host_username = response.host_username;
+    show.value.host_has_logged_in = null;
+    await refreshHostMetadata();
     guestCreds.value = guest;
     newGuestUsername.value = '';
     flash.success(`Guest host "${guest.username}" created and assigned`);
@@ -732,6 +790,7 @@ async function unassignHost() {
     // Update local state
     show.value.host_user_id = undefined;
     show.value.host_username = undefined;
+    show.value.host_has_logged_in = null;
     flash.success('Host removed from show');
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to remove host');
@@ -1007,13 +1066,22 @@ onMounted(() => {
 });
 
 onActivated(() => {
+  pageActive.value = true;
   const id = Number(route.params.id);
   if (consume('shows', id)) {
     loadShow();
   }
 });
 
+onDeactivated(() => {
+  pageActive.value = false;
+  flowSelectionReady.value = false;
+  flowSelectionGeneration++;
+});
+
 onUnmounted(() => {
+  pageActive.value = false;
+  flowSelectionGeneration++;
   if (coverRefreshTimer) {
     clearTimeout(coverRefreshTimer);
   }
@@ -1055,6 +1123,18 @@ onUnmounted(() => {
         @cancel="cancelDashboardEdit"
       />
 
+      <p v-if="hostMetadataError" class="flash-message warning" role="status">
+        Host login status could not be refreshed. It may be out of date.
+      </p>
+      <p v-if="hostLoginWarnings.length" class="flash-message warning" role="alert">
+        Assigned host {{ show.host_username }} has no login recorded. This show starts within 60
+        minutes.
+      </p>
+
+      <BaseButton v-if="isUnheard && canManageMedia" variant="primary" @click="enterFlow('live')">
+        Prepare live broadcast
+      </BaseButton>
+
       <StatusStrip
         :show="show"
         :phase="phase"
@@ -1079,7 +1159,7 @@ onUnmounted(() => {
             <h2 class="phase-title">
               Preparation · {{ mediaMode === 'live' ? 'live' : 'pre-recorded' }}
             </h2>
-            <template v-if="canManageMedia">
+            <template v-if="canPrepareMedia">
               <PrepUploadInline
                 v-if="mediaMode === 'upload'"
                 :show-id="show.id"
@@ -1087,9 +1167,16 @@ onUnmounted(() => {
               />
               <LiveSetupTest v-else @passed="goLivePanel" />
             </template>
+            <p v-else-if="canManageMedia" class="phase-muted">
+              Preparing this show’s broadcast controls…
+            </p>
             <p v-else class="phase-muted">
-              Only the assigned host can prepare the stream.
-              {{ show.host_username ? `Assigned host: ${show.host_username}.` : 'No host assigned yet.' }}
+              Only admins and the assigned host can prepare the stream.
+              {{
+                show.host_username
+                  ? `Assigned host: ${show.host_username}.`
+                  : 'No host assigned yet.'
+              }}
             </p>
           </div>
 

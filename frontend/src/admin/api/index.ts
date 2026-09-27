@@ -406,6 +406,7 @@ export interface Show {
   stream_mode?: 'live' | 'prerecorded';
   /** Username of the assigned host (external/brunchtime shows), if any. */
   host_username?: string;
+  host_has_logged_in: boolean | null;
   artists: { id: number; name: string }[];
   /**
    * Status of the show's most recent live-stream recording, or absent if never
@@ -430,7 +431,7 @@ export type ScheduleItem = Pick<
   | 'show_type'
   | 'host_username'
   | 'artists'
->;
+> & { host_has_logged_in?: boolean | null };
 
 /** Read-only schedule entry returned by GET /api/shows-overview. */
 export interface ShowOverviewItem {
@@ -443,6 +444,7 @@ export interface ShowOverviewItem {
   status: string;
   show_type: string;
   host_username?: string;
+  host_has_logged_in: boolean | null;
   artists: { id: number; name: string }[];
 }
 
@@ -493,6 +495,7 @@ export interface ShowDetail {
   prerecorded_url?: string;
   // Host assignment (external/brunchtime shows)
   host_user_id?: number;
+  host_has_logged_in: boolean | null;
   host_username?: string;
   available_hosts?: { id: number; username: string }[];
   /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */

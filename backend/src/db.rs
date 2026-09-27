@@ -357,6 +357,16 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Migration: add user_id column to existing sessions table if missing
     add_column_if_missing(pool, "sessions", "user_id", "INTEGER").await?;
 
+    // Keep login history after logout or session expiry. Older deleted sessions
+    // cannot be recovered; only backfill logins for which evidence remains.
+    add_column_if_missing(pool, "users", "first_login_at", "TEXT").await?;
+    sqlx::query(
+        "UPDATE users SET first_login_at = (SELECT MIN(created_at) FROM sessions WHERE user_id = users.id) \
+         WHERE first_login_at IS NULL AND EXISTS (SELECT 1 FROM sessions WHERE user_id = users.id)",
+    )
+    .execute(pool)
+    .await?;
+
     // Reusable show templates (name + cover + description) owned by a user.
     // A show can be created from a template, copying its content into the show.
     sqlx::query(
