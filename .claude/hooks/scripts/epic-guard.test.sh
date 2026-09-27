@@ -62,6 +62,31 @@ check 2 "gh pr merge inside command substitution" "$(bash_cmd "echo \$(gh pr mer
 check 2 "MCP PR into main" "$(jq -cn '{tool_name:"mcp__github__create_pull_request", tool_input:{base:"main", head:"feat/1-x"}}')"
 check 0 "MCP PR into dev branch" \
   "$(jq -cn '{tool_name:"mcp__github__create_pull_request", tool_input:{base:"dev/streaming-architecture", head:"feat/1-x"}}')"
+# Codex re-review at 64311caf1ea58d4120d5acc22a38523c092a3482
+NL=$'\n'
+check 2 "newline-separated second merge" \
+  "$(bash_cmd "gh pr merge 5 --squash --match-head-commit $SHA${NL}gh pr merge 6 --squash")"
+check 2 "env prefix" "$(bash_cmd "env FOO=1 gh pr merge 6 --squash")"
+check 2 "command prefix" "$(bash_cmd "command gh pr create --base main --head feat/1-x --fill")"
+check 2 "absolute gh path" "$(bash_cmd "/opt/homebrew/bin/gh pr merge 6 --squash")"
+check 2 "timeout prefix" "$(bash_cmd "timeout 30 gh pr merge 6 --squash")"
+check 2 "flag value that looks like --base" \
+  "$(bash_cmd "gh pr create --body --base --base main --head feat/1-x")"
+check 2 "last --base wins" \
+  "$(bash_cmd "gh pr create --base dev/streaming-architecture --base main --head feat/1-x")"
+check 2 "heredoc fed to bash" "$(bash_cmd "bash <<'END'${NL}gh pr merge 6 --squash${NL}END")"
+check 2 "heredoc to an unknown command is parsed as commands" \
+  "$(bash_cmd "while read x; do :; done <<END${NL}gh pr merge 6 --squash${NL}END")"
+check 2 "unquoted heredoc body substitution" \
+  "$(bash_cmd "cat <<END${NL}\$(gh pr merge 6 --squash)${NL}END")"
+check 0 "literal backticks in single-quoted body" \
+  "$(bash_cmd "gh pr create --base dev/streaming-architecture --body 'Use \`gh pr merge\` later'")"
+check 0 "heredoc body mentioning gh pr merge as data" \
+  "$(bash_cmd "gh pr comment 5 --body-file - <<'END'${NL}Merge with gh pr merge 5 --squash later.${NL}END")"
+check 2 "gh api merge without sha" "$(bash_cmd "gh api -X PUT repos/o/r/pulls/5/merge")"
+check 0 "gh api merge with sha" "$(bash_cmd "gh api -X PUT repos/o/r/pulls/5/merge -f sha=$SHA")"
+check 2 "gh api PR into main" "$(bash_cmd "gh api repos/o/r/pulls -f base=main -f head=feat/1-x -f title=x")"
+check 2 "eval wrapper" "$(bash_cmd "eval 'gh pr merge 6 --squash'")"
 check 2 "MCP merge" "$(jq -cn '{tool_name:"mcp__github__merge_pull_request", tool_input:{pull_number:5}}')"
 
 exit "$fail"
