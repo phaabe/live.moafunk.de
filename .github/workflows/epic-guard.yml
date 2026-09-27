@@ -9,7 +9,13 @@ on:
   check_run:
     types: [completed, rerequested]
   workflow_run:
-    workflows: ["*"]
+    workflows:
+      - BACKEND - Build, Push and Deploy Image (GHCR)
+      - FRONTEND - Build and Deploy
+      - Epic guard tests
+      - EPIC - Integration checks
+      - BACKUP - Database and R2 Storage
+      - Generate re-listen.html page
     types: [completed]
   workflow_dispatch:
     inputs:

@@ -352,7 +352,10 @@ def check_errors(policy: Json, snapshot: Json, head: str) -> list[str]:
     observed = set()
     for (name, _), run in latest.items():
         observed.add(name)
-        if run.get("status") != "completed" or run.get("conclusion") != "success":
+        accepted = {"success"}
+        if name not in policy["required_checks"]:
+            accepted.update({"skipped", "neutral"})
+        if run.get("status") != "completed" or run.get("conclusion") not in accepted:
             errors.append(f"check {name}: not successful")
     states: dict[str, Json] = {}
     for status in snapshot["statuses"]:

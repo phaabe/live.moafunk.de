@@ -317,6 +317,46 @@ class EvaluationTests(unittest.TestCase):
         failed["app"] = {"id": 2}
         self.assertTrue(self.errors())
 
+    def test_optional_checks_accept_only_completed_nonfailure_conclusions(self) -> None:
+        for conclusion in (
+            "success",
+            "skipped",
+            "neutral",
+            "failure",
+            "cancelled",
+            None,
+        ):
+            for status in ("completed", "in_progress"):
+                with self.subTest(conclusion=conclusion, status=status):
+                    self.data = snapshot()
+                    self.data["check_runs"].append(
+                        dict(
+                            self.data["check_runs"][0],
+                            id=15,
+                            name="optional-deploy",
+                            conclusion=conclusion,
+                            status=status,
+                        )
+                    )
+                    should_pass = status == "completed" and conclusion in {
+                        "success",
+                        "skipped",
+                        "neutral",
+                    }
+                    self.assertEqual(self.errors() == [], should_pass)
+
+    def test_skipped_or_neutral_checks_cannot_supply_required_success(self) -> None:
+        for conclusion in ("skipped", "neutral"):
+            with self.subTest(conclusion=conclusion):
+                self.data = snapshot()
+                self.data["check_runs"][0]["conclusion"] = conclusion
+                self.assertTrue(self.errors())
+                self.data["check_runs"][0]["name"] = "optional-deploy"
+                self.assertIn("required check missing: test", self.errors())
+                self.data["check_runs"].append(snapshot()["check_runs"][0])
+                self.data["check_runs"][0]["head_sha"] = OLD
+                self.assertTrue(self.errors())
+
     def test_all_reported_statuses_and_checks_must_succeed(self) -> None:
         self.data["statuses"] = [{"id": 2, "context": "extra", "state": "pending"}]
         self.assertTrue(self.errors())
@@ -446,6 +486,61 @@ class CollectionTests(unittest.TestCase):
 
 
 class PolicyTests(unittest.TestCase):
+    def test_real_epic_script_and_shared_plan_paths(self) -> None:
+        lane_policy = check.load_policy(
+            Path(__file__).resolve().parents[2] / ".github/epic-lanes.yml"
+        )
+        script = [{"filename": "scripts/epic/next_action.py"}]
+        self.assertEqual(check.file_errors(lane_policy, script, "Claude", "setup"), [])
+        self.assertTrue(check.file_errors(lane_policy, script, "Codex", "setup"))
+        self.assertTrue(check.file_errors(lane_policy, script, "Claude", "backend"))
+        for path in (
+            "README.md",
+            "plan-v4.md",
+            "test-protocol-v4.md",
+            "plan-v4.manifest.json",
+            "claude-review.md",
+            "codex-review.md",
+            "anchors-v2.md",
+        ):
+            for executor in ("Claude", "Codex"):
+                with self.subTest(path=path, executor=executor):
+                    files = [{"filename": f"docs/implementation/{path}"}]
+                    self.assertEqual(
+                        check.file_errors(lane_policy, files, executor, "setup"), []
+                    )
+
+    def test_shared_plan_rule_preserves_specific_owners_and_lanes(self) -> None:
+        lane_policy = check.load_policy(
+            Path(__file__).resolve().parents[2] / ".github/epic-lanes.yml"
+        )
+        for path, owner, lane in (
+            ("epic-rules.md", "Claude", "setup"),
+            ("baseline.md", "Codex", "coordination"),
+            ("device-matrix.md", "Codex", "coordination"),
+            ("evidence/runtime-inventory.md", "Codex", "ops"),
+            ("runbooks/bootstrap-maintenance.md", "Codex", "ops"),
+            ("test-protocol.md", "Codex", "coordination"),
+        ):
+            with self.subTest(path=path):
+                files = [{"filename": f"docs/implementation/{path}"}]
+                self.assertEqual(check.file_errors(lane_policy, files, owner, lane), [])
+                other = "Claude" if owner == "Codex" else "Codex"
+                self.assertTrue(check.file_errors(lane_policy, files, other, "setup"))
+                if lane != "setup":
+                    self.assertTrue(
+                        check.file_errors(lane_policy, files, owner, "setup")
+                    )
+        for executor in ("Claude", "Codex"):
+            self.assertTrue(
+                check.file_errors(
+                    lane_policy,
+                    [{"filename": "frontend/src/main.ts"}],
+                    executor,
+                    "setup",
+                )
+            )
+
     def test_policy_loading_and_rejecting_ignored_required_checks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "policy.yml"

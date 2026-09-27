@@ -8,9 +8,9 @@ Rules: https://github.com/phaabe/live.moafunk.de/issues/312.
 
 `.github/epic-lanes.yml` uses the JSON subset of YAML; no YAML dependency is
 needed. File rules apply in order. The first matching rule must allow both
-the executor and lane. Unmatched files are refused. Frontend files have no
-assignment yet. Record new assignments on the epic and review a policy PR
-before editing newly assigned paths.
+the executor and lane. Unmatched files are refused. `frontend/**` is
+intentionally unmapped until frontend issues have an executor. Record new
+assignments on the epic and review a policy PR before editing newly assigned paths.
 
 Use the PR template's `Executor`, `Lane`, `Reviewer` and `Leaf IDs` fields.
 The reviewer must be the other agent. Include the full epic URL. For assigned
@@ -43,6 +43,8 @@ be reconstructed from current comments. Never edit or delete verdicts.
 Current required checks are `Vercel` and `Vercel Preview Comments`. Change the
 policy in a reviewed PR when required CI changes. These checks do not replace
 the tests or activation evidence required by the implementation plan.
+Required checks must succeed. Completed optional checks may also be `skipped`
+or `neutral`; pending and failed checks still refuse the gate.
 
 ## Install and activate
 
@@ -57,7 +59,9 @@ the tests or activation evidence required by the implementation plan.
    SHA. A PR cannot change the policy used to evaluate itself. The privileged
    workflow never executes the PR's head.
 4. The repository owner configures required status `epic-guard`, restricted
-   to its GitHub Actions producer, on the active integration branch. Keep
+   to the **GitHub Actions** app as its **expected source**, on the active
+   integration branch. Do not select **any source**. Confirm the app is
+   selectable after the first workflow publishes the status. Keep
    `main`'s human review requirement. Do not require this epic-only status
    on `main` before a reviewed policy covers releases and ordinary PRs.
    Opening or merging this setup PR does not change branch protection.
@@ -105,7 +109,12 @@ shared check explicitly before merging.
 
 The `Epic guard` workflow's `epic-guard-runner` job writes the `epic-guard`
 status. It refreshes on PR-target events, issue comments, statuses, checks,
-completed workflows, manual dispatch and a ten-minute schedule.
+completed named workflows, manual dispatch and a ten-minute schedule.
+The workflow uses an explicit `workflow_run.workflows` list, including
+`EPIC - Integration checks`; update it when adding or renaming CI workflows.
+After installation on the default branch, finish a CI run and confirm it
+starts the guard. GitHub documents [named workflow completion triggers](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run);
+the default-branch installation is required to verify delivery.
 It binds the result to the checked head and rechecks PR state before posting.
 Refresh is eventually consistent: a comment, body or check may change after
 a successful run. `--match-head-commit` protects the head, not an atomic

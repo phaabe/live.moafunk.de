@@ -22,6 +22,7 @@
     {"pattern": ".github/workflows/epic-guard.yml", "owners": ["Codex"], "lanes": ["setup"]},
     {"pattern": ".github/workflows/epic-guard-tests.yml", "owners": ["Codex"], "lanes": ["setup"]},
     {"pattern": "scripts/epic_guard/**", "owners": ["Codex"], "lanes": ["setup"]},
+    {"pattern": "scripts/epic/**", "owners": ["Claude"], "lanes": ["setup"]},
     {"pattern": ".github/workflows/**", "owners": ["Codex"], "lanes": ["ops"]},
     {"pattern": "backend/scripts/deploy_*.sh", "owners": ["Codex"], "lanes": ["ops"]},
     {"pattern": "backend/scripts/provision_*.sh", "owners": ["Codex"], "lanes": ["ops"]},
@@ -41,6 +42,7 @@
     {"pattern": "docs/implementation/device-matrix.md", "owners": ["Codex"], "lanes": ["coordination"]},
     {"pattern": "docs/implementation/evidence/runtime-inventory.md", "owners": ["Codex"], "lanes": ["coordination", "ops"]},
     {"pattern": "docs/implementation/runbooks/bootstrap-maintenance.md", "owners": ["Codex"], "lanes": ["coordination", "ops"]},
-    {"pattern": "docs/implementation/test-protocol.md", "owners": ["Codex"], "lanes": ["coordination"]}
+    {"pattern": "docs/implementation/test-protocol.md", "owners": ["Codex"], "lanes": ["coordination"]},
+    {"pattern": "docs/implementation/**", "owners": ["Claude", "Codex"], "lanes": ["setup"]}
   ]
 }
