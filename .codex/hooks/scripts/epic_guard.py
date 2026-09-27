@@ -110,11 +110,7 @@ def option(args: list[str], names: tuple[str, ...]) -> str | None:
         if key in value_flags:
             if not separator:
                 index += 1
-                if (
-                    index >= len(args)
-                    or args[index].startswith("-")
-                    and args[index] != "-"
-                ):
+                if index >= len(args):
                     raise ValueError(f"Missing value for {key}.")
                 value = args[index]
             if key in names:
@@ -134,8 +130,8 @@ def check_base(base: str | None, head: str | None) -> None:
         raise ValueError(f"Only heads {TRUNK} and ci/312-epic-guard may target main.")
 
 
-def check_api(args: list[str]) -> None:
-    """Refuse REST PR writes, including implicit POSTs and opaque bodies."""
+def check_api(args: list[str], cwd: Path) -> None:
+    """Inspect typed file fields and refuse REST PR writes."""
     value_flags = {
         "-f",
         "--raw-field",
@@ -180,6 +176,13 @@ def check_api(args: list[str]) -> None:
                 value = args[index]
             if flag in ("-f", "--raw-field", "-F", "--field"):
                 has_fields = True
+                if flag in ("-F", "--field"):
+                    _, _, field_value = value.partition("=")
+                    if field_value.startswith("@"):
+                        path = field_value[1:]
+                        if path == "-":
+                            raise ValueError("Use a readable API field file, not @-.")
+                        check_verdict((cwd / path).read_text())
             elif flag in ("-X", "--method"):
                 if method is not None:
                     raise ValueError("Pass the API method only once.")
@@ -234,7 +237,7 @@ def check_command(command: str, cwd: Path) -> None:
     if api:
         if args[1:2] != ["api"]:
             raise ValueError("Use gh api directly, with flags after api.")
-        check_api(args[2:])
+        check_api(args[2:], cwd)
         return
     body_path = option(args[1:], ("--body-file", "-F")) if body_file else None
     if body_path is not None:
@@ -287,6 +290,8 @@ def main() -> int:
             check_base(tool_input.get("base"), tool_input.get("head"))
         command = tool_input.get("command", tool_input.get("cmd", ""))
         if payload.get("tool_name") in ("Bash", "exec_command", "shell_command"):
+            if not isinstance(command, str):
+                raise ValueError("The shell command must be a string.")
             cwd = Path(tool_input.get("workdir") or payload.get("cwd") or Path.cwd())
             check_command(command, cwd)
     except (

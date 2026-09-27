@@ -20,7 +20,7 @@ COMMAND = json.loads((ROOT / ".codex/hooks.json").read_text())["hooks"]["PreTool
 class EpicGuardTest(unittest.TestCase):
     def run_hook(
         self,
-        command: str,
+        command: str | list[str] | dict[str, str] | int | None,
         expected: int,
         cwd: Path = ROOT,
         tool: str = "Bash",
@@ -179,6 +179,51 @@ class EpicGuardTest(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_api_file_fields(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            path = Path(directory) / "verdict body.txt"
+            relative = path.relative_to(ROOT)
+            for verdict in (
+                CLAUDE_VERDICT,
+                CLAUDE_VERDICT.replace("APPROVED", "CHANGES REQUESTED"),
+            ):
+                path.write_text(verdict)
+                for endpoint in ("repos/o/r/issues/5/comments", "graphql"):
+                    for field in (
+                        f"-F 'body=@{relative}'",
+                        f"--field 'body=@{path}'",
+                        f"--field='body=@{relative}'",
+                    ):
+                        with self.subTest(
+                            endpoint=endpoint, field=field, verdict=verdict
+                        ):
+                            self.run_hook(f"gh api {endpoint} {field}", 2)
+            # Raw fields send the @path literally; typed fields read the file.
+            self.run_hook(f"gh api graphql -f 'body=@{relative}'", 0)
+            path.write_text("Review: APPROVED by Codex at " + SHA)
+            self.run_hook(f"gh api graphql -F 'body=@{relative}'", 0)
+            self.run_hook(
+                f"gh api repos/o/r/issues/5/comments --field 'body=@{path}'", 0
+            )
+            self.run_hook(f"gh api graphql -F 'body=@{relative}.missing'", 2)
+        for field in ("-F body=@-", "--field body=@-", "--field=body=@-"):
+            with self.subTest(field=field):
+                self.run_hook(f"gh api graphql {field}", 2)
+
+    def test_dash_prefixed_option_values(self) -> None:
+        self.run_hook(
+            f"gh pr create --base {TRUNK} --body '- fix workflow' --title x", 0
+        )
+        self.run_hook(f"gh pr create --base {TRUNK} --body '-Bmain' --title x", 0)
+        self.run_hook("gh pr create --body --base --base main --head feat/x", 2)
+        self.run_hook(f"gh pr create --base {TRUNK} --body", 2)
+
+    def test_non_string_commands(self) -> None:
+        for command in (["gh", "pr", "merge", "5", "--squash"], [], {}, 7, None):
+            for tool, field in (("Bash", "command"), ("exec_command", "cmd")):
+                with self.subTest(command=command, tool=tool):
+                    self.run_hook(command, 2, tool=tool, field=field)
 
     def test_body_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

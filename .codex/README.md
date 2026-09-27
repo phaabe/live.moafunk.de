@@ -16,8 +16,10 @@ Codex skips new or changed hook definitions until they are trusted. Check
 
 The guard blocks:
 
-- Claude verdicts containing a real 40-character SHA in tool input or a `gh`
-  body file. Codex may only write its own verdict.
+- Claude verdicts containing a real 40-character SHA in tool input, a `gh`
+  body file or a typed API field file (`-F key=@path` / `--field key=@path`).
+  Codex may only write its own verdict. API field paths resolve against the
+  command's working directory; unreadable files and `@-` (stdin) are refused.
 - PR creation without an explicit base. Feature PRs target
   `dev/streaming-architecture`; only that branch may create a release into `main`.
   The approved setup exception is exactly `ci/312-epic-guard` → `main`.
@@ -32,6 +34,9 @@ the verb. Compound commands, wrappers and shell expansion are refused for these
 operations. Flags before or between subcommands are refused. Quoted values,
 `--flag=value` and backslash-newline continuations work. Short option values
 must be separate (`-B main`, not `-Bmain`); repeated base/head options are refused.
+Known value flags accept quoted values starting with a dash, such as
+`--body '- fix workflow'`. Shell command payloads must be strings; arrays and
+other types are refused.
 Body files must exist before the command; stdin and heredoc bodies are refused,
 including heredocs passed through shell wrappers. For `gh api`, `-F` is a typed
 API field, not a body-file path. There is no main-branch override.
