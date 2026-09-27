@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from next_action import MAX_ROUNDS, decide
+from next_action import MAX_ROUNDS, comments_from_rest, decide
 
 A = "a" * 40
 B = "b" * 40
@@ -260,6 +260,41 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(
             first("Claude", prs, [item(10, "Claude", "Ready")]).action, "idle"
         )
+
+
+def rest(i: int, body: str, edited: bool = False) -> dict:
+    at = f"2026-09-28T00:{i // 60:02d}:{i % 60:02d}Z"
+    return {
+        "id": i,
+        "body": body,
+        "created_at": at,
+        "updated_at": "later" if edited else at,
+        "html_url": f"u{i}",
+    }
+
+
+class CommentsFromRestTest(unittest.TestCase):
+    def test_changes_requested_after_comment_100_wins(self) -> None:
+        rows = [rest(i, "discussion") for i in range(99)]
+        rows += [
+            rest(99, f"Review: APPROVED by Codex at {A}"),
+            rest(100, f"Review: CHANGES REQUESTED by Codex at {A}"),
+        ]
+        p = pr(1, "Claude", comments=comments_from_rest(rows, 101))
+        self.assertEqual(first("Claude", [p]).action, "fix")
+
+    def test_partial_history_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            comments_from_rest([rest(0, "x")], 2)
+
+    def test_duplicate_ids_are_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            comments_from_rest([rest(0, "x"), rest(0, "x")], 2)
+
+    def test_edited_rest_verdict_is_ignored(self) -> None:
+        rows = [rest(0, f"Review: APPROVED by Codex at {A}", edited=True)]
+        p = pr(1, "Claude", comments=comments_from_rest(rows, 1))
+        self.assertEqual(first("Claude", [p]).action, "idle")
 
 
 if __name__ == "__main__":

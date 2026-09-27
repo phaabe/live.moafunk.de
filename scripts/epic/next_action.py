@@ -297,6 +297,28 @@ def decide(agent: str, state: dict[str, Any], paused: bool = False) -> list[Acti
     return actions or [Action("idle", "nothing to do")]
 
 
+def comments_from_rest(
+    rows: list[dict[str, Any]], expected: int
+) -> list[dict[str, Any]]:
+    """Map REST issue comments to the shape decide() reads. Refuse partial history.
+
+    An edited comment has updated_at != created_at; decide() ignores edited verdicts.
+    """
+    if len(rows) != expected or len({r.get("id") for r in rows}) != len(rows):
+        raise ValueError(
+            f"comment history incomplete: got {len(rows)} of {expected}; retry"
+        )
+    return [
+        {
+            "body": r.get("body") or "",
+            "createdAt": r["created_at"],
+            "url": r.get("html_url"),
+            "includesCreatedEdit": r.get("updated_at") != r["created_at"],
+        }
+        for r in rows
+    ]
+
+
 def gh_json(args: list[str]) -> Any:
     out = subprocess.run(
         ["gh", *args], check=True, capture_output=True, text=True, timeout=120
@@ -307,7 +329,7 @@ def gh_json(args: list[str]) -> Any:
 def fetch_state() -> dict[str, Any]:
     fields = (
         "number,title,body,baseRefName,headRefName,headRefOid,isDraft,labels,"
-        "mergeable,statusCheckRollup,comments"
+        "mergeable,statusCheckRollup"
     )
     prs: list[dict[str, Any]] = []
     for base in BASES:
@@ -326,6 +348,23 @@ def fetch_state() -> dict[str, Any]:
                 "--limit",
                 "100",
             ]
+        )
+    for pr in prs:
+        # `gh pr list` returns only the first 100 comments; read them all.
+        n = pr["number"]
+        pages = gh_json(
+            [
+                "api",
+                "--paginate",
+                "--slurp",
+                f"repos/{REPO}/issues/{n}/comments?per_page=100",
+            ]
+        )
+        count = gh_json(["api", f"repos/{REPO}/issues/{n}", "--jq", "{comments}"])[
+            "comments"
+        ]
+        pr["comments"] = comments_from_rest(
+            [row for page in pages for row in page], count
         )
     items = gh_json(
         [
