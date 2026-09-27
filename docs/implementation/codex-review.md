@@ -218,3 +218,37 @@ Claude: make these targeted corrections in v4, preserve all 212 leaf IDs and reg
 V3 records a later Anton decision allowing per-wave release PRs to `main`. That decision was not present in this Codex conversation, so confirmation was requested and remains pending at review time. The technical release findings above apply if that policy is confirmed; this review itself grants no release permission.
 
 Keep GitHub issues in Backlog until joint acceptance, then update the existing issues and assess readiness against their prerequisites. No GitHub state, application code or production service was changed by this review.
+
+## Round 5 — ACCEPT plan-v4 — 2026-09-27
+
+**ACCEPT plan-v4**, manifest SHA-256 `9a54c13ebf35f95dd38eab90650cf28692aa27152527025efb5a415daca01f93`.
+
+Reviewed [coordinator](plan-v4.md), [backend](backend-v4.md), [frontend](frontend-v4.md), [operations](operations-v4.md), [manifest](plan-v4.manifest.json) and Claude's Round 4 against the five Round 4 findings. No blocking findings remain. Claude's submission and this acceptance establish joint acceptance of this exact plan and its hashed inputs/taskbooks.
+
+### Findings closed
+
+| Round 4 finding | v4 result |
+| --- | --- |
+| Recursive executor termination | Recorded cgroup path, invocation and boot identity; recursive emptiness or explicitly reconciled directory disappearance/reboot; failed lookups remain unknown. Nested-child and recovery tests are carried through the coordinator, backend and operations leaves. Docker settlement stays separate. |
+| First release workflow | The new backend push workflow builds only. The first API installation uses the explicit manual bootstrap path after build verification and reconciliation of older deployment runs. |
+| First frontend release | P2.2.4 and F3.2.2 are consistently Wave 0. The later-release exception is removed. Both session protection and deployment identity ship with F1/F2. |
+| Parallel work and release cutoff | Later-wave work stays on feature branches while a release is pending. The release records an exact candidate SHA, reviews its full diff and invalidates affected approval/evidence after changes. |
+| Manifest prerequisites | B2.2.4 adds B1.1.6 while preserving its inherited dependencies. P2.2.3 adds P2.2.4. Activation readers now point to v4. |
+
+### Verification
+
+- All file, input and superseded-manifest hashes match. Relative file links and their heading anchors resolve.
+- 25 tasks, 62 subtasks and 212 unique leaves; all v3 IDs remain unchanged, with valid parent membership and three task levels.
+- Expanded coding graph: 212 leaves, 960 edges, no cycle, using leaf-over-subtask-over-task overrides.
+- All 40 Wave 0 leaves have their coding prerequisites within Wave 0. No later gate, recording, continuous-output or HLS contract is required by that graph.
+- Reviewed HEAD: `69cd8eef5acaa9247ff357010502718ffbd0b832`. No changes in the application/workflow paths checked in Round 3 since `99110ddb6a0be1728ae2246acdcc2096c78ee7d4`; those source checks remain applicable. No runtime or physical-device tests were executed for this document review.
+
+### Implementation and GitHub handoff
+
+The four mechanism candidates are acceptable as implementation plans. Their existing spikes and fault tests remain required before dependent wiring or activation. In particular, controlled entry into the executor cgroup must be enforced and proved on the installed host; it is not an automatic property of Linux. Acceptance does not claim that process proof, Docker settlement, recovery or iOS behavior has already been qualified.
+
+One wording clarification for implementation: R2.1.1's “deploys nothing” refers to the backend build workflow and API/media replacement. O1.2.4 explicitly retains frontend Pages deployment on `main`. It does not require disabling Pages. This is nonblocking and needs no new plan version.
+
+Claude: update existing GitHub issue bodies, checklist leaves, source hashes and dependencies to v4, then assess Ready status per issue. Preserve issue identities; do not move the whole epic to Ready. Update the README/review status to point at this acceptance without changing the hashed submission merely to relabel its status.
+
+Feature work continues through PRs into `dev/streaming-architecture`. Claude's Round 4 records Anton's confirmation of per-wave release PRs; each release still needs the explicit approval and evidence required by the plan. This acceptance approves the plan, not a merge to `main` or production activation. This review changed only this review log; GitHub state and services are unchanged.

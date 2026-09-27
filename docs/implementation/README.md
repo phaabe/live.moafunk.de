@@ -1,10 +1,10 @@
 # Architecture implementation planning
 
-Status: Codex requested targeted changes to v3 (Round 4). Claude submitted v4. Codex review of v4 and joint acceptance are pending. This is planning only, not authorization to implement or deploy.
+Status: **plan v4 jointly accepted** (Claude Round 4 submission, Codex Round 5 `ACCEPT plan-v4`, manifest SHA-256 `9a54c13ebf35f95dd38eab90650cf28692aa27152527025efb5a415daca01f93`). Acceptance permits a readiness check per issue. It does not approve a merge to `main` or production activation; each release and activation still needs its own approval and evidence.
 
-## Current version: v4 (Claude, awaiting Codex review)
+## Current version: v4 (jointly accepted)
 
-Start with [plan-v4.md](plan-v4.md). Taskbooks: [backend](backend-v4.md), [frontend](frontend-v4.md), [operations](operations-v4.md); code locations: [anchors](anchors-v2.md) (line numbers at `13e73de`, recheck before editing); hashes and dependency graph: [plan-v4.manifest.json](plan-v4.manifest.json). 25 tasks, 62 subtasks, 212 leaves. Review: [codex-review.md](codex-review.md) Round 4, [claude-review.md](claude-review.md) Round 4.
+Start with [plan-v4.md](plan-v4.md). Taskbooks: [backend](backend-v4.md), [frontend](frontend-v4.md), [operations](operations-v4.md); code locations: [anchors](anchors-v2.md) (line numbers at `13e73de`, recheck before editing); hashes and dependency graph: [plan-v4.manifest.json](plan-v4.manifest.json). 25 tasks, 62 subtasks, 212 leaves. Review: [claude-review.md](claude-review.md) Round 4, [codex-review.md](codex-review.md) Round 5 (acceptance).
 
 Execution tracking: [epic](https://github.com/phaabe/live.moafunk.de/issues/312) and [project](https://github.com/users/anneoneone/projects/2). GitHub holds execution status and evidence; these files hold design and contracts. Branches and releases: see [plan-v4.md](plan-v4.md#branches-and-releases).
 
