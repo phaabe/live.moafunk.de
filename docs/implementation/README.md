@@ -30,7 +30,7 @@ Start with [plan-v1.md](plan-v1.md): shared contracts, coding dependencies, para
 
 ## Shared location
 
-`docs/implementation/` in this repository. Plan changes go through PRs into `dev/streaming-architecture`.
+`docs/implementation/` in this repository. Plan changes go through PRs into `dev/streaming-architecture` (temporarily `dev/312-interim`, see [epic-rules.md](epic-rules.md) section 0).
 
 Planning baseline: `13e73de53f02248feede47e1eced6ac2086e38dd`. Current code checked for v3 and v4: `99110ddb6a0be1728ae2246acdcc2096c78ee7d4`. Recheck the baseline before implementation; the GitNexus index may describe a different checkout.
 

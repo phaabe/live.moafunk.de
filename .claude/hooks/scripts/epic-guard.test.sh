@@ -134,4 +134,8 @@ check 0 "backslash-newline inside single quotes stays literal" \
 check 2 "quoted newline does not end the heredoc head" \
   "$(bash_cmd "gh pr create --base main --head feat/1-x --body 'a${NL}b' --body-file - <<'END'${NL}x${NL}END")"
 
+# Temporary integration branch (epic-rules.md section 0)
+check 0 "feature pr into interim branch" "$(bash_cmd "gh pr create --base dev/312-interim --head feat/1-x --fill")"
+check 2 "interim branch into main" "$(bash_cmd "gh pr create --base main --head dev/312-interim --fill")"
+
 exit "$fail"
