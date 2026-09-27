@@ -1,24 +1,30 @@
 """Claude's local guard for the architecture epic rules (docs/implementation/epic-rules.md).
 
 Reads a PreToolUse payload on stdin. Exit 2 blocks the tool call (message on
-stderr), exit 0 allows it.
+stderr), exit 0 allows it. This is a guard against mistakes, not a security
+boundary; the required server-side check is separate.
 
-Blocks:
-  1. A review verdict written in Codex's name, in any tool input.
-  2. A pull request without an explicit base, or with base `main` unless the
-     head is `dev/streaming-architecture` (release) or the approved setup
-     branch. Covers `gh pr create`, `gh api .../pulls` and the MCP tool.
-  3. A merge without its own expected head SHA: `gh pr merge` needs
-     `--match-head-commit <sha>`, `gh api .../pulls/<n>/merge` needs
-     `sha=<sha>`. MCP merges are blocked.
-  4. `gh` pull request commands the guard cannot see into: inside command
-     substitution, or run through eval, a shell, xargs or source.
+Rules:
+  1. Never a review verdict in Codex's name, in any tool input.
+  2. A shell command that creates or merges a pull request must be exactly
+     one plain `gh` command: optional `VAR=value` assignments, then `gh`,
+     then the subcommand (no global flags before it), with no shell
+     operators, wrappers, `$` or backticks outside single quotes. It may end
+     with one heredoc whose delimiter is quoted (data, e.g. `--body-file -`).
+     Backslash-newline continuations are joined first.
+  3. `gh pr create` needs an explicit base; base `main` only from
+     `dev/streaming-architecture` (release) or the approved setup branch.
+  4. `gh pr merge` needs `--match-head-commit <40-char SHA>`.
+  5. Pull request writes through `gh api` are refused; use `gh pr create/merge`.
+  6. MCP pull request creation follows rule 3; MCP merges are refused.
 
-Parsing is quote-aware: separators, heredocs and substitutions are only
-recognised outside single quotes, and every simple command is checked on its
-own real arguments.
+A command "creates or merges a pull request" when its text, outside the
+bodies of quoted-delimiter heredocs fed to non-interpreters, mentions
+`gh ... pr create`, `gh ... pr merge` or `gh ... api ... pulls`. Text such as
+`git commit -m "... gh pr merge ..."` is therefore refused too; use a file or
+a quoted heredoc for such messages.
 
-Override for an approved `main` hotfix PR (rule 2 only): the operator sets
+Override for an approved `main` hotfix PR (rule 3 only): the operator sets
 CLAUDE_ALLOW_MAIN_PR=1 in the hook environment, for example in
 `.claude/settings.local.json` under "env". An inline assignment on the
 guarded command does not reach this hook, by design.
@@ -32,6 +38,7 @@ import re
 import shlex
 import subprocess
 import sys
+from typing import NoReturn
 
 RELEASE_HEAD = "dev/streaming-architecture"
 SETUP_HEADS = {"ci/312-epic-guard"}  # approved epic-guard setup PR to main
@@ -39,82 +46,66 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 FORGED_VERDICT = re.compile(
     r"Review: (APPROVED|CHANGES REQUESTED) by Codex at [0-9a-f]{40}"
 )
-GH_PR_TEXT = re.compile(r"\bgh\b.*\b(pr\s+(create|merge)|api\b.*\bpulls\b)", re.S)
-SEPARATORS = {"&&", "||", ";", ";;", "|", "|&", "&", "\n", "(", ")"}
+GUARDED = re.compile(r"\bgh\b.*?(\bpr\s+(create|merge)\b|\bapi\b.*?\bpulls\b)", re.S)
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-# Wrappers that run the rest of the line as a command, with their value options.
-WRAPPERS = {
-    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
-    "command": set(),
-    "builtin": set(),
-    "exec": {"-a"},
-    "nohup": set(),
-    "time": set(),
-    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U"},
-    "nice": {"-n"},
-    "timeout": {"-s", "--signal", "-k", "--kill-after"},
-    "gtimeout": {"-s", "--signal", "-k", "--kill-after"},
+HEREDOC = re.compile(r"<<-?[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*$")
+INTERPRETERS = {
+    "bash",
+    "sh",
+    "zsh",
+    "dash",
+    "ksh",
+    "eval",
+    "source",
+    ".",
+    "xargs",
+    "python",
+    "python3",
+    "node",
+    "perl",
+    "ruby",
 }
-TAKES_DURATION = {"timeout", "gtimeout"}
-INTERPRETERS = {"eval", "bash", "sh", "zsh", "dash", "ksh", "xargs", "source", "."}
-DATA_OWNERS = {"gh", "cat", "tee"}
-PR_CREATE_VALUE_FLAGS = {
-    "-t",
-    "--title",
-    "-b",
-    "--body",
-    "-F",
-    "--body-file",
-    "-B",
-    "--base",
-    "-H",
-    "--head",
-    "-a",
-    "--assignee",
-    "-l",
-    "--label",
-    "-m",
-    "--milestone",
-    "-p",
-    "--project",
-    "-r",
-    "--reviewer",
-    "-R",
-    "--repo",
-    "-T",
-    "--template",
+PUNCTUATION = set(";&|<>()\n")
+# gh flags that take a value, normalised to one name so the last one wins.
+CREATE_FLAGS = {
+    "-B": "--base",
+    "--base": "--base",
+    "-H": "--head",
+    "--head": "--head",
+    "-t": "--title",
+    "--title": "--title",
+    "-b": "--body",
+    "--body": "--body",
+    "-F": "--body-file",
+    "--body-file": "--body-file",
+    "-a": "--assignee",
+    "--assignee": "--assignee",
+    "-l": "--label",
+    "--label": "--label",
+    "-m": "--milestone",
+    "--milestone": "--milestone",
+    "-p": "--project",
+    "--project": "--project",
+    "-r": "--reviewer",
+    "--reviewer": "--reviewer",
+    "-R": "--repo",
+    "--repo": "--repo",
+    "-T": "--template",
+    "--template": "--template",
+    "--recover": "--recover",
 }
-PR_MERGE_VALUE_FLAGS = {
-    "-b",
-    "--body",
-    "-F",
-    "--body-file",
-    "-t",
-    "--subject",
-    "-A",
-    "--author-email",
-    "--match-head-commit",
-    "-R",
-    "--repo",
-}
-API_VALUE_FLAGS = {
-    "-X",
-    "--method",
-    "-f",
-    "--raw-field",
-    "-F",
-    "--field",
-    "-H",
-    "--header",
-    "--input",
-    "-q",
-    "--jq",
-    "-t",
-    "--template",
-    "--hostname",
-    "--cache",
-    "-p",
-    "--preview",
+MERGE_FLAGS = {
+    "-b": "--body",
+    "--body": "--body",
+    "-F": "--body-file",
+    "--body-file": "--body-file",
+    "-t": "--subject",
+    "--subject": "--subject",
+    "-A": "--author-email",
+    "--author-email": "--author-email",
+    "--match-head-commit": "--match-head-commit",
+    "-R": "--repo",
+    "--repo": "--repo",
 }
 
 
@@ -122,153 +113,76 @@ class Blocked(Exception):
     pass
 
 
-def block(*lines: str) -> None:
+def block(*lines: str) -> NoReturn:
     raise Blocked("\n".join(lines))
 
 
-# ------------------------------------------------------------------ scanning
-def scan(cmd: str) -> tuple[str, list[tuple[str, bool, str]], list[str]]:
-    """Split a command into code, heredocs and substitutions, respecting quotes.
+def split_heredoc(cmd: str) -> tuple[str, str | None]:
+    """Split `head <<'D'\\nbody\\nD` into (head, body). No heredoc: (cmd, None)."""
+    first, _, rest = cmd.partition("\n")
+    m = HEREDOC.search(first)
+    if not m:
+        return cmd, None
+    tag = m.group(2)
+    lines = rest.split("\n")
+    if tag not in [line.strip() for line in lines]:
+        return cmd, None
+    end = [line.strip() for line in lines].index(tag)
+    if any(line.strip() for line in lines[end + 1 :]):
+        return cmd, None  # commands after the heredoc: not the supported form
+    return first[: m.start()].rstrip(), "\n".join(lines[:end])
 
-    Returns (code without heredoc bodies, [(owner line, delimiter quoted, body)],
-    [contents of $(...) and backtick substitutions found outside single quotes]).
-    """
-    code: list[str] = []
-    heredocs: list[tuple[str, bool, str]] = []
-    subs: list[str] = []
-    pending: list[tuple[str, bool]] = []  # heredoc delimiters waiting for end of line
-    line_start = 0
-    i, n = 0, len(cmd)
-    single = double = False
-    while i < n:
-        c = cmd[i]
-        if single:
-            if c == "'":
-                single = False
-            code.append(c)
-            i += 1
-            continue
-        if c == "\\" and i + 1 < n:
-            code.append(cmd[i : i + 2])
-            i += 2
-            continue
-        if c == "'" and not double:
+
+def detection_text(cmd: str) -> str:
+    """The command text that can run, for deciding whether it is guarded."""
+    head, body = split_heredoc(cmd)
+    if body is None:
+        return cmd
+    try:
+        words = shlex.split(head)
+    except ValueError:
+        return cmd
+    words = [w for w in words if not ASSIGNMENT.match(w)]
+    if words and os.path.basename(words[0]) in INTERPRETERS:
+        return cmd  # the body is code
+    return head
+
+
+def outside_single_quotes(text: str) -> str:
+    out, single, i = [], False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "'" and not single:
             single = True
-        elif c == '"':
-            double = not double
-        elif c == "`":
-            end = cmd.find("`", i + 1)
-            end = n if end == -1 else end
-            subs.append(cmd[i + 1 : end])
-            code.append(cmd[i : end + 1])
-            i = end + 1
-            continue
-        elif c == "$" and cmd.startswith("$(", i):
-            depth, j = 1, i + 2
-            while j < n and depth:
-                depth += {"(": 1, ")": -1}.get(cmd[j], 0)
-                j += 1
-            subs.append(cmd[i + 2 : j - 1])
-            code.append(cmd[i:j])
-            i = j
-            continue
-        elif (
-            c == "<"
-            and not double
-            and cmd.startswith("<<", i)
-            and not cmd.startswith("<<<", i)
-        ):
-            m = re.match(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", cmd[i:])
-            if m:
-                pending.append((m.group(2), bool(m.group(1))))
-                code.append(m.group(0))
-                i += m.end()
+        elif c == "'" and single:
+            single = False
+        elif not single:
+            if c == "\\" and i + 1 < len(text):
+                out.append(" ")
+                i += 2
                 continue
-        elif c == "\n" and not double and pending:
-            owner = cmd[line_start:i]
-            code.append("\n")
-            i += 1
-            for tag, quoted in pending:
-                body: list[str] = []
-                while i < n:
-                    end = cmd.find("\n", i)
-                    end = n if end == -1 else end
-                    line = cmd[i:end]
-                    i = end + 1
-                    if line.strip() == tag:
-                        break
-                    body.append(line)
-                heredocs.append((owner, quoted, "\n".join(body)))
-            pending = []
-            line_start = i
-            continue
-        if c == "\n" and not double:
-            line_start = i + 1
-        code.append(c)
+            out.append(c)
         i += 1
-    return "".join(code), heredocs, subs
+    return "".join(out)
 
 
-def simple_commands(code: str) -> list[list[str]]:
-    lexer = shlex.shlex(code, posix=True, punctuation_chars=";&|()\n")
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    commands, current = [], []
-    for token in lexer:
-        if token in SEPARATORS or (token and set(token) <= set(";&|()\n")):
-            if current:
-                commands.append(current)
-            current = []
-        else:
-            current.append(token)
-    if current:
-        commands.append(current)
-    return commands
-
-
-def strip_wrappers(words: list[str]) -> list[str]:
-    """Drop env assignments and wrapper commands such as env, command, sudo, timeout."""
-    i = 0
-    while i < len(words):
-        word = words[i]
-        name = os.path.basename(word)
-        if ASSIGNMENT.match(word):
-            i += 1
-        elif name in WRAPPERS:
-            i += 1
-            while i < len(words) and (
-                words[i].startswith("-") or ASSIGNMENT.match(words[i])
-            ):
-                i += 2 if words[i] in WRAPPERS[name] else 1
-            if name in TAKES_DURATION and i < len(words):
-                i += 1  # the duration
-        else:
-            break
-    return words[i:]
-
-
-def parse(args: list[str], value_flags: set[str]) -> dict[str, list[str]]:
-    """Collect flag values; value flags consume the next argument."""
-    values: dict[str, list[str]] = {}
+def parse(args: list[str], flags: dict[str, str]) -> dict[str, str]:
+    values: dict[str, str] = {}
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg.startswith("--") and "=" in arg:
-            flag, value = arg.split("=", 1)
-            values.setdefault(flag, []).append(value)
-        elif arg in value_flags and i + 1 < len(args):
-            values.setdefault(arg, []).append(args[i + 1])
-            i += 1
+        name, sep, value = arg.partition("=") if arg.startswith("--") else (arg, "", "")
+        if name in flags:
+            if not sep:
+                if i + 1 >= len(args):
+                    block(f"Missing value for {name}.")
+                value = args[i + 1]
+                i += 1
+            values[flags[name]] = value
         i += 1
     return values
 
 
-def last(values: dict[str, list[str]], *flags: str) -> str | None:
-    found = [v for f in flags for v in values.get(f, [])]
-    return found[-1] if found else None
-
-
-# ------------------------------------------------------------------ rules
 def current_branch(cwd: str) -> str:
     try:
         return subprocess.run(
@@ -298,91 +212,60 @@ def check_base(base: str | None, head: str | None) -> None:
             )
 
 
-def require_sha(sha: str | None, how: str) -> None:
-    if not sha or not SHA_RE.match(sha):
-        block(
-            f"A merge needs its own expected head SHA: {how} <40-char head SHA>.",
-            "Merge only the head the other agent approved; a mismatch aborts the merge.",
-        )
-
-
-def check_gh(words: list[str], cwd: str) -> None:
-    if len(words) >= 3 and words[1] == "pr" and words[2] == "create":
-        values = parse(words[3:], PR_CREATE_VALUE_FLAGS)
-        head = last(values, "--head", "-H") or current_branch(cwd)
-        check_base(last(values, "--base", "-B"), head)
-    elif len(words) >= 3 and words[1] == "pr" and words[2] == "merge":
-        require_sha(
-            last(parse(words[3:], PR_MERGE_VALUE_FLAGS), "--match-head-commit"),
-            "--match-head-commit",
-        )
-    elif len(words) >= 2 and words[1] == "api":
-        values = parse(words[2:], API_VALUE_FLAGS)
-        paths = [w for w in words[2:] if "pulls" in w and not w.startswith("-")]
-        fields = dict(
-            f.split("=", 1)
-            for f in values.get("-f", [])
-            + values.get("--raw-field", [])
-            + values.get("-F", [])
-            + values.get("--field", [])
-            if "=" in f
-        )
-        if any(re.search(r"pulls/\d+/merge\b", p) for p in paths):
-            require_sha(fields.get("sha"), "gh api ... -f sha=")
-        elif any(re.search(r"/pulls/?$", p) for p in paths) and (
-            "base" in fields or "head" in fields
-        ):
-            check_base(fields.get("base"), fields.get("head"))
-
-
-def check_command(cmd: str, cwd: str, depth: int = 0) -> None:
-    if depth > 3:
-        block("Nested commands are too deep for the guard to check.")
-    code, heredocs, subs = scan(cmd)
-    for sub in subs:
-        if GH_PR_TEXT.search(sub):
-            block(
-                "The guard cannot check a gh pull request command inside $(...) or backticks.",
-                "Run the gh command directly.",
-            )
-    try:
-        commands = simple_commands(code)
-    except ValueError:
-        if GH_PR_TEXT.search(code):
-            block(
-                "The guard cannot parse this command. Run the gh command as a plain command."
-            )
+def check_command(cmd: str, cwd: str) -> None:
+    if not GUARDED.search(detection_text(cmd)):
         return
-    for words in commands:
-        words = strip_wrappers(words)
-        if not words:
-            continue
-        name = os.path.basename(words[0])
-        if name in INTERPRETERS and GH_PR_TEXT.search(" ".join(words[1:])):
+    unsupported = (
+        "Pull request create/merge commands must be one plain gh command: "
+        "no wrappers, shell operators, substitutions or flags before the subcommand."
+    )
+    head, body = split_heredoc(cmd)
+    if (
+        body is not None
+        and os.path.basename((shlex.split(head) or [""])[0]) in INTERPRETERS
+    ):
+        block(unsupported)
+    head = re.sub(r"\\\n", " ", head)  # line continuations
+    code = outside_single_quotes(head)
+    if "$" in code or "`" in code:
+        block(unsupported)
+    try:
+        lexer = shlex.shlex(head, posix=True, punctuation_chars=";&|<>()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        block(unsupported)
+    if any(w and set(w) <= PUNCTUATION for w in words):
+        block(unsupported)
+    while words and ASSIGNMENT.match(words[0]):
+        words = words[1:]
+    if (
+        not words
+        or os.path.basename(words[0]) != "gh"
+        or len(words) < 2
+        or words[1].startswith("-")
+    ):
+        block(unsupported)
+    if words[1:3] == ["pr", "create"]:
+        values = parse(words[3:], CREATE_FLAGS)
+        check_base(values.get("--base"), values.get("--head") or current_branch(cwd))
+    elif words[1:3] == ["pr", "merge"]:
+        sha = parse(words[3:], MERGE_FLAGS).get("--match-head-commit")
+        if not sha or not SHA_RE.match(sha):
             block(
-                f"The guard cannot check a gh pull request command run through `{name}`.",
-                "Run the gh command directly.",
+                "gh pr merge needs --match-head-commit <40-char head SHA>.",
+                "Merge only the head the other agent approved; a mismatch aborts the merge.",
             )
-        if name == "gh":
-            check_gh(words, cwd)
-    for owner, quoted, body in heredocs:
-        owner_words = strip_wrappers((simple_commands(scan(owner)[0]) or [[]])[-1])
-        owner_name = os.path.basename(owner_words[0]) if owner_words else ""
-        if owner_name in DATA_OWNERS:
-            if not quoted:  # unquoted delimiter: substitutions in the body still run
-                for sub in scan(body.replace("'", " "))[2]:
-                    if GH_PR_TEXT.search(sub):
-                        block(
-                            "A heredoc body runs a gh pull request command in a substitution."
-                        )
-        elif owner_name in INTERPRETERS or owner_name in {"python", "python3", "node"}:
-            if GH_PR_TEXT.search(body):
-                block(
-                    f"The guard cannot check gh pull request commands fed to `{owner_name}`.",
-                    "Run the gh command directly.",
-                )
-        else:
-            check_command(body, cwd, depth + 1)
+    elif words[1] == "api" and any("pulls" in w for w in words[2:]):
+        writes = {"-f", "-F", "--field", "--raw-field", "--input"}
+        method = (
+            parse(words[2:], {"-X": "-X", "--method": "-X"}).get("-X", "GET").upper()
+        )
+        if method != "GET" or any(w.split("=", 1)[0] in writes for w in words[2:]):
+            block(
+                "Pull request writes through gh api are refused. Use gh pr create or gh pr merge."
+            )
 
 
 def main() -> int:

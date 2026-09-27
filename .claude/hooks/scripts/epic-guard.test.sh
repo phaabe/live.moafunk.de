@@ -84,9 +84,25 @@ check 0 "literal backticks in single-quoted body" \
 check 0 "heredoc body mentioning gh pr merge as data" \
   "$(bash_cmd "gh pr comment 5 --body-file - <<'END'${NL}Merge with gh pr merge 5 --squash later.${NL}END")"
 check 2 "gh api merge without sha" "$(bash_cmd "gh api -X PUT repos/o/r/pulls/5/merge")"
-check 0 "gh api merge with sha" "$(bash_cmd "gh api -X PUT repos/o/r/pulls/5/merge -f sha=$SHA")"
+check 2 "gh api merge refused even with sha" "$(bash_cmd "gh api -X PUT repos/o/r/pulls/5/merge -f sha=$SHA")"
+check 0 "gh api pulls read" "$(bash_cmd "gh api repos/o/r/pulls/5 --jq .head.sha")"
 check 2 "gh api PR into main" "$(bash_cmd "gh api repos/o/r/pulls -f base=main -f head=feat/1-x -f title=x")"
 check 2 "eval wrapper" "$(bash_cmd "eval 'gh pr merge 6 --squash'")"
+# Codex third review at 14ad99fc813ecdec150d5f2219ae4e658fe32a30
+check 2 "global flag before pr" "$(bash_cmd "gh -R phaabe/live.moafunk.de pr merge 402 --squash")"
+check 2 "mixed aliases, last base is main" \
+  "$(bash_cmd "gh pr create -B dev/streaming-architecture --base main --head feat/1-x --fill")"
+PR_JSON='{"base":"main","head":"feat/1-x"}'
+check 2 "gh api pulls with --input body" \
+  "$(bash_cmd "gh api repos/o/r/pulls --input - <<'END'${NL}${PR_JSON}${NL}END")"
+check 2 "if/then wrapper" "$(bash_cmd "if true; then gh pr merge 402 --squash; fi")"
+check 2 "env -S wrapper" "$(bash_cmd "env -S \"gh pr merge 402 --squash\"")"
+check 0 "line continuation" "$(bash_cmd "gh pr merge 5 --squash \\${NL}  --match-head-commit $SHA")"
+check 0 "git commit with quoted heredoc message mentioning gh pr merge" \
+  "$(bash_cmd "git commit -F - <<'END'${NL}Merge with gh pr merge later.${NL}END")"
+check 2 "git commit -m mentioning gh pr merge is refused (use a file)" \
+  "$(bash_cmd "git commit -m 'run gh pr merge later'")"
+check 0 "gh pr view is not guarded" "$(bash_cmd "gh pr view 402 --json headRefOid && echo done")"
 check 2 "MCP merge" "$(jq -cn '{tool_name:"mcp__github__merge_pull_request", tool_input:{pull_number:5}}')"
 
 exit "$fail"

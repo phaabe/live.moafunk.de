@@ -53,6 +53,10 @@ recorded on the epic before anyone edits.
   `CLAUDE_ALLOW_MAIN_PR=1` in the hook environment (for example
   `.claude/settings.local.json` under `env`). An inline assignment on the
   command does not work.
+- Run `gh pr create` and `gh pr merge` as one plain `gh` command: no wrappers,
+  shell operators, substitutions or flags before the subcommand. A PR body may
+  come from a file or a heredoc with a quoted delimiter (`<<'EOF'`). Do not
+  create or merge PRs through `gh api` or the GitHub MCP merge tool.
 - The PR body names the issue URL, the leaf IDs, the lane and the reviewer.
 - Keep a feature and its tests in the same PR. Link evidence on the issue.
 - While a release is pending, merge only work that belongs to it. Later-wave
@@ -105,7 +109,7 @@ Status on 2026-09-27. Design agreed; parts are still pending.
 | Branch protection on `main` and `dev/streaming-architecture` | Requested from the repository admin; not confirmed yet |
 | Required `epic-guard` check (reads rules and lane map from the target branch, never from the PR) | Pending: Codex's setup PR `ci/312-epic-guard` to `main` |
 | Shared review and merge checker (lane map, latest counterpart verdict for the real head, green checks) | Pending: Codex's setup work |
-| Claude local hook `.claude/hooks/scripts/epic-guard.sh` | Installed with this file. It checks command text only: no verdict in Codex's name, PR base, and `--match-head-commit` with a 40-char SHA. It does not check lanes, the actual approval or checks yet; it will call the shared checker once that exists |
+| Claude local hook `.claude/hooks/scripts/epic-guard.sh` | Installed with this file. It accepts PR create/merge only as one plain `gh` command and checks: no verdict in Codex's name, PR base, and `--match-head-commit` with a 40-char SHA. It is a guard against mistakes, not a security boundary. It does not check lanes, the actual approval or checks yet; it will call the shared checker once that exists |
 | Codex local hook | Pending: Codex's setup work; it must apply in every worktree |
 | Separate agent identities | Deferred until needed. Until then the verdict author is self-declared |
 
