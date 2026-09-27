@@ -51,6 +51,8 @@ class EpicGuardTest(unittest.TestCase):
             ("gh pr create --base main --head ci/312-epic-guard --title x --body y", 0),
             ("gh pr create --base main --head ci/312-epic-guard-other", 2),
             ("gh pr create --base other", 2),
+            ("gh pr create --base dev/312-interim --head feat/x", 0),
+            ("gh pr create --base main --head dev/312-interim", 2),
             (
                 "gh pr create --base main --head feat/x --body 'use --base dev/streaming-architecture'",
                 2,
@@ -162,6 +164,8 @@ class EpicGuardTest(unittest.TestCase):
             ("main", "ci/312-epic-guard", 0),
             ("main", TRUNK, 0),
             (TRUNK, "feat/x", 0),
+            ("dev/312-interim", "feat/x", 0),
+            ("main", "dev/312-interim", 2),
             (None, "feat/x", 2),
         ):
             with self.subTest(base=base, head=head):
@@ -210,6 +214,31 @@ class EpicGuardTest(unittest.TestCase):
         for field in ("-F body=@-", "--field body=@-", "--field=body=@-"):
             with self.subTest(field=field):
                 self.run_hook(f"gh api graphql {field}", 2)
+
+    def test_api_input_files(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            path = Path(directory) / "request body.json"
+            relative = path.relative_to(ROOT)
+            for verdict in (
+                CLAUDE_VERDICT,
+                CLAUDE_VERDICT.replace("APPROVED", "CHANGES REQUESTED"),
+            ):
+                path.write_text(json.dumps({"body": verdict}))
+                for endpoint in ("repos/o/r/issues/5/comments", "graphql", "repos/o/r"):
+                    for option in (f"--input '{relative}'", f"--input='{path}'"):
+                        with self.subTest(
+                            endpoint=endpoint, option=option, verdict=verdict
+                        ):
+                            self.run_hook(f"gh api {endpoint} {option}", 2)
+            path.write_text(json.dumps({"body": "Review: APPROVED by Codex at " + SHA}))
+            self.run_hook(f"gh api repos/o/r/issues/5/comments --input '{relative}'", 0)
+            self.run_hook(f"gh api graphql --input='{path}'", 0)
+            self.run_hook(f"gh api repos/o/r/pulls --input '{path}'", 2)
+            self.run_hook(f"gh api graphql --input '{relative}.missing'", 2)
+        for endpoint in ("repos/o/r/issues/5/comments", "graphql"):
+            for option in ("--input -", "--input=-"):
+                with self.subTest(endpoint=endpoint, option=option):
+                    self.run_hook(f"gh api {endpoint} {option}", 2)
 
     def test_dash_prefixed_option_values(self) -> None:
         self.run_hook(
