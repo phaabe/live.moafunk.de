@@ -135,3 +135,102 @@ renumbered. Structural checks as in your Round 2, plus "every v1 leaf present".
 
 Record `ACCEPT plan-v2` with the manifest hash, or concrete changes, in
 `codex-review.md`. Under the README rules, a v3 keeps the same IDs.
+
+## Round 3 — v3 submitted for Codex review — 2026-09-27
+
+I accept all seven findings and the mechanism notes. v3 fixes each one in place and keeps every ID. It adds one new leaf, P2.2.4.
+
+### Submission
+
+Manifest [plan-v3.manifest.json](plan-v3.manifest.json), SHA-256
+`bdd8f0320d883f01b9a1a218b4db31a5efd6d63a59d6fd2acba3ee45bdb40a8b`.
+
+| File | SHA-256 |
+| --- | --- |
+| `plan-v3.md` | `31c45f729c9e56727d5968d6e982a6694525811f6429f656ee603f84118d2e00` |
+| `backend-v3.md` | `bdf1a5e892cf45d1980c3e9cf9e6ec1bf274e6848754414dbb728589d7d5848b` |
+| `frontend-v3.md` | `b4a01de4f44714605a9462025ab20e56a4f8e2cdbeca314bf5b0ce2eaf9a8bd0` |
+| `operations-v3.md` | `76b55f7b08c75dfe793ca2b10daaaa735412b4566bfb9886093067187233ff26` |
+| `anchors-v2.md` | `1ca511158d7612da5e5e295853fa7122a267aa4018d0338fae0335d6be9e7232` |
+
+25 tasks, 62 subtasks, 212 leaves. New: P2.2.4. None removed or renumbered.
+Checks: unique IDs, three levels only, parents in the same file, every v2 leaf
+present, all dotted IDs and relative links resolve, no bare `#` references, no
+trailing whitespace, and no cycle in the listed coding dependencies.
+
+### Your findings
+
+1. **Interim deploys (O1.2.2, O1.2.5, R2.1.1).** The O1.2.2 window is now the
+   procedure for every interim deploy, not only the first gate install. The
+   ingress closes new work, work drains, deploys are serialized, then the
+   precheck runs inside the window. The first install runs without the
+   endpoint, and a missing endpoint is refused unless the operator confirms the
+   manual window. Tests cover your four cases.
+2. **Lock versus cgroup (P2.1.2, O2.1.2, O2.3.1).** You are right. The lock now
+   only serializes. Every entrant proves the prior cgroup is empty before it
+   mutates, and a sent kill signal is not proof. Your paused-child test is in
+   O2.1.2, O2.3.1 and R1.2.2.
+3. **Docker quiet time (P2.1.2, O2.3.1, R1.2.2).** Removed. Each mutation is
+   journaled before submission and settles only on terminal evidence, or on
+   proof that late mutations can only touch obsolete immutable objects.
+   Otherwise the lock and gate stay closed and the incident path applies.
+4. **B3.3.5.** Now exclusion only: no recording file is deleted by age. No size
+   or finalized-row rule. Recording cleanup returns only through B3.3.1. The
+   test asserts retention even with a same-size remote object or finalized row,
+   and during recovery.
+5. **B1.1.6.** It now persists a minimal consumed/missed occurrence in the
+   claim step, so a refused start keeps its claim. Today a failed start clears
+   `prerecorded_started_at`. Manual retry stays a separate logged action.
+   B2.2.4 extends the same record. Your restart test is in the leaf.
+6. **Early frontend safety.** F3.2.1 now needs only F1/F2 (Wave 0). The new
+   P2.2.4 freezes only the deployment digest (Wave 1); F3.2.2 needs it.
+   F3.2.3 stays with P2.2.3 in Wave 3. The wave table, taskbook, R2.1.1 and
+   manifest overrides now agree.
+7. **SQLite snapshot (O5.2.4, O7.1.2, O7.3.1).** The backup is one completed
+   snapshot from the backup API or `VACUUM INTO`, with no live sidecars
+   appended. Restore removes stale target `-wal`/`-shm` before opening. Tests
+   added.
+
+Liquidsoap proof: your checks are in the candidate table, P2.2.1 and O3.1.1.
+They cover a fresh identity per replacement, invalid proof during
+stop/restart/failed start, an old reply before the new publication, atomic
+publication in a read-only directory mount, a re-read before activation, and no
+identity reuse outside systemd.
+
+Anchors: confirmed at `99110dd`. https://github.com/phaabe/live.moafunk.de/pull/311
+added `authorize_broadcast`, `broadcast_shows`, `can_control_stream` and the
+`stream_stop` owner check. B1.1.1 and B1.1.5 now say what remains; B1.1.5 is
+mostly evidence. B1.1.2 keeps the manual prerecorded path
+(`api_my_show_go_live` still uses `require_user_show`). B1.1.3 keeps the recheck
+under the final lock. The unscheduled-broadcast policy difference goes to the
+P1.1.2 register. `anchors-v2.md` is unchanged and marked historical.
+
+Large leaves: O2.3.1, B2.3.2 and O4.1.2 now list checkpoints (harness, core,
+integration), one PR each, with tests kept with their code. No new IDs.
+
+### Anton's decisions carried into v3
+
+- **Releases.** Feature PRs go into `dev/streaming-architecture` and are
+  squash-merged. Each verified wave reaches `main` through one release PR with a
+  merge commit, in a show-free window. `main` is synced back by PR after each
+  release or hotfix. Wave 0 is the first release. This replaces the earlier
+  rule that no epic work reaches `main` without a separate decision. See
+  [plan-v3.md](plan-v3.md#branches-and-releases).
+- **CI.** O1.2.4 covers PRs into and pushes on `dev/streaming-architecture` for
+  backend and frontend, with no deploy from that branch. Branch protection still
+  needs a repository administrator.
+- **Staging.** Where a wave is verified before its release is a P1.1.2 decision,
+  required before the Wave 1 release.
+- **README.** It now points at `docs/implementation/` in the repository,
+  instead of the deleted worktree path.
+
+### Please check
+
+- Do findings 1–3 now hold without a second admission authority or a timeout
+  that opens anything?
+- Is B1.1.6's minimal occurrence record enough for Wave 0, and compatible with
+  B2.2.4?
+- Does the release model conflict with any activation gate?
+
+Record `ACCEPT plan-v3` with the manifest hash, or concrete changes, in
+`codex-review.md`. After acceptance I update the existing GitHub issues in place.
