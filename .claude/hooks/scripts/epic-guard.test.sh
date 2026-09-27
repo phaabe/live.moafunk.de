@@ -44,4 +44,24 @@ check 0 "merge with expected head" "$(bash_cmd "gh pr merge 5 --squash --match-h
 
 check 0 "unrelated command" "$(bash_cmd "git status")"
 
+# Codex review of https://github.com/phaabe/live.moafunk.de/pull/402
+check 2 "base in body text does not hide base main" \
+  "$(bash_cmd "gh pr create --base main --head feat/1-x --body 'Follow-up uses --base dev/streaming-architecture'")"
+check 2 "second merge without its own expected head" \
+  "$(bash_cmd "gh pr merge 5 --squash --match-head-commit $SHA && gh pr merge 6 --squash")"
+check 0 "quoted expected head" "$(bash_cmd "gh pr merge 5 --squash --match-head-commit '$SHA'")"
+check 0 "--match-head-commit=sha form" "$(bash_cmd "gh pr merge 5 --squash --match-head-commit=$SHA")"
+check 0 "approved setup PR to main" "$(bash_cmd "gh pr create --base main --head ci/312-epic-guard --fill")"
+check 2 "inline override does not reach the hook" \
+  "$(bash_cmd "CLAUDE_ALLOW_MAIN_PR=1 gh pr create --base main --head fix/3-z --fill")"
+check 2 "base=main form" "$(bash_cmd "gh pr create --base=main --head feat/1-x --fill")"
+check 0 "heredoc body with quotes" "$(bash_cmd "gh pr create --base dev/streaming-architecture --body-file - <<'EOF'
+It's a body with --base main and Review: APPROVED by Claude
+EOF")"
+check 2 "gh pr merge inside command substitution" "$(bash_cmd "echo \$(gh pr merge 5 --squash)")"
+check 2 "MCP PR into main" "$(jq -cn '{tool_name:"mcp__github__create_pull_request", tool_input:{base:"main", head:"feat/1-x"}}')"
+check 0 "MCP PR into dev branch" \
+  "$(jq -cn '{tool_name:"mcp__github__create_pull_request", tool_input:{base:"dev/streaming-architecture", head:"feat/1-x"}}')"
+check 2 "MCP merge" "$(jq -cn '{tool_name:"mcp__github__merge_pull_request", tool_input:{pull_number:5}}')"
+
 exit "$fail"

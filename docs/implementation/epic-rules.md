@@ -28,6 +28,15 @@ and its project (https://github.com/users/anneoneone/projects/2).
 | Ops | Codex | `.github/workflows/**`, deployment scripts, nginx, systemd and Liquidsoap configuration |
 | Setup | as assigned on the epic | Rule, template, lane-map and guard files, per the epic's setup comment |
 
+Split and shared work:
+
+- **O1.2.5** is split when it starts: Codex owns the deployment workflow, the
+  host script and the nginx rule; Claude owns the backend precheck endpoint.
+  Agree the endpoint's response and refusal behavior on the issue before
+  wiring the two together.
+- **P1 and O1.1** use one shared production inventory, not two. Missing
+  operator decisions and host observations stay visibly open in it.
+
 The machine-readable map is `.github/epic-lanes.yml` once it exists. Until
 then, this table and the assignments on the epic apply. New assignments are
 recorded on the epic before anyone edits.
@@ -36,8 +45,14 @@ recorded on the epic before anyone edits.
 
 - Branch `<type>/<issue>-<slug>` from `dev/streaming-architecture`, in its own
   worktree.
-- Every feature PR targets `dev/streaming-architecture`. Never target `main`;
-  only release PRs from `dev/streaming-architecture` do.
+- Every feature PR targets `dev/streaming-architecture`. Never target `main`.
+  Only two kinds of PR target `main`: release PRs from
+  `dev/streaming-architecture`, and the one approved `epic-guard` setup PR
+  from Codex's branch `ci/312-epic-guard` (Anton's exception before the first
+  release). A `main` hotfix needs Anton's approval; the operator then sets
+  `CLAUDE_ALLOW_MAIN_PR=1` in the hook environment (for example
+  `.claude/settings.local.json` under `env`). An inline assignment on the
+  command does not work.
 - The PR body names the issue URL, the leaf IDs, the lane and the reviewer.
 - Keep a feature and its tests in the same PR. Link evidence on the issue.
 - While a release is pending, merge only work that belongs to it. Later-wave
@@ -83,9 +98,16 @@ the evidence the plan requires. A merged PR is never activation evidence.
 
 ## 7. Enforcement
 
-- Server side: branch protection on `main` and `dev/streaming-architecture`,
-  and the required `epic-guard` check once it exists. The check reads the rules
-  and lane map from the target branch, never from the PR.
-- Local: Claude and Codex each run a hook around the shared checker.
-- Known gap: the verdict author is self-declared until the agents have separate
-  identities.
+Status on 2026-09-27. Design agreed; parts are still pending.
+
+| Layer | Status |
+| --- | --- |
+| Branch protection on `main` and `dev/streaming-architecture` | Requested from the repository admin; not confirmed yet |
+| Required `epic-guard` check (reads rules and lane map from the target branch, never from the PR) | Pending: Codex's setup PR `ci/312-epic-guard` to `main` |
+| Shared review and merge checker (lane map, latest counterpart verdict for the real head, green checks) | Pending: Codex's setup work |
+| Claude local hook `.claude/hooks/scripts/epic-guard.sh` | Installed with this file. It checks command text only: no verdict in Codex's name, PR base, and `--match-head-commit` with a 40-char SHA. It does not check lanes, the actual approval or checks yet; it will call the shared checker once that exists |
+| Codex local hook | Pending: Codex's setup work; it must apply in every worktree |
+| Separate agent identities | Deferred until needed. Until then the verdict author is self-declared |
+
+Until the pending layers exist, the author checks lanes, the counterpart
+verdict for the current head and green checks by hand before merging.
