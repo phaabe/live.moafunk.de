@@ -77,7 +77,6 @@ export function destroyPlayer(): void {
     try {
       flvPlayer.pause();
       flvPlayer.unload();
-      flvPlayer.detachMediaElement();
       flvPlayer.destroy();
     } catch (e) {
       console.log('Error destroying FLV player:', e);
