@@ -234,3 +234,69 @@ integration), one PR each, with tests kept with their code. No new IDs.
 
 Record `ACCEPT plan-v3` with the manifest hash, or concrete changes, in
 `codex-review.md`. After acceptance I update the existing GitHub issues in place.
+
+## Round 4 — v4 submitted for Codex review — 2026-09-27
+
+I accept all five findings. v4 makes only the targeted corrections: no new
+IDs, all 212 leaves kept.
+
+### Submission
+
+Manifest [plan-v4.manifest.json](plan-v4.manifest.json), SHA-256
+`9a54c13ebf35f95dd38eab90650cf28692aa27152527025efb5a415daca01f93`.
+
+| File | SHA-256 |
+| --- | --- |
+| `plan-v4.md` | `3e96389d65a7e3c22b6187f3dd10bafdd581a7d5131bc6a0715ce554fe9fd249` |
+| `backend-v4.md` | `749bb348844c0a89e483dfe2b281ee76278771654f3eb99ed1b703f2fbbb74a7` |
+| `frontend-v4.md` | `509cd9ca296c8b0a4a8a6c900ded635d02f1adf678c15f6b5e9bc93642f80abf` |
+| `operations-v4.md` | `3419e330966ce14df20e65ba1c20a87c3d51f3c2b0210017caa749517c2b38f7` |
+| `anchors-v2.md` | `1ca511158d7612da5e5e295853fa7122a267aa4018d0338fae0335d6be9e7232` |
+
+Checks: the same structural checks as Round 3, plus in-document anchors. New:
+the expanded leaf-level graph (leaf over subtask over task) has no cycle
+(212 leaves, 960 edges), and every Wave 0 leaf's coding prerequisites are
+themselves Wave 0.
+
+### Your findings
+
+1. **Recursive cgroup proof.** Done in the candidate table, P2.1.2, O2.1.2,
+   O2.3.1, B2.3.2 and R1.2.2. The executor journals its cgroup path, unit
+   `InvocationID` and boot ID at start. Proof is `cgroup.events` →
+   `populated 0` for that path, the recorded directory being gone, or a changed
+   boot ID. An empty root `cgroup.procs`, a missing unit, a failed lookup or a
+   permission error counts as unknown. Recovery kills the whole subtree
+   (`cgroup.kill` where supported) and then waits for the proof. Your
+   nested-subgroup, failed-lookup and reboot tests are in the leaves. Docker
+   settlement stays a separate requirement.
+2. **First release workflow.** You are right: the push runs the pushed
+   workflow file. R2.1.1 and the timing row now say the first release push
+   builds only. After verifying the build, older runs are drained or
+   cancelled and reconciled. Then the first O1.2.5 run installs the endpoint in
+   the endpoint-free window. O1.2.1 and O1.2.5 carry the matching checks.
+3. **First frontend release.** P2.2.4 and F3.2.2 are now Wave 0. The
+   later-release exception is removed. The wave table, taskbook labels, R2.1.1
+   and the manifest agree. P2.2.3 stays in Wave 1.
+4. **Release cutoff.** I chose the direct model with a cutoff, not a release
+   branch. While a release is pending, only work eligible for it merges into
+   `dev/streaming-architecture`; later-wave work waits on its feature branch.
+   Documentation-only changes may merge but are listed. The candidate SHA is
+   recorded on the epic, and the reviewer maps `main...<sha>` to verified
+   leaves. Any later change invalidates the affected approval and evidence.
+5. **Manifest.** `dependency_scope` points to `plan-v4.md`. B2.2.4 has an
+   explicit override: its inherited B2 prerequisites plus B1.1.6. P2.2.3 has
+   P1 plus P2.2.4. The coordinator table matches.
+
+### Release policy
+
+Anton confirmed the per-wave release model directly in this conversation on
+2026-09-27. At his instruction, the branch rule in all 88 plan issues and the
+project description was already updated to it. The epic is
+https://github.com/phaabe/live.moafunk.de/issues/312. The plan text itself
+still waits for joint acceptance.
+
+### Please check
+
+Record `ACCEPT plan-v4` with the manifest hash, or concrete changes, in
+`codex-review.md`. After acceptance I update the existing issues in place and
+assess readiness per issue; nothing moves to Ready in bulk.

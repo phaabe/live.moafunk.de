@@ -1,14 +1,16 @@
 # Architecture implementation planning
 
-Status: Codex requested changes to v2 (Round 3). Claude submitted v3. Codex review of v3 and joint acceptance are pending. This is planning only, not authorization to implement or deploy.
+Status: Codex requested targeted changes to v3 (Round 4). Claude submitted v4. Codex review of v4 and joint acceptance are pending. This is planning only, not authorization to implement or deploy.
 
-## Current version: v3 (Claude, awaiting Codex review)
+## Current version: v4 (Claude, awaiting Codex review)
 
-Start with [plan-v3.md](plan-v3.md). Taskbooks: [backend](backend-v3.md), [frontend](frontend-v3.md), [operations](operations-v3.md); code locations: [anchors](anchors-v2.md) (line numbers at `13e73de`, recheck before editing); hashes and dependency graph: [plan-v3.manifest.json](plan-v3.manifest.json). 25 tasks, 62 subtasks, 212 leaves. Review: [codex-review.md](codex-review.md) Round 3, [claude-review.md](claude-review.md) Round 3.
+Start with [plan-v4.md](plan-v4.md). Taskbooks: [backend](backend-v4.md), [frontend](frontend-v4.md), [operations](operations-v4.md); code locations: [anchors](anchors-v2.md) (line numbers at `13e73de`, recheck before editing); hashes and dependency graph: [plan-v4.manifest.json](plan-v4.manifest.json). 25 tasks, 62 subtasks, 212 leaves. Review: [codex-review.md](codex-review.md) Round 4, [claude-review.md](claude-review.md) Round 4.
 
-Execution tracking: [epic](https://github.com/phaabe/live.moafunk.de/issues/312) and [project](https://github.com/users/anneoneone/projects/2). GitHub holds execution status and evidence; these files hold design and contracts. Branches and releases: see [plan-v3.md](plan-v3.md#branches-and-releases).
+Execution tracking: [epic](https://github.com/phaabe/live.moafunk.de/issues/312) and [project](https://github.com/users/anneoneone/projects/2). GitHub holds execution status and evidence; these files hold design and contracts. Branches and releases: see [plan-v4.md](plan-v4.md#branches-and-releases).
 
 ## Earlier versions (history)
+
+v3: [plan-v3.md](plan-v3.md), [backend](backend-v3.md), [frontend](frontend-v3.md), [operations](operations-v3.md), [manifest](plan-v3.manifest.json). 212 leaves.
 
 v2: [plan-v2.md](plan-v2.md), [backend](backend-v2.md), [frontend](frontend-v2.md), [operations](operations-v2.md), [manifest](plan-v2.manifest.json). 211 leaves.
 
@@ -30,7 +32,7 @@ Start with [plan-v1.md](plan-v1.md): shared contracts, coding dependencies, para
 
 `docs/implementation/` in this repository. Plan changes go through PRs into `dev/streaming-architecture`.
 
-Planning baseline: `13e73de53f02248feede47e1eced6ac2086e38dd`. Current code checked for v3: `99110ddb6a0be1728ae2246acdcc2096c78ee7d4`. Recheck the baseline before implementation; the GitNexus index may describe a different checkout.
+Planning baseline: `13e73de53f02248feede47e1eced6ac2086e38dd`. Current code checked for v3 and v4: `99110ddb6a0be1728ae2246acdcc2096c78ee7d4`. Recheck the baseline before implementation; the GitNexus index may describe a different checkout.
 
 Inputs: [architecture v5](../architecture/live-moafunk.proposal-v5.md), [streaming design](../stream-rework/streaming-design.md), and both architecture review logs. The architecture's newly added component-description table is explanatory; the detailed contracts and their explicit limits govern the plan.
 
