@@ -54,7 +54,8 @@ recorded on the epic before anyone edits.
   `.claude/settings.local.json` under `env`). An inline assignment on the
   command does not work.
 - Run `gh pr create` and `gh pr merge` as one plain `gh` command: no wrappers,
-  shell operators, substitutions or flags before the subcommand. A PR body may
+  shell operators, substitutions or flags before the subcommand. Write short
+  options with a separate value (`-B main`, not `-Bmain`). A PR body may
   come from a file or a heredoc with a quoted delimiter (`<<'EOF'`). Do not
   create or merge PRs through `gh api` or the GitHub MCP merge tool.
 - The PR body names the issue URL, the leaf IDs, the lane and the reviewer.

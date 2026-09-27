@@ -9,8 +9,10 @@ Rules:
   2. A shell command that creates or merges a pull request must be exactly
      one plain `gh` command: optional `VAR=value` assignments, then `gh`,
      then the subcommand (no global flags before it), with no shell
-     operators, wrappers, `$` or backticks outside single quotes. It may end
-     with one heredoc whose delimiter is quoted (data, e.g. `--body-file -`).
+     operators, wrappers, `$` or backticks outside single quotes, no flags
+     between `pr` and its subcommand, and short options written with a
+     separate value (`-B main`, not `-Bmain`). It may end with one heredoc
+     whose delimiter is quoted (data, e.g. `--body-file -`).
      Backslash-newline continuations are joined first.
   3. `gh pr create` needs an explicit base; base `main` only from
      `dev/streaming-architecture` (release) or the approved setup branch.
@@ -19,8 +21,9 @@ Rules:
   6. MCP pull request creation follows rule 3; MCP merges are refused.
 
 A command "creates or merges a pull request" when its text, outside the
-bodies of quoted-delimiter heredocs fed to non-interpreters, mentions
-`gh ... pr create`, `gh ... pr merge` or `gh ... api ... pulls`. Text such as
+bodies of quoted-delimiter heredocs fed to a data command (gh, git, cat,
+tee), mentions `gh ... pr ... create`, `gh ... pr ... merge` or
+`gh ... api ... pulls`. Text such as
 `git commit -m "... gh pr merge ..."` is therefore refused too; use a file or
 a quoted heredoc for such messages.
 
@@ -46,25 +49,14 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 FORGED_VERDICT = re.compile(
     r"Review: (APPROVED|CHANGES REQUESTED) by Codex at [0-9a-f]{40}"
 )
-GUARDED = re.compile(r"\bgh\b.*?(\bpr\s+(create|merge)\b|\bapi\b.*?\bpulls\b)", re.S)
+GUARDED = re.compile(
+    r"\bgh\b.*?(\bpr\b.*?\b(create|merge)\b|\bapi\b.*?\bpulls\b)", re.S
+)
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*$")
-INTERPRETERS = {
-    "bash",
-    "sh",
-    "zsh",
-    "dash",
-    "ksh",
-    "eval",
-    "source",
-    ".",
-    "xargs",
-    "python",
-    "python3",
-    "node",
-    "perl",
-    "ruby",
-}
+# Commands that read a heredoc body as data. Any other consumer (a shell,
+# `command bash`, `env bash`, ...) may run it, so its body stays in detection.
+DATA_CONSUMERS = {"gh", "git", "cat", "tee"}
 PUNCTUATION = set(";&|<>()\n")
 # gh flags that take a value, normalised to one name so the last one wins.
 CREATE_FLAGS = {
@@ -117,12 +109,37 @@ def block(*lines: str) -> NoReturn:
     raise Blocked("\n".join(lines))
 
 
+def continues(line: str) -> bool:
+    """True if the line ends with an unescaped backslash."""
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
+
+
+def join_continuations(text: str) -> str:
+    lines = text.split("\n")
+    out = [lines[0]]
+    for line in lines[1:]:
+        if continues(out[-1]):
+            out[-1] = out[-1][:-1] + " " + line
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def split_heredoc(cmd: str) -> tuple[str, str | None]:
-    """Split `head <<'D'\\nbody\\nD` into (head, body). No heredoc: (cmd, None)."""
-    first, _, rest = cmd.partition("\n")
+    """Split `head <<'D'\\nbody\\nD` into (head, body).
+
+    Continuations are joined in the head only; the quoted body is literal.
+    No heredoc: (cmd with continuations joined, None).
+    """
+    lines = cmd.split("\n")
+    first, i = lines[0], 1
+    while continues(first) and i < len(lines):
+        first = first[:-1] + " " + lines[i]
+        i += 1
+    rest = "\n".join(lines[i:])
     m = HEREDOC.search(first)
     if not m:
-        return cmd, None
+        return join_continuations(cmd), None
     tag = m.group(2)
     lines = rest.split("\n")
     if tag not in [line.strip() for line in lines]:
@@ -143,9 +160,9 @@ def detection_text(cmd: str) -> str:
     except ValueError:
         return cmd
     words = [w for w in words if not ASSIGNMENT.match(w)]
-    if words and os.path.basename(words[0]) in INTERPRETERS:
-        return cmd  # the body is code
-    return head
+    if words and os.path.basename(words[0]) in DATA_CONSUMERS:
+        return head
+    return cmd  # the body may run as code
 
 
 def outside_single_quotes(text: str) -> str:
@@ -220,12 +237,6 @@ def check_command(cmd: str, cwd: str) -> None:
         "no wrappers, shell operators, substitutions or flags before the subcommand."
     )
     head, body = split_heredoc(cmd)
-    if (
-        body is not None
-        and os.path.basename((shlex.split(head) or [""])[0]) in INTERPRETERS
-    ):
-        block(unsupported)
-    head = re.sub(r"\\\n", " ", head)  # line continuations
     code = outside_single_quotes(head)
     if "$" in code or "`" in code:
         block(unsupported)
@@ -245,8 +256,14 @@ def check_command(cmd: str, cwd: str) -> None:
         or os.path.basename(words[0]) != "gh"
         or len(words) < 2
         or words[1].startswith("-")
+        or (words[1] == "pr" and (len(words) < 3 or words[2].startswith("-")))
     ):
         block(unsupported)
+    if any(w.startswith("-") and not w.startswith("--") and len(w) > 2 for w in words):
+        block(
+            "Write short options with a separate value (-B main, not -Bmain), "
+            "or use the long form."
+        )
     if words[1:3] == ["pr", "create"]:
         values = parse(words[3:], CREATE_FLAGS)
         check_base(values.get("--base"), values.get("--head") or current_branch(cwd))

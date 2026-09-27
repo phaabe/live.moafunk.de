@@ -105,4 +105,20 @@ check 2 "git commit -m mentioning gh pr merge is refused (use a file)" \
 check 0 "gh pr view is not guarded" "$(bash_cmd "gh pr view 402 --json headRefOid && echo done")"
 check 2 "MCP merge" "$(jq -cn '{tool_name:"mcp__github__merge_pull_request", tool_input:{pull_number:5}}')"
 
+# Codex fourth review at bc9a8aa2544e955fc86726a4fb5e14bd17f579ca
+check 2 "repo flag between pr and merge" "$(bash_cmd "gh pr -R phaabe/live.moafunk.de merge 402 --squash")"
+check 2 "attached -B value" \
+  "$(bash_cmd "gh pr create --base dev/streaming-architecture -Bmain --head feat/1-x --fill")"
+check 2 "attached -X value" "$(bash_cmd "gh api -XPUT repos/o/r/pulls/5/merge")"
+check 2 "attached -f values" "$(bash_cmd "gh api repos/o/r/pulls -fbase=main -fhead=feat/1-x -ftitle=x")"
+check 2 "continuation between pr and merge" "$(bash_cmd "gh pr \\${NL}  merge 5 --squash")"
+check 2 "continuation before create into main" \
+  "$(bash_cmd "gh pr \\${NL}  create --base main --head feat/1-x --fill")"
+check 0 "continued create with quoted heredoc" \
+  "$(bash_cmd "gh pr create --base dev/streaming-architecture \\${NL}  --body-file - <<'END'${NL}body${NL}END")"
+check 2 "command bash heredoc" "$(bash_cmd "command bash <<'END'${NL}gh pr merge 5 --squash${NL}END")"
+check 2 "env bash heredoc" "$(bash_cmd "env bash <<'END'${NL}gh pr merge 5 --squash${NL}END")"
+check 2 "escaped backslash is not a continuation" \
+  "$(bash_cmd "gh pr view 1 \\\\${NL}gh pr merge 5 --squash")"
+
 exit "$fail"
