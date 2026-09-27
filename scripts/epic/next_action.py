@@ -51,7 +51,10 @@ EXECUTOR_LINE = re.compile(
     r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t]*$", re.MULTILINE
 )
 REVIEWER_LINE = re.compile(r"\bReviewer:\s*(Claude|Codex)\b")
-ISSUE_URL = re.compile(rf"https://github\.com/{re.escape(REPO)}/issues/(\d+)")
+ISSUE_LINE = re.compile(
+    rf"^Issue:[ \t]*https://github\.com/{re.escape(REPO)}/issues/(\d+)[ \t]*$",
+    re.MULTILINE,
+)
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED = {
     "FAILURE",
@@ -152,7 +155,8 @@ def findings(
 
 
 def issue_numbers(text: str) -> set[int]:
-    return {int(n) for n in ISSUE_URL.findall(text or "")}
+    """Issues a PR implements: only line-start `Issue:` lines, not other links."""
+    return {int(n) for n in ISSUE_LINE.findall(text or "")}
 
 
 def decide(agent: str, state: dict[str, Any], paused: bool = False) -> list[Action]:
@@ -160,11 +164,9 @@ def decide(agent: str, state: dict[str, Any], paused: bool = False) -> list[Acti
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
     peer = other(agent)
-    prs = [
-        p
-        for p in state.get("prs", [])
-        if p.get("baseRefName") in BASES and ESCALATION_LABEL not in labels(p)
-    ]
+    all_prs = [p for p in state.get("prs", []) if p.get("baseRefName") in BASES]
+    # Escalated PRs get no PR action, but still link their issue and count as open.
+    prs = [p for p in all_prs if ESCALATION_LABEL not in labels(p)]
     mine = [p for p in prs if pr_author(p) == agent]
     theirs = [p for p in prs if pr_author(p) == peer]
     ranked: dict[str, list[Action]] = {}
@@ -254,9 +256,9 @@ def decide(agent: str, state: dict[str, Any], paused: bool = False) -> list[Acti
             )
 
     linked = set()
-    for p in prs:
+    for p in all_prs:
         linked |= issue_numbers(p.get("body") or "")
-    open_mine = len(mine)
+    open_mine = len([p for p in all_prs if pr_author(p) == agent])
     items = [
         i
         for i in state.get("items", [])

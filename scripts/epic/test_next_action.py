@@ -29,7 +29,7 @@ def pr(
 ) -> dict:
     base = {
         "number": number,
-        "body": f"Refs: {R}/{900 + number}\nExecutor: {author}",
+        "body": f"Issue: {R}/{900 + number}\nExecutor: {author}",
         "baseRefName": "dev/312-interim",
         "headRefOid": head,
         "isDraft": False,
@@ -230,6 +230,25 @@ class DecideTest(unittest.TestCase):
     def test_in_progress_leaf_with_open_pr_is_not_continued(self) -> None:
         items = [item(901, "Claude", "In progress")]
         self.assertEqual(first("Claude", [pr(1, "Claude")], items).action, "idle")
+
+    def test_escalated_pr_still_links_its_issue(self) -> None:
+        p = pr(1, "Claude", labels=[{"name": "needs-anton"}])
+        items = [item(901, "Claude", "In progress"), item(902, "Claude", "Ready")]
+        actions = [a.action for a in decide("Claude", {"prs": [p], "items": items})]
+        self.assertNotIn("continue", actions)
+        self.assertEqual(actions, ["claim"])
+
+    def test_escalated_pr_counts_toward_open_limit(self) -> None:
+        prs = [pr(1, "Claude", labels=[{"name": "needs-anton"}]), pr(2, "Claude")]
+        self.assertEqual(
+            first("Claude", prs, [item(10, "Claude", "Ready")]).action, "idle"
+        )
+
+    def test_dependency_link_does_not_block_claim(self) -> None:
+        body = f"Issue: {R}/901\nDepends on: {R}/350\nExecutor: Codex"
+        p = pr(1, "Codex", body=body, comments=[verdict("APPROVED", "Claude", A, "t1")])
+        a = first("Claude", [p], [item(350, "Claude", "Ready")])
+        self.assertEqual((a.action, a.issue), ("claim", f"{R}/350"))
 
     def test_draft_pr_is_continued(self) -> None:
         self.assertEqual(

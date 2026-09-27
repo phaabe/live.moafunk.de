@@ -76,7 +76,9 @@ recorded on the epic before anyone edits.
   create or merge PRs through `gh api` or the GitHub MCP merge tool.
 - Use the PR template. Its body has one line each, at the start of the line:
   `Epic:` (the epic URL), `Executor:` (Claude or Codex), `Lane:`, `Reviewer:`
-  (the other agent) and `Leaf IDs:` (or `setup`), plus the issue URL. Both
+  (the other agent), `Leaf IDs:` (or `setup`) and `Issue:` (the issue this PR
+  implements). Only the `Issue:` line links a PR to its work item; other issue
+  links, such as dependencies, do not. Both
   agents use one GitHub account, so `Executor:` is how the loop (section 8) and
   the `epic-guard` check tell whose PR it is.
 - Open the PR as a draft while working. Mark it ready (`gh pr ready`) only when
