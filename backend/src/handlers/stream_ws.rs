@@ -78,12 +78,16 @@ pub async fn stream_ws_handler(
 
     let username = user.username.clone();
 
+    crate::auth::authorize_broadcast(&state.db, &user, query.show_id, query.test).await?;
+
     // Check if someone else is streaming
     {
         let stream = stream_state.lock().await;
         if stream.is_active() {
             if let Some(ref current_user) = stream.current_user {
-                if current_user != &username && !query.force {
+                if current_user != &username
+                    && (!query.force || !crate::auth::can_control_stream(&user, Some(current_user)))
+                {
                     return Ok((
                         StatusCode::CONFLICT,
                         format!("Stream already active by user '{}'", current_user),
@@ -405,13 +409,18 @@ pub async fn stream_stop(
 
     // Authenticate user
     let user = get_current_user(&state, token.as_deref()).await;
-    if user.is_none() {
+    let Some(user) = user else {
         return Ok((StatusCode::UNAUTHORIZED, "Not authenticated").into_response());
-    }
+    };
 
     let was_active = {
         let mut stream = stream_state.lock().await;
         if stream.is_active() {
+            if !crate::auth::can_control_stream(&user, stream.current_user.as_deref()) {
+                return Err(crate::AppError::Forbidden(
+                    "You cannot stop another user's stream".into(),
+                ));
+            }
             if let Err(e) = stream.stop_stream().await {
                 tracing::error!("Failed to stop stream: {}", e);
                 return Ok((
