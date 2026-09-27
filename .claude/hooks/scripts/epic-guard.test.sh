@@ -121,4 +121,17 @@ check 2 "env bash heredoc" "$(bash_cmd "env bash <<'END'${NL}gh pr merge 5 --squ
 check 2 "escaped backslash is not a continuation" \
   "$(bash_cmd "gh pr view 1 \\\\${NL}gh pr merge 5 --squash")"
 
+# Codex fifth review at 940283fd4da8e492b4bc65bdf30e248cb61ad6c4
+check 2 "compound git && bash heredoc" \
+  "$(bash_cmd "git status --short && bash <<'END'${NL}gh pr merge 402 --squash${NL}END")"
+check 2 "continuation inside the base value" \
+  "$(bash_cmd "gh pr create --base ma\\${NL}in --head feat/x --fill")"
+check 2 "continuation inside the merge verb" "$(bash_cmd "gh pr mer\\${NL}ge 402 --squash")"
+check 0 "body value starting with a dash" \
+  "$(bash_cmd "gh pr create --base dev/streaming-architecture --body '- fix workflow' --title 'Fix workflow'")"
+check 0 "backslash-newline inside single quotes stays literal" \
+  "$(bash_cmd "gh pr create --base dev/streaming-architecture --body 'a\\${NL}b' --fill")"
+check 2 "quoted newline does not end the heredoc head" \
+  "$(bash_cmd "gh pr create --base main --head feat/1-x --body 'a${NL}b' --body-file - <<'END'${NL}x${NL}END")"
+
 exit "$fail"

@@ -100,6 +100,26 @@ MERGE_FLAGS = {
     "--repo": "--repo",
 }
 
+API_FLAGS = {
+    "-X": "--method",
+    "--method": "--method",
+    "-f": "--raw-field",
+    "--raw-field": "--raw-field",
+    "-F": "--field",
+    "--field": "--field",
+    "--input": "--input",
+    "-H": "--header",
+    "--header": "--header",
+    "-q": "--jq",
+    "--jq": "--jq",
+    "-t": "--template",
+    "--template": "--template",
+    "-p": "--preview",
+    "--preview": "--preview",
+    "--hostname": "--hostname",
+    "--cache": "--cache",
+}
+
 
 class Blocked(Exception):
     pass
@@ -109,60 +129,95 @@ def block(*lines: str) -> NoReturn:
     raise Blocked("\n".join(lines))
 
 
-def continues(line: str) -> bool:
-    """True if the line ends with an unescaped backslash."""
-    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
+def logical_line(text: str) -> tuple[str, str, bool]:
+    """Read one logical shell line: (line, rest, ended_at_newline).
+
+    Like the shell, a backslash-newline outside single quotes is removed
+    with no space, so `ma\\<newline>in` is `main`. A newline inside quotes
+    does not end the line.
+    """
+    out: list[str] = []
+    single = double = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if single:
+            single = c != "'"
+        elif c == "\\" and i + 1 < len(text):
+            if text[i + 1] != "\n":
+                out.append(text[i : i + 2])
+            i += 2
+            continue
+        elif c == "'" and not double:
+            single = True
+        elif c == '"':
+            double = not double
+        elif c == "\n" and not double:
+            return "".join(out), text[i + 1 :], True
+        out.append(c)
+        i += 1
+    return "".join(out), "", False
 
 
 def join_continuations(text: str) -> str:
-    lines = text.split("\n")
-    out = [lines[0]]
-    for line in lines[1:]:
-        if continues(out[-1]):
-            out[-1] = out[-1][:-1] + " " + line
-        else:
-            out.append(line)
-    return "\n".join(out)
+    lines = []
+    more = True
+    while more:
+        line, text, more = logical_line(text)
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def split_heredoc(cmd: str) -> tuple[str, str | None]:
     """Split `head <<'D'\\nbody\\nD` into (head, body).
 
     Continuations are joined in the head only; the quoted body is literal.
-    No heredoc: (cmd with continuations joined, None).
+    No supported heredoc: (cmd with continuations joined, None).
     """
-    lines = cmd.split("\n")
-    first, i = lines[0], 1
-    while continues(first) and i < len(lines):
-        first = first[:-1] + " " + lines[i]
-        i += 1
-    rest = "\n".join(lines[i:])
+    first, rest, _ = logical_line(cmd)
     m = HEREDOC.search(first)
     if not m:
         return join_continuations(cmd), None
     tag = m.group(2)
     lines = rest.split("\n")
-    if tag not in [line.strip() for line in lines]:
-        return cmd, None
-    end = [line.strip() for line in lines].index(tag)
-    if any(line.strip() for line in lines[end + 1 :]):
-        return cmd, None  # commands after the heredoc: not the supported form
+    stripped = [line.strip() for line in lines]
+    if tag not in stripped:
+        return join_continuations(cmd), None
+    end = stripped.index(tag)
+    if any(stripped[end + 1 :]):
+        # commands after the heredoc: not the supported form
+        return join_continuations(cmd), None
     return first[: m.start()].rstrip(), "\n".join(lines[:end])
+
+
+def shell_words(head: str) -> list[str] | None:
+    """Words of one simple command, or None if it has shell syntax."""
+    code = outside_single_quotes(head)
+    if "$" in code or "`" in code:
+        return None
+    try:
+        lexer = shlex.shlex(head, posix=True, punctuation_chars=";&|<>()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return None
+    if any(w and set(w) <= PUNCTUATION for w in words):
+        return None
+    while words and ASSIGNMENT.match(words[0]):
+        words = words[1:]
+    return words
 
 
 def detection_text(cmd: str) -> str:
     """The command text that can run, for deciding whether it is guarded."""
     head, body = split_heredoc(cmd)
     if body is None:
-        return cmd
-    try:
-        words = shlex.split(head)
-    except ValueError:
-        return cmd
-    words = [w for w in words if not ASSIGNMENT.match(w)]
-    if words and os.path.basename(words[0]) in DATA_CONSUMERS:
         return head
-    return cmd  # the body may run as code
+    words = shell_words(head)
+    if words and os.path.basename(words[0]) in DATA_CONSUMERS:
+        return head  # one simple data command reads the body
+    return head + "\n" + body  # the body may run as code
 
 
 def outside_single_quotes(text: str) -> str:
@@ -184,10 +239,16 @@ def outside_single_quotes(text: str) -> str:
 
 
 def parse(args: list[str], flags: dict[str, str]) -> dict[str, str]:
+    """Read value flags; the last one wins. Refuse attached short values."""
     values: dict[str, str] = {}
     i = 0
     while i < len(args):
         arg = args[i]
+        if arg.startswith("-") and not arg.startswith("--") and len(arg) > 2:
+            block(
+                "Write short options with a separate value (-B main, not -Bmain), "
+                "or use the long form."
+            )
         name, sep, value = arg.partition("=") if arg.startswith("--") else (arg, "", "")
         if name in flags:
             if not sep:
@@ -236,21 +297,10 @@ def check_command(cmd: str, cwd: str) -> None:
         "Pull request create/merge commands must be one plain gh command: "
         "no wrappers, shell operators, substitutions or flags before the subcommand."
     )
-    head, body = split_heredoc(cmd)
-    code = outside_single_quotes(head)
-    if "$" in code or "`" in code:
+    head, _ = split_heredoc(cmd)
+    words = shell_words(head)
+    if words is None:
         block(unsupported)
-    try:
-        lexer = shlex.shlex(head, posix=True, punctuation_chars=";&|<>()\n")
-        lexer.whitespace = " \t\r"
-        lexer.whitespace_split = True
-        words = list(lexer)
-    except ValueError:
-        block(unsupported)
-    if any(w and set(w) <= PUNCTUATION for w in words):
-        block(unsupported)
-    while words and ASSIGNMENT.match(words[0]):
-        words = words[1:]
     if (
         not words
         or os.path.basename(words[0]) != "gh"
@@ -259,11 +309,6 @@ def check_command(cmd: str, cwd: str) -> None:
         or (words[1] == "pr" and (len(words) < 3 or words[2].startswith("-")))
     ):
         block(unsupported)
-    if any(w.startswith("-") and not w.startswith("--") and len(w) > 2 for w in words):
-        block(
-            "Write short options with a separate value (-B main, not -Bmain), "
-            "or use the long form."
-        )
     if words[1:3] == ["pr", "create"]:
         values = parse(words[3:], CREATE_FLAGS)
         check_base(values.get("--base"), values.get("--head") or current_branch(cwd))
@@ -276,9 +321,7 @@ def check_command(cmd: str, cwd: str) -> None:
             )
     elif words[1] == "api" and any("pulls" in w for w in words[2:]):
         writes = {"-f", "-F", "--field", "--raw-field", "--input"}
-        method = (
-            parse(words[2:], {"-X": "-X", "--method": "-X"}).get("-X", "GET").upper()
-        )
+        method = parse(words[2:], API_FLAGS).get("--method", "GET").upper()
         if method != "GET" or any(w.split("=", 1)[0] in writes for w in words[2:]):
             block(
                 "Pull request writes through gh api are refused. Use gh pr create or gh pr merge."
