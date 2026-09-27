@@ -74,7 +74,15 @@ recorded on the epic before anyone edits.
   options with a separate value (`-B main`, not `-Bmain`). A PR body may
   come from a file or a heredoc with a quoted delimiter (`<<'EOF'`). Do not
   create or merge PRs through `gh api` or the GitHub MCP merge tool.
-- The PR body names the issue URL, the leaf IDs, the lane and the reviewer.
+- Use the PR template. Its body has one line each, at the start of the line:
+  `Epic:` (the epic URL), `Executor:` (Claude or Codex), `Lane:`, `Reviewer:`
+  (the other agent), `Leaf IDs:` (or `setup`) and `Issue:` (the issue this PR
+  implements). Only the `Issue:` line links a PR to its work item; other issue
+  links, such as dependencies, do not. Both
+  agents use one GitHub account, so `Executor:` is how the loop (section 8) and
+  the `epic-guard` check tell whose PR it is.
+- Open the PR as a draft while working. Mark it ready (`gh pr ready`) only when
+  it is ready for review; drafts are not reviewed.
 - Keep a feature and its tests in the same PR. Link evidence on the issue.
 - While a release is pending, merge only work that belongs to it. Later-wave
   work waits on its branch. Documentation-only changes may merge.
@@ -127,8 +135,37 @@ Status on 2026-09-28. Design agreed; parts are still pending.
 | Required `epic-guard` check (reads rules and lane map from the target branch, never from the PR) | Pending: Codex's setup PR `ci/312-epic-guard` to `main` |
 | Shared review and merge checker (lane map, latest counterpart verdict for the real head, green checks) | Pending: Codex's setup work |
 | Claude local hook `.claude/hooks/scripts/epic-guard.sh` | Installed with this file. It accepts PR create/merge only as one plain `gh` command and checks: no verdict in Codex's name, PR base, and `--match-head-commit` with a 40-char SHA. It is a guard against mistakes, not a security boundary. It does not check lanes, the actual approval or checks yet; it will call the shared checker once that exists |
-| Codex local hook | Pending: Codex's setup work; it must apply in every worktree |
+| Codex local hook `.codex/hooks/scripts/epic-guard.sh` | Merged. Active only after it is trusted with `/hooks` in each Codex worktree |
+| Loop decision script `scripts/epic/next_action.py` | Read-only; picks one action per tick (section 8). Tested per priority row |
 | Separate agent identities | Deferred until needed. Until then the verdict author is self-declared |
 
 Until the pending layers exist, the author checks lanes, the counterpart
 verdict for the current head and green checks by hand before merging.
+
+## 8. Autonomous loop
+
+Each agent works in ticks. A tick runs
+`python3 scripts/epic/next_action.py --agent <claude|codex>`, does exactly the
+one action it prints, and ends. All state is on GitHub, so ticks can stop and
+restart at any time.
+
+Priority, first match wins:
+
+1. `stop`: the pause file `~/.epic-pause` exists. Anton creates or removes it.
+2. `escalate`: the other agent requested changes for the current head for the
+   third time on this PR. Add label `needs-anton`, summarise the open question,
+   and stop working on that PR. The loop skips PRs and issues with that label.
+3. `merge`: the other agent approved the current head and checks are green.
+4. `fix`: the other agent requested changes for the current head.
+5. `fix-checks`, then `resolve-conflict`, for the agent's own PRs.
+6. `review`: the other agent's ready (non-draft) PR has no verdict from this
+   agent for its current head.
+7. `continue`: the agent's draft PR, or its In progress issue without a PR.
+8. `claim`: a Ready issue with Executor set to this agent, lowest wave first.
+   Not while the agent has work to continue or two open PRs.
+9. `idle`.
+
+Claude runs ticks with `/epic-tick` (under `/loop` for autopilot). Codex runs
+the same script from its own runner. `python3 scripts/epic/next_action.py --status`
+shows the queue for both agents. The loop never releases to `main`, touches
+production, or changes the plan or lanes; those go to Anton.
