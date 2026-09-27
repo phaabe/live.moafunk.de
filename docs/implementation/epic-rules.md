@@ -74,9 +74,11 @@ recorded on the epic before anyone edits.
   options with a separate value (`-B main`, not `-Bmain`). A PR body may
   come from a file or a heredoc with a quoted delimiter (`<<'EOF'`). Do not
   create or merge PRs through `gh api` or the GitHub MCP merge tool.
-- The PR body names the issue URL, the leaf IDs, the lane, `Author: <Claude|Codex>`
-  and `Reviewer: <Claude|Codex>`. Both agents use one GitHub account, so the
-  `Author:` line is how the loop (section 8) tells whose PR it is.
+- Use the PR template. Its body has one line each, at the start of the line:
+  `Epic:` (the epic URL), `Executor:` (Claude or Codex), `Lane:`, `Reviewer:`
+  (the other agent) and `Leaf IDs:` (or `setup`), plus the issue URL. Both
+  agents use one GitHub account, so `Executor:` is how the loop (section 8) and
+  the `epic-guard` check tell whose PR it is.
 - Open the PR as a draft while working. Mark it ready (`gh pr ready`) only when
   it is ready for review; drafts are not reviewed.
 - Keep a feature and its tests in the same PR. Link evidence on the issue.

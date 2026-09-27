@@ -47,7 +47,9 @@ ESCALATION_LABEL = "needs-anton"
 VERDICT = re.compile(
     r"^Review: (APPROVED|CHANGES REQUESTED) by (Claude|Codex) at ([0-9a-f]{40})$"
 )
-AUTHOR_LINE = re.compile(r"\bAuthor:\s*(Claude|Codex)\b")
+EXECUTOR_LINE = re.compile(
+    r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t]*$", re.MULTILINE
+)
 REVIEWER_LINE = re.compile(r"\bReviewer:\s*(Claude|Codex)\b")
 ISSUE_URL = re.compile(rf"https://github\.com/{re.escape(REPO)}/issues/(\d+)")
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
@@ -81,9 +83,13 @@ def other(agent: str) -> str:
 
 
 def pr_author(pr: dict[str, Any]) -> str | None:
-    """Both agents share one GitHub account, so the PR body names the author."""
+    """Both agents share one GitHub account, so the PR body names the author.
+
+    Uses the `Executor:` line from the PR template (`Author:` is accepted too);
+    falls back to the opposite of `Reviewer:`.
+    """
     body = pr.get("body") or ""
-    m = AUTHOR_LINE.search(body)
+    m = EXECUTOR_LINE.search(body)
     if m:
         return m.group(1)
     m = REVIEWER_LINE.search(body)

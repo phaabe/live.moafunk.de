@@ -29,7 +29,7 @@ def pr(
 ) -> dict:
     base = {
         "number": number,
-        "body": f"Refs: {R}/{900 + number}\nAuthor: {author}",
+        "body": f"Refs: {R}/{900 + number}\nExecutor: {author}",
         "baseRefName": "dev/312-interim",
         "headRefOid": head,
         "isDraft": False,
@@ -185,6 +185,14 @@ class DecideTest(unittest.TestCase):
     def test_author_from_reviewer_line(self) -> None:
         p = pr(2, "x", body="Lane: setup · Reviewer: Claude")
         self.assertEqual(first("Claude", [p]).action, "review")
+
+    def test_author_line_is_accepted(self) -> None:
+        p = pr(2, "x", body="Author: Codex")
+        self.assertEqual(first("Claude", [p]).action, "review")
+
+    def test_executor_must_start_a_line(self) -> None:
+        p = pr(2, "x", body="see Executor: Codex in the notes")
+        self.assertEqual(first("Claude", [p]).action, "idle")
 
     def test_pr_without_author_is_ignored(self) -> None:
         self.assertEqual(first("Claude", [pr(2, "x", body="no marker")]).action, "idle")

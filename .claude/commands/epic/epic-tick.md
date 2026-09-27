@@ -35,7 +35,7 @@ It prints one JSON action. Do **only** that action, then stop. If `$ARGUMENTS` c
 ## 3. Every PR you open
 
 - Base `dev/312-interim` (rules section 0). Draft until ready for review.
-- Body: issue URL, leaf IDs, `Lane: …`, `Author: Claude`, `Reviewer: Codex`, full URLs only, details in a collapsed block.
+- Body: follow `.github/PULL_REQUEST_TEMPLATE.md`. One line each at line start: `Epic: https://github.com/phaabe/live.moafunk.de/issues/312`, `Executor: Claude`, `Lane: …`, `Reviewer: Codex`, `Leaf IDs: …`. Plus the issue URL, full URLs only, details in a collapsed block.
 
 ## 4. Never
 
