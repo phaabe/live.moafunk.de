@@ -8,12 +8,15 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 TRUNK = "dev/streaming-architecture"
+MAIN_HEADS = (TRUNK, "ci/312-epic-guard")
 VERDICT = re.compile(
     r"Review: (?:APPROVED|CHANGES REQUESTED) by Claude at [0-9a-fA-F]{40}(?![0-9a-fA-F])"
 )
-PR_MUTATION = re.compile(r"\bgh\s+pr\s+(?:create|merge)\b")
+PR_MUTATION = re.compile(r"\bgh\b.*\bpr\b.*\b(?:create|merge)\b", re.DOTALL)
+API_COMMAND = re.compile(r"\bgh\b.*\bapi\b", re.DOTALL)
 SHELL_PUNCTUATION = frozenset(";&|<>()\n")
 
 
@@ -29,6 +32,28 @@ def shell_words(command: str) -> list[str]:
     lexer.whitespace_split = True
     lexer.commenters = ""
     return list(lexer)
+
+
+def join_continuations(command: str) -> str:
+    """Join shell continuations before detection, keeping single quotes literal."""
+    result: list[str] = []
+    quote = ""
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if char == "\\" and quote != "'" and index + 1 < len(command):
+            following = command[index + 1]
+            if following != "\n":
+                result.extend((char, following))
+            index += 2
+            continue
+        if char == quote:
+            quote = ""
+        elif not quote and char in ("'", '"'):
+            quote = char
+        result.append(char)
+        index += 1
+    return "".join(result)
 
 
 def check_literal(command: str, args: list[str]) -> None:
@@ -102,33 +127,122 @@ def option(args: list[str], names: tuple[str, ...]) -> str | None:
     return values[0] if values else None
 
 
+def check_base(base: str | None, head: str | None) -> None:
+    if base not in (TRUNK, "main"):
+        raise ValueError(f"PR creation requires base {TRUNK} (or an approved main PR).")
+    if base == "main" and head not in MAIN_HEADS:
+        raise ValueError(f"Only heads {TRUNK} and ci/312-epic-guard may target main.")
+
+
+def check_api(args: list[str]) -> None:
+    """Refuse REST PR writes, including implicit POSTs and opaque bodies."""
+    value_flags = {
+        "-f",
+        "--raw-field",
+        "-F",
+        "--field",
+        "-X",
+        "--method",
+        "--input",
+        "-H",
+        "--header",
+        "--hostname",
+        "--cache",
+        "-q",
+        "--jq",
+        "-p",
+        "--preview",
+        "-t",
+        "--template",
+    }
+    switches = {
+        "-i",
+        "--include",
+        "--paginate",
+        "--silent",
+        "--slurp",
+        "--verbose",
+        "--help",
+    }
+    has_fields = False
+    endpoints: list[str] = []
+    method = None
+    body_input = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        flag, separator, value = arg.partition("=")
+        if flag in value_flags:
+            if not separator:
+                index += 1
+                if index >= len(args):
+                    raise ValueError(f"Missing value for {flag}.")
+                value = args[index]
+            if flag in ("-f", "--raw-field", "-F", "--field"):
+                has_fields = True
+            elif flag in ("-X", "--method"):
+                if method is not None:
+                    raise ValueError("Pass the API method only once.")
+                method = value.upper()
+            elif flag == "--input":
+                body_input = True
+        elif arg not in switches:
+            if arg.startswith("-"):
+                raise ValueError(
+                    "Use separate API short-option values or long options."
+                )
+            endpoints.append(arg)
+        index += 1
+    if len(endpoints) != 1:
+        raise ValueError("Use one literal gh api endpoint.")
+    endpoint = urlsplit(endpoints[0])
+    path = unquote(endpoint.path).rstrip("/")
+    method = method or ("POST" if has_fields or body_input else "GET")
+    if re.search(r"/pulls(?:/|$)", path) and (method != "GET" or body_input):
+        raise ValueError("Use gh pr commands instead of gh api for PR writes.")
+
+
 def check_command(command: str, cwd: Path) -> None:
+    command = join_continuations(command)
     args = shell_words(command)
     for arg in args:
         check_verdict(arg)
     if not any(
-        arg == "gh" or arg.endswith("/gh") or PR_MUTATION.search(arg) for arg in args
+        arg == "gh"
+        or arg.endswith("/gh")
+        or PR_MUTATION.search(arg)
+        or API_COMMAND.search(arg)
+        for arg in args
     ):
         return
     # Body files need inspection even for issue comments and PR reviews.
-    body_file = any(arg.startswith(("--body-file", "-F")) for arg in args)
+    body_command = any(arg in ("pr", "issue") for arg in args) and any(
+        arg in ("create", "comment", "edit", "review", "merge") for arg in args
+    )
+    body_file = body_command and any(
+        arg.startswith(("--body-file", "-F")) for arg in args
+    )
+    api = "api" in args or bool(API_COMMAND.search(command))
+    if args[:2] in (["gh", "pr"], ["gh", "issue"]):
+        api = False
     mutation = bool(PR_MUTATION.search(command)) or (
         "pr" in args and ("create" in args or "merge" in args)
     )
-    if not mutation and not body_file:
+    if not mutation and not body_file and not api:
         return
     check_literal(command, args)
-    body_path = option(args[1:], ("--body-file", "-F"))
+    if api:
+        if args[1:2] != ["api"]:
+            raise ValueError("Use gh api directly, with flags after api.")
+        check_api(args[2:])
+        return
+    body_path = option(args[1:], ("--body-file", "-F")) if body_file else None
     if body_path is not None:
         if body_path == "-":
             raise ValueError("Use a readable --body-file path, not stdin.")
         check_verdict((cwd / body_path).read_text())
     if args[1:3] == ["pr", "create"]:
         base = option(args[3:], ("--base", "-B"))
-        if base not in (TRUNK, "main"):
-            raise ValueError(
-                f"gh pr create requires --base {TRUNK} (or main for a release)."
-            )
         head = option(args[3:], ("--head", "-H"))
         if base == "main":
             if head is None:
@@ -146,8 +260,7 @@ def check_command(command: str, cwd: Path) -> None:
                     capture_output=True,
                     text=True,
                 ).stdout.strip()
-            if head != TRUNK:
-                raise ValueError(f"Only a release with head {TRUNK} may target main.")
+        check_base(base, head)
     elif args[1:3] == ["pr", "merge"]:
         sha = option(args[3:], ("--match-head-commit",))
         if sha is None or re.fullmatch(r"[0-9a-fA-F]{40}", sha) is None:
@@ -165,6 +278,13 @@ def main() -> int:
         payload = json.load(sys.stdin)
         tool_input = payload.get("tool_input", payload.get("toolInput", {}))
         check_verdict(json.dumps(tool_input, ensure_ascii=False))
+        tool_name = payload.get("tool_name", "")
+        if tool_name.endswith("merge_pull_request"):
+            raise ValueError(
+                "Use gh pr merge with --match-head-commit instead of MCP merge."
+            )
+        if tool_name.endswith("create_pull_request"):
+            check_base(tool_input.get("base"), tool_input.get("head"))
         command = tool_input.get("command", tool_input.get("cmd", ""))
         if payload.get("tool_name") in ("Bash", "exec_command", "shell_command"):
             cwd = Path(tool_input.get("workdir") or payload.get("cwd") or Path.cwd())

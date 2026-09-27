@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+TRUNK = "dev/streaming-architecture"
 SHA = "0123456789abcdef" * 2 + "01234567"
 CLAUDE_VERDICT = "Review: APPROVED by " + "Claude at " + SHA
 COMMAND = json.loads((ROOT / ".codex/hooks.json").read_text())["hooks"]["PreToolUse"][
@@ -47,6 +48,8 @@ class EpicGuardTest(unittest.TestCase):
             ("gh pr create --base=dev/streaming-architecture", 0),
             ("gh pr create -B dev/streaming-architecture", 0),
             ("gh pr create --base main --head dev/streaming-architecture", 0),
+            ("gh pr create --base main --head ci/312-epic-guard --title x --body y", 0),
+            ("gh pr create --base main --head ci/312-epic-guard-other", 2),
             ("gh pr create --base other", 2),
             (
                 "gh pr create --base main --head feat/x --body 'use --base dev/streaming-architecture'",
@@ -107,16 +110,152 @@ class EpicGuardTest(unittest.TestCase):
         self.run_hook("gh pr merge 1", 2, tool="exec_command", field="cmd")
         self.run_hook("git status --short", 0)
 
+    def test_api(self) -> None:
+        pulls = "repos/phaabe/live.moafunk.de/pulls"
+        cases = [
+            (f"gh api -X PUT {pulls}/5/merge", 2),
+            (f"gh api {pulls}/5/merge -X PUT -f sha={SHA}", 2),
+            (f"gh api {pulls}/5/merge --method=PUT --raw-field=sha={SHA}", 2),
+            (f"gh api {pulls}/5/merge -f sha=abc", 2),
+            (f"gh api {pulls}/5/merge -F sha=@head.txt", 2),
+            (f"gh api {pulls}/5/merge -f sha={SHA} -f sha=abc", 2),
+            (f"gh api {pulls}/5/merge -f title='sha={SHA}'", 2),
+            (f"gh api {pulls}/5/merge --input body.json -f sha={SHA}", 2),
+            (f"gh api {pulls}/5/merge?sha={SHA} -X PUT", 2),
+            (f"gh api https://api.github.com/{pulls}/5/merge -X PUT", 2),
+            (f"gh api {pulls} -f base=main -f head=feat/x -f title=t", 2),
+            (f"gh api {pulls} -F base=main -F head=feat/x", 2),
+            (f"gh api {pulls} -f base={TRUNK} -f head=feat/x", 2),
+            (f"gh api {pulls} -f base=main -f head={TRUNK}", 2),
+            (f"gh api {pulls} -f base=main -f head=ci/312-epic-guard", 2),
+            (f"gh api {pulls} -f base=main -f head=ci/312-epic-guard-other", 2),
+            (f"gh api {pulls} -f title='base={TRUNK}'", 2),
+            (f"gh api {pulls} --input body.json", 2),
+            (f"gh api {pulls} --input body.json -X GET", 2),
+            (f"gh api {pulls} -X POST", 2),
+            (f"gh api {pulls}/5 -X PATCH -f base=main", 2),
+            (f"gh api {pulls}/5/reviews -X POST -f body=review", 2),
+            (f"gh api {pulls}", 0),
+            (f"gh api '{pulls}?state=open'", 0),
+            (f"gh api {pulls}/5/merge", 0),
+            (f"gh api {pulls} -X GET -f state=open", 0),
+            ("gh api graphql -F owner=phaabe -f query=q", 0),
+            ("gh api graphql --field=owner=phaabe -f query=q", 0),
+            ("gh api graphql --field owner=phaabe --raw-field query=q", 0),
+            ("gh api repos/o/r/issues/5 -F state=closed", 0),
+            (f"env gh api {pulls}/5/merge -X PUT", 2),
+            (f"/usr/local/bin/gh api {pulls} -f base=main", 2),
+            (f"gh api {pulls}/5/merge -f sha={SHA}; gh api {pulls}/6/merge", 2),
+        ]
+        for command, expected in cases:
+            with self.subTest(command=command):
+                self.run_hook(command, expected)
+
+    def test_mcp_pr_tools(self) -> None:
+        for tool in (
+            "mcp__github__merge_pull_request",
+            "mcp__github_tools__merge_pull_request",
+        ):
+            self.run_hook("", 2, tool=tool)
+        for base, head, expected in (
+            ("main", "feat/x", 2),
+            ("main", "ci/312-epic-guard", 0),
+            ("main", TRUNK, 0),
+            (TRUNK, "feat/x", 0),
+            (None, "feat/x", 2),
+        ):
+            with self.subTest(base=base, head=head):
+                result = subprocess.run(
+                    ["/bin/bash", "-c", COMMAND],
+                    cwd=ROOT,
+                    input=json.dumps(
+                        {
+                            "tool_name": "mcp__github__create_pull_request",
+                            "tool_input": {"base": base, "head": head},
+                        }
+                    ),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_body_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "body.md"
             path.write_text(CLAUDE_VERDICT)
             self.run_hook(f"gh pr comment 1 --body-file '{path}'", 2)
+            for verb in (
+                "pr create",
+                "issue create",
+                "pr comment",
+                "issue comment",
+                "pr review",
+                "pr merge",
+            ):
+                self.run_hook(f"gh {verb} -F '{path}'", 2)
+            self.run_hook(f"gh pr merge 1 --match-head-commit {SHA} -F '{path}'", 2)
+            self.run_hook(
+                f"gh pr -R phaabe/live.moafunk.de comment 1 --body-file '{path}'", 2
+            )
+            self.run_hook(
+                f"gh issue -R phaabe/live.moafunk.de comment 1 -F '{path}'", 2
+            )
             path.write_text("Review: APPROVED by Codex at " + SHA)
             self.run_hook(f"gh pr comment 1 --body-file='{path}'", 0)
             self.run_hook(f"gh pr comment 1 -F '{path}'", 0)
         self.run_hook(f"gh pr comment 1 --body-file '{path}'", 2)
         self.run_hook("gh pr comment 1 --body-file -", 2)
+
+    def test_flag_placement_and_attached_values(self) -> None:
+        cases = [
+            ("gh -R phaabe/live.moafunk.de pr merge 5 --squash", 2),
+            ("gh pr -R phaabe/live.moafunk.de merge 5 --squash", 2),
+            (f"gh pr -R phaabe/live.moafunk.de create --base {TRUNK}", 2),
+            (f"gh pr create --base {TRUNK} -Bmain --head feat/x --fill", 2),
+            (f"gh pr create -B {TRUNK} --base main --head feat/x --fill", 2),
+            (f"gh pr create --base main -B {TRUNK} --head feat/x --fill", 2),
+            ("gh pr create -Bmain -Hci/312-epic-guard", 2),
+            ("gh api -XPUT repos/o/r/pulls/5/merge", 2),
+            ("gh api repos/o/r/pulls -fbase=main -fhead=feat/x -ftitle=x", 2),
+            ("gh api repos/o/r/pulls -Fbase=main", 2),
+            ("gh api repos/o/r/pulls -X GET --method PUT", 2),
+            ("gh -R phaabe/live.moafunk.de api repos/o/r/pulls -X POST", 2),
+            ('bash -c "gh pr -R phaabe/live.moafunk.de merge 5 --squash"', 2),
+            ('env -S "gh -R phaabe/live.moafunk.de pr merge 5 --squash"', 2),
+            ('bash -c "gh --hostname github.com api repos/o/r/pulls -X POST"', 2),
+            (f"gh pr create --base {TRUNK} --title api", 0),
+        ]
+        for command, expected in cases:
+            with self.subTest(command=command):
+                self.run_hook(command, expected)
+
+    def test_continuations_and_wrapped_heredocs(self) -> None:
+        cases = [
+            ("gh pr \\\n  merge 5 --squash", 2),
+            ("gh pr \\\n  create --base main --head feat/x --fill", 2),
+            (f"gh pr \\\n  merge 5 --match-head-commit {SHA}", 0),
+            (f"gh pr merge 5 \\\n  --match-head-commit {SHA}", 0),
+            (f"g\\\nh p\\\nr mer\\\nge 5 --match-head-commit {SHA}", 0),
+            (f"gh pr create --base {TRUNK} \\\n  --body 'hello'", 0),
+            ("gh a\\\npi repos/o/r/pulls -X PUT", 2),
+            (f"gh pr merge 5 --match-head-commit '{SHA[:20]}\\\n{SHA[20:]}'", 2),
+            (f'gh pr merge 5 --match-head-commit "{SHA[:20]}\\\n{SHA[20:]}"', 0),
+            (f"gh pr merge 5 --match-head-commit {SHA} \\\\\ngh pr merge 6", 2),
+            # Stdin/heredoc bodies remain outside the supported grammar.
+            (f"gh pr create --base {TRUNK} \\\n --body-file - <<'END'\nbody\nEND", 2),
+            ("gh api repos/o/r/pulls --input - <<'END'\n{}\nEND", 2),
+            ("bash <<'END'\ngh pr merge 5 --squash\nEND", 2),
+            ("command bash <<'END'\ngh pr merge 5 --squash\nEND", 2),
+            ("env bash <<'END'\ngh pr merge 5 --squash\nEND", 2),
+            ("bash -c 'gh pr \\\n merge 5 --squash'", 2),
+            ("bash -c 'gh \\\n api repos/o/r/pulls/5/merge -X PUT'", 2),
+            ("if true; then gh pr merge 5 --squash; fi", 2),
+            ('env -S "gh pr merge 5 --squash"', 2),
+        ]
+        for command, expected in cases:
+            with self.subTest(command=command):
+                self.run_hook(command, expected)
 
     def test_malformed_payload(self) -> None:
         result = subprocess.run(
