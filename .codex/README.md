@@ -73,3 +73,37 @@ python3 -m unittest discover -s .codex/hooks/scripts -p 'test_*.py' -v
 
 The tests invoke the registered command through macOS-compatible `/bin/bash`,
 including from a fresh linked worktree with a space in its path.
+
+## One-tick runner
+
+Run `/bin/bash /path/to/checkout/.codex/codex-tick.sh` from any directory.
+The runner lives in Codex's setup lane. It uses Bash 3.2, Python 3.10+, GNU
+`timeout` (or `gtimeout`), authenticated `gh`, and an authenticated Codex CLI.
+Keep the runner checkout current with `dev/312-interim`. Trust its project
+hooks before unattended use, as described above.
+
+Each invocation takes the shared `~/.local/state/epic-loop/codex.lock`
+directory using `mkdir`, checks `~/.epic-pause`, and calls the shared decision
+script once. Lock contention, pause, idle and stop exit 0 without starting Codex.
+Other actions start one fresh `codex exec` session using `epic-tick.md` plus
+the selected JSON. It uses the workspace-write sandbox and existing approval
+settings; it never bypasses approvals or hook trust. Permission failures must
+stop the tick. See [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
+
+Output and errors append to `~/.local/state/epic-loop/codex.log`. Selection
+has a 120-second limit and Codex has a 1,800-second limit, with a 10-second
+TERM-to-KILL grace. Override these with positive integer values in
+`EPIC_SELECT_TIMEOUT_SECONDS` and `EPIC_TICK_TIMEOUT_SECONDS`. Errors and timeout
+exit codes propagate; a later invocation starts a new decision and session.
+The lock is held through child termination and removed on normal exit, errors
+and handled signals. SIGKILL or a power failure can leave a stale lock: confirm
+no tick or child session is running before manually removing that directory.
+Do not clear another worktree's lock. All checkouts share it.
+
+This PR installs no scheduler and starts no live agent session. Test locally
+without GitHub writes or model calls:
+
+```sh
+python3 -m unittest discover -s .codex/tests -v
+/bin/bash -n .codex/codex-tick.sh
+```
