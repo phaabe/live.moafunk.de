@@ -107,6 +107,14 @@ Before that gate, `.codex/tick_backoff.py` delays blocked or failed targets for
 15 minutes (`EPIC_BLOCKED_RETRY_SECONDS` overrides this). This also applies to
 `continue`, including a blocked `claim` followed by `continue` on the same issue.
 Cooldowns persist per target in `~/.local/state/epic-loop/codex-backoff.json`.
+When a blocked issue becomes a draft PR, a `continue` tick reads the PR's exact
+`Issue:` field and checks its head. If it links the blocked issue, the helper
+transfers that cooldown to the selected PR head and skips the session. The
+original expiry and reason are preserved. The issue entry is removed, so a
+later PR head can run immediately. Failed metadata reads, ambiguous issue
+fields or a changed head stop before starting the model and leave state intact.
+This lookup runs only when a PR continuation could inherit an active issue
+cooldown. Ticks without active issue cooldowns need no extra PR request.
 A different selected target or a new PR head can run immediately. Comments do
 not reset a cooldown. The selector still chooses one action per tick; a skipped
 target does not cause the runner to choose lower-priority work.
@@ -127,6 +135,13 @@ access (`-c sandbox_workspace_write.network_access=true`) for GitHub calls and
 existing approval settings; it never bypasses approvals or hook trust.
 Permission failures must return a blocked result and stop the tick. See
 [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
+
+Provision pinned build tools before starting unattended ticks. For the current
+Rust 1.98.0 pin, install it with `rustup toolchain install 1.98.0 --profile minimal
+--component rustfmt --component clippy`, then verify `cargo +1.98.0 fmt --check`
+from `backend/` inside the runner sandbox. An installed default `stable`
+toolchain does not satisfy an explicit version pin; otherwise rustup tries to
+install into its home directory during the tick and may be blocked.
 
 Output and errors append to `~/.local/state/epic-loop/codex.log`. Selection
 has a 120-second limit and Codex has a 1,800-second limit, with a 10-second
