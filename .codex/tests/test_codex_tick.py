@@ -37,6 +37,8 @@ class TickTests(unittest.TestCase):
         shutil.copyfile(ROOT / "codex-tick.sh", self.runner)
         shutil.copyfile(ROOT / "epic-tick.md", self.runner.parent / "epic-tick.md")
         shutil.copyfile(ROOT / "epic_lock.py", self.runner.parent / "epic_lock.py")
+        for filename in ("tick_backoff.py", "tick-result.schema.json"):
+            shutil.copyfile(ROOT / filename, self.runner.parent / filename)
         selector = self.repo / "scripts/epic/next_action.py"
         selector.parent.mkdir(parents=True)
         shutil.copyfile(
@@ -78,6 +80,10 @@ class TickTests(unittest.TestCase):
             "        s.recv(1)\n"
             "if os.environ.get('TEST_REMOVE_GATE_SNAPSHOT'):\n"
             "    (pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex-gate-seen.json').unlink()\n"
+            "if not os.environ.get('TEST_RESULT_MISSING'):\n"
+            "    result = pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1])\n"
+            "    result.write_text(os.environ.get('TEST_RESULT', "
+            "json.dumps({'status': 'completed', 'summary': 'Action completed.'})))\n"
             "sys.exit(int(os.environ.get('TEST_CODEX_EXIT', '0')))\n"
         )
         codex.chmod(0o755)
@@ -95,6 +101,7 @@ class TickTests(unittest.TestCase):
             "EPIC_SELECT_TIMEOUT_SECONDS": "10",
             "EPIC_STATE_DIR": str(self.state),
             "EPIC_REPEAT_TTL_SECONDS": "10800",
+            "EPIC_BLOCKED_RETRY_SECONDS": "900",
         }
 
     def run_tick(self) -> subprocess.CompletedProcess[str]:
@@ -194,6 +201,10 @@ class TickTests(unittest.TestCase):
                 "sandbox_workspace_write.network_access=true",
                 "--color",
                 "never",
+                "--output-schema",
+                str(self.repo.resolve() / ".codex/tick-result.schema.json"),
+                "--output-last-message",
+                str(self.state / "codex-result.json"),
                 "-",
             ],
         )
@@ -259,6 +270,127 @@ class TickTests(unittest.TestCase):
         self.assertFalse(self.record.exists())
         self.assertFalse(self.lock.exists())
 
+    def test_blocked_continue_returns_retry_code_and_next_tick_skips(self) -> None:
+        self.env["TEST_DECISION"] = json.dumps(
+            {
+                "action": "continue",
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/381",
+            }
+        )
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Commit permission denied."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertFalse(self.record.exists())
+        self.assertFalse(self.lock.exists())
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertFalse(self.record.exists())
+
+    def test_blocked_claim_suppresses_continue_for_the_same_issue(self) -> None:
+        self.env["TEST_DECISION"] = json.dumps(
+            {
+                "action": "claim",
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/381",
+            }
+        )
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Commit permission denied after claim."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.env["TEST_DECISION"] = json.dumps(
+            {
+                "action": "continue",
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/381",
+            }
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertFalse(self.record.exists())
+
+    def test_unrelated_target_runs_without_clearing_an_existing_cooldown(self) -> None:
+        blocked_action = self.env["TEST_DECISION"]
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Review permission denied."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        del self.env["TEST_RESULT"]
+        self.env["TEST_DECISION"] = json.dumps(
+            {"action": "review", "pr": 407, "sha": "a" * 40}
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.env["TEST_DECISION"] = blocked_action
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_new_head_runs_despite_previous_head_cooldown(self) -> None:
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Review permission denied."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        del self.env["TEST_RESULT"]
+        self.env["TEST_DECISION"] = json.dumps(
+            {"action": "review", "pr": 406, "sha": "b" * 40}
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_invalid_model_result_fails_closed_and_suppresses_retry(self) -> None:
+        for index, result in enumerate(
+            (
+                "broken json",
+                "[]",
+                '{"status":"completed"}',
+                '{"status":"unknown","summary":"bad status"}',
+            )
+        ):
+            with self.subTest(result=result):
+                self.env["TEST_DECISION"] = json.dumps(
+                    {
+                        "action": "continue",
+                        "issue": f"https://github.com/phaabe/live.moafunk.de/issues/{500 + index}",
+                    }
+                )
+                self.env["TEST_RESULT"] = result
+                self.assertEqual(self.run_tick().returncode, 75)
+                self.assertEqual(self.run_tick().returncode, 0)
+                self.assertEqual(len(self.calls.read_text().splitlines()), index + 1)
+                self.assertFalse(self.record.exists())
+                self.assertFalse(self.lock.exists())
+
+    def test_missing_model_result_cannot_reuse_previous_success(self) -> None:
+        self.env["TEST_DECISION"] = json.dumps(
+            {
+                "action": "continue",
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/381",
+            }
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        previous_record = self.record.read_text()
+        self.env["TEST_RESULT_MISSING"] = "1"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(self.record.read_text(), previous_record)
+        self.assertFalse(self.lock.exists())
+
+    def test_expired_cooldown_retries_and_success_clears_it(self) -> None:
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Commit permission denied."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        path = self.state / "codex-backoff.json"
+        entries = json.loads(path.read_text())
+        self.assertEqual(len(entries), 1)
+        for entry in entries.values():
+            entry["at"] = 0
+        path.write_text(json.dumps(entries))
+        del self.env["TEST_RESULT"]
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(json.loads(path.read_text()), {})
+        self.assertTrue(self.record.exists())
+
     def test_gate_record_failure_fails_tick(self) -> None:
         self.env["TEST_REMOVE_GATE_SNAPSHOT"] = "1"
         self.assertNotEqual(self.run_tick().returncode, 0)
@@ -285,7 +417,7 @@ class TickTests(unittest.TestCase):
         self.assertIn("exit=17", (self.state / "codex.log").read_text())
         self.env["TEST_CODEX_EXIT"] = "0"
         self.assertEqual(self.run_tick().returncode, 0)
-        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
 
     def test_invalid_timeout_never_starts_work(self) -> None:
         for value in ("0", "-1", "1.5", "never"):

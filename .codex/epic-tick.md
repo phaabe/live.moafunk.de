@@ -51,4 +51,24 @@ the plan or lane assignments; escalate those decisions to Anton. Do not bypass
 approval controls or hook trust. If required permissions are unavailable, log
 the blocker and stop. Do not remove the runner's lock or modify its logs.
 
-End with: `tick: <action> <target> -> <result>`.
+## Commands and final result
+
+Use the installed feature Git helper whose absolute path is appended below for
+normal commits and pushes: `python3 -I <helper> --worktree <path> commit
+--message-file <path>` or `python3 -I <helper> --worktree <path> push`.
+Use its literal absolute path in the command. This tick authorizes those normal
+feature-branch operations. The installed helper checks the repository, branch
+and origin and preserves Git hooks. If it is unavailable or refuses an action,
+report the blocker. Raw Git approval rules still apply to rebase, force pushes,
+amend, deletion and other operations outside the helper.
+
+Call `gh` as a single literal command, with no shell wrappers or compound
+commands. Write body files before calling `gh --body-file`; use file editing
+tools for multiline content instead of heredocs in shell tool calls.
+
+Return only a JSON object with `status` and `summary`. Use `status: "completed"`
+when the selected action succeeded, or a continue tick made useful progress
+without a blocker. Use `status: "blocked"` for refused permissions, missing
+prerequisites, changed target state or any other reason the action could not
+proceed. An exit code of zero alone does not mean success. In `summary`, state
+the action, target, result and any blocker in one short sentence.
