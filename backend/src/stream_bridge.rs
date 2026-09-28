@@ -191,6 +191,13 @@ impl StreamState {
         self.current_user.is_some() && (self.ffmpeg_stdin.is_some() || self.ffmpeg_handle.is_some())
     }
 
+    /// Test stand-in for another producer: `child` plays its FFmpeg process.
+    #[cfg(test)]
+    pub(crate) fn set_active_for_test(&mut self, user: &str, child: Child) {
+        self.current_user = Some(user.to_string());
+        self.ffmpeg_handle = Some(child);
+    }
+
     /// Returns true if recording to file is active.
     pub fn is_recording(&self) -> bool {
         self.recording_tx.is_some()
@@ -528,6 +535,9 @@ pub fn new_shared_state() -> SharedStreamState {
 /// Unlike live streaming (where audio chunks are piped via stdin), this spawns
 /// FFmpeg with `-re` (real-time playback) reading directly from the presigned
 /// URL. A background task monitors when FFmpeg exits and cleans up the state.
+///
+/// Refuses with [`StreamError::ProducerBusy`] while another producer (live
+/// broadcast or prerecorded) is active. It never stops the active producer.
 pub async fn start_prerecorded_stream(
     stream_state: &SharedStreamState,
     user: String,
@@ -537,9 +547,11 @@ pub async fn start_prerecorded_stream(
     {
         let mut state = stream_state.lock().await;
 
-        // Clean up any existing stream first
+        // Never silently replace the active producer (B1.1.6).
         if state.is_active() {
-            state.stop_stream().await?;
+            return Err(StreamError::ProducerBusy(
+                state.current_user.clone().unwrap_or_default(),
+            ));
         }
 
         tracing::info!(
@@ -781,11 +793,47 @@ pub enum StreamError {
 
     #[error("Recording error: {0}")]
     RecordingError(String),
+
+    #[error("Another producer is live ({0})")]
+    ProducerBusy(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B1.1.6: a prerecorded start must refuse, not replace, an active producer.
+    #[tokio::test]
+    async fn prerecorded_start_refuses_while_another_producer_is_live() {
+        let shared = new_shared_state();
+        {
+            let mut state = shared.lock().await;
+            // Stand-in for the live producer's FFmpeg process.
+            let child = Command::new("sleep")
+                .arg("30")
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn sleep");
+            state.current_user = Some("live-host".to_string());
+            state.ffmpeg_handle = Some(child);
+        }
+        let target = PushTarget::Rtmp {
+            destination: "rtmp://127.0.0.1:1/live/test".to_string(),
+        };
+
+        let result = start_prerecorded_stream(
+            &shared,
+            "prerec-host".to_string(),
+            "http://x/a.mp3",
+            &target,
+        )
+        .await;
+
+        assert!(matches!(result, Err(StreamError::ProducerBusy(ref u)) if u == "live-host"));
+        let state = shared.lock().await;
+        assert_eq!(state.current_user.as_deref(), Some("live-host"));
+        assert!(state.is_active(), "the live producer must keep running");
+    }
 
     #[test]
     fn segment_files_are_recognized() {
