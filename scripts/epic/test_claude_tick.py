@@ -49,7 +49,8 @@ class ClaudeTickTest(unittest.TestCase):
         )
         (bin_dir / "claude").write_text(
             "#!/bin/bash\n"
-            'printf \'["claude", "%s"]\\n\' "$*" >> "$TEST_CALLS"\n'
+            # JSON-encode: the arguments include the gate's JSON config.
+            'python3 -c \'import json, sys; print(json.dumps(["claude", " ".join(sys.argv[1:])]))\' "$@" >> "$TEST_CALLS"\n'
             'echo $$ > "$TEST_MODEL_PID"\n'
             'if [[ -n "${TEST_MODEL_SLEEP:-}" ]]; then exec sleep "$TEST_MODEL_SLEEP"; fi\n'
         )
@@ -77,16 +78,31 @@ class ClaudeTickTest(unittest.TestCase):
 
     def test_fix_runs_opus_and_records_the_gate(self) -> None:
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        calls = self.calls_made()
         self.assertEqual(
-            self.calls_made(),
-            [
-                ["git", "pull -q --ff-only"],
-                ["gate", "check"],
-                ["claude", "-p --model opus --effort high --permission-mode auto"],
-                ["gate", "record"],
-            ],
+            [calls[0], calls[1], calls[3]],
+            [["git", "pull -q --ff-only"], ["gate", "check"], ["gate", "record"]],
+        )
+        self.assertEqual(calls[2][0], "claude")
+        self.assertTrue(
+            calls[2][1].startswith(
+                "-p --model opus --effort high --permission-mode auto"
+            )
         )
         self.assertFalse((self.state / "claude.lock").exists())
+
+    def test_model_prompts_go_to_the_permission_gate(self) -> None:
+        # claude -p cannot prompt; without the gate, pushes and merges stop.
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        args = self.calls_made()[2][1]
+        self.assertIn("--permission-prompt-tool mcp__epic-gate__approve", args)
+        config = json.loads(args.split("--mcp-config ", 1)[1].split(" --", 1)[0])
+        server = config["mcpServers"]["epic-gate"]
+        self.assertEqual(
+            server["args"],
+            [str(self.repo.resolve() / "scripts/epic/permission_gate.py")],
+        )
+        self.assertEqual(server["env"], {"EPIC_STATE_DIR": str(self.state)})
 
     def test_failed_pull_stops_the_tick(self) -> None:
         self.assertEqual(self.run_tick(TEST_GIT_EXIT="1").wait(timeout=30), 1)
