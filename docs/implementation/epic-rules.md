@@ -171,6 +171,9 @@ model session only for real work: pause, idle, stop and a repeat of the last
 no-op action (`scripts/epic/tick_gate.py`: same action, no change on GitHub,
 younger than 3 hours) start none. Claims follow the "Start after" lines and the
 order in the epic's batch table ("Scope, in order"; "then" or an arrow starts
-the next stage). `python3 scripts/epic/next_action.py --status`
+the next stage). Each runner checkout only runs ticks and holds no work. Every
+tick starts with `git pull --ff-only` there, so merged changes to
+`scripts/epic/`, `.claude/commands/epic/` or `.codex/` apply on the next tick;
+a failed pull stops the tick. `python3 scripts/epic/next_action.py --status`
 shows the queue for both agents. The loop never releases to `main`, touches
 production, or changes the plan or lanes; those go to Anton.
