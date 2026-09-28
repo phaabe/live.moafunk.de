@@ -3,6 +3,12 @@ name: EPIC - Integration checks
 on:
   pull_request:
     branches:
+      - main
+      - dev/312-interim
+      - dev/streaming-architecture
+  push:
+    branches:
+      - main
       - dev/312-interim
       - dev/streaming-architecture
 
@@ -12,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: epic-ci-${{ github.event.pull_request.number }}
+  group: epic-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -41,9 +47,13 @@ jobs:
         id: toolchain
         uses: dtolnay/rust-toolchain@1.98.0
         with:
-          components: clippy
+          components: clippy, rustfmt
+
+      - name: Check backend formatting
+        run: cargo fmt --check
 
       - name: Run backend tests
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test --locked --all-targets
 
       - name: Run Clippy
@@ -76,6 +86,10 @@ jobs:
 
       - name: Run frontend lint
         run: npm run lint
+
+      - name: Test workflow rules
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: node --test ../.github/workflows/tests/*.test.cjs
 
       - name: Run frontend typecheck
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
