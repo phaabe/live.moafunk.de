@@ -1,7 +1,9 @@
 """Skip a tick that would repeat the last no-op action. Saves model tokens.
 
 A runner calls `check` after next_action.py and before starting a model session,
-and `record` after a session that exited 0. `check` exits 3 ("skip") when:
+and `record` after a session that exited 0. `record` saves the GitHub state
+that `check` saw before the session, so feedback that arrived during the session
+still starts the next tick. `check` exits 3 ("skip") when:
   - the action JSON is the same as the recorded one,
   - its PR or issue on GitHub has not changed since the record (updated_at), and
   - the record is younger than the TTL (EPIC_REPEAT_TTL_SECONDS, default 3 hours).
@@ -24,7 +26,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 REPO = "phaabe/live.moafunk.de"
 STATE_DIR = Path(
@@ -78,6 +80,49 @@ def updated_at(action: dict[str, Any]) -> str | None:
     return out.stdout.strip() or None
 
 
+def check(
+    agent: str,
+    action: dict[str, Any],
+    lookup: Callable[[dict[str, Any]], str | None],
+    now: float,
+    ttl: int,
+    state_dir: Path,
+) -> int:
+    """0 = run, SKIP = skip. Saves the GitHub state this tick starts from."""
+    record_file = state_dir / f"{agent}-gate.json"
+    record = json.loads(record_file.read_text()) if record_file.exists() else None
+    seen = lookup(action)
+    if should_skip(action, seen, record, now, ttl):
+        return SKIP
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / f"{agent}-gate-seen.json").write_text(
+        json.dumps({"fingerprint": fingerprint(action), "updated_at": seen})
+    )
+    return 0
+
+
+def record(agent: str, action: dict[str, Any], now: float, state_dir: Path) -> int:
+    """Record the state saved by `check`, not a fresh one: a comment that
+    arrived during the session was not seen, so the next tick must run."""
+    seen_file = state_dir / f"{agent}-gate-seen.json"
+    seen = json.loads(seen_file.read_text())
+    if seen.get("fingerprint") != fingerprint(action):
+        raise ValueError("gate: record does not match the checked action")
+    (state_dir / f"{agent}-gate.json").write_text(
+        json.dumps(
+            {
+                "fingerprint": seen["fingerprint"],
+                "updated_at": seen["updated_at"],
+                "at": now,
+                "action": action,
+            },
+            indent=1,
+        )
+    )
+    seen_file.unlink()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -88,27 +133,16 @@ def main() -> int:
     args = parser.parse_args()
 
     action = json.loads(args.action_file.read_text())
-    record_file = STATE_DIR / f"{args.agent}-gate.json"
     if args.command == "record":
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        record = {
-            "fingerprint": fingerprint(action),
-            "updated_at": updated_at(action),
-            "at": time.time(),
-            "action": action,
-        }
-        record_file.write_text(json.dumps(record, indent=1))
-        return 0
-
-    record = json.loads(record_file.read_text()) if record_file.exists() else None
+        return record(args.agent, action, time.time(), STATE_DIR)
     ttl = int(os.environ.get("EPIC_REPEAT_TTL_SECONDS", DEFAULT_TTL))
-    if should_skip(action, updated_at(action), record, time.time(), ttl):
+    result = check(args.agent, action, updated_at, time.time(), ttl, STATE_DIR)
+    if result == SKIP:
         print(
             "gate: skip, same action as the last tick and no change on GitHub",
             file=sys.stderr,
         )
-        return SKIP
-    return 0
+    return result
 
 
 if __name__ == "__main__":

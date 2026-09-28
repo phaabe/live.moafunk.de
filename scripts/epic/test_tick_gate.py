@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
-from tick_gate import fingerprint, should_skip, target_number
+from tick_gate import (
+    SKIP,
+    check,
+    fingerprint,
+    record as save,
+    should_skip,
+    target_number,
+)
 
 R = "https://github.com/phaabe/live.moafunk.de/issues"
 CLAIM = {"action": "claim", "reason": "Ready leaf assigned to me", "issue": f"{R}/338"}
@@ -48,6 +57,39 @@ class TickGateTest(unittest.TestCase):
         self.assertEqual(target_number({"pr": 410}), 410)
         self.assertEqual(target_number({"issue": f"{R}/338"}), 338)
         self.assertIsNone(target_number({"action": "idle"}))
+
+
+class CheckRecordTest(unittest.TestCase):
+    """check -> session -> record -> next check, with a fake GitHub clock."""
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.updated = "t1"
+
+    def tick(self, now: float) -> int:
+        return check("claude", CLAIM, lambda _: self.updated, now, TTL, self.dir)
+
+    def test_noop_tick_skips_the_next_one(self) -> None:
+        self.assertEqual(self.tick(1000.0), 0)
+        save("claude", CLAIM, 1010.0, self.dir)
+        self.assertEqual(self.tick(1020.0), SKIP)
+
+    def test_comment_during_session_is_not_marked_seen(self) -> None:
+        # Codex review on PR 412: a comment posted while the model ran was
+        # recorded as seen, and the next tick was skipped for up to 3 hours.
+        self.assertEqual(self.tick(1000.0), 0)
+        self.updated = "t2"
+        save("claude", CLAIM, 1010.0, self.dir)
+        self.assertEqual(self.tick(1020.0), 0)
+
+    def test_record_without_check_fails(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            save("claude", CLAIM, 1010.0, self.dir)
+
+    def test_record_of_other_action_fails(self) -> None:
+        self.assertEqual(self.tick(1000.0), 0)
+        with self.assertRaises(ValueError):
+            save("claude", {"action": "review", "pr": 5}, 1010.0, self.dir)
 
 
 if __name__ == "__main__":
