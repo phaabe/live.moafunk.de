@@ -216,10 +216,21 @@ pub async fn ensure_multipart_abort_lifecycle(client: &aws_sdk_s3::Client, bucke
     }
 }
 
+/// True for a recording artifact that age-based cleanup must never delete:
+/// any `recording_*` entry (capture file or segment dir) and any `*.segs/` dir.
+///
+/// These may hold the only copy of a show whose upload has not been verified.
+/// Recording cleanup comes back only with verified, indexed and serialized
+/// eligibility (B3.3.1), not with an age or size rule.
+fn is_recording_artifact(name: &str) -> bool {
+    name.starts_with("recording_") || name.ends_with(".segs")
+}
+
 /// Remove entries in `dir` whose modification time is older than `max_age`.
 ///
-/// Handles both stale recording files (`recording_*.webm`) and orphaned segment
-/// directories (`*.segs/` left by a crashed recorder). Returns the count removed.
+/// Recording artifacts (see [`is_recording_artifact`]) are always kept, whatever
+/// their age, and logged. Other stale entries (e.g. an abandoned `reexport_*`
+/// staging file) are removed as before. Returns the count removed.
 /// Best-effort: a missing dir is a no-op, and per-entry errors are logged, not
 /// propagated, so a scheduled sweep never aborts mid-way.
 pub async fn cleanup_stale_files(
@@ -251,6 +262,14 @@ pub async fn cleanup_stale_files(
         }
 
         let path = entry.path();
+        if is_recording_artifact(&entry.file_name().to_string_lossy()) {
+            tracing::info!(
+                "Kept stale recording artifact {:?} (age {}h); recordings are not age-cleaned",
+                path,
+                age.as_secs() / 3600
+            );
+            continue;
+        }
         let result = if meta.is_dir() {
             tokio::fs::remove_dir_all(&path).await
         } else {
@@ -1240,14 +1259,11 @@ mod tests {
         );
 
         let dir = tempfile::TempDir::new().unwrap();
-        // A stale file and a stale segment directory.
-        tokio::fs::write(dir.path().join("recording_1.webm"), b"x")
+        // Unrelated stale scratch: a file and a directory.
+        tokio::fs::write(dir.path().join("reexport_1_v1.webm"), b"x")
             .await
             .unwrap();
-        tokio::fs::create_dir(dir.path().join("recording_1.segs"))
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("recording_1.segs/seg_00000.ts"), b"y")
+        tokio::fs::create_dir(dir.path().join("scratch"))
             .await
             .unwrap();
 
@@ -1258,7 +1274,7 @@ mod tests {
                 .unwrap(),
             0
         );
-        assert!(dir.path().join("recording_1.webm").exists());
+        assert!(dir.path().join("reexport_1_v1.webm").exists());
 
         // max_age 0: everything qualifies → file + dir removed (2 entries).
         assert_eq!(
@@ -1267,8 +1283,117 @@ mod tests {
                 .unwrap(),
             2
         );
-        assert!(!dir.path().join("recording_1.webm").exists());
-        assert!(!dir.path().join("recording_1.segs").exists());
+        assert!(!dir.path().join("reexport_1_v1.webm").exists());
+        assert!(!dir.path().join("scratch").exists());
+    }
+
+    #[test]
+    fn recording_artifact_names() {
+        assert!(is_recording_artifact(
+            "recording_7_2026-01-28T19-30-00.webm"
+        ));
+        assert!(is_recording_artifact(
+            "recording_7_2026-01-28T19-30-00.segs"
+        ));
+        assert!(is_recording_artifact("recording_legacy.mp3"));
+        assert!(is_recording_artifact("odd-name.segs"));
+        assert!(!is_recording_artifact("reexport_7_v1.webm"));
+        assert!(!is_recording_artifact("7_2026-01-28T19-30-00"));
+        assert!(!is_recording_artifact("my_recording_7.webm"));
+    }
+
+    /// B3.3.5 regression: stale recording artifacts survive any age, while
+    /// unrelated stale files next to them are still removed. Cleanup reads no
+    /// remote object or DB row, so a same-size R2 object or a finalized legacy
+    /// row cannot make a recording deletable.
+    #[tokio::test]
+    async fn cleanup_never_deletes_recording_artifacts() {
+        use std::time::Duration;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path();
+        tokio::fs::write(p.join("recording_1_2026-01-28T19-30-00.webm"), b"x")
+            .await
+            .unwrap();
+        tokio::fs::create_dir(p.join("recording_1_2026-01-28T19-30-00.segs"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            p.join("recording_1_2026-01-28T19-30-00.segs/seg_00000.ts"),
+            b"y",
+        )
+        .await
+        .unwrap();
+        tokio::fs::create_dir(p.join("legacy.segs")).await.unwrap();
+        tokio::fs::write(p.join("stale.tmp"), b"z").await.unwrap();
+
+        // max_age 0 = every entry is "older than a day" for the rule.
+        assert_eq!(cleanup_stale_files(p, Duration::ZERO).await.unwrap(), 1);
+        assert!(!p.join("stale.tmp").exists());
+        assert!(p.join("recording_1_2026-01-28T19-30-00.webm").exists());
+        assert!(p
+            .join("recording_1_2026-01-28T19-30-00.segs/seg_00000.ts")
+            .exists());
+        assert!(p.join("legacy.segs").exists());
+    }
+
+    /// B3.3.5 regression: the boot-time cleanup tick runs concurrently with
+    /// orphan recovery. Recovery must still find every segment dir and file,
+    /// however the two interleave.
+    #[tokio::test]
+    async fn cleanup_concurrent_with_recovery_scan_keeps_recordings() {
+        use std::time::Duration;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().to_path_buf();
+        for i in 0..20 {
+            let seg = p.join(format!("recording_{i}_2026-01-28T19-30-00.segs"));
+            tokio::fs::create_dir(&seg).await.unwrap();
+            tokio::fs::write(seg.join("seg_00000.ts"), b"y")
+                .await
+                .unwrap();
+            tokio::fs::write(p.join(format!("other_{i}.tmp")), b"z")
+                .await
+                .unwrap();
+        }
+
+        // Stand-in for the recovery scan: repeatedly list seg dirs and read
+        // their segments while cleanup sweeps the same directory.
+        let scan_dir = p.clone();
+        let scan = tokio::spawn(async move {
+            for _ in 0..20 {
+                let mut rd = tokio::fs::read_dir(&scan_dir).await.unwrap();
+                let mut segs = 0;
+                while let Some(e) = rd.next_entry().await.unwrap() {
+                    if e.file_name().to_string_lossy().ends_with(".segs") {
+                        tokio::fs::read(e.path().join("seg_00000.ts"))
+                            .await
+                            .unwrap();
+                        segs += 1;
+                    }
+                }
+                assert_eq!(segs, 20);
+                tokio::task::yield_now().await;
+            }
+        });
+        let sweeps = async {
+            let mut removed = 0;
+            for _ in 0..5 {
+                removed += cleanup_stale_files(&p, Duration::ZERO).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+            removed
+        };
+        let (scan, removed) = tokio::join!(scan, sweeps);
+        scan.unwrap();
+        assert_eq!(removed, 20);
+        for i in 0..20 {
+            assert!(p
+                .join(format!(
+                    "recording_{i}_2026-01-28T19-30-00.segs/seg_00000.ts"
+                ))
+                .exists());
+        }
     }
 
     /// Integration test against a **real R2 bucket**. Validates the checksum
