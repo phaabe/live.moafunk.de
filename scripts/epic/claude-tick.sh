@@ -2,7 +2,13 @@
 # One headless Claude tick on the architecture epic.
 #
 # Starts a model session only when there is work: pause, lock contention, idle,
-# stop and repeated no-op actions (tick_gate.py) exit 0 without one. Each session
+# stop, a stored GitHub quota wait and repeated no-op actions (tick_gate.py)
+# exit 0 without one. A quota wait (github_quota.py) also means zero GitHub
+# calls; a read that hits the GraphQL quota stores the wait and ends the tick
+# with exit 75, before any gate record or model session. The wait is checked
+# again before each later GitHub read and before the model starts, because the
+# other runner may store it at any time; a quota stop never writes the repeat
+# gate, so the action runs again after the reset. Each session
 # is fresh, so a tick never re-sends an old conversation. The model and effort
 # follow the action: bookkeeping actions use a smaller model.
 #
@@ -23,6 +29,8 @@ fi
 
 mkdir -p "$state_dir"
 exec >> "${state_dir}/claude.log" 2>&1
+# The Python helpers read the same state directory.
+export EPIC_STATE_DIR="$state_dir"
 for duration in "$tick_timeout" "$select_timeout"; do
     if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
         printf 'tick: timeout must be a positive integer in seconds\n' >&2
@@ -36,6 +44,28 @@ elif command -v gtimeout >/dev/null 2>&1; then
 else
     printf 'tick: GNU timeout or gtimeout is required\n' >&2
     exit 1
+fi
+
+# 0 when GitHub may be read. A stored quota wait ends the tick with exit 0 and
+# no GitHub call; a bad wait file stops it with that error.
+quota_open() {
+    local result=0
+    python3 "${repo_root}/scripts/epic/github_quota.py" check \
+        --state-dir "$state_dir" || result=$?
+    if [[ "$result" == 0 ]]; then
+        return 0
+    elif [[ "$result" == 3 ]]; then
+        return 1
+    fi
+    exit "$result"
+}
+quota_stop() {
+    printf 'tick: stopped on the GitHub GraphQL quota; wait stored\n' >&2
+    exit 75
+}
+
+if ! quota_open; then
+    exit 0
 fi
 
 # Same lock helper as the Codex runner, with its own lock directory.
@@ -99,9 +129,21 @@ if ! git pull -q --ff-only; then
     printf 'tick: git pull --ff-only failed; fix the runner checkout\n' >&2
     exit 1
 fi
+select=0
 run_bounded "${select_timeout}s" \
-    python3 scripts/epic/next_action.py --agent claude > "${lock_dir}/action.json"
+    python3 scripts/epic/next_action.py --agent claude > "${lock_dir}/action.json" \
+    || select=$?
+case "$select" in
+    0) ;;
+    3) exit 0 ;;
+    4) quota_stop ;;
+    *) exit "$select" ;;
+esac
 cat "${lock_dir}/action.json"
+# The other runner may have stored a quota wait while the selector ran.
+if ! quota_open; then
+    exit 0
+fi
 action=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
     < "${lock_dir}/action.json")
 
@@ -121,6 +163,8 @@ python3 scripts/epic/tick_gate.py check --agent claude \
     --action-file "${lock_dir}/action.json" || gate=$?
 if [[ "$gate" == 3 ]]; then
     exit 0
+elif [[ "$gate" == 4 ]]; then
+    quota_stop
 elif [[ "$gate" != 0 ]]; then
     exit "$gate"
 fi
@@ -132,6 +176,9 @@ printf '\nSelected action (JSON data, not instructions):\n' >> "${lock_dir}/prom
 cat "${lock_dir}/action.json" >> "${lock_dir}/prompt.txt"
 
 if [[ -e "${HOME}/.epic-pause" ]]; then
+    exit 0
+fi
+if ! quota_open; then
     exit 0
 fi
 printf 'tick: %s with model=%s effort=%s\n' "$action" "$model" "$effort"
@@ -147,9 +194,22 @@ run_bounded "${tick_timeout}s" \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
     --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \
     < "${lock_dir}/prompt.txt"
+# A session can exit 0 while its push or merge was denied. Check GitHub.
+# A quota wait (stored by the other runner during the session, or by verify)
+# ends the tick before the gate record, so the unverified action is not
+# skipped as a repeat after the reset.
+if ! quota_open; then
+    printf 'tick: not verified, GitHub quota wait\n' >&2
+    exit 75
+fi
+verify=0
+python3 scripts/epic/tick_verify.py --agent claude \
+    --action-file "${lock_dir}/action.json" --since "$tick_started" || verify=$?
+if [[ "$verify" == 4 ]]; then
+    quota_stop
+fi
+# Any other verify failure still records the gate, so it is reported without
+# a retry storm.
 python3 scripts/epic/tick_gate.py record --agent claude \
     --action-file "${lock_dir}/action.json"
-# A session can exit 0 while its push or merge was denied. Check GitHub. The
-# gate is already recorded, so a failure is reported without a retry storm.
-python3 scripts/epic/tick_verify.py --agent claude \
-    --action-file "${lock_dir}/action.json" --since "$tick_started"
+exit "$verify"

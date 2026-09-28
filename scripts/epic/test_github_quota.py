@@ -1,0 +1,314 @@
+"""Tests for the shared GitHub quota wait. Run: python3 -m unittest discover -s scripts/epic"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import github_quota
+from github_quota import (
+    DEFERRED,
+    FALLBACK_SECONDS,
+    MARGIN,
+    PROCEED,
+    QUOTA,
+    QuotaExhausted,
+    check,
+    is_quota_error,
+    iso,
+    parse_iso,
+    record,
+    run_gh,
+)
+
+HERE = Path(__file__).resolve().parent
+T0 = parse_iso("2026-09-28T12:00:00Z")
+RESET = "2026-09-28T13:00:00Z"
+GRAPHQL_STDERR = "GraphQL: API rate limit already exceeded for user ID 1234567."
+RATE_LIMITED_200 = json.dumps(
+    {
+        "data": None,
+        "errors": [
+            {"type": "RATE_LIMITED", "message": "API rate limit exceeded for user"}
+        ],
+    }
+)
+
+
+class DetectTest(unittest.TestCase):
+    def test_graphql_command_error(self) -> None:
+        self.assertTrue(is_quota_error(["pr", "list"], "", GRAPHQL_STDERR))
+        self.assertTrue(is_quota_error(["project", "item-list"], "", GRAPHQL_STDERR))
+
+    def test_rate_limited_inside_http_200(self) -> None:
+        self.assertTrue(is_quota_error(["api", "graphql"], RATE_LIMITED_200, ""))
+
+    def test_rest_error_is_not_the_graphql_quota(self) -> None:
+        # REST reads keep failing visibly; only GraphQL stores the wait.
+        stderr = "gh: API rate limit exceeded for user ID 1. (HTTP 403)"
+        self.assertFalse(is_quota_error(["api", "repos/x/issues/1"], "", stderr))
+
+    def test_secondary_limit_is_out_of_scope(self) -> None:
+        stderr = "GraphQL: You have exceeded a secondary rate limit."
+        self.assertFalse(is_quota_error(["pr", "list"], "", stderr))
+
+    def test_other_errors_stay_visible(self) -> None:
+        self.assertFalse(
+            is_quota_error(["pr", "list"], "", "HTTP 401: Bad credentials")
+        )
+        other = json.dumps({"errors": [{"type": "NOT_FOUND"}]})
+        self.assertFalse(is_quota_error(["api", "graphql"], other, ""))
+        self.assertFalse(is_quota_error(["pr", "list"], "[]", ""))
+
+
+def fake_run(stdout: str, stderr: str, code: int):
+    return mock.patch.object(
+        github_quota.subprocess,
+        "run",
+        return_value=subprocess.CompletedProcess([], code, stdout, stderr),
+    )
+
+
+class RunGhTest(unittest.TestCase):
+    def test_quota_error_raises(self) -> None:
+        with fake_run("", GRAPHQL_STDERR, 1), self.assertRaises(QuotaExhausted):
+            run_gh(["pr", "list"])
+
+    def test_quota_error_with_exit_0_raises(self) -> None:
+        with fake_run(RATE_LIMITED_200, "", 0), self.assertRaises(QuotaExhausted):
+            run_gh(["api", "graphql", "-f", "query=x"])
+
+    def test_other_failure_is_a_called_process_error(self) -> None:
+        with fake_run("", "HTTP 401: Bad credentials", 1):
+            with self.assertRaises(subprocess.CalledProcessError):
+                run_gh(["pr", "list"])
+
+    def test_success_returns_stdout(self) -> None:
+        with fake_run("[]", "", 0):
+            self.assertEqual(run_gh(["pr", "list"]), "[]")
+
+
+class WaitTest(unittest.TestCase):
+    """Injected clock: wait, expiry and renewed exhaustion."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.lookups = 0
+
+    def lookup(self, reset: str | None):
+        def read() -> str | None:
+            self.lookups += 1
+            return reset
+
+        return read
+
+    def test_no_file_proceeds(self) -> None:
+        self.assertEqual(check(self.dir, T0), (PROCEED, None))
+
+    def test_wait_until_reset_plus_margin(self) -> None:
+        wait = record(self.dir, T0, lookup=self.lookup(RESET))
+        self.assertEqual(self.lookups, 1)
+        retry = iso(parse_iso(RESET) + MARGIN)
+        self.assertEqual(wait["retry_at"], retry)
+        self.assertEqual(wait["source"], "rateLimit")
+        self.assertEqual(check(self.dir, T0 + 60), (DEFERRED, retry))
+        self.assertEqual(check(self.dir, parse_iso(RESET)), (DEFERRED, retry))
+
+    def test_expiry_proceeds(self) -> None:
+        record(self.dir, T0, lookup=self.lookup(RESET))
+        self.assertEqual(check(self.dir, parse_iso(RESET) + MARGIN), (PROCEED, None))
+
+    def test_renewed_exhaustion_stores_a_new_wait(self) -> None:
+        record(self.dir, T0, lookup=self.lookup(RESET))
+        later = parse_iso(RESET) + MARGIN + 5
+        self.assertEqual(check(self.dir, later)[0], PROCEED)
+        record(self.dir, later, lookup=self.lookup("2026-09-28T14:00:00Z"))
+        self.assertEqual(
+            check(self.dir, later),
+            (DEFERRED, iso(parse_iso("2026-09-28T14:00:00Z") + MARGIN)),
+        )
+
+    def test_caller_reset_needs_no_query(self) -> None:
+        wait = record(self.dir, T0, RESET, lookup=self.lookup(None))
+        self.assertEqual(self.lookups, 0)
+        self.assertEqual(wait["source"], "caller")
+
+    def test_unknown_reset_uses_bounded_backoff(self) -> None:
+        wait = record(self.dir, T0, lookup=self.lookup(None))
+        self.assertEqual(wait["source"], "fallback")
+        self.assertEqual(wait["retry_at"], iso(T0 + FALLBACK_SECONDS))
+        self.assertEqual(check(self.dir, T0 + FALLBACK_SECONDS - 1)[0], DEFERRED)
+        self.assertEqual(check(self.dir, T0 + FALLBACK_SECONDS)[0], PROCEED)
+
+    def test_past_or_bad_reset_uses_backoff_not_an_immediate_retry(self) -> None:
+        for reset in ("2026-09-28T11:00:00Z", "soon"):
+            wait = record(self.dir, T0, reset, lookup=self.lookup(None))
+            self.assertEqual(wait["retry_at"], iso(T0 + FALLBACK_SECONDS))
+
+    def test_bad_file_is_an_error(self) -> None:
+        (self.dir / github_quota.WAIT_FILE).write_text("{}")
+        with self.assertRaises(ValueError):
+            check(self.dir, T0)
+
+    def test_wait_leaves_other_state_intact(self) -> None:
+        gate = self.dir / "claude-gate.json"
+        backoff = self.dir / "codex-backoff.json"
+        gate.write_text('{"at": 1}')
+        backoff.write_text('{"issue:x": {"at": 1, "reason": "r"}}')
+        record(self.dir, T0, lookup=self.lookup(RESET))
+        self.assertEqual(gate.read_text(), '{"at": 1}')
+        self.assertEqual(backoff.read_text(), '{"issue:x": {"at": 1, "reason": "r"}}')
+        self.assertEqual(
+            sorted(p.name for p in self.dir.iterdir()),
+            ["claude-gate.json", "codex-backoff.json", github_quota.WAIT_FILE],
+        )
+
+
+class ScriptTest(unittest.TestCase):
+    """The real scripts with a fake gh that counts GitHub calls."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.state = root / "state"
+        self.calls = root / "gh-calls.jsonl"
+        home = root / "home"
+        home.mkdir()
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "with open(os.environ['TEST_GH_CALLS'], 'a') as f:\n"
+            "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:3] == ['api', 'graphql'] and 'rateLimit' in ' '.join(sys.argv):\n"
+            "    print(json.dumps({'data': {'rateLimit': {'resetAt': os.environ['TEST_RESET']}}}))\n"
+            "    sys.exit(0)\n"
+            f"sys.stderr.write({GRAPHQL_STDERR!r} + '\\n')\n"
+            "sys.exit(1)\n"
+        )
+        gh.chmod(0o755)
+        self.reset = iso(time.time() + 3600)
+        self.env = {
+            **os.environ,
+            "HOME": str(home),
+            "EPIC_STATE_DIR": str(self.state),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TEST_GH_CALLS": str(self.calls),
+            "TEST_RESET": self.reset,
+        }
+
+    def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, *args],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            cwd=HERE,
+            timeout=60,
+        )
+
+    def gh_calls(self) -> list[list[str]]:
+        if not self.calls.exists():
+            return []
+        return [json.loads(line) for line in self.calls.read_text().splitlines()]
+
+    def test_selector_stops_on_quota_and_stores_the_wait(self) -> None:
+        out = self.run_script("next_action.py", "--agent", "claude")
+        self.assertEqual(out.returncode, QUOTA, out.stderr)
+        self.assertEqual(out.stdout, "")  # no action from that read
+        calls = self.gh_calls()
+        self.assertEqual(len(calls), 2)  # the failed read, one rateLimit query
+        self.assertEqual(calls[0][:2], ["pr", "list"])
+        self.assertEqual(calls[1][:2], ["api", "graphql"])
+        wait = json.loads((self.state / github_quota.WAIT_FILE).read_text())
+        self.assertEqual(wait["reset_at"], self.reset)
+        self.assertIn("retry at", out.stderr)
+
+    def test_selector_makes_no_call_during_a_wait(self) -> None:
+        record(self.state, time.time(), self.reset)
+        out = self.run_script("next_action.py", "--agent", "claude")
+        self.assertEqual(out.returncode, DEFERRED, out.stderr)
+        self.assertEqual(out.stdout, "")
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_gate_writes_no_record_on_quota(self) -> None:
+        # The gate reads REST, but a RATE_LIMITED body still stops it.
+        gh = Path(self.env["PATH"].split(":")[0]) / "gh"
+        gh.write_text(
+            gh.read_text().replace(
+                f"sys.stderr.write({GRAPHQL_STDERR!r} + '\\n')\nsys.exit(1)\n",
+                f"print({RATE_LIMITED_200!r})\n",
+            )
+        )
+        action = self.state.parent / "action.json"
+        action.write_text(json.dumps({"action": "fix", "pr": 5, "sha": "a" * 40}))
+        out = self.run_script(
+            "tick_gate.py", "check", "--agent", "claude", "--action-file", str(action)
+        )
+        self.assertEqual(out.returncode, QUOTA, out.stderr)
+        self.assertEqual(
+            sorted(p.name for p in self.state.iterdir()), [github_quota.WAIT_FILE]
+        )
+
+
+class CodexInterfaceTest(unittest.TestCase):
+    """Fixture for the Codex runner: the CLI calls codex-tick.sh can make."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name)
+
+    def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(HERE / "github_quota.py"),
+                *args,
+                "--state-dir",
+                str(self.state),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "PATH": "/nonexistent"},  # no gh: no GitHub call
+        )
+
+    def test_fixture_file_is_a_valid_wait(self) -> None:
+        fixture = HERE / "fixtures" / "github-quota-wait.json"
+        (self.state / github_quota.WAIT_FILE).write_text(fixture.read_text())
+        retry = json.loads(fixture.read_text())["retry_at"]
+        self.assertEqual(check(self.state, parse_iso(retry) - 1), (DEFERRED, retry))
+        self.assertEqual(check(self.state, parse_iso(retry))[0], PROCEED)
+
+    def test_check_record_expire(self) -> None:
+        self.assertEqual(self.cli("check").returncode, PROCEED)
+        future = iso(time.time() + 3600)
+        stored = self.cli("record", "--reset-at", future)
+        self.assertEqual(stored.returncode, 0, stored.stderr)
+        deferred = self.cli("check")
+        self.assertEqual(deferred.returncode, DEFERRED)
+        self.assertIn("retry at", deferred.stdout)
+        # A reset in the past falls back to a bounded wait, never a retry now.
+        self.cli("record", "--reset-at", iso(time.time() - 10))
+        self.assertEqual(self.cli("check").returncode, DEFERRED)
+
+    def test_bad_file_exits_2(self) -> None:
+        (self.state / github_quota.WAIT_FILE).write_text("not json")
+        self.assertEqual(self.cli("check").returncode, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

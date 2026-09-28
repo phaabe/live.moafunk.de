@@ -12,7 +12,8 @@ a push or merge was denied. claude-tick.sh runs this after the session:
                                 was created during the tick
 
 Other actions are not checked yet. Exit 0 when the action landed or is not
-checked, 1 when it did not land, 2 on bad input. GitHub read errors exit 1:
+checked, 1 when it did not land, 2 on bad input, 4 on a GraphQL quota error
+(wait stored, see github_quota.py). GitHub read errors exit 1:
 an unverified tick is not reported as done.
 
 Any other comment (progress, a blocker, a bot) does not count as a fix. Both
@@ -31,6 +32,8 @@ import subprocess
 import sys
 from typing import Any, Callable
 
+from github_quota import QuotaExhausted, run_gh, stop_on_quota
+
 REPO = "phaabe/live.moafunk.de"
 PUSHES = {"fix-checks", "resolve-conflict"}
 CHECKED = {"merge", "review", "fix", *PUSHES}
@@ -39,8 +42,7 @@ Fetch = Callable[[list[str]], Any]
 
 
 def gh_json(args: list[str]) -> Any:
-    out = subprocess.run(["gh", *args], capture_output=True, text=True, check=True)
-    return json.loads(out.stdout)
+    return json.loads(run_gh(args))
 
 
 def landed(
@@ -108,6 +110,8 @@ def main() -> int:
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"tick: cannot verify: {error}", file=sys.stderr)
         return 2
+    except QuotaExhausted as error:
+        return stop_on_quota(error)
     except subprocess.CalledProcessError:
         print("tick: cannot verify: GitHub read failed", file=sys.stderr)
         return 1

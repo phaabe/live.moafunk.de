@@ -11,6 +11,9 @@ A push changes the PR head SHA in the action, and a comment changes updated_at,
 so real progress always gets a new session. `continue` is never skipped: local
 work between ticks does not show on GitHub.
 
+`check` exits 4 when its GitHub read hits the GraphQL quota. It then stores the
+shared quota wait (github_quota.py) and writes no gate state.
+
 Usage:
   tick_gate.py check  --agent claude|codex --action-file action.json
   tick_gate.py record --agent claude|codex --action-file action.json
@@ -22,11 +25,12 @@ import argparse
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+from github_quota import QuotaExhausted, run_gh, stop_on_quota
 
 REPO = "phaabe/live.moafunk.de"
 STATE_DIR = Path(
@@ -70,14 +74,10 @@ def updated_at(action: dict[str, Any]) -> str | None:
     number = target_number(action)
     if number is None:
         return None
-    out = subprocess.run(
-        ["gh", "api", f"repos/{REPO}/issues/{number}", "--jq", ".updated_at"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
+    out = run_gh(
+        ["api", f"repos/{REPO}/issues/{number}", "--jq", ".updated_at"], timeout=60
     )
-    return out.stdout.strip() or None
+    return out.strip() or None
 
 
 def check(
@@ -136,7 +136,11 @@ def main() -> int:
     if args.command == "record":
         return record(args.agent, action, time.time(), STATE_DIR)
     ttl = int(os.environ.get("EPIC_REPEAT_TTL_SECONDS", DEFAULT_TTL))
-    result = check(args.agent, action, updated_at, time.time(), ttl, STATE_DIR)
+    try:
+        result = check(args.agent, action, updated_at, time.time(), ttl, STATE_DIR)
+    except QuotaExhausted as error:
+        # Stop before any gate record is written.
+        return stop_on_quota(error)
     if result == SKIP:
         print(
             "gate: skip, same action as the last tick and no change on GitHub",
