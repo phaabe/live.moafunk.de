@@ -79,8 +79,9 @@ including from a fresh linked worktree with a space in its path.
 Run `/bin/bash /path/to/checkout/.codex/codex-tick.sh` from any directory.
 The runner lives in Codex's setup lane. It uses Bash 3.2, Python 3.10+, GNU
 `timeout` (or `gtimeout`), authenticated `gh`, and an authenticated Codex CLI.
-Keep the runner checkout current with `dev/312-interim`. Trust its project
-hooks before unattended use, as described above.
+Use a dedicated runner checkout on `dev/312-interim` with that branch as its
+upstream. Keep feature work in separate worktrees. Trust its project hooks
+before unattended use, as described above.
 
 A scheduler must set `PATH` so `gh`, `codex`, Python and GNU `timeout` are
 available. For Apple Silicon Homebrew, include `/opt/homebrew/bin` along with
@@ -89,8 +90,14 @@ actual Codex installation directory if it is elsewhere. launchd's default
 PATH does not include Homebrew.
 
 Each invocation takes the shared `~/.local/state/epic-loop/codex.lock`
-directory using `mkdir`, checks `~/.epic-pause`, and calls the shared decision
-script once. Lock contention, pause, idle and stop exit 0 without starting Codex.
+directory using `mkdir`, checks `~/.epic-pause`, and runs `git pull --ff-only`
+before calling the shared decision script once. The updated selector and helpers
+apply in that tick, including focus rules. Runner shell changes apply on the
+next invocation. A failed or timed-out pull logs the error and stops before
+selection or a model session; it creates no target cooldown or repeat record.
+The runner never resets, stashes or discards local edits. Resolve pull failures
+in the operator checkout before retrying. Pause and lock contention skip the
+pull. Lock contention, pause, idle and stop exit 0 without starting Codex.
 Before a session, `scripts/epic/tick_gate.py check --agent codex` checks the
 selected action. Exit 3 skips the session and exits 0; other gate errors stop
 the tick. An unchanged action and GitHub timestamp are skipped for three hours
@@ -143,16 +150,17 @@ from `backend/` inside the runner sandbox. An installed default `stable`
 toolchain does not satisfy an explicit version pin; otherwise rustup tries to
 install into its home directory during the tick and may be blocked.
 
-Output and errors append to `~/.local/state/epic-loop/codex.log`. Selection
-has a 120-second limit and Codex has a 1,800-second limit, with a 10-second
-TERM-to-KILL grace. Override these with positive integer values in
-`EPIC_SELECT_TIMEOUT_SECONDS` and `EPIC_TICK_TIMEOUT_SECONDS`. Errors and timeout
-exit codes propagate; a later invocation selects again and checks the cooldown.
+Output and errors append to `~/.local/state/epic-loop/codex.log`. Pull and
+selection each have a 120-second limit; Codex has a 1,800-second limit, with a
+10-second TERM-to-KILL grace. Override these with positive integer values in
+`EPIC_PULL_TIMEOUT_SECONDS`, `EPIC_SELECT_TIMEOUT_SECONDS` and
+`EPIC_TICK_TIMEOUT_SECONDS`. Errors and timeout exit codes propagate; a later
+invocation refreshes, selects again and checks the cooldown.
 The lock stores the runner PID, Unix start time and original timeout budget in
 `owner.json`. It is held through child termination and removed on normal exit,
 errors and handled signals. A later tick reclaims and logs an abandoned lock
-only when the owner PID is dead and its age exceeds selection + tick timeout +
-10-second grace. It uses the larger of the stored and current budgets, so a
+only when the owner PID is dead and its age exceeds pull + selection + tick
+timeout + 10-second grace. It uses the larger of the stored and current budgets, so a
 shorter later tick cannot reclaim while an old child may still run. A live PID
 always keeps its lock, including a reused PID. A short OS file lock on
 `codex.guard` serializes recovery; keep that guard file in place.

@@ -7,6 +7,7 @@ state_dir="${HOME}/.local/state/epic-loop"
 lock_dir="${state_dir}/codex.lock"
 tick_timeout=${EPIC_TICK_TIMEOUT_SECONDS:-1800}
 select_timeout=${EPIC_SELECT_TIMEOUT_SECONDS:-120}
+pull_timeout=${EPIC_PULL_TIMEOUT_SECONDS:-120}
 blocked_retry=${EPIC_BLOCKED_RETRY_SECONDS:-900}
 
 # Pause before any API call or session, even if dependencies are unavailable.
@@ -16,7 +17,7 @@ fi
 
 mkdir -p "$state_dir"
 exec >> "${state_dir}/codex.log" 2>&1
-for duration in "$tick_timeout" "$select_timeout" "$blocked_retry"; do
+for duration in "$tick_timeout" "$select_timeout" "$pull_timeout" "$blocked_retry"; do
     if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
         printf 'tick: timeout and retry delay must be positive integers in seconds\n' >&2
         exit 2
@@ -24,7 +25,7 @@ for duration in "$tick_timeout" "$select_timeout" "$blocked_retry"; do
 done
 # Store the original timeout budget so shorter later ticks cannot reclaim early.
 if python3 "${repo_root}/.codex/epic_lock.py" "$lock_dir" "$$" \
-    "$((select_timeout + tick_timeout + 10))"; then
+    "$((pull_timeout + select_timeout + tick_timeout + 10))"; then
     :
 else
     result=$?
@@ -83,6 +84,16 @@ run_bounded() {
 }
 
 cd "$repo_root"
+if [[ -e "${HOME}/.epic-pause" ]]; then
+    exit 0
+fi
+printf 'tick: refreshing runner checkout\n'
+pull_exit=0
+run_bounded "${pull_timeout}s" git pull --ff-only || pull_exit=$?
+if [[ "$pull_exit" != 0 ]]; then
+    printf 'tick: checkout refresh failed exit=%s; stopping\n' "$pull_exit" >&2
+    exit "$pull_exit"
+fi
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
