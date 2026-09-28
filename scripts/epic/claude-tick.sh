@@ -5,7 +5,10 @@
 # stop, a stored GitHub quota wait and repeated no-op actions (tick_gate.py)
 # exit 0 without one. A quota wait (github_quota.py) also means zero GitHub
 # calls; a read that hits the GraphQL quota stores the wait and ends the tick
-# with exit 75, before any gate record or model session. Each session
+# with exit 75, before any gate record or model session. The wait is checked
+# again before each later GitHub read and before the model starts, because the
+# other runner may store it at any time; a quota stop never writes the repeat
+# gate, so the action runs again after the reset. Each session
 # is fresh, so a tick never re-sends an old conversation. The model and effort
 # follow the action: bookkeeping actions use a smaller model.
 #
@@ -137,6 +140,10 @@ case "$select" in
     *) exit "$select" ;;
 esac
 cat "${lock_dir}/action.json"
+# The other runner may have stored a quota wait while the selector ran.
+if ! quota_open; then
+    exit 0
+fi
 action=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
     < "${lock_dir}/action.json")
 
@@ -171,6 +178,9 @@ cat "${lock_dir}/action.json" >> "${lock_dir}/prompt.txt"
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+if ! quota_open; then
+    exit 0
+fi
 printf 'tick: %s with model=%s effort=%s\n' "$action" "$model" "$effort"
 # `claude -p` cannot show a prompt, and the project settings ask before every
 # push and merge. permission_gate.py answers those prompts: it approves only
@@ -184,11 +194,10 @@ run_bounded "${tick_timeout}s" \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
     --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \
     < "${lock_dir}/prompt.txt"
-python3 scripts/epic/tick_gate.py record --agent claude \
-    --action-file "${lock_dir}/action.json"
-# A session can exit 0 while its push or merge was denied. Check GitHub. The
-# gate is already recorded, so a failure is reported without a retry storm.
-# The other runner may have stored a quota wait during the session.
+# A session can exit 0 while its push or merge was denied. Check GitHub.
+# A quota wait (stored by the other runner during the session, or by verify)
+# ends the tick before the gate record, so the unverified action is not
+# skipped as a repeat after the reset.
 if ! quota_open; then
     printf 'tick: not verified, GitHub quota wait\n' >&2
     exit 75
@@ -199,4 +208,8 @@ python3 scripts/epic/tick_verify.py --agent claude \
 if [[ "$verify" == 4 ]]; then
     quota_stop
 fi
+# Any other verify failure still records the gate, so it is reported without
+# a retry storm.
+python3 scripts/epic/tick_gate.py record --agent claude \
+    --action-file "${lock_dir}/action.json"
 exit "$verify"

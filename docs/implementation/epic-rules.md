@@ -200,6 +200,8 @@ never from REST `rate_limit`) and exits 4; the runner ends the tick with exit 75
 and starts no model. Until reset plus 60 seconds, a tick makes zero GitHub calls
 and starts zero models; it logs the retry time. If the reset time is unknown,
 the wait is 15 minutes. A quota wait writes no cooldown or repeat-gate record.
-Runners call `github_quota.py check --state-dir <dir>` before their first GitHub
-read (exit 0 proceed, 3 deferred, 2 bad file) and `record` to store a wait. The loop never releases to `main`, touches
-production, or changes the plan or lanes; those go to Anton.
+Runners call `github_quota.py check --state-dir <dir>` before each GitHub read
+and before starting a model (exit 0 proceed, 3 deferred, 2 bad file), because
+the other runner can store a wait at any time, and `record` to store a wait.
+The loop never releases to `main`, touches production, or changes the plan or
+lanes; those go to Anton.
