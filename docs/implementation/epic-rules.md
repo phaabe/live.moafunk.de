@@ -165,6 +165,13 @@ Priority, first match wins:
    Not while the agent has work to continue or two open PRs.
 9. `idle`.
 
+Focus: Anton can limit both loops to some labels by writing them into
+`~/.epic-focus`, one per line (for example `project::Stream`). Then only issues
+with one of these labels, and PRs whose own labels or `Issue:` ticket have one,
+get actions. All other PRs are frozen: no review, fix or merge. They still count
+toward the two-open-PR limit. No file or an empty file means all work. Every
+PR needs an `Issue:` line naming its ticket, or it is frozen under a focus.
+
 Claude runs ticks headless with `scripts/epic/claude-tick.sh` (or `/epic-tick`
 by hand). Codex runs the same script from its own runner. A runner starts a
 model session only for real work: pause, idle, stop and a repeat of the last
