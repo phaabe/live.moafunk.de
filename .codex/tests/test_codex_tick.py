@@ -27,6 +27,9 @@ class TickTests(unittest.TestCase):
         self.home.mkdir()
         self.state = self.home / ".local/state/epic-loop"
         self.lock = self.state / "codex.lock"
+        self.record = self.state / "codex-gate.json"
+        self.updated_at = self.root / "updated-at"
+        self.updated_at.write_text("2026-09-28T03:00:00Z")
         self.calls = self.root / "codex-calls.jsonl"
         self.selections = self.root / "selector-calls"
         self.runner = self.repo / ".codex/codex-tick.sh"
@@ -36,6 +39,10 @@ class TickTests(unittest.TestCase):
         shutil.copyfile(ROOT / "epic_lock.py", self.runner.parent / "epic_lock.py")
         selector = self.repo / "scripts/epic/next_action.py"
         selector.parent.mkdir(parents=True)
+        shutil.copyfile(
+            ROOT.parent / "scripts/epic/tick_gate.py",
+            selector.parent / "tick_gate.py",
+        )
         selector.write_text(
             "import os, pathlib, sys\n"
             "assert sys.argv[1:] == ['--agent', 'codex']\n"
@@ -47,10 +54,19 @@ class TickTests(unittest.TestCase):
         )
         self.bin = self.root / "bin"
         self.bin.mkdir()
+        gh = self.bin / "gh"
+        gh.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, sys\n"
+            "assert sys.argv[1] == 'api'\n"
+            "if os.environ.get('TEST_GH_FAILURE'): sys.exit(7)\n"
+            "print(pathlib.Path(os.environ['TEST_UPDATED_AT']).read_text())\n"
+        )
+        gh.chmod(0o755)
         codex = self.bin / "codex"
         codex.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, os, socket, sys\n"
+            "import json, os, pathlib, socket, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read()}) + '\\n')\n"
             "print('fake Codex stdout', flush=True)\n"
@@ -60,6 +76,8 @@ class TickTests(unittest.TestCase):
             "        s.connect(os.environ['TEST_SOCKET'])\n"
             "        s.sendall(b'ready')\n"
             "        s.recv(1)\n"
+            "if os.environ.get('TEST_REMOVE_GATE_SNAPSHOT'):\n"
+            "    (pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex-gate-seen.json').unlink()\n"
             "sys.exit(int(os.environ.get('TEST_CODEX_EXIT', '0')))\n"
         )
         codex.chmod(0o755)
@@ -69,11 +87,14 @@ class TickTests(unittest.TestCase):
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "TEST_CALLS": str(self.calls),
             "TEST_SELECTIONS": str(self.selections),
+            "TEST_UPDATED_AT": str(self.updated_at),
             "TEST_DECISION": json.dumps(
                 {"action": "review", "pr": 406, "sha": "a" * 40}
             ),
             "EPIC_TICK_TIMEOUT_SECONDS": "10",
             "EPIC_SELECT_TIMEOUT_SECONDS": "10",
+            "EPIC_STATE_DIR": str(self.state),
+            "EPIC_REPEAT_TTL_SECONDS": "10800",
         }
 
     def run_tick(self) -> subprocess.CompletedProcess[str]:
@@ -190,6 +211,61 @@ class TickTests(unittest.TestCase):
         self.assertFalse(self.calls.exists())
         self.assertFalse(self.lock.exists())
 
+    def test_unchanged_action_is_recorded_and_next_tick_skips(self) -> None:
+        self.assertEqual(self.run_tick().returncode, 0)
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record["action"], json.loads(self.env["TEST_DECISION"]))
+        self.assertEqual(record["updated_at"], self.updated_at.read_text())
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertEqual(json.loads(self.record.read_text()), record)
+        self.assertEqual(len(self.selections.read_text().splitlines()), 2)
+        self.assertFalse(self.lock.exists())
+
+    def test_new_github_feedback_starts_another_session(self) -> None:
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.updated_at.write_text("2026-09-28T03:01:00Z")
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(
+            json.loads(self.record.read_text())["updated_at"],
+            self.updated_at.read_text(),
+        )
+
+    def test_new_head_starts_another_session(self) -> None:
+        self.assertEqual(self.run_tick().returncode, 0)
+        action = json.loads(self.env["TEST_DECISION"])
+        action["sha"] = "b" * 40
+        self.env["TEST_DECISION"] = json.dumps(action)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(json.loads(self.record.read_text())["action"], action)
+
+    def test_continue_starts_each_session(self) -> None:
+        self.env["TEST_DECISION"] = json.dumps(
+            {
+                "action": "continue",
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/338",
+            }
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_gate_check_failure_prevents_session(self) -> None:
+        self.env["TEST_GH_FAILURE"] = "1"
+        self.assertNotEqual(self.run_tick().returncode, 0)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse(self.lock.exists())
+
+    def test_gate_record_failure_fails_tick(self) -> None:
+        self.env["TEST_REMOVE_GATE_SNAPSHOT"] = "1"
+        self.assertNotEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertFalse(self.record.exists())
+        self.assertFalse(self.lock.exists())
+
     def test_selector_errors_and_invalid_json_fail_closed(self) -> None:
         for value in ("broken json", '{"action": "unknown"}', "[]"):
             with self.subTest(value=value):
@@ -205,7 +281,11 @@ class TickTests(unittest.TestCase):
         self.env["TEST_CODEX_EXIT"] = "17"
         self.assertEqual(self.run_tick().returncode, 17)
         self.assertFalse(self.lock.exists())
+        self.assertFalse(self.record.exists())
         self.assertIn("exit=17", (self.state / "codex.log").read_text())
+        self.env["TEST_CODEX_EXIT"] = "0"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
 
     def test_invalid_timeout_never_starts_work(self) -> None:
         for value in ("0", "-1", "1.5", "never"):
@@ -252,6 +332,20 @@ class TickTests(unittest.TestCase):
         self.assertEqual(process.wait(timeout=10), 0)
         self.assertFalse(self.lock.exists())
 
+    def test_feedback_during_session_is_not_suppressed(self) -> None:
+        initial_updated_at = self.updated_at.read_text()
+        process, connection = self.blocked_tick()
+        self.assertFalse(self.record.exists())
+        self.updated_at.write_text("2026-09-28T03:01:00Z")
+        connection.sendall(b"x")
+        self.assertEqual(process.wait(timeout=10), 0)
+        self.assertEqual(
+            json.loads(self.record.read_text())["updated_at"], initial_updated_at
+        )
+        del self.env["TEST_SOCKET"]
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
     def test_concurrent_recovery_cannot_replace_a_new_owner(self) -> None:
         self.seed_lock(self.dead_pid(), age=1000)
         process, connection = self.blocked_tick()
@@ -269,6 +363,7 @@ class TickTests(unittest.TestCase):
         self.assertEqual(process.wait(timeout=15), 124)
         self.assertEqual(connection.recv(1), b"")
         self.assertFalse(self.lock.exists())
+        self.assertFalse(self.record.exists())
 
     def test_term_stops_child_before_releasing_lock(self) -> None:
         process, connection = self.blocked_tick()
@@ -276,6 +371,7 @@ class TickTests(unittest.TestCase):
         self.assertEqual(process.wait(timeout=15), 143)
         self.assertEqual(connection.recv(1), b"")
         self.assertFalse(self.lock.exists())
+        self.assertFalse(self.record.exists())
 
 
 if __name__ == "__main__":

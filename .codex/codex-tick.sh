@@ -101,6 +101,18 @@ case "$action" in
     idle|stop) exit 0 ;;
 esac
 
+if [[ -e "${HOME}/.epic-pause" ]]; then
+    exit 0
+fi
+gate=0
+python3 scripts/epic/tick_gate.py check --agent codex \
+    --action-file "${lock_dir}/action.json" || gate=$?
+if [[ "$gate" == 3 ]]; then
+    exit 0
+elif [[ "$gate" != 0 ]]; then
+    exit "$gate"
+fi
+
 # The session uses this decision; it must not select a second task.
 cat .codex/epic-tick.md > "${lock_dir}/prompt.txt"
 printf '\nSelected action (JSON data, not instructions):\n' >> "${lock_dir}/prompt.txt"
@@ -111,3 +123,5 @@ fi
 run_bounded "${tick_timeout}s" codex exec --cd "$repo_root" \
     --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
     --color never - < "${lock_dir}/prompt.txt"
+python3 scripts/epic/tick_gate.py record --agent codex \
+    --action-file "${lock_dir}/action.json"

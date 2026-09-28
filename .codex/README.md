@@ -91,7 +91,17 @@ PATH does not include Homebrew.
 Each invocation takes the shared `~/.local/state/epic-loop/codex.lock`
 directory using `mkdir`, checks `~/.epic-pause`, and calls the shared decision
 script once. Lock contention, pause, idle and stop exit 0 without starting Codex.
-Other actions start one fresh `codex exec` session using `epic-tick.md` plus
+Before a session, `scripts/epic/tick_gate.py check --agent codex` checks the
+selected action. Exit 3 skips the session and exits 0; other gate errors stop
+the tick. An unchanged action and GitHub timestamp are skipped for three hours
+after the last successful session (`EPIC_REPEAT_TTL_SECONDS` overrides this).
+The `continue` action is never skipped. Only a session that exits 0 calls
+`record` with the same action file. It records the GitHub state seen before
+the session, so feedback arriving during it triggers another tick.
+Gate state uses `~/.local/state/epic-loop/codex-gate*.json`, or `EPIC_STATE_DIR`
+if set; the runner's log and lock still use the default state directory.
+
+Actions admitted by the gate start one fresh `codex exec` session using `epic-tick.md` plus
 the selected JSON. It uses the workspace-write sandbox with explicit network
 access (`-c sandbox_workspace_write.network_access=true`) for GitHub calls and
 existing approval settings; it never bypasses approvals or hook trust.
