@@ -1167,6 +1167,25 @@ pub fn notify_stream_start(state: &Arc<AppState>, username: &str) {
     });
 }
 
+/// Alert admin that a scheduled prerecorded show did not start because another
+/// producer was live. Sent once per occurrence (the caller owns the claim).
+pub fn notify_prerecorded_missed(
+    state: &Arc<AppState>,
+    show_id: i64,
+    title: &str,
+    scheduled_start_utc: &str,
+    reason: &str,
+) {
+    let state = state.clone();
+    let message = format!(
+        "⚠️ Prerecorded show '{title}' (id {show_id}) did not start at {scheduled_start_utc}: \
+         {reason}. It will not start automatically. An operator can retry with Go Live."
+    );
+    tokio::spawn(async move {
+        notify(&state, &message).await;
+    });
+}
+
 /// Notify admin that a live stream has ended.
 ///
 /// Spawns a detached tokio task so the caller is never blocked.

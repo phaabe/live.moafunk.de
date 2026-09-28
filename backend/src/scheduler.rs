@@ -142,7 +142,7 @@ fn parse_hhmm(s: &str) -> Option<NaiveTime> {
 /// Compute a show's scheduled start as a UTC instant, interpreting `date`+`start_time`
 /// in Europe/Berlin. Returns `None` if the date/time can't be parsed or the
 /// local time is invalid (DST gap).
-fn show_start_utc(date: &str, start_time: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn show_start_utc(date: &str, start_time: &str) -> Option<DateTime<Utc>> {
     let day = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
     let start = parse_hhmm(start_time)?;
     Berlin
@@ -420,15 +420,10 @@ pub async fn check_prerecorded_show_start(state: Arc<AppState>) {
             continue;
         };
 
-        tracing::info!(
-            "Prerecorded auto-start: starting show {} ('{}') for user '{}'",
-            show.id,
-            show.title,
-            username
-        );
-
-        if let Err(e) =
-            crate::handlers::api::start_prerecorded_show_stream(&state, show, &username).await
+        if let Err(e) = crate::handlers::api::start_scheduled_prerecorded_occurrence(
+            &state, show, &username, start,
+        )
+        .await
         {
             tracing::error!(
                 "Prerecorded auto-start: failed to start show {} ('{}'): {e}",

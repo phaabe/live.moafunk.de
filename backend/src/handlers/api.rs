@@ -5462,7 +5462,39 @@ pub async fn api_my_show_go_live(
 ) -> Result<impl IntoResponse> {
     let (user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
-    start_prerecorded_show_stream(&state, &show, &user.username).await?;
+    // A manual start of a missed scheduled occurrence is an operator retry:
+    // record it separately; the occurrence itself stays 'missed' (B1.1.6).
+    let occurrence = show
+        .start_time
+        .as_deref()
+        .and_then(|t| crate::scheduler::show_start_utc(&show.date, t))
+        .map(|start| start.to_rfc3339());
+    let is_retry = match &occurrence {
+        Some(key) => crate::db::record_prerecorded_retry(&state.db, show.id, key, &user.username)
+            .await
+            .unwrap_or(false),
+        None => false,
+    };
+    if is_retry {
+        tracing::info!(
+            "Prerecorded manual retry: show {} occurrence {:?} by '{}'",
+            show.id,
+            occurrence,
+            user.username
+        );
+    }
+
+    let result = start_prerecorded_show_stream(&state, &show, &user.username).await;
+    if let (true, Some(key)) = (is_retry, &occurrence) {
+        let outcome = match &result {
+            Ok(()) => "started".to_string(),
+            Err(e) => format!("failed: {e}"),
+        };
+        crate::db::finish_prerecorded_retry(&state.db, show.id, key, &outcome)
+            .await
+            .ok();
+    }
+    result?;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -5534,6 +5566,78 @@ pub async fn start_prerecorded_show_stream(
     Ok(())
 }
 
+/// What a scheduled start attempt means for its occurrence record.
+#[derive(Debug, PartialEq)]
+enum OccurrenceOutcome {
+    /// Started (by this attempt or already running): record 'started'.
+    Started,
+    /// Refused because another producer is live: keep it consumed, alert once.
+    Missed(String),
+    /// Transient failure: release the claim so a later tick may retry.
+    Release,
+}
+
+fn occurrence_outcome(result: &Result<()>) -> OccurrenceOutcome {
+    match result {
+        Ok(()) => OccurrenceOutcome::Started,
+        Err(AppError::Conflict(msg)) => OccurrenceOutcome::Missed(msg.clone()),
+        Err(_) => OccurrenceOutcome::Release,
+    }
+}
+
+/// Scheduler entry point: start one scheduled occurrence at most once.
+///
+/// The occurrence (show + scheduled start in UTC) is claimed first. If another
+/// producer is live the start is refused, the occurrence stays consumed and one
+/// alert is sent, so no later tick, catch-up or restart starts it again. An
+/// operator can still retry with Go Live, which records itself as a retry.
+pub async fn start_scheduled_prerecorded_occurrence(
+    state: &Arc<AppState>,
+    show: &models::Show,
+    username: &str,
+    scheduled_start: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let key = scheduled_start.to_rfc3339();
+    if !crate::db::claim_prerecorded_occurrence(&state.db, show.id, &key).await? {
+        return Ok(()); // already started, missed or claimed: never again automatically
+    }
+    tracing::info!(
+        "Prerecorded auto-start: starting show {} ('{}') for user '{}'",
+        show.id,
+        show.title,
+        username
+    );
+
+    let result = start_prerecorded_show_stream(state, show, username).await;
+    match occurrence_outcome(&result) {
+        OccurrenceOutcome::Started => {
+            crate::db::finish_prerecorded_occurrence(&state.db, show.id, &key, "started", None)
+                .await?;
+        }
+        OccurrenceOutcome::Missed(reason) => {
+            crate::db::finish_prerecorded_occurrence(
+                &state.db,
+                show.id,
+                &key,
+                "missed",
+                Some(&reason),
+            )
+            .await?;
+            tracing::warn!(
+                "Prerecorded auto-start: show {} occurrence {} missed: {}",
+                show.id,
+                key,
+                reason
+            );
+            telegram_notify::notify_prerecorded_missed(state, show.id, &show.title, &key, &reason);
+        }
+        OccurrenceOutcome::Release => {
+            crate::db::release_prerecorded_occurrence(&state.db, show.id, &key).await?;
+        }
+    }
+    result
+}
+
 async fn start_claimed_prerecorded_stream(
     state: &Arc<AppState>,
     show: &models::Show,
@@ -5559,7 +5663,12 @@ async fn start_claimed_prerecorded_stream(
         &push_target,
     )
     .await
-    .map_err(|e| AppError::Internal(format!("Failed to start prerecorded stream: {}", e)))?;
+    .map_err(|e| match e {
+        crate::stream_bridge::StreamError::ProducerBusy(_) => AppError::Conflict(format!(
+            "Prerecorded stream not started: {e}. Stop it first or retry later."
+        )),
+        other => AppError::Internal(format!("Failed to start prerecorded stream: {}", other)),
+    })?;
 
     // Notify via Telegram
     telegram_notify::notify_stream_start(state, username);
@@ -5700,7 +5809,26 @@ pub async fn require_show_editor(
 
 #[cfg(test)]
 mod tests {
-    use super::{claim_prerecorded_start, time_windows_overlap};
+    use super::{
+        claim_prerecorded_start, occurrence_outcome, time_windows_overlap, OccurrenceOutcome,
+    };
+    use crate::AppError;
+
+    #[test]
+    fn producer_busy_marks_the_occurrence_missed() {
+        let busy: crate::Result<()> = Err(AppError::Conflict("Another producer is live".into()));
+        assert_eq!(
+            occurrence_outcome(&busy),
+            OccurrenceOutcome::Missed("Another producer is live".into())
+        );
+    }
+
+    #[test]
+    fn transient_errors_release_and_success_starts() {
+        let transient: crate::Result<()> = Err(AppError::Internal("presign failed".into()));
+        assert_eq!(occurrence_outcome(&transient), OccurrenceOutcome::Release);
+        assert_eq!(occurrence_outcome(&Ok(())), OccurrenceOutcome::Started);
+    }
 
     async fn shows_test_pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
