@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 import fcntl
 import json
 import logging
@@ -24,12 +25,16 @@ import threading
 import time
 from typing import Any
 
+import agents
 import next_action as epic
 import ticks
 
 # GitHub and the existing selector use heterogeneous JSON objects.
 Json = dict[str, Any]
-AGENTS = ("claude", "codex")
+# Presence severity; retired is 0 so "worst presence" ignores it.
+PRESENCE = {"retired": 0, "running": 1, "idle": 2, "new": 3, "late": 4}
+PRESENCE_ORDER = ("running", "idle", "new", "late", "retired")
+CHECKPOINT_KEEP = 7 * 86_400
 STATUSES = ("Backlog", "Ready", "In progress", "In review", "Done", "Unknown")
 ACTIONS = (
     "stop",
@@ -59,7 +64,7 @@ class Metrics:
         self.names: set[str] = set()
 
     def add(
-        self, name: str, value: float, *, kind: str = "gauge", **labels: str
+        self, name: str, value: float, *, metric_type: str = "gauge", **labels: str
     ) -> None:
         name = f"epic_{name}"
         if not math.isfinite(value):
@@ -68,7 +73,7 @@ class Metrics:
             self.lines.extend(
                 [
                     f"# HELP {name} {name.removeprefix('epic_').replace('_', ' ')}",
-                    f"# TYPE {name} {kind}",
+                    f"# TYPE {name} {metric_type}",
                 ]
             )
             self.names.add(name)
@@ -301,84 +306,280 @@ def task_levels(row: dict[str, str]) -> list[dict[str, str]]:
     return rows
 
 
+@dataclass
+class Runner:
+    """What the lock and gate files say about one agent's runner."""
+
+    state: str | None = None
+    started: float | None = None
+    budget: float | None = None
+    action: dict[str, str] | None = None
+    gate_action: dict[str, str] | None = None
+
+
+@dataclass
+class Row:
+    agent: agents.Agent
+    presence: str
+    action: dict[str, str] | None = None
+    outcome_text: str = ""
+
+
+class Ledgers:
+    """Tick ledgers per agent, created and dropped as agents come and go."""
+
+    def __init__(self, runtime: Path) -> None:
+        self.runtime = runtime
+        self.ledgers: dict[tuple[str, Path], ticks.LogLedger] = {}
+
+    def get(self, agent: agents.Agent) -> ticks.LogLedger:
+        key = (agent.id, agent.log)
+        if key not in self.ledgers:
+            self.ledgers[key] = ticks.LogLedger(
+                agent.id,
+                agent.log,
+                self.runtime / agent.checkpoint_name,
+                action_labels,
+            )
+        return self.ledgers[key]
+
+    def prune(self, active: list[agents.Agent], now: float) -> None:
+        keep = {(agent.id, agent.log) for agent in active}
+        for key in [key for key in self.ledgers if key not in keep]:
+            del self.ledgers[key]
+        names = {agent.checkpoint_name for agent in active}
+        for path in self.runtime.glob("ticks-agents-*.json"):
+            try:
+                if (
+                    path.name not in names
+                    and now - path.stat().st_mtime > CHECKPOINT_KEEP
+                ):
+                    path.unlink()
+            except OSError:
+                logging.warning("Cannot remove an old tick checkpoint")
+
+
+def runner_sample(
+    metrics: Metrics, agent: agents.Agent, now: float, alive: Callable[[int], bool]
+) -> Runner:
+    """Lock, gate and log tail of one agent. A read failure drops its sample."""
+    sample = Metrics()
+    runner = Runner()
+    name = agent.id
+    try:
+        owner = read_object(agent.lock / "owner.json")
+        state = "inactive"
+        if owner is not None:
+            pid = positive_number(owner, "pid")
+            if not pid.is_integer():
+                raise ValueError("invalid pid")
+            started = positive_number(owner, "started_at")
+            budget = positive_number(owner, "max_age")
+            if started > now + 5:
+                raise ValueError("runner timestamp is in the future")
+            live = alive(int(pid))
+            elapsed = max(0, now - started)
+            state = "running" if live else "orphaned"
+            if live and elapsed > budget:
+                state = "overdue"
+            runner.started, runner.budget = started, budget
+            sample.add("tick_elapsed_seconds", elapsed, agent=name)
+            # Whole runner budget: selector, model and kill grace.
+            sample.add("tick_budget_seconds", budget, agent=name)
+            # Shell redirection creates this file before the selector runs.
+            action = read_object(agent.lock / "action.json", allow_empty=True)
+            if action is not None:
+                runner.action = action_labels(action)
+                sample.add("current_action_info", 1, agent=name, **runner.action)
+        elif agent.lock.exists():
+            state = "unknown"
+        sample.add("runner_state", 1, agent=name, state=state)
+        gate = read_object(agent.gate)
+        if gate is not None:
+            sample.add(
+                "last_session_success_timestamp_seconds",
+                positive_number(gate, "at"),
+                agent=name,
+            )
+            runner.gate_action = action_labels(gate["action"])
+            sample.add(
+                "last_successful_action_info", 1, agent=name, **runner.gate_action
+            )
+        log = agent.log
+        if log.exists():
+            sample.add(
+                "log_modified_timestamp_seconds", log.stat().st_mtime, agent=name
+            )
+            # Bounded tail; never publish arbitrary log or model text.
+            with log.open("rb") as stream:
+                stream.seek(max(0, log.stat().st_size - 131072))
+                tail = stream.read(131072).decode("utf-8", errors="replace")
+            finishes = re.findall(r"^tick: finished exit=(\d+)\s*$", tail, re.M)
+            if finishes:
+                sample.add("last_observed_exit_code", int(finishes[-1]), agent=name)
+        metrics.lines.extend(sample.lines)
+        metrics.add("runner_read_success", 1, agent=name)
+        runner.state = state
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        logging.warning("Cannot read %s runner metadata", name)
+        metrics.add("runner_read_success", 0, agent=name)
+        return Runner()
+    return runner
+
+
+def last_start(ledger: ticks.LogLedger | None) -> float | None:
+    state = ledger.state if ledger else None
+    if not state:
+        return None
+    try:
+        if state["open"] is not None:
+            return ticks.utc(state["open"]["tick"])
+    except ValueError:
+        return None
+    return state["ticks"][-1]["start"] if state["ticks"] else None
+
+
+def agent_metrics(
+    metrics: Metrics,
+    agent: agents.Agent,
+    paused: bool,
+    now: float,
+    alive: Callable[[int], bool],
+    ledgers: Ledgers | None,
+) -> Row:
+    name = agent.id
+    metrics.add(
+        "agent_info",
+        agent.registered_at or 0,
+        agent=name,
+        kind=agent.kind,
+        label=agent.label,
+        layout=agent.layout,
+    )
+    metrics.add("agent_interval_seconds", agent.interval, agent=name)
+    if agent.retired_at is not None:
+        return Row(agent, "retired")
+    runner = runner_sample(metrics, agent, now, alive)
+    ledger = ledgers.get(agent) if ledgers is not None else None
+    if ledger is not None:
+        ledger_metrics(metrics, ledger, now)
+    budget = runner.budget or agent.budget
+    metrics.add("agent_budget_seconds", budget, agent=name)
+    started = max(
+        (t for t in (runner.started, last_start(ledger)) if t is not None),
+        default=None,
+    )
+    # No tick starts during a pause, so a pause never makes an agent late.
+    overdue = 2 * agent.interval + budget
+    if runner.state in ("running", "overdue"):
+        presence = "running"
+    elif started is None:
+        since = agent.registered_at
+        late = since is not None and now - since > overdue and not paused
+        presence = "late" if late else "new"
+    else:
+        presence = "late" if now - started > overdue and not paused else "idle"
+    if started is not None:
+        metrics.add("agent_last_start_timestamp_seconds", started, agent=name)
+        if presence in ("idle", "late") and not paused:
+            metrics.add(
+                "agent_next_tick_seconds", started + agent.interval - now, agent=name
+            )
+    row = Row(agent, presence, runner.action if presence == "running" else None)
+    recent = ledger.ticks[-ticks.RECENT :] if ledger is not None else []
+    for age, tick in enumerate(reversed(recent)):
+        metrics.add(
+            "agent_recent",
+            ticks.SEVERITY[tick["outcome"]],
+            agent=name,
+            slot=f"{ticks.RECENT - age:02d}",
+        )
+    if recent:
+        last = recent[-1]
+        exit_text = "" if last["exit"] is None else f" {last['exit']}"
+        phase = f" · {last['phase']}" if last["phase"] else ""
+        row.outcome_text = f"{last['outcome']}{exit_text}{phase}"
+        if row.action is None and last["action"]:
+            row.action = {"action": last["action"], "target": last["target"]}
+    if row.action is None:
+        row.action = runner.gate_action
+    return row
+
+
+def action_text(row: Row, collision: bool) -> str:
+    if not row.action:
+        return ""
+    prefix = (
+        "collision · " if collision else "" if row.presence == "running" else "last: "
+    )
+    target = row.action["target"]
+    match = re.search(r"/(pull|issues)/(\d+)$", target)
+    ref = f" {'PR' if match[1] == 'pull' else 'issue'} {match[2]}" if match else ""
+    return f"{prefix}{row.action['action']}{ref}"
+
+
 def runner_metrics(
     state_dir: Path,
     paused: bool,
     now: float,
     alive: Callable[[int], bool] = process_alive,
-    ledgers: dict[str, ticks.LogLedger] | None = None,
+    ledgers: Ledgers | None = None,
 ) -> str:
     metrics = Metrics()
     metrics.add("local_snapshot_timestamp_seconds", now)
     metrics.add("pause_requested", int(paused))
     for kind, severity in ticks.SEVERITY.items():
         metrics.add("outcome_severity", severity, outcome=kind)
-    for agent in AGENTS:
-        sample = Metrics()
-        try:
-            lock = state_dir / f"{agent}.lock"
-            owner = read_object(lock / "owner.json")
-            state = "inactive"
-            if owner is not None:
-                pid = positive_number(owner, "pid")
-                if not pid.is_integer():
-                    raise ValueError("invalid pid")
-                started = positive_number(owner, "started_at")
-                budget = positive_number(owner, "max_age")
-                if started > now + 5:
-                    raise ValueError("runner timestamp is in the future")
-                live = alive(int(pid))
-                elapsed = max(0, now - started)
-                state = "running" if live else "orphaned"
-                if live and elapsed > budget:
-                    state = "overdue"
-                sample.add("tick_elapsed_seconds", elapsed, agent=agent)
-                # Whole runner budget: selector, model and kill grace.
-                sample.add("tick_budget_seconds", budget, agent=agent)
-                # Shell redirection creates this file before the selector runs.
-                action = read_object(lock / "action.json", allow_empty=True)
-                if action is not None:
-                    sample.add(
-                        "current_action_info", 1, agent=agent, **action_labels(action)
-                    )
-            elif lock.exists():
-                state = "unknown"
-            sample.add("runner_state", 1, agent=agent, state=state)
-            gate = read_object(state_dir / f"{agent}-gate.json")
-            if gate is not None:
-                sample.add(
-                    "last_session_success_timestamp_seconds",
-                    positive_number(gate, "at"),
-                    agent=agent,
-                )
-                sample.add(
-                    "last_successful_action_info",
-                    1,
-                    agent=agent,
-                    **action_labels(gate["action"]),
-                )
-            log = state_dir / f"{agent}.log"
-            if log.exists():
-                sample.add(
-                    "log_modified_timestamp_seconds", log.stat().st_mtime, agent=agent
-                )
-                # Bounded tail; never publish arbitrary log or model text.
-                with log.open("rb") as stream:
-                    stream.seek(max(0, log.stat().st_size - 131072))
-                    tail = stream.read(131072).decode("utf-8", errors="replace")
-                finishes = re.findall(r"^tick: finished exit=(\d+)\s*$", tail, re.M)
-                if finishes:
-                    sample.add(
-                        "last_observed_exit_code", int(finishes[-1]), agent=agent
-                    )
-            metrics.lines.extend(sample.lines)
-            metrics.add("runner_read_success", 1, agent=agent)
-        except (OSError, ValueError, KeyError, TypeError, OverflowError):
-            logging.warning("Cannot read %s runner metadata", agent)
-            metrics.add("runner_read_success", 0, agent=agent)
-        if ledgers is not None:
-            ledger_metrics(metrics, ledgers[agent], now)
-    # Deduplicate HELP/TYPE lines shared by the two runner samples.
+    registry = agents.discover(state_dir, now)
+    for reason in agents.REASONS:
+        metrics.add("agent_registry_rejected", registry.rejected[reason], reason=reason)
+    for name in registry.conflicts:
+        metrics.add("agent_conflict", 1, agent=name)
+    if ledgers is not None:
+        ledgers.prune(registry.agents, now)
+    rows = [
+        agent_metrics(metrics, agent, paused, now, alive, ledgers)
+        for agent in registry.agents
+    ]
+    rows.sort(
+        key=lambda row: (
+            PRESENCE_ORDER.index(row.presence),
+            row.agent.kind,
+            row.agent.id,
+        )
+    )
+    counts = Counter(row.presence for row in rows)
+    for presence in PRESENCE_ORDER:
+        metrics.add("agents_registered", counts[presence], presence=presence)
+    for kind in agents.KINDS:
+        metrics.add(
+            "agents_registered_kind",
+            sum(row.agent.kind == kind and row.presence != "retired" for row in rows),
+            kind=kind,
+        )
+    running = Counter(
+        row.action["target"]
+        for row in rows
+        if row.presence == "running" and row.action and row.action["target"]
+    )
+    for order, row in enumerate(rows):
+        name = row.agent.id
+        target = row.action["target"] if row.action else ""
+        collision = row.presence == "running" and running[target] > 1
+        if collision:
+            metrics.add("agent_collision", 1, agent=name, target=target)
+        metrics.add("agent_order", order, agent=name)
+        metrics.add("agent_presence", PRESENCE[row.presence], agent=name)
+        metrics.add("agent_presence_info", 1, agent=name, presence=row.presence)
+        metrics.add(
+            "agent_row_info",
+            1,
+            agent=name,
+            action_text=action_text(row, collision),
+            target=target,
+            outcome_text=row.outcome_text,
+        )
+    # Deduplicate HELP/TYPE lines shared by the per-agent samples.
     seen: set[str] = set()
     lines = []
     for line in metrics.lines:
@@ -410,18 +611,6 @@ def ledger_metrics(metrics: Metrics, ledger: ticks.LogLedger, now: float) -> Non
         return
     metrics.lines.extend(sample.lines)
     metrics.add("tick_ledger_export_success", 1, agent=ledger.agent)
-
-
-def make_ledgers(state_dir: Path, runtime: Path) -> dict[str, ticks.LogLedger]:
-    return {
-        agent: ticks.LogLedger(
-            agent,
-            state_dir / f"{agent}.log",
-            runtime / f"ticks-{agent}.json",
-            action_labels,
-        )
-        for agent in AGENTS
-    }
 
 
 def github_metrics(state: Json, now: float) -> str:
@@ -582,7 +771,7 @@ def run(args: argparse.Namespace) -> None:
 
     thread = threading.Thread(target=github_loop, daemon=True)
     thread.start()
-    ledgers = make_ledgers(args.state_dir, args.output.parent)
+    ledgers = Ledgers(args.output.parent)
     try:
         while not stopped.is_set():
             atomic_write(
@@ -644,7 +833,7 @@ def main() -> None:
                     args.state_dir,
                     args.pause_file.exists(),
                     time.time(),
-                    ledgers=make_ledgers(args.state_dir, args.output.parent),
+                    ledgers=Ledgers(args.output.parent),
                 ),
             )
             if not collect_github(args.output, args.github_timeout):

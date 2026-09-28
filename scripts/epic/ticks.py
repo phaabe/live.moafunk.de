@@ -120,7 +120,7 @@ def valid_checkpoint(data: object) -> bool:
 
 class Sink(Protocol):
     def add(
-        self, name: str, value: float, *, kind: str = ..., **labels: str
+        self, name: str, value: float, *, metric_type: str = ..., **labels: str
     ) -> None: ...
 
 
@@ -379,7 +379,7 @@ def export(metrics: Sink, ledger: LogLedger, now: float) -> None:
         metrics.add(
             "ticks_total",
             state["totals"][kind],
-            kind="counter",
+            metric_type="counter",
             agent=agent,
             outcome=kind,
         )
