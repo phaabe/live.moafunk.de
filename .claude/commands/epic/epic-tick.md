@@ -35,7 +35,7 @@ It prints one JSON action. If a selected action is already appended below (headl
 ## 3. Every PR you open
 
 - Base `dev/312-interim` (rules section 0). Draft until ready for review.
-- Body: follow `.github/PULL_REQUEST_TEMPLATE.md`. One line each at line start: `Epic: https://github.com/phaabe/live.moafunk.de/issues/312`, `Executor: Claude`, `Lane: …`, `Reviewer: Codex`, `Leaf IDs: …`, `Issue: <the issue this PR implements>`. Full URLs only, details in a collapsed block.
+- Body: follow `.github/PULL_REQUEST_TEMPLATE.md`. One line each at line start: `Epic: https://github.com/phaabe/live.moafunk.de/issues/312`, `Executor: Claude`, `Lane: <exactly one lane name from .github/epic-lanes.yml, e.g. setup>`, `Reviewer: Codex`, `Leaf IDs: …`, `Issue: <the issue this PR implements>`. Full URLs only, details in a collapsed block.
 
 ## 4. Never
 
