@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import unittest
-
 import tempfile
+import unittest
 from pathlib import Path
 
 from next_action import MAX_ROUNDS, comments_from_rest, decide, read_focus, status
@@ -299,6 +298,17 @@ class FocusTest(unittest.TestCase):
             "Claude", {"prs": [outside, inside], "items": items}, focus=STREAM
         )
         self.assertEqual([(a.action, a.pr) for a in acts], [("merge", 1)])
+
+    def test_foreign_issue_with_same_number_does_not_focus_pr(self) -> None:
+        # Project boards may hold issues from other repositories.
+        approved = [verdict("APPROVED", "Codex", A, "t1")]
+        local = item(901, "Claude", "In review", labels=["project::Backup"])
+        foreign = item(901, "Claude", "In review", labels=["project::Stream"])
+        foreign["content"]["url"] = "https://github.com/other/repo/issues/901"
+        for items in ([local, foreign], [foreign, local]):
+            p = pr(1, "Claude", comments=approved)  # Issue: .../901
+            got = decide("Claude", {"prs": [p], "items": items}, focus=STREAM)[0]
+            self.assertEqual(got.action, "idle")
 
     def test_pr_own_label_counts(self) -> None:
         p = pr(3, "Codex", labels=[{"name": "project::Stream"}])

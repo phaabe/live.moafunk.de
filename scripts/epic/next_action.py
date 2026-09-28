@@ -256,9 +256,12 @@ def decide(
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
     peer = other(agent)
+    # Project boards may hold issues from other repositories with the same number.
     issue_labels = {
-        (i.get("content") or {}).get("number"): labels(i)
+        i["content"]["number"]: labels(i)
         for i in state.get("items", [])
+        if (i.get("content") or {}).get("type") == "Issue"
+        and ISSUE_URL.fullmatch(i["content"].get("url") or "")
     }
     all_prs = [p for p in state.get("prs", []) if p.get("baseRefName") in BASES]
     # Escalated PRs get no PR action, but still link their issue and count as open.
