@@ -493,6 +493,20 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(len(set(rows)), 3)
         self.assertIn('tick="2026-09-28T12:00:00Z#2"', "\n".join(rows))
 
+    def test_labels_stay_unique_when_many_ticks_share_a_start(self) -> None:
+        self.log.write_text(tick(NOON, 0) * 45)
+        ledger = self.ledger()
+        ledger.update(NOON + 10)
+        metrics = Metrics()
+        ticks.export(metrics, ledger, NOON + 10)
+        rows = [
+            line.rsplit(" ", 1)[0]
+            for line in metrics.lines
+            if line.startswith("epic_tick_info{")
+        ]
+        self.assertEqual(len(rows), 20)
+        self.assertEqual(len(set(rows)), 20)
+
     # Derived gauges
 
     def test_consecutive_failures_skip_blocked_and_reset_on_ok(self) -> None:

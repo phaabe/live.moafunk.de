@@ -316,11 +316,16 @@ class LogLedger:
         phase = ""
         if kind in FAILURES:
             phase = "select" if tick["gh_failed"] else "unknown"
-        # Starts can share a second; the exported label must stay unique.
-        same = sum(t["tick"] == tick["tick"] for t in state["ticks"][-RECENT:])
+        # Starts can share a second; the exported label must stay unique. The
+        # export window is this tick plus the RECENT - 1 before it.
+        taken = {t["id"] for t in state["ticks"][-(RECENT - 1) :]}
+        tick_id, n = tick["tick"], 1
+        while tick_id in taken:
+            n += 1
+            tick_id = f"{tick['tick']}#{n}"
         state["ticks"].append(
             {
-                "id": tick["tick"] + (f"#{same + 1}" if same else ""),
+                "id": tick_id,
                 "tick": tick["tick"],
                 "start": utc(tick["tick"]),
                 # The log has no finish time; a live read is up to one cycle late.
