@@ -190,5 +190,16 @@ branches, and `gh pr merge <n> --repo phaabe/live.moafunk.de --squash
 [--delete-branch] --match-head-commit <sha>`. It denies everything else and
 logs each decision to `claude-permissions.log` in the state directory.
 `python3 scripts/epic/next_action.py --status`
-shows the queue for both agents. The loop never releases to `main`, touches
+shows the queue for both agents.
+
+GitHub GraphQL quota: both runners share one wait file,
+`github-quota-wait.json` in the state directory (`scripts/epic/github_quota.py`).
+When a GitHub read hits the GraphQL quota, also inside an HTTP 200 response,
+the script stores the reset time (UTC, from one `rateLimit { resetAt }` query,
+never from REST `rate_limit`) and exits 4; the runner ends the tick with exit 75
+and starts no model. Until reset plus 60 seconds, a tick makes zero GitHub calls
+and starts zero models; it logs the retry time. If the reset time is unknown,
+the wait is 15 minutes. A quota wait writes no cooldown or repeat-gate record.
+Runners call `github_quota.py check --state-dir <dir>` before their first GitHub
+read (exit 0 proceed, 3 deferred, 2 bad file) and `record` to store a wait. The loop never releases to `main`, touches
 production, or changes the plan or lanes; those go to Anton.

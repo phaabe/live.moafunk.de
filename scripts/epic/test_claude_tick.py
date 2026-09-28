@@ -27,18 +27,25 @@ class ClaudeTickTest(unittest.TestCase):
         self.calls = self.root / "calls.jsonl"
         for rel in (
             "scripts/epic/claude-tick.sh",
+            "scripts/epic/github_quota.py",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",
         ):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / rel, self.repo / rel)
         (self.repo / "scripts/epic/next_action.py").write_text(
-            f"print({json.dumps(json.dumps(ACTION))})\n"
+            "import json, os, sys\n"
+            "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
+            "    f.write(json.dumps(['select']) + '\\n')\n"
+            "code = int(os.environ.get('TEST_SELECT_EXIT', '0'))\n"
+            f"print({json.dumps(json.dumps(ACTION))}) if code == 0 else sys.exit(code)\n"
         )
         (self.repo / "scripts/epic/tick_gate.py").write_text(
             "import json, os, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(['gate', sys.argv[1]]) + '\\n')\n"
+            "if sys.argv[1] == 'check':\n"
+            "    sys.exit(int(os.environ.get('TEST_GATE_EXIT', '0')))\n"
         )
         (self.repo / "scripts/epic/tick_verify.py").write_text(
             "import json, os, sys\n"
@@ -58,7 +65,14 @@ class ClaudeTickTest(unittest.TestCase):
             # JSON-encode: the arguments include the gate's JSON config.
             'python3 -c \'import json, sys; print(json.dumps(["claude", " ".join(sys.argv[1:])]))\' "$@" >> "$TEST_CALLS"\n'
             'echo $$ > "$TEST_MODEL_PID"\n'
+            # Another runner stores a quota wait while this session runs.
+            'if [[ -n "${TEST_MODEL_WAIT:-}" ]]; then\n'
+            '    printf \'{"retry_at": "2099-01-01T00:00:00Z"}\' > "$EPIC_STATE_DIR/github-quota-wait.json"\n'
+            "fi\n"
             'if [[ -n "${TEST_MODEL_SLEEP:-}" ]]; then exec sleep "$TEST_MODEL_SLEEP"; fi\n'
+        )
+        (bin_dir / "gh").write_text(
+            '#!/bin/bash\nprintf \'["gh", "%s"]\\n\' "$*" >> "$TEST_CALLS"\nexit 1\n'
         )
         for stub in bin_dir.iterdir():
             stub.chmod(0o755)
@@ -86,17 +100,18 @@ class ClaudeTickTest(unittest.TestCase):
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
         calls = self.calls_made()
         self.assertEqual(
-            [calls[0], calls[1], calls[3], calls[4]],
+            [calls[0], calls[1], calls[2], calls[4], calls[5]],
             [
                 ["git", "pull -q --ff-only"],
+                ["select"],
                 ["gate", "check"],
                 ["gate", "record"],
                 ["verify", "--since"],
             ],
         )
-        self.assertEqual(calls[2][0], "claude")
+        self.assertEqual(calls[3][0], "claude")
         self.assertTrue(
-            calls[2][1].startswith(
+            calls[3][1].startswith(
                 "-p --model opus --effort high --permission-mode auto"
             )
         )
@@ -105,7 +120,7 @@ class ClaudeTickTest(unittest.TestCase):
     def test_model_prompts_go_to_the_permission_gate(self) -> None:
         # claude -p cannot prompt; without the gate, pushes and merges stop.
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
-        args = self.calls_made()[2][1]
+        args = self.calls_made()[3][1]
         self.assertIn("--permission-prompt-tool mcp__epic-gate__approve", args)
         config = json.loads(args.split("--mcp-config ", 1)[1].split(" --", 1)[0])
         server = config["mcpServers"]["epic-gate"]
@@ -128,6 +143,54 @@ class ClaudeTickTest(unittest.TestCase):
         self.assertEqual(self.run_tick(TEST_GIT_EXIT="1").wait(timeout=30), 1)
         self.assertEqual(self.calls_made(), [["git", "pull -q --ff-only"]])
         self.assertFalse((self.state / "claude.lock").exists())
+
+    def store_wait(self, retry_at: str = "2099-01-01T00:00:00Z") -> None:
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "github-quota-wait.json").write_text(
+            json.dumps({"retry_at": retry_at})
+        )
+
+    def test_stored_quota_wait_makes_no_call_and_starts_no_model(self) -> None:
+        self.store_wait()
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertFalse(self.calls.exists())  # no git, gh, selector or model
+        self.assertIn("retry at 2099-01-01", (self.state / "claude.log").read_text())
+        self.assertFalse((self.state / "claude.lock").exists())
+
+    def test_expired_quota_wait_runs_normally(self) -> None:
+        self.store_wait("2000-01-01T00:00:00Z")
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertEqual(self.calls_made()[3][0], "claude")
+
+    def test_bad_quota_wait_file_stops_the_tick(self) -> None:
+        self.state.mkdir(parents=True)
+        (self.state / "github-quota-wait.json").write_text("not json")
+        self.assertEqual(self.run_tick().wait(timeout=30), 2)
+        self.assertFalse(self.calls.exists())
+
+    def test_selector_quota_error_stops_before_gate_and_model(self) -> None:
+        self.assertEqual(self.run_tick(TEST_SELECT_EXIT="4").wait(timeout=30), 75)
+        self.assertEqual(self.calls_made(), [["git", "pull -q --ff-only"], ["select"]])
+        self.assertFalse((self.state / "claude.lock").exists())
+
+    def test_selector_deferred_ends_quietly(self) -> None:
+        self.assertEqual(self.run_tick(TEST_SELECT_EXIT="3").wait(timeout=30), 0)
+        self.assertEqual(self.calls_made(), [["git", "pull -q --ff-only"], ["select"]])
+
+    def test_gate_quota_error_starts_no_model(self) -> None:
+        self.assertEqual(self.run_tick(TEST_GATE_EXIT="4").wait(timeout=30), 75)
+        self.assertEqual(self.calls_made()[-1], ["gate", "check"])
+        self.assertNotIn("claude", [c[0] for c in self.calls_made()])
+
+    def test_verify_quota_error_fails_the_tick(self) -> None:
+        self.assertEqual(self.run_tick(TEST_VERIFY_EXIT="4").wait(timeout=30), 75)
+        self.assertEqual(self.calls_made()[-1], ["verify", "--since"])
+
+    def test_wait_stored_during_the_session_skips_verify(self) -> None:
+        self.assertEqual(self.run_tick(TEST_MODEL_WAIT="1").wait(timeout=30), 75)
+        calls = self.calls_made()
+        self.assertEqual(calls[-1], ["gate", "record"])
+        self.assertNotIn(["verify", "--since"], calls)
 
     def test_term_stops_the_model_before_the_lock_is_released(self) -> None:
         # Codex review on PR 412: TERM removed the lock but left the model running.

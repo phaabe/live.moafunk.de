@@ -1,0 +1,6 @@
+{
+ "reset_at": "2026-09-28T13:00:00Z",
+ "retry_at": "2026-09-28T13:01:00Z",
+ "source": "rateLimit",
+ "recorded_at": "2026-09-28T12:10:00Z"
+}

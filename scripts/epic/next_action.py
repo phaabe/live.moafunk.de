@@ -27,6 +27,9 @@ Usage:
   next_action.py --status                    all pending actions, both agents
   next_action.py ... --state-file state.json use saved state (tests, dry runs)
   next_action.py ... --focus project::Stream  override ~/.epic-focus (repeatable)
+
+Exit codes: 0 action printed, 3 a GraphQL quota wait is stored (no GitHub call),
+4 a read hit the GraphQL quota (wait stored, no action). See github_quota.py.
 """
 
 from __future__ import annotations
@@ -34,11 +37,20 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from github_quota import (
+    DEFERRED,
+    STATE_DIR,
+    QuotaExhausted,
+    check as quota_check,
+    run_gh,
+    stop_on_quota,
+)
 
 REPO = "phaabe/live.moafunk.de"
 PROJECT_OWNER = "anneoneone"
@@ -439,10 +451,7 @@ def comments_from_rest(
 
 
 def gh_json(args: list[str]) -> Any:
-    out = subprocess.run(
-        ["gh", *args], check=True, capture_output=True, text=True, timeout=120
-    )
-    return json.loads(out.stdout)
+    return json.loads(run_gh(args))
 
 
 def fetch_state() -> dict[str, Any]:
@@ -574,9 +583,24 @@ def main() -> int:
 
     paused = PAUSE_FILE.exists()
     focus = frozenset(args.focus) if args.focus else read_focus(FOCUS_FILE)
-    state = (
-        json.loads(args.state_file.read_text()) if args.state_file else fetch_state()
-    )
+    if not args.state_file:
+        # A stored GraphQL quota wait means zero GitHub calls until it expires.
+        wait, retry_at = quota_check(STATE_DIR, time.time())
+        if wait == DEFERRED:
+            print(
+                f"quota: GitHub GraphQL quota wait, retry at {retry_at}",
+                file=sys.stderr,
+            )
+            return DEFERRED
+    try:
+        state = (
+            json.loads(args.state_file.read_text())
+            if args.state_file
+            else fetch_state()
+        )
+    except QuotaExhausted as error:
+        # No action from a partial read: the tick stops here.
+        return stop_on_quota(error)
     if args.dump_state:
         args.dump_state.write_text(json.dumps(state, indent=1))
     if args.status:
