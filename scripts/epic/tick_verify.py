@@ -4,17 +4,19 @@ A model session can exit 0 without its work reaching GitHub, for example when
 a push or merge was denied. claude-tick.sh runs this after the session:
 
   merge                         the PR is merged
-  review                        a "Review: ... by <Agent> at <selected sha>" comment exists
+  review                        an unedited "Review: ... by <Agent> at <selected sha>"
+                                comment was created during the tick
   fix-checks, resolve-conflict  the PR head moved (a push arrived)
-  fix                           the PR head moved, or a comment was added
-                                during the tick (a reply-only fix)
+  fix                           the PR head moved, or a comment whose first line
+                                is "Reply-only fix by <Agent> at <selected sha>"
+                                was created during the tick
 
 Other actions are not checked yet. Exit 0 when the action landed or is not
 checked, 1 when it did not land, 2 on bad input. GitHub read errors exit 1:
 an unverified tick is not reported as done.
 
-Both agents share one GitHub account, so "a comment was added" cannot tell
-who wrote it. A push is the stronger signal and is what most fixes produce.
+Any other comment (progress, a blocker, a bot) does not count as a fix. Both
+agents share one GitHub account, so the marker names the agent.
 
 Usage:
   tick_verify.py --agent claude --action-file action.json --since 2026-09-28T12:00:00Z
@@ -66,15 +68,31 @@ def landed(
         ]
     )
     new = [c for c in comments if c.get("created_at", "") >= since]
+    name = agent.capitalize()
     if kind == "review":
         verdict = re.compile(
-            rf"^Review: (APPROVED|CHANGES REQUESTED) by {agent.capitalize()} at {sha}$"
+            rf"^Review: (APPROVED|CHANGES REQUESTED) by {name} at {sha}$"
         )
-        found = any(verdict.match((c.get("body") or "").strip()) for c in new)
+        found = any(
+            verdict.match((c.get("body") or "").strip()) and not edited(c, fetch)
+            for c in new
+        )
         return found, f"verdict for {sha[:7]} {'posted' if found else 'missing'}"
-    if moved or new:
-        return True, "head moved" if moved else "comment added"
-    return False, f"PR {number} head did not move and no comment was added"
+    if moved:
+        return True, "head moved"
+    marker = f"Reply-only fix by {name} at {sha}"
+    if any((c.get("body") or "").strip().splitlines()[:1] == [marker] for c in new):
+        return True, "reply-only fix posted"
+    return False, f"PR {number} head did not move and no reply-only fix was posted"
+
+
+def edited(comment: dict[str, Any], fetch: Fetch) -> bool:
+    """True when GitHub records a body edit. An edited verdict counts as none."""
+    query = "query($id:ID!){node(id:$id){... on IssueComment{lastEditedAt}}}"
+    node = fetch(
+        ["api", "graphql", "-f", f"query={query}", "-f", f"id={comment['node_id']}"]
+    )
+    return node["data"]["node"]["lastEditedAt"] is not None
 
 
 def main() -> int:
