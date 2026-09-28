@@ -336,6 +336,97 @@ class GithubMetricsTest(unittest.TestCase):
         )
 
 
+def plan_issue(
+    number: int, title: str, level: str, body: str = "", **fields: str
+) -> monitor.Json:
+    item = issue(number, fields.pop("executor", "Unassigned"), "Backlog", body)
+    item["content"]["title"] = title
+    item["level"] = level
+    item.update(fields)
+    return item
+
+
+class TaskContextTest(unittest.TestCase):
+    """Epic > area > task > subtask > leaf > PR, as the dashboards show it."""
+
+    def setUp(self) -> None:
+        subtask_body = (
+            f"Parent: {URL}/issues/331\n\n"
+            "- [ ] **O1.2.1** Change the workflow. Then more text.\n"
+            "- [ ] **O1.2.4** **Wave 0.** v3: CI must run for PRs; and more.\n"
+            "- [x] **O1.2.2** Done already.\n"
+        )
+        self.state = snapshot(
+            items=[
+                plan_issue(312, "Epic: Continuous playback", "Epic"),
+                plan_issue(331, "[O1] Establish the baseline", "Task", area="Ops"),
+                plan_issue(
+                    381,
+                    "[O1.2] Remove the unsafe trigger",
+                    "Subtask",
+                    subtask_body,
+                    area="Ops",
+                    executor="Codex",
+                ),
+            ],
+            prs=[
+                pull_request(
+                    417,
+                    "Codex",
+                    title="ci: run checks: backend",
+                    body=f"Executor: Codex\nLeaf IDs: O1.2.4\nIssue: {URL}/issues/381",
+                )
+            ],
+            merged_prs=[
+                {"number": 415, "body": f"Leaf IDs: setup\nIssue: {URL}/issues/312"}
+            ],
+            batch_order=["| Codex | O1.2.4 (x) first; then O1.2.1 |"],
+        )
+
+    def rows(self) -> dict[str, dict[str, str]]:
+        return {row["target"]: row for row in monitor.task_contexts(self.state)}
+
+    def test_issue_path_uses_parent_and_batch_ordered_open_leaf(self) -> None:
+        row = self.rows()[f"{URL}/issues/381"]
+        self.assertEqual(row["epic"], "Continuous playback")
+        self.assertEqual(row["area"], "Ops")
+        self.assertEqual(row["task"], "O1 · Establish the baseline")
+        self.assertEqual(row["task_url"], f"{URL}/issues/331")
+        self.assertEqual(row["subtask"], "O1.2 · Remove the unsafe trigger")
+        # O1.2.4 comes first in the batch table; markers and later text are cut.
+        self.assertEqual(row["leaf"], "O1.2.4 · CI must run for PRs (+1 more)")
+        self.assertEqual(row["leaves_done"], "1/3")
+
+    def test_pr_path_uses_issue_and_leaf_lines_and_keeps_full_title(self) -> None:
+        row = self.rows()[f"{URL}/pull/417"]
+        self.assertEqual(row["subtask_url"], f"{URL}/issues/381")
+        self.assertEqual(row["leaf"], "O1.2.4 · CI must run for PRs")
+        self.assertEqual(row["pr"], "PR 417 · ci: run checks: backend")
+
+    def test_merged_setup_pr_sits_directly_under_the_epic(self) -> None:
+        row = self.rows()[f"{URL}/pull/415"]
+        self.assertEqual(row["epic"], "Continuous playback")
+        self.assertEqual(row["task"], "")
+        self.assertEqual(row["leaf"], "setup (loop and rule files)")
+
+    def test_levels_form_an_indented_linked_tree(self) -> None:
+        levels = monitor.task_levels(self.rows()[f"{URL}/pull/417"])
+        self.assertEqual(
+            [level["level"] for level in levels],
+            ["Epic", "Area", "Task", "Subtask", "Leaf", "PR"],
+        )
+        self.assertEqual([level["depth"] for level in levels], list("123456"))
+        self.assertTrue(levels[2]["text"].endswith("└ O1 · Establish the baseline"))
+        # The leaf links to the issue holding its checkbox.
+        self.assertEqual(levels[4]["url"], f"{URL}/issues/381")
+        self.assertEqual(levels[5]["url"], f"{URL}/pull/417")
+
+    def test_github_metrics_publish_context_rows(self) -> None:
+        text = monitor.github_metrics(self.state, NOW)
+        self.assertIn(f'level="Subtask",target="{URL}/pull/417"', text)
+        self.assertIn("epic_task_context_info{", text)
+
+
 class PublicationTest(unittest.TestCase):
     def test_current_epoch_timestamp_keeps_second_precision(self) -> None:
         metrics = monitor.Metrics()

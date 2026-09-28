@@ -15,7 +15,14 @@ From this worktree's root:
 bash tools/agent-monitoring/service.sh start
 ```
 
-Open [Grafana](http://127.0.0.1:13000/d/epic-agents). It is a read-only local
+Open [Grafana](http://127.0.0.1:13000/d/epic-agents). It has three pages:
+
+- [Overview](http://127.0.0.1:13000/d/epic-agents): both agents side by side.
+- [Claude](http://127.0.0.1:13000/d/epic-agent-claude) and
+  [Codex](http://127.0.0.1:13000/d/epic-agent-codex): one agent in detail,
+  with its runner log.
+
+Grafana is a read-only local
 viewer with no login or default administrator account. Prometheus is at
 <http://127.0.0.1:19090>. Both ports bind only to `127.0.0.1`.
 
@@ -29,7 +36,7 @@ bash tools/agent-monitoring/service.sh stop
 ```
 
 Stopping preserves the named Docker volumes. They hold up to 30 days of
-Prometheus data, capped at 1 GB, and Grafana settings.
+Prometheus data, capped at 1 GB, 30 days of runner logs, and Grafana settings.
 
 For foreground use or custom runner paths, stop the service first, then:
 
@@ -39,10 +46,19 @@ bash tools/agent-monitoring/run.sh --state-dir /path/to/epic-loop
 docker compose -f tools/agent-monitoring/compose.yaml down
 ```
 
-## What the dashboard shows
+## What the dashboards show
+
+Every task is placed in the epic as a path:
+Epic › area › task › subtask › leaf › PR, for example
+`B1 · Authorize…` › `B1.1 · Define authorization…` › `B1.1.6 · Stop scheduled…`
+› `PR 410`. Each level links to its issue or PR. For an issue, the leaf shown
+is the next open one in the epic's batch order. For a PR, it is the PR's
+`Leaf IDs:` line. The overview shows the running task, or the last successful
+session's task when no tick runs.
 
 | View | Meaning |
 | --- | --- |
+| Task path | Where the current, last or queued action sits in the epic |
 | Runner state and tick elapsed | Lock owner's PID is alive, absent, or over its timeout budget |
 | Current action | Action stored by the runner, linked to its issue or PR |
 | Last successful session | Model exited successfully and the shared gate recorded it |
@@ -53,6 +69,12 @@ docker compose -f tools/agent-monitoring/compose.yaml down
 | Needs Anton | Issues and PRs carrying `needs-anton` |
 | Delivery history | Completed issue count and merged-PR window since collection began |
 | Freshness and alerts | Missing/stale collector data and runner metadata problems |
+| Runner state over time (agent page) | When ticks ran |
+| Tick summary and full log (agent page) | The runner log from Loki; search with the box at the top |
+
+The dashboards are generated. Change `scripts/epic/dashboards.py`, then run
+`python3 scripts/epic/dashboards.py` and commit the JSON. A test fails when the
+JSON is out of date.
 
 Activity is collected every 5 seconds; Prometheus scrapes every 5 seconds and
 Grafana refreshes every 5 seconds. Visible latency can reach about 15 seconds.
@@ -87,6 +109,10 @@ Grafana and Prometheus; no external notifications are sent.
   Executor/Reviewer text, because the agents share a GitHub account.
 - The last exit is found in the final 128 KiB of each log. It can refer to an
   earlier tick or be absent. No error rate is inferred from this sample.
+  Exit 75 is shown as "blocked": Codex's session ended with a valid blocked
+  result and its runner waits before trying the same task again.
+- Log lines get the time Alloy read them. On the first start, older lines all
+  get that start time. Lines over 16 KB are cut.
 - Token costs, model utilization, per-task percentage and completion ETA are
   omitted because these runners do not provide reliable inputs for them.
 
@@ -95,8 +121,14 @@ Grafana and Prometheus; no external notifications are sent.
 The collector reads `~/.local/state/epic-loop/` and `~/.epic-pause` by default.
 Use `--state-dir` and `--pause-file` for other locations. It reads lock/gate
 JSON and bounded log tails; model text and prompts never enter metrics.
-Only sanitized `.prom` files are mounted into the textfile exporter. Container
-services have no access to host credentials, source code or runner logs.
+Only sanitized `.prom` files are mounted into the textfile exporter.
+
+The runner logs are shown on the agent pages. Alloy reads the state directory
+read-only and sends `claude.log` and `codex.log` to Loki. These logs contain
+model transcripts, prompts and command output. They stay on this Mac: Loki and
+Alloy have no published ports, and Grafana binds to `127.0.0.1`. Set
+`EPIC_STATE_DIR` for another state directory. No container gets host
+credentials or source code.
 
 Runtime files and the collector log are in the ignored `runtime/` directory.
 Only one collector may use an output directory. The launchd script controls
@@ -110,8 +142,8 @@ host. Logs report error classes without copying subprocess responses. Run
 
 ```bash
 python3 -m unittest discover -s scripts/epic
-ruff check scripts/epic/monitor.py scripts/epic/test_monitor.py
-ruff format --check scripts/epic/monitor.py scripts/epic/test_monitor.py
+ruff check scripts/epic
+ruff format --check scripts/epic
 docker compose -f tools/agent-monitoring/compose.yaml config --quiet
 docker compose -f tools/agent-monitoring/compose.yaml exec -T prometheus \
   promtool check config /etc/prometheus/prometheus.yml

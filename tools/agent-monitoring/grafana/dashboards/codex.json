@@ -1,6 +1,6 @@
 {
-  "uid": "epic-agents",
-  "title": "Agents · Overview",
+  "uid": "epic-agent-codex",
+  "title": "Agents · Codex",
   "tags": [
     "agents",
     "epic"
@@ -16,28 +16,34 @@
   },
   "links": [
     {
-      "title": "Claude details",
-      "url": "/d/epic-agent-claude",
+      "title": "Overview",
+      "url": "/d/epic-agents",
       "targetBlank": false
     },
     {
-      "title": "Codex details",
-      "url": "/d/epic-agent-codex",
+      "title": "Claude details",
+      "url": "/d/epic-agent-claude",
       "targetBlank": false
     },
     {
       "title": "Epic",
       "url": "https://github.com/phaabe/live.moafunk.de/issues/312",
       "targetBlank": true
-    },
-    {
-      "title": "Project board",
-      "url": "https://github.com/users/anneoneone/projects/2",
-      "targetBlank": true
     }
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "search",
+        "label": "Search log",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
   },
   "panels": [
     {
@@ -46,7 +52,7 @@
       "transparent": true,
       "options": {
         "mode": "markdown",
-        "content": "Claude and Codex on the [architecture epic](https://github.com/phaabe/live.moafunk.de/issues/312). Local data every 5 s, GitHub every 2 min. **Details and logs:** [Claude](/d/epic-agent-claude) · [Codex](/d/epic-agent-codex)"
+        "content": "**Codex** runner · [‹ Overview](/d/epic-agents) · [Claude](/d/epic-agent-claude) · Log file: `~/.local/state/epic-loop/codex.log`"
       },
       "id": 1,
       "gridPos": {
@@ -54,780 +60,6 @@
         "y": 0,
         "w": 24,
         "h": 2
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Local data age",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "time() - epic_local_snapshot_timestamp_seconds",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "–",
-          "mappings": [],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 30
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 2,
-      "gridPos": {
-        "x": 0,
-        "y": 2,
-        "w": 4,
-        "h": 3
-      }
-    },
-    {
-      "type": "stat",
-      "title": "GitHub data age",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "time() - epic_github_snapshot_timestamp_seconds",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "–",
-          "mappings": [],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 300
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 3,
-      "gridPos": {
-        "x": 4,
-        "y": 2,
-        "w": 4,
-        "h": 3
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Last GitHub poll",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "epic_github_collection_success",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "–",
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "failed"
-                },
-                "1": {
-                  "text": "ok"
-                }
-              }
-            }
-          ],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 4,
-      "gridPos": {
-        "x": 8,
-        "y": 2,
-        "w": 4,
-        "h": 3
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Paused",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "epic_pause_requested and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "–",
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "no"
-                },
-                "1": {
-                  "text": "yes"
-                }
-              }
-            }
-          ],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 5,
-      "gridPos": {
-        "x": 12,
-        "y": 2,
-        "w": 4,
-        "h": 3
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Firing alerts",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "–",
-          "mappings": [],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 6,
-      "gridPos": {
-        "x": 16,
-        "y": 2,
-        "w": 4,
-        "h": 3
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Needs Anton",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(epic_needs_operator and on() (time() - epic_github_snapshot_timestamp_seconds < 300))",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "–",
-          "mappings": [],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 7,
-      "gridPos": {
-        "x": 20,
-        "y": 2,
-        "w": 4,
-        "h": 3
-      }
-    },
-    {
-      "type": "text",
-      "title": "",
-      "transparent": true,
-      "options": {
-        "mode": "markdown",
-        "content": "### [Claude ›](/d/epic-agent-claude)"
-      },
-      "id": 8,
-      "gridPos": {
-        "x": 0,
-        "y": 5,
-        "w": 12,
-        "h": 2
-      }
-    },
-    {
-      "type": "text",
-      "title": "",
-      "transparent": true,
-      "options": {
-        "mode": "markdown",
-        "content": "### [Codex ›](/d/epic-agent-codex)"
-      },
-      "id": 9,
-      "gridPos": {
-        "x": 12,
-        "y": 5,
-        "w": 12,
-        "h": 2
-      }
-    },
-    {
-      "type": "stat",
-      "title": "State",
-      "description": "running: a tick holds the lock. It may be selecting work, not generating output. inactive: no tick runs now.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "epic_runner_state{agent=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
-          "instant": true,
-          "range": false,
-          "legendFormat": "{{state}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "–",
-          "mappings": [],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "running"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "green"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "inactive"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "text"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "orphaned"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "red"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "overdue"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "orange"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "unknown"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "purple"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "name",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 10,
-      "gridPos": {
-        "x": 0,
-        "y": 7,
-        "w": 3,
-        "h": 4
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Tick running for",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "epic_tick_elapsed_seconds{agent=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "idle",
-          "mappings": [],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 11,
-      "gridPos": {
-        "x": 3,
-        "y": 7,
-        "w": 3,
-        "h": 4
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Last session",
-      "description": "Time since the last model session that exited successfully. It does not mean the task is done.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "(time() - epic_last_session_success_timestamp_seconds{agent=\"claude\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "–",
-          "mappings": [],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 21600
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 12,
-      "gridPos": {
-        "x": 6,
-        "y": 7,
-        "w": 3,
-        "h": 4
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Last exit",
-      "description": "Last finished tick in the log. blocked: the task could not move; the runner waits before trying it again.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "epic_last_observed_exit_code{agent=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
-          "instant": true,
-          "range": false,
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "–",
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "ok",
-                  "color": "green"
-                },
-                "75": {
-                  "text": "blocked",
-                  "color": "orange"
-                }
-              }
-            },
-            {
-              "type": "range",
-              "options": {
-                "from": 1,
-                "to": 255,
-                "result": {
-                  "color": "red"
-                }
-              }
-            }
-          ],
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "values": false,
-          "fields": ""
-        },
-        "textMode": "value",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto"
-      },
-      "id": 13,
-      "gridPos": {
-        "x": 9,
-        "y": 7,
-        "w": 3,
-        "h": 4
       }
     },
     {
@@ -957,11 +189,11 @@
         "justifyMode": "center",
         "orientation": "auto"
       },
-      "id": 14,
+      "id": 2,
       "gridPos": {
-        "x": 12,
-        "y": 7,
-        "w": 3,
+        "x": 0,
+        "y": 2,
+        "w": 4,
         "h": 4
       }
     },
@@ -1016,11 +248,11 @@
         "justifyMode": "center",
         "orientation": "auto"
       },
-      "id": 15,
+      "id": 3,
       "gridPos": {
-        "x": 15,
-        "y": 7,
-        "w": 3,
+        "x": 4,
+        "y": 2,
+        "w": 4,
         "h": 4
       }
     },
@@ -1079,11 +311,11 @@
         "justifyMode": "center",
         "orientation": "auto"
       },
-      "id": 16,
+      "id": 4,
       "gridPos": {
-        "x": 18,
-        "y": 7,
-        "w": 3,
+        "x": 8,
+        "y": 2,
+        "w": 4,
         "h": 4
       }
     },
@@ -1162,18 +394,18 @@
         "justifyMode": "center",
         "orientation": "auto"
       },
-      "id": 17,
+      "id": 5,
       "gridPos": {
-        "x": 21,
-        "y": 7,
-        "w": 3,
+        "x": 12,
+        "y": 2,
+        "w": 4,
         "h": 4
       }
     },
     {
-      "type": "table",
-      "title": "Claude · current task",
-      "description": "The running tick's action, placed in the epic. When no tick runs, the last successful session's action.",
+      "type": "stat",
+      "title": "Open PRs",
+      "description": "",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -1181,7 +413,142 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "label_replace(label_replace(label_replace(((epic_current_action_info{agent=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)) or on(agent) label_replace(epic_last_successful_action_info{agent=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30), \"action\", \"last session: $1\", \"action\", \"(.*)\")), \"level\", \"Action\", \"\", \"\"), \"depth\", \"0\", \"\", \"\"), \"text\", \"$1\", \"action\", \"(.*)\") or (epic_task_level_info and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) * on(target) group_left() ((epic_current_action_info{agent=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)) or on(agent) label_replace(epic_last_successful_action_info{agent=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30), \"action\", \"last session: $1\", \"action\", \"(.*)\"))",
+          "expr": "sum(epic_open_prs{agent=\"codex\"}) and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "–",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "id": 6,
+      "gridPos": {
+        "x": 16,
+        "y": 2,
+        "w": 4,
+        "h": 4
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Needs Anton",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_needs_operator{agent=\"codex\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "–",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "id": 7,
+      "gridPos": {
+        "x": 20,
+        "y": 2,
+        "w": 4,
+        "h": 4
+      }
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Task context",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Working on now",
+      "description": "The running tick's action, placed in the epic. Empty when idle.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_replace(label_replace(label_replace((epic_current_action_info{agent=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)), \"level\", \"Action\", \"\", \"\"), \"depth\", \"0\", \"\", \"\"), \"text\", \"$1\", \"action\", \"(.*)\") or (epic_task_level_info and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) * on(target) group_left() (epic_current_action_info{agent=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30))",
           "instant": true,
           "range": false,
           "legendFormat": "",
@@ -1300,18 +667,18 @@
           }
         }
       ],
-      "id": 18,
+      "id": 9,
       "gridPos": {
         "x": 0,
-        "y": 11,
+        "y": 7,
         "w": 12,
-        "h": 8
+        "h": 9
       }
     },
     {
       "type": "table",
-      "title": "Codex · current task",
-      "description": "The running tick's action, placed in the epic. When no tick runs, the last successful session's action.",
+      "title": "Last successful session",
+      "description": "The last session that exited successfully. It does not mean the task is done.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -1319,7 +686,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "label_replace(label_replace(label_replace(((epic_current_action_info{agent=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)) or on(agent) label_replace(epic_last_successful_action_info{agent=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30), \"action\", \"last session: $1\", \"action\", \"(.*)\")), \"level\", \"Action\", \"\", \"\"), \"depth\", \"0\", \"\", \"\"), \"text\", \"$1\", \"action\", \"(.*)\") or (epic_task_level_info and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) * on(target) group_left() ((epic_current_action_info{agent=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)) or on(agent) label_replace(epic_last_successful_action_info{agent=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30), \"action\", \"last session: $1\", \"action\", \"(.*)\"))",
+          "expr": "label_replace(label_replace(label_replace((epic_last_successful_action_info{agent=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)), \"level\", \"Action\", \"\", \"\"), \"depth\", \"0\", \"\", \"\"), \"text\", \"$1\", \"action\", \"(.*)\") or (epic_task_level_info and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) * on(target) group_left() (epic_last_successful_action_info{agent=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30))",
           "instant": true,
           "range": false,
           "legendFormat": "",
@@ -1438,13 +805,147 @@
           }
         }
       ],
-      "id": 19,
+      "id": 10,
       "gridPos": {
         "x": 12,
-        "y": 11,
+        "y": 7,
         "w": 12,
-        "h": 8
+        "h": 9
       }
+    },
+    {
+      "type": "state-timeline",
+      "title": "Runner state over time",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (state) (epic_runner_state{agent=\"codex\"}) == 1",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "running"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "inactive"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "orphaned"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "overdue"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "unknown"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "rowHeight": 0.8,
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "id": 11,
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 5
+      }
+    },
+    {
+      "id": 12,
+      "type": "row",
+      "title": "Work queue",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
     },
     {
       "type": "table",
@@ -1457,7 +958,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(epic_pr_info{agent=~\".+\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) * on(target) group_left(task, task_url, subtask, subtask_url, leaf) (epic_task_context_info and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) or on(target) (epic_pr_info{agent=~\".+\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300))",
+          "expr": "(epic_pr_info{agent=\"codex\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) * on(target) group_left(task, task_url, subtask, subtask_url, leaf) (epic_task_context_info and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) or on(target) (epic_pr_info{agent=\"codex\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300))",
           "instant": true,
           "range": false,
           "legendFormat": "",
@@ -1659,12 +1160,12 @@
           }
         }
       ],
-      "id": 20,
+      "id": 13,
       "gridPos": {
         "x": 0,
-        "y": 19,
+        "y": 22,
         "w": 24,
-        "h": 8
+        "h": 7
       }
     },
     {
@@ -1678,7 +1179,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((epic_queued_action_info{agent=~\".+\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) * on(target) group_left(epic, epic_url, area, task, task_url, subtask, subtask_url, leaf, leaves_done, pr) (epic_task_context_info and on() (time() - epic_github_snapshot_timestamp_seconds < 300))) or on(agent, action, target) (epic_queued_action_info{agent=~\".+\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300))",
+          "expr": "((epic_queued_action_info{agent=\"codex\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) * on(target) group_left(epic, epic_url, area, task, task_url, subtask, subtask_url, leaf, leaves_done, pr) (epic_task_context_info and on() (time() - epic_github_snapshot_timestamp_seconds < 300))) or on(agent, action, target) (epic_queued_action_info{agent=\"codex\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300))",
           "instant": true,
           "range": false,
           "legendFormat": "",
@@ -1871,26 +1372,13 @@
           }
         }
       ],
-      "id": 21,
+      "id": 14,
       "gridPos": {
         "x": 0,
-        "y": 27,
+        "y": 29,
         "w": 24,
-        "h": 12
+        "h": 10
       }
-    },
-    {
-      "id": 22,
-      "type": "row",
-      "title": "Delivery",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 39,
-        "w": 24,
-        "h": 1
-      },
-      "panels": []
     },
     {
       "type": "bargauge",
@@ -1902,7 +1390,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(epic_issues{agent=~\".+\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) > 0",
+          "expr": "(epic_issues{agent=\"codex\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)) > 0",
           "instant": true,
           "range": false,
           "legendFormat": "{{agent}} · {{status}}"
@@ -1933,10 +1421,10 @@
           "values": false
         }
       },
-      "id": 23,
+      "id": 15,
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 39,
         "w": 12,
         "h": 7
       }
@@ -1951,7 +1439,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_checklist_leaves{agent=~\".+\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "expr": "epic_checklist_leaves{agent=\"codex\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
           "instant": true,
           "range": false,
           "legendFormat": "{{agent}} · {{state}}"
@@ -1982,128 +1470,85 @@
           "values": false
         }
       },
-      "id": 24,
+      "id": 16,
       "gridPos": {
         "x": 12,
-        "y": 40,
+        "y": 39,
         "w": 12,
         "h": 7
       }
     },
     {
-      "type": "timeseries",
-      "title": "Done issues and merged PRs",
+      "id": 17,
+      "type": "row",
+      "title": "Logs",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "logs",
+      "title": "Tick summary",
+      "description": "Start, selected action, result and exit of each tick.",
       "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
+        "type": "loki",
+        "uid": "agent-loki"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_issues{status=\"Done\"}",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{agent}} · done issues"
-        },
-        {
-          "refId": "B",
-          "expr": "epic_merged_prs_in_window",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{agent}} · merged PRs"
+          "expr": "{agent=\"codex\"} |~ \"^(tick: |\\\\{\\\"action\\\")\"",
+          "queryType": "range"
         }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 0
-          }
-        },
-        "overrides": []
-      },
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "right"
-        }
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
       },
-      "id": 25,
+      "id": 18,
       "gridPos": {
         "x": 0,
         "y": 47,
         "w": 24,
-        "h": 7
+        "h": 8
       }
     },
     {
-      "type": "table",
-      "title": "Monitoring alerts",
-      "description": "",
+      "type": "logs",
+      "title": "Full log",
+      "description": "Everything the runner and model wrote. Use the Search box above.",
       "datasource": {
-        "type": "prometheus",
-        "uid": "agent-prometheus"
+        "type": "loki",
+        "uid": "agent-loki"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "ALERTS{alertstate=\"firing\"}",
-          "instant": true,
-          "range": false,
-          "legendFormat": "",
-          "format": "table"
+          "expr": "{agent=\"codex\"} |~ \"(?i)$search\"",
+          "queryType": "range"
         }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "No alerts",
-          "custom": {
-            "filterable": false,
-            "wrapText": true
-          }
-        },
-        "overrides": []
-      },
       "options": {
-        "showHeader": true,
-        "cellHeight": "sm"
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
       },
-      "transformations": [
-        {
-          "id": "filterFieldsByName",
-          "options": {
-            "include": {
-              "names": [
-                "alertname",
-                "agent",
-                "severity"
-              ]
-            }
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {},
-            "indexByName": {
-              "alertname": 0,
-              "agent": 1,
-              "severity": 2
-            },
-            "renameByName": {
-              "alertname": "Alert",
-              "agent": "Agent",
-              "severity": "Severity"
-            }
-          }
-        }
-      ],
-      "id": 26,
+      "id": 19,
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 55,
         "w": 24,
-        "h": 4
+        "h": 18
       }
     }
   ]
