@@ -63,6 +63,11 @@ class WatchGuard(unittest.TestCase):
             "cat <<EOF\n$(\ngh pr checks 12 --watch\n)\nEOF",
             'cat <<EOF\n"`gh run watch 1`"\nEOF',
             "cat <<EOF\n$(gh run watch 1)",
+            "gh pr -R phaabe/live.moafunk.de checks 464 --watch",
+            "gh run --repo phaabe/live.moafunk.de watch 123",
+            "gh -R o/r run watch 1",
+            "gh run --repo=o/r watch 1",
+            "gh run -Ro/r watch 1",
         ):
             with self.subTest(cmd=cmd):
                 self.assertEqual(hook(cmd), 2)
@@ -88,6 +93,9 @@ class WatchGuard(unittest.TestCase):
             "cat <<EOF\n\\$(gh run watch 1)\nEOF",
             "bash -l script.sh gh run watch",
             "bash --login -x script.sh",
+            "gh pr -R o/r checks 464",
+            "gh run -R o/r view 123",
+            "gh pr view -R o/r 5 --json title",
             "echo then gh run watch",
             "if true; then echo 'gh run watch'; fi",
             'cat <<< "gh run watch 1"',

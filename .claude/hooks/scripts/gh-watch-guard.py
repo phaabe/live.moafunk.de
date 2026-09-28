@@ -176,9 +176,19 @@ def is_watcher(argv: list[str], depth: int = 0) -> bool:
     if prog != "gh":
         return False
     args = argv[1:]
-    if args[:2] == ["run", "watch"]:
+    # The command words, with -R/--repo and its value removed (gh allows it anywhere).
+    words: list[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in ("-R", "--repo"):
+            skip = True
+        elif not a.startswith("-"):
+            words.append(a)
+    if words[:2] == ["run", "watch"]:
         return True
-    return args[:2] == ["pr", "checks"] and any(
+    return words[:2] == ["pr", "checks"] and any(
         a == "--watch" or a.startswith("--watch=") for a in args
     )
 
