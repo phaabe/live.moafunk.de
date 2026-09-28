@@ -87,17 +87,15 @@ An agent registers by writing one file. The collector finds it on its next
 cycle (5 s). There is no network listener: the collector has no open port,
 and a file keeps the existing trust model.
 
-Layout for a registered agent (`$EPIC_STATE_DIR/agents/<id>/`):
+Layout for a registered agent: `$EPIC_STATE_DIR/agents/<id>/` holds
+`agent.json` plus **the same files as the legacy state dir**
+(`<kind>.lock/`, `<kind>.log`, `<kind>-gate.json`, `codex-backoff.json`,
+`claude-permissions.log`, later `<kind>-ticks.jsonl`). The runner points
+`state_dir` and `EPIC_STATE_DIR` at the folder, so `tick_gate.py`,
+`permission_gate.py` and `tick_backoff.py` need no change.
 
-| File | Written by | Content |
-|---|---|---|
-| `agent.json` | `agents.py register` / `retire` | `{"v":1,"id","kind","label","interval_seconds","budget_seconds","registered_at","retired_at"}` |
-| `tick.lock/` | runner | `owner.json`, `action.json` (same as today) |
-| `run.log` | runner | same format as `<kind>.log` today |
-| `ticks.jsonl` | runner | events file (PR 3) |
-| `gate.json` | runner | last successful session |
-| `backoff.json` | Codex runner | backoff entries |
-| `permissions.log` | Claude permission gate | allow/deny lines |
+`agent.json` (written by `agents.py register` / `retire`):
+`{"v":1,"id","kind","label","interval_seconds","budget_seconds","registered_at","retired_at"}`
 
 - New CLI `scripts/epic/agents.py`:
   - `register --id <id> [--label <text>] [--interval <s>] [--budget <s>]`
@@ -110,10 +108,12 @@ Layout for a registered agent (`$EPIC_STATE_DIR/agents/<id>/`):
   - Unset: the legacy paths stay exactly as today (`claude.lock`,
     `claude.log`, `claude-gate.json`, …). The running launchd jobs do not
     change.
-  - Set: the runner calls `agents.py register` at the start of each tick,
-    then uses `agents/<id>/`. The kind must match the runner script.
-  - `.codex/codex-tick.sh` also accepts `EPIC_STATE_DIR` (it is hard-coded
-    today).
+  - Set: the runner uses `agents/<id>/` and calls `agents.py register` at
+    the start of each tick (after the pause check). The id must start with
+    the runner's kind. `EPIC_AGENT_LABEL` and `EPIC_AGENT_INTERVAL_SECONDS`
+    are optional; the budget is the runner's lock budget.
+  - `.codex/codex-tick.sh` also accepts `EPIC_STATE_DIR` (it was
+    hard-coded).
 - **Legacy agents.** If `claude.log` or `claude.lock` exists in the state
   dir, the collector adds the implicit agent `claude` with
   `layout="legacy"`. The same applies to `codex`. A registered id `claude`
@@ -128,7 +128,7 @@ Layout for a registered agent (`$EPIC_STATE_DIR/agents/<id>/`):
     characters. Otherwise the id is shown.
   - `interval_seconds`: 30 to 86 400, default 600.
   - `budget_seconds` (the runner's whole tick budget, the lock `max_age`):
-    60 to 86 400, default 3 600. The runner passes its real value. It is
+    10 to 86 400, default 3 600. The runner passes its real value. It is
     needed for the `late` rule while no tick runs.
   - At most **12 agents** (not retired) are exported, sorted by
     `registered_at`. More are rejected and counted in
@@ -148,7 +148,7 @@ order):
 |---|---|
 | `running` | the lock owner PID is alive |
 | `idle` | no tick runs, and the last tick start is within `2 × interval + budget` |
-| `late` | no tick start for longer than `2 × interval + budget_seconds`: the schedule may be broken |
+| `late` | no tick start for longer than `2 × interval + budget_seconds`, loop not paused: the schedule may be broken |
 | `new` | registered, but no tick seen yet (becomes `late` after the same limit) |
 | `retired` | `retired_at` is set |
 
@@ -157,8 +157,8 @@ order):
 - Retired agents stay in the cockpit for 24 h (grey, at the bottom; runtime
   cells show "–"). After that, the collector stops exporting their series.
   Their history stays in Prometheus (30 days).
-- Presence is not affected by pause. The "Next tick" column and the Paused
-  tile show the pause.
+- A pause never makes an agent late (no tick starts on purpose), and no next
+  tick is exported. The Paused tile shows the pause.
 - Deleting `agents/<id>/` removes the agent at once. Its checkpoint
   `runtime/ticks-<id>.json` is deleted with it after 7 days.
 
@@ -192,8 +192,8 @@ reasons: `lock`, `select`, `gate`, `backoff`, `model`, `result`, `verify`,
 
 ### Events file (preferred source, PR 3)
 
-Runners append one JSON line per event to `agents/<id>/ticks.jsonl` (legacy
-agents: `$state_dir/<kind>-ticks.jsonl`). Each line is one atomic `printf` of
+Runners append one JSON line per event to `<kind>-ticks.jsonl` in their
+state dir (`agents/<id>/` for registered agents). Each line is one atomic `printf` of
 < 4 KiB, so lines never interleave:
 
 ```json
@@ -310,13 +310,12 @@ Collector:
 
 Runners:
 - `claude-tick.sh`, `codex-tick.sh`: `EPIC_AGENT_ID` as described in
-  "Registration". `permission_gate.py` writes to the agent's
-  `permissions.log`, and `tick_backoff.py` to its `backoff.json`, when
-  `EPIC_AGENT_ID` is set.
+  "Registration". The helpers follow `EPIC_STATE_DIR`, so the gate,
+  backoff and permission files land in the agent's folder.
 
 Alloy:
-- `local.file_match` keeps the two legacy files and adds the glob
-  `/logs/agents/*/run.log`. `discovery.relabel` sets `agent` from the path
+- `local.file_match` keeps the two legacy files and adds the globs
+  `/logs/agents/claude*/claude.log` and `/logs/agents/codex*/codex.log`. `discovery.relabel` sets `agent` from the path
   with the id regex; a path that does not match is dropped. Alloy re-scans
   the glob (default every 10 s), so a new agent's log appears without a
   restart.
@@ -324,8 +323,8 @@ Alloy:
 Scrape size:
 - Per agent at most about 250 samples (168 hour cells, 20 ticks, 20 recent
   slots, the rest). 12 agents add about 3 000 to the 5 900 GitHub samples.
-- The max fixture test is extended to 12 agents with full ledgers. The guard
-  becomes 10 000 samples; the plan is updated with the measured value.
+- The max fixture test is extended to 12 agents with full ledgers (one
+  running): 8 806 samples measured. The guard is 10 000 samples.
 - Series churn over 30 days: about 80 `epic_tick_info` series per agent per
   day, so up to about 30 k for 12 busy agents. Acceptable for local
   Prometheus.
