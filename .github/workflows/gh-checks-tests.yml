@@ -1,0 +1,23 @@
+name: gh checks tests
+
+on:
+  pull_request:
+    paths:
+      - scripts/gh_checks/**
+      - .claude/hooks/scripts/gh-watch-guard.sh
+      - .github/workflows/gh-checks-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: gh-checks-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s scripts/gh_checks -v

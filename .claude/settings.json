@@ -39,6 +39,8 @@
       "Bash(gh run view:*)",
       "Bash(gh run list:*)",
       "Bash(gh auth status)",
+      "Bash(gh api rate_limit:*)",
+      "Bash(gh api repos/{owner}/{repo}/labels:*)",
       "Bash(npm run:*)",
       "Bash(npm ci)",
       "Bash(npm test:*)",
@@ -181,6 +183,12 @@
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/epic-guard.sh\"",
             "timeout": 5,
             "statusMessage": "Epic-guard: checking epic PR rules..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/gh-watch-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "gh-watch-guard: checking for GraphQL CI watchers..."
           }
         ]
       },

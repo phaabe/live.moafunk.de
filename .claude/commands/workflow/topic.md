@@ -26,11 +26,9 @@ Use this when:
 3. **Execute** the chosen path:
    - **commit only**: `/git.commit`
    - **commit + draft PR**: `/git.commit` then `/git.pr` (uses `--draft`)
-   - **commit + PR + merge**: `/git.commit`, `/git.pr`, then confirm and run:
-     ```sh
-     gh pr merge --squash --delete-branch --auto
-     git switch <trunk> && git pull --ff-only
-     ```
+   - **commit + PR + merge**: `/git.commit`, then confirm and run `/git.pr --merge`.
+     It waits for checks over REST and merges the checked head SHA.
+     Don't use `gh pr merge --auto`: auto-merge is off in this repo.
    - **skip**: acknowledge, leave tree as-is, proceed.
 4. **Then** start the new topic from $ARGUMENTS. If $ARGUMENTS is empty, ask the user what the new topic is.
 

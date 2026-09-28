@@ -1,7 +1,7 @@
 ---
 description: Open a draft PR for the current branch using `gh`. Generates title + body from commit log + diff. Can also handle the merge step.
 argument-hint: [base branch, default: trunk]  |  --merge to also merge it once approved
-allowed-tools: Bash(git:*), Bash(gh:*), Read
+allowed-tools: Bash(git:*), Bash(gh:*), Bash(python3 scripts/gh_checks/wait_checks.py:*), Read
 model: opus
 ---
 
@@ -53,8 +53,13 @@ Open a pull request for the current branch — the only sanctioned way to integr
 If the user passed `--merge` (or said "and merge"):
 
 1. Mark the PR ready for review: `gh pr ready <num>`.
-2. Wait / poll for required checks if any: `gh pr checks <num> --watch`.
-3. Merge with squash + branch deletion: `gh pr merge <num> --squash --delete-branch`.
+2. Wait for checks (REST, polls every 60 s, 30 min limit):
+   `python3 scripts/gh_checks/wait_checks.py <num>`
+   - exit 0: the last line is `HEAD_SHA=<sha>`.
+   - exit 1 (a check failed), 2 (timeout), 3 (API/git error): stop and show the output. Do not merge.
+   - Never use `gh pr checks --watch` or `gh run watch`. They use up the GraphQL budget, and the `gh-watch-guard.sh` hook blocks them.
+3. Merge only that SHA: `gh pr merge <num> --squash --delete-branch --match-head-commit <sha>`.
+   If the head moved, GitHub refuses the merge. Go back to step 2.
 4. Update local trunk: `git switch <trunk> && git pull --ff-only`.
 
 ## Rules

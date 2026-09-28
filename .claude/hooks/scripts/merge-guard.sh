@@ -58,7 +58,7 @@ if is_git_subcommand "$CMD_STRIPPED" "merge"; then
     echo "  /git.pr                              # open a draft PR for the current branch"
     echo "  gh pr create --fill --draft          # alternative one-liner"
     echo "  gh pr merge <num> --squash --delete-branch     # merge an existing PR"
-    echo "  gh pr merge --auto --squash --delete-branch    # enable auto-merge once checks pass"
+    echo "  /git.pr --merge                                # wait for checks (REST), then merge"
     echo ""
     echo "Allowed merge subcommands: --abort, --continue, --quit, --skip (recovery only)."
     echo "Override (use sparingly): CLAUDE_ALLOW_DIRECT_MERGE=1 in ~/.claude/settings.json env."
