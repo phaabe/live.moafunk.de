@@ -18,7 +18,7 @@ case "${1:-status}" in
             printf 'Collector is already registered: %s\n' "$service"
             exit 0
         fi
-        mkdir -p "${runtime}/metrics"
+        mkdir -p "${runtime}/metrics" "${runtime}/alloy"
         python3 - "$repo_root" "$runtime" "$label" "$state_dir" <<'PY'
 import os
 from pathlib import Path

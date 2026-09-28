@@ -314,11 +314,25 @@ Runners:
   backoff and permission files land in the agent's folder.
 
 Alloy:
-- `local.file_match` keeps the two legacy files and adds the globs
-  `/logs/agents/claude*/claude.log` and `/logs/agents/codex*/codex.log`. `discovery.relabel` sets `agent` from the path
-  with the id regex; a path that does not match is dropped. Alloy re-scans
-  the glob (default every 10 s), so a new agent's log appears without a
-  restart.
+- Alloy follows links when it opens a file, and agents can write their
+  folders, so Alloy never globs them. The collector writes
+  `runtime/alloy/targets.json` each cycle: the log of every known agent that
+  is a regular file (no link), with its `agent` label. Alloy reads it with
+  `discovery.file` (every 10 s). A new agent's log appears without a restart.
+- Remaining gap: a log swapped for a link after the check is followed when
+  Alloy reopens it. Impact is small: the container sees only the state dir
+  and its own files, and the model can already print anything it can read
+  into its log.
+
+Collector reads:
+- Every agent file (lock, gate, log, ledger) is opened relative to the state
+  dir, one folder at a time with `O_NOFOLLOW`, and must be a regular file.
+- A malformed `agent.json` (huge numbers, deep nesting, bad Unicode) rejects
+  only that agent; a bad label falls back to the id.
+- A vanished agent's checkpoint is deleted, so a restored log is not counted
+  again. Leftovers from agents that vanished while the collector was stopped
+  go after 7 days.
+- Metric samples are grouped by family, as the text format requires.
 
 Scrape size:
 - Per agent at most about 250 samples (168 hour cells, 20 ticks, 20 recent
@@ -337,7 +351,9 @@ without a registered agent of the same id (`conflict`); presence for each
 state incl. the `late` edge and retired-after-24-h; an agent appearing and
 disappearing between cycles (ledger created, then dropped, no crash);
 collision; the recent strip; runners with and without `EPIC_AGENT_ID` write
-to the right paths; Alloy relabel regex.
+to the right paths; the Alloy target list; no-follow reads; metric families
+contiguous; a returning agent; collisions from current actions only;
+retired cap; custom and unset `EPIC_STATE_DIR` in both runners.
 
 ### PR 3 — Runner events file, backoff, permission gate
 
@@ -568,6 +584,19 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 | Cockpit lanes replaced by one agent table | lanes do not scale past two agents |
 | Scrape guard 7 000 → 10 000, cap of 12 agents | per-agent series |
 | v4.1: design v2 appendix; `budget_seconds` in `agent.json`; numeric age and next-tick fields; row text info metric | design v2 needs them; no time-varying labels |
+
+### PR 2 review, round 1
+
+| Codex finding | Change |
+|---|---|
+| 1 blocker: links inside lock folders are followed | no-follow reads relative to the state dir; regular files only |
+| 2 blocker: huge numbers or bad Unicode stop all collection | strict per-entry validation; label falls back to the id |
+| 3 blocker: Alloy globs model-writable paths | collector writes Alloy's target list; no globs |
+| 4 metric families split | samples grouped by family |
+| 5 returning agent counted twice | vanished agent's checkpoint deleted |
+| 6 false collision from an old target | running rows use only the current action |
+| 7 retired agents hidden at capacity | separate cap for retired agents |
+| 8 missing tests | tests for all of the above |
 
 ## Appendix — panel spec from design v2
 

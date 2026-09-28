@@ -6,7 +6,6 @@ import contextlib
 import io
 import json
 from pathlib import Path
-import re
 import tempfile
 import unittest
 
@@ -226,34 +225,6 @@ class RegistryTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(agents.main([*base, "list"]), 0)
         self.assertEqual(json.loads(out.getvalue())["agents"][0]["id"], "codex-2")
-
-
-class AlloyRuleTest(unittest.TestCase):
-    def test_alloy_keeps_exactly_the_valid_agent_logs(self) -> None:
-        config = (
-            Path(__file__).resolve().parents[2] / "tools/agent-monitoring/alloy.alloy"
-        ).read_text()
-        patterns = set(re.findall(r'regex\s*=\s*"([^"]+)"', config))
-        self.assertEqual(len(patterns), 1)
-        # Prometheus relabel regexes are anchored at both ends.
-        rule = re.compile(patterns.pop().replace("\\\\", "\\"))
-        for agent_id in (
-            "claude",
-            "codex",
-            "claude-2",
-            "codex-review",
-            "x",
-            "Claude",
-            "claude-",
-            "claude-a_b",
-            "gemini-1",
-            "claude-" + "a" * 17,
-        ):
-            path = f"/logs/agents/{agent_id}/{agents.kind_of(agent_id)}.log"
-            match = rule.fullmatch(path)
-            self.assertEqual(bool(match), bool(agents.ID.fullmatch(agent_id)), agent_id)
-            if match:
-                self.assertEqual(match[1], agent_id)
 
 
 if __name__ == "__main__":

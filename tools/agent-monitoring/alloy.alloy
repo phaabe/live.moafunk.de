@@ -1,47 +1,15 @@
 // Ship the runner logs to Loki. The log directory is mounted read-only.
-// Legacy runners log directly in the state dir.
-local.file_match "runners" {
-  path_targets = [
-    {"__path__" = "/logs/claude.log", "agent" = "claude"},
-    {"__path__" = "/logs/codex.log", "agent" = "codex"},
-  ]
+// Alloy follows links when it opens a file, and the agents can write their
+// folders, so Alloy never globs them. The collector lists the logs to ship
+// (regular files of known agents, never links) and rebuilds the list every
+// cycle; Alloy re-reads it every 10 s.
+discovery.file "runners" {
+  files            = ["/targets/targets.json"]
+  refresh_interval = "10s"
 }
 
 loki.source.file "runners" {
-  targets    = local.file_match.runners.targets
-  forward_to = [loki.write.local.receiver]
-}
-
-// Registered agents log in agents/<id>/<kind>.log; the id starts with the kind.
-// The glob is re-scanned, so a new agent's log appears without a restart.
-local.file_match "agents" {
-  path_targets = [
-    {"__path__" = "/logs/agents/claude*/claude.log"},
-    {"__path__" = "/logs/agents/codex*/codex.log"},
-  ]
-  sync_period = "10s"
-}
-
-// Keep only valid agent ids (same rule as scripts/epic/agents.py).
-discovery.relabel "agents" {
-  targets = local.file_match.agents.targets
-
-  rule {
-    source_labels = ["__path__"]
-    regex         = "/logs/agents/((?:claude|codex)(?:-[a-z0-9]{1,16})?)/(?:claude|codex)\\.log"
-    action        = "keep"
-  }
-
-  rule {
-    source_labels = ["__path__"]
-    regex         = "/logs/agents/((?:claude|codex)(?:-[a-z0-9]{1,16})?)/(?:claude|codex)\\.log"
-    target_label  = "agent"
-    replacement   = "$1"
-  }
-}
-
-loki.source.file "agents" {
-  targets    = discovery.relabel.agents.output
+  targets    = discovery.file.runners.targets
   forward_to = [loki.write.local.receiver]
 }
 

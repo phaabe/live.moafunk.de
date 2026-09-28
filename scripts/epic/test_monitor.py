@@ -482,6 +482,53 @@ class AgentRowsTest(unittest.TestCase):
         )
 
 
+class AlloyTargetsTest(unittest.TestCase):
+    def test_only_regular_logs_of_known_agents_are_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "claude.log").write_text("x")
+            agents.register(root, "codex-2", 1.0)
+            (root / "agents/codex-2/codex.log").write_text("x")
+            linked = agents.register(root, "claude-3", 1.0)
+            (linked / "claude.log").symlink_to(root / "claude.log")
+            agents.register(root, "codex-4", 1.0)  # no log yet
+            unregistered = root / "agents/claude-5"
+            unregistered.mkdir()
+            (unregistered / "claude.log").write_text("x")
+            rows = json.loads(monitor.alloy_targets(agents.discover(root, NOW)))
+        self.assertEqual(
+            sorted((r["labels"]["agent"], r["labels"]["__path__"]) for r in rows),
+            [
+                ("claude", "/logs/claude.log"),
+                ("codex-2", "/logs/agents/codex-2/codex.log"),
+            ],
+        )
+
+    def test_alloy_reads_only_the_collector_list(self) -> None:
+        config = (
+            Path(__file__).resolve().parents[2] / "tools/agent-monitoring/alloy.alloy"
+        ).read_text()
+        self.assertIn('files            = ["/targets/targets.json"]', config)
+        self.assertNotIn("__path__", config)
+        self.assertNotIn("local.file_match", config)
+
+    def test_publish_writes_the_list_and_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "state").mkdir()
+            (root / "state/codex.log").write_text("")
+            args = monitor.argparse.Namespace(
+                state_dir=root / "state",
+                output=root / "runtime/metrics",
+                pause_file=root / "pause",
+            )
+            args.output.mkdir(parents=True)
+            monitor.publish_local(args, monitor.Ledgers(root / "runtime"))
+            targets = json.loads((root / "runtime/alloy/targets.json").read_text())
+            self.assertEqual(targets[0]["labels"]["agent"], "codex")
+            self.assertIn("epic_agent_info", (args.output / "runners.prom").read_text())
+
+
 # Samples per scrape at the fetch limits; guards against unbounded label growth.
 SCRAPE_BUDGET = 10_000
 

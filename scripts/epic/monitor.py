@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -634,6 +635,53 @@ def runner_metrics(
     return metrics.render()
 
 
+def alloy_targets(registry: agents.Registry) -> str:
+    """The logs Alloy may ship: regular files of known agents, never links.
+
+    Alloy follows links when it opens a file, so it must not glob folders the
+    model can write. It reads only this list, which the collector rebuilds
+    every cycle.
+    """
+    rows = []
+    for agent in registry.agents:
+        try:
+            entry = agent.lstat(agent.log_name)
+        except OSError:
+            continue
+        if entry is None or not stat.S_ISREG(entry.st_mode):
+            continue
+        path = "/".join(("/logs", *agent.rel, agent.log_name))
+        rows.append(
+            {"targets": ["localhost"], "labels": {"__path__": path, "agent": agent.id}}
+        )
+    return json.dumps(rows, indent=2) + "\n"
+
+
+def publish_local(args: argparse.Namespace, ledgers: Ledgers) -> None:
+    """One collection cycle: agents, Alloy's log list, then runner metrics."""
+    now = time.time()
+    registry = agents.discover(args.state_dir, now)
+    targets = args.output.parent / "alloy" / "targets.json"
+    text = alloy_targets(registry)
+    try:
+        current = targets.read_text()
+    except FileNotFoundError:
+        current = None
+    if text != current:
+        targets.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(targets, text)
+    atomic_write(
+        args.output / "runners.prom",
+        runner_metrics(
+            args.state_dir,
+            args.pause_file.exists(),
+            now,
+            ledgers=ledgers,
+            registry=registry,
+        ),
+    )
+
+
 def ledger_metrics(metrics: Metrics, ledger: ticks.LogLedger, now: float) -> None:
     """Read new log lines, persist the checkpoint, then publish the ledger."""
     ok = True
@@ -817,15 +865,7 @@ def run(args: argparse.Namespace) -> None:
     ledgers = Ledgers(args.output.parent)
     try:
         while not stopped.is_set():
-            atomic_write(
-                args.output / "runners.prom",
-                runner_metrics(
-                    args.state_dir,
-                    args.pause_file.exists(),
-                    time.time(),
-                    ledgers=ledgers,
-                ),
-            )
+            publish_local(args, ledgers)
             stopped.wait(args.interval)
     finally:
         stopped.set()
@@ -870,15 +910,7 @@ def main() -> None:
         except BlockingIOError:
             parser.error("another collector owns this output directory")
         if args.once:
-            atomic_write(
-                args.output / "runners.prom",
-                runner_metrics(
-                    args.state_dir,
-                    args.pause_file.exists(),
-                    time.time(),
-                    ledgers=Ledgers(args.output.parent),
-                ),
-            )
+            publish_local(args, Ledgers(args.output.parent))
             if not collect_github(args.output, args.github_timeout):
                 raise SystemExit(1)
         else:

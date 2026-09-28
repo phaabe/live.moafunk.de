@@ -161,8 +161,9 @@ JSON and bounded log tails; model text and prompts never enter metrics.
 Only sanitized `.prom` files are mounted into the textfile exporter.
 
 The runner logs are shown on the agent pages. Alloy reads the state directory
-read-only and sends `claude.log`, `codex.log` and each registered agent's log
-to Loki. These logs contain
+read-only, but only the logs the collector lists in
+`runtime/alloy/targets.json`: regular files of known agents, never links.
+Without a running collector, no new log lines reach Loki. These logs contain
 model transcripts, prompts and command output. They stay on this Mac: Loki and
 Alloy have no published ports, and Grafana binds to `127.0.0.1`. No container gets host
 credentials or source code.
