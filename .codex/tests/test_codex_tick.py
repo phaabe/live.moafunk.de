@@ -433,6 +433,21 @@ class TickTests(unittest.TestCase):
         self.assertIn("fake Codex stdout", log)
         self.assertIn("fake Codex stderr", log)
 
+    def test_custom_state_dir_is_used_for_every_file(self) -> None:
+        custom = self.root / "custom state"
+        self.env["EPIC_STATE_DIR"] = str(custom)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertIn("tick: finished exit=0", (custom / "codex.log").read_text())
+        self.assertTrue((custom / "codex-gate.json").exists())
+        self.assertTrue((custom / "codex-result.json").exists())
+        self.assertFalse(self.state.exists())
+
+    def test_unset_state_dir_uses_the_home_default(self) -> None:
+        del self.env["EPIC_STATE_DIR"]
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertIn("tick: finished exit=0", (self.state / "codex.log").read_text())
+        self.assertTrue(self.record.exists())
+
     def test_registered_agent_uses_its_own_folder(self) -> None:
         self.env["EPIC_AGENT_ID"] = "codex-2"
         self.env["TEST_RESULT"] = json.dumps(

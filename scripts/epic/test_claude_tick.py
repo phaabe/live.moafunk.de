@@ -254,6 +254,15 @@ class ClaudeTickTest(unittest.TestCase):
             self.calls_made(),
             [["git", "pull -q --ff-only"], ["select"], ["gate", "check"]],
         )
+    def test_unset_state_dir_uses_the_home_default(self) -> None:
+        env = {k: v for k, v in self.env.items() if k != "EPIC_STATE_DIR"}
+        runner = subprocess.Popen(
+            ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")], env=env
+        )
+        self.assertEqual(runner.wait(timeout=30), 0)
+        default = Path(env["HOME"]) / ".local/state/epic-loop"
+        self.assertIn("tick: finished exit=0", (default / "claude.log").read_text())
+        self.assertFalse(self.state.exists())
 
     def test_registered_agent_uses_its_own_folder(self) -> None:
         env = {"EPIC_AGENT_ID": "claude-2", "EPIC_AGENT_LABEL": "docs"}
