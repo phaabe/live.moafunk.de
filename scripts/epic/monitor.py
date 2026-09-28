@@ -550,14 +550,19 @@ def run(args: argparse.Namespace) -> None:
         thread.join(timeout=args.github_timeout + 5)
 
 
+def default_state_dir() -> Path:
+    """Match the runners and the Alloy log mount in compose.yaml."""
+    return Path(
+        os.environ.get("EPIC_STATE_DIR") or Path.home() / ".local/state/epic-loop"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output", type=Path, default=Path("tools/agent-monitoring/runtime/metrics")
     )
-    parser.add_argument(
-        "--state-dir", type=Path, default=Path.home() / ".local/state/epic-loop"
-    )
+    parser.add_argument("--state-dir", type=Path, default=default_state_dir())
     parser.add_argument("--pause-file", type=Path, default=Path.home() / ".epic-pause")
     parser.add_argument("--interval", type=float, default=5)
     parser.add_argument("--github-interval", type=float, default=120)

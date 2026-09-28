@@ -119,15 +119,16 @@ Grafana and Prometheus; no external notifications are sent.
 ## Data and troubleshooting
 
 The collector reads `~/.local/state/epic-loop/` and `~/.epic-pause` by default.
-Use `--state-dir` and `--pause-file` for other locations. It reads lock/gate
+Use `--state-dir` (or `EPIC_STATE_DIR`) and `--pause-file` for other locations.
+`run.sh` and `service.sh` give the same state directory to the collector and to
+Alloy, so metrics and logs always come from one runner. It reads lock/gate
 JSON and bounded log tails; model text and prompts never enter metrics.
 Only sanitized `.prom` files are mounted into the textfile exporter.
 
 The runner logs are shown on the agent pages. Alloy reads the state directory
 read-only and sends `claude.log` and `codex.log` to Loki. These logs contain
 model transcripts, prompts and command output. They stay on this Mac: Loki and
-Alloy have no published ports, and Grafana binds to `127.0.0.1`. Set
-`EPIC_STATE_DIR` for another state directory. No container gets host
+Alloy have no published ports, and Grafana binds to `127.0.0.1`. No container gets host
 credentials or source code.
 
 Runtime files and the collector log are in the ignored `runtime/` directory.
