@@ -94,25 +94,45 @@ script once. Lock contention, pause, idle and stop exit 0 without starting Codex
 Before a session, `scripts/epic/tick_gate.py check --agent codex` checks the
 selected action. Exit 3 skips the session and exits 0; other gate errors stop
 the tick. An unchanged action and GitHub timestamp are skipped for three hours
-after the last successful session (`EPIC_REPEAT_TTL_SECONDS` overrides this).
-The `continue` action is never skipped. Only a session that exits 0 calls
-`record` with the same action file. It records the GitHub state seen before
+after the last completed or valid blocked result (`EPIC_REPEAT_TTL_SECONDS`
+overrides this).
+The shared gate never skips `continue`. Only a session that exits 0 and reports
+a valid completed or blocked result calls `record` with the same action file.
+It records the GitHub state seen before
 the session, so feedback arriving during it triggers another tick.
 Gate state uses `~/.local/state/epic-loop/codex-gate*.json`, or `EPIC_STATE_DIR`
 if set; the runner's log and lock still use the default state directory.
+
+Before that gate, `.codex/tick_backoff.py` delays blocked or failed targets for
+15 minutes (`EPIC_BLOCKED_RETRY_SECONDS` overrides this). This also applies to
+`continue`, including a blocked `claim` followed by `continue` on the same issue.
+Cooldowns persist per target in `~/.local/state/epic-loop/codex-backoff.json`.
+A different selected target or a new PR head can run immediately. Comments do
+not reset a cooldown. The selector still chooses one action per tick; a skipped
+target does not cause the runner to choose lower-priority work.
+
+The model writes `{ "status": "completed" | "blocked", "summary": "..." }`
+through Codex's output schema to `codex-result.json` in the same state directory.
+The runner clears that file before each session. Blocked, missing or malformed
+results exit 75 and start cooldown; a nonzero model exit starts cooldown and
+preserves its exit code. Completed work clears only that target's cooldown.
+Valid blocked results also retain the shared gate's three-hour suppression
+after cooldown expires, unless GitHub changed. Model failures and invalid
+results do not create a shared gate record. A blocked `continue` still retries
+after cooldown because local progress cannot be inferred from GitHub state.
 
 Actions admitted by the gate start one fresh `codex exec` session using `epic-tick.md` plus
 the selected JSON. It uses the workspace-write sandbox with explicit network
 access (`-c sandbox_workspace_write.network_access=true`) for GitHub calls and
 existing approval settings; it never bypasses approvals or hook trust.
-Permission failures must stop the tick. See
+Permission failures must return a blocked result and stop the tick. See
 [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
 
 Output and errors append to `~/.local/state/epic-loop/codex.log`. Selection
 has a 120-second limit and Codex has a 1,800-second limit, with a 10-second
 TERM-to-KILL grace. Override these with positive integer values in
 `EPIC_SELECT_TIMEOUT_SECONDS` and `EPIC_TICK_TIMEOUT_SECONDS`. Errors and timeout
-exit codes propagate; a later invocation starts a new decision and session.
+exit codes propagate; a later invocation selects again and checks the cooldown.
 The lock stores the runner PID, Unix start time and original timeout budget in
 `owner.json`. It is held through child termination and removed on normal exit,
 errors and handled signals. A later tick reclaims and logs an abandoned lock
@@ -133,3 +153,25 @@ model calls:
 python3 -m unittest discover -s .codex/tests -v
 /bin/bash -n .codex/codex-tick.sh
 ```
+
+## Unattended feature commits and pushes
+
+Install a reviewed copy of `.codex/feature_git.py` outside agent-writable
+workspaces as `~/.local/libexec/codex-feature-git.py`. Beside it, place
+`codex-feature-git.json` with `trusted_checkout` set to the absolute trusted
+checkout path and `allowed_origin_urls` set to its exact approved origin URLs.
+Allow only the literal command prefix `python3 -I /absolute/home/.local/libexec/codex-feature-git.py`
+in the operator's Codex rules. Keep both installed files outside writable roots;
+updates require operator approval. Do not allow arbitrary Python commands.
+
+The helper accepts `--worktree <path> commit --message-file <path>` or
+`--worktree <path> push`. It checks the common Git directory, requires an issue
+branch such as `feat/381-integration-ci`, and rejects changed or multiple origin
+destinations. Pushes publish only the current branch without force or tags.
+Commits and pushes retain Git hooks. The isolated Python interpreter and removed
+`GIT_*` variables prevent environment overrides of the helper's imports or Git
+target. This is a restriction on routine operations, not a security boundary
+against malicious repository hooks. Raw critical Git commands retain their
+approval requirements.
+The helper does not check the PR's Executor; lane ownership remains enforced
+by the epic workflow and must be checked before editing or publishing a branch.
