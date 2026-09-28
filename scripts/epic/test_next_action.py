@@ -262,6 +262,61 @@ class DecideTest(unittest.TestCase):
         )
 
 
+class StartAfterTest(unittest.TestCase):
+    def ready(self, number: int, readiness: str) -> dict:
+        i = item(number, "Claude", "Ready")
+        i["readiness"] = readiness
+        return i
+
+    def test_claim_waits_for_start_after_leaf(self) -> None:
+        items = [
+            self.ready(
+                358, "Ready: B3.3.5 may start now.\n\nStart after B1.1.6 (same editor)."
+            )
+        ]
+        self.assertEqual(first("Claude", items=items).action, "idle")
+        waiting = decide("Claude", {"items": items}, include_waiting=True)
+        self.assertEqual(
+            (waiting[0].action, waiting[0].reason), ("wait", "starts after B1.1.6")
+        )
+
+    def test_merged_pr_with_leaf_unblocks_claim(self) -> None:
+        items = [self.ready(358, "Start after B1.1.6 (same editor).")]
+        state = {
+            "items": items,
+            "merged_prs": [{"body": "Executor: Claude\nLeaf IDs: B1.1.6"}],
+        }
+        self.assertEqual(decide("Claude", state)[0].action, "claim")
+
+    def test_ticked_leaf_unblocks_claim(self) -> None:
+        done = item(350, "Claude", "In review")
+        done["content"]["body"] = "- [x] **B1.1.6** Wave 0. Stop ..."
+        items = [self.ready(358, "Start after B1.1.6."), done]
+        self.assertEqual(first("Claude", items=items).issue, f"{R}/358")
+
+    def test_open_pr_with_leaf_does_not_unblock(self) -> None:
+        items = [self.ready(358, "Start after B1.1.6.")]
+        open_pr = pr(
+            1, "Claude", body=f"Issue: {R}/350\nExecutor: Claude\nLeaf IDs: B1.1.6"
+        )
+        self.assertEqual(first("Claude", [open_pr], items).action, "idle")
+
+    def test_chained_waits_list_every_missing_leaf(self) -> None:
+        items = [self.ready(362, "Start after B3.3.5 and B1.1.6.")]
+        waiting = decide("Claude", {"items": items}, include_waiting=True)[0]
+        self.assertEqual(waiting.reason, "starts after B1.1.6, B3.3.5")
+
+    def test_clause_stops_at_sentence_end(self) -> None:
+        text = "Start after B3.3.5. Other B5.2 leaves wait for P2.2.2 and B1.2."
+        items = [self.ready(362, text)]
+        waiting = decide("Claude", {"items": items}, include_waiting=True)[0]
+        self.assertEqual(waiting.reason, "starts after B3.3.5")
+
+    def test_no_start_after_claims_normally(self) -> None:
+        items = [self.ready(10, "Ready: B9.9.9 may start now.")]
+        self.assertEqual(first("Claude", items=items).action, "claim")
+
+
 def rest(i: int, body: str, edited: bool = False) -> dict:
     at = f"2026-09-28T00:{i // 60:02d}:{i % 60:02d}Z"
     return {

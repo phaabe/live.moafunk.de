@@ -55,6 +55,12 @@ ISSUE_LINE = re.compile(
     rf"^Issue:[ \t]*https://github\.com/{re.escape(REPO)}/issues/(\d+)[ \t]*$",
     re.MULTILINE,
 )
+LEAF = re.compile(r"\b[A-Z][0-9]+\.[0-9]+\.[0-9]+\b")
+# Readiness comments may chain leaves: "Start after B1.1.6 (same backend editor)."
+# The clause ends at a sentence end (". " or end of line) or an opening "(".
+START_AFTER = re.compile(r"Start after (.*?)(?:\.(?=\s|$)|\(|$)", re.MULTILINE)
+LEAF_IDS_LINE = re.compile(r"^Leaf IDs:[ \t]*(.+)$", re.MULTILINE)
+CHECKED_LEAF = re.compile(r"- \[[xX]\] \*\*([A-Z][0-9]+\.[0-9]+\.[0-9]+)\*\*")
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED = {
     "FAILURE",
@@ -159,8 +165,36 @@ def issue_numbers(text: str) -> set[int]:
     return {int(n) for n in ISSUE_LINE.findall(text or "")}
 
 
-def decide(agent: str, state: dict[str, Any], paused: bool = False) -> list[Action]:
-    """All actions for the agent, highest priority first. Never empty."""
+def done_leaves(state: dict[str, Any]) -> set[str]:
+    """Leaves listed by a merged PR's `Leaf IDs:` line or ticked in an issue body."""
+    done: set[str] = set()
+    for pr in state.get("merged_prs", []):
+        for line in LEAF_IDS_LINE.findall(pr.get("body") or ""):
+            done |= set(LEAF.findall(line))
+    for item in state.get("items", []):
+        done |= set(CHECKED_LEAF.findall((item.get("content") or {}).get("body") or ""))
+    return done
+
+
+def start_after(item: dict[str, Any]) -> set[str]:
+    """Leaves a Ready issue must wait for, from its readiness comments."""
+    wanted: set[str] = set()
+    for clause in START_AFTER.findall(item.get("readiness") or ""):
+        wanted |= set(LEAF.findall(clause))
+    return wanted
+
+
+def decide(
+    agent: str,
+    state: dict[str, Any],
+    paused: bool = False,
+    include_waiting: bool = False,
+) -> list[Action]:
+    """All actions for the agent, highest priority first. Never empty.
+
+    `include_waiting` adds `wait` entries (Ready leaves blocked by "Start after")
+    for --status; they are never returned as the action to do.
+    """
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
     peer = other(agent)
@@ -267,6 +301,7 @@ def decide(agent: str, state: dict[str, Any], paused: bool = False) -> list[Acti
         and ESCALATION_LABEL not in labels(i)
     ]
     items.sort(key=lambda i: (str(i.get("wave") or "9"), i["content"]["number"]))
+    done = done_leaves(state)
     for i in items:
         number, url = i["content"]["number"], i["content"]["url"]
         if number in linked:
@@ -277,7 +312,14 @@ def decide(agent: str, state: dict[str, Any], paused: bool = False) -> list[Acti
                 Action("continue", "my In progress leaf has no PR yet", issue=url),
             )
         elif i.get("status") == "Ready" and open_mine < MAX_OPEN_PRS:
-            add("claim", Action("claim", "Ready leaf assigned to me", issue=url))
+            blockers = sorted(start_after(i) - done)
+            if blockers:
+                add(
+                    "wait",
+                    Action("wait", f"starts after {', '.join(blockers)}", issue=url),
+                )
+            else:
+                add("claim", Action("claim", "Ready leaf assigned to me", issue=url))
 
     order = [
         "escalate",
@@ -289,6 +331,8 @@ def decide(agent: str, state: dict[str, Any], paused: bool = False) -> list[Acti
         "continue",
         "claim",
     ]
+    if include_waiting:
+        order = [*order, "wait"]
     actions = [a for kind in order for a in ranked.get(kind, [])]
     if any(a.action == "continue" for a in actions):
         actions = [
@@ -366,6 +410,12 @@ def fetch_state() -> dict[str, Any]:
         pr["comments"] = comments_from_rest(
             [row for page in pages for row in page], count
         )
+    merged: list[dict[str, Any]] = []
+    for base in BASES:
+        merged += gh_json(
+            ["pr", "list", "--repo", REPO, "--state", "merged", "--base", base]
+            + ["--json", "number,body", "--limit", "300"]
+        )
     items = gh_json(
         [
             "project",
@@ -379,14 +429,25 @@ def fetch_state() -> dict[str, Any]:
             "500",
         ]
     )["items"]
-    return {"prs": prs, "items": items}
+    for item in items:
+        # Only Ready issues need their readiness comments ("Start after ...").
+        content = item.get("content") or {}
+        if item.get("status") == "Ready" and content.get("type") == "Issue":
+            pages = gh_json(
+                ["api", "--paginate", "--slurp"]
+                + [f"repos/{REPO}/issues/{content['number']}/comments?per_page=100"]
+            )
+            item["readiness"] = "\n".join(
+                row.get("body") or "" for page in pages for row in page
+            )
+    return {"prs": prs, "items": items, "merged_prs": merged}
 
 
 def status(state: dict[str, Any], paused: bool) -> str:
     lines = [f"Paused: {'yes' if paused else 'no'}"]
     for agent in AGENTS:
         lines.append(f"\n{agent}:")
-        for a in decide(agent, state, paused):
+        for a in decide(agent, state, paused, include_waiting=True):
             target = f"PR {a.pr}" if a.pr else (a.issue or "")
             lines.append(f"  {a.action:<17} {target:<55} {a.reason}")
     unknown = [
