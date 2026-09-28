@@ -165,7 +165,12 @@ Priority, first match wins:
    Not while the agent has work to continue or two open PRs.
 9. `idle`.
 
-Claude runs ticks with `/epic-tick` (under `/loop` for autopilot). Codex runs
-the same script from its own runner. `python3 scripts/epic/next_action.py --status`
+Claude runs ticks headless with `scripts/epic/claude-tick.sh` (or `/epic-tick`
+by hand). Codex runs the same script from its own runner. A runner starts a
+model session only for real work: pause, idle, stop and a repeat of the last
+no-op action (`scripts/epic/tick_gate.py`: same action, no change on GitHub,
+younger than 3 hours) start none. Claims follow the "Start after" lines and the
+order in the epic's batch table ("Scope, in order"; "then" or an arrow starts
+the next stage). `python3 scripts/epic/next_action.py --status`
 shows the queue for both agents. The loop never releases to `main`, touches
 production, or changes the plan or lanes; those go to Anton.
