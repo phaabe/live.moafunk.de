@@ -40,6 +40,12 @@ class ClaudeTickTest(unittest.TestCase):
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(['gate', sys.argv[1]]) + '\\n')\n"
         )
+        (self.repo / "scripts/epic/tick_verify.py").write_text(
+            "import json, os, sys\n"
+            "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
+            "    f.write(json.dumps(['verify', sys.argv[-2]]) + '\\n')\n"
+            "sys.exit(int(os.environ.get('TEST_VERIFY_EXIT', '0')))\n"
+        )
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         (bin_dir / "git").write_text(
@@ -80,8 +86,13 @@ class ClaudeTickTest(unittest.TestCase):
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
         calls = self.calls_made()
         self.assertEqual(
-            [calls[0], calls[1], calls[3]],
-            [["git", "pull -q --ff-only"], ["gate", "check"], ["gate", "record"]],
+            [calls[0], calls[1], calls[3], calls[4]],
+            [
+                ["git", "pull -q --ff-only"],
+                ["gate", "check"],
+                ["gate", "record"],
+                ["verify", "--since"],
+            ],
         )
         self.assertEqual(calls[2][0], "claude")
         self.assertTrue(
@@ -103,6 +114,15 @@ class ClaudeTickTest(unittest.TestCase):
             [str(self.repo.resolve() / "scripts/epic/permission_gate.py")],
         )
         self.assertEqual(server["env"], {"EPIC_STATE_DIR": str(self.state)})
+
+    def test_action_that_did_not_land_fails_the_tick_after_recording(self) -> None:
+        # A denied push or merge exited 0 before; now the tick reports it.
+        self.assertEqual(self.run_tick(TEST_VERIFY_EXIT="1").wait(timeout=30), 1)
+        self.assertEqual(
+            self.calls_made()[-2:], [["gate", "record"], ["verify", "--since"]]
+        )
+        self.assertIn("tick: finished exit=1", (self.state / "claude.log").read_text())
+        self.assertFalse((self.state / "claude.lock").exists())
 
     def test_failed_pull_stops_the_tick(self) -> None:
         self.assertEqual(self.run_tick(TEST_GIT_EXIT="1").wait(timeout=30), 1)
