@@ -23,7 +23,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, BinaryIO
 
 import agents
 import next_action as epic
@@ -35,6 +35,8 @@ Json = dict[str, Any]
 PRESENCE = {"retired": 0, "running": 1, "idle": 2, "new": 3, "late": 4}
 PRESENCE_ORDER = ("running", "idle", "new", "late", "retired")
 CHECKPOINT_KEEP = 7 * 86_400
+MAX_STATE_FILE = 65_536
+TAIL = 131_072
 STATUSES = ("Backlog", "Ready", "In progress", "In review", "Done", "Unknown")
 ACTIONS = (
     "stop",
@@ -59,9 +61,14 @@ LEAF_MARKERS = re.compile(r"^(?:\*\*[^*]+\*\*[ \t]*|v\d+(?:[ \t]*\([^)]*\))?:[ \
 
 
 class Metrics:
+    """Prometheus text, grouped by metric family.
+
+    The exposition format needs each family's samples together, after one
+    HELP and TYPE line; samples are kept per family in first-use order.
+    """
+
     def __init__(self) -> None:
-        self.lines: list[str] = []
-        self.names: set[str] = set()
+        self.families: dict[str, list[str]] = {}
 
     def add(
         self, name: str, value: float, *, metric_type: str = "gauge", **labels: str
@@ -69,14 +76,12 @@ class Metrics:
         name = f"epic_{name}"
         if not math.isfinite(value):
             raise ValueError("metric must be finite")
-        if name not in self.names:
-            self.lines.extend(
-                [
-                    f"# HELP {name} {name.removeprefix('epic_').replace('_', ' ')}",
-                    f"# TYPE {name} {metric_type}",
-                ]
-            )
-            self.names.add(name)
+        family = self.families.get(name)
+        if family is None:
+            family = self.families[name] = [
+                f"# HELP {name} {name.removeprefix('epic_').replace('_', ' ')}",
+                f"# TYPE {name} {metric_type}",
+            ]
         escaped = []
         for key, value_text in sorted(labels.items()):
             text = (
@@ -87,7 +92,18 @@ class Metrics:
             )
             escaped.append(f'{key}="{text}"')
         suffix = "{" + ",".join(escaped) + "}" if escaped else ""
-        self.lines.append(f"{name}{suffix} {float(value):.17g}")
+        family.append(f"{name}{suffix} {float(value):.17g}")
+
+    def merge(self, other: Metrics) -> None:
+        for name, family in other.families.items():
+            if name in self.families:
+                self.families[name].extend(family[2:])
+            else:
+                self.families[name] = list(family)
+
+    @property
+    def lines(self) -> list[str]:
+        return [line for family in self.families.values() for line in family]
 
     def render(self) -> str:
         return "\n".join(self.lines) + "\n"
@@ -116,6 +132,25 @@ def read_object(path: Path, *, allow_empty: bool = False) -> Json | None:
     data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError(f"expected object: {path.name}")
+    return data
+
+
+def read_agent_object(
+    agent: agents.Agent, *parts: str, allow_empty: bool = False
+) -> Json | None:
+    """Like read_object, for files in a model-writable agent folder."""
+    stream = agent.open(*parts)
+    if stream is None:
+        return None
+    with stream:
+        raw = stream.read(MAX_STATE_FILE + 1)
+    if len(raw) > MAX_STATE_FILE:
+        raise ValueError(f"{parts[-1]} is too large")
+    if allow_empty and not raw.strip():
+        return None
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"expected object: {parts[-1]}")
     return data
 
 
@@ -335,19 +370,31 @@ class Ledgers:
     def get(self, agent: agents.Agent) -> ticks.LogLedger:
         key = (agent.id, agent.log)
         if key not in self.ledgers:
+
+            def opener() -> BinaryIO:
+                stream = agent.open(agent.log_name)
+                if stream is None:
+                    raise FileNotFoundError(agent.log)
+                return stream
+
             self.ledgers[key] = ticks.LogLedger(
                 agent.id,
                 agent.log,
                 self.runtime / agent.checkpoint_name,
                 action_labels,
+                opener,
             )
         return self.ledgers[key]
 
     def prune(self, active: list[agents.Agent], now: float) -> None:
         keep = {(agent.id, agent.log) for agent in active}
-        for key in [key for key in self.ledgers if key not in keep]:
-            del self.ledgers[key]
         names = {agent.checkpoint_name for agent in active}
+        for key in [key for key in self.ledgers if key not in keep]:
+            # A vanished agent starts fresh if it comes back: its log may
+            # return with a new inode, which would count old ticks again.
+            checkpoint = self.ledgers.pop(key).checkpoint
+            if checkpoint.name not in names:
+                checkpoint.unlink(missing_ok=True)
         for path in self.runtime.glob("ticks-agents-*.json"):
             try:
                 if (
@@ -367,7 +414,7 @@ def runner_sample(
     runner = Runner()
     name = agent.id
     try:
-        owner = read_object(agent.lock / "owner.json")
+        owner = read_agent_object(agent, agent.lock_name, "owner.json")
         state = "inactive"
         if owner is not None:
             pid = positive_number(owner, "pid")
@@ -387,14 +434,16 @@ def runner_sample(
             # Whole runner budget: selector, model and kill grace.
             sample.add("tick_budget_seconds", budget, agent=name)
             # Shell redirection creates this file before the selector runs.
-            action = read_object(agent.lock / "action.json", allow_empty=True)
+            action = read_agent_object(
+                agent, agent.lock_name, "action.json", allow_empty=True
+            )
             if action is not None:
                 runner.action = action_labels(action)
                 sample.add("current_action_info", 1, agent=name, **runner.action)
-        elif agent.lock.exists():
+        elif agent.lstat(agent.lock_name) is not None:
             state = "unknown"
         sample.add("runner_state", 1, agent=name, state=state)
-        gate = read_object(agent.gate)
+        gate = read_agent_object(agent, agent.gate_name)
         if gate is not None:
             sample.add(
                 "last_session_success_timestamp_seconds",
@@ -405,19 +454,18 @@ def runner_sample(
             sample.add(
                 "last_successful_action_info", 1, agent=name, **runner.gate_action
             )
-        log = agent.log
-        if log.exists():
-            sample.add(
-                "log_modified_timestamp_seconds", log.stat().st_mtime, agent=name
-            )
-            # Bounded tail; never publish arbitrary log or model text.
-            with log.open("rb") as stream:
-                stream.seek(max(0, log.stat().st_size - 131072))
-                tail = stream.read(131072).decode("utf-8", errors="replace")
+        stream = agent.open(agent.log_name)
+        if stream is not None:
+            with stream:
+                info = os.fstat(stream.fileno())
+                sample.add("log_modified_timestamp_seconds", info.st_mtime, agent=name)
+                # Bounded tail; never publish arbitrary log or model text.
+                stream.seek(max(0, info.st_size - TAIL))
+                tail = stream.read(TAIL).decode("utf-8", errors="replace")
             finishes = re.findall(r"^tick: finished exit=(\d+)\s*$", tail, re.M)
             if finishes:
                 sample.add("last_observed_exit_code", int(finishes[-1]), agent=name)
-        metrics.lines.extend(sample.lines)
+        metrics.merge(sample)
         metrics.add("runner_read_success", 1, agent=name)
         runner.state = state
     except (OSError, ValueError, KeyError, TypeError, OverflowError):
@@ -499,16 +547,18 @@ def agent_metrics(
         exit_text = "" if last["exit"] is None else f" {last['exit']}"
         phase = f" · {last['phase']}" if last["phase"] else ""
         row.outcome_text = f"{last['outcome']}{exit_text}{phase}"
-        if row.action is None and last["action"]:
+        if presence != "running" and last["action"]:
             row.action = {"action": last["action"], "target": last["target"]}
-    if row.action is None:
+    # A running tick shows only its current action, so an old target never
+    # makes a collision; before the selector writes one, it is "selecting".
+    if row.action is None and presence != "running":
         row.action = runner.gate_action
     return row
 
 
 def action_text(row: Row, collision: bool) -> str:
     if not row.action:
-        return ""
+        return "selecting" if row.presence == "running" else ""
     prefix = (
         "collision · " if collision else "" if row.presence == "running" else "last: "
     )
@@ -524,13 +574,15 @@ def runner_metrics(
     now: float,
     alive: Callable[[int], bool] = process_alive,
     ledgers: Ledgers | None = None,
+    registry: agents.Registry | None = None,
 ) -> str:
     metrics = Metrics()
     metrics.add("local_snapshot_timestamp_seconds", now)
     metrics.add("pause_requested", int(paused))
     for kind, severity in ticks.SEVERITY.items():
         metrics.add("outcome_severity", severity, outcome=kind)
-    registry = agents.discover(state_dir, now)
+    if registry is None:
+        registry = agents.discover(state_dir, now)
     for reason in agents.REASONS:
         metrics.add("agent_registry_rejected", registry.rejected[reason], reason=reason)
     for name in registry.conflicts:
@@ -579,16 +631,7 @@ def runner_metrics(
             target=target,
             outcome_text=row.outcome_text,
         )
-    # Deduplicate HELP/TYPE lines shared by the per-agent samples.
-    seen: set[str] = set()
-    lines = []
-    for line in metrics.lines:
-        if line.startswith("#"):
-            if line in seen:
-                continue
-            seen.add(line)
-        lines.append(line)
-    return "\n".join(lines) + "\n"
+    return metrics.render()
 
 
 def ledger_metrics(metrics: Metrics, ledger: ticks.LogLedger, now: float) -> None:
@@ -609,7 +652,7 @@ def ledger_metrics(metrics: Metrics, ledger: ticks.LogLedger, now: float) -> Non
         logging.warning("Cannot export %s tick ledger", ledger.agent)
         metrics.add("tick_ledger_export_success", 0, agent=ledger.agent)
         return
-    metrics.lines.extend(sample.lines)
+    metrics.merge(sample)
     metrics.add("tick_ledger_export_success", 1, agent=ledger.agent)
 
 

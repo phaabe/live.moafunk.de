@@ -35,7 +35,7 @@ class RegistryTest(unittest.TestCase):
     def test_register_is_idempotent_and_keeps_first_time(self) -> None:
         agents.register(self.root, "claude-2", NOW, label="docs", interval=300)
         agents.register(self.root, "claude-2", NOW + 50, label="docs 2", budget=900)
-        agent = agents.load(self.root / "agents/claude-2", NOW + 60)
+        agent = agents.load(self.root, "claude-2", NOW + 60)
         self.assertEqual(agent.registered_at, NOW)
         self.assertEqual(
             (agent.label, agent.interval, agent.budget), ("docs 2", 600, 900)
@@ -79,7 +79,7 @@ class RegistryTest(unittest.TestCase):
     def test_invalid_entries_are_counted_not_shown(self) -> None:
         self.write("claude-a", id="claude-b")  # folder mismatch
         self.write("codex-x", kind="claude")  # kind mismatch
-        self.write("claude-c", label=7)
+        self.write("claude-c", label=7)  # bad label: shown with the id only
         self.write("claude-d", interval_seconds=True)
         self.write("claude-e", registered_at=NOW + 3600)  # future
         self.write("claude-f", v=2)
@@ -88,8 +88,9 @@ class RegistryTest(unittest.TestCase):
         (self.root / "agents/notes.txt").write_text("x")  # ignored
         self.write("claude-ok")
         registry = agents.discover(self.root, NOW)
-        self.assertEqual([a.id for a in registry.agents], ["claude-ok"])
-        self.assertEqual(registry.rejected["invalid"], 7)
+        self.assertEqual([a.id for a in registry.agents], ["claude-c", "claude-ok"])
+        self.assertEqual(registry.agents[0].label, "")
+        self.assertEqual(registry.rejected["invalid"], 6)
 
     def test_oversized_file_is_rejected(self) -> None:
         home = self.write("claude-2")
@@ -148,10 +149,68 @@ class RegistryTest(unittest.TestCase):
         agents.register(self.root, "codex-late", NOW)
         agents.retire(self.root, "codex-late", NOW)
         registry = agents.discover(self.root, NOW)
-        self.assertEqual(len(registry.agents), agents.MAX_AGENTS)
-        self.assertEqual(registry.agents[0].id, "codex")
-        self.assertEqual(registry.agents[-1].id, "claude-10")
-        self.assertEqual(registry.rejected["limit"], 3)
+        ids = [agent.id for agent in registry.agents]
+        # A full set of active agents never hides a just-retired one.
+        self.assertEqual(len(ids), agents.MAX_AGENTS + 1)
+        self.assertEqual(
+            (ids[0], ids[-2], ids[-1]), ("codex", "claude-10", "codex-late")
+        )
+        self.assertEqual(registry.rejected["limit"], 2)
+
+    def test_retired_agents_have_their_own_cap(self) -> None:
+        for i in range(agents.MAX_RETIRED + 2):
+            self.write(f"codex-{i:02d}", retired_at=NOW - 1000 + i)
+        registry = agents.discover(self.root, NOW)
+        ids = [agent.id for agent in registry.agents]
+        self.assertEqual(len(ids), agents.MAX_RETIRED)
+        self.assertEqual(ids[0], "codex-13")  # most recently retired first
+        self.assertEqual(registry.rejected["limit"], 2)
+
+    def test_malformed_values_reject_only_their_agent(self) -> None:
+        huge = "1" + "0" * 400
+        for agent_id, field, raw in (
+            ("claude-a", "registered_at", huge),
+            ("claude-b", "interval_seconds", huge),
+            ("claude-c", "budget_seconds", "-" + huge),
+            ("claude-d", "retired_at", "1e999"),
+            ("claude-e", "label", '"\\ud800"'),
+            ("claude-f", "label", '"a\\u2028b"'),
+            ("claude-g", "id", "[" * 3000 + "]" * 3000),
+        ):
+            home = self.root / "agents" / agent_id
+            home.mkdir(parents=True)
+            fields = {"v": "1", "id": f'"{agent_id}"', "registered_at": str(NOW - 1)}
+            fields[field] = raw
+            body = ", ".join(f'"{k}": {v}' for k, v in fields.items())
+            (home / "agent.json").write_text("{" + body + "}")
+        self.write("codex")
+        registry = agents.discover(self.root, NOW)
+        ids = [agent.id for agent in registry.agents]
+        # Bad labels fall back to the id; everything else rejects the entry.
+        self.assertEqual(sorted(ids), ["claude-e", "claude-f", "codex"])
+        self.assertEqual([a.label for a in registry.agents], ["", "", ""])
+        self.assertEqual(registry.rejected["invalid"], 5)
+
+    def test_files_are_opened_without_following_links(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret.json").write_text("{}")
+        home = self.write("claude-2")
+        lock = home / "claude.lock"
+        lock.mkdir()
+        (lock / "owner.json").symlink_to(outside / "secret.json")
+        [agent] = agents.discover(self.root, NOW).agents
+        with self.assertRaises(OSError):
+            agent.open("claude.lock", "owner.json")
+        (home / "claude-gate.json").mkdir()  # not a regular file
+        with self.assertRaises(ValueError):
+            agents.open_file(self.root, "agents", "claude-2", "claude-gate.json")
+        self.assertIsNone(agent.open("claude.log"))
+        # A folder swapped for a link is refused too.
+        lock.rename(self.root / "moved")
+        lock.symlink_to(outside)
+        with self.assertRaises(OSError):
+            agent.open("claude.lock", "secret.json")
 
     def test_cli_register_checks_kind_and_lists(self) -> None:
         base = ["--state-dir", str(self.root)]

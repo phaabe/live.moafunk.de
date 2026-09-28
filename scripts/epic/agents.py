@@ -26,7 +26,7 @@ import stat
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, BinaryIO
 
 Json = dict[str, Any]
 KINDS = ("claude", "codex")
@@ -34,6 +34,7 @@ ID = re.compile(r"(claude|codex)(?:-[a-z0-9]{1,16})?")
 # Printable text without markup or control characters.
 LABEL = re.compile(r"[^\x00-\x1f\x7f-\x9f<>`\\]{0,40}")
 MAX_AGENTS = 12
+MAX_RETIRED = 12
 RETIRED_KEEP = 86_400
 MAX_FILE = 4096
 INTERVAL = (30, 86_400, 600)
@@ -53,25 +54,50 @@ class Agent:
     registered_at: float | None
     retired_at: float | None
     layout: str
-    home: Path
+    # The trusted state dir and the agent folder below it (empty for legacy).
+    root: Path
+    rel: tuple[str, ...]
+
+    @property
+    def home(self) -> Path:
+        return self.root.joinpath(*self.rel)
+
+    @property
+    def lock_name(self) -> str:
+        return f"{self.kind}.lock"
+
+    @property
+    def log_name(self) -> str:
+        return f"{self.kind}.log"
+
+    @property
+    def gate_name(self) -> str:
+        return f"{self.kind}-gate.json"
 
     @property
     def lock(self) -> Path:
-        return self.home / f"{self.kind}.lock"
+        return self.home / self.lock_name
 
     @property
     def log(self) -> Path:
-        return self.home / f"{self.kind}.log"
+        return self.home / self.log_name
 
     @property
     def gate(self) -> Path:
-        return self.home / f"{self.kind}-gate.json"
+        return self.home / self.gate_name
 
     @property
     def checkpoint_name(self) -> str:
         # Legacy names match the tick ledger checkpoints written before agents.
         prefix = "ticks-" if self.layout == "legacy" else "ticks-agents-"
         return f"{prefix}{self.id}.json"
+
+    def open(self, *parts: str) -> BinaryIO | None:
+        """Open a regular file in the agent folder; never follows a link."""
+        return open_file(self.root, *self.rel, *parts)
+
+    def lstat(self, *parts: str) -> os.stat_result | None:
+        return lstat_entry(self.root, *self.rel, *parts)
 
 
 @dataclass
@@ -85,11 +111,68 @@ def kind_of(agent_id: str) -> str:
     return agent_id.split("-", 1)[0]
 
 
+def walk(root: Path, parts: tuple[str, ...]) -> int:
+    """Directory descriptor for root/parts; no part may be a link."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            if part in ("", ".", "..") or "/" in part:
+                raise ValueError("invalid path part")
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
+            )
+            os.close(fd)
+            fd = child
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_file(root: Path, *parts: str) -> BinaryIO | None:
+    """Open root/parts read-only without following links; None when missing.
+
+    Model-writable folders are opened relative to the trusted root, one part
+    at a time, so a link or a swapped folder cannot redirect the read.
+    """
+    try:
+        folder = walk(root, parts[:-1])
+    except FileNotFoundError:
+        return None
+    try:
+        fd = os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder
+        )
+    except FileNotFoundError:
+        return None
+    finally:
+        os.close(folder)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ValueError(f"{parts[-1]} is not a regular file")
+    return os.fdopen(fd, "rb")
+
+
+def lstat_entry(root: Path, *parts: str) -> os.stat_result | None:
+    try:
+        folder = walk(root, parts[:-1])
+    except FileNotFoundError:
+        return None
+    try:
+        return os.stat(parts[-1], dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    finally:
+        os.close(folder)
+
+
 def number(data: Json, key: str, low: float, high: float, default: float) -> float:
     value = data.get(key, default)
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
+        # A huge JSON integer would overflow float().
+        or (isinstance(value, int) and abs(value) > 10**15)
         or not math.isfinite(value)
         or not low <= value <= high
     ):
@@ -98,34 +181,30 @@ def number(data: Json, key: str, low: float, high: float, default: float) -> flo
 
 
 def timestamp(data: Json, key: str, now: float) -> float | None:
-    value = data.get(key)
-    if value is None:
+    if data.get(key) is None:
         return None
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or not 0 < value <= now + 5
-    ):
+    value = number(data, key, 0, now + 5, 0)
+    if value <= 0:
         raise ValueError(f"invalid {key}")
-    return float(value)
+    return value
 
 
-def is_link(path: Path) -> bool:
-    try:
-        return stat.S_ISLNK(path.lstat().st_mode)
-    except FileNotFoundError:
+def valid_label(label: object) -> bool:
+    if not isinstance(label, str) or not LABEL.fullmatch(label):
         return False
+    try:
+        label.encode("utf-8")  # rejects lone surrogates such as "\ud800"
+    except UnicodeEncodeError:
+        return False
+    return label.isprintable()
 
 
-def load(home: Path, now: float) -> Agent:
+def load(state_dir: Path, name: str, now: float) -> Agent:
     """Read and validate one registered agent; raise ValueError when invalid."""
-    if is_link(home) or not home.is_dir():
-        raise ValueError("agent folder must be a real directory")
-    path = home / "agent.json"
-    if is_link(path):
-        raise ValueError("agent.json must not be a link")
-    with path.open("rb") as stream:
+    stream = open_file(state_dir, "agents", name, "agent.json")
+    if stream is None:
+        raise FileNotFoundError(name)
+    with stream:
         raw = stream.read(MAX_FILE + 1)
     if len(raw) > MAX_FILE:
         raise ValueError("agent.json is too large")
@@ -135,60 +214,85 @@ def load(home: Path, now: float) -> Agent:
     agent_id = data.get("id")
     if not isinstance(agent_id, str) or not ID.fullmatch(agent_id):
         raise ValueError("invalid id")
-    if agent_id != home.name:
+    if agent_id != name:
         raise ValueError("id does not match its folder")
-    if data.get("kind", kind_of(agent_id)) != kind_of(agent_id):
+    kind = kind_of(agent_id)
+    if data.get("kind", kind) != kind:
         raise ValueError("kind does not match the id")
-    label = data.get("label", "")
-    if not isinstance(label, str) or not LABEL.fullmatch(label):
-        raise ValueError("invalid label")
     registered = timestamp(data, "registered_at", now)
     if registered is None:
         raise ValueError("missing registered_at")
-    kind = kind_of(agent_id)
     # Runner files are read by the monitor and shipped by Alloy; no links.
-    for name in (f"{kind}.lock", f"{kind}.log", f"{kind}-gate.json"):
-        if is_link(home / name):
-            raise ValueError(f"{name} must not be a link")
+    for entry in (f"{kind}.lock", f"{kind}.log", f"{kind}-gate.json"):
+        found = lstat_entry(state_dir, "agents", name, entry)
+        if found is not None and stat.S_ISLNK(found.st_mode):
+            raise ValueError(f"{entry} must not be a link")
+    label = data.get("label", "")
     return Agent(
         id=agent_id,
         kind=kind,
-        label=label,
+        # An invalid label is not fatal: the dashboard shows the id instead.
+        label=label if valid_label(label) else "",
         interval=number(data, "interval_seconds", *INTERVAL),
         budget=number(data, "budget_seconds", *BUDGET),
         registered_at=registered,
         retired_at=timestamp(data, "retired_at", now),
         layout="registered",
-        home=home,
+        root=state_dir,
+        rel=("agents", agent_id),
     )
 
 
+# Anything a malformed file can raise while it is read and validated.
+INVALID = (OSError, ValueError, UnicodeError, OverflowError, TypeError, RecursionError)
+
+
 def discover(state_dir: Path, now: float) -> Registry:
-    """All agents to show: registered ones, then legacy ones, capped."""
+    """All agents to show: legacy ones, active registrations, recently retired."""
     rejected: Counter[str] = Counter()
-    registered: list[Agent] = []
-    folder = state_dir / "agents"
-    if not is_link(folder) and folder.is_dir():
-        for home in sorted(folder.iterdir()):
-            if not (home / "agent.json").exists() and not is_link(home):
-                continue  # Being created, or not an agent folder.
-            try:
-                agent = load(home, now)
-            except (OSError, ValueError, UnicodeError):
-                rejected["invalid"] += 1
-                continue
-            if agent.retired_at is None or now - agent.retired_at < RETIRED_KEEP:
-                registered.append(agent)
-    elif is_link(folder):
+    active: list[Agent] = []
+    retired: list[Agent] = []
+    try:
+        folder = walk(state_dir, ("agents",))
+        try:
+            names = sorted(os.listdir(folder))
+        finally:
+            os.close(folder)
+    except FileNotFoundError:
+        names = []
+    except OSError:
+        names = []  # A link or a file where the agents folder belongs.
         rejected["invalid"] += 1
-    ids = {agent.id for agent in registered}
+    for name in names:
+        entry = lstat_entry(state_dir, "agents", name)
+        if entry is None or not (
+            stat.S_ISDIR(entry.st_mode) or stat.S_ISLNK(entry.st_mode)
+        ):
+            continue  # Not an agent folder.
+        if stat.S_ISDIR(entry.st_mode) and not lstat_entry(
+            state_dir, "agents", name, "agent.json"
+        ):
+            continue  # Being created.
+        try:
+            agent = load(state_dir, name, now)
+        except INVALID:
+            rejected["invalid"] += 1
+            continue
+        if agent.retired_at is None:
+            active.append(agent)
+        elif now - agent.retired_at < RETIRED_KEEP:
+            retired.append(agent)
+    ids = {agent.id for agent in active + retired}
     legacy: list[Agent] = []
     conflicts: list[str] = []
     for kind in KINDS:
-        if not (
-            (state_dir / f"{kind}.log").exists()
-            or (state_dir / f"{kind}.lock").exists()
-        ):
+        try:
+            found = lstat_entry(state_dir, f"{kind}.log") or lstat_entry(
+                state_dir, f"{kind}.lock"
+            )
+        except OSError:
+            found = None
+        if found is None:
             continue
         if kind in ids:
             conflicts.append(kind)
@@ -196,15 +300,17 @@ def discover(state_dir: Path, now: float) -> Registry:
             continue
         interval, budget = LEGACY[kind]
         legacy.append(
-            Agent(kind, kind, "", interval, budget, None, None, "legacy", state_dir)
+            Agent(kind, kind, "", interval, budget, None, None, "legacy", state_dir, ())
         )
-    # Active agents first, oldest registration first; legacy agents never drop.
-    registered.sort(
-        key=lambda a: (a.retired_at is not None, a.registered_at or 0, a.id)
-    )
-    kept = legacy + registered[: max(0, MAX_AGENTS - len(legacy))]
-    rejected["limit"] += len(legacy) + len(registered) - len(kept)
-    return Registry(kept, rejected, conflicts)
+    # Oldest registration first; legacy agents never drop. Retired agents have
+    # their own cap, so a full set of active agents never hides them early.
+    active.sort(key=lambda a: (a.registered_at or 0, a.id))
+    retired.sort(key=lambda a: (-(a.retired_at or 0), a.id))
+    kept_active = active[: max(0, MAX_AGENTS - len(legacy))]
+    kept_retired = retired[:MAX_RETIRED]
+    rejected["limit"] += len(active) - len(kept_active)
+    rejected["limit"] += len(retired) - len(kept_retired)
+    return Registry(legacy + kept_active + kept_retired, rejected, conflicts)
 
 
 def write(path: Path, data: Json) -> None:
@@ -233,7 +339,7 @@ def register(
     """Create or refresh an agent; keeps registered_at and clears retired_at."""
     if not ID.fullmatch(agent_id):
         raise ValueError("id must look like claude, claude-2 or codex-review")
-    if not LABEL.fullmatch(label):
+    if not valid_label(label):
         raise ValueError("label: at most 40 printable characters")
     settings = {"interval_seconds": interval, "budget_seconds": budget}
     for key, (low, high, _) in (
@@ -242,13 +348,15 @@ def register(
     ):
         number(settings, key, low, high, 0)
     home = state_dir / "agents" / agent_id
-    if is_link(state_dir / "agents") or is_link(home):
-        raise ValueError("agent folder must be a real directory")
     home.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(walk(state_dir, ("agents", agent_id)))
+    except OSError as error:
+        raise ValueError("agent folder must be a real directory") from error
     registered_at = now
     try:
-        registered_at = load(home, now).registered_at or now
-    except (OSError, ValueError, UnicodeError):
+        registered_at = load(state_dir, agent_id, now).registered_at or now
+    except INVALID:
         pass  # First registration, or replace a broken file.
     data = {
         "v": 1,
@@ -267,7 +375,7 @@ def retire(state_dir: Path, agent_id: str, now: float) -> None:
     home = state_dir / "agents" / agent_id
     if not ID.fullmatch(agent_id):
         raise ValueError("invalid id")
-    agent = load(home, now)
+    agent = load(state_dir, agent_id, now)
     data = {
         "v": 1,
         "id": agent.id,
@@ -319,7 +427,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             registry = discover(args.state_dir, now)
             rows = [
-                {**asdict(agent), "home": str(agent.home)} for agent in registry.agents
+                {**asdict(agent), "root": str(agent.root), "home": str(agent.home)}
+                for agent in registry.agents
             ]
             print(
                 json.dumps(

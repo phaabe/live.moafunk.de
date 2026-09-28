@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import time
 import unittest
@@ -393,17 +394,78 @@ class AgentRowsTest(unittest.TestCase):
         self.assertIn('epic_tick_last_outcome{agent="codex-new"} 1', self.run_at(NOW))
         checkpoint = self.root / "runtime/ticks-agents-codex-new.json"
         self.assertTrue(checkpoint.exists())
-        for path in home.iterdir():
-            path.unlink()
-        home.rmdir()
+        shutil.rmtree(home)
         text = self.run_at(NOW + 5)
         self.assertNotIn("codex-new", text)
         self.assertEqual(self.ledgers.ledgers, {})
-        # Its checkpoint stays for a week, then goes.
-        self.assertTrue(checkpoint.exists())
-        os.utime(checkpoint, (NOW, NOW))
-        self.run_at(NOW + monitor.CHECKPOINT_KEEP + 1)
         self.assertFalse(checkpoint.exists())
+
+    def test_returning_agent_does_not_count_old_ticks_again(self) -> None:
+        # Codex review: a restored log with a new inode was read as rotated.
+        home = self.agent("codex-2")
+        log = home / "codex.log"
+        self.run_at(NOW)
+        log.write_text(tick_log((1_000, 0, "{}")))
+        ok = 'epic_ticks_total{agent="codex-2",outcome="ok"}'
+        self.assertIn(f"{ok} 1\n", self.run_at(NOW + 5))
+        content = log.read_text()
+        shutil.rmtree(home)
+        self.run_at(NOW + 10)
+        home = self.agent("codex-2")
+        (home / "codex.log").write_text(content)
+        self.assertIn(f"{ok} 0\n", self.run_at(NOW + 15))
+
+    def test_left_over_checkpoints_go_after_a_week(self) -> None:
+        # From an agent that vanished while the collector was stopped.
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        old = runtime / "ticks-agents-codex-gone.json"
+        old.write_text("{}")
+        self.run_at(NOW)
+        self.assertTrue(old.exists())
+        os.utime(old, (NOW, NOW))
+        self.run_at(NOW + monitor.CHECKPOINT_KEEP + 1)
+        self.assertFalse(old.exists())
+
+    def test_running_tick_without_an_action_has_no_old_target(self) -> None:
+        # Codex review: the last target of a selecting agent made a collision.
+        pr = '{"action": "review", "pr": 7}'
+        first = self.agent("claude", (1_000, 0, pr))
+        second = self.agent("claude-2")
+        self.running(first, "claude", 1_900, "")
+        self.running(second, "claude", 1_950, pr)
+        text = self.run_at(NOW)
+        self.assertNotIn("epic_agent_collision", text)
+        self.assertIn(
+            'epic_agent_row_info{action_text="selecting",agent="claude",'
+            'outcome_text="ok 0",target=""} 1',
+            text,
+        )
+
+    def test_linked_lock_file_is_a_read_failure(self) -> None:
+        home = self.agent("claude-2")
+        secret = self.root / "secret.json"
+        secret.write_text('{"pid": 42, "started_at": 1900, "max_age": 300}')
+        (home / "claude.lock").mkdir()
+        (home / "claude.lock/owner.json").symlink_to(secret)
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW)
+        self.assertIn('epic_runner_read_success{agent="claude-2"} 0\n', text)
+        self.assertNotIn('epic_tick_elapsed_seconds{agent="claude-2"}', text)
+
+    def test_each_metric_family_is_contiguous(self) -> None:
+        # Codex review: the second agent's samples followed other families.
+        for name in ("claude", "codex", "codex-2"):
+            self.agent(name, (1_000, 1, '{"action": "fix", "pr": 3}'))
+        text = self.run_at(NOW)
+        seen: list[str] = []
+        for line in text.splitlines():
+            family = line.split()[2] if line.startswith("#") else line.split("{")[0]
+            family = family.split()[0]
+            if not seen or seen[-1] != family:
+                self.assertNotIn(family, seen, f"{family} is split")
+                seen.append(family)
+        self.assertEqual(text.count("# TYPE epic_agent_info gauge"), 1)
 
     def test_registry_problems_are_published(self) -> None:
         (self.root / "claude.log").write_text("")
