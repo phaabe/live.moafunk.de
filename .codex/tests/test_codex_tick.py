@@ -114,6 +114,34 @@ class TickTests(unittest.TestCase):
             timeout=20,
         )
 
+    def expire_cooldown(self) -> None:
+        path = self.state / "codex-backoff.json"
+        entries = json.loads(path.read_text())
+        self.assertTrue(entries)
+        for entry in entries.values():
+            entry["at"] = 0
+        path.write_text(json.dumps(entries))
+
+    def test_unchanged_blocked_claim_stays_suppressed_after_cooldown(self) -> None:
+        self.env["TEST_DECISION"] = json.dumps(
+            {
+                "action": "claim",
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/381",
+            }
+        )
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Prerequisite still incomplete."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        for _ in range(2):
+            self.expire_cooldown()
+            self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+        self.updated_at.write_text("2026-09-28T03:01:00Z")
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
     def test_pause_never_calls_selector_or_codex(self) -> None:
         (self.home / ".epic-pause").touch()
         self.assertEqual(self.run_tick().returncode, 0)
@@ -281,11 +309,11 @@ class TickTests(unittest.TestCase):
             {"status": "blocked", "summary": "Commit permission denied."}
         )
         self.assertEqual(self.run_tick().returncode, 75)
-        self.assertFalse(self.record.exists())
+        record = self.record.read_text()
         self.assertFalse(self.lock.exists())
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
-        self.assertFalse(self.record.exists())
+        self.assertEqual(self.record.read_text(), record)
 
     def test_blocked_claim_suppresses_continue_for_the_same_issue(self) -> None:
         self.env["TEST_DECISION"] = json.dumps(
@@ -306,7 +334,9 @@ class TickTests(unittest.TestCase):
         )
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
-        self.assertFalse(self.record.exists())
+        self.assertEqual(
+            json.loads(self.record.read_text())["action"]["action"], "claim"
+        )
 
     def test_unrelated_target_runs_without_clearing_an_existing_cooldown(self) -> None:
         blocked_action = self.env["TEST_DECISION"]
@@ -375,16 +405,18 @@ class TickTests(unittest.TestCase):
         self.assertFalse(self.lock.exists())
 
     def test_expired_cooldown_retries_and_success_clears_it(self) -> None:
+        self.env["TEST_DECISION"] = json.dumps(
+            {
+                "action": "continue",
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/381",
+            }
+        )
         self.env["TEST_RESULT"] = json.dumps(
             {"status": "blocked", "summary": "Commit permission denied."}
         )
         self.assertEqual(self.run_tick().returncode, 75)
         path = self.state / "codex-backoff.json"
-        entries = json.loads(path.read_text())
-        self.assertEqual(len(entries), 1)
-        for entry in entries.values():
-            entry["at"] = 0
-        path.write_text(json.dumps(entries))
+        self.expire_cooldown()
         del self.env["TEST_RESULT"]
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 2)
@@ -418,6 +450,10 @@ class TickTests(unittest.TestCase):
         self.env["TEST_CODEX_EXIT"] = "0"
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.expire_cooldown()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertTrue(self.record.exists())
 
     def test_invalid_timeout_never_starts_work(self) -> None:
         for value in ("0", "-1", "1.5", "never"):

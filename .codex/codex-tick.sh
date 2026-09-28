@@ -145,8 +145,13 @@ python3 .codex/tick_backoff.py record --action-file "${lock_dir}/action.json" \
     --result-file "${state_dir}/codex-result.json" --exit-code "$model_exit" || outcome=$?
 if [[ "$model_exit" != 0 ]]; then
     exit "$model_exit"
-elif [[ "$outcome" != 0 ]]; then
+elif [[ "$outcome" != 0 && "$outcome" != 3 ]]; then
     exit "$outcome"
 fi
+# A valid blocked result is a seen no-op, not an unrecorded process failure.
+# Keep the shared gate's longer suppression after the short cooldown expires.
 python3 scripts/epic/tick_gate.py record --agent codex \
     --action-file "${lock_dir}/action.json"
+if [[ "$outcome" == 3 ]]; then
+    exit 75
+fi

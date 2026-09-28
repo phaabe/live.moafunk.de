@@ -37,7 +37,7 @@ class BackoffTests(unittest.TestCase):
         )
 
     def test_claim_block_suppresses_continue_until_expiry(self) -> None:
-        self.assertEqual(self.record(), 75)
+        self.assertEqual(self.record(), 3)
         continuation = {**self.action, "action": "continue"}
         self.assertEqual(backoff.check(continuation, self.state, 900, 1899), 3)
         self.assertEqual(backoff.check(continuation, self.state, 900, 1900), 0)
@@ -51,16 +51,16 @@ class BackoffTests(unittest.TestCase):
 
     def test_new_pr_head_bypasses_previous_block(self) -> None:
         action = {"action": "review", "pr": 410, "sha": "a" * 40}
-        self.assertEqual(self.record(action), 75)
+        self.assertEqual(self.record(action), 3)
         self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
         new_head = {**action, "sha": "b" * 40}
         self.assertEqual(backoff.check(new_head, self.state, 900, 1001), 0)
 
     def test_completed_target_does_not_clear_other_blocks(self) -> None:
-        self.assertEqual(self.record(), 75)
+        self.assertEqual(self.record(), 3)
         other = {"action": "review", "pr": 412, "sha": "c" * 40}
         self.assertEqual(backoff.check(other, self.state, 900, 1001), 0)
-        self.assertEqual(self.record(other), 75)
+        self.assertEqual(self.record(other), 3)
         self.result.write_text(json.dumps({"status": "completed", "summary": "Done"}))
         self.assertEqual(self.record(other), 0)
         self.assertEqual(backoff.check(other, self.state, 900, 1001), 0)
@@ -68,6 +68,10 @@ class BackoffTests(unittest.TestCase):
 
     def test_nonzero_exit_overrides_completed_output(self) -> None:
         self.result.write_text(json.dumps({"status": "completed", "summary": "Done"}))
+        self.assertEqual(self.record(code=17), 75)
+        self.assertEqual(backoff.check(self.action, self.state, 900, 1001), 3)
+
+    def test_nonzero_exit_overrides_blocked_output(self) -> None:
         self.assertEqual(self.record(code=17), 75)
         self.assertEqual(backoff.check(self.action, self.state, 900, 1001), 3)
 
@@ -123,12 +127,21 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual(self.cli("check").returncode, 0)
         arguments = ("--result-file", str(self.result), "--exit-code", "0")
         blocked = self.cli("record", *arguments)
-        self.assertEqual(blocked.returncode, 75)
+        self.assertEqual(blocked.returncode, 3)
         self.assertIn("Waiting", blocked.stderr)
         self.assertEqual(self.cli("check").returncode, 3)
         self.result.write_text(json.dumps({"status": "completed", "summary": "Done"}))
         self.assertEqual(self.cli("record", *arguments).returncode, 0)
         self.assertEqual(self.cli("check").returncode, 0)
+
+    def test_cli_failure_does_not_report_valid_blocked_outcome(self) -> None:
+        arguments = ("--result-file", str(self.result), "--exit-code", "17")
+        self.assertEqual(self.cli("record", *arguments).returncode, 75)
+        self.result.write_text("invalid JSON")
+        arguments = ("--result-file", str(self.result), "--exit-code", "0")
+        self.assertEqual(self.cli("record", *arguments).returncode, 75)
+        self.result.unlink()
+        self.assertEqual(self.cli("record", *arguments).returncode, 75)
 
     def test_invalid_state_fails_closed(self) -> None:
         self.state.mkdir()
@@ -136,6 +149,12 @@ class BackoffTests(unittest.TestCase):
             with self.subTest(value=value):
                 (self.state / "codex-backoff.json").write_text(value)
                 self.assertEqual(self.cli("check").returncode, 75)
+                self.assertEqual(
+                    self.cli(
+                        "record", "--result-file", str(self.result), "--exit-code", "0"
+                    ).returncode,
+                    75,
+                )
 
     def test_cli_rejects_invalid_ttl_and_missing_record_arguments(self) -> None:
         for ttl in ("0", "-1", "bad"):

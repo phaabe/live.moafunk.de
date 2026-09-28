@@ -94,9 +94,10 @@ script once. Lock contention, pause, idle and stop exit 0 without starting Codex
 Before a session, `scripts/epic/tick_gate.py check --agent codex` checks the
 selected action. Exit 3 skips the session and exits 0; other gate errors stop
 the tick. An unchanged action and GitHub timestamp are skipped for three hours
-after the last successful session (`EPIC_REPEAT_TTL_SECONDS` overrides this).
+after the last completed or valid blocked result (`EPIC_REPEAT_TTL_SECONDS`
+overrides this).
 The shared gate never skips `continue`. Only a session that exits 0 and reports
-a valid completed result calls `record` with the same action file.
+a valid completed or blocked result calls `record` with the same action file.
 It records the GitHub state seen before
 the session, so feedback arriving during it triggers another tick.
 Gate state uses `~/.local/state/epic-loop/codex-gate*.json`, or `EPIC_STATE_DIR`
@@ -115,6 +116,10 @@ through Codex's output schema to `codex-result.json` in the same state directory
 The runner clears that file before each session. Blocked, missing or malformed
 results exit 75 and start cooldown; a nonzero model exit starts cooldown and
 preserves its exit code. Completed work clears only that target's cooldown.
+Valid blocked results also retain the shared gate's three-hour suppression
+after cooldown expires, unless GitHub changed. Model failures and invalid
+results do not create a shared gate record. A blocked `continue` still retries
+after cooldown because local progress cannot be inferred from GitHub state.
 
 Actions admitted by the gate start one fresh `codex exec` session using `epic-tick.md` plus
 the selected JSON. It uses the workspace-write sandbox with explicit network
@@ -168,3 +173,5 @@ Commits and pushes retain Git hooks. The isolated Python interpreter and removed
 target. This is a restriction on routine operations, not a security boundary
 against malicious repository hooks. Raw critical Git commands retain their
 approval requirements.
+The helper does not check the PR's Executor; lane ownership remains enforced
+by the epic workflow and must be checked before editing or publishing a branch.

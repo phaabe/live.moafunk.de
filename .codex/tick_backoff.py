@@ -14,7 +14,8 @@ import time
 from typing import TypedDict
 
 SKIP = 3
-BLOCKED = 75
+BLOCKED = 3
+FAILED = 75
 
 
 class Entry(TypedDict):
@@ -80,24 +81,24 @@ def check(action: dict[str, object], state_dir: Path, ttl: int, now: float) -> i
     return 0
 
 
-def failure_reason(result_file: Path, exit_code: int) -> str | None:
+def result_outcome(result_file: Path, exit_code: int) -> tuple[int, str | None]:
     if exit_code != 0:
-        return f"model exited {exit_code}"
+        return FAILED, f"model exited {exit_code}"
     try:
         result = json.loads(result_file.read_text())
     except (OSError, ValueError):
-        return "missing or invalid final result"
+        return FAILED, "missing or invalid final result"
     if (
         not isinstance(result, dict)
         or set(result) != {"status", "summary"}
         or result["status"] not in ("completed", "blocked")
         or not isinstance(result["summary"], str)
     ):
-        return "invalid final result schema"
+        return FAILED, "invalid final result schema"
     if result["status"] == "blocked":
         summary = " ".join(result["summary"].split())[:240]
-        return f"model reported blocked: {summary}"
-    return None
+        return BLOCKED, f"model reported blocked: {summary}"
+    return 0, None
 
 
 def record(
@@ -109,7 +110,7 @@ def record(
 ) -> int:
     key = target_key(action)
     entries = load_entries(state_dir)
-    reason = failure_reason(result_file, exit_code)
+    outcome, reason = result_outcome(result_file, exit_code)
     if reason is None:
         entries.pop(key, None)
     else:
@@ -117,8 +118,7 @@ def record(
     save_entries(state_dir, entries)
     if reason is not None:
         logging.warning("backoff: %s", reason)
-        return BLOCKED
-    return 0
+    return outcome
 
 
 def positive_int(value: str) -> int:
@@ -152,7 +152,7 @@ def main() -> int:
         )
     except (OSError, ValueError) as error:
         logging.error("backoff: %s", error)
-        return BLOCKED
+        return FAILED
 
 
 if __name__ == "__main__":
