@@ -75,6 +75,8 @@ STAGE_SPLIT = re.compile(r"\bthen\b|→|->")
 ISSUE_URL = re.compile(rf"https://github\.com/{re.escape(REPO)}/issues/(\d+)")
 EPIC = 312
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+# Merge gates, not code checks (".github/epic-lanes.yml" lists them as ignored).
+GUARD_CHECKS = {"epic-guard", "epic-guard-runner"}
 FAILED = {
     "FAILURE",
     "ERROR",
@@ -138,12 +140,18 @@ def verdicts(pr: dict[str, Any], by: str) -> list[dict[str, Any]]:
 
 
 def checks_state(pr: dict[str, Any]) -> str:
-    """'green', 'failed' or 'pending' for the PR head."""
+    """'green', 'failed' or 'pending' for the PR head.
+
+    The epic guard fails on purpose until the reviewer's verdict for the head
+    exists. That is no code failure to fix, so a failed guard counts as
+    pending: no `fix-checks`, and no merge until it is green.
+    """
     states = []
     for c in pr.get("statusCheckRollup") or []:
-        states.append(
-            (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
-        )
+        state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        if (c.get("name") or c.get("context")) in GUARD_CHECKS and state in FAILED:
+            state = "PENDING"
+        states.append(state)
     if any(s in FAILED for s in states):
         return "failed"
     if all(s in GREEN for s in states):

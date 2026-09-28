@@ -273,6 +273,42 @@ class DecideTest(unittest.TestCase):
 STREAM = frozenset({"project::Stream"})
 
 
+class GuardCheckTest(unittest.TestCase):
+    FAILED_GUARD = {"name": "epic-guard", "conclusion": "FAILURE"}
+
+    def test_failed_guard_is_no_fix_checks(self) -> None:
+        # The guard fails until the reviewer's verdict exists: wait, do not fix.
+        p = pr(
+            1,
+            "Claude",
+            statusCheckRollup=[{"conclusion": "SUCCESS"}, self.FAILED_GUARD],
+        )
+        self.assertEqual(first("Claude", [p]).action, "idle")
+
+    def test_failed_guard_blocks_merge(self) -> None:
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            statusCheckRollup=[self.FAILED_GUARD],
+        )
+        self.assertEqual(first("Claude", [p]).action, "idle")
+
+    def test_green_guard_allows_merge(self) -> None:
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            statusCheckRollup=[{"context": "epic-guard", "state": "SUCCESS"}],
+        )
+        self.assertEqual(first("Claude", [p]).action, "merge")
+
+    def test_other_failed_check_still_needs_fixing(self) -> None:
+        rollup = [self.FAILED_GUARD, {"name": "backend-ci", "conclusion": "FAILURE"}]
+        p = pr(1, "Claude", statusCheckRollup=rollup)
+        self.assertEqual(first("Claude", [p]).action, "fix-checks")
+
+
 class FocusTest(unittest.TestCase):
     def test_claims_only_issues_in_focus(self) -> None:
         items = [
