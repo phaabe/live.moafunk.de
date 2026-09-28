@@ -14,7 +14,8 @@ Priority (first match wins), see docs/implementation/epic-rules.md section 8:
   resolve-conflict  my PR conflicts with its base
   review    the other agent's ready PR has no verdict from me for its head
   continue  my draft PR, or my In progress leaf without a PR
-  claim     a Ready leaf with Executor = me
+  claim     a Ready leaf with Executor = me, after its "Start after" leaves
+            and the leaves before it in the epic's batch order
   idle      nothing to do
 
 Usage:
@@ -61,6 +62,12 @@ LEAF = re.compile(r"\b[A-Z][0-9]+\.[0-9]+\.[0-9]+\b")
 START_AFTER = re.compile(r"Start after (.*?)(?:\.(?=\s|$)|\(|$)", re.MULTILINE)
 LEAF_IDS_LINE = re.compile(r"^Leaf IDs:[ \t]*(.+)$", re.MULTILINE)
 CHECKED_LEAF = re.compile(r"- \[[xX]\] \*\*([A-Z][0-9]+\.[0-9]+\.[0-9]+)\*\*")
+# Batch tables on the epic: "| Codex | O1.2.4 (<url>) first; then P1 (<url>) ... |".
+# A row is split into stages at "then" or an arrow; later stages wait for earlier leaves.
+BATCH_ROW = re.compile(r"^\|[ \t]*(Claude|Codex)[ \t]*\|(.*)\|[ \t]*$", re.MULTILINE)
+STAGE_SPLIT = re.compile(r"\bthen\b|→|->")
+ISSUE_URL = re.compile(rf"https://github\.com/{re.escape(REPO)}/issues/(\d+)")
+EPIC = 312
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED = {
     "FAILURE",
@@ -184,6 +191,29 @@ def start_after(item: dict[str, Any]) -> set[str]:
     return wanted
 
 
+def batch_blockers(state: dict[str, Any], agent: str) -> dict[int, set[str]]:
+    """Leaves each issue must wait for, from the batch order tables on the epic.
+
+    An issue first named in stage k waits for all leaves named in stages 0..k-1.
+    """
+    blockers: dict[int, set[str]] = {}
+    for text in state.get("batch_order", []):
+        if "Scope, in order" not in text:
+            continue
+        for who, scope in BATCH_ROW.findall(text):
+            if who != agent:
+                continue
+            earlier: set[str] = set()
+            seen: set[int] = set()
+            for stage in STAGE_SPLIT.split(scope):
+                for n in (int(x) for x in ISSUE_URL.findall(stage)):
+                    if n not in seen:
+                        seen.add(n)
+                        blockers.setdefault(n, set()).update(earlier)
+                earlier |= set(LEAF.findall(stage))
+    return blockers
+
+
 def decide(
     agent: str,
     state: dict[str, Any],
@@ -302,6 +332,7 @@ def decide(
     ]
     items.sort(key=lambda i: (str(i.get("wave") or "9"), i["content"]["number"]))
     done = done_leaves(state)
+    batch = batch_blockers(state, agent)
     for i in items:
         number, url = i["content"]["number"], i["content"]["url"]
         if number in linked:
@@ -312,7 +343,7 @@ def decide(
                 Action("continue", "my In progress leaf has no PR yet", issue=url),
             )
         elif i.get("status") == "Ready" and open_mine < MAX_OPEN_PRS:
-            blockers = sorted(start_after(i) - done)
+            blockers = sorted((start_after(i) | batch.get(number, set())) - done)
             if blockers:
                 add(
                     "wait",
@@ -440,7 +471,23 @@ def fetch_state() -> dict[str, Any]:
             item["readiness"] = "\n".join(
                 row.get("body") or "" for page in pages for row in page
             )
-    return {"prs": prs, "items": items, "merged_prs": merged}
+    # Batch order tables ("Scope, in order") live in comments on the epic.
+    pages = gh_json(
+        ["api", "--paginate", "--slurp"]
+        + [f"repos/{REPO}/issues/{EPIC}/comments?per_page=100"]
+    )
+    batch_order = [
+        row.get("body") or ""
+        for page in pages
+        for row in page
+        if "Scope, in order" in (row.get("body") or "")
+    ]
+    return {
+        "prs": prs,
+        "items": items,
+        "merged_prs": merged,
+        "batch_order": batch_order,
+    }
 
 
 def status(state: dict[str, Any], paused: bool) -> str:
