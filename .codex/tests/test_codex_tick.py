@@ -10,6 +10,7 @@ import signal
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -32,6 +33,7 @@ class TickTests(unittest.TestCase):
         self.runner.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / "codex-tick.sh", self.runner)
         shutil.copyfile(ROOT / "epic-tick.md", self.runner.parent / "epic-tick.md")
+        shutil.copyfile(ROOT / "epic_lock.py", self.runner.parent / "epic_lock.py")
         selector = self.repo / "scripts/epic/next_action.py"
         selector.parent.mkdir(parents=True)
         selector.write_text(
@@ -109,6 +111,52 @@ class TickTests(unittest.TestCase):
                 self.assertFalse(self.lock.exists())
         self.assertEqual(self.selections.read_text().splitlines(), ["call", "call"])
 
+    def seed_lock(self, pid: int, age: int, max_age: int = 30) -> None:
+        self.lock.mkdir(parents=True)
+        (self.lock / "owner.json").write_text(
+            json.dumps(
+                {"pid": pid, "started_at": int(time.time()) - age, "max_age": max_age}
+            )
+        )
+
+    @staticmethod
+    def dead_pid() -> int:
+        process = subprocess.Popen(["/usr/bin/true"])
+        process.wait(timeout=5)
+        return process.pid
+
+    def test_dead_expired_lock_is_reclaimed_and_logged(self) -> None:
+        pid = self.dead_pid()
+        self.seed_lock(pid, age=1000)
+        (self.lock / "action.json").write_text("old action")
+        (self.lock / "prompt.txt").write_text("old prompt")
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertTrue(self.calls.exists())
+        self.assertFalse(self.lock.exists())
+        self.assertIn(
+            f"reclaimed stale lock from pid {pid}",
+            (self.state / "codex.log").read_text(),
+        )
+
+    def test_live_pid_keeps_even_an_old_lock(self) -> None:
+        self.seed_lock(os.getpid(), age=1000)
+        owner = (self.lock / "owner.json").read_text()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual((self.lock / "owner.json").read_text(), owner)
+        self.assertFalse(self.selections.exists())
+
+    def test_dead_pid_keeps_a_young_lock(self) -> None:
+        self.seed_lock(self.dead_pid(), age=0)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertTrue(self.lock.is_dir())
+        self.assertFalse(self.selections.exists())
+
+    def test_original_timeout_budget_prevents_early_reclaim(self) -> None:
+        self.seed_lock(self.dead_pid(), age=100, max_age=2000)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertTrue(self.lock.is_dir())
+        self.assertFalse(self.selections.exists())
+
     def test_one_fresh_session_receives_prompt_and_selected_action(self) -> None:
         self.assertEqual(self.run_tick().returncode, 0)
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
@@ -121,6 +169,8 @@ class TickTests(unittest.TestCase):
                 str(self.repo.resolve()),
                 "--sandbox",
                 "workspace-write",
+                "-c",
+                "sandbox_workspace_write.network_access=true",
                 "--color",
                 "never",
                 "-",
@@ -191,9 +241,24 @@ class TickTests(unittest.TestCase):
     def test_concurrent_invocation_cannot_start_a_second_session(self) -> None:
         process, connection = self.blocked_tick()
         self.assertTrue(self.lock.is_dir())
+        owner = json.loads((self.lock / "owner.json").read_text())
+        self.assertEqual(owner["pid"], process.pid)
+        self.assertGreater(owner["started_at"], 0)
+        self.assertEqual(owner["max_age"], 30)
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertTrue(self.lock.is_dir())
+        connection.sendall(b"x")
+        self.assertEqual(process.wait(timeout=10), 0)
+        self.assertFalse(self.lock.exists())
+
+    def test_concurrent_recovery_cannot_replace_a_new_owner(self) -> None:
+        self.seed_lock(self.dead_pid(), age=1000)
+        process, connection = self.blocked_tick()
+        owner = (self.lock / "owner.json").read_text()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual((self.lock / "owner.json").read_text(), owner)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         connection.sendall(b"x")
         self.assertEqual(process.wait(timeout=10), 0)
         self.assertFalse(self.lock.exists())

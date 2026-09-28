@@ -15,19 +15,28 @@ fi
 
 mkdir -p "$state_dir"
 exec >> "${state_dir}/codex.log" 2>&1
-if ! mkdir "$lock_dir" 2>/dev/null; then
-    if [[ -d "$lock_dir" ]]; then
-        printf 'tick: locked; another Codex tick owns %s\n' "$lock_dir"
+for duration in "$tick_timeout" "$select_timeout"; do
+    if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
+        printf 'tick: timeout must be a positive integer in seconds\n' >&2
+        exit 2
+    fi
+done
+# Store the original timeout budget so shorter later ticks cannot reclaim early.
+if python3 "${repo_root}/.codex/epic_lock.py" "$lock_dir" "$$" \
+    "$((select_timeout + tick_timeout + 10))"; then
+    :
+else
+    result=$?
+    if [[ "$result" == 75 ]]; then
         exit 0
     fi
-    printf 'tick: cannot create lock %s\n' "$lock_dir" >&2
-    exit 1
+    exit "$result"
 fi
 
 child_pid=""
 cleanup() {
     local result=$?
-    rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt"
+    rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json"
     rmdir "$lock_dir"
     printf 'tick: finished exit=%s\n' "$result"
 }
@@ -52,12 +61,6 @@ trap 'interrupt 130' INT
 trap 'interrupt 143' TERM
 
 printf '\ntick: started %s repo=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$repo_root"
-for duration in "$tick_timeout" "$select_timeout"; do
-    if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
-        printf 'tick: timeout must be a positive integer in seconds\n' >&2
-        exit 2
-    fi
-done
 if command -v timeout >/dev/null 2>&1; then
     timeout_bin=timeout
 elif command -v gtimeout >/dev/null 2>&1; then
@@ -106,4 +109,5 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 run_bounded "${tick_timeout}s" codex exec --cd "$repo_root" \
-    --sandbox workspace-write --color never - < "${lock_dir}/prompt.txt"
+    --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
+    --color never - < "${lock_dir}/prompt.txt"

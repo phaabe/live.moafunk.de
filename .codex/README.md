@@ -82,26 +82,42 @@ The runner lives in Codex's setup lane. It uses Bash 3.2, Python 3.10+, GNU
 Keep the runner checkout current with `dev/312-interim`. Trust its project
 hooks before unattended use, as described above.
 
+A scheduler must set `PATH` so `gh`, `codex`, Python and GNU `timeout` are
+available. For Apple Silicon Homebrew, include `/opt/homebrew/bin` along with
+`/usr/bin:/bin:/usr/sbin:/sbin`; use `/usr/local/bin` for Intel Homebrew. Add the
+actual Codex installation directory if it is elsewhere. launchd's default
+PATH does not include Homebrew.
+
 Each invocation takes the shared `~/.local/state/epic-loop/codex.lock`
 directory using `mkdir`, checks `~/.epic-pause`, and calls the shared decision
 script once. Lock contention, pause, idle and stop exit 0 without starting Codex.
 Other actions start one fresh `codex exec` session using `epic-tick.md` plus
-the selected JSON. It uses the workspace-write sandbox and existing approval
-settings; it never bypasses approvals or hook trust. Permission failures must
-stop the tick. See [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
+the selected JSON. It uses the workspace-write sandbox with explicit network
+access (`-c sandbox_workspace_write.network_access=true`) for GitHub calls and
+existing approval settings; it never bypasses approvals or hook trust.
+Permission failures must stop the tick. See
+[Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
 
 Output and errors append to `~/.local/state/epic-loop/codex.log`. Selection
 has a 120-second limit and Codex has a 1,800-second limit, with a 10-second
 TERM-to-KILL grace. Override these with positive integer values in
 `EPIC_SELECT_TIMEOUT_SECONDS` and `EPIC_TICK_TIMEOUT_SECONDS`. Errors and timeout
 exit codes propagate; a later invocation starts a new decision and session.
-The lock is held through child termination and removed on normal exit, errors
-and handled signals. SIGKILL or a power failure can leave a stale lock: confirm
-no tick or child session is running before manually removing that directory.
-Do not clear another worktree's lock. All checkouts share it.
+The lock stores the runner PID, Unix start time and original timeout budget in
+`owner.json`. It is held through child termination and removed on normal exit,
+errors and handled signals. A later tick reclaims and logs an abandoned lock
+only when the owner PID is dead and its age exceeds selection + tick timeout +
+10-second grace. It uses the larger of the stored and current budgets, so a
+shorter later tick cannot reclaim while an old child may still run. A live PID
+always keeps its lock, including a reused PID. A short OS file lock on
+`codex.guard` serializes recovery; keep that guard file in place.
 
-This PR installs no scheduler and starts no live agent session. Test locally
-without GitHub writes or model calls:
+Missing/invalid owner metadata or unexpected lock contents require manual
+review. Confirm no tick or child session is running before removing such a
+lock. Do not clear another worktree's lock. All checkouts share it.
+
+This PR installs no scheduler. Run the local tests without GitHub writes or
+model calls:
 
 ```sh
 python3 -m unittest discover -s .codex/tests -v
