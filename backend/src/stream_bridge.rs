@@ -515,8 +515,6 @@ impl StreamState {
             active: self.is_active() && !self.is_test,
             user: self.current_user.clone(),
             recording: self.is_recording(),
-            recording_path: self.recording_path.clone(),
-            recording_failed: self.recording_failed.clone(),
         }
     }
 }
@@ -763,17 +761,15 @@ pub(crate) async fn concat_segments(seg_dir: &Path, output: &Path) -> Result<(),
 }
 
 /// Status information for API responses.
+///
+/// Served anonymously on `/api/stream/status`, so it must never carry a
+/// filesystem path or error text. Recording failures stay internal (see
+/// [`StreamState::recording_failure`]).
 #[derive(serde::Serialize)]
 pub struct StreamStatus {
     pub active: bool,
     pub user: Option<String>,
     pub recording: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recording_path: Option<PathBuf>,
-    /// Non-null when a recording write failed mid-stream; the archive for this
-    /// session is incomplete. Stays set until the next recording starts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recording_failed: Option<String>,
 }
 
 /// Errors that can occur during streaming.
@@ -801,6 +797,31 @@ pub enum StreamError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B5.2.6: the anonymous status JSON must not leak a recording path or
+    /// failure text, even while both are set internally.
+    #[test]
+    fn status_json_has_no_recording_path_or_failure_text() {
+        let mut state = StreamState::new();
+        state.current_user = Some("host".to_string());
+        state.recording_path = Some(PathBuf::from("/srv/data/recordings/secret.mp3"));
+        state.recording_failed = Some("Segment concat failed: disk full".to_string());
+
+        let json = serde_json::to_value(state.get_status()).expect("serialize status");
+        let keys: Vec<&str> = json
+            .as_object()
+            .expect("status is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys.len(), 3, "unexpected keys: {keys:?}");
+        for key in ["active", "user", "recording"] {
+            assert!(keys.contains(&key), "missing {key}: {keys:?}");
+        }
+        let body = json.to_string();
+        assert!(!body.contains("/srv/data"), "path leaked: {body}");
+        assert!(!body.contains("disk full"), "error text leaked: {body}");
+    }
 
     /// B1.1.6: a prerecorded start must refuse, not replace, an active producer.
     #[tokio::test]
