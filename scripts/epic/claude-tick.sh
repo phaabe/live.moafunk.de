@@ -134,8 +134,17 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 printf 'tick: %s with model=%s effort=%s\n' "$action" "$model" "$effort"
+# `claude -p` cannot show a prompt, and the project settings ask before every
+# push and merge. permission_gate.py answers those prompts: it approves only
+# feature-branch pushes and head-pinned squash merges, and denies the rest.
+gate_config=$(python3 -c '
+import json, sys
+print(json.dumps({"mcpServers": {"epic-gate": {
+    "command": "python3", "args": [sys.argv[1]], "env": {"EPIC_STATE_DIR": sys.argv[2]}}}}))
+' "${repo_root}/scripts/epic/permission_gate.py" "$state_dir")
 run_bounded "${tick_timeout}s" \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
+    --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \
     < "${lock_dir}/prompt.txt"
 python3 scripts/epic/tick_gate.py record --agent claude \
     --action-file "${lock_dir}/action.json"

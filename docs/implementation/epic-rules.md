@@ -174,6 +174,14 @@ order in the epic's batch table ("Scope, in order"; "then" or an arrow starts
 the next stage). Each runner checkout only runs ticks and holds no work. Every
 tick starts with `git pull --ff-only` there, so merged changes to
 `scripts/epic/`, `.claude/commands/epic/` or `.codex/` apply on the next tick;
-a failed pull stops the tick. `python3 scripts/epic/next_action.py --status`
+a failed pull stops the tick. A headless session cannot answer permission
+prompts, and the project settings ask before every push and merge. So
+`claude-tick.sh` hands those prompts to `scripts/epic/permission_gate.py`. It
+approves only `git push [-u] origin <branch>` and `git push origin --delete
+<branch>` for `feat/`, `fix/`, `chore/`, `docs/`, `test/` and `refactor/`
+branches, and `gh pr merge <n> --repo phaabe/live.moafunk.de --squash
+[--delete-branch] --match-head-commit <sha>`. It denies everything else and
+logs each decision to `claude-permissions.log` in the state directory.
+`python3 scripts/epic/next_action.py --status`
 shows the queue for both agents. The loop never releases to `main`, touches
 production, or changes the plan or lanes; those go to Anton.
