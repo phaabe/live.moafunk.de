@@ -45,6 +45,11 @@ ACTIONS = (
 )
 REPO_URL = f"https://github.com/{epic.REPO}"
 LEAF_BOX = re.compile(r"^- \[([ xX])\] \*\*([A-Z]\d+\.\d+\.\d+)\*\*", re.M)
+LEAF_TEXT = re.compile(r"^- \[[ xX]\] \*\*([A-Z]\d+\.\d+\.\d+)\*\*[ \t]*(.*)$", re.M)
+PARENT_LINE = re.compile(r"^Parent:[ \t]*(\S+)", re.M)
+PLAN_TITLE = re.compile(r"^\[([A-Z]\d+(?:\.\d+)*)\][ \t]*")
+# Leaf text starts with markers such as "**Wave 0 (v3).**" or "v3:".
+LEAF_MARKERS = re.compile(r"^(?:\*\*[^*]+\*\*[ \t]*|v\d+(?:[ \t]*\([^)]*\))?:[ \t]*)+")
 
 
 class Metrics:
@@ -141,6 +146,156 @@ def action_labels(action: Json) -> dict[str, str]:
     ):
         target = action["issue"]
     return {"action": kind, "target": target}
+
+
+def short(text: str, limit: int = 75, *, sentence: bool = True) -> str:
+    """Plain text cut to `limit` characters; leaf text keeps its first sentence."""
+    text = re.sub(r"[`*]", "", LEAF_MARKERS.sub("", text.strip()))
+    if sentence:
+        text = re.split(r"(?<=[.;:])\s", text, maxsplit=1)[0].rstrip(".;:")
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def plan_title(item: Json) -> str:
+    """ "[O1.2] Remove the trigger" -> "O1.2 · Remove the trigger"."""
+    title = (item.get("content") or {}).get("title") or item.get("title") or ""
+    title = PLAN_TITLE.sub(lambda m: f"{m.group(1)} · ", title)
+    return short(title.removeprefix("Epic: "), 80, sentence=False)
+
+
+def task_contexts(state: Json) -> list[dict[str, str]]:
+    """Epic > area > task > subtask > leaf > PR for every issue and PR target.
+
+    Panels join these rows onto action metrics by `target`.
+    """
+    issues: dict[int, Json] = {}
+    for item in state["items"]:
+        content = item.get("content") or {}
+        if content.get("type") == "Issue" and content.get("url", "").startswith(
+            f"{REPO_URL}/issues/"
+        ):
+            issues[content["number"]] = item
+    done = epic.done_leaves(state)
+    # The epic's batch tables decide which open leaf an agent takes first.
+    batch = [
+        leaf
+        for comment in state.get("batch_order", [])
+        for _, row in epic.BATCH_ROW.findall(comment)
+        for leaf in epic.LEAF.findall(row)
+    ]
+
+    def batch_rank(leaf: str) -> int:
+        return batch.index(leaf) if leaf in batch else len(batch)
+
+    def chain(number: int | None) -> dict[str, str]:
+        labels = dict.fromkeys(
+            ("epic", "epic_url", "area", "task", "task_url", "subtask", "subtask_url"),
+            "",
+        )
+        if epic_item := issues.get(epic.EPIC):
+            labels["epic"] = plan_title(epic_item)
+            labels["epic_url"] = epic_item["content"]["url"]
+        item = issues.get(number) if number != epic.EPIC else None
+        if item is None:
+            return labels
+        labels["area"] = str(item.get("area") or "")
+        parent_line = PARENT_LINE.search(item["content"].get("body") or "")
+        parent_number = (
+            epic.ISSUE_URL.fullmatch(parent_line.group(1)) if parent_line else None
+        )
+        parent = issues.get(int(parent_number.group(1))) if parent_number else None
+        task, subtask = (
+            (parent, item)
+            if parent and item.get("level") == "Subtask"
+            else (item, None)
+        )
+        labels["task"], labels["task_url"] = plan_title(task), task["content"]["url"]
+        if subtask:
+            labels["subtask"] = plan_title(subtask)
+            labels["subtask_url"] = subtask["content"]["url"]
+        return labels
+
+    def leaf_texts(number: int | None) -> dict[str, str]:
+        item = issues.get(number) if number else None
+        body = (item or {}).get("content", {}).get("body") or ""
+        return {leaf: short(text) for leaf, text in LEAF_TEXT.findall(body)}
+
+    def describe(leaves: list[str], texts: dict[str, str]) -> str:
+        if not leaves:
+            return ""
+        first = (
+            f"{leaves[0]} · {texts[leaves[0]]}" if texts.get(leaves[0]) else leaves[0]
+        )
+        return first + (f" (+{len(leaves) - 1} more)" if len(leaves) > 1 else "")
+
+    rows = []
+    for number, item in issues.items():
+        if number == epic.EPIC or item.get("level") not in ("Task", "Subtask"):
+            continue
+        texts = leaf_texts(number)
+        open_leaves = sorted(
+            (leaf for leaf in texts if leaf not in done), key=batch_rank
+        )
+        rows.append(
+            {
+                "target": item["content"]["url"],
+                **chain(number),
+                "leaf": describe(open_leaves, texts),
+                "leaves_done": f"{len(texts) - len(open_leaves)}/{len(texts)}"
+                if texts
+                else "",
+                "pr": "",
+            }
+        )
+    open_numbers = {pr["number"] for pr in state["prs"]}
+    merged = [pr for pr in state["merged_prs"] if pr.get("number") not in open_numbers]
+    for pr in [*state["prs"], *merged]:
+        body = pr.get("body") or ""
+        number = min(epic.issue_numbers(body), default=None)
+        line = epic.LEAF_IDS_LINE.search(body)
+        leaves = epic.LEAF.findall(line.group(1)) if line else []
+        leaf = describe(leaves, leaf_texts(number))
+        if not leaf and line and "setup" in line.group(1).lower():
+            leaf = "setup (loop and rule files)"
+        title = pr.get("title") or ""
+        rows.append(
+            {
+                "target": f"{REPO_URL}/pull/{pr['number']}",
+                **chain(number),
+                "leaf": leaf,
+                "leaves_done": "",
+                "pr": f"PR {pr['number']}"
+                + (f" · {short(title, 80, sentence=False)}" if title else ""),
+            }
+        )
+    return rows
+
+
+def task_levels(row: dict[str, str]) -> list[dict[str, str]]:
+    """One row per level of a target's path, indented so panels read as a tree."""
+    levels = (
+        ("Epic", row["epic"], row["epic_url"]),
+        ("Area", row["area"], ""),
+        ("Task", row["task"], row["task_url"]),
+        ("Subtask", row["subtask"], row["subtask_url"]),
+        # A leaf lives in its issue body; link that issue.
+        ("Leaf", row["leaf"], row["subtask_url"] or row["task_url"]),
+        ("PR", row["pr"], row["target"] if "/pull/" in row["target"] else ""),
+    )
+    rows = []
+    for level, text, url in levels:
+        if text:
+            indent = "\u2003" * len(rows) + ("└ " if rows else "")
+            rows.append(
+                {
+                    "target": row["target"],
+                    "depth": str(len(rows) + 1),
+                    "level": level,
+                    "text": indent + text,
+                    "url": url,
+                }
+            )
+    return rows
 
 
 def runner_metrics(
@@ -313,6 +468,10 @@ def github_metrics(state: Json, now: float) -> str:
                 draft=str(bool(pr.get("isDraft"))).lower(),
             )
     metrics.add("unattributed_prs", sum(epic.pr_author(pr) is None for pr in prs))
+    for row in task_contexts(filtered):
+        metrics.add("task_context_info", 1, **row)
+        for level in task_levels(row):
+            metrics.add("task_level_info", 1, **level)
     return metrics.render()
 
 
@@ -391,14 +550,19 @@ def run(args: argparse.Namespace) -> None:
         thread.join(timeout=args.github_timeout + 5)
 
 
+def default_state_dir() -> Path:
+    """Match the runners and the Alloy log mount in compose.yaml."""
+    return Path(
+        os.environ.get("EPIC_STATE_DIR") or Path.home() / ".local/state/epic-loop"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output", type=Path, default=Path("tools/agent-monitoring/runtime/metrics")
     )
-    parser.add_argument(
-        "--state-dir", type=Path, default=Path.home() / ".local/state/epic-loop"
-    )
+    parser.add_argument("--state-dir", type=Path, default=default_state_dir())
     parser.add_argument("--pause-file", type=Path, default=Path.home() / ".epic-pause")
     parser.add_argument("--interval", type=float, default=5)
     parser.add_argument("--github-interval", type=float, default=120)

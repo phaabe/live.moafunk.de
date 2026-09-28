@@ -22,7 +22,7 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
-    ports: ["127.0.0.1:19090:9090"]
+    ports: ["127.0.0.1:${AGENT_PROMETHEUS_PORT:-19090}:9090"]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
@@ -36,15 +36,42 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/agents.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/overview.json
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
-    ports: ["127.0.0.1:13000:3000"]
+    ports: ["127.0.0.1:${AGENT_GRAFANA_PORT:-13000}:3000"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  loki:
+    image: grafana/loki:3.7.8
+    command: [-config.file=/etc/loki/loki.yaml]
+    volumes:
+      - ./loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  alloy:
+    image: grafana/alloy:v1.20.0
+    # Root without capabilities cannot write the image's alloy-owned data dir.
+    user: alloy
+    command:
+      - run
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy.alloy:/etc/alloy/config.alloy:ro
+      # Runner logs contain model transcripts; they stay on this Mac.
+      - ${EPIC_STATE_DIR:-${HOME}/.local/state/epic-loop}:/logs:ro
+      - alloy-data:/var/lib/alloy
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 volumes:
   prometheus-data:
   grafana-data:
+  loki-data:
+  alloy-data:

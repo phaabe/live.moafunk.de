@@ -2,6 +2,10 @@
 # Manage the host collector for the current macOS login session.
 set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+# The collector and the Alloy log mount must read the same state directory.
+state_dir="${EPIC_STATE_DIR:-${HOME}/.local/state/epic-loop}"
+[[ "$state_dir" == /* ]] || state_dir="${PWD}/${state_dir}"
+export EPIC_STATE_DIR="$state_dir"
 cd "$repo_root"
 runtime="${repo_root}/tools/agent-monitoring/runtime"
 domain="gui/$(id -u)"
@@ -15,16 +19,21 @@ case "${1:-status}" in
             exit 0
         fi
         mkdir -p "${runtime}/metrics"
-        python3 - "$repo_root" "$runtime" "$label" <<'PY'
+        python3 - "$repo_root" "$runtime" "$label" "$state_dir" <<'PY'
 import os
 from pathlib import Path
 import plistlib
 import sys
 
-root, runtime, label = sys.argv[1:]
+root, runtime, label, state_dir = sys.argv[1:]
 config = {
     "Label": label,
-    "ProgramArguments": [sys.executable, f"{root}/scripts/epic/monitor.py"],
+    "ProgramArguments": [
+        sys.executable,
+        f"{root}/scripts/epic/monitor.py",
+        "--state-dir",
+        state_dir,
+    ],
     "WorkingDirectory": root,
     "EnvironmentVariables": {"PATH": os.environ["PATH"]},
     "RunAtLoad": True,
