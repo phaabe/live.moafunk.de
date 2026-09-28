@@ -317,6 +317,54 @@ class StartAfterTest(unittest.TestCase):
         self.assertEqual(first("Claude", items=items).action, "claim")
 
 
+# The first batch table from the epic, trimmed to the two rows.
+BATCH = f"""**First implementation batch.**
+
+| Executor | Scope, in order |
+| --- | --- |
+| Claude | B1.1.6 ({R}/350) → B3.3.5 ({R}/358) → B5.2.6 ({R}/362), one after another |
+| Codex | O1.2.4 ({R}/381) first; then P1 ({R}/338, {R}/339), O1.1 ({R}/380) and O1.2.2 ({R}/381) |
+"""
+
+
+class BatchOrderTest(unittest.TestCase):
+    def state(self, *numbers: int, done: str = "") -> dict:
+        return {
+            "items": [item(n, "Codex", "Ready") for n in numbers],
+            "batch_order": [BATCH],
+            "merged_prs": [{"body": f"Leaf IDs: {done}"}] if done else [],
+        }
+
+    def test_first_stage_is_claimed_before_lower_numbers(self) -> None:
+        # Found live: Codex claimed 338 again and again while O1.2.4 (381) was open.
+        got = decide("Codex", self.state(338, 339, 380, 381))
+        self.assertEqual([(a.action, a.issue) for a in got], [("claim", f"{R}/381")])
+
+    def test_later_stage_waits_for_earlier_leaves(self) -> None:
+        got = decide("Codex", self.state(338), include_waiting=True)[0]
+        self.assertEqual((got.action, got.reason), ("wait", "starts after O1.2.4"))
+
+    def test_done_leaf_unblocks_later_stage(self) -> None:
+        got = decide("Codex", self.state(338, 339, 380, done="O1.2.4"))[0]
+        self.assertEqual((got.action, got.issue), ("claim", f"{R}/338"))
+
+    def test_arrow_chain_waits_for_every_earlier_leaf(self) -> None:
+        state = self.state()
+        state["items"] = [item(362, "Claude", "Ready")]
+        got = decide("Claude", state, include_waiting=True)[0]
+        self.assertEqual(got.reason, "starts after B1.1.6, B3.3.5")
+
+    def test_other_agents_row_is_ignored(self) -> None:
+        state = self.state()
+        state["items"] = [item(338, "Claude", "Ready")]
+        self.assertEqual(decide("Claude", state)[0].action, "claim")
+
+    def test_comment_without_order_header_is_ignored(self) -> None:
+        state = self.state(338)
+        state["batch_order"] = [BATCH.replace("Scope, in order", "Scope")]
+        self.assertEqual(decide("Codex", state)[0].action, "claim")
+
+
 def rest(i: int, body: str, edited: bool = False) -> dict:
     at = f"2026-09-28T00:{i // 60:02d}:{i % 60:02d}Z"
     return {

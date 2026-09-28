@@ -16,7 +16,7 @@ git fetch -q origin
 python3 scripts/epic/next_action.py --agent claude
 ```
 
-It prints one JSON action. Do **only** that action, then stop. If `$ARGUMENTS` contains `--dry-run`, print the action and what you would do, and change nothing.
+It prints one JSON action. If a selected action is already appended below (headless runner `scripts/epic/claude-tick.sh`), skip this step and use that one. Do **only** that action, then stop. If `$ARGUMENTS` contains `--dry-run`, print the action and what you would do, and change nothing.
 
 ## 2. Act
 
