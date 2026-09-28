@@ -62,8 +62,8 @@ OPEN_KEYS = {
 }
 TICK_KEYS = {
     "tick": str,
-    "start": (int, float),
-    "end": (int, float, type(None)),
+    "start": float,
+    "end": (float, type(None)),
     "exit": (int, type(None)),
     "outcome": str,
     "phase": str,
@@ -74,14 +74,16 @@ TICK_KEYS = {
 
 
 def typed(value: object, schema: dict[str, type | tuple[type, ...]]) -> bool:
+    """Exact types: `bool` is never an `int`, and `float` also accepts `int`."""
+
+    def ok(item: object, kind: type | tuple[type, ...]) -> bool:
+        allowed = kind if isinstance(kind, tuple) else (kind,)
+        return type(item) in allowed or (float in allowed and type(item) is int)
+
     return (
         isinstance(value, dict)
         and set(value) == set(schema)
-        and all(
-            isinstance(value[key], kind)
-            and not (isinstance(value[key], bool) and kind in ((int, float), int))
-            for key, kind in schema.items()
-        )
+        and all(ok(value[key], kind) for key, kind in schema.items())
     )
 
 
@@ -101,11 +103,10 @@ def valid_checkpoint(data: object) -> bool:
                 "open": (dict, type(None)),
                 "ticks": list,
                 "totals": dict,
-                "coverage_start": (int, float),
-                "last_tick": str,
+                "coverage_start": float,
             },
         )
-        and data["v"] == 2
+        and data["v"] == 3
         and data["offset"] >= 0
         and data["baseline"] >= 0
         and (data["open"] is None or typed(data["open"], OPEN_KEYS))
@@ -151,8 +152,11 @@ def nearest_rank(values: list[float], q: float) -> float:
 class LogLedger:
     """Incremental reader of one runner log, with a persisted checkpoint.
 
-    Per cycle the caller runs `update()`, then `save()`, then publishes. A
-    crash in between replays bytes; ticks are deduplicated by start time.
+    Per cycle the caller runs `update()`, then `save()`, then publishes. The
+    checkpoint holds the read offset and the ledger in one atomic write, so a
+    crash before `save()` replays only ticks that were never saved: nothing
+    is counted twice. After truncation or rotation every line is new; the
+    runners only append, so a new file never repeats old ticks.
     """
 
     def __init__(
@@ -169,7 +173,7 @@ class LogLedger:
 
     def fresh(self, now: float, size: int) -> Json:
         return {
-            "v": 2,
+            "v": 3,
             "inode": None,
             "offset": 0,
             "baseline": size,
@@ -179,9 +183,6 @@ class LogLedger:
             "ticks": [],
             "totals": dict.fromkeys(SEVERITY, 0),
             "coverage_start": now,
-            # Start of the newest tick in the ledger. Runner ticks start one
-            # after another (lock), so an older or equal start is a replay.
-            "last_tick": "",
         }
 
     def load(self) -> Json | None:
@@ -295,9 +296,6 @@ class LogLedger:
             "interrupted" if exit_code is None else outcome(exit_code, tick["blocked"])
         )
         live = end > state["baseline"]
-        if tick["tick"] <= state["last_tick"]:
-            return  # replayed after a crash, truncation or rotation
-        state["last_tick"] = tick["tick"]
         phase = ""
         if kind in FAILURES:
             phase = "select" if tick["gh_failed"] else "unknown"

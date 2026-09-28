@@ -125,12 +125,20 @@ nothing a runner writes changes the old log format.
 - New `scripts/epic/ticks.py`: legacy parser, outcome/phase enums, ledger,
   incremental reader, checkpoint. `monitor.py` uses it instead of the 128 KiB
   tail. `epic_last_observed_exit_code` stays until PR 4.
+- Both runner scripts print `tick: finished` **before** releasing the lock
+  (it was after). The line format does not change; the order guarantees the
+  next tick's start line comes after the previous finish.
 - Incremental reading: checkpoint
   `{inode, size, offset, partial_line, ledger, totals, coverage_start}` in
   `runtime/ticks-<agent>.json`.
   - Order per cycle: read new bytes → update ledger and totals → write
-    checkpoint atomically → publish metrics. A crash between steps replays
-    bytes; replay is deduplicated by tick id `(agent, start)`.
+    checkpoint atomically → publish metrics. The checkpoint holds offset
+    and ledger together, so a crash before the write replays only ticks
+    that were never saved; nothing is counted twice. Tick identity is the
+    position in the log, never the wall-clock start (clocks can go back,
+    starts can share a second). The runners only append; a file that
+    repeats old lines after rotation is not supported (its ticks count
+    again).
   - Unfinished last line and split UTF-8 kept in `partial_line`.
   - Truncation (same inode, smaller size) or rotation (new inode) → re-read
     the file; ticks already in `totals` are not counted again.

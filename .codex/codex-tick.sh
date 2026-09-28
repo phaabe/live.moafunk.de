@@ -37,9 +37,11 @@ fi
 child_pid=""
 cleanup() {
     local result=$?
+    # Log the finish while the lock is held, so the next tick's start line
+    # always comes after it (the monitor pairs start and finish lines).
+    printf 'tick: finished exit=%s\n' "$result"
     rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json"
     rmdir "$lock_dir"
-    printf 'tick: finished exit=%s\n' "$result"
 }
 interrupt() {
     trap '' HUP INT TERM

@@ -365,7 +365,25 @@ class LedgerTest(unittest.TestCase):
             {**good, "ticks": [{"tick": "x"}]},
             {**good, "ticks": [{**good["ticks"][0], "outcome": "weird"}]},
             {**good, "open": {"tick": 5}},
-            {**good, "v": 1},
+            {**good, "v": 2},
+            {**good, "inode": True},
+            {**good, "coverage_start": True},
+            {**good, "ticks": [{**good["ticks"][0], "end": True}]},
+            {**good, "ticks": [{**good["ticks"][0], "exit": True}]},
+            {**good, "ticks": [{**good["ticks"][0], "tokens": True}]},
+            {
+                **good,
+                "open": {
+                    "tick": "2026-09-28T12:00:00Z",
+                    "first": False,
+                    "action": "",
+                    "target": "",
+                    "blocked": False,
+                    "gh_failed": False,
+                    "tokens": True,
+                    "want_tokens": False,
+                },
+            },
         ]
         for value in broken:
             with self.subTest(value=value):
@@ -379,20 +397,15 @@ class LedgerTest(unittest.TestCase):
                     len(json.loads(self.checkpoint.read_text())["ticks"]), 1
                 )
 
-    def test_replay_of_many_ticks_after_rotation_is_not_counted_again(self) -> None:
+    def test_ticks_are_counted_even_if_the_clock_goes_back(self) -> None:
+        # Identity is the position in the log, not the wall-clock start time.
         ledger = self.ledger()
         self.run_cycle(ledger, NOON)
-        history = "".join(tick(NOON + 10 + i * 60, 0) for i in range(60))
-        self.append(history)
-        samples = self.run_cycle(ledger, NOON + 4000)
-        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 60)
-        rotated = self.root / "new.log"
-        rotated.write_text(history + tick(NOON + 5000, 1))
-        os.replace(rotated, self.log)
-        samples = self.run_cycle(ledger, NOON + 5100)
-        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 60)
+        self.append(tick(NOON + 60, 0) + tick(NOON + 60, 0) + tick(NOON - 3600, 1))
+        samples = self.run_cycle(ledger, NOON + 120)
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 2)
         self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="error"}'], 1)
-        self.assertEqual(len(ledger.ticks), 61)
+        self.assertEqual(len(ledger.ticks), 3)
 
     def test_replay_of_many_ticks_after_a_crash_is_not_counted_again(self) -> None:
         ledger = self.ledger()
