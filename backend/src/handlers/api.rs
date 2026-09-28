@@ -5455,51 +5455,74 @@ pub async fn api_my_show_confirm(
 // Prerecorded — go live (start streaming the uploaded file)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Query for Go Live. `retry=true` marks an explicit operator retry of a
+/// missed scheduled occurrence; without it the call is automatic admission.
+#[derive(Debug, Deserialize)]
+pub struct GoLiveQuery {
+    pub show_id: i64,
+    #[serde(default)]
+    pub retry: bool,
+}
+
 pub async fn api_my_show_go_live(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ShowIdQuery>,
+    Query(query): Query<GoLiveQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let (user, show) = require_user_show(&state, &headers, query.show_id).await?;
 
-    // A manual start of a missed scheduled occurrence is an operator retry:
-    // record it separately; the occurrence itself stays 'missed' (B1.1.6).
-    let occurrence = show
+    let scheduled_start = show
         .start_time
         .as_deref()
-        .and_then(|t| crate::scheduler::show_start_utc(&show.date, t))
-        .map(|start| start.to_rfc3339());
-    let is_retry = match &occurrence {
-        Some(key) => crate::db::record_prerecorded_retry(&state.db, show.id, key, &user.username)
-            .await
-            .unwrap_or(false),
-        None => false,
+        .and_then(|t| crate::scheduler::show_start_utc(&show.date, t));
+    let Some(scheduled_start) = scheduled_start else {
+        start_prerecorded_show_stream(&state, &show, &user.username).await?;
+        return Ok(go_live_started());
     };
-    if is_retry {
+    let key = scheduled_start.to_rfc3339();
+
+    // An explicit retry of a missed occurrence records itself; the occurrence
+    // stays 'missed' (B1.1.6).
+    if query.retry
+        && crate::db::record_prerecorded_retry(&state.db, show.id, &key, &user.username).await?
+    {
         tracing::info!(
-            "Prerecorded manual retry: show {} occurrence {:?} by '{}'",
+            "Prerecorded manual retry: show {} occurrence {} by '{}'",
             show.id,
-            occurrence,
+            key,
             user.username
         );
-    }
-
-    let result = start_prerecorded_show_stream(&state, &show, &user.username).await;
-    if let (true, Some(key)) = (is_retry, &occurrence) {
+        let result = start_prerecorded_show_stream(&state, &show, &user.username).await;
         let outcome = match &result {
-            Ok(()) => "started".to_string(),
+            Ok(true) => "started".to_string(),
+            Ok(false) => "skipped: already started elsewhere".to_string(),
             Err(e) => format!("failed: {e}"),
         };
-        crate::db::finish_prerecorded_retry(&state.db, show.id, key, &outcome)
-            .await
-            .ok();
+        crate::db::finish_prerecorded_retry(&state.db, show.id, &key, &outcome).await?;
+        result?;
+        return Ok(go_live_started());
     }
-    result?;
 
-    Ok(Json(serde_json::json!({
+    // Anything else (the waiting room's countdown, a reload, a plain click) is
+    // automatic admission and shares the scheduler's occurrence claim.
+    match start_scheduled_prerecorded_occurrence(&state, &show, &user.username, scheduled_start)
+        .await?
+    {
+        Admission::Started | Admission::Skipped => Ok(go_live_started()),
+        Admission::Missed(reason) => Err(AppError::Conflict(reason)),
+        Admission::AlreadyMissed => Err(AppError::Conflict(
+            "This scheduled start was missed and will not start automatically. \
+             Retry explicitly with retry=true."
+                .to_string(),
+        )),
+    }
+}
+
+fn go_live_started() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
         "success": true,
         "message": "Prerecorded stream started",
-    })))
+    }))
 }
 
 /// Start a show's pre-recorded stream: presign the uploaded file, push it
@@ -5528,11 +5551,14 @@ async fn claim_prerecorded_start(db: &sqlx::SqlitePool, show_id: i64) -> Result<
     Ok(claim.rows_affected() > 0)
 }
 
+///
+/// Returns `Ok(true)` only when this call won the claim and started FFmpeg;
+/// `Ok(false)` when another attempt holds the claim (it may still fail).
 pub async fn start_prerecorded_show_stream(
     state: &Arc<AppState>,
     show: &models::Show,
     username: &str,
-) -> Result<()> {
+) -> Result<bool> {
     // Must have a confirmed prerecorded file
     let key = show
         .prerecorded_key
@@ -5549,7 +5575,7 @@ pub async fn start_prerecorded_show_stream(
             "Prerecorded stream for show_id={} already started elsewhere; skipping",
             show.id
         );
-        return Ok(());
+        return Ok(false);
     }
 
     // From here on, any failure must release the claim so a later retry
@@ -5563,43 +5589,68 @@ pub async fn start_prerecorded_show_stream(
         return Err(e);
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// What a scheduled start attempt means for its occurrence record.
 #[derive(Debug, PartialEq)]
 enum OccurrenceOutcome {
-    /// Started (by this attempt or already running): record 'started'.
+    /// This attempt started playback: record 'started'.
     Started,
     /// Refused because another producer is live: keep it consumed, alert once.
     Missed(String),
-    /// Transient failure: release the claim so a later tick may retry.
+    /// Transient failure, or another attempt holds the show claim and may still
+    /// fail: release the claim so a later tick records the real result.
     Release,
 }
 
-fn occurrence_outcome(result: &Result<()>) -> OccurrenceOutcome {
+fn occurrence_outcome(result: &Result<bool>) -> OccurrenceOutcome {
     match result {
-        Ok(()) => OccurrenceOutcome::Started,
+        Ok(true) => OccurrenceOutcome::Started,
+        Ok(false) => OccurrenceOutcome::Release,
         Err(AppError::Conflict(msg)) => OccurrenceOutcome::Missed(msg.clone()),
         Err(_) => OccurrenceOutcome::Release,
     }
 }
 
-/// Scheduler entry point: start one scheduled occurrence at most once.
+/// Result of one automatic admission of a scheduled occurrence.
+#[derive(Debug, PartialEq)]
+pub enum Admission {
+    /// This attempt started playback.
+    Started,
+    /// Nothing done: the occurrence is claimed or started, or another attempt
+    /// holds the show claim.
+    Skipped,
+    /// This attempt was refused (producer busy). The occurrence is now 'missed'
+    /// and the one alert was sent.
+    Missed(String),
+    /// The occurrence was missed earlier. Only an explicit retry may start it.
+    AlreadyMissed,
+}
+
+/// Automatic admission (scheduler or Go Live without retry): start one
+/// scheduled occurrence at most once.
 ///
 /// The occurrence (show + scheduled start in UTC) is claimed first. If another
 /// producer is live the start is refused, the occurrence stays consumed and one
-/// alert is sent, so no later tick, catch-up or restart starts it again. An
-/// operator can still retry with Go Live, which records itself as a retry.
+/// alert is sent, so no later tick, catch-up, restart or page load starts it
+/// again. An operator can still retry with Go Live `retry=true`, which records
+/// itself as a retry.
 pub async fn start_scheduled_prerecorded_occurrence(
     state: &Arc<AppState>,
     show: &models::Show,
     username: &str,
     scheduled_start: chrono::DateTime<chrono::Utc>,
-) -> Result<()> {
+) -> Result<Admission> {
     let key = scheduled_start.to_rfc3339();
     if !crate::db::claim_prerecorded_occurrence(&state.db, show.id, &key).await? {
-        return Ok(()); // already started, missed or claimed: never again automatically
+        // Already claimed, started or missed: never again automatically.
+        let status = crate::db::prerecorded_occurrence_status(&state.db, show.id, &key).await?;
+        return Ok(if status.as_deref() == Some("missed") {
+            Admission::AlreadyMissed
+        } else {
+            Admission::Skipped
+        });
     }
     tracing::info!(
         "Prerecorded auto-start: starting show {} ('{}') for user '{}'",
@@ -5613,6 +5664,7 @@ pub async fn start_scheduled_prerecorded_occurrence(
         OccurrenceOutcome::Started => {
             crate::db::finish_prerecorded_occurrence(&state.db, show.id, &key, "started", None)
                 .await?;
+            Ok(Admission::Started)
         }
         OccurrenceOutcome::Missed(reason) => {
             crate::db::finish_prerecorded_occurrence(
@@ -5630,12 +5682,13 @@ pub async fn start_scheduled_prerecorded_occurrence(
                 reason
             );
             telegram_notify::notify_prerecorded_missed(state, show.id, &show.title, &key, &reason);
+            Ok(Admission::Missed(reason))
         }
         OccurrenceOutcome::Release => {
             crate::db::release_prerecorded_occurrence(&state.db, show.id, &key).await?;
+            result.map(|_| Admission::Skipped)
         }
     }
-    result
 }
 
 async fn start_claimed_prerecorded_stream(
@@ -5816,7 +5869,7 @@ mod tests {
 
     #[test]
     fn producer_busy_marks_the_occurrence_missed() {
-        let busy: crate::Result<()> = Err(AppError::Conflict("Another producer is live".into()));
+        let busy: crate::Result<bool> = Err(AppError::Conflict("Another producer is live".into()));
         assert_eq!(
             occurrence_outcome(&busy),
             OccurrenceOutcome::Missed("Another producer is live".into())
@@ -5825,9 +5878,15 @@ mod tests {
 
     #[test]
     fn transient_errors_release_and_success_starts() {
-        let transient: crate::Result<()> = Err(AppError::Internal("presign failed".into()));
+        let transient: crate::Result<bool> = Err(AppError::Internal("presign failed".into()));
         assert_eq!(occurrence_outcome(&transient), OccurrenceOutcome::Release);
-        assert_eq!(occurrence_outcome(&Ok(())), OccurrenceOutcome::Started);
+        assert_eq!(occurrence_outcome(&Ok(true)), OccurrenceOutcome::Started);
+    }
+
+    /// A lost show claim is not confirmed playback: the other attempt may fail.
+    #[test]
+    fn losing_the_show_claim_releases_instead_of_starting() {
+        assert_eq!(occurrence_outcome(&Ok(false)), OccurrenceOutcome::Release);
     }
 
     async fn shows_test_pool() -> sqlx::SqlitePool {

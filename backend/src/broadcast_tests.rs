@@ -7,11 +7,15 @@ use serde_json::{json, Value};
 async fn state() -> (Arc<AppState>, tempfile::TempDir) {
     let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
     db::run_migrations(&db).await.unwrap();
-    let config: Config = serde_json::from_value(json!({
+    let mut config: Config = serde_json::from_value(json!({
         "secret_key": "test-only", "superadmin_password_hash": "unused",
-        "r2_account_id": "unused", "r2_access_key_id": "unused", "r2_secret_access_key": "unused"
+        "r2_account_id": "unused", "r2_access_key_id": "unused", "r2_secret_access_key": "unused",
+        // Never push a test stream to the production default.
+        "rtmp_url": "rtmp://127.0.0.1:1/live"
     }))
     .unwrap();
+    // Local dead end so presigning works offline.
+    config.r2_endpoint = "http://127.0.0.1:1".to_string();
     let temp = tempfile::tempdir().unwrap();
     let state = Arc::new(AppState {
         db,
@@ -206,4 +210,238 @@ async fn stop_handler_allows_admins_and_owner_but_rejects_another_host() {
         assert_eq!(stopped["message"], "Stream stopped");
         assert!(!state.stream_state.lock().await.is_active());
     }
+}
+
+// ── B1.1.6: prerecorded occurrences ─────────────────────────────────────────
+
+const SHOW_START: &str = "2026-09-26T18:00:00+00:00"; // 20:00 Berlin (CEST)
+
+async fn prerecorded_show(state: &Arc<AppState>, host: i64) {
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, start_time, end_time, show_type, host_user_id, \
+         stream_mode, prerecorded_key, prerecorded_confirmed_at) \
+         VALUES (1, 'Tape', '2026-09-26', '20:00', '22:00', 'external', ?, 'prerecorded', \
+         'shows/tape.mp3', datetime('now'))",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+async fn show(state: &Arc<AppState>) -> models::Show {
+    sqlx::query_as("SELECT * FROM shows WHERE id = 1")
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+/// Another producer (a live broadcast) is on air.
+async fn producer_busy(state: &Arc<AppState>) {
+    let child = tokio::process::Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    state
+        .stream_state
+        .lock()
+        .await
+        .set_active_for_test("live-host", child);
+}
+
+async fn producer_ends(state: &Arc<AppState>) {
+    state.stream_state.lock().await.stop_stream().await.unwrap();
+}
+
+async fn on_air(state: &Arc<AppState>) -> Option<String> {
+    let stream = state.stream_state.lock().await;
+    stream
+        .is_active()
+        .then(|| stream.current_user.clone())
+        .flatten()
+}
+
+async fn scheduler_tick(state: &Arc<AppState>) -> handlers::api::Admission {
+    let start = chrono::DateTime::parse_from_rfc3339(SHOW_START)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    handlers::api::start_scheduled_prerecorded_occurrence(state, &show(state).await, "host", start)
+        .await
+        .unwrap()
+}
+
+async fn go_live(state: &Arc<AppState>, headers: &HeaderMap, retry: bool) -> Result<()> {
+    handlers::api::api_my_show_go_live(
+        State(state.clone()),
+        Query(handlers::api::GoLiveQuery { show_id: 1, retry }),
+        headers.clone(),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// (status, manual_retries, last_retry_by, last_retry_result)
+async fn occurrence(
+    state: &Arc<AppState>,
+) -> Option<(String, i64, Option<String>, Option<String>)> {
+    sqlx::query_as(
+        "SELECT status, manual_retries, last_retry_by, last_retry_result \
+         FROM prerecorded_occurrences WHERE show_id = 1 AND scheduled_start_utc = ?",
+    )
+    .bind(SHOW_START)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap()
+}
+
+async fn show_claimed(state: &Arc<AppState>) -> bool {
+    show(state).await.prerecorded_started_at.is_some()
+}
+
+/// Review finding 1: opening or reloading the on-air page calls Go Live on its
+/// own. That must not start a missed occurrence; only an explicit retry may.
+#[tokio::test]
+async fn automatic_go_live_cannot_start_a_missed_occurrence_but_explicit_retry_can() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+    let headers = headers(&state, host).await;
+
+    producer_busy(&state).await;
+    assert!(matches!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Missed(_)
+    ));
+    db::run_migrations(&state.db).await.unwrap(); // API restart
+    producer_ends(&state).await; // still inside the show's window
+
+    for _ in 0..2 {
+        assert_eq!(
+            scheduler_tick(&state).await,
+            handlers::api::Admission::AlreadyMissed,
+            "no second start and no second alert"
+        );
+        let page_load = go_live(&state, &headers, false).await;
+        assert!(matches!(page_load, Err(AppError::Conflict(_))));
+    }
+    assert_eq!(on_air(&state).await, None);
+    assert!(!show_claimed(&state).await);
+    assert_eq!(occurrence(&state).await.unwrap().1, 0, "no retry recorded");
+
+    if let Err(e) = go_live(&state, &headers, true).await {
+        panic!("explicit retry must start: {e}");
+    }
+    assert_eq!(on_air(&state).await.as_deref(), Some("host"));
+    assert_eq!(
+        occurrence(&state).await,
+        Some((
+            "missed".to_string(),
+            1,
+            Some("host".to_string()),
+            Some("started".to_string())
+        )),
+        "the retry is logged as a retry; missed playback never becomes 'started'"
+    );
+    producer_ends(&state).await;
+}
+
+/// The waiting room's automatic Go Live shares the scheduler's occurrence claim.
+#[tokio::test]
+async fn refused_page_admission_consumes_the_occurrence_for_the_scheduler() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+    let headers = headers(&state, host).await;
+
+    producer_busy(&state).await;
+    assert!(matches!(
+        go_live(&state, &headers, false).await,
+        Err(AppError::Conflict(_))
+    ));
+    assert_eq!(occurrence(&state).await.unwrap().0, "missed");
+    producer_ends(&state).await;
+    assert_eq!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::AlreadyMissed
+    );
+    assert_eq!(on_air(&state).await, None);
+}
+
+/// Review finding 2: the scheduler claims the occurrence but loses the show
+/// claim to another attempt that later fails. The scheduler must not record
+/// 'started'; the next tick records the real result.
+#[tokio::test]
+async fn losing_the_show_claim_never_records_playback_busy_failure() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+    let headers = headers(&state, host).await;
+    producer_busy(&state).await;
+
+    // Another attempt holds the show claim while it starts.
+    sqlx::query("UPDATE shows SET prerecorded_started_at = datetime('now') WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Skipped
+    );
+    assert_eq!(occurrence(&state).await, None, "not recorded as started");
+
+    // That attempt fails with producer busy and clears its show claim.
+    sqlx::query("UPDATE shows SET prerecorded_started_at = NULL WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let mut alerts = 0;
+    for _ in 0..3 {
+        if matches!(
+            scheduler_tick(&state).await,
+            handlers::api::Admission::Missed(_)
+        ) {
+            alerts += 1;
+        }
+    }
+    assert_eq!(alerts, 1, "exactly one alert for the occurrence");
+    assert_eq!(occurrence(&state).await.unwrap().0, "missed");
+
+    // The missed occurrence stays eligible for an explicit retry.
+    producer_ends(&state).await;
+    if let Err(e) = go_live(&state, &headers, true).await {
+        panic!("explicit retry must start: {e}");
+    }
+    assert_eq!(occurrence(&state).await.unwrap().1, 1);
+    producer_ends(&state).await;
+}
+
+#[tokio::test]
+async fn losing_the_show_claim_never_records_playback_transient_failure() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+
+    sqlx::query("UPDATE shows SET prerecorded_started_at = datetime('now') WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Skipped
+    );
+    assert_eq!(occurrence(&state).await, None);
+
+    // That attempt fails transiently and clears its show claim.
+    sqlx::query("UPDATE shows SET prerecorded_started_at = NULL WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Started
+    );
+    assert_eq!(occurrence(&state).await.unwrap().0, "started");
+    assert_eq!(on_air(&state).await.as_deref(), Some("host"));
+    producer_ends(&state).await;
 }

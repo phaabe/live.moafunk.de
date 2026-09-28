@@ -420,6 +420,8 @@ pub async fn check_prerecorded_show_start(state: Arc<AppState>) {
             continue;
         };
 
+        // A missed occurrence is logged and alerted once inside; later ticks
+        // get AlreadyMissed and stay quiet.
         if let Err(e) = crate::handlers::api::start_scheduled_prerecorded_occurrence(
             &state, show, &username, start,
         )

@@ -191,6 +191,13 @@ impl StreamState {
         self.current_user.is_some() && (self.ffmpeg_stdin.is_some() || self.ffmpeg_handle.is_some())
     }
 
+    /// Test stand-in for another producer: `child` plays its FFmpeg process.
+    #[cfg(test)]
+    pub(crate) fn set_active_for_test(&mut self, user: &str, child: Child) {
+        self.current_user = Some(user.to_string());
+        self.ffmpeg_handle = Some(child);
+    }
+
     /// Returns true if recording to file is active.
     pub fn is_recording(&self) -> bool {
         self.recording_tx.is_some()

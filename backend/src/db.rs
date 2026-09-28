@@ -1024,6 +1024,22 @@ pub async fn release_prerecorded_occurrence(
     Ok(())
 }
 
+/// Status of a scheduled prerecorded start ('claimed', 'started', 'missed').
+pub async fn prerecorded_occurrence_status(
+    pool: &SqlitePool,
+    show_id: i64,
+    scheduled_start_utc: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT status FROM prerecorded_occurrences \
+         WHERE show_id = ? AND scheduled_start_utc = ?",
+    )
+    .bind(show_id)
+    .bind(scheduled_start_utc)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Record an operator's manual retry of a missed occurrence. Returns true if
 /// the occurrence was missed (so this start is a retry). `status` stays 'missed'.
 pub async fn record_prerecorded_retry(
