@@ -42,7 +42,11 @@ class ClaudeTickTest(unittest.TestCase):
         )
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
-        (bin_dir / "git").write_text("#!/bin/bash\nexit 0\n")
+        (bin_dir / "git").write_text(
+            "#!/bin/bash\n"
+            'printf \'["git", "%s"]\\n\' "$*" >> "$TEST_CALLS"\n'
+            'exit "${TEST_GIT_EXIT:-0}"\n'
+        )
         (bin_dir / "claude").write_text(
             "#!/bin/bash\n"
             'printf \'["claude", "%s"]\\n\' "$*" >> "$TEST_CALLS"\n'
@@ -76,11 +80,17 @@ class ClaudeTickTest(unittest.TestCase):
         self.assertEqual(
             self.calls_made(),
             [
+                ["git", "pull -q --ff-only"],
                 ["gate", "check"],
                 ["claude", "-p --model opus --effort high --permission-mode auto"],
                 ["gate", "record"],
             ],
         )
+        self.assertFalse((self.state / "claude.lock").exists())
+
+    def test_failed_pull_stops_the_tick(self) -> None:
+        self.assertEqual(self.run_tick(TEST_GIT_EXIT="1").wait(timeout=30), 1)
+        self.assertEqual(self.calls_made(), [["git", "pull -q --ff-only"]])
         self.assertFalse((self.state / "claude.lock").exists())
 
     def test_term_stops_the_model_before_the_lock_is_released(self) -> None:

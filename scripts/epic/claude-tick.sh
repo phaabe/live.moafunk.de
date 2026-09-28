@@ -92,7 +92,12 @@ run_bounded() {
 
 printf '\ntick: started %s repo=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$repo_root"
 cd "$repo_root"
-git fetch -q origin
+# Keep the runner on the latest scripts and tick instructions. The checkout only
+# runs ticks, so a failed fast-forward (local changes, diverged) stops the tick.
+if ! git pull -q --ff-only; then
+    printf 'tick: git pull --ff-only failed; fix the runner checkout\n' >&2
+    exit 1
+fi
 run_bounded "${select_timeout}s" \
     python3 scripts/epic/next_action.py --agent claude > "${lock_dir}/action.json"
 cat "${lock_dir}/action.json"
