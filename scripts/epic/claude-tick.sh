@@ -90,7 +90,8 @@ run_bounded() {
     return "$result"
 }
 
-printf '\ntick: started %s repo=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$repo_root"
+tick_started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+printf '\ntick: started %s repo=%s\n' "$tick_started" "$repo_root"
 cd "$repo_root"
 # Keep the runner on the latest scripts and tick instructions. The checkout only
 # runs ticks, so a failed fast-forward (local changes, diverged) stops the tick.
@@ -148,3 +149,7 @@ run_bounded "${tick_timeout}s" \
     < "${lock_dir}/prompt.txt"
 python3 scripts/epic/tick_gate.py record --agent claude \
     --action-file "${lock_dir}/action.json"
+# A session can exit 0 while its push or merge was denied. Check GitHub. The
+# gate is already recorded, so a failure is reported without a retry storm.
+python3 scripts/epic/tick_verify.py --agent claude \
+    --action-file "${lock_dir}/action.json" --since "$tick_started"
