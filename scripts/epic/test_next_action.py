@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
-from next_action import MAX_ROUNDS, comments_from_rest, decide
+from next_action import MAX_ROUNDS, comments_from_rest, decide, read_focus, status
 
 A = "a" * 40
 B = "b" * 40
@@ -42,12 +44,18 @@ def pr(
     return base
 
 
-def item(number: int, executor: str, status: str, wave: str = "0") -> dict:
+def item(
+    number: int,
+    executor: str,
+    status: str,
+    wave: str = "0",
+    labels: list[str] | None = None,
+) -> dict:
     return {
         "executor": executor,
         "status": status,
         "wave": wave,
-        "labels": [],
+        "labels": labels or [],
         "content": {"type": "Issue", "number": number, "url": f"{R}/{number}"},
     }
 
@@ -260,6 +268,75 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(
             first("Claude", prs, [item(10, "Claude", "Ready")]).action, "idle"
         )
+
+
+STREAM = frozenset({"project::Stream"})
+
+
+class FocusTest(unittest.TestCase):
+    def test_claims_only_issues_in_focus(self) -> None:
+        items = [
+            item(5, "Claude", "Ready", labels=["project::Infrastructure"]),
+            item(6, "Claude", "Ready", labels=["project::Stream"]),
+        ]
+        got = decide("Claude", {"items": items}, focus=STREAM)[0]
+        self.assertEqual((got.action, got.issue), ("claim", f"{R}/6"))
+
+    def test_no_focus_keeps_everything(self) -> None:
+        items = [item(5, "Claude", "Ready", labels=["project::Infrastructure"])]
+        self.assertEqual(decide("Claude", {"items": items})[0].action, "claim")
+
+    def test_pr_follows_its_issue_labels(self) -> None:
+        approved = [verdict("APPROVED", "Codex", A, "t1")]
+        inside = pr(1, "Claude", comments=approved)  # Issue: .../901
+        outside = pr(2, "Claude", comments=approved)  # Issue: .../902
+        items = [
+            item(901, "Claude", "In review", labels=["project::Stream"]),
+            item(902, "Claude", "In review", labels=["project::Backup"]),
+        ]
+        acts = decide(
+            "Claude", {"prs": [outside, inside], "items": items}, focus=STREAM
+        )
+        self.assertEqual([(a.action, a.pr) for a in acts], [("merge", 1)])
+
+    def test_foreign_issue_with_same_number_does_not_focus_pr(self) -> None:
+        # Project boards may hold issues from other repositories.
+        approved = [verdict("APPROVED", "Codex", A, "t1")]
+        local = item(901, "Claude", "In review", labels=["project::Backup"])
+        foreign = item(901, "Claude", "In review", labels=["project::Stream"])
+        foreign["content"]["url"] = "https://github.com/other/repo/issues/901"
+        for items in ([local, foreign], [foreign, local]):
+            p = pr(1, "Claude", comments=approved)  # Issue: .../901
+            got = decide("Claude", {"prs": [p], "items": items}, focus=STREAM)[0]
+            self.assertEqual(got.action, "idle")
+
+    def test_pr_own_label_counts(self) -> None:
+        p = pr(3, "Codex", labels=[{"name": "project::Stream"}])
+        got = decide("Claude", {"prs": [p]}, focus=STREAM)[0]
+        self.assertEqual((got.action, got.pr), ("review", 3))
+
+    def test_frozen_pr_gets_no_action_but_still_counts(self) -> None:
+        # Out-of-focus PRs keep their issue linked and count toward the PR limit.
+        frozen = [pr(n, "Claude") for n in (1, 2)]  # issues 901, 902: unlabelled
+        items = [item(7, "Claude", "Ready", labels=["project::Stream"])]
+        got = decide("Claude", {"prs": frozen, "items": items}, focus=STREAM)[0]
+        self.assertEqual(got.action, "idle")
+        self.assertIn("project::Stream", got.reason)
+
+    def test_read_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "focus"
+            self.assertEqual(read_focus(path), frozenset())
+            path.write_text("# stream first\nproject::Stream\n\n  project::Backup \n")
+            self.assertEqual(
+                read_focus(path), frozenset({"project::Stream", "project::Backup"})
+            )
+            path.write_text("")
+            self.assertEqual(read_focus(path), frozenset())
+
+    def test_status_names_the_focus(self) -> None:
+        self.assertIn("Focus: project::Stream", status({}, False, STREAM))
+        self.assertIn("Focus: all", status({}, False))
 
 
 class StartAfterTest(unittest.TestCase):

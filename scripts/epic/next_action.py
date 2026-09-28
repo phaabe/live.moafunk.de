@@ -7,6 +7,10 @@ restarted agent picks up where it stopped.
 
 Priority (first match wins), see docs/implementation/epic-rules.md section 8:
   stop      pause file exists
+
+Focus: when ~/.epic-focus lists labels (one per line, e.g. project::Stream),
+only issues with one of them, and PRs whose own labels or `Issue:` ticket have
+one, get actions. Everything else is frozen. No file or an empty file: all.
   escalate  my PR reached MAX_ROUNDS changes-requested verdicts
   merge     my PR is approved for its head, checks green, no conflict
   fix       my PR has a changes-requested verdict for its head
@@ -22,6 +26,7 @@ Usage:
   next_action.py --agent claude|codex        one JSON action
   next_action.py --status                    all pending actions, both agents
   next_action.py ... --state-file state.json use saved state (tests, dry runs)
+  next_action.py ... --focus project::Stream  override ~/.epic-focus (repeatable)
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ AGENTS = ("Claude", "Codex")
 MAX_ROUNDS = 3
 MAX_OPEN_PRS = 2
 PAUSE_FILE = Path.home() / ".epic-pause"
+FOCUS_FILE = Path.home() / ".epic-focus"
 ESCALATION_LABEL = "needs-anton"
 
 VERDICT = re.compile(
@@ -214,23 +220,58 @@ def batch_blockers(state: dict[str, Any], agent: str) -> dict[int, set[str]]:
     return blockers
 
 
+def read_focus(path: Path) -> frozenset[str]:
+    """Labels in the focus file; empty when the file is missing or empty."""
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        return frozenset()
+    stripped = (line.strip() for line in lines)
+    return frozenset(line for line in stripped if line and not line.startswith("#"))
+
+
+def in_focus(
+    focus: frozenset[str], pr: dict[str, Any], issue_labels: dict[int, set[str]]
+) -> bool:
+    """A PR is in focus through its own labels or its `Issue:` tickets' labels."""
+    found = set(labels(pr))
+    for n in issue_numbers(pr.get("body") or ""):
+        found |= issue_labels.get(n, set())
+    return bool(found & focus)
+
+
 def decide(
     agent: str,
     state: dict[str, Any],
     paused: bool = False,
     include_waiting: bool = False,
+    focus: frozenset[str] = frozenset(),
 ) -> list[Action]:
     """All actions for the agent, highest priority first. Never empty.
 
     `include_waiting` adds `wait` entries (Ready leaves blocked by "Start after")
     for --status; they are never returned as the action to do.
+    `focus` limits actions to issues and PRs with one of these labels.
     """
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
     peer = other(agent)
+    # Project boards may hold issues from other repositories with the same number.
+    issue_labels = {
+        i["content"]["number"]: labels(i)
+        for i in state.get("items", [])
+        if (i.get("content") or {}).get("type") == "Issue"
+        and ISSUE_URL.fullmatch(i["content"].get("url") or "")
+    }
     all_prs = [p for p in state.get("prs", []) if p.get("baseRefName") in BASES]
     # Escalated PRs get no PR action, but still link their issue and count as open.
-    prs = [p for p in all_prs if ESCALATION_LABEL not in labels(p)]
+    # So do PRs outside the focus: they are frozen, not forgotten.
+    prs = [
+        p
+        for p in all_prs
+        if ESCALATION_LABEL not in labels(p)
+        and (not focus or in_focus(focus, p, issue_labels))
+    ]
     mine = [p for p in prs if pr_author(p) == agent]
     theirs = [p for p in prs if pr_author(p) == peer]
     ranked: dict[str, list[Action]] = {}
@@ -329,6 +370,7 @@ def decide(
         if i.get("executor") == agent
         and (i.get("content") or {}).get("type") == "Issue"
         and ESCALATION_LABEL not in labels(i)
+        and (not focus or labels(i) & focus)
     ]
     items.sort(key=lambda i: (str(i.get("wave") or "9"), i["content"]["number"]))
     done = done_leaves(state)
@@ -369,6 +411,8 @@ def decide(
         actions = [
             a for a in actions if a.action != "claim"
         ]  # one implementation at a time
+    if not actions and focus:
+        return [Action("idle", f"nothing to do in focus {', '.join(sorted(focus))}")]
     return actions or [Action("idle", "nothing to do")]
 
 
@@ -490,11 +534,16 @@ def fetch_state() -> dict[str, Any]:
     }
 
 
-def status(state: dict[str, Any], paused: bool) -> str:
-    lines = [f"Paused: {'yes' if paused else 'no'}"]
+def status(
+    state: dict[str, Any], paused: bool, focus: frozenset[str] = frozenset()
+) -> str:
+    lines = [
+        f"Paused: {'yes' if paused else 'no'}",
+        f"Focus: {', '.join(sorted(focus)) if focus else 'all'}",
+    ]
     for agent in AGENTS:
         lines.append(f"\n{agent}:")
-        for a in decide(agent, state, paused, include_waiting=True):
+        for a in decide(agent, state, paused, include_waiting=True, focus=focus):
             target = f"PR {a.pr}" if a.pr else (a.issue or "")
             lines.append(f"  {a.action:<17} {target:<55} {a.reason}")
     unknown = [
@@ -518,18 +567,22 @@ def main() -> int:
     parser.add_argument(
         "--dump-state", type=Path, help="save the fetched state as JSON"
     )
+    parser.add_argument(
+        "--focus", action="append", help=f"label to work on; overrides {FOCUS_FILE}"
+    )
     args = parser.parse_args()
 
     paused = PAUSE_FILE.exists()
+    focus = frozenset(args.focus) if args.focus else read_focus(FOCUS_FILE)
     state = (
         json.loads(args.state_file.read_text()) if args.state_file else fetch_state()
     )
     if args.dump_state:
         args.dump_state.write_text(json.dumps(state, indent=1))
     if args.status:
-        print(status(state, paused))
+        print(status(state, paused, focus))
     else:
-        print(decide(args.agent.capitalize(), state, paused)[0].to_json())
+        print(decide(args.agent.capitalize(), state, paused, focus=focus)[0].to_json())
     return 0
 
 
