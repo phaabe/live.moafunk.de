@@ -32,6 +32,8 @@ WRAPPERS = {
     "sudo",
     "xargs",
     "builtin",
+    "timeout",
+    "gtimeout",
 }
 SHELLS = {"bash", "sh", "zsh", "dash"}
 # Shell words that come before a command: `if x; then gh ...`, `do gh ...`.
@@ -123,8 +125,31 @@ def split_substitutions(command: str, heredoc: bool = False) -> tuple[str, list[
     return "".join(rest), bodies
 
 
+def join_continuations(command: str) -> str:
+    """Drop backslash-newline outside single quotes, as the shell does."""
+    out: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        c = command[i]
+        if c == "\\" and quote != "'":
+            if command.startswith("\n", i + 1):
+                i += 2
+                continue
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        if c in "'\"" and quote in ("", c):
+            quote = "" if quote else c
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def tokens(command: str) -> list[str]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+    lexer = shlex.shlex(
+        join_continuations(command), posix=True, punctuation_chars=";&|()\n"
+    )
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     return list(lexer)

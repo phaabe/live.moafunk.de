@@ -68,6 +68,13 @@ class WatchGuard(unittest.TestCase):
             "gh -R o/r run watch 1",
             "gh run --repo=o/r watch 1",
             "gh run -Ro/r watch 1",
+            "gh pr checks 464 \\\n  --watch",
+            "gh \\\n  run watch 123",
+            'gh pr checks 464 "x" \\\n  --watch',
+            "timeout 300 gh pr checks 464 --watch",
+            "timeout 300 gh run watch 123",
+            "gtimeout -k 5 300 gh run watch 1",
+            "timeout --signal=INT 5m gh pr checks 1 --watch",
         ):
             with self.subTest(cmd=cmd):
                 self.assertEqual(hook(cmd), 2)
@@ -96,6 +103,10 @@ class WatchGuard(unittest.TestCase):
             "gh pr -R o/r checks 464",
             "gh run -R o/r view 123",
             "gh pr view -R o/r 5 --json title",
+            "gh pr checks 464 \\\n  --json name",
+            "echo 'gh pr checks 1 \\\n --watch'",
+            "timeout 300 gh pr checks 464",
+            "timeout 60 python3 scripts/gh_checks/wait_checks.py 464",
             "echo then gh run watch",
             "if true; then echo 'gh run watch'; fi",
             'cat <<< "gh run watch 1"',
