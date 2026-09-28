@@ -47,7 +47,8 @@ FINISH = re.compile(r"tick: finished exit=(\d{1,3})")
 BLOCKED = "backoff: model reported blocked: "
 # The selector (next_action.py) failed on a gh call before any model ran.
 GH_FAILED = re.compile(r"subprocess\.CalledProcessError: Command '\['gh', ")
-TOKENS = re.compile(r"[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+")
+# At most 15 digits: int() of a huge string raises, and no session is that big.
+TOKENS = re.compile(r"[0-9]{1,3}(?:,[0-9]{3}){0,4}|[0-9]{1,15}")
 
 
 OPEN_KEYS = {
@@ -61,6 +62,7 @@ OPEN_KEYS = {
     "want_tokens": bool,
 }
 TICK_KEYS = {
+    "id": str,
     "tick": str,
     "start": float,
     "end": (float, type(None)),
@@ -106,7 +108,7 @@ def valid_checkpoint(data: object) -> bool:
                 "coverage_start": float,
             },
         )
-        and data["v"] == 3
+        and data["v"] == 4
         and data["offset"] >= 0
         and data["baseline"] >= 0
         and (data["open"] is None or typed(data["open"], OPEN_KEYS))
@@ -173,7 +175,7 @@ class LogLedger:
 
     def fresh(self, now: float, size: int) -> Json:
         return {
-            "v": 3,
+            "v": 4,
             "inode": None,
             "offset": 0,
             "baseline": size,
@@ -205,7 +207,22 @@ class LogLedger:
         if self.state is None:
             self.state = self.load() or self.fresh(now, stat.st_size)
             self.dirty = True
-        state = self.state
+        # All or nothing: an exception while parsing restores the old state, so
+        # a tick is never counted without its offset being committed.
+        before = self.state
+        state = self.state = {
+            **before,
+            "ticks": list(before["ticks"]),
+            "totals": dict(before["totals"]),
+            "open": dict(before["open"]) if before["open"] else None,
+        }
+        try:
+            self.read(state, stat, now)
+        except BaseException:
+            self.state = before
+            raise
+
+    def read(self, state: Json, stat: os.stat_result, now: float) -> None:
         if state["inode"] is not None and (
             stat.st_ino != state["inode"] or stat.st_size < state["offset"]
         ):
@@ -299,8 +316,11 @@ class LogLedger:
         phase = ""
         if kind in FAILURES:
             phase = "select" if tick["gh_failed"] else "unknown"
+        # Starts can share a second; the exported label must stay unique.
+        same = sum(t["tick"] == tick["tick"] for t in state["ticks"][-RECENT:])
         state["ticks"].append(
             {
+                "id": tick["tick"] + (f"#{same + 1}" if same else ""),
                 "tick": tick["tick"],
                 "start": utc(tick["tick"]),
                 # The log has no finish time; a live read is up to one cycle late.
@@ -426,7 +446,7 @@ def export(metrics: Sink, ledger: LogLedger, now: float) -> None:
             "tick_info",
             tick["end"] - tick["start"] if tick["end"] is not None else -1,
             agent=agent,
-            tick=tick["tick"],
+            tick=tick["id"],
             action=tick["action"],
             target=tick["target"],
             outcome=tick["outcome"],

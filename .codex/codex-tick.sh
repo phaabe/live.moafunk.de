@@ -39,7 +39,8 @@ cleanup() {
     local result=$?
     # Log the finish while the lock is held, so the next tick's start line
     # always comes after it (the monitor pairs start and finish lines).
-    printf 'tick: finished exit=%s\n' "$result"
+    # A failed log write must not skip the lock release below (set -e).
+    printf 'tick: finished exit=%s\n' "$result" || true
     rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json"
     rmdir "$lock_dir"
 }

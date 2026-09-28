@@ -451,6 +451,48 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(len(ledger.ticks), 1)
         self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 1)
 
+    def test_parse_failure_mid_read_changes_nothing(self) -> None:
+        calls = {"fail": True}
+
+        def normalize(action: dict) -> dict[str, str]:
+            if calls["fail"] and action.get("action") == "merge":
+                raise RuntimeError("boom")
+            return monitor.action_labels(action)
+
+        ledger = ticks.LogLedger("codex", self.log, self.checkpoint, normalize)
+        self.run_cycle(ledger, NOON)
+        self.append(
+            tick(NOON + 10, 0) + tick(NOON + 70, 0, action='{"action": "merge"}')
+        )
+        with self.assertRaises(RuntimeError):
+            ledger.update(NOON + 100)
+        self.assertEqual(ledger.ticks, [])
+        self.assertEqual(ledger.state["totals"]["ok"], 0)
+        calls["fail"] = False
+        samples = self.run_cycle(ledger, NOON + 110)
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 2)
+
+    def test_oversized_token_count_is_ignored_not_a_crash(self) -> None:
+        self.log.write_text(tick(NOON, 0, body="tokens used\n" + "9" * 5000))
+        ledger = self.ledger()
+        ledger.update(NOON)
+        self.assertEqual(self.last(ledger)["tokens"], None)
+
+    def test_ticks_with_the_same_start_get_unique_labels(self) -> None:
+        self.log.write_text(tick(NOON, 0) + tick(NOON, 1) + tick(NOON, 0))
+        ledger = self.ledger()
+        ledger.update(NOON + 10)
+        metrics = Metrics()
+        ticks.export(metrics, ledger, NOON + 10)
+        rows = [
+            line.rsplit(" ", 1)[0]
+            for line in metrics.lines
+            if line.startswith("epic_tick_info{")
+        ]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(set(rows)), 3)
+        self.assertIn('tick="2026-09-28T12:00:00Z#2"', "\n".join(rows))
+
     # Derived gauges
 
     def test_consecutive_failures_skip_blocked_and_reset_on_ok(self) -> None:
