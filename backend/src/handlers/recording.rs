@@ -614,8 +614,8 @@ async fn recording_already_persisted(state: &Arc<AppState>, show_id: i64, versio
 /// On a crash/restart the recorder FFmpeg is killed (`kill_on_drop`), leaving a
 /// `recording_{show_id}_{version}.segs/` directory of finalized MPEG-TS segments
 /// that nothing ever concatenates or uploads — the show would otherwise be
-/// silently lost (the dead-man's-switch alerts but can't recover it, and
-/// `cleanup_stale_files` deletes the dir after ~1 day).
+/// silently lost (the dead-man's-switch alerts but can't recover it).
+/// `cleanup_stale_files` never deletes such dirs, so they wait for recovery.
 ///
 /// This scans `temp_dir` for such dirs at startup and, for each one not already
 /// persisted, concatenates the segments and runs the normal upload + verify +
@@ -624,7 +624,8 @@ async fn recording_already_persisted(state: &Arc<AppState>, show_id: i64, versio
 /// finalize) is a no-op. Failures are logged and the dir is left in place for the
 /// next attempt / the dead-man's-switch.
 ///
-/// Run once at startup, before the daily temp cleanup could remove anything.
+/// Run once at startup. The daily temp cleanup may run at the same time but
+/// skips recording artifacts.
 /// Only dirs present at boot are considered; a new live session uses a fresh
 /// timestamp, so there is no collision with concurrent recording.
 pub async fn recover_orphaned_recordings(state: &Arc<AppState>, temp_dir: &Path) {

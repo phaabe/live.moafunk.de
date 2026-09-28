@@ -778,8 +778,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Recover recordings orphaned by a restart mid-show: concat + upload any
-    // `*.segs/` segment dirs left on disk before the daily cleanup could delete
-    // them. Idempotent; only touches dirs present at boot (a new live session
+    // `*.segs/` segment dirs left on disk (the daily cleanup never deletes
+    // them). Idempotent; only touches dirs present at boot (a new live session
     // uses a fresh timestamp), so it's safe to run concurrently with startup.
     {
         let state = state.clone();
@@ -789,9 +789,11 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Spawn background task to clean up orphaned recording temp files (stale
-    // `recording_*.webm` artifacts and `*.segs/` segment dirs left by a crash),
-    // older than ~1 day. Runs daily.
+    // Spawn background task to clean up stale temp files older than ~1 day.
+    // Runs daily (first tick at boot). Recording artifacts (`recording_*` and
+    // `*.segs/`) are never deleted here: they may hold the only copy of an
+    // unverified show, so the boot tick cannot race orphan recovery. Watch disk
+    // use until verified cleanup (B3.3.1) exists.
     tokio::spawn(async move {
         let dir = std::path::PathBuf::from("./data/recordings-temp");
         let max_age = std::time::Duration::from_secs(24 * 60 * 60);
