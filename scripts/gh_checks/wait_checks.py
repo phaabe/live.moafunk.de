@@ -25,8 +25,6 @@ Api = Callable[[str, bool], Any]
 Git = Callable[[list[str]], str]
 
 OK_CONCLUSIONS = {"success", "neutral", "skipped"}
-# GitHub only evaluates path filters on the first 300 changed files.
-MAX_FILTER_FILES = 300
 RUN_TYPES = {"opened", "synchronize", "reopened"}
 FILTER_KEYS = ("branches", "branches-ignore", "paths", "paths-ignore")
 
@@ -79,6 +77,10 @@ def _children(lines: list[str], start: int) -> list[str]:
 def _flow_list(value: str) -> list[str]:
     if not (value.startswith("[") and value.endswith("]")):
         raise Unknown(f"unsupported value: {value}")
+    inner = value[1:-1]
+    # Quoted items can hold commas; nested lists/maps are not plain strings.
+    if any(ch in inner for ch in "'\"[]{}"):
+        raise Unknown(f"quoted or nested flow list: {value}")
     return [_clean(v) for v in value[1:-1].split(",") if _clean(v)]
 
 
@@ -122,6 +124,8 @@ def pull_request_filters(text: str) -> dict[str, list[str]] | None:
             continue
         inline = _clean(m.group(2))
         if inline:
+            if inline.startswith("{"):
+                raise Unknown(f"flow mapping trigger: {inline}")
             names = _flow_list(inline) if inline.startswith("[") else [inline]
             return {} if "pull_request" in names else None
         triggers = _keys(_children(lines, i))
@@ -143,20 +147,40 @@ def pull_request_filters(text: str) -> dict[str, list[str]] | None:
 
 
 def glob_regex(pattern: str) -> re.Pattern[str]:
-    """GitHub filter glob: `*` stays in one path segment, `**` crosses segments."""
+    """GitHub filter pattern as a regex.
+
+    `*` stays in one path segment, `**` crosses segments, `?` / `+` mean zero-or-one /
+    one-or-more of the preceding character, `[...]` is a character class, `\\` escapes.
+    Raises Unknown for patterns this doesn't cover.
+    """
     out, i = "", 0
+    quantifiable = False  # the last emitted atom can take `?` / `+`
     while i < len(pattern):
+        c = pattern[i]
         if pattern.startswith("**/", i):
-            out, i = out + "(?:.*/)?", i + 3
+            out, i, quantifiable = out + "(?:.*/)?", i + 3, False
         elif pattern.startswith("**", i):
-            out, i = out + ".*", i + 2
-        elif pattern[i] == "*":
-            out, i = out + "[^/]*", i + 1
-        elif pattern[i] == "?":
-            out, i = out + "[^/]", i + 1
+            out, i, quantifiable = out + ".*", i + 2, False
+        elif c == "*":
+            out, i, quantifiable = out + "[^/]*", i + 1, False
+        elif c in "?+":
+            if not quantifiable:
+                raise Unknown(f"unsupported pattern: {pattern}")
+            out, i, quantifiable = out + c, i + 1, False
+        elif c == "[":
+            end = pattern.find("]", i + 1)
+            if end == -1:
+                raise Unknown(f"unsupported pattern: {pattern}")
+            body = pattern[i + 1 : end].replace("\\", "\\\\")
+            out, i, quantifiable = out + f"[{body}]", end + 1, True
+        elif c == "\\" and i + 1 < len(pattern):
+            out, i, quantifiable = out + re.escape(pattern[i + 1]), i + 2, True
         else:
-            out, i = out + re.escape(pattern[i]), i + 1
-    return re.compile(out + r"\Z")
+            out, i, quantifiable = out + re.escape(c), i + 1, True
+    try:
+        return re.compile(out + r"\Z", re.DOTALL)
+    except re.error as exc:
+        raise Unknown(f"unsupported pattern: {pattern}") from exc
 
 
 def _matches(patterns: list[str], value: str) -> bool:
@@ -176,8 +200,6 @@ def workflow_runs_for(
         return False
     if "branches-ignore" in filters and _matches(filters["branches-ignore"], base):
         return False
-    if len(files) > MAX_FILTER_FILES:
-        return True
     if "paths" in filters and not any(_matches(filters["paths"], f) for f in files):
         return False
     if "paths-ignore" in filters and all(
@@ -188,12 +210,13 @@ def workflow_runs_for(
 
 
 def expected_workflows(git: Git, base: str, head: str) -> set[str]:
-    """Workflow paths that should run for this PR. Unparseable triggers count as expected."""
-    files = [
-        f
-        for f in git(["diff", "--name-only", f"origin/{base}...{head}"]).splitlines()
-        if f
-    ]
+    """Workflow paths that should run for this PR. Unparseable triggers count as expected.
+
+    GitHub checks path filters against only the first 300 changed files. For bigger PRs a
+    workflow that matches a later file may not run; we still expect it and time out.
+    """
+    diff = git(["diff", "--name-only", "-z", f"origin/{base}...{head}"])
+    files = [f for f in diff.split("\0") if f]
     listing = git(["ls-tree", "--name-only", head, ".github/workflows/"]).splitlines()
     expected = set()
     for path in listing:
@@ -201,10 +224,9 @@ def expected_workflows(git: Git, base: str, head: str) -> set[str]:
             continue
         try:
             filters = pull_request_filters(git(["show", f"{head}:{path}"]))
+            if filters is not None and workflow_runs_for(filters, base, files):
+                expected.add(path)
         except Unknown:
-            expected.add(path)
-            continue
-        if filters is not None and workflow_runs_for(filters, base, files):
             expected.add(path)
     return expected
 
@@ -212,11 +234,16 @@ def expected_workflows(git: Git, base: str, head: str) -> set[str]:
 # ---- check evaluation ---------------------------------------------------------
 
 
-def _latest(items: list[Json], key: str) -> dict[str, Json]:
+def _latest(items: list[Json], key: Callable[[Json], str]) -> dict[str, Json]:
     out: dict[str, Json] = {}
     for item in sorted(items, key=lambda x: x.get("id", 0)):
-        out[item[key]] = item
+        out[key(item)] = item
     return out
+
+
+def _check_key(check: Json) -> str:
+    app = (check.get("app") or {}).get("slug", "?")
+    return f"{app}/{check['name']}"
 
 
 def evaluate(
@@ -225,7 +252,7 @@ def evaluate(
     """Return ("pass" | "pending" | "fail", reasons)."""
     failed: list[str] = []
     pending: list[str] = []
-    latest_runs = _latest(runs, "path")
+    latest_runs = _latest(runs, lambda r: r["path"])
     for path in sorted(expected - latest_runs.keys()):
         pending.append(f"workflow {path} has not started")
     for path, run in sorted(latest_runs.items()):
@@ -233,18 +260,24 @@ def evaluate(
             pending.append(f"workflow {path} is {run.get('status')}")
         elif run.get("conclusion") not in OK_CONCLUSIONS:
             failed.append(f"workflow {path} concluded {run.get('conclusion')}")
-    for name, cr in sorted(_latest(check_runs, "name").items()):
+    for name, cr in sorted(_latest(check_runs, _check_key).items()):
         if cr.get("status") != "completed":
             pending.append(f"check {name} is {cr.get('status')}")
         elif cr.get("conclusion") not in OK_CONCLUSIONS:
             failed.append(f"check {name} concluded {cr.get('conclusion')}")
     # With no commit statuses GitHub reports "pending"; ignore that case.
+    # The combined state covers all statuses, also those past the first page.
     if status.get("total_count", 0) > 0:
-        for st in status.get("statuses", []):
-            if st.get("state") == "pending":
-                pending.append(f"status {st.get('context')} is pending")
-            elif st.get("state") != "success":
-                failed.append(f"status {st.get('context')} is {st.get('state')}")
+        bad = [
+            f"{st.get('context')}={st.get('state')}"
+            for st in status.get("statuses", [])
+            if st.get("state") != "success"
+        ]
+        detail = f" ({', '.join(bad)})" if bad else ""
+        if status.get("state") == "pending":
+            pending.append(f"commit statuses pending{detail}")
+        elif status.get("state") != "success":
+            failed.append(f"commit statuses {status.get('state')}{detail}")
     if failed:
         return "fail", failed
     if pending:
@@ -271,7 +304,7 @@ def wait(
 ) -> str:
     repo = "repos/{owner}/{repo}"
     deadline = clock() + timeout
-    sha = ""
+    sha, base_ref = "", ""
     expected: set[str] = set()
     while True:
         pr = api(f"{repo}/pulls/{number}", False)
@@ -282,10 +315,12 @@ def wait(
                 ["PR has merge conflicts; pull_request workflows will not run"]
             )
         head, base = pr["head"]["sha"], pr["base"]["ref"]
-        if head != sha:
+        if (head, base) != (sha, base_ref):
             if sha:
-                log(f"head moved {sha[:7]} -> {head[:7]}, starting over")
-            sha = head
+                log(
+                    f"PR moved {base_ref}@{sha[:7]} -> {base}@{head[:7]}, starting over"
+                )
+            sha, base_ref = head, base
             git(
                 [
                     "fetch",
@@ -307,6 +342,8 @@ def wait(
         )
         status = api(f"{repo}/commits/{sha}/status?per_page=100", False)
         verdict, reasons = evaluate(expected, runs, check_runs, status)
+        if verdict == "pass" and pr.get("mergeable") is None:
+            verdict, reasons = "pending", ["GitHub is still computing mergeability"]
         if verdict == "pass":
             return sha
         if verdict == "fail":

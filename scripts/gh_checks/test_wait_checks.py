@@ -9,6 +9,7 @@ import wait_checks as w
 
 SHA = "a" * 40
 NEW_SHA = "b" * 40
+FRONTEND = ".github/workflows/frontend.yml"
 
 FRONTEND_YML = """\
 name: FRONTEND
@@ -55,16 +56,30 @@ def check(
     status: str = "completed",
     conclusion: str | None = "success",
     id: int = 1,
+    app: str = "github-actions",
 ):
-    return {"id": id, "name": name, "status": status, "conclusion": conclusion}
+    return {
+        "id": id,
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "app": {"slug": app},
+    }
 
 
-NO_STATUS = {"total_count": 0, "state": "pending", "statuses": []}
-VERCEL_OK = {
-    "total_count": 1,
-    "state": "success",
-    "statuses": [{"context": "Vercel", "state": "success"}],
-}
+def statuses(
+    state: str, *contexts: tuple[str, str], total: int | None = None
+) -> dict[str, Any]:
+    items = [{"context": c, "state": s} for c, s in contexts]
+    return {
+        "total_count": len(items) if total is None else total,
+        "state": state,
+        "statuses": items,
+    }
+
+
+NO_STATUS = statuses("pending")
+VERCEL_OK = statuses("success", ("Vercel", "success"))
 
 
 class FakeGit:
@@ -76,7 +91,7 @@ class FakeGit:
             workflows
             if workflows is not None
             else {
-                ".github/workflows/frontend.yml": FRONTEND_YML,
+                FRONTEND: FRONTEND_YML,
                 ".github/workflows/backend.yml": BACKEND_YML,
                 ".github/workflows/guard.yml": GUARD_YML,
             }
@@ -88,7 +103,8 @@ class FakeGit:
         if args[0] == "fetch":
             return ""
         if args[0] == "diff":
-            return "\n".join(self.files) + "\n"
+            assert "-z" in args
+            return "".join(f + "\0" for f in self.files)
         if args[0] == "ls-tree":
             return "\n".join(self.workflows) + "\n"
         if args[0] == "show":
@@ -116,7 +132,7 @@ class FakeApi:
                 "state": p.get("state", "open"),
                 "mergeable": p.get("mergeable", True),
                 "head": {"sha": p.get("sha", SHA)},
-                "base": {"ref": "main"},
+                "base": {"ref": p.get("base", "main")},
             }
         if "/actions/runs" in endpoint:
             assert paginate
@@ -141,12 +157,9 @@ def do_wait(
         now[0] += s
 
     sha = w.wait(
-        api, git, 7, 60, timeout, sleep=sleep, clock=lambda: now[0], log=lambda _m: None
+        api, git, 7, 60, timeout, sleep=sleep, clock=lambda: now[0], log=lambda _: None
     )
     return sha, sleeps
-
-
-FRONTEND = ".github/workflows/frontend.yml"
 
 
 class TriggerParsing(unittest.TestCase):
@@ -173,6 +186,10 @@ class TriggerParsing(unittest.TestCase):
     def test_bare_pull_request_key(self) -> None:
         self.assertEqual(w.pull_request_filters("on:\n  pull_request:\n  push:\n"), {})
 
+    def test_quoted_block_items(self) -> None:
+        text = "on:\n  pull_request:\n    paths:\n      - 'frontend/a,b.ts'\n"
+        self.assertEqual(w.pull_request_filters(text), {"paths": ["frontend/a,b.ts"]})
+
     def test_types_without_code_events(self) -> None:
         self.assertIsNone(
             w.pull_request_filters("on:\n  pull_request:\n    types: [closed]\n")
@@ -185,10 +202,15 @@ class TriggerParsing(unittest.TestCase):
         )
 
     def test_unsupported_syntax_is_unknown(self) -> None:
-        with self.assertRaises(w.Unknown):
-            w.pull_request_filters("on:\n  pull_request:\n    paths: *shared\n")
-        with self.assertRaises(w.Unknown):
-            w.pull_request_filters("name: no trigger\n")
+        for text in (
+            "on:\n  pull_request:\n    paths: *shared\n",
+            "name: no trigger\n",
+            "on: {pull_request: {}}\n",
+            'on:\n  pull_request:\n    paths: ["frontend/a,b.ts"]\n',
+            "on:\n  pull_request:\n    branches: main\n",
+        ):
+            with self.subTest(text=text), self.assertRaises(w.Unknown):
+                w.pull_request_filters(text)
 
 
 class Matching(unittest.TestCase):
@@ -203,6 +225,22 @@ class Matching(unittest.TestCase):
             )
         )
         self.assertFalse(w.glob_regex("a.b").match("axb"))
+
+    def test_github_quantifiers_and_classes(self) -> None:
+        self.assertTrue(w.glob_regex("*.jsx?").match("page.js"))
+        self.assertTrue(w.glob_regex("*.jsx?").match("page.jsx"))
+        self.assertFalse(w.glob_regex("*.jsx?").match("page.jsxx"))
+        self.assertTrue(w.glob_regex("v1+.txt").match("v111.txt"))
+        self.assertFalse(w.glob_regex("v1+.txt").match("v.txt"))
+        self.assertTrue(w.glob_regex("release-[0-9].x").match("release-7.x"))
+        self.assertFalse(w.glob_regex("release-[0-9].x").match("release-a.x"))
+        self.assertTrue(w.glob_regex("a\\*b").match("a*b"))
+        self.assertFalse(w.glob_regex("a\\*b").match("axb"))
+
+    def test_unsupported_patterns_are_unknown(self) -> None:
+        for p in ("?abc", "**+", "a[b"):
+            with self.subTest(pattern=p), self.assertRaises(w.Unknown):
+                w.glob_regex(p)
 
     def test_negation_last_match_wins(self) -> None:
         self.assertFalse(w._matches(["docs/**", "!docs/keep.md"], "docs/keep.md"))
@@ -225,17 +263,31 @@ class Matching(unittest.TestCase):
             w.workflow_runs_for({"branches-ignore": ["dev/**"]}, "dev/x", ["a"])
         )
 
-    def test_too_many_files_means_expected(self) -> None:
-        files = [f"backend/{i}.rs" for i in range(301)]
-        self.assertTrue(w.workflow_runs_for({"paths": ["frontend/**"]}, "main", files))
+    def test_many_files_keep_certain_exclusions(self) -> None:
+        backend_only = [f"backend/{i}.rs" for i in range(301)]
+        self.assertFalse(
+            w.workflow_runs_for({"paths": ["frontend/**"]}, "main", backend_only)
+        )
+        self.assertTrue(
+            w.workflow_runs_for(
+                {"paths": ["frontend/**"]}, "main", [*backend_only, "frontend/a.ts"]
+            )
+        )
 
     def test_expected_workflows(self) -> None:
         git = FakeGit(["frontend/src/a.ts"])
         self.assertEqual(w.expected_workflows(git, "main", SHA), {FRONTEND})
-        self.assertIn(["diff", "--name-only", f"origin/main...{SHA}"], git.calls)
+        self.assertIn(["diff", "--name-only", "-z", f"origin/main...{SHA}"], git.calls)
         self.assertEqual(
             w.expected_workflows(FakeGit(["backend/a.rs"]), "main", SHA), set()
         )
+
+    def test_unusual_file_names(self) -> None:
+        for name in ("frontend/ä.ts", "frontend/new\nline.ts", 'frontend/"q".ts'):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    w.expected_workflows(FakeGit([name]), "main", SHA), {FRONTEND}
+                )
 
     def test_unparseable_workflow_is_expected(self) -> None:
         git = FakeGit(
@@ -245,13 +297,20 @@ class Matching(unittest.TestCase):
             w.expected_workflows(git, "main", SHA), {".github/workflows/odd.yml"}
         )
 
+    def test_unsupported_pattern_is_expected(self) -> None:
+        odd = "on:\n  pull_request:\n    paths:\n      - '?weird'\n"
+        git = FakeGit(["backend/a.rs"], {".github/workflows/odd.yml": odd})
+        self.assertEqual(
+            w.expected_workflows(git, "main", SHA), {".github/workflows/odd.yml"}
+        )
+
 
 class Evaluate(unittest.TestCase):
     def test_pass(self) -> None:
-        verdict, _ = w.evaluate(
-            {FRONTEND}, [run(FRONTEND)], [check("build")], VERCEL_OK
+        self.assertEqual(
+            w.evaluate({FRONTEND}, [run(FRONTEND)], [check("build")], VERCEL_OK)[0],
+            "pass",
         )
-        self.assertEqual(verdict, "pass")
 
     def test_ok_conclusions(self) -> None:
         for c in ("success", "neutral", "skipped"):
@@ -274,13 +333,15 @@ class Evaluate(unittest.TestCase):
                     set(), [], [check("x", conclusion=c)], NO_STATUS
                 )
                 self.assertEqual(verdict, "fail")
-                self.assertIn("check x", reasons[0])
+                self.assertIn("check github-actions/x", reasons[0])
 
     def test_failed_workflow_run(self) -> None:
-        verdict, _ = w.evaluate(
-            {FRONTEND}, [run(FRONTEND, conclusion="failure")], [], NO_STATUS
+        self.assertEqual(
+            w.evaluate(
+                {FRONTEND}, [run(FRONTEND, conclusion="failure")], [], NO_STATUS
+            )[0],
+            "fail",
         )
-        self.assertEqual(verdict, "fail")
 
     def test_running(self) -> None:
         self.assertEqual(
@@ -311,22 +372,37 @@ class Evaluate(unittest.TestCase):
         self.assertEqual(w.evaluate(set(), [], [], NO_STATUS)[0], "pass")
 
     def test_statuses(self) -> None:
-        pending = {
-            "total_count": 1,
-            "state": "pending",
-            "statuses": [{"context": "Vercel", "state": "pending"}],
-        }
-        failing = {
-            "total_count": 1,
-            "state": "failure",
-            "statuses": [{"context": "Vercel", "state": "error"}],
-        }
-        self.assertEqual(w.evaluate(set(), [], [], pending)[0], "pending")
+        self.assertEqual(
+            w.evaluate(set(), [], [], statuses("pending", ("Vercel", "pending")))[0],
+            "pending",
+        )
+        self.assertEqual(
+            w.evaluate(set(), [], [], statuses("failure", ("Vercel", "error")))[0],
+            "fail",
+        )
+
+    def test_combined_state_covers_statuses_past_first_page(self) -> None:
+        visible = [(f"ctx{i}", "success") for i in range(100)]
+        failing = statuses("failure", *visible, total=101)
+        pending = statuses("pending", *visible, total=101)
         self.assertEqual(w.evaluate(set(), [], [], failing)[0], "fail")
+        self.assertEqual(w.evaluate(set(), [], [], pending)[0], "pending")
 
     def test_latest_rerun_wins(self) -> None:
         runs = [run(FRONTEND, conclusion="failure", id=1), run(FRONTEND, id=2)]
         self.assertEqual(w.evaluate({FRONTEND}, runs, [], NO_STATUS)[0], "pass")
+        checks = [check("build", conclusion="failure", id=1), check("build", id=2)]
+        self.assertEqual(w.evaluate(set(), [], checks, NO_STATUS)[0], "pass")
+
+    def test_same_name_from_other_app_is_a_separate_check(self) -> None:
+        checks = [
+            check("build", conclusion="failure", id=1, app="ci-a"),
+            check("build", id=2, app="ci-b"),
+        ]
+        verdict, reasons = w.evaluate(set(), [], checks, NO_STATUS)
+        self.assertEqual(
+            (verdict, reasons), ("fail", ["check ci-a/build concluded failure"])
+        )
 
 
 class Wait(unittest.TestCase):
@@ -334,20 +410,21 @@ class Wait(unittest.TestCase):
         api = FakeApi(
             [{"runs": [run(FRONTEND)], "checks": [check("build")], "status": VERCEL_OK}]
         )
-        sha, sleeps = do_wait(api, FakeGit(["frontend/a.ts"]))
-        self.assertEqual((sha, sleeps), (SHA, []))
+        self.assertEqual(do_wait(api, FakeGit(["frontend/a.ts"])), (SHA, []))
 
     def test_no_frontend_change_needs_no_workflow(self) -> None:
-        api = FakeApi([{"status": VERCEL_OK}])
-        sha, sleeps = do_wait(api, FakeGit(["backend/a.rs"]))
-        self.assertEqual((sha, sleeps), (SHA, []))
+        self.assertEqual(
+            do_wait(FakeApi([{"status": VERCEL_OK}]), FakeGit(["backend/a.rs"])),
+            (SHA, []),
+        )
 
     def test_expected_check_shows_up_late(self) -> None:
         late = [{"status": VERCEL_OK}] * 3 + [
             {"runs": [run(FRONTEND)], "checks": [check("build")], "status": VERCEL_OK}
         ]
-        sha, sleeps = do_wait(FakeApi(late), FakeGit(["frontend/a.ts"]))
-        self.assertEqual((sha, sleeps), (SHA, [60, 60, 60]))
+        self.assertEqual(
+            do_wait(FakeApi(late), FakeGit(["frontend/a.ts"])), (SHA, [60, 60, 60])
+        )
 
     def test_expected_check_never_shows_up_times_out(self) -> None:
         with self.assertRaises(w.TimedOut) as ctx:
@@ -365,7 +442,9 @@ class Wait(unittest.TestCase):
         )
         with self.assertRaises(w.ChecksFailed) as ctx:
             do_wait(api, FakeGit(["README.md"]))
-        self.assertEqual(ctx.exception.args[0], ["check late concluded failure"])
+        self.assertEqual(
+            ctx.exception.args[0], ["check github-actions/late concluded failure"]
+        )
 
     def test_head_changed_starts_over(self) -> None:
         git = FakeGit(["frontend/a.ts"])
@@ -385,13 +464,39 @@ class Wait(unittest.TestCase):
         self.assertEqual(sum(c[0] == "fetch" for c in git.calls), 2)
         self.assertTrue(any(NEW_SHA in e for e in api.endpoints if "check-runs" in e))
 
+    def test_retarget_same_head_recomputes_expected(self) -> None:
+        # dev base: frontend.yml doesn't apply. After retarget to main it must run.
+        api = FakeApi(
+            [
+                {"base": "dev/example", "status": VERCEL_OK, "mergeable": None},
+                {"base": "main", "status": VERCEL_OK},
+                {"base": "main", "runs": [run(FRONTEND)], "status": VERCEL_OK},
+            ]
+        )
+        sha, sleeps = do_wait(api, FakeGit(["frontend/a.ts"]))
+        self.assertEqual((sha, sleeps), (SHA, [60, 60]))
+
     def test_merge_conflict_fails_fast(self) -> None:
         with self.assertRaises(w.ChecksFailed):
             do_wait(FakeApi([{"mergeable": False}]), FakeGit(["frontend/a.ts"]))
 
-    def test_unknown_mergeable_keeps_going(self) -> None:
-        sha, _ = do_wait(FakeApi([{"mergeable": None}]), FakeGit(["backend/a.rs"]))
-        self.assertEqual(sha, SHA)
+    def test_unknown_mergeable_waits(self) -> None:
+        api = FakeApi([{"mergeable": None}, {"mergeable": None}, {"mergeable": True}])
+        self.assertEqual(do_wait(api, FakeGit(["backend/a.rs"])), (SHA, [60, 60]))
+
+    def test_unknown_then_conflict_fails(self) -> None:
+        with self.assertRaises(w.ChecksFailed):
+            do_wait(
+                FakeApi([{"mergeable": None}, {"mergeable": False}]),
+                FakeGit(["backend/a.rs"]),
+            )
+
+    def test_unknown_mergeable_times_out(self) -> None:
+        with self.assertRaises(w.TimedOut) as ctx:
+            do_wait(
+                FakeApi([{"mergeable": None}]), FakeGit(["backend/a.rs"]), timeout=120
+            )
+        self.assertIn("mergeability", ctx.exception.args[0][0])
 
     def test_closed_pr_fails(self) -> None:
         with self.assertRaises(w.ChecksFailed):
@@ -413,11 +518,17 @@ class Wait(unittest.TestCase):
 
 class Main(unittest.TestCase):
     def test_exit_codes(self) -> None:
+        def raises(exc: Exception):
+            def fake(*_a: Any, **_k: Any) -> str:
+                raise exc
+
+            return fake
+
         cases = [
-            (lambda *a, **k: SHA, 0),
-            (lambda *a, **k: (_ for _ in ()).throw(w.ChecksFailed(["x"])), 1),
-            (lambda *a, **k: (_ for _ in ()).throw(w.TimedOut(["x"])), 2),
-            (lambda *a, **k: (_ for _ in ()).throw(w.ToolError("boom")), 3),
+            (lambda *_a, **_k: SHA, 0),
+            (raises(w.ChecksFailed(["x"])), 1),
+            (raises(w.TimedOut(["x"])), 2),
+            (raises(w.ToolError("boom")), 3),
         ]
         for fake, code in cases:
             with (

@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-HOOK = Path(__file__).resolve().parents[2] / ".claude/hooks/scripts/gh-watch-guard.sh"
+HOOK = Path(__file__).resolve().parents[2] / ".claude/hooks/scripts/gh-watch-guard.py"
 
 
 def hook(command: str, **env: str) -> int:
@@ -29,13 +29,27 @@ class WatchGuard(unittest.TestCase):
             "gh pr checks --watch 12",
             "gh pr checks 12 --interval 30 --watch",
             "gh pr checks 12 --watch=true",
+            'gh pr checks 12 "--watch"',
             "gh run watch 123",
             "gh run watch",
             "git push && gh pr checks 12 --watch",
             "cd x; gh run watch 5 --exit-status",
             "GH_REPO=a/b gh run watch 5",
+            "env GH_REPO=owner/repo gh run watch 123",
+            "env -u FOO gh run watch 1",
+            "time gh run watch 1",
+            'bash -c "gh run watch 1"',
+            "sh -c 'cd x && gh pr checks 3 --watch'",
+            "echo $(gh run watch 1)",
+            "/usr/local/bin/gh run watch 1",
             'git commit -m "msg" && gh pr checks 3 --watch',
             "echo 'x'\ngh run watch 9",
+            "true|gh run watch 1",
+            'echo "`gh run watch 1`"',
+            'echo "$(gh run watch 1)"',
+            "x=$(cd a && gh pr checks 2 --watch)",
+            "cat <<EOF > f\ntext\nEOF\ngh run watch 1",
+            "cat <<-EOF\n\ttext\n\tEOF\ngh run watch 1",
         ):
             with self.subTest(cmd=cmd):
                 self.assertEqual(hook(cmd), 2)
@@ -52,7 +66,13 @@ class WatchGuard(unittest.TestCase):
             'git commit -m "fix: stop using gh pr checks --watch"',
             "git commit -m 'body\ngh run watch polls GraphQL\n'",
             'git commit -m "a \\"quoted\\" gh run watch"',
+            "grep -r 'gh run watch' .",
+            "git commit -m 'uses `gh run watch` and $(gh pr checks 1 --watch)'",
+            "cat > body.md <<'EOF'\n- blocks `gh pr checks --watch` and `gh run watch`.\nEOF\ngh api repos/o/r/pulls -F body=@body.md",
+            "cat <<EOF\n$(echo hi) `gh run watch` text\nEOF",
+            'cat <<< "gh run watch 1"',
             "git log --oneline",
+            "echo 'unbalanced",
             "",
         ):
             with self.subTest(cmd=cmd):
@@ -60,6 +80,12 @@ class WatchGuard(unittest.TestCase):
 
     def test_override(self) -> None:
         self.assertEqual(hook("gh run watch 1", CLAUDE_ALLOW_GH_WATCH="1"), 0)
+
+    def test_bad_json_is_allowed(self) -> None:
+        result = subprocess.run(
+            [str(HOOK)], input="not json", capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

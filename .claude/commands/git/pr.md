@@ -57,7 +57,7 @@ If the user passed `--merge` (or said "and merge"):
    `python3 scripts/gh_checks/wait_checks.py <num>`
    - exit 0: the last line is `HEAD_SHA=<sha>`.
    - exit 1 (a check failed), 2 (timeout), 3 (API/git error): stop and show the output. Do not merge.
-   - Never use `gh pr checks --watch` or `gh run watch`. They use up the GraphQL budget, and the `gh-watch-guard.sh` hook blocks them.
+   - Never use `gh pr checks --watch` or `gh run watch`. They use up the GraphQL budget, and the `gh-watch-guard.py` hook blocks them.
 3. Merge only that SHA: `gh pr merge <num> --squash --delete-branch --match-head-commit <sha>`.
    If the head moved, GitHub refuses the merge. Go back to step 2.
 4. Update local trunk: `git switch <trunk> && git pull --ff-only`.

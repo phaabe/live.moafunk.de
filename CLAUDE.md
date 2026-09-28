@@ -44,7 +44,7 @@ GraphQL has a limit of 5,000 points per hour per user, and agents hit it. Most `
 2. **`gh api` REST** for GitHub data (separate budget): `gh api repos/{owner}/{repo}/pulls/<n>`, `.../issues`, `.../labels`. `/issues` also returns PRs; filter with `select(.pull_request == null)`. Add `--paginate` when you need the full list.
 3. **GraphQL** only for: Projects v2, review threads, and writes (`gh pr create/ready/merge`).
 
-- Wait for CI with `python3 scripts/gh_checks/wait_checks.py <pr>` (REST, 60 s). `gh pr checks --watch` and `gh run watch` are blocked by `gh-watch-guard.sh`.
+- Wait for CI with `python3 scripts/gh_checks/wait_checks.py <pr>` (REST, 60 s). `gh pr checks --watch` and `gh run watch` are blocked by `gh-watch-guard.py`.
 - Merge only the checked head: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
 - Don't assume the `mcp__github__*` tools use REST; some use GraphQL.
 - Check the budget with `gh api rate_limit --jq .resources.graphql`.
