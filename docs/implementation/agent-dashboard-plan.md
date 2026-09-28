@@ -170,9 +170,11 @@ Metrics (runners.prom; `Metrics` gains `kind="counter"`):
 
 Cardinality: `epic_tick_info` ~160 new series/day; `epic_tick_hour_worst`
 ≤ 336 live series with one new series per agent-hour; about 10 k series over
-30 days. No `sample_limit` is added (a full-size snapshot already reaches
-~3 000 samples per scrape; failing the whole scrape is worse than the risk).
-A max-size fixture test asserts one scrape stays under 6 000 samples.
+30 days. No `sample_limit` is added (a full-size scrape reaches about 6 400 samples; failing the whole scrape is
+worse than the risk).
+A max-size fixture test (500 items, 200 open and 600 merged PRs, 2 000-tick
+ledgers over 7 days) measured 6 357 samples; it asserts one scrape stays
+under 7 000.
 
 Tests (`test_ticks.py`, `test_monitor.py`): each outcome incl. 75 with and
 without the blocked line; interrupted; contender lock line; tokens with

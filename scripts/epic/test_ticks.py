@@ -350,6 +350,94 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(len(ledger.ticks), 2)
         self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 5)
 
+    # Review regressions (PR 449)
+
+    def test_checkpoint_with_wrong_types_is_rebuilt_not_a_crash(self) -> None:
+        self.log.write_text(tick(NOON - 60, 0))
+        ledger = self.ledger()
+        self.run_cycle(ledger, NOON)
+        good = json.loads(self.checkpoint.read_text())
+        broken = [
+            {**good, "partial": 7},
+            {**good, "offset": -1},
+            {**good, "totals": {**good["totals"], "ok": -3}},
+            {**good, "totals": {**good["totals"], "ok": True}},
+            {**good, "ticks": [{"tick": "x"}]},
+            {**good, "ticks": [{**good["ticks"][0], "outcome": "weird"}]},
+            {**good, "open": {"tick": 5}},
+            {**good, "v": 1},
+        ]
+        for value in broken:
+            with self.subTest(value=value):
+                self.checkpoint.write_text(json.dumps(value))
+                with self.assertLogs(level="WARNING"):
+                    samples = self.run_cycle(self.ledger(), NOON + 10)
+                self.assertEqual(
+                    samples['epic_ticks_total{agent="codex",outcome="ok"}'], 0
+                )
+                self.assertEqual(
+                    len(json.loads(self.checkpoint.read_text())["ticks"]), 1
+                )
+
+    def test_replay_of_many_ticks_after_rotation_is_not_counted_again(self) -> None:
+        ledger = self.ledger()
+        self.run_cycle(ledger, NOON)
+        history = "".join(tick(NOON + 10 + i * 60, 0) for i in range(60))
+        self.append(history)
+        samples = self.run_cycle(ledger, NOON + 4000)
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 60)
+        rotated = self.root / "new.log"
+        rotated.write_text(history + tick(NOON + 5000, 1))
+        os.replace(rotated, self.log)
+        samples = self.run_cycle(ledger, NOON + 5100)
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 60)
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="error"}'], 1)
+        self.assertEqual(len(ledger.ticks), 61)
+
+    def test_replay_of_many_ticks_after_a_crash_is_not_counted_again(self) -> None:
+        ledger = self.ledger()
+        self.run_cycle(ledger, NOON)
+        self.append("".join(tick(NOON + 10 + i * 60, 0) for i in range(60)))
+        ledger.update(NOON + 4000)  # crash before save()
+        again = self.ledger()
+        samples = self.run_cycle(again, NOON + 4100)
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 60)
+        self.assertEqual(len(again.ticks), 60)
+
+    def test_finish_line_split_across_the_baseline_is_counted(self) -> None:
+        self.log.write_text(tick(NOON, None) + "tick: finished exit=")
+        ledger = self.ledger()
+        self.run_cycle(ledger, NOON + 10)
+        self.append("0\n")
+        samples = self.run_cycle(ledger, NOON + 20)
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 1)
+        self.assertEqual(self.last(ledger)["end"], NOON + 20)
+
+    def test_open_tick_survives_rotation_and_becomes_interrupted(self) -> None:
+        ledger = self.ledger()
+        self.run_cycle(ledger, NOON)
+        self.append(tick(NOON + 10, None) + "half a li")
+        self.run_cycle(ledger, NOON + 20)
+        rotated = self.root / "new.log"
+        rotated.write_text("ne from the new file\n" + tick(NOON + 100, 0))
+        os.replace(rotated, self.log)
+        samples = self.run_cycle(ledger, NOON + 200)
+        self.assertEqual([t["outcome"] for t in ledger.ticks], ["interrupted", "ok"])
+        self.assertEqual(
+            samples['epic_ticks_total{agent="codex",outcome="interrupted"}'], 1
+        )
+
+    def test_impossible_start_date_is_skipped_and_parsing_continues(self) -> None:
+        ledger = self.ledger()
+        self.run_cycle(ledger, NOON)
+        self.append(
+            "tick: started 2026-99-28T12:00:00Z repo=/x\ntick: finished exit=0\n"
+            + tick(NOON + 10, 0)
+        )
+        samples = self.run_cycle(ledger, NOON + 20)
+        self.assertEqual(len(ledger.ticks), 1)
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 1)
+
     # Derived gauges
 
     def test_consecutive_failures_skip_blocked_and_reset_on_ok(self) -> None:

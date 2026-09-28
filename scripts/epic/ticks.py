@@ -50,6 +50,71 @@ GH_FAILED = re.compile(r"subprocess\.CalledProcessError: Command '\['gh', ")
 TOKENS = re.compile(r"[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+")
 
 
+OPEN_KEYS = {
+    "tick": str,
+    "first": bool,
+    "action": str,
+    "target": str,
+    "blocked": bool,
+    "gh_failed": bool,
+    "tokens": (int, type(None)),
+    "want_tokens": bool,
+}
+TICK_KEYS = {
+    "tick": str,
+    "start": (int, float),
+    "end": (int, float, type(None)),
+    "exit": (int, type(None)),
+    "outcome": str,
+    "phase": str,
+    "action": str,
+    "target": str,
+    "tokens": (int, type(None)),
+}
+
+
+def typed(value: object, schema: dict[str, type | tuple[type, ...]]) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == set(schema)
+        and all(
+            isinstance(value[key], kind)
+            and not (isinstance(value[key], bool) and kind in ((int, float), int))
+            for key, kind in schema.items()
+        )
+    )
+
+
+def valid_checkpoint(data: object) -> bool:
+    """The whole checkpoint, nested values included; anything else is rebuilt."""
+    count = int
+    return (
+        typed(
+            data,
+            {
+                "v": int,
+                "inode": (int, type(None)),
+                "offset": count,
+                "baseline": count,
+                "partial": str,
+                "skip_line": bool,
+                "open": (dict, type(None)),
+                "ticks": list,
+                "totals": dict,
+                "coverage_start": (int, float),
+                "last_tick": str,
+            },
+        )
+        and data["v"] == 2
+        and data["offset"] >= 0
+        and data["baseline"] >= 0
+        and (data["open"] is None or typed(data["open"], OPEN_KEYS))
+        and all(typed(t, TICK_KEYS) and t["outcome"] in SEVERITY for t in data["ticks"])
+        and set(data["totals"]) == set(SEVERITY)
+        and all(type(n) is int and n >= 0 for n in data["totals"].values())
+    )
+
+
 class Sink(Protocol):
     def add(
         self, name: str, value: float, *, kind: str = ..., **labels: str
@@ -104,7 +169,7 @@ class LogLedger:
 
     def fresh(self, now: float, size: int) -> Json:
         return {
-            "v": 1,
+            "v": 2,
             "inode": None,
             "offset": 0,
             "baseline": size,
@@ -114,6 +179,9 @@ class LogLedger:
             "ticks": [],
             "totals": dict.fromkeys(SEVERITY, 0),
             "coverage_start": now,
+            # Start of the newest tick in the ledger. Runner ticks start one
+            # after another (lock), so an older or equal start is a replay.
+            "last_tick": "",
         }
 
     def load(self) -> Json | None:
@@ -126,24 +194,7 @@ class LogLedger:
                 "Tick checkpoint for %s is unreadable; rebuilding", self.agent
             )
             return None
-        keys = {
-            "v",
-            "inode",
-            "offset",
-            "baseline",
-            "partial",
-            "skip_line",
-            "open",
-            "ticks",
-            "totals",
-            "coverage_start",
-        }
-        if (
-            not isinstance(data, dict)
-            or set(data) != keys
-            or data["v"] != 1
-            or set(data["totals"]) != set(SEVERITY)
-        ):
+        if not valid_checkpoint(data):
             logging.warning("Tick checkpoint for %s is invalid; rebuilding", self.agent)
             return None
         return data
@@ -157,8 +208,10 @@ class LogLedger:
         if state["inode"] is not None and (
             stat.st_ino != state["inode"] or stat.st_size < state["offset"]
         ):
-            # Rotated or truncated: every line in the file is new.
-            state.update(offset=0, baseline=0, partial="", skip_line=False, open=None)
+            # Rotated or truncated: every line in the file is new. A half line
+            # belongs to the old file; an open tick may continue or be
+            # interrupted by the next start.
+            state.update(offset=0, baseline=0, partial="", skip_line=False)
         state["inode"] = stat.st_ino
         if stat.st_size == state["offset"]:
             return
@@ -171,24 +224,30 @@ class LogLedger:
         lines = buffer.split(b"\n")
         rest = lines.pop()
         for raw in lines:
+            # Offset just after this line's newline: a line that ends after
+            # the baseline is new, even if it started before it.
+            position += len(raw) + 1
             if state["skip_line"]:
                 state["skip_line"] = False
             else:
                 self.feed(raw.decode("utf-8", "replace").rstrip("\r"), position, now)
-            position += len(raw) + 1
         if len(rest) > MAX_LINE:
             rest, state["skip_line"] = b"", True
         state["partial"] = rest.decode("utf-8", "surrogateescape")
         state["offset"] = stat.st_size
         self.dirty = True
 
-    def feed(self, line: str, position: int, now: float) -> None:
+    def feed(self, line: str, end: int, now: float) -> None:
         state = self.state
         assert state is not None
         started = START.fullmatch(line)
         if started:
+            try:
+                utc(started.group(1))
+            except ValueError:
+                return  # an impossible date is not a runner line
             if state["open"] is not None:
-                self.finish(None, position, now)
+                self.finish(None, end, now)
             state["open"] = {
                 "tick": started.group(1),
                 "first": True,
@@ -226,18 +285,19 @@ class LogLedger:
         else:
             finished = FINISH.fullmatch(line)
             if finished:
-                self.finish(int(finished.group(1)), position, now)
+                self.finish(int(finished.group(1)), end, now)
 
-    def finish(self, exit_code: int | None, position: int, now: float) -> None:
+    def finish(self, exit_code: int | None, end: int, now: float) -> None:
         state = self.state
         assert state is not None
         tick, state["open"] = state["open"], None
         kind = (
             "interrupted" if exit_code is None else outcome(exit_code, tick["blocked"])
         )
-        live = position >= state["baseline"]
-        if any(t["tick"] == tick["tick"] for t in state["ticks"][-50:]):
-            return
+        live = end > state["baseline"]
+        if tick["tick"] <= state["last_tick"]:
+            return  # replayed after a crash, truncation or rotation
+        state["last_tick"] = tick["tick"]
         phase = ""
         if kind in FAILURES:
             phase = "select" if tick["gh_failed"] else "unknown"

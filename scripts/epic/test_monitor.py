@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -258,9 +259,14 @@ class RunnerMetricsTest(unittest.TestCase):
         self.assertIn('epic_runner_state{agent="codex",state="inactive"} 1\n', text)
 
 
+# Samples per scrape at the fetch limits; guards against unbounded label growth.
+SCRAPE_BUDGET = 7000
+
+
 class ScrapeSizeTest(unittest.TestCase):
-    def test_max_size_snapshot_and_full_ledgers_stay_under_6000_samples(self) -> None:
-        """Fetch limits: 500 project items, 100 open and 300 merged PRs per base."""
+    def test_max_size_snapshot_and_full_ledgers_stay_under_budget(self) -> None:
+        """Fetch limits: 500 project items; 100 open and 300 merged PRs per base
+        (two bases). Full ledgers: 2 000 ticks per agent over the 7-day window."""
         body = "\n".join(f"- [ ] **B1.{i}.1** Leaf {i}." for i in range(5))
         items = [
             plan_issue(
@@ -277,10 +283,11 @@ class ScrapeSizeTest(unittest.TestCase):
             pull_request(
                 2000 + i,
                 "Claude" if i % 2 else "Codex",
-                body=f"Executor: Claude\nLeaf IDs: B1.{i}.1\n"
-                f"Issue: {URL}/issues/{1000 + i}",
+                body=f"Executor: Claude\nLeaf IDs: B1.{i % 500}.1\n"
+                f"Issue: {URL}/issues/{1000 + i % 500}",
+                baseRefName=("dev/312-interim", "dev/streaming-architecture")[i % 2],
             )
-            for i in range(100)
+            for i in range(200)
         ]
         merged = [
             {
@@ -298,19 +305,19 @@ class ScrapeSizeTest(unittest.TestCase):
             for agent in monitor.AGENTS:
                 (root / f"{agent}.log").write_text(
                     "".join(
-                        f"\ntick: started 1970-01-01T{h:02d}:{m:02d}:00Z repo=/x\n"
-                        '{"action": "review", "pr": 7}\n'
-                        f"tick: finished exit={(0, 1, 124)[m % 3]}\n"
-                        for h in range(24)
-                        for m in range(0, 60, 2)
+                        "\ntick: started "
+                        + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(i * 300))
+                        + ' repo=/x\n{"action": "review", "pr": 7}\n'
+                        f"tick: finished exit={(0, 1, 124)[i % 3]}\n"
+                        for i in range(2000)
                     )
                 )
             ledgers = monitor.make_ledgers(root, root / "runtime")
-            runners = monitor.runner_metrics(root, False, 86399, ledgers=ledgers)
+            runners = monitor.runner_metrics(root, False, 2000 * 300, ledgers=ledgers)
         samples = [
             line for line in (github + runners).splitlines() if not line.startswith("#")
         ]
-        self.assertLess(len(samples), 6000)
+        self.assertLess(len(samples), SCRAPE_BUDGET)
 
 
 class GithubMetricsTest(unittest.TestCase):
