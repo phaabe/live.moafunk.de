@@ -47,8 +47,15 @@ def run(
     status: str = "completed",
     conclusion: str | None = "success",
     id: int = 1,
+    pr: int | None = 7,
 ):
-    return {"id": id, "path": path, "status": status, "conclusion": conclusion}
+    return {
+        "id": id,
+        "path": path,
+        "status": status,
+        "conclusion": conclusion,
+        "pull_requests": [{"number": pr}] if pr is not None else [],
+    }
 
 
 def check(
@@ -475,6 +482,21 @@ class Wait(unittest.TestCase):
         )
         sha, sleeps = do_wait(api, FakeGit(["frontend/a.ts"]))
         self.assertEqual((sha, sleeps), (SHA, [60, 60]))
+
+    def test_run_of_other_pr_with_same_sha_does_not_count(self) -> None:
+        other = {"runs": [run(FRONTEND, pr=8)], "status": VERCEL_OK}
+        mine = {
+            "runs": [run(FRONTEND, pr=8, id=1), run(FRONTEND, id=2)],
+            "status": VERCEL_OK,
+        }
+        sha, sleeps = do_wait(FakeApi([other, other, mine]), FakeGit(["frontend/a.ts"]))
+        self.assertEqual((sha, sleeps), (SHA, [60, 60]))
+        with self.assertRaises(w.TimedOut):
+            do_wait(FakeApi([other]), FakeGit(["frontend/a.ts"]), timeout=120)
+
+    def test_fork_run_without_pr_link_counts(self) -> None:
+        api = FakeApi([{"runs": [run(FRONTEND, pr=None)], "status": VERCEL_OK}])
+        self.assertEqual(do_wait(api, FakeGit(["frontend/a.ts"])), (SHA, []))
 
     def test_merge_conflict_fails_fast(self) -> None:
         with self.assertRaises(w.ChecksFailed):

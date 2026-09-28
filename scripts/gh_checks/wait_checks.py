@@ -246,12 +246,27 @@ def _check_key(check: Json) -> str:
     return f"{app}/{check['name']}"
 
 
+def _for_pr(run: Json, number: int) -> bool:
+    """Runs of another PR with the same head SHA don't count.
+
+    Fork PRs leave `pull_requests` empty; such runs can't be told apart, so they count.
+    """
+    prs = run.get("pull_requests") or []
+    return not prs or any(pr.get("number") == number for pr in prs)
+
+
 def evaluate(
-    expected: set[str], runs: list[Json], check_runs: list[Json], status: Json
+    expected: set[str],
+    runs: list[Json],
+    check_runs: list[Json],
+    status: Json,
+    number: int | None = None,
 ) -> tuple[str, list[str]]:
     """Return ("pass" | "pending" | "fail", reasons)."""
     failed: list[str] = []
     pending: list[str] = []
+    if number is not None:
+        runs = [r for r in runs if _for_pr(r, number)]
     latest_runs = _latest(runs, lambda r: r["path"])
     for path in sorted(expected - latest_runs.keys()):
         pending.append(f"workflow {path} has not started")
@@ -341,7 +356,7 @@ def wait(
             api, f"{repo}/commits/{sha}/check-runs?per_page=100", "check_runs"
         )
         status = api(f"{repo}/commits/{sha}/status?per_page=100", False)
-        verdict, reasons = evaluate(expected, runs, check_runs, status)
+        verdict, reasons = evaluate(expected, runs, check_runs, status, number)
         if verdict == "pass" and pr.get("mergeable") is None:
             verdict, reasons = "pending", ["GitHub is still computing mergeability"]
         if verdict == "pass":

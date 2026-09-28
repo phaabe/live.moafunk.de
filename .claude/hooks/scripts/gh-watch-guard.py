@@ -34,6 +34,8 @@ WRAPPERS = {
     "builtin",
 }
 SHELLS = {"bash", "sh", "zsh", "dash"}
+# Shell words that come before a command: `if x; then gh ...`, `do gh ...`.
+CONTROL_WORDS = {"if", "then", "else", "elif", "while", "until", "do", "!", "{"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
 MESSAGE = """\
@@ -51,19 +53,30 @@ Override (use sparingly): CLAUDE_ALLOW_GH_WATCH=1"""
 HEREDOC = re.compile(r"(?<!<)<<(-?)(?!<)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 
 
-def drop_heredoc_bodies(command: str) -> str:
-    """Heredoc bodies are data (PR bodies, files), not commands."""
+def drop_heredoc_bodies(command: str) -> tuple[str, list[str]]:
+    """Split heredoc bodies off the command.
+
+    Bodies are data, not commands. But with an unquoted delimiter the shell still
+    runs `...` and $(...) in them, so those bodies are returned for checking.
+    """
     out: list[str] = []
-    waiting: list[tuple[str, bool]] = []  # (delimiter, leading tabs allowed)
+    expanded: list[str] = []
+    # (delimiter, leading tabs allowed, body is expanded)
+    waiting: list[tuple[str, bool, bool]] = []
     for line in command.split("\n"):
         if waiting:
-            delim, strip_tabs = waiting[0]
+            delim, strip_tabs, expands = waiting[0]
             if (line.lstrip("\t") if strip_tabs else line) == delim:
                 waiting.pop(0)
+            elif expands:
+                expanded.append(line)
             continue
         out.append(line)
-        waiting += [(m.group(3), m.group(1) == "-") for m in HEREDOC.finditer(line)]
-    return "\n".join(out)
+        waiting += [
+            (m.group(3), m.group(1) == "-", not m.group(2))
+            for m in HEREDOC.finditer(line)
+        ]
+    return "\n".join(out), expanded
 
 
 def split_substitutions(command: str) -> tuple[str, list[str]]:
@@ -118,9 +131,22 @@ def simple_commands(command: str) -> list[list[str]]:
     return [c for c in out if c]
 
 
+def shell_command_string(args: list[str]) -> str | None:
+    """The string a shell runs with -c, also in combined flags like -lc or -ec."""
+    has_c = False
+    for arg in args:
+        if arg.startswith("-") and not arg.startswith("--") and len(arg) > 1:
+            has_c = has_c or "c" in arg[1:]
+            continue
+        if arg.startswith("--"):
+            continue
+        return arg if has_c else None
+    return None
+
+
 def is_watcher(argv: list[str], depth: int = 0) -> bool:
     i = 0
-    while i < len(argv) and ASSIGNMENT.match(argv[i]):
+    while i < len(argv) and (ASSIGNMENT.match(argv[i]) or argv[i] in CONTROL_WORDS):
         i += 1
     argv = argv[i:]
     if not argv:
@@ -135,9 +161,9 @@ def is_watcher(argv: list[str], depth: int = 0) -> bool:
             return False
         argv = argv[starts[0] :]
     prog = os.path.basename(argv[0])
-    if prog in SHELLS and "-c" in argv and depth < 3:
-        body_index = argv.index("-c") + 1
-        return body_index < len(argv) and blocked(argv[body_index], depth + 1)
+    if prog in SHELLS:
+        body = shell_command_string(argv[1:])
+        return body is not None and depth < 3 and blocked(body, depth + 1)
     if prog != "gh":
         return False
     args = argv[1:]
@@ -149,7 +175,10 @@ def is_watcher(argv: list[str], depth: int = 0) -> bool:
 
 
 def blocked(command: str, depth: int = 0) -> bool:
-    rest, bodies = split_substitutions(drop_heredoc_bodies(command))
+    command, expanded = drop_heredoc_bodies(command)
+    rest, bodies = split_substitutions(command)
+    for line in expanded:
+        bodies += split_substitutions(line)[1]
     if depth < 3 and any(blocked(body, depth + 1) for body in bodies):
         return True
     try:
