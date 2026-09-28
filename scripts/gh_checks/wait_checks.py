@@ -246,13 +246,16 @@ def _check_key(check: Json) -> str:
     return f"{app}/{check['name']}"
 
 
-def _for_pr(run: Json, number: int) -> bool:
-    """Runs of another PR with the same head SHA don't count.
+def _for_pr(run: Json, number: int, base: str) -> bool:
+    """A run counts only if GitHub links it to this PR and its current base.
 
-    Fork PRs leave `pull_requests` empty; such runs can't be told apart, so they count.
+    Another PR can share the head SHA. Runs without a link (fork PRs) can't be
+    proven to belong to this PR, so they don't count; the poller then times out.
     """
-    prs = run.get("pull_requests") or []
-    return not prs or any(pr.get("number") == number for pr in prs)
+    return any(
+        pr.get("number") == number and (pr.get("base") or {}).get("ref") == base
+        for pr in run.get("pull_requests") or []
+    )
 
 
 def evaluate(
@@ -260,16 +263,27 @@ def evaluate(
     runs: list[Json],
     check_runs: list[Json],
     status: Json,
-    number: int | None = None,
+    pr: tuple[int, str] | None = None,
 ) -> tuple[str, list[str]]:
-    """Return ("pass" | "pending" | "fail", reasons)."""
+    """Return ("pass" | "pending" | "fail", reasons).
+
+    `pr` is (number, base). When set, only workflow runs linked to it count.
+    """
     failed: list[str] = []
     pending: list[str] = []
-    if number is not None:
-        runs = [r for r in runs if _for_pr(r, number)]
+    unlinked: set[str] = set()
+    if pr is not None:
+        unlinked = {r["path"] for r in runs if not _for_pr(r, *pr)}
+        runs = [r for r in runs if _for_pr(r, *pr)]
     latest_runs = _latest(runs, lambda r: r["path"])
     for path in sorted(expected - latest_runs.keys()):
-        pending.append(f"workflow {path} has not started")
+        if path in unlinked and pr is not None:
+            pending.append(
+                f"workflow {path} has runs, but none linked to PR {pr[0]} "
+                f"with base {pr[1]} (fork PR or retarget without new push?)"
+            )
+        else:
+            pending.append(f"workflow {path} has not started")
     for path, run in sorted(latest_runs.items()):
         if run.get("status") != "completed":
             pending.append(f"workflow {path} is {run.get('status')}")
@@ -356,7 +370,7 @@ def wait(
             api, f"{repo}/commits/{sha}/check-runs?per_page=100", "check_runs"
         )
         status = api(f"{repo}/commits/{sha}/status?per_page=100", False)
-        verdict, reasons = evaluate(expected, runs, check_runs, status, number)
+        verdict, reasons = evaluate(expected, runs, check_runs, status, (number, base))
         if verdict == "pass" and pr.get("mergeable") is None:
             verdict, reasons = "pending", ["GitHub is still computing mergeability"]
         if verdict == "pass":

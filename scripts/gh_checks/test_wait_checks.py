@@ -48,13 +48,16 @@ def run(
     conclusion: str | None = "success",
     id: int = 1,
     pr: int | None = 7,
+    base: str = "main",
 ):
     return {
         "id": id,
         "path": path,
         "status": status,
         "conclusion": conclusion,
-        "pull_requests": [{"number": pr}] if pr is not None else [],
+        "pull_requests": [{"number": pr, "base": {"ref": base}}]
+        if pr is not None
+        else [],
     }
 
 
@@ -494,8 +497,31 @@ class Wait(unittest.TestCase):
         with self.assertRaises(w.TimedOut):
             do_wait(FakeApi([other]), FakeGit(["frontend/a.ts"]), timeout=120)
 
-    def test_fork_run_without_pr_link_counts(self) -> None:
+    def test_run_without_pr_link_does_not_count(self) -> None:
         api = FakeApi([{"runs": [run(FRONTEND, pr=None)], "status": VERCEL_OK}])
+        with self.assertRaises(w.TimedOut) as ctx:
+            do_wait(api, FakeGit(["frontend/a.ts"]), timeout=120)
+        self.assertIn("none linked to PR 7 with base main", ctx.exception.args[0][0])
+
+    def test_run_linked_to_old_base_does_not_count(self) -> None:
+        api = FakeApi(
+            [{"runs": [run(FRONTEND, base="dev/312-interim")], "status": VERCEL_OK}]
+        )
+        with self.assertRaises(w.TimedOut):
+            do_wait(api, FakeGit(["frontend/a.ts"]), timeout=120)
+
+    def test_failed_run_of_other_pr_does_not_fail_this_pr(self) -> None:
+        api = FakeApi(
+            [
+                {
+                    "runs": [
+                        run(FRONTEND, pr=8, conclusion="failure", id=1),
+                        run(FRONTEND, id=2),
+                    ],
+                    "status": VERCEL_OK,
+                }
+            ]
+        )
         self.assertEqual(do_wait(api, FakeGit(["frontend/a.ts"])), (SHA, []))
 
     def test_merge_conflict_fails_fast(self) -> None:

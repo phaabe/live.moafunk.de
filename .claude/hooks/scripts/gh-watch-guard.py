@@ -61,6 +61,7 @@ def drop_heredoc_bodies(command: str) -> tuple[str, list[str]]:
     """
     out: list[str] = []
     expanded: list[str] = []
+    body: list[str] = []
     # (delimiter, leading tabs allowed, body is expanded)
     waiting: list[tuple[str, bool, bool]] = []
     for line in command.split("\n"):
@@ -68,19 +69,27 @@ def drop_heredoc_bodies(command: str) -> tuple[str, list[str]]:
             delim, strip_tabs, expands = waiting[0]
             if (line.lstrip("\t") if strip_tabs else line) == delim:
                 waiting.pop(0)
-            elif expands:
-                expanded.append(line)
+                if expands:
+                    expanded.append("\n".join(body))
+                body = []
+            else:
+                body.append(line)
             continue
         out.append(line)
         waiting += [
             (m.group(3), m.group(1) == "-", not m.group(2))
             for m in HEREDOC.finditer(line)
         ]
+    if waiting and waiting[0][2]:  # unterminated body: the shell still expands it
+        expanded.append("\n".join(body))
     return "\n".join(out), expanded
 
 
-def split_substitutions(command: str) -> tuple[str, list[str]]:
-    """Pull `...` and $(...) bodies out of the command, except inside single quotes."""
+def split_substitutions(command: str, heredoc: bool = False) -> tuple[str, list[str]]:
+    """Pull `...` and $(...) bodies out of the command, except inside single quotes.
+
+    With heredoc=True, quotes are plain text (heredoc rules): only `\\` escapes.
+    """
     rest: list[str] = []
     bodies: list[str] = []
     quote = ""
@@ -107,7 +116,7 @@ def split_substitutions(command: str) -> tuple[str, list[str]]:
             rest.append(" ")
             i = j
             continue
-        if c in "'\"" and quote in ("", c):
+        if not heredoc and c in "'\"" and quote in ("", c):
             quote = "" if quote else c
         rest.append(c)
         i += 1
@@ -177,8 +186,8 @@ def is_watcher(argv: list[str], depth: int = 0) -> bool:
 def blocked(command: str, depth: int = 0) -> bool:
     command, expanded = drop_heredoc_bodies(command)
     rest, bodies = split_substitutions(command)
-    for line in expanded:
-        bodies += split_substitutions(line)[1]
+    for body in expanded:
+        bodies += split_substitutions(body, heredoc=True)[1]
     if depth < 3 and any(blocked(body, depth + 1) for body in bodies):
         return True
     try:

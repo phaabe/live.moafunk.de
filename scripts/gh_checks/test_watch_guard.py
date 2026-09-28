@@ -59,6 +59,10 @@ class WatchGuard(unittest.TestCase):
             "while true; do gh run watch 1; done",
             "! gh run watch 1",
             "{ gh run watch 1; }",
+            "cat <<EOF\n'$(gh pr checks 12 --watch)'\nEOF",
+            "cat <<EOF\n$(\ngh pr checks 12 --watch\n)\nEOF",
+            'cat <<EOF\n"`gh run watch 1`"\nEOF',
+            "cat <<EOF\n$(gh run watch 1)",
         ):
             with self.subTest(cmd=cmd):
                 self.assertEqual(hook(cmd), 2)
@@ -80,6 +84,8 @@ class WatchGuard(unittest.TestCase):
             "cat > body.md <<'EOF'\n- blocks `gh pr checks --watch` and `gh run watch`.\nEOF\ngh api repos/o/r/pulls -F body=@body.md",
             "cat <<'EOF'\n$(gh pr checks 12 --watch)\n`gh run watch`\nEOF",
             'cat <<"EOF"\n$(gh run watch 1)\nEOF',
+            "cat <<'EOF'\n$(\ngh pr checks 12 --watch\n)\nEOF",
+            "cat <<EOF\n\\$(gh run watch 1)\nEOF",
             "bash -l script.sh gh run watch",
             "bash --login -x script.sh",
             "echo then gh run watch",
