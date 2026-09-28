@@ -55,12 +55,45 @@ cleanup() {
     rmdir "$lock_dir"
     printf 'tick: finished exit=%s\n' "$result"
 }
+# Stop the running child (selector or model) before the lock is released, so a
+# stopped runner never leaves a model working while a new tick starts.
+child_pid=""
+interrupt() {
+    trap '' HUP INT TERM
+    if [[ -n "$child_pid" ]]; then
+        # timeout forwards TERM to the command group and applies its kill grace.
+        if ! kill -TERM "$child_pid" 2>/dev/null; then
+            printf 'tick: child already exited\n'
+        fi
+        if wait "$child_pid"; then
+            printf 'tick: child stopped\n'
+        else
+            printf 'tick: child stopped with exit=%s\n' "$?"
+        fi
+    fi
+    exit "$1"
+}
 trap cleanup EXIT
+trap 'interrupt 129' HUP
+trap 'interrupt 130' INT
+trap 'interrupt 143' TERM
+
+# Runs "$@" under timeout in the background so the traps above can fire.
+run_bounded() {
+    local duration=$1
+    local result=0
+    shift
+    "$timeout_bin" --kill-after=10s "$duration" "$@" <&0 &
+    child_pid=$!
+    wait "$child_pid" || result=$?
+    child_pid=""
+    return "$result"
+}
 
 printf '\ntick: started %s repo=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$repo_root"
 cd "$repo_root"
 git fetch -q origin
-"$timeout_bin" --kill-after=10s "${select_timeout}s" \
+run_bounded "${select_timeout}s" \
     python3 scripts/epic/next_action.py --agent claude > "${lock_dir}/action.json"
 cat "${lock_dir}/action.json"
 action=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
@@ -96,7 +129,7 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 printf 'tick: %s with model=%s effort=%s\n' "$action" "$model" "$effort"
-"$timeout_bin" --kill-after=10s "${tick_timeout}s" \
+run_bounded "${tick_timeout}s" \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
     < "${lock_dir}/prompt.txt"
 python3 scripts/epic/tick_gate.py record --agent claude \
