@@ -2,12 +2,12 @@ name: FRONTEND - Build and Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev/312-interim, dev/streaming-architecture]
     paths:
       - frontend/**
       - .github/workflows/frontend.yml
   pull_request:
-    branches: [main]
+    branches: [main, dev/312-interim, dev/streaming-architecture]
     paths:
       - frontend/**
       - .github/workflows/frontend.yml
@@ -15,8 +15,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: frontend-${{ github.ref }}
@@ -25,26 +23,35 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
     defaults:
       run:
         working-directory: frontend
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Pages
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/configure-pages@v5
 
       # Python setup for SoundCloud API
       - name: Setup Python
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
       - name: Install uv
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: astral-sh/setup-uv@v5
 
       - name: Get secrets from Bitwarden
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: bitwarden/sm-action@v2
         id: bitwarden-secrets
         with:
@@ -54,6 +61,7 @@ jobs:
             fb23eb6e-139b-45be-a95a-b3ec013f2eac > SOUNDCLOUD_CLIENT_SECRET
 
       - name: Generate tracks JSON from SoundCloud
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         id: generate-tracks
         continue-on-error: true
         run: |
@@ -79,16 +87,15 @@ jobs:
           echo "✅ Generated re-listen.html with SoundCloud tracks"
 
       - name: Use fallback re-listen.html
-        if: steps.generate-tracks.outcome == 'failure'
+        if: steps.generate-tracks.outcome == 'failure' || steps.generate-tracks.outcome == 'skipped'
         run: |
-          echo "⚠️ SoundCloud API failed, using fallback re-listen.html"
-          echo "The static fallback page is already in src/pages/re-listen.html"
+          echo "SoundCloud refresh failed or was skipped; using checked-in tracks."
 
       - name: Run linter
         run: npm run lint
 
       - name: Run tests
-        run: npm test
+        run: npm test -- --run
 
       - name: Build website
         run: npm run build
@@ -110,13 +117,16 @@ jobs:
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           path: frontend/dist
 
   deploy:
     # Only deploy on push to main, not on PRs
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
