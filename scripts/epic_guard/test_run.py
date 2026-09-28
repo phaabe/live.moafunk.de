@@ -1,0 +1,215 @@
+"""Trusted-base loading and status publication tests; no network or credentials."""
+
+from __future__ import annotations
+
+import base64
+import copy
+import hashlib
+import json
+import subprocess
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import urlencode
+
+import run
+from test_check import HEAD, OLD, FakeGitHub, policy, snapshot
+
+
+def blob(content: bytes) -> dict:
+    return {
+        "type": "file",
+        "encoding": "base64",
+        "content": base64.b64encode(content).decode(),
+        "sha": hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest(),
+    }
+
+
+class BaseAPI(FakeGitHub):
+    def __init__(self) -> None:
+        super().__init__(snapshot())
+        self.data["pr"]["number"] = 406
+        self.pulls = [self.data["pr"]]
+        self.contents = {
+            "scripts/epic_guard/check.py": blob(
+                Path(__file__).with_name("check.py").read_bytes()
+            ),
+            ".github/epic-lanes.yml": blob(json.dumps(policy()).encode()),
+        }
+
+    def __call__(self, endpoint: str) -> dict | list:
+        if "/contents/" in endpoint:
+            self.calls.append(endpoint)
+            path, sha = endpoint.split("/contents/")[1].split("?ref=")
+            if sha != OLD:
+                raise AssertionError("checker must be loaded from immutable base SHA")
+            return copy.deepcopy(self.contents[path])
+        if "/pulls?" in endpoint:
+            self.calls.append(endpoint)
+            return copy.deepcopy(self.pulls)
+        return super().__call__(endpoint)
+
+
+class RunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.api = BaseAPI()
+        self.statuses: list[tuple[str, str, str]] = []
+
+    def verify(self, gh: run.Api | None = None) -> list[str]:
+        return run.verify(
+            406, gh or self.api, lambda *args: self.statuses.append(args), HEAD
+        )
+
+    def test_loads_only_base_blobs_and_publishes_exact_head(self) -> None:
+        self.assertEqual(self.verify(), [])
+        self.assertEqual(
+            [s[:2] for s in self.statuses], [(HEAD, "pending"), (HEAD, "success")]
+        )
+        self.assertEqual(sum("/contents/" in call for call in self.api.calls), 2)
+
+    def test_read_only_mode_never_publishes(self) -> None:
+        with patch.object(run, "publish") as publish:
+            self.assertEqual(run.verify(406, self.api, expected_head=HEAD), [])
+            publish.assert_not_called()
+
+    def test_graphql_transport_only_executes_queries(self) -> None:
+        endpoint = "graphql?" + urlencode({"query": "query { viewer { login } }"})
+        with patch.object(run.subprocess, "run") as command:
+            command.return_value.stdout = '{"data": {}}'
+            self.assertEqual(run.api(endpoint), {"data": {}})
+            self.assertEqual(command.call_args.args[0][2], "graphql")
+        with self.assertRaisesRegex(ValueError, "only anonymous"):
+            run.api("graphql?" + urlencode({"query": "mutation { wrong }"}))
+
+    def test_missing_bootstrap_or_invalid_blob_fails_closed(self) -> None:
+        self.api.contents["scripts/epic_guard/check.py"] = {"type": "symlink"}
+        self.assertIn("install setup", self.verify()[0])
+        self.assertEqual(self.statuses[-1][1], "failure")
+        self.api = BaseAPI()
+        self.api.contents["scripts/epic_guard/check.py"]["sha"] = "f" * 40
+        self.assertIn("invalid Git blob", self.verify()[0])
+
+    def test_untrusted_base_and_wrong_expected_head(self) -> None:
+        self.api.data["pr"]["base"]["ref"] = "attacker-branch"
+        self.assertIn("untrusted base", self.verify()[0])
+        self.assertFalse(any("/contents/" in call for call in self.api.calls))
+        self.api = BaseAPI()
+        self.assertIn("expected head", run.verify(406, self.api, expected_head=OLD)[0])
+
+    def test_duplicate_open_pr_at_head_refused(self) -> None:
+        duplicate = copy.deepcopy(self.api.data["pr"])
+        duplicate["number"] = 407
+        self.api.pulls.append(duplicate)
+        self.assertIn("exactly one", self.verify()[0])
+
+    def test_changes_requested_during_collection_prevents_success(self) -> None:
+        comments = 0
+
+        def gh(endpoint: str) -> dict | list:
+            nonlocal comments
+            if "/comments?" in endpoint:
+                comments += 1
+                if comments == 2:
+                    self.api.data["comments"][0]["body"] = self.api.data["comments"][0][
+                        "body"
+                    ].replace("APPROVED", "CHANGES REQUESTED")
+            return self.api(endpoint)
+
+        self.assertIn("requests changes", " ".join(self.verify(gh)))
+        self.assertEqual(self.statuses[-1][1], "failure")
+
+    def test_check_turning_red_before_publication_prevents_success(self) -> None:
+        checks = 0
+
+        def gh(endpoint: str) -> dict | list:
+            nonlocal checks
+            if "/check-runs?" in endpoint:
+                checks += 1
+                if checks == 2:
+                    self.api.data["check_runs"][0]["conclusion"] = "failure"
+            return self.api(endpoint)
+
+        self.assertIn("not successful", " ".join(self.verify(gh)))
+        self.assertEqual(self.statuses[-1][1], "failure")
+
+    def test_head_advance_before_publish_never_grants_success(self) -> None:
+        reads = 0
+
+        def gh(endpoint: str) -> dict | list:
+            nonlocal reads
+            if endpoint.endswith("/pulls/406"):
+                reads += 1
+                if reads == 6:
+                    self.api.data["pr"]["head"]["sha"] = "c" * 40
+            return self.api(endpoint)
+
+        self.assertIn("before status", " ".join(self.verify(gh)))
+        self.assertEqual(self.statuses[-1][:2], (HEAD, "failure"))
+
+    def test_base_advance_rejects_old_policy(self) -> None:
+        reads = 0
+
+        def gh(endpoint: str) -> dict | list:
+            nonlocal reads
+            if endpoint.endswith("/pulls/406"):
+                reads += 1
+                if reads == 2:
+                    self.api.data["pr"]["base"]["sha"] = "d" * 40
+            return self.api(endpoint)
+
+        self.assertIn("base changed", " ".join(self.verify(gh)))
+
+    def test_api_failure_after_pending_publishes_failure(self) -> None:
+        def gh(endpoint: str) -> dict | list:
+            if "/contents/" in endpoint:
+                raise subprocess.CalledProcessError(1, ["gh", "api"])
+            return self.api(endpoint)
+
+        self.assertTrue(self.verify(gh))
+        self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
+
+    def test_scope_and_manual_input_validation(self) -> None:
+        event = {"repository": {"full_name": run.REPO}}
+        self.assertEqual(run.event_numbers(event, self.api), [406])
+        self.api.data["pr"]["base"]["ref"] = "main"
+        self.api.data["pr"]["body"] = "Ordinary fix"
+        self.assertEqual(run.event_numbers(event, self.api), [])
+        event["inputs"] = {"pr_number": "406; echo wrong"}
+        with self.assertRaisesRegex(ValueError, "invalid PR"):
+            run.event_numbers(event, self.api)
+        event["inputs"] = {"pr_number": "406"}
+        self.assertEqual(run.event_numbers(event, self.api), [406])
+        event["repository"]["full_name"] = "another/repo"
+        with self.assertRaisesRegex(ValueError, "repository mismatch"):
+            run.event_numbers(event, self.api)
+
+    def test_leaving_scope_invalidates_previous_green_status(self) -> None:
+        self.api.data["pr"]["base"]["ref"] = "main"
+        self.api.data["pr"]["body"] = "Ordinary fix"
+        self.api.data["statuses"] = [
+            {"id": i, "context": f"other-{i}", "state": "success"} for i in range(100)
+        ] + [{"id": 101, "context": "epic-guard", "state": "success"}]
+        event = {"repository": {"full_name": run.REPO}}
+        self.assertEqual(run.event_numbers(event, self.api), [406])
+        self.assertTrue(self.verify())
+        self.assertEqual(self.statuses[-1][1], "failure")
+
+    def test_new_pr_sharing_head_before_publication_blocks_success(self) -> None:
+        reads = 0
+
+        def gh(endpoint: str) -> dict | list:
+            nonlocal reads
+            if "/pulls?" in endpoint:
+                reads += 1
+                if reads == 2:
+                    duplicate = copy.deepcopy(self.api.data["pr"])
+                    duplicate["number"] = 407
+                    self.api.pulls.append(duplicate)
+            return self.api(endpoint)
+
+        self.assertIn("sharing this head changed", " ".join(self.verify(gh)))
+        self.assertEqual(self.statuses[-1][1], "failure")
+
+
+if __name__ == "__main__":
+    unittest.main()

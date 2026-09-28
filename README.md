@@ -18,6 +18,15 @@ Live streaming web radio from Moabit, Berlin.
   - Frontend: GitHub Actions + GitHub Pages
   - Backend: GitHub Actions → GHCR image → AWS Lightsail (Docker Compose) behind nginx
 
+## Architecture
+
+Interactive architecture diagrams, generated with archify, live in [`docs/architecture/`](docs/architecture/):
+
+- **Accepted target architecture (v5)** — [view online](https://claude.ai/artifact/C9pKpi9c274r3fwRBRK1EQ) · [diagram file](docs/architecture/claude-live-moafunk.proposal-v5.html) · [spec](docs/architecture/live-moafunk.proposal-v5.md) · [source JSON](docs/architecture/claude-live-moafunk.proposal-v5.architecture.json). Continuous radio on one server: independent station delivery, local fallback, HLS + direct MP3, guarded API deploys and durable recording handoff.
+- **Current architecture** — [diagram](docs/architecture/live-moafunk.html) · [source JSON](docs/architecture/live-moafunk.architecture.json).
+
+The v5 diagram can be viewed online via the link above. The diagram files are self-contained HTML; GitHub shows their source, so download or open them locally in a browser. Review history and the v1–v4 proposals are indexed in [docs/architecture/README.md](docs/architecture/README.md).
+
 ## Development Setup
 
 ### Prerequisites
