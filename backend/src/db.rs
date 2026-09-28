@@ -217,10 +217,25 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             manual_retries INTEGER NOT NULL DEFAULT 0,
-            last_retry_at TEXT,
-            last_retry_by TEXT,
-            last_retry_result TEXT,
             PRIMARY KEY (show_id, scheduled_start_utc)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // One row per manual retry of a missed occurrence. Each attempt keeps its
+    // own operator and result, so concurrent retries never overwrite each other.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS prerecorded_retries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            show_id INTEGER NOT NULL,
+            scheduled_start_utc TEXT NOT NULL,
+            retried_by TEXT NOT NULL,
+            result TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            finished_at TEXT
         )
         "#,
     )
@@ -1040,42 +1055,53 @@ pub async fn prerecorded_occurrence_status(
     .await
 }
 
-/// Record an operator's manual retry of a missed occurrence. Returns true if
-/// the occurrence was missed (so this start is a retry). `status` stays 'missed'.
+/// Record an operator's manual retry of a missed occurrence. Returns the
+/// retry attempt ID if the occurrence was missed (so this start is a retry),
+/// else None. `status` stays 'missed'.
 pub async fn record_prerecorded_retry(
     pool: &SqlitePool,
     show_id: i64,
     scheduled_start_utc: &str,
     username: &str,
-) -> Result<bool, sqlx::Error> {
+) -> Result<Option<i64>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
     let res = sqlx::query(
         "UPDATE prerecorded_occurrences \
-         SET manual_retries = manual_retries + 1, last_retry_at = datetime('now'), \
-             last_retry_by = ?, last_retry_result = 'pending', updated_at = datetime('now') \
+         SET manual_retries = manual_retries + 1, updated_at = datetime('now') \
          WHERE show_id = ? AND scheduled_start_utc = ? AND status = 'missed'",
     )
-    .bind(username)
     .bind(show_id)
     .bind(scheduled_start_utc)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(res.rows_affected() > 0)
+    if res.rows_affected() == 0 {
+        return Ok(None);
+    }
+    let id = sqlx::query(
+        "INSERT INTO prerecorded_retries (show_id, scheduled_start_utc, retried_by) \
+         VALUES (?, ?, ?)",
+    )
+    .bind(show_id)
+    .bind(scheduled_start_utc)
+    .bind(username)
+    .execute(&mut *tx)
+    .await?
+    .last_insert_rowid();
+    tx.commit().await?;
+    Ok(Some(id))
 }
 
-/// Store the result of the latest manual retry ('started' or 'failed: …').
+/// Store the result of one retry attempt ('started', 'skipped: …' or 'failed: …').
 pub async fn finish_prerecorded_retry(
     pool: &SqlitePool,
-    show_id: i64,
-    scheduled_start_utc: &str,
+    retry_id: i64,
     result: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE prerecorded_occurrences SET last_retry_result = ?, updated_at = datetime('now') \
-         WHERE show_id = ? AND scheduled_start_utc = ?",
+        "UPDATE prerecorded_retries SET result = ?, finished_at = datetime('now') WHERE id = ?",
     )
     .bind(result)
-    .bind(show_id)
-    .bind(scheduled_start_utc)
+    .bind(retry_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -1085,14 +1111,32 @@ pub async fn finish_prerecorded_retry(
 mod tests {
     use super::*;
 
-    async fn occurrence(pool: &SqlitePool) -> (String, Option<String>, i64, Option<String>) {
+    async fn occurrence(pool: &SqlitePool) -> (String, Option<String>, i64) {
         sqlx::query_as(
-            "SELECT status, reason, manual_retries, last_retry_result \
+            "SELECT status, reason, manual_retries \
              FROM prerecorded_occurrences WHERE show_id = 7 AND scheduled_start_utc = 'S'",
         )
         .fetch_one(pool)
         .await
         .unwrap()
+    }
+
+    /// (retried_by, result) per retry attempt, oldest first.
+    async fn retries(pool: &SqlitePool) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "SELECT retried_by, result FROM prerecorded_retries \
+             WHERE show_id = 7 AND scheduled_start_utc = 'S' ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn missed_occurrence(pool: &SqlitePool) {
+        assert!(claim_prerecorded_occurrence(pool, 7, "S").await.unwrap());
+        finish_prerecorded_occurrence(pool, 7, "S", "missed", Some("producer_busy: live"))
+            .await
+            .unwrap();
     }
 
     /// B1.1.6 scenario: live producer busy → scheduled start refused → API
@@ -1101,10 +1145,7 @@ mod tests {
     #[tokio::test]
     async fn refused_occurrence_stays_consumed_and_retry_is_recorded() {
         let pool = mem_db().await;
-        assert!(claim_prerecorded_occurrence(&pool, 7, "S").await.unwrap());
-        finish_prerecorded_occurrence(&pool, 7, "S", "missed", Some("producer_busy: live"))
-            .await
-            .unwrap();
+        missed_occurrence(&pool).await;
         // A refusal is not released: that is what keeps the claim consumed.
         release_prerecorded_occurrence(&pool, 7, "S").await.unwrap();
 
@@ -1117,20 +1158,68 @@ mod tests {
             );
         }
 
-        assert!(record_prerecorded_retry(&pool, 7, "S", "admin")
+        let retry = record_prerecorded_retry(&pool, 7, "S", "admin")
             .await
-            .unwrap());
-        finish_prerecorded_retry(&pool, 7, "S", "started")
+            .unwrap()
+            .expect("a missed occurrence accepts a retry");
+        finish_prerecorded_retry(&pool, retry, "started")
             .await
             .unwrap();
-        let (status, reason, retries, result) = occurrence(&pool).await;
+        let (status, reason, count) = occurrence(&pool).await;
         assert_eq!(
             status, "missed",
             "missed playback is never recorded as played"
         );
         assert_eq!(reason.as_deref(), Some("producer_busy: live"));
-        assert_eq!(retries, 1);
-        assert_eq!(result.as_deref(), Some("started"));
+        assert_eq!(count, 1);
+        assert_eq!(
+            retries(&pool).await,
+            vec![("admin".to_string(), "started".to_string())]
+        );
+    }
+
+    /// Review finding: two concurrent retries must each keep their own
+    /// operator and result, whatever order they finish in.
+    #[tokio::test]
+    async fn concurrent_retries_keep_operator_and_result_paired() {
+        for a_finishes_last in [true, false] {
+            let pool = mem_db().await;
+            missed_occurrence(&pool).await;
+
+            // A registers and wins the show claim; B registers and loses it.
+            let a = record_prerecorded_retry(&pool, 7, "S", "host-A")
+                .await
+                .unwrap()
+                .unwrap();
+            let b = record_prerecorded_retry(&pool, 7, "S", "admin-B")
+                .await
+                .unwrap()
+                .unwrap();
+            let finish_a = finish_prerecorded_retry(&pool, a, "started");
+            let finish_b = finish_prerecorded_retry(&pool, b, "skipped: already started elsewhere");
+            if a_finishes_last {
+                finish_b.await.unwrap();
+                finish_a.await.unwrap();
+            } else {
+                finish_a.await.unwrap();
+                finish_b.await.unwrap();
+            }
+
+            let (status, _, count) = occurrence(&pool).await;
+            assert_eq!(status, "missed");
+            assert_eq!(count, 2);
+            assert_eq!(
+                retries(&pool).await,
+                vec![
+                    ("host-A".to_string(), "started".to_string()),
+                    (
+                        "admin-B".to_string(),
+                        "skipped: already started elsewhere".to_string()
+                    ),
+                ],
+                "a_finishes_last={a_finishes_last}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1144,16 +1233,18 @@ mod tests {
     #[tokio::test]
     async fn manual_start_of_a_normal_show_is_not_a_retry() {
         let pool = mem_db().await;
-        assert!(!record_prerecorded_retry(&pool, 7, "S", "host")
+        assert!(record_prerecorded_retry(&pool, 7, "S", "host")
             .await
-            .unwrap());
+            .unwrap()
+            .is_none());
         assert!(claim_prerecorded_occurrence(&pool, 7, "S").await.unwrap());
         finish_prerecorded_occurrence(&pool, 7, "S", "started", None)
             .await
             .unwrap();
-        assert!(!record_prerecorded_retry(&pool, 7, "S", "host")
+        assert!(record_prerecorded_retry(&pool, 7, "S", "host")
             .await
-            .unwrap());
+            .unwrap()
+            .is_none());
     }
 
     async fn mem_db() -> SqlitePool {

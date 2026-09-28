@@ -281,13 +281,19 @@ async fn go_live(state: &Arc<AppState>, headers: &HeaderMap, retry: bool) -> Res
     .map(|_| ())
 }
 
-/// (status, manual_retries, last_retry_by, last_retry_result)
+/// (status, manual_retries, latest retry's operator, latest retry's result)
 async fn occurrence(
     state: &Arc<AppState>,
 ) -> Option<(String, i64, Option<String>, Option<String>)> {
     sqlx::query_as(
-        "SELECT status, manual_retries, last_retry_by, last_retry_result \
-         FROM prerecorded_occurrences WHERE show_id = 1 AND scheduled_start_utc = ?",
+        "SELECT o.status, o.manual_retries, \
+                (SELECT retried_by FROM prerecorded_retries r \
+                 WHERE r.show_id = o.show_id AND r.scheduled_start_utc = o.scheduled_start_utc \
+                 ORDER BY r.id DESC LIMIT 1), \
+                (SELECT result FROM prerecorded_retries r \
+                 WHERE r.show_id = o.show_id AND r.scheduled_start_utc = o.scheduled_start_utc \
+                 ORDER BY r.id DESC LIMIT 1) \
+         FROM prerecorded_occurrences o WHERE o.show_id = 1 AND o.scheduled_start_utc = ?",
     )
     .bind(SHOW_START)
     .fetch_optional(&state.db)

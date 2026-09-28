@@ -5483,11 +5483,15 @@ pub async fn api_my_show_go_live(
 
     // An explicit retry of a missed occurrence records itself; the occurrence
     // stays 'missed' (B1.1.6).
-    if query.retry
-        && crate::db::record_prerecorded_retry(&state.db, show.id, &key, &user.username).await?
-    {
+    let retry = if query.retry {
+        crate::db::record_prerecorded_retry(&state.db, show.id, &key, &user.username).await?
+    } else {
+        None
+    };
+    if let Some(retry_id) = retry {
         tracing::info!(
-            "Prerecorded manual retry: show {} occurrence {} by '{}'",
+            "Prerecorded manual retry {}: show {} occurrence {} by '{}'",
+            retry_id,
             show.id,
             key,
             user.username
@@ -5498,7 +5502,7 @@ pub async fn api_my_show_go_live(
             Ok(false) => "skipped: already started elsewhere".to_string(),
             Err(e) => format!("failed: {e}"),
         };
-        crate::db::finish_prerecorded_retry(&state.db, show.id, &key, &outcome).await?;
+        crate::db::finish_prerecorded_retry(&state.db, retry_id, &outcome).await?;
         result?;
         return Ok(go_live_started());
     }
