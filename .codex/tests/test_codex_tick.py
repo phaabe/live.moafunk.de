@@ -15,6 +15,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REAL_GIT = shutil.which("git")
 
 
 class TickTests(unittest.TestCase):
@@ -33,6 +34,7 @@ class TickTests(unittest.TestCase):
         self.calls = self.root / "codex-calls.jsonl"
         self.pr_queries = self.root / "pr-queries.jsonl"
         self.selections = self.root / "selector-calls"
+        self.pulls = self.root / "pull-calls"
         self.runner = self.repo / ".codex/codex-tick.sh"
         self.runner.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / "codex-tick.sh", self.runner)
@@ -49,6 +51,7 @@ class TickTests(unittest.TestCase):
         selector.write_text(
             "import os, pathlib, sys\n"
             "assert sys.argv[1:] == ['--agent', 'codex']\n"
+            "assert pathlib.Path(os.environ['TEST_PULLS']).exists()\n"
             "with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('call\\n')\n"
             "if os.environ.get('TEST_SELECTOR_EXIT'): sys.exit(23)\n"
             "if os.environ.get('TEST_PAUSE_AFTER_SELECT'):\n"
@@ -57,6 +60,20 @@ class TickTests(unittest.TestCase):
         )
         self.bin = self.root / "bin"
         self.bin.mkdir()
+        git = self.bin / "git"
+        git.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, sys, time\n"
+            "assert sys.argv[1:] == ['pull', '--ff-only']\n"
+            "assert pathlib.Path.cwd() == pathlib.Path(os.environ['TEST_REPO']).resolve()\n"
+            "assert (pathlib.Path.home() / '.local/state/epic-loop/codex.lock/owner.json').exists()\n"
+            "with open(os.environ['TEST_PULLS'], 'a') as f: f.write('pull\\n')\n"
+            "if os.environ.get('TEST_PAUSE_AFTER_PULL'):\n"
+            "    (pathlib.Path.home() / '.epic-pause').touch()\n"
+            "if os.environ.get('TEST_PULL_SLEEP'): time.sleep(60)\n"
+            "sys.exit(int(os.environ.get('TEST_PULL_EXIT', '0')))\n"
+        )
+        git.chmod(0o755)
         gh = self.bin / "gh"
         gh.write_text(
             "#!/usr/bin/env python3\n"
@@ -103,12 +120,15 @@ class TickTests(unittest.TestCase):
             "TEST_CALLS": str(self.calls),
             "TEST_PR_QUERIES": str(self.pr_queries),
             "TEST_SELECTIONS": str(self.selections),
+            "TEST_PULLS": str(self.pulls),
+            "TEST_REPO": str(self.repo),
             "TEST_UPDATED_AT": str(self.updated_at),
             "TEST_DECISION": json.dumps(
                 {"action": "review", "pr": 406, "sha": "a" * 40}
             ),
             "EPIC_TICK_TIMEOUT_SECONDS": "10",
             "EPIC_SELECT_TIMEOUT_SECONDS": "10",
+            "EPIC_PULL_TIMEOUT_SECONDS": "10",
             "EPIC_STATE_DIR": str(self.state),
             "EPIC_REPEAT_TTL_SECONDS": "10800",
             "EPIC_BLOCKED_RETRY_SECONDS": "900",
@@ -220,6 +240,101 @@ class TickTests(unittest.TestCase):
         self.assertFalse(self.selections.exists())
         self.assertFalse(self.calls.exists())
         self.assertFalse(self.lock.exists())
+        self.assertFalse(self.pulls.exists())
+
+    def test_failed_pull_stops_before_selection_and_releases_lock(self) -> None:
+        self.env["TEST_PULL_EXIT"] = "17"
+        self.assertEqual(self.run_tick().returncode, 17)
+        self.assertFalse(self.selections.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.lock.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+        self.assertIn(
+            "checkout refresh failed exit=17", (self.state / "codex.log").read_text()
+        )
+
+    def test_pull_timeout_stops_before_selection(self) -> None:
+        self.env["TEST_PULL_SLEEP"] = "1"
+        self.env["EPIC_PULL_TIMEOUT_SECONDS"] = "1"
+        self.assertEqual(self.run_tick().returncode, 124)
+        self.assertFalse(self.selections.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.lock.exists())
+
+    def test_pause_created_during_pull_prevents_selection(self) -> None:
+        self.env["TEST_PAUSE_AFTER_PULL"] = "1"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(self.pulls.read_text(), "pull\n")
+        self.assertFalse(self.selections.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.lock.exists())
+
+    def test_real_pull_uses_new_selector_in_same_tick_and_rejects_divergence(
+        self,
+    ) -> None:
+        assert REAL_GIT is not None
+        (self.bin / "git").unlink()
+
+        def git(cwd: Path, *args: str) -> str:
+            return subprocess.check_output(
+                [REAL_GIT, "-C", str(cwd), *args],
+                env=self.env,
+                text=True,
+                stderr=subprocess.STDOUT,
+                timeout=10,
+            ).strip()
+
+        def configure(cwd: Path) -> None:
+            git(cwd, "config", "user.name", "Runner test")
+            git(cwd, "config", "user.email", "runner@example.invalid")
+            git(cwd, "config", "commit.gpgsign", "false")
+
+        upstream = self.root / "upstream.git"
+        git(self.root, "init", "--bare", str(upstream))
+        git(self.repo, "init", "-b", "dev/312-interim")
+        configure(self.repo)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "Initial runner")
+        git(self.repo, "remote", "add", "origin", str(upstream))
+        git(self.repo, "push", "-u", "origin", "dev/312-interim")
+        writer = self.root / "writer"
+        git(
+            self.root,
+            "clone",
+            "--branch",
+            "dev/312-interim",
+            str(upstream),
+            str(writer),
+        )
+        configure(writer)
+        (writer / "scripts/epic/next_action.py").write_text(
+            "import os\n"
+            "with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('new\\n')\n"
+            'print(\'{"action": "idle", "reason": "focused selector"}\')\n'
+        )
+        git(writer, "add", ".")
+        git(writer, "commit", "-m", "Update selector")
+        git(writer, "push")
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(
+            git(self.repo, "rev-parse", "HEAD"), git(writer, "rev-parse", "HEAD")
+        )
+        self.assertIn("focused selector", (self.state / "codex.log").read_text())
+        self.assertEqual(self.selections.read_text(), "new\n")
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.lock.exists())
+
+        # Diverged runner history must stop, rather than merge or use old decisions.
+        git(self.repo, "commit", "--allow-empty", "-m", "Local work")
+        local_head = git(self.repo, "rev-parse", "HEAD")
+        git(writer, "commit", "--allow-empty", "-m", "Remote work")
+        git(writer, "push")
+        self.assertNotEqual(self.run_tick().returncode, 0)
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), local_head)
+        self.assertEqual(self.selections.read_text(), "new\n")
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.lock.exists())
 
     def test_existing_lock_is_not_removed(self) -> None:
         self.lock.mkdir(parents=True)
@@ -227,6 +342,7 @@ class TickTests(unittest.TestCase):
         owner.write_text("another tick")
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(owner.read_text(), "another tick")
+        self.assertFalse(self.pulls.exists())
         self.assertFalse(self.selections.exists())
         self.assertFalse(self.calls.exists())
 
@@ -238,6 +354,7 @@ class TickTests(unittest.TestCase):
                 self.assertFalse(self.calls.exists())
                 self.assertFalse(self.lock.exists())
         self.assertEqual(self.selections.read_text().splitlines(), ["call", "call"])
+        self.assertEqual(self.pulls.read_text().splitlines(), ["pull", "pull"])
 
     def seed_lock(self, pid: int, age: int, max_age: int = 30) -> None:
         self.lock.mkdir(parents=True)
@@ -564,7 +681,7 @@ class TickTests(unittest.TestCase):
         owner = json.loads((self.lock / "owner.json").read_text())
         self.assertEqual(owner["pid"], process.pid)
         self.assertGreater(owner["started_at"], 0)
-        self.assertEqual(owner["max_age"], 30)
+        self.assertEqual(owner["max_age"], 40)
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertTrue(self.lock.is_dir())
