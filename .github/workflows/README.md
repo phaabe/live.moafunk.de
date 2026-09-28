@@ -26,3 +26,25 @@ names stable when changing the workflow.
 
 GitHub explains why required workflows must not be skipped by path filters in
 [Troubleshooting required status checks](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks).
+
+## O1.2.4 verification still required
+
+The existing integration PR checks cover only part of
+https://github.com/phaabe/live.moafunk.de/issues/381. The leaf remains open
+until the following evidence is recorded:
+
+- PR and push checks cover `main`, `dev/312-interim` and
+  `dev/streaming-architecture`, including backend changes.
+- Backend checks use the pinned Rust toolchain and run `cargo fmt --check`,
+  `cargo clippy --all-targets --locked` and `cargo test --locked`.
+- The Clippy baseline is recorded. Existing warnings are listed explicitly;
+  any later move to `-D warnings` has its own follow-up.
+- Frontend PR and push triggers include both integration branches. Pages
+  deployment remains limited to `main`.
+- Deliberate test and formatting failures produce failed checks for backend
+  and frontend changes on each target branch.
+- Integration pushes cannot deploy, and CI checks need no secrets or
+  production access.
+- The administrator receives the stable required check names and evidence.
+
+This checklist records outstanding verification, not completed leaf evidence.
