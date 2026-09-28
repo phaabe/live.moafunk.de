@@ -66,6 +66,154 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual(backoff.check(other, self.state, 900, 1001), 0)
         self.assertEqual(backoff.check(self.action, self.state, 900, 1001), 3)
 
+    def test_issue_cooldown_transfers_once_without_extending_expiry(self) -> None:
+        self.record()
+        action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        original = backoff.load_entries(self.state)[backoff.target_key(self.action)]
+        metadata = {
+            "body": f"Executor: Codex\r\nIssue: {self.action['issue']}\r\n",
+            "headRefOid": action["sha"],
+        }
+        response = subprocess.CompletedProcess([], 0, stdout=json.dumps(metadata))
+        with patch.object(backoff.subprocess, "run", return_value=response) as github:
+            self.assertEqual(backoff.check(action, self.state, 900, 1200), 3)
+            github.assert_called_once_with(
+                [
+                    "gh",
+                    "pr",
+                    "view",
+                    "410",
+                    "--repo",
+                    "phaabe/live.moafunk.de",
+                    "--json",
+                    "body,headRefOid",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        self.assertEqual(
+            backoff.load_entries(self.state), {backoff.target_key(action): original}
+        )
+        with patch.object(backoff.subprocess, "run") as github:
+            self.assertEqual(backoff.check(action, self.state, 900, 1899), 3)
+            self.assertEqual(backoff.check(action, self.state, 900, 1900), 0)
+            new_head = {**action, "sha": "b" * 40}
+            self.assertEqual(backoff.check(new_head, self.state, 900, 1201), 0)
+            github.assert_not_called()
+
+    def test_migration_preserves_unrelated_entries(self) -> None:
+        self.record()
+        other = {"action": "claim", "issue": self.action["issue"].replace("338", "381")}
+        self.record(other)
+        before = backoff.load_entries(self.state)
+        action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        with patch.object(backoff, "pr_issue", return_value=self.action["issue"]):
+            self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
+        after = backoff.load_entries(self.state)
+        self.assertNotIn(backoff.target_key(self.action), after)
+        self.assertEqual(
+            after[backoff.target_key(other)], before[backoff.target_key(other)]
+        )
+        with patch.object(backoff, "pr_issue", return_value=self.action["issue"]):
+            self.assertEqual(
+                backoff.check({**action, "sha": "b" * 40}, self.state, 900, 1002), 0
+            )
+        self.assertEqual(backoff.load_entries(self.state), after)
+
+    def test_healthy_expired_and_non_continue_prs_need_no_metadata(self) -> None:
+        action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        with patch.object(backoff.subprocess, "run") as github:
+            self.assertEqual(backoff.check(action, self.state, 900, 1000), 0)
+            self.record()
+            self.assertEqual(backoff.check(action, self.state, 900, 1900), 0)
+            self.assertEqual(
+                backoff.check({**action, "action": "review"}, self.state, 900, 1001), 0
+            )
+            self.record(action)
+            self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
+            github.assert_not_called()
+
+    def test_missing_or_unrelated_issue_does_not_consume_cooldown(self) -> None:
+        self.record()
+        action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        path = self.state / "codex-backoff.json"
+        original = path.read_bytes()
+        for body in (
+            "",
+            f"Refs: {self.action['issue']}\nCloses: {self.action['issue']}",
+            f"This fixes {self.action['issue']}",
+            "Issue: https://github.com/phaabe/live.moafunk.de/issues/381",
+        ):
+            with self.subTest(body=body):
+                response = subprocess.CompletedProcess(
+                    [],
+                    0,
+                    stdout=json.dumps({"body": body, "headRefOid": action["sha"]}),
+                )
+                with patch.object(backoff.subprocess, "run", return_value=response):
+                    self.assertEqual(backoff.check(action, self.state, 900, 1001), 0)
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_invalid_or_ambiguous_metadata_keeps_state(self) -> None:
+        self.record()
+        action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        path = self.state / "codex-backoff.json"
+        original = path.read_bytes()
+        issue_line = f"Issue: {self.action['issue']}"
+        for metadata in (
+            [],
+            {"body": None, "headRefOid": action["sha"]},
+            {"body": issue_line, "headRefOid": "b" * 40},
+            {"body": "Issue: #338", "headRefOid": action["sha"]},
+            {"body": f"{issue_line}\n{issue_line}", "headRefOid": action["sha"]},
+            {"body": f"{issue_line} extra", "headRefOid": action["sha"]},
+            {
+                "body": "Issue: https://github.com/other/repo/issues/338",
+                "headRefOid": action["sha"],
+            },
+        ):
+            with self.subTest(metadata=metadata):
+                response = subprocess.CompletedProcess(
+                    [], 0, stdout=json.dumps(metadata)
+                )
+                with patch.object(backoff.subprocess, "run", return_value=response):
+                    with self.assertRaises(ValueError):
+                        backoff.check(action, self.state, 900, 1001)
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_github_errors_keep_state_and_fail_cli_closed(self) -> None:
+        self.record()
+        action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        path = self.state / "codex-backoff.json"
+        original = path.read_bytes()
+        action_file = self.root / "action.json"
+        action_file.write_text(json.dumps(action))
+        argv = [
+            "tick_backoff.py",
+            "check",
+            "--action-file",
+            str(action_file),
+            "--state-dir",
+            str(self.state),
+            "--ttl",
+            "900",
+        ]
+        for error in (
+            subprocess.TimeoutExpired("gh", 30),
+            subprocess.CalledProcessError(1, "gh"),
+            FileNotFoundError("gh"),
+        ):
+            with self.subTest(error=error):
+                with (
+                    patch.object(backoff.subprocess, "run", side_effect=error),
+                    patch.object(backoff.time, "time", return_value=1001),
+                    patch.object(sys, "argv", argv),
+                ):
+                    self.assertEqual(backoff.main(), 75)
+                self.assertEqual(path.read_bytes(), original)
+
     def test_nonzero_exit_overrides_completed_output(self) -> None:
         self.result.write_text(json.dumps({"status": "completed", "summary": "Done"}))
         self.assertEqual(self.record(code=17), 75)

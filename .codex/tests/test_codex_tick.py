@@ -31,6 +31,7 @@ class TickTests(unittest.TestCase):
         self.updated_at = self.root / "updated-at"
         self.updated_at.write_text("2026-09-28T03:00:00Z")
         self.calls = self.root / "codex-calls.jsonl"
+        self.pr_queries = self.root / "pr-queries.jsonl"
         self.selections = self.root / "selector-calls"
         self.runner = self.repo / ".codex/codex-tick.sh"
         self.runner.parent.mkdir(parents=True)
@@ -59,9 +60,17 @@ class TickTests(unittest.TestCase):
         gh = self.bin / "gh"
         gh.write_text(
             "#!/usr/bin/env python3\n"
-            "import os, pathlib, sys\n"
-            "assert sys.argv[1] == 'api'\n"
+            "import json, os, pathlib, sys\n"
             "if os.environ.get('TEST_GH_FAILURE'): sys.exit(7)\n"
+            "if sys.argv[1:3] == ['pr', 'view']:\n"
+            "    assert sys.argv[4:] == ['--repo', 'phaabe/live.moafunk.de', "
+            "'--json', 'body,headRefOid']\n"
+            "    with open(os.environ['TEST_PR_QUERIES'], 'a') as f:\n"
+            "        f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "    if os.environ.get('TEST_PR_FAILURE'): sys.exit(7)\n"
+            "    print(os.environ['TEST_PR_METADATA'])\n"
+            "    sys.exit(0)\n"
+            "assert sys.argv[1] == 'api'\n"
             "print(pathlib.Path(os.environ['TEST_UPDATED_AT']).read_text())\n"
         )
         gh.chmod(0o755)
@@ -92,6 +101,7 @@ class TickTests(unittest.TestCase):
             "HOME": str(self.home),
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "TEST_CALLS": str(self.calls),
+            "TEST_PR_QUERIES": str(self.pr_queries),
             "TEST_SELECTIONS": str(self.selections),
             "TEST_UPDATED_AT": str(self.updated_at),
             "TEST_DECISION": json.dumps(
@@ -121,6 +131,68 @@ class TickTests(unittest.TestCase):
         for entry in entries.values():
             entry["at"] = 0
         path.write_text(json.dumps(entries))
+
+    def block_issue_then_select_draft_pr(self) -> dict[str, object]:
+        issue = "https://github.com/phaabe/live.moafunk.de/issues/381"
+        self.env["TEST_DECISION"] = json.dumps({"action": "continue", "issue": issue})
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Commit permission denied."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        entries = json.loads((self.state / "codex-backoff.json").read_text())
+        entry = entries[f"issue:{issue}"]
+        self.env["TEST_DECISION"] = json.dumps(
+            {"action": "continue", "pr": 417, "sha": "a" * 40}
+        )
+        self.env["TEST_PR_METADATA"] = json.dumps(
+            {"body": f"Executor: Codex\nIssue: {issue}\n", "headRefOid": "a" * 40}
+        )
+        del self.env["TEST_RESULT"]
+        return entry
+
+    def test_issue_cooldown_follows_draft_pr_without_blocking_new_head(self) -> None:
+        entry = self.block_issue_then_select_draft_pr()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertEqual(
+            json.loads((self.state / "codex-backoff.json").read_text()),
+            {f"pr:417:{'a' * 40}": entry},
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertEqual(len(self.pr_queries.read_text().splitlines()), 1)
+        self.env["TEST_DECISION"] = json.dumps(
+            {"action": "continue", "pr": 417, "sha": "b" * 40}
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_migrated_issue_cooldown_expires_for_same_pr_head(self) -> None:
+        self.block_issue_then_select_draft_pr()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.expire_cooldown()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(
+            json.loads((self.state / "codex-backoff.json").read_text()), {}
+        )
+
+    def test_pr_lookup_failure_and_head_race_preserve_issue_cooldown(self) -> None:
+        self.block_issue_then_select_draft_pr()
+        path = self.state / "codex-backoff.json"
+        original = path.read_text()
+        self.env["TEST_PR_FAILURE"] = "1"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertEqual(path.read_text(), original)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        del self.env["TEST_PR_FAILURE"]
+        metadata = json.loads(self.env["TEST_PR_METADATA"])
+        metadata["headRefOid"] = "b" * 40
+        self.env["TEST_PR_METADATA"] = json.dumps(metadata)
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertEqual(path.read_text(), original)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
 
     def test_unchanged_blocked_claim_stays_suppressed_after_cooldown(self) -> None:
         self.env["TEST_DECISION"] = json.dumps(

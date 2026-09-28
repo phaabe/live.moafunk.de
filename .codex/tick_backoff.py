@@ -8,6 +8,8 @@ import logging
 import math
 import os
 from pathlib import Path
+import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -16,6 +18,10 @@ from typing import TypedDict
 SKIP = 3
 BLOCKED = 3
 FAILED = 75
+REPO = "phaabe/live.moafunk.de"
+ISSUE_LINE = re.compile(
+    rf"Issue:[ \t]*(https://github\.com/{re.escape(REPO)}/issues/[1-9][0-9]*)[ \t]*"
+)
 
 
 class Entry(TypedDict):
@@ -73,11 +79,64 @@ def save_entries(state_dir: Path, entries: dict[str, Entry]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def pr_issue(action: dict[str, object]) -> str | None:
+    response = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(action["pr"]),
+            "--repo",
+            REPO,
+            "--json",
+            "body,headRefOid",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    metadata = json.loads(response.stdout)
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("body"), str):
+        raise ValueError("invalid PR metadata")
+    if metadata.get("headRefOid") != action["sha"]:
+        raise ValueError("PR head changed since action selection")
+    declarations = [
+        line for line in metadata["body"].splitlines() if line.startswith("Issue:")
+    ]
+    if not declarations:
+        return None
+    if len(declarations) != 1:
+        raise ValueError("ambiguous PR Issue metadata")
+    match = ISSUE_LINE.fullmatch(declarations[0])
+    if match is None:
+        raise ValueError("invalid PR Issue metadata")
+    return match.group(1)
+
+
 def check(action: dict[str, object], state_dir: Path, ttl: int, now: float) -> int:
-    entry = load_entries(state_dir).get(target_key(action))
+    entries = load_entries(state_dir)
+    key = target_key(action)
+    entry = entries.get(key)
     if entry is not None and now - entry["at"] < ttl:
         logging.info("backoff: skip blocked target until its retry delay expires")
         return SKIP
+    if action.get("action") == "continue" and action.get("pr"):
+        active_issues = {
+            name: entry
+            for name, entry in entries.items()
+            if name.startswith("issue:") and now - entry["at"] < ttl
+        }
+        if active_issues:
+            issue = pr_issue(action)
+            source = f"issue:{issue}" if issue is not None else None
+            if source is not None and source in active_issues:
+                entries[key] = entries.pop(source)
+                save_entries(state_dir, entries)
+                logging.info(
+                    "backoff: transferred issue retry delay to selected PR head"
+                )
+                return SKIP
     return 0
 
 
@@ -150,7 +209,7 @@ def main() -> int:
         return record(
             action, args.state_dir, args.result_file, args.exit_code, time.time()
         )
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         logging.error("backoff: %s", error)
         return FAILED
 
