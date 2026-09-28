@@ -19,7 +19,7 @@ one, get actions. Everything else is frozen. No file or an empty file: all.
   review    the other agent's ready PR has no verdict from me for its head
   continue  my draft PR, or my In progress leaf without a PR
   claim     a Ready leaf with Executor = me, after its "Start after" leaves
-            and the leaves before it in the epic's batch order
+            or tickets and the leaves before it in the epic's batch order
   idle      nothing to do
 
 Usage:
@@ -64,6 +64,7 @@ ISSUE_LINE = re.compile(
 )
 LEAF = re.compile(r"\b[A-Z][0-9]+\.[0-9]+\.[0-9]+\b")
 # Readiness comments may chain leaves: "Start after B1.1.6 (same backend editor)."
+# They may also name tickets by URL: "Start after https://github.com/.../issues/432."
 # The clause ends at a sentence end (". " or end of line) or an opening "(".
 START_AFTER = re.compile(r"Start after (.*?)(?:\.(?=\s|$)|\(|$)", re.MULTILINE)
 LEAF_IDS_LINE = re.compile(r"^Leaf IDs:[ \t]*(.+)$", re.MULTILINE)
@@ -178,22 +179,29 @@ def issue_numbers(text: str) -> set[int]:
     return {int(n) for n in ISSUE_LINE.findall(text or "")}
 
 
+def issue_url(number: int) -> str:
+    return f"https://github.com/{REPO}/issues/{number}"
+
+
 def done_leaves(state: dict[str, Any]) -> set[str]:
-    """Leaves listed by a merged PR's `Leaf IDs:` line or ticked in an issue body."""
+    """Leaves listed by a merged PR's `Leaf IDs:` line or ticked in an issue body,
+    plus the URLs of tickets a merged PR names in its `Issue:` line."""
     done: set[str] = set()
     for pr in state.get("merged_prs", []):
         for line in LEAF_IDS_LINE.findall(pr.get("body") or ""):
             done |= set(LEAF.findall(line))
+        done |= {issue_url(n) for n in issue_numbers(pr.get("body") or "")}
     for item in state.get("items", []):
         done |= set(CHECKED_LEAF.findall((item.get("content") or {}).get("body") or ""))
     return done
 
 
 def start_after(item: dict[str, Any]) -> set[str]:
-    """Leaves a Ready issue must wait for, from its readiness comments."""
+    """Leaves and tickets a Ready issue must wait for, from its readiness comments."""
     wanted: set[str] = set()
     for clause in START_AFTER.findall(item.get("readiness") or ""):
         wanted |= set(LEAF.findall(clause))
+        wanted |= {issue_url(int(n)) for n in ISSUE_URL.findall(clause)}
     return wanted
 
 

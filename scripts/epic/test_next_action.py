@@ -383,6 +383,34 @@ class StartAfterTest(unittest.TestCase):
         waiting = decide("Claude", {"items": items}, include_waiting=True)[0]
         self.assertEqual(waiting.reason, "starts after B1.1.6, B3.3.5")
 
+    def test_claim_waits_for_start_after_ticket(self) -> None:
+        items = [self.ready(434, f"Start after {R}/432 is merged: same file.")]
+        waiting = decide("Claude", {"items": items}, include_waiting=True)[0]
+        self.assertEqual(
+            (waiting.action, waiting.reason), ("wait", f"starts after {R}/432")
+        )
+
+    def test_merged_pr_for_ticket_unblocks_claim(self) -> None:
+        items = [self.ready(434, f"Start after {R}/432.")]
+        state = {
+            "items": items,
+            "merged_prs": [
+                {"body": f"Executor: Claude\nIssue: {R}/432\nLeaf IDs: setup"}
+            ],
+        }
+        self.assertEqual(decide("Claude", state)[0].action, "claim")
+
+    def test_open_pr_for_ticket_does_not_unblock(self) -> None:
+        items = [self.ready(434, f"Start after {R}/432.")]
+        open_pr = pr(1, "Claude", body=f"Issue: {R}/432\nExecutor: Claude")
+        self.assertEqual(first("Claude", [open_pr], items).action, "idle")
+
+    def test_ticket_and_leaf_mix(self) -> None:
+        items = [self.ready(424, f"Start after {R}/432 and B1.1.6.")]
+        state = {"items": items, "merged_prs": [{"body": f"Issue: {R}/432"}]}
+        waiting = decide("Claude", state, include_waiting=True)[0]
+        self.assertEqual(waiting.reason, "starts after B1.1.6")
+
     def test_clause_stops_at_sentence_end(self) -> None:
         text = "Start after B3.3.5. Other B5.2 leaves wait for P2.2.2 and B1.2."
         items = [self.ready(362, text)]
