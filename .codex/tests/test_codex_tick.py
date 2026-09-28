@@ -44,10 +44,10 @@ class TickTests(unittest.TestCase):
             shutil.copyfile(ROOT / filename, self.runner.parent / filename)
         selector = self.repo / "scripts/epic/next_action.py"
         selector.parent.mkdir(parents=True)
-        shutil.copyfile(
-            ROOT.parent / "scripts/epic/tick_gate.py",
-            selector.parent / "tick_gate.py",
-        )
+        for helper in ("tick_gate.py", "agents.py"):
+            shutil.copyfile(
+                ROOT.parent / "scripts/epic" / helper, selector.parent / helper
+            )
         selector.write_text(
             "import os, pathlib, sys\n"
             "assert sys.argv[1:] == ['--agent', 'codex']\n"
@@ -432,6 +432,33 @@ class TickTests(unittest.TestCase):
         log = (self.state / "codex.log").read_text()
         self.assertIn("fake Codex stdout", log)
         self.assertIn("fake Codex stderr", log)
+
+    def test_registered_agent_uses_its_own_folder(self) -> None:
+        self.env["EPIC_AGENT_ID"] = "codex-2"
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Commit permission denied."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        home = self.state / "agents/codex-2"
+        agent = json.loads((home / "agent.json").read_text())
+        self.assertEqual(
+            (agent["interval_seconds"], agent["budget_seconds"]), (180, 30)
+        )
+        self.assertIn("tick: finished exit=75", (home / "codex.log").read_text())
+        self.assertTrue((home / "codex-backoff.json").exists())
+        self.assertTrue((home / "codex-gate.json").exists())
+        self.assertTrue((home / "codex-result.json").exists())
+        for name in ("codex.log", "codex-backoff.json", "codex-gate.json"):
+            self.assertFalse((self.state / name).exists(), name)
+        self.assertFalse((home / "codex.lock").exists())
+
+    def test_agent_id_of_another_kind_is_refused(self) -> None:
+        self.env["EPIC_AGENT_ID"] = "claude"
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("EPIC_AGENT_ID must look like codex", result.stderr)
+        self.assertFalse(self.selections.exists())
+        self.assertFalse(self.state.exists())
 
     def test_pause_created_during_selection_prevents_session(self) -> None:
         self.env["TEST_PAUSE_AFTER_SELECT"] = "1"

@@ -33,6 +33,7 @@ class ClaudeTickTest(unittest.TestCase):
         for rel in (
             "scripts/epic/claude-tick.sh",
             "scripts/epic/github_quota.py",
+            "scripts/epic/agents.py",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",
         ):
@@ -253,6 +254,35 @@ class ClaudeTickTest(unittest.TestCase):
             self.calls_made(),
             [["git", "pull -q --ff-only"], ["select"], ["gate", "check"]],
         )
+
+    def test_registered_agent_uses_its_own_folder(self) -> None:
+        env = {"EPIC_AGENT_ID": "claude-2", "EPIC_AGENT_LABEL": "docs"}
+        self.assertEqual(self.run_tick(**env).wait(timeout=30), 0)
+        home = self.state / "agents/claude-2"
+        agent = json.loads((home / "agent.json").read_text())
+        self.assertEqual(
+            (agent["kind"], agent["label"], agent["interval_seconds"]),
+            ("claude", "docs", 600),
+        )
+        self.assertEqual(agent["budget_seconds"], 1930)
+        self.assertIn("tick: finished exit=0", (home / "claude.log").read_text())
+        self.assertFalse((self.state / "claude.log").exists())
+        self.assertFalse((home / "claude.lock").exists())
+        config = self.calls_made()[2][1].split("--mcp-config ", 1)[1].split(" --", 1)[0]
+        server = json.loads(config)["mcpServers"]["epic-gate"]
+        self.assertEqual(server["env"], {"EPIC_STATE_DIR": str(home)})
+
+    def test_agent_id_of_another_kind_is_refused(self) -> None:
+        runner = subprocess.Popen(
+            ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")],
+            env={**self.env, "EPIC_AGENT_ID": "codex-2"},
+            stderr=subprocess.PIPE,
+        )
+        _, error = runner.communicate(timeout=30)
+        self.assertEqual(runner.returncode, 2)
+        self.assertIn(b"EPIC_AGENT_ID must look like claude", error)
+        self.assertFalse(self.state.exists())
+        self.assertFalse(self.calls.exists())
 
     def test_term_stops_the_model_before_the_lock_is_released(self) -> None:
         # Codex review on PR 412: TERM removed the lock but left the model running.

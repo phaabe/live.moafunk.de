@@ -19,13 +19,25 @@ umask 077
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 state_dir="${EPIC_STATE_DIR:-${HOME}/.local/state/epic-loop}"
-lock_dir="${state_dir}/claude.lock"
 tick_timeout=${EPIC_TICK_TIMEOUT_SECONDS:-1800}
 select_timeout=${EPIC_SELECT_TIMEOUT_SECONDS:-120}
+# Optional agent id (claude, claude-2, ...). A registered agent keeps the same
+# files as the legacy state dir in its own folder, agents/<id>/.
+agent_id=${EPIC_AGENT_ID:-}
+registry_dir=$state_dir
 
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+if [[ -n "$agent_id" ]]; then
+    if [[ ! "$agent_id" =~ ^claude(-[a-z0-9]{1,16})?$ ]]; then
+        printf 'tick: EPIC_AGENT_ID must look like claude or claude-2\n' >&2
+        exit 2
+    fi
+    state_dir="${registry_dir}/agents/${agent_id}"
+    export EPIC_STATE_DIR="$state_dir"
+fi
+lock_dir="${state_dir}/claude.lock"
 
 mkdir -p "$state_dir"
 exec >> "${state_dir}/claude.log" 2>&1
@@ -37,6 +49,12 @@ for duration in "$tick_timeout" "$select_timeout"; do
         exit 2
     fi
 done
+if [[ -n "$agent_id" ]]; then
+    python3 "${repo_root}/scripts/epic/agents.py" --state-dir "$registry_dir" \
+        register --id "$agent_id" --kind claude --label "${EPIC_AGENT_LABEL:-}" \
+        --interval "${EPIC_AGENT_INTERVAL_SECONDS:-600}" \
+        --budget "$((select_timeout + tick_timeout + 10))"
+fi
 if command -v timeout >/dev/null 2>&1; then
     timeout_bin=timeout
 elif command -v gtimeout >/dev/null 2>&1; then
