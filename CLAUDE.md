@@ -36,6 +36,19 @@ GitNexus clusters: Handlers (backend), Pages / Composables / Components (Vue adm
 - **Issues**: one ticket → `/project.issue "<task>"`; a big task → the `decompose-issue` workflow. **Labels:** one or more `type::*` (layer) — `backend` / `frontend` / `ci` — plus the most specific `project::*` (area): `Stream`, `recording`, `Instagram`, `Telegram`, `Soundcloud`, `ImgGen`, `Upload`, `Backup`, `Infrastructure`, `ExternalShows`, `Ai`, `unheard-artist-form`, `UNHEARD`, `auth`, `calendar`, `public-pages`, `downloads`, `admin_dashboard`. Use `later` for deferred/backlog items. **Milestones** are the epics: *Webbased Streaming*, *Webbased Recording (UNHEARD)*, *UNHEARD User Story*, *External Shows User Story*, *Infrastructure & Secrets*, *Public Website*.
 - **GitNexus-first**: before grepping, query the graph (see the managed block below). Impact-analyse before editing a symbol; `detect_changes` before committing.
 
+## GitHub API budget
+
+GraphQL has a limit of 5,000 points per hour per user, and agents hit it. Most `gh pr` / `gh issue` / `gh label` / `gh repo` commands use GraphQL. Pick the cheapest correct source:
+
+1. **git** for code, diffs and history (free): `git fetch origin "+refs/pull/<n>/head:refs/remotes/origin/pr/<n>"`, then `git diff` / `git log` / `git show`.
+2. **`gh api` REST** for GitHub data (separate budget): `gh api repos/{owner}/{repo}/pulls/<n>`, `.../issues`, `.../labels`. `/issues` also returns PRs; filter with `select(.pull_request == null)`. Add `--paginate` when you need the full list.
+3. **GraphQL** only for: Projects v2, review threads, and writes (`gh pr create/ready/merge`).
+
+- Wait for CI with `python3 scripts/gh_checks/wait_checks.py <pr>` (REST, 60 s). `gh pr checks --watch` and `gh run watch` are blocked by `gh-watch-guard.sh`.
+- Merge only the checked head: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
+- Don't assume the `mcp__github__*` tools use REST; some use GraphQL.
+- Check the budget with `gh api rate_limit --jq .resources.graphql`.
+
 ## GitNexus index — fresh & clean (how it works here)
 
 - The index lives in `.gitnexus/` (gitignored) and is refreshed automatically: at session start, on edits (debounced), and after every commit — always with `gitnexus analyze --skip-agents-md`, so **a reindex never dirties a tracked file**.
