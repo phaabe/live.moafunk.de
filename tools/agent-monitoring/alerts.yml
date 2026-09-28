@@ -1,0 +1,21 @@
+groups:
+  - name: agent-monitoring
+    rules:
+      - alert: AgentCollectorStale
+        expr: absent(epic_local_snapshot_timestamp_seconds) or time() - epic_local_snapshot_timestamp_seconds > 30
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          summary: Host collector has stopped updating
+      - alert: AgentGitHubStale
+        expr: absent(epic_github_snapshot_timestamp_seconds) or time() - epic_github_snapshot_timestamp_seconds > 300
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: GitHub progress data is missing or stale
+      - alert: AgentRunnerNeedsAttention
+        expr: epic_runner_state{state=~"orphaned|overdue|unknown"} == 1 or epic_runner_read_success == 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: Runner lock or metadata needs inspection

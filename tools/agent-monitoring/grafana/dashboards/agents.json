@@ -1,0 +1,1235 @@
+{
+  "uid": "epic-agents",
+  "title": "Claude & Codex \u2014 Epic progress",
+  "tags": [
+    "agents",
+    "epic"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "5s",
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "agent",
+        "label": "Agent",
+        "type": "custom",
+        "query": "claude,codex",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Claude + Codex \u2022 live work and delivery",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Local activity refreshes every **5 seconds**; GitHub polls every **120 seconds**. **Active tick \u2260 model working. Successful session \u2260 task completed.**\n\n[Project board](https://github.com/users/anneoneone/projects/2) \u00b7 [Architecture epic](https://github.com/phaabe/live.moafunk.de/issues/312) \u00b7 [Open PRs](https://github.com/phaabe/live.moafunk.de/pulls)\n\nMissing/stale data hides live and queue panels. Check freshness and alerts first."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Local data age",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - epic_local_snapshot_timestamp_seconds",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": ""
+    },
+    {
+      "id": 3,
+      "title": "GitHub data age",
+      "type": "stat",
+      "gridPos": {
+        "x": 6,
+        "y": 3,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - epic_github_snapshot_timestamp_seconds",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": ""
+    },
+    {
+      "id": 4,
+      "title": "Last GitHub poll",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 3,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_github_collection_success",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "FAILED",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "OK",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": ""
+    },
+    {
+      "id": 5,
+      "title": "Pause requested",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 3,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_pause_requested and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "No",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "Yes",
+                  "color": "orange"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": ""
+    },
+    {
+      "id": 6,
+      "title": "Runner state",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_runner_state{agent=~\"$agent\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GitHub"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "description": "Running means the recorded PID is alive. Inactive does not mean a scheduler is installed. Orphaned means its lock remains but its PID is gone. Overdue means its original timeout budget has elapsed.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Value": true
+            },
+            "indexByName": {
+              "agent": 0,
+              "state": 1
+            },
+            "renameByName": {
+              "agent": "Agent",
+              "state": "State",
+              "action": "Action",
+              "target": "GitHub",
+              "reason": "Reason",
+              "title": "Title",
+              "review": "Review",
+              "checks": "CI",
+              "draft": "Draft"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Current tick elapsed",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tick_elapsed_seconds{agent=~\"$agent\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": ""
+    },
+    {
+      "id": 8,
+      "title": "Last successful session age",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 12,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(time() - epic_last_session_success_timestamp_seconds{agent=~\"$agent\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": "Recorded after model exit 0. It does not certify completed work."
+    },
+    {
+      "id": 9,
+      "title": "Last observed tick exit",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 12,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_last_observed_exit_code{agent=~\"$agent\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": "Latest finish marker in the bounded log tail; may belong to the preceding tick. No data if the marker is outside the tail."
+    },
+    {
+      "id": 10,
+      "title": "Current action",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_current_action_info{agent=~\"$agent\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GitHub"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "description": "Action in the current lock. No rows between ticks.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Value": true
+            },
+            "indexByName": {
+              "agent": 0,
+              "action": 1,
+              "target": 2
+            },
+            "renameByName": {
+              "agent": "Agent",
+              "state": "State",
+              "action": "Action",
+              "target": "GitHub",
+              "reason": "Reason",
+              "title": "Title",
+              "review": "Review",
+              "checks": "CI",
+              "draft": "Draft"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Next actions and dependency waits",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_queued_action_info{agent=~\"$agent\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GitHub"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "description": "Read-only proposals from the shared selector. They do not prove that a runner started. Queue order in this table is not priority order.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Value": true
+            },
+            "indexByName": {
+              "agent": 0,
+              "action": 1,
+              "target": 2,
+              "reason": 3
+            },
+            "renameByName": {
+              "agent": "Agent",
+              "state": "State",
+              "action": "Action",
+              "target": "GitHub",
+              "reason": "Reason",
+              "title": "Title",
+              "review": "Review",
+              "checks": "CI",
+              "draft": "Draft"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Open PRs \u2022 review and CI",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_pr_info{agent=~\"$agent\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GitHub"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "description": "Review uses the latest unedited counterpart verdict for the current head. Missing CI is unknown. This dashboard never authorizes a merge.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Value": true
+            },
+            "indexByName": {
+              "agent": 0,
+              "title": 1,
+              "review": 2,
+              "checks": 3,
+              "draft": 4,
+              "target": 5
+            },
+            "renameByName": {
+              "agent": "Agent",
+              "state": "State",
+              "action": "Action",
+              "target": "GitHub",
+              "reason": "Reason",
+              "title": "Title",
+              "review": "Review",
+              "checks": "CI",
+              "draft": "Draft"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Issues by project status",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_issues{agent=~\"$agent\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "legendFormat": "{{agent}} \u00b7 {{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Checked checklist leaves",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 12,
+        "y": 35,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_checklist_leaves{agent=~\"$agent\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "legendFormat": "{{agent}} \u00b7 {{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        }
+      },
+      "description": "Unique leaf checkboxes on this repository's issues assigned to each agent. Checked is evidence recorded in issue text, not a percentage of effort. Merged PRs do not tick these automatically."
+    },
+    {
+      "id": 15,
+      "title": "Items needing Anton",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_needs_operator{agent=~\"$agent\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": "Issues plus PRs labelled needs-anton; an issue and its PR can both count."
+    },
+    {
+      "id": 16,
+      "title": "Merged PRs in fetched window",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 43,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_merged_prs_in_window{agent=~\"$agent\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": "Snapshot of the selector's latest 300 merged PRs per integration branch, attributed by PR body. A bounded window, not a lifetime counter."
+    },
+    {
+      "id": 17,
+      "title": "Unattributed open PRs",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 43,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_unattributed_prs and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "description": ""
+    },
+    {
+      "id": 18,
+      "title": "Completed issues over time",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_issues{agent=~\"$agent\",status=\"Done\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {},
+      "description": "Project status history since this monitor started. No fabricated backfill."
+    },
+    {
+      "id": 19,
+      "title": "Merged PR window over time",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 47,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_merged_prs_in_window{agent=~\"$agent\"} and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{agent}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 20,
+      "title": "Monitoring alerts",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 55,
+        "w": 24,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{agent}}",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {}
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GitHub"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "description": "Local alerts only; no external notifications configured.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "Value": true
+            },
+            "indexByName": {
+              "alertname": 0,
+              "agent": 1,
+              "severity": 2,
+              "alertstate": 3
+            },
+            "renameByName": {
+              "agent": "Agent",
+              "state": "State",
+              "action": "Action",
+              "target": "GitHub",
+              "reason": "Reason",
+              "title": "Title",
+              "review": "Review",
+              "checks": "CI",
+              "draft": "Draft"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
