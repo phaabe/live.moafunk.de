@@ -571,6 +571,70 @@ class AgentRowsTest(unittest.TestCase):
         self.run_at(NOW + 5)
         self.assertFalse(checkpoint.exists())
 
+    def test_backoff_exports_active_delays_without_reasons(self) -> None:
+        home = self.agent("codex")
+        sha, other = "a" * 40, "b" * 40
+        (home / "codex-backoff.json").write_text(
+            json.dumps(
+                {
+                    f"pr:7:{sha}": {"at": 1_900, "until": 2_800, "reason": "SECRET"},
+                    f"pr:8:{sha}": {"at": 1_500, "reason": "old entry"},  # estimated
+                    f"pr:9:{sha}": {"at": 100, "until": 1_000, "reason": "expired"},
+                    f"issue:{URL}/issues/5": {
+                        "at": 1_900,
+                        "until": 2_500,
+                        "reason": "x",
+                    },
+                }
+            )
+        )
+        heads = {f"{URL}/pull/7": sha, f"{URL}/pull/8": other}
+        text = monitor.runner_metrics(
+            self.root, False, NOW, alive=lambda _: False, heads=heads
+        )
+        rows = [
+            line for line in text.splitlines() if line.startswith("epic_backoff_info")
+        ]
+        self.assertEqual(len(rows), 3)
+        self.assertIn(
+            f'epic_backoff_info{{agent="codex",current_head="true",estimated="false",'
+            f'head="{sha}",target="{URL}/pull/7"}} 2800',
+            text,
+        )
+        self.assertIn(
+            f'current_head="false",estimated="true",head="{sha}",target="{URL}/pull/8"}} 2400',
+            text,
+        )
+        self.assertIn(
+            f'current_head="unknown",estimated="false",head="",target="{URL}/issues/5"',
+            text,
+        )
+        self.assertNotIn("SECRET", text)
+        self.assertIn('epic_backoff_read_success{agent="codex"} 1\n', text)
+
+    def test_backoff_heads_are_unknown_before_a_github_poll(self) -> None:
+        home = self.agent("codex")
+        (home / "codex-backoff.json").write_text(
+            json.dumps(
+                {f"pr:7:{'a' * 40}": {"at": 1_900, "until": 2_800, "reason": "x"}}
+            )
+        )
+        text = monitor.runner_metrics(self.root, False, NOW, alive=lambda _: False)
+        self.assertIn('current_head="unknown"', text)
+
+    def test_bad_backoff_file_is_reported_and_collection_goes_on(self) -> None:
+        home = self.agent("codex")
+        (home / "codex-backoff.json").write_text(json.dumps({"rm -rf /": {"at": 1}}))
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW)
+        self.assertIn('epic_backoff_read_success{agent="codex"} 0\n', text)
+        self.assertIn('epic_agent_presence_info{agent="codex"', text)
+        self.assertNotIn("rm -rf", text)
+
+    def test_claude_agents_have_no_backoff_series(self) -> None:
+        self.agent("claude")
+        self.assertNotIn("epic_backoff", self.run_at(NOW))
+
     def test_registry_problems_are_published(self) -> None:
         (self.root / "claude.log").write_text("")
         self.agent("claude")
@@ -908,6 +972,16 @@ class TaskContextTest(unittest.TestCase):
         text = monitor.github_metrics(self.state, NOW)
         self.assertIn(f'level="Subtask",target="{URL}/pull/417"', text)
         self.assertIn("epic_task_context_info{", text)
+
+
+class HeadsTest(unittest.TestCase):
+    def test_successful_github_poll_records_pr_heads(self) -> None:
+        state = snapshot(prs=[pull_request(7, "Codex")])
+        with tempfile.TemporaryDirectory() as directory:
+            monitor.LATEST.heads = None
+            self.addCleanup(setattr, monitor.LATEST, "heads", None)
+            self.assertTrue(monitor.collect_github(Path(directory), 5, lambda _: state))
+        self.assertEqual(monitor.LATEST.heads, {f"{URL}/pull/7": HEAD})
 
 
 class PublicationTest(unittest.TestCase):

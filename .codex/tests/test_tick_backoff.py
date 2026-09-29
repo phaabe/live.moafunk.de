@@ -33,8 +33,39 @@ class BackoffTests(unittest.TestCase):
 
     def record(self, action: dict[str, object] | None = None, code: int = 0) -> int:
         return backoff.record(
-            action or self.action, self.state, self.result, code, 1000
+            action or self.action, self.state, self.result, code, 1000, 900
         )
+
+    def entries(self) -> dict[str, dict[str, object]]:
+        return json.loads((self.state / "codex-backoff.json").read_text())
+
+    def test_record_stores_the_expiry_and_check_obeys_it(self) -> None:
+        self.assertEqual(self.record(), 3)
+        [entry] = self.entries().values()
+        self.assertEqual((entry["at"], entry["until"]), (1000, 1900))
+        # A shorter --ttl on a later tick does not end the stored delay early.
+        self.assertEqual(backoff.check(self.action, self.state, 60, 1899), 3)
+        self.assertEqual(backoff.check(self.action, self.state, 60, 1900), 0)
+
+    def test_old_entries_without_expiry_use_the_ttl(self) -> None:
+        self.state.mkdir()
+        key = backoff.target_key(self.action)
+        (self.state / "codex-backoff.json").write_text(
+            json.dumps({key: {"at": 1000, "reason": "old"}})
+        )
+        self.assertEqual(backoff.check(self.action, self.state, 900, 1899), 3)
+        self.assertEqual(backoff.check(self.action, self.state, 900, 1900), 0)
+
+    def test_invalid_expiry_is_rejected(self) -> None:
+        self.state.mkdir()
+        key = backoff.target_key(self.action)
+        for until in ("soon", True, float("inf")):
+            with self.subTest(until=until):
+                (self.state / "codex-backoff.json").write_text(
+                    json.dumps({key: {"at": 1000, "until": until, "reason": "x"}})
+                )
+                with self.assertRaises(ValueError):
+                    backoff.load_entries(self.state)
 
     def test_claim_block_suppresses_continue_until_expiry(self) -> None:
         self.assertEqual(self.record(), 3)

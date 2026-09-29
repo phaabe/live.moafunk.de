@@ -24,9 +24,15 @@ ISSUE_LINE = re.compile(
 )
 
 
-class Entry(TypedDict):
+class Entry(TypedDict, total=False):
     at: float
+    # When the retry delay ends. Older entries have none; they use at + ttl.
+    until: float
     reason: str
+
+
+def expires(entry: Entry, ttl: int) -> float:
+    return entry.get("until", entry["at"] + ttl)
 
 
 def target_key(action: dict[str, object]) -> str:
@@ -56,6 +62,13 @@ def load_entries(state_dir: Path) -> dict[str, Entry]:
             or type(entry.get("at")) not in (int, float)
             or not math.isfinite(entry["at"])
             or not isinstance(entry.get("reason"), str)
+            or (
+                "until" in entry
+                and (
+                    type(entry["until"]) not in (int, float)
+                    or not math.isfinite(entry["until"])
+                )
+            )
         ):
             raise ValueError("invalid backoff entry")
     return entries
@@ -118,14 +131,14 @@ def check(action: dict[str, object], state_dir: Path, ttl: int, now: float) -> i
     entries = load_entries(state_dir)
     key = target_key(action)
     entry = entries.get(key)
-    if entry is not None and now - entry["at"] < ttl:
+    if entry is not None and now < expires(entry, ttl):
         logging.info("backoff: skip blocked target until its retry delay expires")
         return SKIP
     if action.get("action") == "continue" and action.get("pr"):
         active_issues = {
             name: entry
             for name, entry in entries.items()
-            if name.startswith("issue:") and now - entry["at"] < ttl
+            if name.startswith("issue:") and now < expires(entry, ttl)
         }
         if active_issues:
             issue = pr_issue(action)
@@ -166,6 +179,7 @@ def record(
     result_file: Path,
     exit_code: int,
     now: float,
+    ttl: int,
 ) -> int:
     key = target_key(action)
     entries = load_entries(state_dir)
@@ -173,7 +187,7 @@ def record(
     if reason is None:
         entries.pop(key, None)
     else:
-        entries[key] = {"at": now, "reason": reason}
+        entries[key] = {"at": now, "until": now + ttl, "reason": reason}
     save_entries(state_dir, entries)
     if reason is not None:
         logging.warning("backoff: %s", reason)
@@ -207,7 +221,12 @@ def main() -> int:
         if args.command == "check":
             return check(action, args.state_dir, args.ttl, time.time())
         return record(
-            action, args.state_dir, args.result_file, args.exit_code, time.time()
+            action,
+            args.state_dir,
+            args.result_file,
+            args.exit_code,
+            time.time(),
+            args.ttl,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         logging.error("backoff: %s", error)

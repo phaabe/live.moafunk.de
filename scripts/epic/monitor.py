@@ -501,6 +501,69 @@ def runner_sample(
     return runner
 
 
+BACKOFF_FILE = "codex-backoff.json"
+# The Codex runner's default retry delay, for entries stored without `until`.
+BACKOFF_DEFAULT = 900
+BACKOFF_KEY = re.compile(
+    rf"pr:([1-9][0-9]{{0,8}}):([0-9a-f]{{7,40}})|issue:({re.escape(REPO_URL)}/issues/[1-9][0-9]{{0,8}})"
+)
+
+
+class Heads:
+    """PR heads from the last successful GitHub poll (None before the first)."""
+
+    def __init__(self) -> None:
+        self.heads: dict[str, str] | None = None
+
+
+LATEST = Heads()
+
+
+def backoff_metrics(
+    metrics: Metrics, agent: agents.Agent, now: float, heads: dict[str, str] | None
+) -> None:
+    """Active retry delays of the Codex runner; never the reason text."""
+    if agent.kind != "codex":
+        return
+    try:
+        entries = read_agent_object(agent, BACKOFF_FILE) or {}
+        rows = []
+        for key, entry in entries.items():
+            match = BACKOFF_KEY.fullmatch(key)
+            if match is None or not isinstance(entry, dict):
+                raise ValueError("invalid backoff entry")
+            at = positive_number(entry, "at")
+            estimated = "until" not in entry
+            until = (
+                at + BACKOFF_DEFAULT if estimated else positive_number(entry, "until")
+            )
+            if until <= now:
+                continue
+            if match[1]:
+                target, head = f"{REPO_URL}/pull/{match[1]}", match[2]
+                current = "unknown"
+                if heads is not None:
+                    current = str(heads.get(target) == head).lower()
+            else:
+                target, head, current = match[3], "", "unknown"
+            rows.append((until, target, head, str(estimated).lower(), current))
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        logging.warning("Cannot read %s backoff", agent.id)
+        metrics.add("backoff_read_success", 0, agent=agent.id)
+        return
+    metrics.add("backoff_read_success", 1, agent=agent.id)
+    for until, target, head, estimated, current in rows:
+        metrics.add(
+            "backoff_info",
+            until,
+            agent=agent.id,
+            target=target,
+            head=head,
+            estimated=estimated,
+            current_head=current,
+        )
+
+
 def last_start(view: ticks.TickView | None) -> float | None:
     state = view.state if view else None
     if not state:
@@ -520,6 +583,7 @@ def agent_metrics(
     now: float,
     alive: Callable[[int], bool],
     ledgers: Ledgers | None,
+    heads: dict[str, str] | None = None,
 ) -> Row:
     name = agent.id
     metrics.add(
@@ -534,6 +598,7 @@ def agent_metrics(
     if agent.retired_at is not None:
         return Row(agent, "retired")
     runner = runner_sample(metrics, agent, now, alive)
+    backoff_metrics(metrics, agent, now, heads)
     view = None
     if ledgers is not None:
         view = ledger_metrics(metrics, ledgers.get(agent), ledgers.events(agent), now)
@@ -604,6 +669,7 @@ def runner_metrics(
     alive: Callable[[int], bool] = process_alive,
     ledgers: Ledgers | None = None,
     registry: agents.Registry | None = None,
+    heads: dict[str, str] | None = None,
 ) -> str:
     metrics = Metrics()
     metrics.add("local_snapshot_timestamp_seconds", now)
@@ -619,7 +685,7 @@ def runner_metrics(
     if ledgers is not None:
         ledgers.prune(registry.agents)
     rows = [
-        agent_metrics(metrics, agent, paused, now, alive, ledgers)
+        agent_metrics(metrics, agent, paused, now, alive, ledgers, heads)
         for agent in registry.agents
     ]
     rows.sort(
@@ -706,6 +772,7 @@ def publish_local(args: argparse.Namespace, ledgers: Ledgers) -> None:
             now,
             ledgers=ledgers,
             registry=registry,
+            heads=LATEST.heads,
         ),
     )
 
@@ -887,8 +954,15 @@ def collect_github(
     began = time.monotonic()
     ok = False
     try:
-        metrics = github_metrics(fetch(timeout), time.time())
+        state = fetch(timeout)
+        metrics = github_metrics(state, time.time())
         atomic_write(output / "github.prom", metrics)
+        # Read by the runner loop to tell whether a backoff head is current.
+        LATEST.heads = {
+            f"{REPO_URL}/pull/{pr['number']}": pr.get("headRefOid", "")
+            for pr in state["prs"]
+            if type(pr.get("number")) is int
+        }
         ok = True
     except (
         OSError,
