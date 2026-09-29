@@ -85,8 +85,23 @@ def check_repo(repo: Path) -> None:
         raise RuntimeError(f"origin is {url}, not {REPO}")
 
 
+def rebasing(path: Path) -> str | None:
+    """The branch a detached worktree is rebasing, from Git's rebase state."""
+    for state in ("rebase-merge/head-name", "rebase-apply/head-name"):
+        out = git(path, "rev-parse", "--path-format=absolute", "--git-path", state)
+        head_name = Path(out.stdout.strip())
+        if out.returncode == 0 and head_name.is_file():
+            ref = head_name.read_text().strip()
+            if ref.startswith("refs/heads/"):
+                return ref[len("refs/heads/") :]
+    return None
+
+
 def worktrees(repo: Path) -> dict[str, Path]:
-    """Branch name -> path of the worktree that has it checked out."""
+    """Branch name -> path of the worktree that has it checked out.
+
+    A worktree in an unfinished rebase is detached, but still holds its branch
+    (Git refuses to check it out elsewhere too)."""
     held: dict[str, Path] = {}
     path: Path | None = None
     for line in git_out(repo, "worktree", "list", "--porcelain").splitlines():
@@ -94,6 +109,10 @@ def worktrees(repo: Path) -> dict[str, Path]:
             path = Path(line[len("worktree ") :])
         elif line.startswith("branch refs/heads/") and path is not None:
             held[line[len("branch refs/heads/") :]] = path
+        elif line == "detached" and path is not None and path.is_dir():
+            branch = rebasing(path)
+            if branch:
+                held[branch] = path
     return held
 
 

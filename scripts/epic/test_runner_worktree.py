@@ -101,6 +101,52 @@ class RealGitTest(unittest.TestCase):
         self.assertEqual((path / "wip.txt").read_text(), "unfinished\n")
         self.assertEqual(run(path, "git", "rev-parse", "HEAD"), head)
 
+    def conflicting_rebase(self, path: Path) -> None:
+        """Stop a rebase of the branch in `path` on a conflict."""
+        (path / "README").write_text("branch\n")
+        run(path, "git", "commit", "-q", "-am", "branch change")
+        base = run(self.repo, "git", "rev-parse", "origin/dev/312-interim").strip()
+        run(self.repo, "git", "branch", "moved-base", base)
+        other = self.tmp / "other"
+        run(self.repo, "git", "worktree", "add", "-q", str(other), "moved-base")
+        (other / "README").write_text("base change\n")
+        run(other, "git", "commit", "-q", "-am", "base change")
+        rebase = subprocess.run(
+            ["git", "rebase", "moved-base"], cwd=path, capture_output=True, text=True
+        )
+        self.assertNotEqual(rebase.returncode, 0)
+        self.assertEqual(run(path, "git", "branch", "--show-current"), "")
+
+    def test_resume_keeps_an_unfinished_rebase(self) -> None:
+        # Codex review on https://github.com/phaabe/live.moafunk.de/pull/516:
+        # a rebase stopped by a conflict detaches HEAD; the runner refused it.
+        path = self.prepare({**self.fix(), "action": "resolve-conflict"})
+        assert path is not None
+        self.conflicting_rebase(path)
+        status = run(path, "git", "status", "--porcelain")
+        self.assertEqual(
+            self.prepare({**self.fix(), "action": "resolve-conflict"}), path
+        )
+        self.assertEqual(run(path, "git", "status", "--porcelain"), status)
+        rebase_dir = run(
+            path,
+            "git",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "rebase-merge",
+        ).strip()
+        self.assertTrue(Path(rebase_dir).is_dir())
+
+    def test_rebase_in_a_human_checkout_needs_handoff(self) -> None:
+        human = self.human_checkout()
+        (human / "draft.txt").unlink()
+        self.conflicting_rebase(human)
+        with self.assertRaises(rw.Stop) as stop:
+            self.prepare(self.fix())
+        self.assertEqual(str(stop.exception), f"handoff needed: {BRANCH} in {human}")
+        self.assertFalse((self.root / BRANCH).exists())
+
     def test_deleted_runner_checkout_is_not_resumed(self) -> None:
         path = self.prepare(self.fix())
         assert path is not None
