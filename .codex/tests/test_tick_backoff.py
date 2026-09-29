@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -20,6 +21,9 @@ SPEC.loader.exec_module(backoff)
 
 class BackoffTests(unittest.TestCase):
     def setUp(self) -> None:
+        environment = patch.dict(os.environ, {"EPIC_SHARED_READER": "0"})
+        environment.start()
+        self.addCleanup(environment.stop)
         temporary = tempfile.TemporaryDirectory(prefix="tick-backoff-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -133,6 +137,98 @@ class BackoffTests(unittest.TestCase):
             new_head = {**action, "sha": "b" * 40}
             self.assertEqual(backoff.check(new_head, self.state, 900, 1201), 0)
             github.assert_not_called()
+
+    def fresh_cli(
+        self, payload: object, status: int = 200, auth_context: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        """Exercise the real CLI and shared reader with only gh replaced."""
+        self.action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        cache = self.root / "cache" / "github-cache"
+        cache.mkdir(parents=True, exist_ok=True)
+        if auth_context:
+            (cache / "auth-context").write_text("test-backoff")
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        gh = bin_dir / "gh"
+        gh.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "assert sys.argv[1:3] == ['api', '-i'], sys.argv\n"
+            "if sys.argv[-1] == 'https://api.github.com/user':\n"
+            "    print('HTTP/2.0 200 OK\\n\\n' + json.dumps({'login': 'test'}))\n"
+            "else:\n"
+            "    assert sys.argv[-1].endswith('/pulls/410'), sys.argv\n"
+            "    print(os.environ['TEST_GITHUB_RESPONSE'])\n"
+        )
+        gh.chmod(0o755)
+        response = f"HTTP/2.0 {status} Response\n\n{json.dumps(payload)}"
+        with patch.dict(
+            os.environ,
+            {
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "EPIC_SHARED_READER": "1",
+                "EPIC_CACHE_DIR": str(cache.parent),
+                "TEST_GITHUB_RESPONSE": response,
+            },
+        ):
+            return self.cli("check")
+
+    def fresh_cooldown(self) -> tuple[Path, bytes]:
+        # A fixed future expiry keeps real CLI tests independent of wall time.
+        key = backoff.target_key(self.action)
+        backoff.save_entries(
+            self.state,
+            {key: {"at": 1000, "until": 4102444800, "reason": "Waiting"}},
+        )
+        path = self.state / "codex-backoff.json"
+        return path, path.read_bytes()
+
+    def test_fresh_cli_transfers_cooldown_for_selected_head(self) -> None:
+        self.fresh_cooldown()
+        original = next(iter(backoff.load_entries(self.state).values()))
+        result = self.fresh_cli(
+            {"body": f"Issue: {self.action['issue']}", "head": {"sha": "a" * 40}}
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(
+            backoff.load_entries(self.state),
+            {backoff.target_key(self.action): original},
+        )
+        calls = self.root / "cache" / "github-cache" / "calls.jsonl"
+        records = [json.loads(line) for line in calls.read_text().splitlines()]
+        self.assertEqual([row["purpose"] for row in records], ["identity", "backoff"])
+
+    def test_fresh_cli_changed_head_skips_without_mutation(self) -> None:
+        path, original = self.fresh_cooldown()
+        result = self.fresh_cli(
+            {"body": f"Issue: {self.action['issue']}", "head": {"sha": "b" * 40}}
+        )
+        self.assertEqual(result.returncode, 6, result.stderr)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_fresh_cli_read_failures_leave_cooldown_and_quota_unchanged(self) -> None:
+        path, original = self.fresh_cooldown()
+        for status, payload in (
+            (429, {"message": "rate limit exceeded"}),
+            (403, {"message": "secondary rate limit"}),
+            (500, {"message": "server failure"}),
+            (200, []),
+            (200, {"head": {"sha": "a" * 40}}),
+            (200, {"body": "", "head": {"sha": "invalid"}}),
+        ):
+            with self.subTest(status=status, payload=payload):
+                result = self.fresh_cli(payload, status)
+                self.assertEqual(result.returncode, 5, result.stderr)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertFalse((self.state / "github-quota-wait.json").exists())
+                self.assertFalse(list((self.root / "cache").rglob("snapshot.json")))
+                self.assertFalse(list((self.root / "cache").rglob("etags")))
+
+    def test_fresh_cli_missing_auth_context_is_config_error(self) -> None:
+        path, original = self.fresh_cooldown()
+        result = self.fresh_cli({}, auth_context=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(path.read_bytes(), original)
 
     def test_migration_preserves_unrelated_entries(self) -> None:
         self.record()

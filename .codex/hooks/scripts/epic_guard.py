@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlsplit
 
 TRUNK = "dev/streaming-architecture"
@@ -20,6 +22,7 @@ VERDICT = re.compile(
 PR_MUTATION = re.compile(r"\bgh\b.*\bpr\b.*\b(?:create|merge)\b", re.DOTALL)
 API_COMMAND = re.compile(r"\bgh\b.*\bapi\b", re.DOTALL)
 SHELL_PUNCTUATION = frozenset(";&|<>()\n")
+FEATURE_HELPER = Path.home() / ".local/libexec/codex-feature-git.py"
 
 
 def check_verdict(text: str) -> None:
@@ -323,6 +326,127 @@ def check_command(command: str, cwd: Path) -> None:
         )
 
 
+def helper_push_command(command: str, cwd: Path) -> tuple[str, Path]:
+    """Translate the installed publisher into the branch write it performs."""
+    if not re.search(r"(?:codex-feature-git|feature_git)\.py", command):
+        return command, cwd
+    args = shell_words(join_continuations(command))
+    literal = (
+        not any(arg and set(arg) <= SHELL_PUNCTUATION for arg in args)
+        and "$" not in command
+        and "`" not in command
+    )
+    if literal and args and args[0] in ("cat", "rg", "head", "tail", "echo"):
+        return command, cwd
+    if not literal or args[:3] != ["python3", "-I", str(FEATURE_HELPER)]:
+        raise ValueError("Use one literal installed feature-git helper command.")
+    tail = args[3:]
+    if tail == ["--help"]:
+        return "", cwd
+    if len(tail) < 3 or tail[0] != "--worktree":
+        raise ValueError("The feature-git helper requires --worktree <path> push.")
+    if tail[2:] == ["push", "--help"] or tail[2:] == ["commit", "--help"]:
+        return "", cwd
+    if len(tail) == 5 and tail[2:4] == ["commit", "--message-file"]:
+        return "", cwd
+    if tail[2:] != ["push"]:
+        raise ValueError("The feature-git push command cannot be checked.")
+    worktree = (cwd / tail[1]).resolve(strict=True)
+    try:
+        branch = subprocess.run(
+            [
+                "/usr/bin/git",
+                "-C",
+                str(worktree),
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+            ],
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("GIT_")
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        ).stdout.strip()
+    except subprocess.SubprocessError as error:
+        raise ValueError(
+            f"Cannot resolve the feature-git push branch: {error}"
+        ) from error
+    if not branch:
+        raise ValueError("The feature-git push branch is empty.")
+    return shlex.join(["git", "push", "origin", f"HEAD:refs/heads/{branch}"]), worktree
+
+
+def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None:
+    """Use the runner's trusted checker immediately before a GitHub write."""
+    if os.environ.get("EPIC_SHARED_READER") != "1" or not os.environ.get(
+        "EPIC_ACTION_FILE"
+    ):
+        return
+    root = Path(
+        os.environ.get("EPIC_TRUSTED_ROOT") or Path(__file__).resolve().parents[3]
+    )
+    sys.path.insert(0, str(root / "scripts" / "epic"))
+    try:
+        if not (root / "scripts/epic/write_checks.py").is_file():
+            raise ValueError("write checker is missing from the trusted checkout")
+        checks = importlib.import_module("write_checks")
+        if (
+            Path(checks.__file__).resolve()
+            != (root / "scripts/epic/write_checks.py").resolve()
+        ):
+            raise ValueError("write checker did not load from the trusted checkout")
+    except Exception as error:  # Import failures must block the proposed write.
+        raise ValueError(f"Runner write checks are unavailable: {error}") from error
+
+    # The shared checker currently defaults to Claude. This hook runs in its own
+    # process; select Codex locally without changing the shared implementation.
+    original_agent, original_push = checks.AGENT, checks.check_push
+
+    def owned_pr_push(ctx: Any, write: Any) -> str | None:
+        reason = original_push(ctx, write)
+        if reason or ctx.pr is None or write.delete:
+            return reason
+        issues = ctx.targets() - {ctx.pr}
+        if not issues:
+            return "the PR names no owned issue"
+        for number in sorted(issues):
+            item = ctx.item(number)
+            if (
+                not item
+                or item.get("status") != "In progress"
+                or item.get("executor") != "Codex"
+            ):
+                return f"issue {number} is not In progress for Codex"
+        return None
+
+    if tool in ("exec_command", "shell_command"):
+        tool = "Bash"
+        tool_input = {
+            **tool_input,
+            "command": tool_input.get("command", tool_input.get("cmd", "")),
+        }
+    if tool == "Bash":
+        command, cwd = helper_push_command(tool_input.get("command", ""), cwd)
+        tool_input = {**tool_input, "command": command}
+    try:
+        checks.AGENT, checks.check_push = "Codex", owned_pr_push
+        refused = checks.guard(tool, tool_input, str(cwd))
+    except Exception as error:  # Malformed fresh data must also fail closed.
+        raise ValueError(f"Runner write check failed: {error}") from error
+    finally:
+        checks.AGENT, checks.check_push = original_agent, original_push
+    if refused:
+        raise ValueError(
+            f"Runner write check: {refused}. Stop this action; the next tick selects again."
+        )
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -336,11 +460,12 @@ def main() -> int:
         if tool_name.endswith("create_pull_request"):
             check_base(tool_input.get("base"), tool_input.get("head"))
         command = tool_input.get("command", tool_input.get("cmd", ""))
+        cwd = Path(tool_input.get("workdir") or payload.get("cwd") or Path.cwd())
         if payload.get("tool_name") in ("Bash", "exec_command", "shell_command"):
             if not isinstance(command, str):
                 raise ValueError("The shell command must be a string.")
-            cwd = Path(tool_input.get("workdir") or payload.get("cwd") or Path.cwd())
             check_command(command, cwd)
+        runner_write_check(tool_name, tool_input, cwd)
     except (
         ValueError,
         OSError,

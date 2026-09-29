@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import io
 import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 TRUNK = "dev/streaming-architecture"
@@ -507,6 +513,370 @@ class EpicGuardTest(unittest.TestCase):
             self.run_hook("gh pr create --base main", 0, cwd=nested)
             self.run_hook("gh pr merge 1", 2, cwd=nested)
             self.run_hook("gh pr create --base main --head feat/x", 2, cwd=worktree)
+
+
+class FreshWriteCheckTest(unittest.TestCase):
+    """Exercise Codex's hook with the real checker and fake GitHub reads."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        sys.path.insert(0, str(ROOT / "scripts/epic"))
+        self.addCleanup(sys.path.pop, 0)
+        import github_state
+        import next_action
+        import write_checks
+
+        self.gs, self.na, self.checks = github_state, next_action, write_checks
+        spec = importlib.util.spec_from_file_location(
+            "codex_epic_guard", ROOT / ".codex/hooks/scripts/epic_guard.py"
+        )
+        assert spec is not None and spec.loader is not None
+        self.hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.hook)
+        self.action_file = self.directory / "action.json"
+        self.patches = [
+            patch.dict(
+                os.environ,
+                {
+                    "EPIC_SHARED_READER": "1",
+                    "EPIC_ACTION_FILE": str(self.action_file),
+                    "EPIC_TRUSTED_ROOT": str(ROOT),
+                    "EPIC_ACTIONS": "",
+                },
+            ),
+            patch.object(next_action, "PAUSE_FILE", self.directory / "pause"),
+            patch.object(next_action, "FOCUS_FILE", self.directory / "focus"),
+            patch.object(github_state, "FreshReader", return_value=self),
+        ]
+        for context in self.patches:
+            context.start()
+            self.addCleanup(context.stop)
+        self.pull_data: dict[str, Any] = {
+            "number": 5,
+            "state": "open",
+            "draft": False,
+            "merged_at": None,
+            "body": "Executor: Codex\nIssue: https://github.com/phaabe/live.moafunk.de/issues/21",
+            "head": {"sha": SHA, "ref": "feat/21-work"},
+            "labels": [],
+        }
+        self.items = [self.item(21, "In progress")]
+        self.branch_pulls: list[dict[str, Any]] = []
+        self.errors: list[str] = []
+        self.fail: Exception | None = None
+        self.reads: list[str] = []
+        self.client = object()
+
+    def item(self, number: int, status: str, executor: str = "Codex") -> dict[str, Any]:
+        return {
+            "id": f"PVTI_{number}",
+            "status": status,
+            "executor": executor,
+            "content": {
+                "type": "Issue",
+                "number": number,
+                "url": f"https://github.com/phaabe/live.moafunk.de/issues/{number}",
+            },
+        }
+
+    def read(self, kind: str) -> None:
+        self.reads.append(kind)
+        if self.fail:
+            raise self.fail
+
+    def pull(self, number: int) -> dict[str, Any]:
+        self.read(f"pull:{number}")
+        return self.pull_data
+
+    def issue(self, number: int) -> dict[str, Any]:
+        self.read(f"issue:{number}")
+        return {"number": number, "labels": []}
+
+    def board_items(self) -> list[dict[str, Any]]:
+        self.read("board")
+        return self.items
+
+    def pulls_for_branch(self, branch: str) -> list[dict[str, Any]]:
+        self.read(f"branch:{branch}")
+        return self.branch_pulls
+
+    def merge_errors(self, number: int, sha: str) -> list[str]:
+        self.read(f"merge:{number}:{sha}")
+        return self.errors
+
+    def action(self, action: str, pr: int | None = 5) -> None:
+        self.action_file.write_text(
+            json.dumps(
+                {
+                    "action": action,
+                    "pr": pr,
+                    "sha": SHA if pr else None,
+                    "issue": "https://github.com/phaabe/live.moafunk.de/issues/21",
+                }
+            )
+        )
+
+    def run_hook(
+        self, command: str, expected: int = 0, tool: str = "exec_command"
+    ) -> str:
+        payload = {
+            "tool_name": tool,
+            "cwd": str(self.directory),
+            "tool_input": {"cmd" if tool == "exec_command" else "command": command},
+        }
+        with (
+            patch.object(sys, "path", list(sys.path)),
+            patch.object(sys, "stdin", io.StringIO(json.dumps(payload))),
+            patch.object(sys, "stderr", io.StringIO()) as stderr,
+        ):
+            self.assertEqual(self.hook.main(), expected, stderr.getvalue())
+            return stderr.getvalue()
+
+    def test_claim_rechecks_ready_executor_blockers_and_slot(self) -> None:
+        self.action("claim", None)
+        command = (
+            "gh project item-edit --id PVTI_21 --field-id F --single-select-option-id O"
+        )
+        self.items = [self.item(21, "Ready")]
+        state: dict[str, Any] = {"prs": [], "items": self.items, "merged_prs": []}
+        with patch.object(self.gs, "build_state", return_value=state):
+            self.run_hook(command)
+            for changes in (
+                {"status": "Backlog"},
+                {"executor": "Claude"},
+                {
+                    "readiness": "Start after https://github.com/phaabe/live.moafunk.de/issues/22."
+                },
+            ):
+                with self.subTest(changes=changes):
+                    self.items[0] = {**self.item(21, "Ready"), **changes}
+                    self.run_hook(command, 2)
+            self.items[0] = self.item(21, "Ready")
+            state["prs"] = [
+                {
+                    "number": n,
+                    "body": "Executor: Codex",
+                    "isDraft": True,
+                    "baseRefName": "dev/312-interim",
+                }
+                for n in (6, 7)
+            ]
+            self.run_hook(command, 2)
+
+    def test_first_push_requires_owned_issue_without_another_slot(self) -> None:
+        self.action("claim", None)
+        command = "git push -u origin feat/21-work"
+        with patch.object(
+            self.gs, "recheck", side_effect=AssertionError("no extra slot")
+        ):
+            self.run_hook(command)
+        self.items[0]["status"] = "Ready"
+        self.run_hook(command, 2)
+        self.items[0] = self.item(21, "In progress", "Claude")
+        self.run_hook(command, 2)
+        self.items[0] = self.item(21, "In progress")
+        self.branch_pulls = [{"number": 5, "state": "closed", "merged_at": "today"}]
+        self.run_hook(command, 2)
+
+    def test_pr_push_checks_owned_issue_branch_and_open_pr(self) -> None:
+        self.action("fix")
+        self.run_hook("git push origin feat/21-work")
+        self.run_hook("git push origin feat/22-other", 2)
+        self.items[0]["executor"] = "Claude"
+        self.run_hook("git push origin feat/21-work", 2)
+        self.items[0]["executor"] = "Codex"
+        self.pull_data.update(state="closed", merged_at="today")
+        self.run_hook("git push origin feat/21-work", 2)
+
+    def test_verdict_requires_reviewed_head_and_open_ready_pr(self) -> None:
+        self.action("review")
+        self.pull_data["body"] = "Executor: Claude"
+        command = f"gh pr comment 5 --body 'Review: APPROVED by Codex at {SHA}'"
+        self.run_hook(command)
+        for changes in (
+            {"state": "closed"},
+            {"draft": True},
+            {"head": {"sha": "b" * 40, "ref": "feat/21-work"}},
+        ):
+            with self.subTest(changes=changes), patch.dict(self.pull_data, changes):
+                self.run_hook(command, 2)
+
+    def test_other_comment_requires_open_pr_and_correct_target(self) -> None:
+        self.action("fix")
+        self.run_hook("gh pr comment 5 --body note")
+        self.run_hook("gh pr comment 6 --body note", 2)
+        self.pull_data["state"] = "closed"
+        self.run_hook("gh pr comment 5 --body note", 2)
+
+    def test_merge_runs_full_guard_and_pins_head(self) -> None:
+        self.action("merge")
+        command = f"gh pr merge 5 --squash --match-head-commit {SHA}"
+        self.run_hook(command)
+        self.assertIn(f"merge:5:{SHA}", self.reads)
+        for error in ("reviewer comment was edited", "checks pending", "head moved"):
+            self.errors = [error]
+            self.assertIn(error, self.run_hook(command, 2))
+        self.errors = []
+        self.run_hook(command.replace(SHA, "b" * 40), 2)
+
+    def test_failed_fresh_read_blocks_every_write_row(self) -> None:
+        cases = [
+            ("claim", None, "gh project item-edit --id PVTI_21"),
+            ("claim", None, "git push origin feat/21-work"),
+            ("fix", 5, "git push origin feat/21-work"),
+            (
+                "review",
+                5,
+                f"gh pr comment 5 --body 'Review: APPROVED by Codex at {SHA}'",
+            ),
+            ("fix", 5, "gh pr comment 5 --body note"),
+            ("merge", 5, f"gh pr merge 5 --match-head-commit {SHA}"),
+        ]
+        self.fail = self.gs.ReadBlocked("HTTP 502")
+        for action, pr, command in cases:
+            with self.subTest(action=action, command=command):
+                self.action(action, pr)
+                self.assertIn("read failed", self.run_hook(command, 2))
+
+    def test_shell_aliases_pause_focus_and_assignment(self) -> None:
+        self.action("fix")
+        for tool in ("Bash", "exec_command", "shell_command"):
+            self.run_hook("gh pr comment 5 --body note", tool=tool)
+        self.na.PAUSE_FILE.touch()
+        self.run_hook("gh pr comment 5 --body note", 2)
+        self.na.PAUSE_FILE.unlink()
+        self.na.FOCUS_FILE.write_text("project::Stream\n")
+        self.run_hook("gh pr comment 5 --body note", 2)
+        self.na.FOCUS_FILE.unlink()
+        self.pull_data["body"] = "Executor: Claude"
+        self.run_hook("gh pr comment 5 --body note", 2)
+
+    def test_read_only_and_disabled_calls_make_no_fresh_reads(self) -> None:
+        self.run_hook("git status --short")
+        with patch.dict(os.environ, {"EPIC_SHARED_READER": "0"}):
+            self.run_hook("git push origin feat/21-work")
+        self.assertEqual(self.reads, [])
+
+    def test_unavailable_trusted_checker_fails_closed(self) -> None:
+        with patch.dict(os.environ, {"EPIC_TRUSTED_ROOT": str(self.directory)}):
+            self.assertIn(
+                "trusted checkout", self.run_hook("git push origin feat/21-work", 2)
+            )
+
+    def test_feature_worktree_cannot_override_trusted_checker(self) -> None:
+        trusted = self.directory / "trusted"
+        helpers = trusted / "scripts/epic"
+        helpers.mkdir(parents=True)
+        (helpers / "write_checks.py").write_text(
+            "AGENT = 'Claude'\n"
+            "def check_push(ctx, write): return None\n"
+            "def guard(tool, tool_input, cwd):\n"
+            "    assert AGENT == 'Codex'\n"
+            "    assert tool == 'Bash'\n"
+            "    return 'trusted refusal'\n"
+        )
+        feature = self.directory / "feature"
+        feature.mkdir()
+        (feature / "write_checks.py").write_text(
+            "raise RuntimeError('feature checker must not load')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, str(ROOT / ".codex/hooks/scripts/epic_guard.py")],
+            cwd=feature,
+            env={
+                **os.environ,
+                "EPIC_TRUSTED_ROOT": str(trusted),
+                "PYTHONPATH": str(feature),
+            },
+            input=json.dumps(
+                {
+                    "tool_name": "exec_command",
+                    "tool_input": {
+                        "cmd": "git push origin feat/21-work",
+                        "workdir": str(feature),
+                    },
+                }
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("trusted refusal", result.stderr)
+        self.assertNotIn("feature checker", result.stderr)
+
+    def test_hook_timeout_covers_default_fresh_read_budget(self) -> None:
+        hook = json.loads((ROOT / ".codex/hooks.json").read_text())["hooks"][
+            "PreToolUse"
+        ][0]["hooks"][0]
+        with patch.dict(os.environ, {"EPIC_RECHECK_TIMEOUT_SECONDS": "60"}):
+            self.assertGreater(hook["timeout"], self.gs.settings().recheck)
+
+    def test_installed_helper_push_reads_fresh_state_for_actual_worktree(self) -> None:
+        worktree = self.directory / "feature worktree"
+        subprocess.run(
+            ["/usr/bin/git", "init", "-q", "-b", "feat/21-work", str(worktree)],
+            check=True,
+        )
+        self.action("fix")
+        command = shlex.join(
+            [
+                "python3",
+                "-I",
+                str(self.hook.FEATURE_HELPER),
+                "--worktree",
+                str(worktree),
+                "push",
+            ]
+        )
+        with patch.dict(os.environ, {"GIT_DIR": "/missing-git-dir"}):
+            self.run_hook(command)
+        self.assertIn("pull:5", self.reads)
+        self.assertIn("board", self.reads)
+        self.action("claim", None)
+        self.run_hook(command)
+        self.assertIn("branch:feat/21-work", self.reads)
+        self.action("fix")
+        self.fail = self.gs.ReadBlocked("HTTP 502")
+        self.assertIn("read failed", self.run_hook(command, 2))
+        self.fail = None
+        self.pull_data["head"]["ref"] = "feat/22-other"
+        self.assertIn("not PR 5", self.run_hook(command, 2))
+
+    def test_helper_write_variants_fail_closed(self) -> None:
+        helper = str(self.hook.FEATURE_HELPER)
+        prefix = f"python3 -I {helper}"
+        commands = [
+            f"{prefix} --worktree {self.directory} push; echo done",
+            f"{prefix} --worktree {self.directory} push && echo done",
+            f"{prefix} --worktree={self.directory} push",
+            f"{prefix} --worktree {self.directory} --worktree /other push",
+            f"{prefix} --worktree '$WORKTREE' push",
+            f"env {prefix} --worktree {self.directory} push",
+            f"python3 {helper} --worktree {self.directory} push",
+            f"python3 -I /other/codex-feature-git.py --worktree {self.directory} push",
+            f"bash -c '{prefix} --worktree {self.directory} push'",
+            f"{prefix} --worktree {self.directory} pu$OP",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.run_hook(command, 2)
+        self.assertEqual(self.reads, [])
+
+    def test_helper_local_commit_and_help_do_not_need_fresh_reads(self) -> None:
+        helper = str(self.hook.FEATURE_HELPER)
+        prefix = f"python3 -I {helper}"
+        for command in (
+            f"{prefix} --help",
+            f"{prefix} --worktree {self.directory} push --help",
+            f"{prefix} --worktree {self.directory} commit --message-file /tmp/message.txt",
+            f"cat {helper}",
+        ):
+            with self.subTest(command=command):
+                self.run_hook(command)
+        self.assertEqual(self.reads, [])
 
 
 if __name__ == "__main__":
