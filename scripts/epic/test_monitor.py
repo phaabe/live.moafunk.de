@@ -77,12 +77,16 @@ class RecentStripTest(unittest.TestCase):
         self.assertEqual(len(bars), 20)
         self.assertEqual(bars[:17], [monitor.STRIP_EMPTY] * 17)
         self.assertEqual(bars[17:], ["#5AB45F", "#5B8DEF", "#E5484D"])
-        self.assertIn('title="1 ok · 1 err · 1 blk"', html)
 
     def test_no_ticks_is_an_empty_strip(self) -> None:
         html = monitor.recent_strip([])
         self.assertEqual(self.bars(html), [monitor.STRIP_EMPTY] * 20)
-        self.assertIn('title="no ticks"', html)
+
+    def test_only_style_attributes_survive_grafana(self) -> None:
+        # Grafana 13.2 strips `title`; hover text would silently vanish.
+        html = monitor.recent_strip(["ok", "error", "interrupted"])
+        self.assertEqual(set(re.findall(r"\s([a-z-]+)=", html)), {"style"})
+        self.assertNotIn("vertical-align", html)
 
     def test_the_longest_strip_is_not_cut(self) -> None:
         html = monitor.recent_strip(["interrupted"] * 20)

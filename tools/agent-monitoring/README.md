@@ -94,8 +94,8 @@ while GitHub has not been seen for 5 min.
 Open the cockpit with `?kiosk` to hide Grafana's own bars: the page then
 fits a 1600 × 1000 or 1280 × 1000 window like the design.
 
-"Last 20" draws one bar per tick, newest right; hover it for the counts
-("16 ok · 1 err · 1 tmo"). Grafana 13 table columns are at least 50 px wide,
+"Last 20" draws one bar per tick, newest right (no hover text: Grafana's
+sanitizer drops `title`). Grafana 13 table columns are at least 50 px wide,
 so the collector sends the 20 bars as HTML in one label (`recent_strip`) and
 the column is a Markdown cell. Table cells have no "filter for value" buttons.
 

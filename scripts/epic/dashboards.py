@@ -925,7 +925,7 @@ def agent_table() -> Json:
         transformations,
         overrides,
         description="One row per registered agent, running first. Last 20: "
-        "one bar per tick, newest right; hover for counts. Backoff: "
+        "one bar per tick, newest right. Backoff: "
         "Codex retry delays. Denied: Claude permission gate.",
     )
     return panel

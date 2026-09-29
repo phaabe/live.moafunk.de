@@ -2159,7 +2159,7 @@
     {
       "type": "table",
       "title": "Agents",
-      "description": "One row per registered agent, running first. Last 20: one bar per tick, newest right; hover for counts. Backoff: Codex retry delays. Denied: Claude permission gate.",
+      "description": "One row per registered agent, running first. Last 20: one bar per tick, newest right. Backoff: Codex retry delays. Denied: Claude permission gate.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"

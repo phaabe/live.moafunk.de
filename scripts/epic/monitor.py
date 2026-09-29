@@ -361,17 +361,6 @@ class Runner:
     gate_action: dict[str, str] | None = None
 
 
-# Last-20 counts (the strip's hover text): ok first, then the worst down.
-RECENT_SHORT = (
-    ("ok", "ok"),
-    ("error", "err"),
-    ("interrupted", "int"),
-    ("killed", "kil"),
-    ("timeout", "tmo"),
-    ("blocked", "blk"),
-)
-
-
 # Colors of the last-20 strip: dashboards.OUTCOME and EMPTY_SLOT.
 STRIP_COLORS = {
     "ok": "#5AB45F",
@@ -388,19 +377,15 @@ BAR = '<i style="width:4px;background:{}"></i>'
 def recent_strip(outcomes: list[str]) -> str:
     """One bar per tick, oldest left, for the cockpit's Markdown cell.
 
-    Empty slots fill the left while an agent has fewer than 20 ticks. The
-    counts show on hover.
+    Empty slots fill the left while an agent has fewer than 20 ticks.
+    Only `style` attributes: Grafana's sanitizer drops `title` (no hover
+    text) and `vertical-align`.
     """
-    counts = Counter(outcomes)
-    title = " · ".join(
-        f"{counts[kind]} {short}" for kind, short in RECENT_SHORT if counts[kind]
-    )
     bars = [STRIP_EMPTY] * (ticks.RECENT - len(outcomes)) + [
         STRIP_COLORS[outcome] for outcome in outcomes
     ]
     return (
-        f'<span title="{title or "no ticks"}" style="display:inline-flex;'
-        'gap:1px;height:16px;vertical-align:middle">'
+        '<span style="display:inline-flex;gap:1px;height:16px">'
         + "".join(BAR.format(color) for color in bars)
         + "</span>"
     )
