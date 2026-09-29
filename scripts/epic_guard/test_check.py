@@ -536,6 +536,30 @@ class CollectionTests(unittest.TestCase):
 
 
 class PolicyTests(unittest.TestCase):
+    def test_monitoring_paths_require_assigned_owner_and_setup_lane(self) -> None:
+        lane_policy = check.load_policy(
+            Path(__file__).resolve().parents[2] / ".github/epic-lanes.yml"
+        )
+        for path, owner in (
+            ("tools/agent-monitoring/grafana/dashboards/agent.json", "Claude"),
+            ("tools/agent-monitoring/grafana/dashboards/overview.json", "Claude"),
+            ("tools/agent-monitoring/grafana/dashboards/README.md", "Codex"),
+            ("tools/agent-monitoring/grafana/provisioning/dashboards/agents.yml", "Codex"),
+            ("tools/agent-monitoring/compose.yaml", "Codex"),
+            ("tools/agent-monitoring/alloy.alloy", "Codex"),
+            ("tools/agent-monitoring/runtime/alloy/targets.json", "Codex"),
+            ("tools/agent-monitoring/README.md", "Codex"),
+            ("scripts/epic/next_action.py", "Claude"),
+        ):
+            with self.subTest(path=path):
+                files = [{"filename": path}]
+                self.assertEqual(
+                    check.file_errors(lane_policy, files, owner, "setup"), []
+                )
+                other = "Claude" if owner == "Codex" else "Codex"
+                self.assertTrue(check.file_errors(lane_policy, files, other, "setup"))
+                self.assertTrue(check.file_errors(lane_policy, files, owner, "ops"))
+
     def test_real_epic_script_and_shared_plan_paths(self) -> None:
         lane_policy = check.load_policy(
             Path(__file__).resolve().parents[2] / ".github/epic-lanes.yml"
