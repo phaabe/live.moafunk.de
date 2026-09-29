@@ -19,3 +19,48 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: Runner lock or metadata needs inspection
+      # Per agent: a new agent is covered without a rule change. All are
+      # silent while local data is stale; AgentCollectorStale reports that.
+      # Failures and lateness count only while the tick history is read and
+      # exported: both come from tick timing.
+      - alert: AgentFailingRepeatedly
+        expr: >-
+          epic_tick_consecutive_failures >= 3
+          and on(agent) epic_runner_read_success == 1
+          and on(agent) epic_tick_ledger_read_success == 1
+          and on(agent) epic_tick_events_read_success == 1
+          and on(agent) epic_tick_ledger_export_success == 1
+          and on() (time() - epic_local_snapshot_timestamp_seconds < 30)
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.agent }}: the last {{ $value }} ticks failed"
+      - alert: AgentLate
+        expr: >-
+          epic_agent_presence == 4
+          and on(agent) epic_runner_read_success == 1
+          and on(agent) epic_tick_ledger_read_success == 1
+          and on(agent) epic_tick_events_read_success == 1
+          and on(agent) epic_tick_ledger_export_success == 1
+          and on() (time() - epic_local_snapshot_timestamp_seconds < 30)
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.agent }} missed its schedule"
+      - alert: AgentCollision
+        expr: >-
+          epic_agent_collision == 1
+          and on() (time() - epic_local_snapshot_timestamp_seconds < 30)
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.agent }} works on {{ $labels.target }} with another agent"
+      - alert: AgentHandoffStalled
+        expr: >-
+          epic_handoff_stalled == 1
+          and on() (time() - epic_local_snapshot_timestamp_seconds < 30)
+          and on() (time() - epic_handoff_observed_timestamp_seconds < 300)
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Both kinds wait over 30 min for a review and no agent can act

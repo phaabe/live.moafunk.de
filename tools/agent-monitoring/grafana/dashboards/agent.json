@@ -1,0 +1,1463 @@
+{
+  "uid": "epic-agent",
+  "title": "Agent detail",
+  "tags": [
+    "agents",
+    "epic"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "5s",
+  "timezone": "browser",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "Cockpit",
+      "url": "/d/epic-agents",
+      "targetBlank": false
+    },
+    {
+      "title": "Agent detail",
+      "url": "/d/epic-agent",
+      "targetBlank": false
+    },
+    {
+      "title": "Delivery",
+      "url": "/d/epic-delivery",
+      "targetBlank": false
+    },
+    {
+      "title": "Epic #312 on GitHub ↗",
+      "url": "https://github.com/phaabe/live.moafunk.de/issues/312",
+      "targetBlank": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "agent",
+        "label": "Agent",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "agent-prometheus"
+        },
+        "query": {
+          "query": "label_values(epic_agent_info, agent)",
+          "refId": "agent"
+        },
+        "definition": "label_values(epic_agent_info, agent)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "search",
+        "label": "Search log",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "table",
+      "title": "",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_agent_info{agent=\"$agent\"}",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "epic_agent_presence_info{agent=\"$agent\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "expr": "epic_agent_interval_seconds{agent=\"$agent\"}",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "refId": "D",
+          "expr": "epic_agent_budget_seconds{agent=\"$agent\"}",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "agent",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "kind",
+                "agent",
+                "label",
+                "presence",
+                "Value #C",
+                "Value #D"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "kind": 0,
+              "agent": 1,
+              "label": 2,
+              "presence": 3,
+              "Value #C": 4,
+              "Value #D": 5
+            },
+            "renameByName": {
+              "kind": " ",
+              "agent": "Agent",
+              "label": "Label",
+              "presence": "Presence",
+              "Value #C": "Interval",
+              "Value #D": "Tick budget"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "–",
+          "custom": {
+            "filterable": false,
+            "align": "auto",
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": " "
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 50
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "claude": {
+                        "index": 0,
+                        "color": "#E0875A",
+                        "text": "●"
+                      },
+                      "codex": {
+                        "index": 1,
+                        "color": "#35C2C2",
+                        "text": "●"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Agent"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Presence"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "noValue",
+                "value": "data stale"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "running": {
+                        "index": 0,
+                        "color": "#5AB45F"
+                      },
+                      "idle": {
+                        "index": 1,
+                        "color": "#2C2F36"
+                      },
+                      "new": {
+                        "index": 2,
+                        "color": "transparent"
+                      },
+                      "late": {
+                        "index": 3,
+                        "color": "#C8342E"
+                      },
+                      "unknown": {
+                        "index": 4,
+                        "color": "#9A9BA6"
+                      },
+                      "retired": {
+                        "index": 5,
+                        "color": "#6E717A"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Label"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9A9BA6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Presence"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Interval"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tick budget"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 9,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Ticks today",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(epic_ticks_today{agent=\"$agent\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 9,
+        "y": 0,
+        "w": 3,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Success rate today",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(epic_ticks_today{agent=\"$agent\",outcome=\"ok\"}) / sum(epic_ticks_today{agent=\"$agent\"})) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "—",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#C8342E"
+              },
+              {
+                "value": 0.5,
+                "color": "#E0A526"
+              },
+              {
+                "value": 0.7,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 3,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Median tick duration",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(epic_tick_duration_today_seconds{agent=\"$agent\",quantile=\"0.5\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "—",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 15,
+        "y": 0,
+        "w": 3,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Sessions blocked",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(epic_ticks_today{agent=\"$agent\",outcome=\"blocked\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              },
+              {
+                "value": 11,
+                "color": "#E0A526"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 5,
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 3,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Tokens today",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(epic_tokens_today{agent=\"$agent\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Not reported by this runner (Codex only)",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 6,
+      "gridPos": {
+        "x": 21,
+        "y": 0,
+        "w": 3,
+        "h": 3
+      }
+    },
+    {
+      "type": "table",
+      "title": "Tick history",
+      "description": "Newest first. Tokens only for Codex. Source: events (written by the runner) or log (best effort).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tick_info{agent=\"$agent\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "tick",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "tick",
+                "outcome",
+                "exit",
+                "phase",
+                "action",
+                "target",
+                "Value",
+                "tokens",
+                "source"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "tick": 0,
+              "outcome": 1,
+              "exit": 2,
+              "phase": 3,
+              "action": 4,
+              "target": 5,
+              "Value": 6,
+              "tokens": 7,
+              "source": 8
+            },
+            "renameByName": {
+              "tick": "Started",
+              "outcome": "Outcome",
+              "exit": "Exit",
+              "phase": "Stage",
+              "action": "Action",
+              "target": "Target",
+              "Value": "Duration",
+              "tokens": "Tokens",
+              "source": "Source"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No ticks yet",
+          "custom": {
+            "filterable": false,
+            "align": "auto",
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Outcome"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ok": {
+                        "index": 0,
+                        "color": "#5AB45F"
+                      },
+                      "blocked": {
+                        "index": 1,
+                        "color": "#5B8DEF"
+                      },
+                      "timeout": {
+                        "index": 2,
+                        "color": "#E8B530"
+                      },
+                      "killed": {
+                        "index": 3,
+                        "color": "#A57BE0"
+                      },
+                      "interrupted": {
+                        "index": 4,
+                        "color": "#E5484D"
+                      },
+                      "error": {
+                        "index": 5,
+                        "color": "#E5484D"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "noValue",
+                "value": "running"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "-1": {
+                        "index": 0,
+                        "color": "#9A9BA6",
+                        "text": "unknown"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tokens"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "–"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Exit"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 50
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Target"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*/pull/(\\d+)$",
+                      "result": {
+                        "index": 0,
+                        "text": "PR $1"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*/issues/(\\d+)$",
+                      "result": {
+                        "index": 1,
+                        "text": "issue $1"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 7,
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 15,
+        "h": 9
+      }
+    },
+    {
+      "type": "table",
+      "title": "Outcome per hour · 7 days",
+      "description": "Worst outcome of each local hour. Empty: no tick.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tick_hour_worst{agent=\"$agent\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "filter": {
+            "id": "byRefId",
+            "options": "A"
+          },
+          "options": {
+            "columnField": "hour",
+            "rowField": "day",
+            "valueField": "Value"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^day\\\\hour$",
+            "renamePattern": "day"
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "day",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No ticks in 7 days",
+          "custom": {
+            "filterable": false,
+            "align": "auto",
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "day"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "displayName",
+                "value": "Day"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^\\d\\db?$"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#2C2F36"
+                }
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "index": 0,
+                        "color": "#5AB45F",
+                        "text": " "
+                      },
+                      "2": {
+                        "index": 1,
+                        "color": "#5B8DEF",
+                        "text": " "
+                      },
+                      "3": {
+                        "index": 2,
+                        "color": "#E8B530",
+                        "text": " "
+                      },
+                      "4": {
+                        "index": 3,
+                        "color": "#A57BE0",
+                        "text": " "
+                      },
+                      "5": {
+                        "index": 4,
+                        "color": "#E5484D",
+                        "text": " "
+                      },
+                      "6": {
+                        "index": 5,
+                        "color": "#E5484D",
+                        "text": " "
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 8,
+      "gridPos": {
+        "x": 15,
+        "y": 3,
+        "w": 9,
+        "h": 4
+      }
+    },
+    {
+      "type": "table",
+      "title": "Backoff",
+      "description": "Codex retry delays still active. A retry within 10 min is about to happen.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_backoff_info{agent=\"$agent\"} * 1000 and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "target",
+                "Value",
+                "current_head",
+                "estimated"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "target": 0,
+              "Value": 1,
+              "current_head": 2,
+              "estimated": 3
+            },
+            "renameByName": {
+              "target": "Target",
+              "Value": "Retry after",
+              "current_head": "Head still current",
+              "estimated": "Estimated"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Not reported by this runner (Codex only) or no delay",
+          "custom": {
+            "filterable": false,
+            "align": "auto",
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Target"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*/pull/(\\d+)$",
+                      "result": {
+                        "index": 0,
+                        "text": "PR $1"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*/issues/(\\d+)$",
+                      "result": {
+                        "index": 1,
+                        "text": "issue $1"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Retry after"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "text"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 9,
+      "gridPos": {
+        "x": 15,
+        "y": 7,
+        "w": 9,
+        "h": 5
+      }
+    },
+    {
+      "type": "barchart",
+      "title": "Permission gate · per hour",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "interval": "1h",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (decision) (increase(epic_permission_decisions_total{agent=\"$agent\"}[1h]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{decision}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Not reported by this runner (Claude only)",
+          "decimals": 0,
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "allow"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#6E717A"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "deny"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#C8342E"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "stacking": "normal",
+        "showValue": "never",
+        "xTickLabelSpacing": 100,
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 10,
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 7,
+        "h": 4
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Last 10 denials",
+      "description": "Commands the Claude permission gate denied.",
+      "datasource": {
+        "type": "loki",
+        "uid": "agent-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{agent=\"$agent\", stream=\"permissions\", decision=\"deny\"}",
+          "queryType": "range",
+          "maxLines": 10
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "id": 11,
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 7,
+        "h": 6
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Errors only",
+      "description": "Runner log lines that report a failure.",
+      "datasource": {
+        "type": "loki",
+        "uid": "agent-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{agent=\"$agent\", stream!=\"permissions\"} |~ \"(?i)(error|failed|exit=[1-9]|timed out)\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "id": 12,
+      "gridPos": {
+        "x": 7,
+        "y": 12,
+        "w": 17,
+        "h": 4
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Runner log",
+      "description": "Everything the runner and model wrote. Use the Search box above.",
+      "datasource": {
+        "type": "loki",
+        "uid": "agent-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{agent=\"$agent\", stream!=\"permissions\"} |~ \"(?i)$search\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "id": 13,
+      "gridPos": {
+        "x": 7,
+        "y": 16,
+        "w": 17,
+        "h": 6
+      }
+    }
+  ]
+}

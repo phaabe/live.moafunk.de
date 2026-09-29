@@ -1,0 +1,788 @@
+{
+  "uid": "epic-delivery",
+  "title": "Delivery",
+  "tags": [
+    "agents",
+    "epic"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "5s",
+  "timezone": "browser",
+  "time": {
+    "from": "now-14d",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "Cockpit",
+      "url": "/d/epic-agents",
+      "targetBlank": false
+    },
+    {
+      "title": "Agent detail",
+      "url": "/d/epic-agent",
+      "targetBlank": false
+    },
+    {
+      "title": "Delivery",
+      "url": "/d/epic-delivery",
+      "targetBlank": false
+    },
+    {
+      "title": "Epic #312 on GitHub ↗",
+      "url": "https://github.com/phaabe/live.moafunk.de/issues/312",
+      "targetBlank": true
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Burn-up",
+      "description": "Checklist leaves done per area; the dashed line is all leaves.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (area) (epic_area_leaves{state=\"done\"}) and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{area}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(epic_area_leaves) and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "all leaves"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "shades",
+            "fixedColor": "#9A9BA6"
+          },
+          "custom": {
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineInterpolation": "stepAfter"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "all leaves"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#D8D9DA"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 11
+      }
+    },
+    {
+      "timeFrom": "7d",
+      "interval": "5m",
+      "type": "stat",
+      "title": "Median review rounds",
+      "description": "Heads the reviewer gave a verdict on, PRs merged in the last 7 days.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_review_rounds_median and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600) and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds < 600)[1m:] @ end()) and on() (epic_review_rounds_median @ end())",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              },
+              {
+                "value": 2.5,
+                "color": "#E0A526"
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      }
+    },
+    {
+      "timeFrom": "7d",
+      "interval": "5m",
+      "type": "stat",
+      "title": "Median time to merge",
+      "description": "From PR opened to merged, last 7 days.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_time_to_merge_median_seconds and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600) and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds < 600)[1m:] @ end()) and on() (epic_time_to_merge_median_seconds @ end())",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "—",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              },
+              {
+                "value": 21600,
+                "color": "#E0A526"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      }
+    },
+    {
+      "type": "barchart",
+      "title": "Issues by project status · per kind",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (agent, status) (epic_issues) and on() (time() - epic_github_snapshot_timestamp_seconds < 300)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "filter": {
+            "id": "byRefId",
+            "options": "A"
+          },
+          "options": {
+            "columnField": "status",
+            "rowField": "agent",
+            "valueField": "Value"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^agent\\\\status$",
+            "renamePattern": "agent"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "shades",
+            "fixedColor": "#9A9BA6"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "stacking": "normal",
+        "showValue": "never",
+        "xField": "agent",
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 8,
+        "h": 6
+      }
+    },
+    {
+      "type": "barchart",
+      "title": "Merged PRs per day · by executor kind",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_merged_prs_day and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "filter": {
+            "id": "byRefId",
+            "options": "A"
+          },
+          "options": {
+            "columnField": "kind",
+            "rowField": "day",
+            "valueField": "Value"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^day\\\\kind$",
+            "renamePattern": "day"
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "day",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#6E717A"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "claude"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#E0875A"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "codex"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#35C2C2"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "stacking": "normal",
+        "showValue": "never",
+        "xField": "day",
+        "xTickLabelRotation": -45,
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 9,
+        "h": 11
+      }
+    },
+    {
+      "type": "table",
+      "title": "PR flow",
+      "description": "The last 14 PRs, open and merged. Waiting: observed wait for a review by the other kind.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_pr_flow_info and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (target) (epic_handoff_wait_seconds and on() (time() - epic_handoff_observed_timestamp_seconds < 300)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterByRefId",
+          "options": {
+            "include": "A|B"
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "target",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              {
+                "fieldName": "executor",
+                "config": {
+                  "id": "isNotNull"
+                }
+              }
+            ],
+            "type": "include",
+            "match": "all"
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "opened",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "target",
+                "executor",
+                "reviewer",
+                "opened",
+                "state",
+                "Value #A",
+                "Value #B"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "target": 0,
+              "executor": 1,
+              "reviewer": 2,
+              "opened": 3,
+              "state": 4,
+              "Value #A": 5,
+              "Value #B": 6
+            },
+            "renameByName": {
+              "target": "PR",
+              "executor": "Executor",
+              "reviewer": "Reviewer",
+              "opened": "Opened",
+              "state": "State",
+              "Value #A": "Review rounds",
+              "Value #B": "Waiting"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No PRs in 14 days",
+          "custom": {
+            "filterable": false,
+            "align": "auto",
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*/pull/(\\d+)$",
+                      "result": {
+                        "index": 0,
+                        "text": "PR $1"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*/issues/(\\d+)$",
+                      "result": {
+                        "index": 1,
+                        "text": "issue $1"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Executor"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "claude": {
+                        "index": 0,
+                        "color": "#E0875A"
+                      },
+                      "codex": {
+                        "index": 1,
+                        "color": "#35C2C2"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reviewer"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "claude": {
+                        "index": 0,
+                        "color": "#E0875A"
+                      },
+                      "codex": {
+                        "index": 1,
+                        "color": "#35C2C2"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "State"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Review rounds"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Opened"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Waiting"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "transparent"
+                    },
+                    {
+                      "value": 1800,
+                      "color": "#E0A526"
+                    },
+                    {
+                      "value": 3600,
+                      "color": "#C8342E"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "noValue",
+                "value": "–"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 6,
+      "gridPos": {
+        "x": 9,
+        "y": 11,
+        "w": 15,
+        "h": 11
+      }
+    }
+  ]
+}

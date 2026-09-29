@@ -396,11 +396,15 @@ def delivery_metrics(
     snapshot = {pr.get("number"): pr for pr in open_prs or []}
     flow: list[tuple[float, Json, str, int]] = []
     for row in data["open"]:
+        # Every open PR, for the cockpit's age and rounds columns.
+        target = f"{REPO_URL}/pull/{row['number']}"
+        metrics.add("pr_opened_timestamp_seconds", row["created"], target=target)
         pr = snapshot.get(row["number"])
         if pr is None:
             continue  # rounds unknown until the selector snapshot has it
         count = rounds(pr.get("comments") or [], row["executor"])
         if count is not None:
+            metrics.add("pr_review_rounds", count, target=target)
             flow.append(
                 (row["created"], row, "draft" if row["draft"] else "open", count)
             )

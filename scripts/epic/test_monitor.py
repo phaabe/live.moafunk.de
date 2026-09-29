@@ -219,14 +219,15 @@ class RunnerMetricsTest(unittest.TestCase):
         self.assertNotIn("epic_tick_elapsed_seconds", text)
         self.assertIn('epic_runner_read_success{agent="claude"} 0\n', text)
 
-    def test_logs_export_only_last_exit_and_modified_time(self) -> None:
+    def test_logs_export_only_their_modified_time(self) -> None:
         log = self.root / "codex.log"
         log.write_text(
             "private model output\ntick: finished exit=1\ntick: finished exit=0\n"
         )
         os.utime(log, (1_400, 1_400))
         text = monitor.runner_metrics(self.root, False, NOW)
-        self.assertIn('epic_last_observed_exit_code{agent="codex"} 0\n', text)
+        # The tick ledger names outcomes; the raw last exit is gone.
+        self.assertNotIn("epic_last_observed_exit_code", text)
         self.assertIn('epic_log_modified_timestamp_seconds{agent="codex"} 1400\n', text)
         self.assertNotIn("private model output", text)
 
@@ -365,7 +366,7 @@ class AgentRowsTest(unittest.TestCase):
         # Idle rows show the last tick's action; exit 75 without a blocked line is error.
         self.assertIn(
             'epic_agent_row_info{action_text="last: claim",agent="codex",'
-            'outcome_text="error 75 · unknown",target=""} 1',
+            'outcome_text="error 75 · unknown",recent_text="1 err",target=""} 1',
             text,
         )
         # Order: running first, then kind, then id.
@@ -392,6 +393,11 @@ class AgentRowsTest(unittest.TestCase):
         self.assertIn('epic_agent_recent{agent="codex",slot="19"} 6', text)
         self.assertIn('epic_agent_recent{agent="codex",slot="18"} 1', text)
         self.assertNotIn('slot="17"', text)
+        # The cockpit shows counts: Grafana columns are too wide for a strip.
+        self.assertIn(
+            'outcome_text="timeout 124 · unknown",recent_text="1 ok · 1 err · 1 tmo"',
+            text,
+        )
 
     def test_agents_come_and_go_between_cycles(self) -> None:
         self.run_at(NOW)
@@ -475,7 +481,7 @@ class AgentRowsTest(unittest.TestCase):
         self.assertNotIn("epic_agent_collision", text)
         self.assertIn(
             'epic_agent_row_info{action_text="selecting",agent="claude",'
-            'outcome_text="ok 0",target=""} 1',
+            'outcome_text="ok 0",recent_text="1 ok",target=""} 1',
             text,
         )
 

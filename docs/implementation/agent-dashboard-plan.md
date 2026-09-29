@@ -509,6 +509,27 @@ date. Manual: compare with design v2 at 1600 and 1280 px; reproduce the 10
 design scenarios (normal, single, busy, full, late, failing, collision,
 retired, paused, stale) with fixture state dirs.
 
+Built (issue https://github.com/phaabe/live.moafunk.de/issues/447).
+Decisions made while building:
+
+- Spike: per-query "Grouping to matrix" plus an outer join keeps one row per
+  agent in Grafana 13, also when an agent has no series for some queries. But
+  Grafana 13 table columns are at least 50 px wide, so 20 slot columns do not
+  fit. The fallback from this plan is used: one "Last 20" cell with counts
+  (`recent_text` on `epic_agent_row_info`), colored by the worst outcome.
+- The 6 px kind stripe is a colored dot for the same reason.
+- "Ago" is the age in minutes, not "x minutes ago", so the table fits 1280 px.
+- Stale local data: presence and last outcome fall back to "data stale" for
+  every agent, so the rows stay.
+- The 1 h denial window is limited to current agents; without it, an agent
+  that was removed shows up for an hour.
+- "PRs waiting > 30 min" turns red at 2; a single wait over 60 min raises
+  Needs Anton instead. The median tick duration has no budget-relative color.
+- `epic_last_observed_exit_code` is removed; the tick ledger names outcomes.
+- `scripts/epic/fixtures.py` and `tools/agent-monitoring/preview.sh` show the
+  10 design scenarios on a second stack; `alerts.test.yml` holds the
+  `promtool` tests.
+
 ## Out of scope
 
 - Starting, stopping or scheduling agents from the dashboard or collector.
@@ -699,6 +720,53 @@ file's end).
 | the closed-PR page limit cut the window short silently | the fetch fails and the last snapshot stays |
 | comment history had no memory bound | read one page at a time; over 1 000 comments the PR is reported as incomplete |
 | `--once` published local metrics before the handoff | it loads the saved clock, collects, then publishes |
+
+### PR 5 review, round 1
+
+| Codex finding | Change |
+|---|---|
+| P1: the preview could delete a stopped collector's checkpoints and metrics | own `runtime-preview/` dir (`AGENT_RUNTIME` in compose); refuses the collector's runtime and any unmarked dir |
+| failing alert trusted an unreadable tick history | also needs tick ledger read, events read and export success |
+| outcome timeline went on through a collector outage | local freshness guard per step |
+| retired agents stayed in the 24 h timeline | presence at the end of the range (`@ end()`) |
+| median tiles kept an expired value | the series only while delivery data is fresh at the range end; promtool checks it |
+
+### PR 5 review, round 2
+
+| Codex finding | Change |
+|---|---|
+| median tiles kept a median that the collector stopped publishing | the median must also exist at the range end; promtool test through a subquery, like Grafana's range |
+| failure tile, "Needs Anton" and the Failed column trusted an unreadable tick history | same read and export checks as the alert; the column shows "?" |
+| handoff waits kept growing while GitHub was not seen | waits, stall and "Needs Anton" only while the handoff was observed in the last 5 min; the stall alert too |
+
+### PR 5 review, round 3
+
+| Codex finding | Change |
+|---|---|
+| P1: a symlinked `runtime-preview/metrics` could point at the real metrics | the preview refuses a metrics dir that links out; `--output` must be a `metrics` dir |
+| handoff table showed "0 waiting" while GitHub was not seen | reviewer rows need the same freshness; the table says "No current data" |
+| a relative `AGENT_PREVIEW_STATE_DIR` meant two dirs | `preview.sh` makes it absolute first |
+| running fixture ticks started before the finished ones; the ledger rejected them | finished ticks end before the running start |
+| the paused preview kept starting ticks | no new ticks while paused |
+
+### PR 5 review, round 4 (approved)
+
+| Codex finding | Change |
+|---|---|
+| P2: late alert, tile and "Needs Anton" trusted cached tick timing after a failed read | same read and export checks as the failing alert |
+| P3: a tick without a finish time showed "-1 s" | Duration maps -1 to "unknown" |
+
+### PR 5, design check at 1600 and 1280 px
+
+| Blueprint | Change |
+|---|---|
+| tiles: value on the left, caption under it, "4 / 8" | canvas tiles with their own title; a stat panel can only center |
+| page chrome "Agent loop › Cockpit", tab row | folder "Agent loop", titles without "Agents ·", one link row on every page |
+| 8 agents fit the table | fixture "normal" has the design's 8 agents; widths fit 1280 px |
+| 24 h of outcomes | the preview writes 24 h of fixture history into its Prometheus |
+| handoff per direction with the oldest PR | one row per direction: oldest PR, wait, PR count, reviewers |
+| open PRs: PR, executor, leaf, review, CI, rounds, age | same columns (task instead of leaf); new `epic_pr_opened_timestamp_seconds` and `epic_pr_review_rounds` |
+| kind stripe, 20 tick cells, "21m" inside the outcome, kind squares in the timeline, "38/58" | not possible in Grafana 13 or would add a label that changes each minute; kept the dot, the counts, the Ago column |
 
 ## Appendix — panel spec from design v2
 

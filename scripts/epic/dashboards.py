@@ -1,4 +1,8 @@
-"""Build the agent Grafana dashboards: one overview and one page per agent.
+"""Build the agent Grafana dashboards: Cockpit, Agent detail and Delivery.
+
+Layout, colors and thresholds follow design v2 (plan appendix). No page
+lists agent ids: rows and the agent picker come from `epic_agent_info`, so
+a new agent appears on its own. The old per-agent pages only link on.
 
 Run after changing this file, then commit the JSON:
     python3 scripts/epic/dashboards.py
@@ -15,43 +19,67 @@ Json = dict[str, Any]
 OUT = Path(__file__).resolve().parents[2] / "tools/agent-monitoring/grafana/dashboards"
 PROM = {"type": "prometheus", "uid": "agent-prometheus"}
 LOKI = {"type": "loki", "uid": "agent-loki"}
-AGENTS = {"claude": "Claude", "codex": "Codex"}
 REPO = "https://github.com/phaabe/live.moafunk.de"
+# Only the redirect pages from the time of two fixed agents name an agent.
+LEGACY_PAGES = {"claude": "Claude", "codex": "Codex"}
 
-# Hide panels whose source stopped updating instead of showing stale work.
+# Hide data whose source stopped updating instead of showing stale work.
 LOCAL = " and on() (time() - epic_local_snapshot_timestamp_seconds < 30)"
 GITHUB = " and on() (time() - epic_github_snapshot_timestamp_seconds < 300)"
-CONTEXT_LABELS = (
-    "epic, epic_url, area, task, task_url, subtask, subtask_url, leaf, leaves_done, pr"
-)
-# Level name, label, and the label holding its link.
-LEVELS = (
-    ("Epic", "epic", "epic_url"),
-    ("Area", "area", None),
-    ("Task", "task", "task_url"),
-    ("Subtask", "subtask", "subtask_url"),
-    ("Leaf", "leaf", "target"),
-    ("PR", "pr", "target"),
-)
-STATE_COLORS = {
-    "running": "green",
-    "inactive": "text",
-    "orphaned": "red",
-    "overdue": "orange",
-    "unknown": "purple",
-}
-
-
-def with_context(metric: str) -> str:
-    """Add the task hierarchy to an action metric; keep rows without context."""
-    guard = LOCAL if metric.startswith("epic_current") else GITHUB
-    if metric.startswith("epic_last_successful"):
-        guard = LOCAL
-    joined = (
-        f"(({metric}{guard}) * on(target) group_left({CONTEXT_LABELS}) "
-        f"(epic_task_context_info{GITHUB}))"
+DELIVERY = " and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)"
+# Waits grow from cached GitHub data: only while the handoff was seen lately.
+HANDOFF = " and on() (time() - epic_handoff_observed_timestamp_seconds < 300)"
+# Failure counts only while the tick history is read and exported, as in
+# the AgentFailingRepeatedly alert.
+TRUSTED = "".join(
+    f" and on(agent) epic_{name} == 1"
+    for name in (
+        "runner_read_success",
+        "tick_ledger_read_success",
+        "tick_events_read_success",
+        "tick_ledger_export_success",
     )
-    return f"{joined} or on(agent, action, target) ({metric}{guard})"
+)
+FAILURES = f"(epic_tick_consecutive_failures{TRUSTED})"
+# Late comes from tick timing too: cached timing after a failed read is not.
+LATE = f"(epic_agent_presence == 4{TRUSTED})"
+# For sparklines: the whole series only while delivery data is fresh now, so
+# the "last value" reducer never shows an expired number.
+FRESH_AT_END = (
+    " and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds"
+    " < 600)[1m:] @ end())"
+)
+
+# Design v2 colors.
+KIND = {"claude": "#E0875A", "codex": "#35C2C2"}
+OUTCOME = {
+    "ok": "#5AB45F",
+    "blocked": "#5B8DEF",
+    "timeout": "#E8B530",
+    "killed": "#A57BE0",
+    "interrupted": "#E5484D",
+    "error": "#E5484D",
+}
+# Severity values from ticks.SEVERITY.
+SEVERITY = {
+    "ok": 1,
+    "blocked": 2,
+    "timeout": 3,
+    "killed": 4,
+    "interrupted": 5,
+    "error": 6,
+}
+PRESENCE = {
+    "running": "#5AB45F",
+    "idle": "#2C2F36",
+    "new": "transparent",
+    "late": "#C8342E",
+    "unknown": "#9A9BA6",
+    "retired": "#6E717A",
+}
+ACT_NOW, LOOK_SOON, STALE = "#C8342E", "#E0A526", "#9A9BA6"
+GREY, MUTED, EMPTY_SLOT = "#6E717A", "#9A9BA6", "#22252B"
+NEUTRAL = "text"
 
 
 def target(expr: str, *, table: bool = False, legend: str = "", ref: str = "A") -> Json:
@@ -67,39 +95,81 @@ def target(expr: str, *, table: bool = False, legend: str = "", ref: str = "A") 
     return result
 
 
+def ranged(expr: str, *, legend: str = "", ref: str = "A") -> Json:
+    return {**target(expr, legend=legend, ref=ref), "instant": False, "range": True}
+
+
 def link(title: str, url: str) -> Json:
     return {"title": title, "url": url, "targetBlank": url.startswith("http")}
 
 
+# The design's tab row, the same on every page.
+PAGE_LINKS = [
+    link("Cockpit", "/d/epic-agents"),
+    link("Agent detail", "/d/epic-agent"),
+    link("Delivery", "/d/epic-delivery"),
+    link("Epic #312 on GitHub ↗", f"{REPO}/issues/312"),
+]
+
+
+def steps(*pairs: tuple[float | None, str]) -> Json:
+    return {
+        "mode": "absolute",
+        "steps": [{"value": value, "color": color} for value, color in pairs],
+    }
+
+
+def value_map(values: dict[str, tuple[str, str]]) -> Json:
+    """Value → (text, color). Empty text keeps the value."""
+    return {
+        "type": "value",
+        "options": {
+            value: {"index": i, "color": color, **({"text": text} if text else {})}
+            for i, (value, (text, color)) in enumerate(values.items())
+        },
+    }
+
+
+def regex_map(pattern: str, color: str, index: int) -> Json:
+    return {
+        "type": "regex",
+        "options": {"pattern": pattern, "result": {"index": index, "color": color}},
+    }
+
+
+def override(matcher: str, name: str, *properties: tuple[str, Any]) -> Json:
+    return {
+        "matcher": {"id": matcher, "options": name},
+        "properties": [{"id": key, "value": value} for key, value in properties],
+    }
+
+
+def by_name(name: str, *properties: tuple[str, Any]) -> Json:
+    return override("byName", name, *properties)
+
+
+def cell(kind: str, **extra: Any) -> tuple[str, Json]:
+    return ("custom.cellOptions", {"type": kind, **extra})
+
+
+SEVERITY_COLORS = value_map(
+    {str(v): (k, OUTCOME[k]) for k, v in SEVERITY.items() if k != "interrupted"}
+    | {str(SEVERITY["interrupted"]): ("interrupted", OUTCOME["interrupted"])}
+)
+
+
 class Board:
-    def __init__(self, uid: str, title: str, links: list[Json]) -> None:
-        self.uid, self.title, self.links = uid, title, links
+    def __init__(
+        self, uid: str, title: str, links: list[Json], time_from: str = "now-24h"
+    ) -> None:
+        self.uid, self.title, self.links, self.time_from = uid, title, links, time_from
         self.panels: list[Json] = []
-        self.y = 0
-        self.row_height = 0
+        self.variables: list[Json] = []
 
-    def add(self, panel: Json, x: int, w: int, h: int) -> None:
+    def add(self, panel: Json, x: int, y: int, w: int, h: int) -> None:
         panel["id"] = len(self.panels) + 1
-        panel["gridPos"] = {"x": x, "y": self.y, "w": w, "h": h}
-        self.row_height = max(self.row_height, h)
+        panel["gridPos"] = {"x": x, "y": y, "w": w, "h": h}
         self.panels.append(panel)
-
-    def row(self, title: str | None = None) -> None:
-        """Start a new line of panels, optionally under a section header."""
-        self.y += self.row_height
-        self.row_height = 0
-        if title:
-            self.panels.append(
-                {
-                    "id": len(self.panels) + 1,
-                    "type": "row",
-                    "title": title,
-                    "collapsed": False,
-                    "gridPos": {"x": 0, "y": self.y, "w": 24, "h": 1},
-                    "panels": [],
-                }
-            )
-            self.y += 1
 
     def render(self) -> Json:
         return {
@@ -109,712 +179,1442 @@ class Board:
             "schemaVersion": 39,
             "version": 1,
             "editable": False,
+            "graphTooltip": 1,
             "refresh": "5s",
             "timezone": "browser",
-            "time": {"from": "now-6h", "to": "now"},
+            "time": {"from": self.time_from, "to": "now"},
             "links": self.links,
-            "templating": {"list": []},
+            "templating": {"list": self.variables},
             "panels": self.panels,
         }
 
 
-def text(content: str) -> Json:
+def text(content: str, title: str = "") -> Json:
     return {
         "type": "text",
-        "title": "",
-        "transparent": True,
+        "title": title,
+        "transparent": not title,
         "options": {"mode": "markdown", "content": content},
     }
 
 
 def stat(
     title: str,
-    expr: str,
+    targets: list[Json],
     *,
     unit: str = "none",
-    legend: str = "",
-    text_mode: str = "value",
     mappings: list[Json] | None = None,
-    thresholds: list[Json] | None = None,
+    thresholds: Json | None = None,
     overrides: list[Json] | None = None,
     description: str = "",
-    no_value: str = "–",
+    no_value: str = "—",
+    color_mode: str = "value",
+    graph: str = "none",
+    decimals: int | None = None,
+    time_from: str | None = None,
 ) -> Json:
+    defaults: Json = {
+        "unit": unit,
+        "noValue": no_value,
+        "mappings": mappings or [],
+        "color": {"mode": "thresholds"},
+        "thresholds": thresholds or steps((None, NEUTRAL)),
+    }
+    if decimals is not None:
+        defaults["decimals"] = decimals
+    # A sparkline over a fixed window, so the last step always has data.
+    window = {"timeFrom": time_from, "interval": "5m"} if time_from else {}
     return {
+        **window,
         "type": "stat",
         "title": title,
         "description": description,
         "datasource": PROM,
-        "targets": [target(expr, legend=legend)],
-        "fieldConfig": {
-            "defaults": {
-                "unit": unit,
-                "noValue": no_value,
-                "mappings": mappings or [],
-                "color": {"mode": "thresholds"},
-                "thresholds": {
-                    "mode": "absolute",
-                    "steps": thresholds or [{"color": "text", "value": None}],
-                },
-            },
-            "overrides": overrides or [],
-        },
+        "targets": targets,
+        "fieldConfig": {"defaults": defaults, "overrides": overrides or []},
         "options": {
             "reduceOptions": {"calcs": ["lastNotNull"], "values": False, "fields": ""},
-            "textMode": text_mode,
-            "colorMode": "value",
-            "graphMode": "none",
+            "textMode": "value_and_name" if len(targets) > 1 else "value",
+            "colorMode": color_mode,
+            "graphMode": graph,
             "justifyMode": "center",
-            "orientation": "auto",
+            "orientation": "horizontal",
+            "wideLayout": True,
         },
     }
 
 
-def table(
+def table_panel(
     title: str,
-    expr: str,
-    columns: dict[str, str],
+    targets: list[Json],
+    transformations: list[Json],
+    overrides: list[Json],
     *,
-    links: dict[str, str] | None = None,
     description: str = "",
-    no_value: str = "Nothing here",
-    colors: dict[str, dict[str, str]] | None = None,
-    sort: str | None = None,
+    no_value: str = "–",
+    header: bool = True,
 ) -> Json:
-    """Table of `columns` (label -> header), in that order.
-
-    `links` maps a shown label to the hidden label holding its URL.
-    """
-    links = links or {}
-    overrides = []
-    for column, url in links.items():
-        overrides.append(
-            {
-                "matcher": {"id": "byName", "options": columns[column]},
-                "properties": [
-                    {
-                        "id": "links",
-                        "value": [
-                            link("Open on GitHub", "${__data.fields." + url + "}")
-                        ],
-                    }
-                ],
-            }
-        )
-    for url in sorted(set(links.values()) - set(columns)):
-        overrides.append(
-            {
-                "matcher": {"id": "byName", "options": url},
-                "properties": [{"id": "custom.hidden", "value": True}],
-            }
-        )
-    for column, values in (colors or {}).items():
-        overrides.append(
-            {
-                "matcher": {"id": "byName", "options": column},
-                "properties": [
-                    {
-                        "id": "mappings",
-                        "value": [
-                            {
-                                "type": "value",
-                                "options": {
-                                    value: {"color": color, "index": i}
-                                    for i, (value, color) in enumerate(values.items())
-                                },
-                            }
-                        ],
-                    },
-                    {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-                ],
-            }
-        )
-    transformations: list[Json] = [
-        {
-            "id": "filterFieldsByName",
-            "options": {
-                "include": {
-                    "names": [*columns, *links.values(), *([sort] if sort else [])]
-                }
-            },
-        },
-    ]
-    if sort:
-        transformations.append(
-            {"id": "sortBy", "options": {"sort": [{"field": sort, "desc": False}]}}
-        )
-    transformations.append(
-        {
-            "id": "organize",
-            "options": {
-                "excludeByName": {sort: True} if sort and sort not in columns else {},
-                "indexByName": {name: i for i, name in enumerate(columns)},
-                "renameByName": columns,
-            },
-        }
-    )
     return {
         "type": "table",
         "title": title,
         "description": description,
         "datasource": PROM,
-        "targets": [target(expr, table=True)],
+        "targets": targets,
+        "transformations": transformations,
         "fieldConfig": {
             "defaults": {
                 "noValue": no_value,
-                "custom": {"filterable": False, "wrapText": True},
+                "custom": {
+                    "filterable": False,
+                    "align": "auto",
+                    "inspect": False,
+                },
+                "color": {"mode": "thresholds"},
+                "thresholds": steps((None, NEUTRAL)),
             },
             "overrides": overrides,
         },
-        "options": {"showHeader": True, "cellHeight": "sm"},
-        "transformations": transformations,
+        "options": {
+            "showHeader": header,
+            "cellHeight": "sm",
+            "footer": {"show": False},
+        },
     }
 
 
-def runner_stats(board: Board, agent: str, x: int, width: int) -> None:
-    """State, tick elapsed, last successful session, last exit."""
-    w = width // 4
-    board.add(
-        stat(
-            "State",
-            f'epic_runner_state{{agent="{agent}"}}{LOCAL}',
-            legend="{{state}}",
-            text_mode="name",
-            overrides=[
-                {
-                    "matcher": {"id": "byName", "options": state},
-                    "properties": [
-                        {"id": "color", "value": {"mode": "fixed", "fixedColor": color}}
-                    ],
-                }
-                for state, color in STATE_COLORS.items()
-            ],
-            description="running: a tick holds the lock. It may be selecting "
-            "work, not generating output. inactive: no tick runs now.",
-        ),
-        x,
-        w,
-        4,
-    )
-    board.add(
-        stat(
-            "Tick running for",
-            f'epic_tick_elapsed_seconds{{agent="{agent}"}}{LOCAL}',
-            unit="s",
-            no_value="idle",
-        ),
-        x + w,
-        w,
-        4,
-    )
-    board.add(
-        stat(
-            "Last session",
-            f'(time() - epic_last_session_success_timestamp_seconds{{agent="{agent}"}}){LOCAL}',
-            unit="s",
-            description="Time since the last model session that exited "
-            "successfully. It does not mean the task is done.",
-            thresholds=[
-                {"color": "text", "value": None},
-                {"color": "orange", "value": 6 * 3600},
-            ],
-        ),
-        x + 2 * w,
-        w,
-        4,
-    )
-    board.add(
-        stat(
-            "Last exit",
-            f'epic_last_observed_exit_code{{agent="{agent}"}}{LOCAL}',
-            mappings=[
-                {
-                    "type": "value",
-                    "options": {
-                        "0": {"text": "ok", "color": "green"},
-                        # Codex: the session ended with a valid blocked result.
-                        "75": {"text": "blocked", "color": "orange"},
-                    },
-                },
-                {
-                    "type": "range",
-                    "options": {"from": 1, "to": 255, "result": {"color": "red"}},
-                },
-            ],
-            description="Last finished tick in the log. blocked: the task "
-            "could not move; the runner waits before trying it again.",
-        ),
-        x + 3 * w,
-        width - 3 * w,
-        4,
-    )
-
-
-def queue_table(agent_filter: str) -> Json:
-    return table(
-        "Next actions and waits",
-        with_context(f"epic_queued_action_info{{{agent_filter}}}"),
+def keep_fields(
+    names: list[str], rename: dict[str, str], hide: list[str]
+) -> list[Json]:
+    """Keep `names` in order, rename them, and exclude `hide` (sort keys)."""
+    return [
+        {"id": "filterFieldsByName", "options": {"include": {"names": names}}},
         {
-            "agent": "Agent",
-            "action": "Action",
-            "task": "Task",
-            "subtask": "Subtask",
-            "leaf": "Next leaf",
-            "leaves_done": "Leaves done",
-            "reason": "Why",
-        },
-        links={"subtask": "subtask_url", "task": "task_url", "leaf": "target"},
-        colors={"Action": {"wait": "text", "review": "blue", "claim": "green"}},
-        no_value="–",
-        description="What the shared selector would do next, from the "
-        "latest GitHub poll. Wait rows name the leaves they wait for.",
-    )
-
-
-def pr_table(agent_filter: str) -> Json:
-    return table(
-        "Open PRs",
-        f"(epic_pr_info{{{agent_filter}}}{GITHUB}) * on(target) "
-        f"group_left(task, task_url, subtask, subtask_url, leaf) "
-        f"(epic_task_context_info{GITHUB}) or on(target) "
-        f"(epic_pr_info{{{agent_filter}}}{GITHUB})",
-        {
-            "agent": "Agent",
-            "title": "PR",
-            "subtask": "Subtask",
-            "leaf": "Leaf",
-            "review": "Review",
-            "checks": "CI",
-            "draft": "Draft",
-        },
-        links={"title": "target", "subtask": "subtask_url"},
-        colors={
-            "Review": {
-                "approved": "green",
-                "changes requested": "red",
-                "waiting": "orange",
-            },
-            "CI": {
-                "green": "green",
-                "failed": "red",
-                "pending": "orange",
-                "unknown": "text",
+            "id": "organize",
+            "options": {
+                "excludeByName": dict.fromkeys(hide, True),
+                "indexByName": {name: i for i, name in enumerate(names)},
+                "renameByName": rename,
             },
         },
-        no_value="–",
-        description="Review is the other agent's latest verdict for the "
-        "current head. This page never authorizes a merge.",
-    )
-
-
-def progress(board: Board, agent_filter: str, x: int, w: int) -> None:
-    for i, (title, expr, legend) in enumerate(
-        (
-            (
-                "Issues by status",
-                # `>` binds tighter than `and`; filter the counts, not the guard.
-                f"(epic_issues{{{agent_filter}}}{GITHUB}) > 0",
-                "{{agent}} · {{status}}",
-            ),
-            (
-                "Checklist leaves",
-                f"epic_checklist_leaves{{{agent_filter}}}{GITHUB}",
-                "{{agent}} · {{state}}",
-            ),
-        )
-    ):
-        board.add(
-            {
-                "type": "bargauge",
-                "title": title,
-                "datasource": PROM,
-                "targets": [target(expr, legend=legend)],
-                "fieldConfig": {
-                    "defaults": {
-                        "min": 0,
-                        "color": {"mode": "palette-classic"},
-                        "noValue": "No data",
-                    },
-                    "overrides": [],
-                },
-                "options": {
-                    "orientation": "horizontal",
-                    "displayMode": "basic",
-                    "showUnfilled": True,
-                    "text": {"titleSize": 12, "valueSize": 18},
-                    "reduceOptions": {"calcs": ["lastNotNull"], "values": False},
-                },
-            },
-            x + i * (w // 2),
-            w // 2,
-            7,
-        )
-
-
-def overview() -> Json:
-    pages = [
-        link(f"{name} details", f"/d/epic-agent-{agent}")
-        for agent, name in AGENTS.items()
     ]
-    board = Board(
-        "epic-agents",
-        "Agents · Overview",
-        [
-            *pages,
-            link("Epic", f"{REPO}/issues/312"),
-            link("Project board", "https://github.com/users/anneoneone/projects/2"),
-        ],
-    )
-    board.add(
-        text(
-            "Claude and Codex on the "
-            f"[architecture epic]({REPO}/issues/312). "
-            "Local data every 5 s, GitHub every 2 min. "
-            "**Details and logs:** [Claude](/d/epic-agent-claude) · "
-            "[Codex](/d/epic-agent-codex)"
-        ),
-        0,
-        24,
-        2,
-    )
-    board.row()
-    health = (
-        (
-            "Local data age",
-            "time() - epic_local_snapshot_timestamp_seconds",
-            "s",
-            [{"color": "green", "value": None}, {"color": "red", "value": 30}],
-        ),
-        (
-            "GitHub data age",
-            "time() - epic_github_snapshot_timestamp_seconds",
-            "s",
-            [{"color": "green", "value": None}, {"color": "red", "value": 300}],
-        ),
-        (
-            "Last GitHub poll",
-            "epic_github_collection_success",
-            "none",
-            [{"color": "red", "value": None}, {"color": "green", "value": 1}],
-        ),
-        (
-            "Paused",
-            f"epic_pause_requested{LOCAL}",
-            "none",
-            [{"color": "green", "value": None}, {"color": "orange", "value": 1}],
-        ),
-        (
-            "Firing alerts",
-            'count(ALERTS{alertstate="firing"}) or vector(0)',
-            "none",
-            [{"color": "green", "value": None}, {"color": "red", "value": 1}],
-        ),
-        (
-            "Needs Anton",
-            f"sum(epic_needs_operator{GITHUB})",
-            "none",
-            [{"color": "green", "value": None}, {"color": "orange", "value": 1}],
-        ),
-    )
-    for i, (title, expr, unit, steps) in enumerate(health):
-        mappings = []
-        if title == "Last GitHub poll":
-            mappings = [
-                {
-                    "type": "value",
-                    "options": {"0": {"text": "failed"}, "1": {"text": "ok"}},
-                }
-            ]
-        if title == "Paused":
-            mappings = [
-                {
-                    "type": "value",
-                    "options": {"0": {"text": "no"}, "1": {"text": "yes"}},
-                }
-            ]
-        board.add(
-            stat(title, expr, unit=unit, thresholds=steps, mappings=mappings),
-            i * 4,
-            4,
-            3,
-        )
-    for i, (agent, name) in enumerate(AGENTS.items()):
-        x = i * 12
-        if i == 0:
-            board.row()
-        board.add(
-            text(f"### [{name} ›](/d/epic-agent-{agent})"),
-            x,
-            12,
-            2,
-        )
-    board.row()
-    for i, agent in enumerate(AGENTS):
-        runner_stats(board, agent, i * 12, 12)
-    board.row()
-    for i, (agent, name) in enumerate(AGENTS.items()):
-        board.add(
-            path_table(
-                f"{name} · current task",
-                f'(epic_current_action_info{{agent="{agent}"}}{LOCAL}) or on(agent) '
-                f'label_replace(epic_last_successful_action_info{{agent="{agent}"}}{LOCAL}, '
-                '"action", "last session: $1", "action", "(.*)")',
-                "The running tick's action, placed in the epic. When no tick "
-                "runs, the last successful session's action.",
-            ),
-            i * 12,
-            12,
-            8,
-        )
-    board.row()
-    board.add(pr_table('agent=~".+"'), 0, 24, 8)
-    board.row()
-    board.add(queue_table('agent=~".+"'), 0, 24, 12)
-    board.row("Delivery")
-    progress(board, 'agent=~".+"', 0, 24)
-    board.row()
-    board.add(
-        {
-            "type": "timeseries",
-            "title": "Done issues and merged PRs",
-            "datasource": PROM,
-            "targets": [
-                {
-                    **target(
-                        'epic_issues{status="Done"}',
-                        legend="{{agent}} · done issues",
-                    ),
-                    "instant": False,
-                    "range": True,
-                },
-                {
-                    **target(
-                        "epic_merged_prs_in_window",
-                        legend="{{agent}} · merged PRs",
-                        ref="B",
-                    ),
-                    "instant": False,
-                    "range": True,
-                },
-            ],
-            "fieldConfig": {
-                "defaults": {"custom": {"lineWidth": 2, "fillOpacity": 0}},
-                "overrides": [],
-            },
-            "options": {"legend": {"displayMode": "list", "placement": "right"}},
-        },
-        0,
-        24,
-        7,
-    )
-    board.row()
-    board.add(
-        table(
-            "Monitoring alerts",
-            'ALERTS{alertstate="firing"}',
-            {"alertname": "Alert", "agent": "Agent", "severity": "Severity"},
-            no_value="No alerts",
-        ),
-        0,
-        24,
-        4,
-    )
-    return board.render()
 
 
-def path_table(title: str, actions: str, description: str) -> Json:
-    """Where an action sits in the epic: an indented, linked tree.
+def matrix(ref: str, row: str, column: str, *, single: bool = False) -> list[Json]:
+    """One query's rows turned into columns, keyed by `row` for a join.
 
-    `actions` is a guarded PromQL expression with one action series.
+    A panel with one query names its value field "Value", else "Value #ref".
     """
-    action = (
-        f'label_replace(label_replace(label_replace(({actions}), "level", "Action", "", ""), '
-        '"depth", "0", "", ""), "text", "$1", "action", "(.*)")'
-    )
-    tree = f"(epic_task_level_info{GITHUB}) * on(target) group_left() ({actions})"
-    panel = table(
-        title,
-        f"{action} or {tree}",
-        {"level": "Level", "text": "Path"},
-        links={"text": "url"},
-        description=description,
-        no_value="No task",
-        sort="depth",
-    )
-    panel["options"]["showHeader"] = False
-    panel["fieldConfig"]["overrides"].append(
+    return [
         {
-            "matcher": {"id": "byName", "options": "Level"},
-            "properties": [
-                {"id": "custom.width", "value": 80},
-                {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-                {"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}},
+            "id": "groupingToMatrix",
+            "filter": {"id": "byRefId", "options": ref},
+            "options": {
+                "columnField": column,
+                "rowField": row,
+                "valueField": "Value" if single else f"Value #{ref}",
+            },
+        },
+        # The matrix names its key column "row\\column".
+        {
+            "id": "renameByRegex",
+            "options": {"regex": f"^{row}\\\\{column}$", "renamePattern": row},
+        },
+    ]
+
+
+def join(field: str) -> Json:
+    return {"id": "joinByField", "options": {"byField": field, "mode": "outer"}}
+
+
+def github_link(url_field: str) -> tuple[str, list[Json]]:
+    return ("links", [link("Open on GitHub", "${__data.fields." + url_field + "}")])
+
+
+# "https://github.com/.../pull/412" shows as "PR 412".
+SHORT_LINKS = [
+    {
+        "type": "regex",
+        "options": {
+            "pattern": ".*/pull/(\\d+)$",
+            "result": {"index": 0, "text": "PR $1"},
+        },
+    },
+    {
+        "type": "regex",
+        "options": {
+            "pattern": ".*/issues/(\\d+)$",
+            "result": {"index": 1, "text": "issue $1"},
+        },
+    },
+]
+
+
+def hidden(name: str) -> Json:
+    return by_name(name, ("custom.hidden", True))
+
+
+def median_expr(name: str) -> str:
+    """A median sparkline, empty unless the median exists now.
+
+    The collector stops publishing a median when its 7-day window is empty,
+    while delivery data stays fresh: the last value must not linger.
+    """
+    return f"{name}{DELIVERY}{FRESH_AT_END} and on() ({name} @ end())"
+
+
+# ---------------------------------------------------------------- Cockpit
+
+
+def needs_anton() -> str:
+    """Reasons to look now; -1 when the pause is the only one."""
+    reasons = " + ".join(
+        f"(({expr}) or vector(0))"
+        for expr in (
+            f"sum(epic_needs_operator{GITHUB})",
+            f"sum(epic_handoff_stalled{HANDOFF})",
+            f"count({FAILURES} >= 3)",
+            f"count({LATE})",
+            "count(count by (target) (epic_agent_collision) > 1)",
+            'count((sum by (agent) (increase(epic_permission_decisions_total{decision="deny"}[1h])) '
+            "and on(agent) epic_agent_info) >= 5)",
+            "count(count by (agent) (epic_backoff_info) >= 3)",
+            f"count((epic_handoff_wait_seconds{HANDOFF}) > 3600)",
+        )
+    )
+    return (
+        f"((({reasons}) > 0) or (-1 * sum(epic_pause_requested == 1)) or vector(0))"
+        f"{LOCAL}"
+    )
+
+
+def canvas_text(
+    name: str,
+    *,
+    top: int,
+    size: int,
+    field: str = "",
+    fixed: str = "",
+    left: int = 12,
+    width: int = 240,
+    align: str = "left",
+    color: str = "",
+) -> Json:
+    """One text on a canvas tile: a field's shown value, or fixed text.
+
+    Without `color`, a field takes its threshold or mapping color.
+    """
+    return {
+        "type": "metric-value" if field else "text",
+        "name": name,
+        "config": {
+            "text": (
+                {"mode": "field", "field": field, "fixed": ""}
+                if field
+                else {"mode": "fixed", "fixed": fixed}
+            ),
+            "color": {"fixed": color} if color else {"field": field, "fixed": "text"},
+            "size": size,
+            "align": align,
+            "valign": "middle",
+        },
+        "background": {"color": {"fixed": "transparent"}},
+        "border": {"color": {"fixed": "transparent"}},
+        "constraint": {"horizontal": "left", "vertical": "top"},
+        "placement": {"top": top, "left": left, "width": width, "height": size + 8},
+    }
+
+
+VALUE_SIZE, CAPTION_SIZE, CAPTION_TOP = 30, 12, 40
+# The tile draws its own title: a panel title is cut short at 1280 px.
+TITLE_SIZE, TITLE_ROOM = 13, 28
+
+
+def tile(
+    title: str,
+    targets: list[Json],
+    elements: list[Json],
+    overrides: list[Json],
+    *,
+    description: str = "",
+) -> Json:
+    """A design tile: title, the value on the left, a short caption under it.
+
+    A stat panel only centers its value, so this is a canvas.
+    """
+    for element in elements:
+        element["placement"]["top"] += TITLE_ROOM
+    heading = canvas_text("title", fixed=title, top=0, size=TITLE_SIZE, color="text")
+    heading["config"]["weight"] = "medium"
+    return {
+        "type": "canvas",
+        # No panel title, so Grafana draws no header; the canvas has it.
+        "title": "",
+        "description": description,
+        "datasource": PROM,
+        "targets": targets,
+        "fieldConfig": {
+            "defaults": {
+                "noValue": "—",
+                "color": {"mode": "thresholds"},
+                "thresholds": steps((None, NEUTRAL)),
+                "mappings": [],
+            },
+            "overrides": overrides,
+        },
+        "options": {
+            "inlineEditing": False,
+            "showAdvancedTypes": True,
+            "panZoom": False,
+            "infinitePan": False,
+            "root": {
+                "type": "frame",
+                "name": "root",
+                "background": {"color": {"fixed": "transparent"}},
+                "border": {"color": {"fixed": "transparent"}},
+                "constraint": {"horizontal": "left", "vertical": "top"},
+                "placement": {},
+                "elements": [heading, *elements],
+            },
+        },
+    }
+
+
+def caption_map(zero: str, more: str, **values: str) -> list[Json]:
+    """Caption text for 0, for ≥ 1, and for other exact values."""
+    return [
+        value_map({"0": (zero, MUTED)} | {k: (v, MUTED) for k, v in values.items()}),
+        {
+            "type": "range",
+            "options": {"from": 1, "to": 1e12, "result": {"index": 9, "text": more}},
+        },
+    ]
+
+
+def value_caption(fields: list[str]) -> list[Json]:
+    return [
+        canvas_text("value", field=fields[0], top=0, size=VALUE_SIZE),
+        canvas_text(
+            "caption",
+            field=fields[1],
+            top=CAPTION_TOP,
+            size=CAPTION_SIZE,
+            color=MUTED,
+        ),
+    ]
+
+
+def number_tile(
+    title: str,
+    expr: str,
+    captions: list[Json],
+    *,
+    thresholds: Json | None = None,
+    mappings: list[Json] | None = None,
+    description: str = "",
+) -> Json:
+    """One number, with a caption from value mappings on the same query."""
+    return tile(
+        title,
+        [target(expr, legend="value"), target(expr, legend="caption", ref="B")],
+        value_caption(["value", "caption"]),
+        [
+            by_name(
+                "value",
+                ("thresholds", thresholds or steps((None, NEUTRAL))),
+                ("mappings", mappings or []),
+            ),
+            by_name("caption", ("mappings", captions)),
+        ],
+        description=description,
+    )
+
+
+def attention_tiles(board: Board) -> None:
+    red = steps((None, NEUTRAL), (1, ACT_NOW))
+    tiles = [
+        number_tile(
+            "Needs Anton",
+            needs_anton(),
+            caption_map("nothing waiting", "look now", **{"-1": "only the pause"}),
+            thresholds=red,
+            mappings=[value_map({"-1": ("paused", LOOK_SOON)})],
+        ),
+        number_tile(
+            "Paused",
+            f"max(epic_pause_requested){LOCAL}",
+            caption_map("loop running", "runners skip ticks"),
+            mappings=[value_map({"0": ("No", NEUTRAL), "1": ("Yes", LOOK_SOON)})],
+        ),
+        tile(
+            "Agents",
+            [
+                target(
+                    f'sum(epic_agents_registered{{presence="running"}}){LOCAL}',
+                    legend="running",
+                ),
+                target(
+                    f'sum(epic_agents_registered{{presence!="retired"}}){LOCAL}',
+                    legend="registered",
+                    ref="B",
+                ),
             ],
-        }
+            [
+                # "4 / 8": running ends where "/ 8" starts.
+                canvas_text(
+                    "running",
+                    field="running",
+                    top=0,
+                    size=VALUE_SIZE,
+                    width=40,
+                    align="right",
+                ),
+                canvas_text(
+                    "registered", field="registered", top=0, size=VALUE_SIZE, left=58
+                ),
+                canvas_text(
+                    "caption",
+                    fixed="running / registered",
+                    top=CAPTION_TOP,
+                    size=CAPTION_SIZE,
+                    color=MUTED,
+                ),
+            ],
+            [by_name("registered", ("unit", "prefix:/ "))],
+        ),
+    ]
+    for title, expr, zero, more in (
+        (
+            "Agents failing",
+            f"count({FAILURES} >= 3)",
+            "none failing 3 in a row",
+            "last 3+ ticks failed",
+        ),
+        (
+            "Agents late",
+            f"count({LATE})",
+            "all on schedule",
+            "missed the schedule",
+        ),
+        (
+            "Collisions",
+            "count(count by (target) (epic_agent_collision) > 1)",
+            "no shared targets",
+            "agents share a target",
+        ),
+    ):
+        tiles.append(
+            number_tile(
+                title,
+                f"(({expr}) or vector(0)){LOCAL}",
+                caption_map(zero, more),
+                thresholds=red,
+            )
+        )
+    waits = f"(epic_handoff_wait_seconds{HANDOFF})"
+    tiles.append(
+        tile(
+            "PRs waiting > 30 min",
+            [
+                target(
+                    f"((count({waits} > 1800)) or vector(0)){LOCAL}", legend="value"
+                ),
+                target(
+                    f"((max({waits})) or vector(0)){LOCAL}", legend="oldest", ref="B"
+                ),
+            ],
+            [
+                *value_caption(["value", "oldest"])[:1],
+                canvas_text(
+                    "label",
+                    fixed="oldest",
+                    top=CAPTION_TOP,
+                    size=CAPTION_SIZE,
+                    color=MUTED,
+                ),
+                canvas_text(
+                    "oldest",
+                    field="oldest",
+                    top=CAPTION_TOP,
+                    size=CAPTION_SIZE,
+                    left=52,
+                    color=MUTED,
+                ),
+            ],
+            [
+                by_name(
+                    "value",
+                    (
+                        "thresholds",
+                        steps((None, NEUTRAL), (1, LOOK_SOON), (2, ACT_NOW)),
+                    ),
+                ),
+                by_name(
+                    "oldest",
+                    ("unit", "s"),
+                    ("decimals", 0),
+                    ("mappings", [value_map({"0": ("–", MUTED)})]),
+                ),
+            ],
+        )
+    )
+    tiles.append(
+        tile(
+            "Data freshness",
+            [
+                target(
+                    "time() - max(epic_local_snapshot_timestamp_seconds)",
+                    legend="local",
+                ),
+                target(
+                    "time() - max(epic_github_snapshot_timestamp_seconds)",
+                    legend="GitHub",
+                    ref="B",
+                ),
+            ],
+            [
+                canvas_text("local", field="local", top=0, size=VALUE_SIZE),
+                canvas_text(
+                    "label",
+                    fixed="GitHub sync",
+                    top=CAPTION_TOP,
+                    size=CAPTION_SIZE,
+                    color=MUTED,
+                ),
+                canvas_text(
+                    "GitHub",
+                    field="GitHub",
+                    top=CAPTION_TOP,
+                    size=CAPTION_SIZE,
+                    left=92,
+                ),
+            ],
+            [
+                by_name(
+                    "local",
+                    ("unit", "s"),
+                    ("decimals", 0),
+                    (
+                        "thresholds",
+                        steps((None, NEUTRAL), (30, LOOK_SOON), (120, ACT_NOW)),
+                    ),
+                ),
+                by_name(
+                    "GitHub",
+                    ("unit", "s"),
+                    ("decimals", 0),
+                    ("thresholds", steps((None, MUTED), (300, LOOK_SOON))),
+                ),
+            ],
+        )
+    )
+    for i, panel in enumerate(tiles):
+        board.add(panel, 3 * i, 0, 3, 3)
+
+
+def stale(label: str) -> str:
+    """All agents with `label`="data stale", for when local data is old."""
+    # Only the agent label, so the join keeps one field per name.
+    return f'label_replace(max by (agent) (epic_agent_info), "{label}", "data stale", "", "")'
+
+
+def agent_table() -> Json:
+    """One row per agent; columns from the plan appendix."""
+    queries = {
+        "A": "epic_agent_info",
+        # Stale local data: every agent still gets a row that says so.
+        "B": f"(epic_agent_presence_info{LOCAL}) or on(agent) {stale('presence')}",
+        "C": "epic_agent_order",
+        # Task of the current or last action, from the GitHub context.
+        "D": f"(epic_agent_row_info{LOCAL}) * on(target) group_left(task, task_url) "
+        f"(epic_task_context_info{GITHUB}) or on(agent) (epic_agent_row_info{LOCAL}) "
+        f"or on(agent) {stale('outcome_text')}",
+        # Only while running: an idle agent keeps its last elapsed value.
+        "E": "(epic_tick_elapsed_seconds / on(agent) epic_tick_budget_seconds)"
+        f" and on(agent) (epic_agent_presence == 1){LOCAL}",
+        "F": f"(time() - max by (agent) (epic_tick_last_info)){LOCAL}",
+        # -1: a count exists but its tick history cannot be read: unknown.
+        "G": f"({FAILURES} or on(agent) (-1 * group by (agent) "
+        f"(epic_tick_consecutive_failures))){LOCAL}",
+        "I": f"epic_agent_next_tick_seconds{LOCAL}",
+        "J": f"(count by (agent) (epic_backoff_info)){LOCAL}",
+        # A 1 h window still holds agents that are gone: keep current ones.
+        "K": 'round(sum by (agent) (increase(epic_permission_decisions_total{decision="deny"}[1h])))'
+        + " and on(agent) epic_agent_info"
+        + LOCAL,
+    }
+    names = [
+        "kind",
+        "agent",
+        "label",
+        "presence",
+        "action_text",
+        "task",
+        "Value #E",
+        "outcome_text",
+        "Value #F",
+        "Value #G",
+        "recent_text",
+        "Value #I",
+        "Value #J",
+        "Value #K",
+        # Link and sort helpers, hidden.
+        "target",
+        "task_url",
+        "Value #C",
+    ]
+    rename = {
+        "kind": " ",
+        "agent": "Agent",
+        "label": "Label",
+        "presence": "Presence",
+        "action_text": "Current / last action",
+        "task": "Task",
+        "Value #E": "Tick elapsed",
+        "outcome_text": "Last outcome",
+        "Value #F": "Ago",
+        "Value #G": "Failed",
+        "recent_text": "Last 20",
+        "Value #I": "Next tick",
+        "Value #J": "Backoff",
+        "Value #K": "Denied 1 h",
+    }
+    transformations = [
+        join("agent"),
+        {"id": "sortBy", "options": {"sort": [{"field": "Value #C", "desc": False}]}},
+        *keep_fields(names, rename, ["Value #C"]),
+    ]
+    overrides = [
+        by_name(
+            " ",
+            ("custom.width", 50),
+            cell("color-text"),
+            ("mappings", [value_map({k: ("●", c) for k, c in KIND.items()})]),
+        ),
+        by_name(
+            "Agent",
+            ("custom.width", 100),
+            ("links", [link("Agent page", "/d/epic-agent?var-agent=${__value.raw}")]),
+        ),
+        by_name(
+            "Label",
+            ("custom.minWidth", 80),
+            cell("color-text"),
+            ("color", {"mode": "fixed", "fixedColor": MUTED}),
+        ),
+        by_name(
+            "Presence",
+            ("custom.width", 76),
+            cell("color-background", mode="basic"),
+            ("noValue", "data stale"),
+            (
+                "mappings",
+                [
+                    value_map(
+                        {k: ("", c) for k, c in PRESENCE.items()}
+                        | {"data stale": ("", STALE)}
+                    )
+                ],
+            ),
+        ),
+        by_name(
+            "Current / last action",
+            ("custom.minWidth", 120),
+            cell("color-background", mode="basic"),
+            ("color", {"mode": "fixed", "fixedColor": "transparent"}),
+            ("mappings", [regex_map("^collision.*", ACT_NOW, 0)]),
+            github_link("target"),
+        ),
+        by_name("Task", ("custom.minWidth", 60), github_link("task_url")),
+        by_name(
+            "Tick elapsed",
+            ("custom.width", 100),
+            ("unit", "percentunit"),
+            ("decimals", 0),
+            ("min", 0),
+            ("max", 1),
+            cell("gauge", mode="basic"),
+            (
+                "thresholds",
+                steps((None, "#5AB45F"), (0.7, "#E8B530"), (0.9, "#E5484D")),
+            ),
+            ("noValue", " "),
+        ),
+        by_name(
+            "Last outcome",
+            ("custom.width", 124),
+            cell("color-background", mode="basic"),
+            ("color", {"mode": "fixed", "fixedColor": "transparent"}),
+            (
+                "mappings",
+                [
+                    regex_map("^ok.*", OUTCOME["ok"], 0),
+                    regex_map("^blocked.*", OUTCOME["blocked"], 1),
+                    regex_map("^(error|interrupted).*", OUTCOME["error"], 2),
+                    regex_map("^timeout.*", OUTCOME["timeout"], 3),
+                    regex_map("^killed.*", OUTCOME["killed"], 4),
+                    regex_map("^data stale$", STALE, 5),
+                ],
+            ),
+        ),
+        by_name(
+            "Ago",
+            ("custom.width", 60),
+            ("unit", "s"),
+            ("decimals", 0),
+            cell("color-text"),
+            ("color", {"mode": "fixed", "fixedColor": MUTED}),
+        ),
+        by_name(
+            "Failed",
+            ("custom.width", 50),
+            cell("color-background", mode="basic"),
+            ("thresholds", steps((None, "transparent"), (2, LOOK_SOON), (3, ACT_NOW))),
+            ("mappings", [value_map({"-1": ("?", "transparent")})]),
+        ),
+        by_name(
+            "Last 20",
+            ("custom.width", 116),
+            cell("color-background", mode="basic"),
+            ("color", {"mode": "fixed", "fixedColor": "transparent"}),
+            # The worst outcome in the last 20 ticks sets the color.
+            (
+                "mappings",
+                [
+                    regex_map(".*\\b(err|int)\\b.*", OUTCOME["error"], 0),
+                    regex_map(".*\\bkil\\b.*", OUTCOME["killed"], 1),
+                    regex_map(".*\\btmo\\b.*", OUTCOME["timeout"], 2),
+                    regex_map(".*\\bblk\\b.*", OUTCOME["blocked"], 3),
+                    regex_map("^\\d+ ok$", OUTCOME["ok"], 4),
+                ],
+            ),
+        ),
+        by_name(
+            "Next tick",
+            ("custom.width", 70),
+            ("unit", "s"),
+            ("decimals", 0),
+            cell("color-background", mode="basic"),
+            # Overdue (negative) is red; an empty cell stays plain.
+            (
+                "mappings",
+                [
+                    {
+                        "type": "range",
+                        "options": {
+                            "from": -1e12,
+                            "to": -1e-9,
+                            "result": {"index": 0, "color": ACT_NOW},
+                        },
+                    }
+                ],
+            ),
+            ("color", {"mode": "fixed", "fixedColor": "transparent"}),
+        ),
+        by_name(
+            "Backoff",
+            ("custom.width", 60),
+            cell("color-text"),
+            ("thresholds", steps((None, GREY), (1, "#F0B94A"))),
+        ),
+        by_name(
+            "Denied 1 h",
+            ("custom.width", 80),
+            cell("color-text"),
+            ("thresholds", steps((None, GREY), (1, "#F0B94A"), (5, "#FF7A7F"))),
+        ),
+        hidden("target"),
+        hidden("task_url"),
+    ]
+    panel = table_panel(
+        "Agents",
+        [target(q, table=True, ref=r) for r, q in queries.items()],
+        transformations,
+        overrides,
+        description="One row per registered agent, running first. Last 20: "
+        "outcome counts of the last 20 ticks, colored by the worst. Backoff: "
+        "Codex retry delays. Denied: Claude permission gate.",
     )
     return panel
 
 
-def agent_page(agent: str, name: str) -> Json:
-    other = next(a for a in AGENTS if a != agent)
-    board = Board(
-        f"epic-agent-{agent}",
-        f"Agents · {name}",
-        [
-            link("Overview", "/d/epic-agents"),
-            link(f"{AGENTS[other]} details", f"/d/epic-agent-{other}"),
-            link("Epic", f"{REPO}/issues/312"),
+def outcome_timeline() -> Json:
+    return {
+        "type": "state-timeline",
+        "title": "Tick outcomes · last 24 h · held until the next tick",
+        "datasource": PROM,
+        "timeFrom": "24h",
+        "hideTimeOverride": True,
+        "targets": [
+            ranged(
+                # A gap while the collector is down; agents retired or gone
+                # by the end of the range are hidden.
+                "epic_tick_last_outcome and on(agent) (epic_agent_presence > 0)"
+                " and on(agent) (epic_agent_presence @ end() > 0)" + LOCAL,
+                legend="{{agent}}",
+            )
         ],
-    )
-    board.add(
-        text(
-            f"**{name}** runner · [‹ Overview](/d/epic-agents) · "
-            f"[{AGENTS[other]}](/d/epic-agent-{other}) · "
-            f"Log file: `~/.local/state/epic-loop/{agent}.log`"
-        ),
-        0,
-        24,
-        2,
-    )
-    board.row()
-    runner_stats(board, agent, 0, 16)
-    board.add(
-        stat(
-            "Open PRs",
-            f'sum(epic_open_prs{{agent="{agent}"}}){GITHUB}',
-        ),
-        16,
-        4,
-        4,
-    )
-    board.add(
-        stat(
-            "Needs Anton",
-            f'epic_needs_operator{{agent="{agent}"}}{GITHUB}',
-            thresholds=[
-                {"color": "green", "value": None},
-                {"color": "orange", "value": 1},
-            ],
-        ),
-        20,
-        4,
-        4,
-    )
-    board.row("Task context")
-    board.add(
-        path_table(
-            "Working on now",
-            f'epic_current_action_info{{agent="{agent}"}}{LOCAL}',
-            "The running tick's action, placed in the epic. Empty when idle.",
-        ),
-        0,
-        12,
-        9,
-    )
-    board.add(
-        path_table(
-            "Last successful session",
-            f'epic_last_successful_action_info{{agent="{agent}"}}{LOCAL}',
-            "The last session that exited successfully. It does not mean "
-            "the task is done.",
-        ),
-        12,
-        12,
-        9,
-    )
-    board.row()
-    board.add(
-        {
-            "type": "state-timeline",
-            "title": "Runner state over time",
-            "datasource": PROM,
-            "targets": [
-                {
-                    **target(
-                        f'max by (state) (epic_runner_state{{agent="{agent}"}}) == 1',
-                        legend="{{state}}",
-                    ),
-                    "instant": False,
-                    "range": True,
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "color": {"mode": "fixed", "fixedColor": "green"},
-                    "custom": {"fillOpacity": 80, "lineWidth": 0},
-                },
-                "overrides": [
-                    {
-                        "matcher": {"id": "byName", "options": state},
-                        "properties": [
-                            {
-                                "id": "color",
-                                "value": {"mode": "fixed", "fixedColor": color},
-                            }
-                        ],
-                    }
-                    for state, color in STATE_COLORS.items()
-                ],
+        "fieldConfig": {
+            "defaults": {
+                # Fixed, so the legend lists the outcome mappings.
+                "color": {"mode": "fixed", "fixedColor": "#2C2F36"},
+                "mappings": [SEVERITY_COLORS],
+                "custom": {"fillOpacity": 90, "lineWidth": 0},
+                "noValue": "No ticks",
             },
-            "options": {
-                "mergeValues": True,
-                "showValue": "never",
-                "rowHeight": 0.8,
-                "legend": {"showLegend": False},
+            "overrides": [],
+        },
+        "options": {
+            "mergeValues": True,
+            "showValue": "never",
+            "rowHeight": 0.9,
+            "alignValue": "left",
+            "legend": {
+                "showLegend": True,
+                "displayMode": "list",
+                "placement": "bottom",
             },
         },
-        0,
-        24,
-        5,
+    }
+
+
+# "https://github.com/.../pull/412" shows as "#412", as on GitHub.
+PR_NUMBER = [
+    {
+        "type": "regex",
+        "options": {
+            "pattern": ".*/pull/(\\d+)$",
+            "result": {"index": 0, "text": "#$1"},
+        },
+    }
+]
+
+
+def handoff_table() -> Json:
+    """One row per direction: its oldest waiting PR, and who could review it."""
+    reviewers = " or ".join(
+        f'label_replace(epic_agents_registered_kind{{kind="{reviewer}"}}{LOCAL}, '
+        f'"waiter_kind", "{waiter}", "", "")'
+        for waiter, reviewer in (("claude", "codex"), ("codex", "claude"))
     )
-    board.row("Work queue")
-    board.add(pr_table(f'agent="{agent}"'), 0, 24, 7)
-    board.row()
-    board.add(queue_table(f'agent="{agent}"'), 0, 24, 10)
-    board.row()
-    progress(board, f'agent="{agent}"', 0, 24)
-    board.row("Logs")
-    board.add(
-        logs(
-            "Tick summary",
-            f'{{agent="{agent}", stream!="permissions"}} |~ "^(tick: |\\\\{{\\"action\\")"',
-            "Start, selected action, result and exit of each tick.",
-        ),
-        0,
-        24,
-        8,
+    waits = f"(epic_handoff_wait_seconds{HANDOFF})"
+    queries = {
+        # All rows vanish while GitHub is not seen: no "0 waiting" guess.
+        "A": f"({reviewers}){HANDOFF}",
+        "B": f"count by (waiter_kind) ({waits}){LOCAL}",
+        "C": f"topk by (waiter_kind) (1, {waits}){LOCAL}",
+    }
+    names = ["waiter_kind", "target", "Value #C", "Value #B", "Value #A"]
+    rename = {
+        "waiter_kind": "PRs → review",
+        "target": "Oldest",
+        "Value #C": "Waits",
+        "Value #B": "PRs",
+        "Value #A": "Reviewers",
+    }
+    return table_panel(
+        "Handoff · per kind",
+        [target(q, table=True, ref=r) for r, q in queries.items()],
+        [join("waiter_kind"), *keep_fields(names, rename, [])],
+        [
+            by_name(
+                "PRs → review",
+                ("custom.minWidth", 110),
+                cell("color-text"),
+                (
+                    "mappings",
+                    [
+                        value_map(
+                            {
+                                "claude": ("Claude → Codex", KIND["claude"]),
+                                "codex": ("Codex → Claude", KIND["codex"]),
+                            }
+                        )
+                    ],
+                ),
+            ),
+            by_name(
+                "Oldest",
+                ("custom.width", 60),
+                ("mappings", PR_NUMBER),
+                ("noValue", "none"),
+                ("links", [link("Open on GitHub", "${__value.raw}")]),
+            ),
+            by_name(
+                "Waits",
+                ("custom.width", 72),
+                ("unit", "s"),
+                ("decimals", 0),
+                cell("color-background", mode="basic"),
+                (
+                    "thresholds",
+                    steps((None, "transparent"), (900, LOOK_SOON), (1800, ACT_NOW)),
+                ),
+            ),
+            by_name("PRs", ("noValue", "0"), ("custom.width", 44)),
+            by_name(
+                "Reviewers",
+                ("custom.width", 80),
+                cell("color-background", mode="basic"),
+                ("thresholds", steps((None, LOOK_SOON), (1, "transparent"))),
+            ),
+        ],
+        description="Ready PRs of each kind waiting for a review by the other "
+        "kind: the oldest one and how long it waits. Amber: over 15 min, or no "
+        "agent of the reviewer kind. Red: over 30 min. Empty when GitHub data "
+        "is stale.",
+        no_value="No current data",
     )
-    board.row()
-    board.add(
-        logs(
-            "Full log",
-            f'{{agent="{agent}", stream!="permissions"}} |~ "(?i)$search"',
-            "Everything the runner and model wrote. Use the Search box above.",
-        ),
-        0,
-        24,
-        18,
+
+
+def epic_progress() -> Json:
+    return {
+        "type": "barchart",
+        "title": "Epic progress",
+        "description": "Checklist leaves per area: done by Claude, done by "
+        "Codex, still open.",
+        "datasource": PROM,
+        "targets": [
+            target(
+                f'sum by (area, kind) (epic_area_leaves{{state="done"}}){GITHUB}',
+                table=True,
+            ),
+            target(
+                f'sum by (area) (epic_area_leaves{{state="open"}}){GITHUB}',
+                table=True,
+                ref="B",
+            ),
+        ],
+        "transformations": [
+            *matrix("A", "area", "kind"),
+            join("area"),
+            *keep_fields(
+                ["area", "claude", "codex", "unknown", "Value #B"],
+                {
+                    "claude": "Claude",
+                    "codex": "Codex",
+                    "unknown": "Other",
+                    "Value #B": "Open",
+                },
+                [],
+            ),
+        ],
+        "fieldConfig": {
+            "defaults": {
+                "color": {"mode": "fixed", "fixedColor": GREY},
+                "min": 0,
+                # No value axis: the bars and their counts say enough.
+                "custom": {
+                    "axisPlacement": "hidden",
+                    "fillOpacity": 100,
+                    "lineWidth": 0,
+                },
+            },
+            "overrides": [
+                by_name("area", ("custom.axisPlacement", "left")),
+                by_name(
+                    "Claude", ("color", {"mode": "fixed", "fixedColor": KIND["claude"]})
+                ),
+                by_name(
+                    "Codex", ("color", {"mode": "fixed", "fixedColor": KIND["codex"]})
+                ),
+                by_name("Open", ("color", {"mode": "fixed", "fixedColor": "#2C2F36"})),
+            ],
+        },
+        "options": {
+            "orientation": "horizontal",
+            "stacking": "normal",
+            "showValue": "auto",
+            "barWidth": 0.7,
+            "xField": "area",
+            "legend": {
+                "showLegend": True,
+                "displayMode": "list",
+                "placement": "right",
+            },
+        },
+    }
+
+
+def open_prs() -> Json:
+    """Columns from the design: PR, executor, task, review, CI, rounds, age."""
+    queries = {
+        "A": f"epic_pr_info{GITHUB}",
+        "B": f"max by (target, task, task_url) (epic_task_context_info{GITHUB})",
+        "C": f"epic_pr_review_rounds{DELIVERY}",
+        "D": f"(time() - epic_pr_opened_timestamp_seconds){DELIVERY}",
+    }
+    names = [
+        "target",
+        "agent",
+        "title",
+        "task",
+        "review",
+        "checks",
+        "Value #C",
+        "Value #D",
+        "task_url",
+    ]
+    rename = {
+        "target": "PR",
+        "agent": "Executor",
+        "title": "Title",
+        "task": "Task",
+        "review": "Review",
+        "checks": "CI",
+        "Value #C": "Rounds",
+        "Value #D": "Age",
+    }
+    return table_panel(
+        "Open PRs",
+        [target(q, table=True, ref=r) for r, q in queries.items()],
+        [
+            join("target"),
+            # Only rows of open PRs; the task context also has issues.
+            {
+                "id": "filterByValue",
+                "options": {
+                    "filters": [{"fieldName": "title", "config": {"id": "isNotNull"}}],
+                    "type": "include",
+                    "match": "all",
+                },
+            },
+            {
+                "id": "sortBy",
+                "options": {"sort": [{"field": "Value #D", "desc": False}]},
+            },
+            *keep_fields(names, rename, []),
+        ],
+        [
+            by_name(
+                "PR",
+                ("custom.width", 60),
+                ("mappings", PR_NUMBER),
+                ("links", [link("Open on GitHub", "${__value.raw}")]),
+            ),
+            by_name(
+                "Executor",
+                ("custom.width", 80),
+                cell("color-text"),
+                (
+                    "mappings",
+                    [value_map({k: (k.capitalize(), c) for k, c in KIND.items()})],
+                ),
+            ),
+            by_name(
+                "Task",
+                ("custom.minWidth", 100),
+                ("noValue", "–"),
+                github_link("task_url"),
+            ),
+            by_name(
+                "Review",
+                ("custom.width", 130),
+                cell("color-text"),
+                (
+                    "mappings",
+                    [
+                        value_map(
+                            {
+                                "approved": ("", "#5AB45F"),
+                                "changes requested": ("", LOOK_SOON),
+                                "waiting": ("awaiting review", MUTED),
+                            }
+                        )
+                    ],
+                ),
+            ),
+            by_name(
+                "CI",
+                ("custom.width", 60),
+                cell("color-text"),
+                (
+                    "mappings",
+                    [
+                        value_map(
+                            {
+                                "green": ("pass", "#5AB45F"),
+                                "failed": ("fail", "#E5484D"),
+                                "pending": ("running", MUTED),
+                                "unknown": ("", MUTED),
+                            }
+                        )
+                    ],
+                ),
+            ),
+            by_name("Rounds", ("custom.width", 60), ("noValue", "–")),
+            by_name(
+                "Age",
+                ("custom.width", 70),
+                ("unit", "s"),
+                ("decimals", 0),
+                ("noValue", "–"),
+            ),
+            hidden("task_url"),
+        ],
+        description="Review is the other kind's latest verdict for the current "
+        "head. Rounds and age come from the delivery data. This page never "
+        "authorizes a merge.",
+        no_value="No open PRs",
     )
-    result = board.render()
-    result["templating"]["list"] = [
+
+
+def cockpit() -> Json:
+    board = Board(
+        "epic-agents",
+        "Cockpit",
+        PAGE_LINKS,
+    )
+    attention_tiles(board)
+    board.add(agent_table(), 0, 3, 24, 10)
+    board.add(outcome_timeline(), 0, 13, 16, 6)
+    board.add(handoff_table(), 16, 13, 8, 6)
+    board.add(epic_progress(), 0, 19, 9, 5)
+    board.add(open_prs(), 9, 19, 15, 5)
+    return board.render()
+
+
+# ----------------------------------------------------------- Agent detail
+
+
+def not_reported(kind: str) -> str:
+    return f"Not reported by this runner ({kind} only)"
+
+
+def agent_detail() -> Json:
+    board = Board(
+        "epic-agent",
+        "Agent detail",
+        PAGE_LINKS,
+    )
+    board.variables = [
+        {
+            "name": "agent",
+            "label": "Agent",
+            "type": "query",
+            "datasource": PROM,
+            # Registered agents and those retired in the last 24 h.
+            "query": {
+                "query": "label_values(epic_agent_info, agent)",
+                "refId": "agent",
+            },
+            "definition": "label_values(epic_agent_info, agent)",
+            "refresh": 2,
+            "sort": 1,
+            "includeAll": False,
+            "multi": False,
+        },
         {
             "name": "search",
             "label": "Search log",
             "type": "textbox",
             "query": "",
             "current": {"text": "", "value": ""},
-        }
+        },
     ]
-    return result
+    a = 'agent="$agent"'
+    header = table_panel(
+        "",
+        [
+            target(f"epic_agent_info{{{a}}}", table=True),
+            target(f"epic_agent_presence_info{{{a}}}{LOCAL}", table=True, ref="B"),
+            target(f"epic_agent_interval_seconds{{{a}}}", table=True, ref="C"),
+            target(f"epic_agent_budget_seconds{{{a}}}", table=True, ref="D"),
+        ],
+        [
+            join("agent"),
+            *keep_fields(
+                ["kind", "agent", "label", "presence", "Value #C", "Value #D"],
+                {
+                    "kind": " ",
+                    "agent": "Agent",
+                    "label": "Label",
+                    "presence": "Presence",
+                    "Value #C": "Interval",
+                    "Value #D": "Tick budget",
+                },
+                [],
+            ),
+        ],
+        [
+            by_name(
+                " ",
+                ("custom.width", 50),
+                cell("color-text"),
+                ("mappings", [value_map({k: ("●", c) for k, c in KIND.items()})]),
+            ),
+            by_name("Agent", ("custom.width", 100)),
+            by_name(
+                "Presence",
+                cell("color-background", mode="basic"),
+                ("noValue", "data stale"),
+                ("mappings", [value_map({k: ("", c) for k, c in PRESENCE.items()})]),
+            ),
+            by_name(
+                "Label",
+                cell("color-text"),
+                ("color", {"mode": "fixed", "fixedColor": MUTED}),
+            ),
+            by_name("Presence", ("custom.width", 80)),
+            by_name("Interval", ("unit", "s"), ("custom.width", 70)),
+            by_name("Tick budget", ("unit", "s"), ("custom.width", 90)),
+        ],
+    )
+    board.add(header, 0, 0, 9, 3)
+    tiles = (
+        ("Ticks today", f"sum(epic_ticks_today{{{a}}}){LOCAL}", "none", None, "—"),
+        (
+            "Success rate today",
+            f'(sum(epic_ticks_today{{{a},outcome="ok"}}) / sum(epic_ticks_today{{{a}}})){LOCAL}',
+            "percentunit",
+            steps((None, ACT_NOW), (0.5, LOOK_SOON), (0.7, NEUTRAL)),
+            "—",
+        ),
+        (
+            "Median tick duration",
+            f'max(epic_tick_duration_today_seconds{{{a},quantile="0.5"}}){LOCAL}',
+            "s",
+            None,
+            "—",
+        ),
+        (
+            "Sessions blocked",
+            f'sum(epic_ticks_today{{{a},outcome="blocked"}}){LOCAL}',
+            "none",
+            steps((None, NEUTRAL), (11, LOOK_SOON)),
+            "—",
+        ),
+        (
+            "Tokens today",
+            f"sum(epic_tokens_today{{{a}}}){LOCAL}",
+            "short",
+            None,
+            not_reported("Codex"),
+        ),
+    )
+    for i, (title, expr, unit, thresholds, no_value) in enumerate(tiles):
+        board.add(
+            stat(
+                title,
+                [target(expr)],
+                unit=unit,
+                thresholds=thresholds,
+                no_value=no_value,
+            ),
+            9 + 3 * i,
+            0,
+            3,
+            3,
+        )
+    board.add(tick_history(a), 0, 3, 15, 9)
+    board.add(hour_matrix(a), 15, 3, 9, 4)
+    board.add(backoff_table(a), 15, 7, 9, 5)
+    board.add(permission_bars(a), 0, 12, 7, 4)
+    board.add(
+        logs(
+            "Last 10 denials",
+            f'{{{a}, stream="permissions", decision="deny"}}',
+            "Commands the Claude permission gate denied.",
+            limit=10,
+        ),
+        0,
+        16,
+        7,
+        6,
+    )
+    board.add(
+        logs(
+            "Errors only",
+            f'{{{a}, stream!="permissions"}} |~ "(?i)(error|failed|exit=[1-9]|timed out)"',
+            "Runner log lines that report a failure.",
+        ),
+        7,
+        12,
+        17,
+        4,
+    )
+    board.add(
+        logs(
+            "Runner log",
+            f'{{{a}, stream!="permissions"}} |~ "(?i)$search"',
+            "Everything the runner and model wrote. Use the Search box above.",
+        ),
+        7,
+        16,
+        17,
+        6,
+    )
+    return board.render()
 
 
-def logs(title: str, expr: str, description: str) -> Json:
+def tick_history(a: str) -> Json:
+    names = [
+        "tick",
+        "outcome",
+        "exit",
+        "phase",
+        "action",
+        "target",
+        "Value",
+        "tokens",
+        "source",
+    ]
+    return table_panel(
+        "Tick history",
+        [target(f"epic_tick_info{{{a}}}{LOCAL}", table=True)],
+        [
+            {"id": "sortBy", "options": {"sort": [{"field": "tick", "desc": True}]}},
+            *keep_fields(
+                names,
+                {
+                    "tick": "Started",
+                    "outcome": "Outcome",
+                    "exit": "Exit",
+                    "phase": "Stage",
+                    "action": "Action",
+                    "target": "Target",
+                    "Value": "Duration",
+                    "tokens": "Tokens",
+                    "source": "Source",
+                },
+                [],
+            ),
+        ],
+        [
+            by_name(
+                "Outcome",
+                ("custom.width", 110),
+                cell("color-background", mode="basic"),
+                ("mappings", [value_map({k: ("", c) for k, c in OUTCOME.items()})]),
+            ),
+            by_name(
+                "Duration",
+                ("unit", "s"),
+                ("noValue", "running"),
+                # -1: the tick has no finish time (old log import, interrupted).
+                ("mappings", [value_map({"-1": ("unknown", MUTED)})]),
+            ),
+            by_name("Tokens", ("noValue", "–")),
+            by_name("Started", ("custom.width", 170)),
+            by_name("Exit", ("custom.width", 50)),
+            by_name(
+                "Target",
+                ("custom.width", 90),
+                ("mappings", SHORT_LINKS),
+                ("links", [link("Open on GitHub", "${__value.raw}")]),
+            ),
+        ],
+        description="Newest first. Tokens only for Codex. Source: events "
+        "(written by the runner) or log (best effort).",
+        no_value="No ticks yet",
+    )
+
+
+def hour_matrix(a: str) -> Json:
+    return table_panel(
+        "Outcome per hour · 7 days",
+        [target(f"epic_tick_hour_worst{{{a}}}{LOCAL}", table=True)],
+        [
+            *matrix("A", "day", "hour", single=True),
+            {"id": "sortBy", "options": {"sort": [{"field": "day", "desc": True}]}},
+        ],
+        [
+            by_name("day", ("custom.width", 90), ("displayName", "Day")),
+            override(
+                "byRegexp",
+                "^\\d\\db?$",
+                cell("color-background", mode="basic"),
+                ("color", {"mode": "fixed", "fixedColor": "#2C2F36"}),
+                ("noValue", " "),
+                (
+                    "mappings",
+                    [
+                        value_map(
+                            {str(v): (" ", OUTCOME[k]) for k, v in SEVERITY.items()}
+                        )
+                    ],
+                ),
+            ),
+        ],
+        description="Worst outcome of each local hour. Empty: no tick.",
+        no_value="No ticks in 7 days",
+    )
+
+
+def backoff_table(a: str) -> Json:
+    return table_panel(
+        "Backoff",
+        [target(f"epic_backoff_info{{{a}}} * 1000{LOCAL}", table=True)],
+        keep_fields(
+            ["target", "Value", "current_head", "estimated"],
+            {
+                "target": "Target",
+                "Value": "Retry after",
+                "current_head": "Head still current",
+                "estimated": "Estimated",
+            },
+            [],
+        ),
+        [
+            by_name(
+                "Target",
+                ("mappings", SHORT_LINKS),
+                ("links", [link("Open on GitHub", "${__value.raw}")]),
+            ),
+            by_name(
+                "Retry after",
+                ("unit", "dateTimeFromNow"),
+                cell("color-text"),
+                ("thresholds", steps((None, NEUTRAL))),
+            ),
+        ],
+        description="Codex retry delays still active. A retry within 10 min is "
+        "about to happen.",
+        no_value=not_reported("Codex") + " or no delay",
+    )
+
+
+def permission_bars(a: str) -> Json:
+    return {
+        "type": "barchart",
+        "title": "Permission gate · per hour",
+        "datasource": PROM,
+        "interval": "1h",
+        "targets": [
+            ranged(
+                f"sum by (decision) (increase(epic_permission_decisions_total{{{a}}}[1h]))",
+                legend="{{decision}}",
+            )
+        ],
+        "fieldConfig": {
+            "defaults": {"noValue": not_reported("Claude"), "decimals": 0, "min": 0},
+            "overrides": [
+                by_name("allow", ("color", {"mode": "fixed", "fixedColor": GREY})),
+                by_name("deny", ("color", {"mode": "fixed", "fixedColor": ACT_NOW})),
+            ],
+        },
+        "options": {
+            "stacking": "normal",
+            "showValue": "never",
+            "xTickLabelSpacing": 100,
+            "legend": {
+                "showLegend": True,
+                "displayMode": "list",
+                "placement": "bottom",
+            },
+        },
+    }
+
+
+def logs(title: str, expr: str, description: str, limit: int | None = None) -> Json:
+    query: Json = {"refId": "A", "expr": expr, "queryType": "range"}
+    if limit is not None:
+        query["maxLines"] = limit
     return {
         "type": "logs",
         "title": title,
         "description": description,
         "datasource": LOKI,
-        "targets": [{"refId": "A", "expr": expr, "queryType": "range"}],
+        "targets": [query],
         "options": {
             "showTime": True,
             "wrapLogMessage": True,
@@ -825,10 +1625,275 @@ def logs(title: str, expr: str, description: str) -> Json:
     }
 
 
+# --------------------------------------------------------------- Delivery
+
+
+def delivery_page() -> Json:
+    board = Board(
+        "epic-delivery",
+        "Delivery",
+        PAGE_LINKS,
+        time_from="now-14d",
+    )
+    board.add(
+        {
+            "type": "timeseries",
+            "title": "Burn-up",
+            "description": "Checklist leaves done per area; the dashed line is all leaves.",
+            "datasource": PROM,
+            "targets": [
+                ranged(
+                    f'sum by (area) (epic_area_leaves{{state="done"}}){GITHUB}',
+                    legend="{{area}}",
+                ),
+                ranged(f"sum(epic_area_leaves){GITHUB}", legend="all leaves", ref="B"),
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "shades", "fixedColor": MUTED},
+                    "custom": {
+                        "fillOpacity": 60,
+                        "lineWidth": 1,
+                        "stacking": {"mode": "normal", "group": "A"},
+                        "lineInterpolation": "stepAfter",
+                    },
+                    "min": 0,
+                },
+                "overrides": [
+                    by_name(
+                        "all leaves",
+                        ("custom.stacking", {"mode": "none"}),
+                        ("custom.fillOpacity", 0),
+                        ("custom.lineStyle", {"fill": "dash", "dash": [6, 4]}),
+                        ("color", {"mode": "fixed", "fixedColor": "#D8D9DA"}),
+                    )
+                ],
+            },
+            "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+        },
+        0,
+        0,
+        16,
+        11,
+    )
+    board.add(
+        stat(
+            "Median review rounds",
+            [ranged(median_expr("epic_review_rounds_median"))],
+            thresholds=steps((None, NEUTRAL), (2.5, LOOK_SOON)),
+            graph="area",
+            time_from="7d",
+            decimals=1,
+            description="Heads the reviewer gave a verdict on, PRs merged in the last 7 days.",
+        ),
+        16,
+        0,
+        4,
+        5,
+    )
+    board.add(
+        stat(
+            "Median time to merge",
+            [ranged(median_expr("epic_time_to_merge_median_seconds"))],
+            unit="s",
+            thresholds=steps((None, NEUTRAL), (6 * 3600, LOOK_SOON)),
+            graph="area",
+            time_from="7d",
+            description="From PR opened to merged, last 7 days.",
+        ),
+        20,
+        0,
+        4,
+        5,
+    )
+    board.add(
+        {
+            "type": "barchart",
+            "title": "Issues by project status · per kind",
+            "datasource": PROM,
+            "targets": [
+                target(f"sum by (agent, status) (epic_issues){GITHUB}", table=True)
+            ],
+            "transformations": matrix("A", "agent", "status", single=True),
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "shades", "fixedColor": MUTED},
+                    "min": 0,
+                },
+                "overrides": [],
+            },
+            "options": {
+                "orientation": "horizontal",
+                "stacking": "normal",
+                "showValue": "never",
+                "xField": "agent",
+                "legend": {
+                    "showLegend": True,
+                    "displayMode": "list",
+                    "placement": "bottom",
+                },
+            },
+        },
+        16,
+        5,
+        8,
+        6,
+    )
+    board.add(
+        {
+            "type": "barchart",
+            "title": "Merged PRs per day · by executor kind",
+            "datasource": PROM,
+            "targets": [target(f"epic_merged_prs_day{DELIVERY}", table=True)],
+            "transformations": [
+                *matrix("A", "day", "kind", single=True),
+                {
+                    "id": "sortBy",
+                    "options": {"sort": [{"field": "day", "desc": False}]},
+                },
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "min": 0,
+                    "decimals": 0,
+                    "color": {"mode": "fixed", "fixedColor": GREY},
+                },
+                "overrides": [
+                    by_name(kind, ("color", {"mode": "fixed", "fixedColor": color}))
+                    for kind, color in KIND.items()
+                ],
+            },
+            "options": {
+                "stacking": "normal",
+                "showValue": "never",
+                "xField": "day",
+                "xTickLabelRotation": -45,
+                "legend": {
+                    "showLegend": True,
+                    "displayMode": "list",
+                    "placement": "bottom",
+                },
+            },
+        },
+        0,
+        11,
+        9,
+        11,
+    )
+    board.add(pr_flow(), 9, 11, 15, 11)
+    return board.render()
+
+
+def pr_flow() -> Json:
+    names = [
+        "target",
+        "executor",
+        "reviewer",
+        "opened",
+        "state",
+        "Value #A",
+        "Value #B",
+    ]
+    return table_panel(
+        "PR flow",
+        [
+            target(f"epic_pr_flow_info{DELIVERY}", table=True),
+            target(
+                f"max by (target) (epic_handoff_wait_seconds{HANDOFF}){LOCAL}",
+                table=True,
+                ref="B",
+            ),
+        ],
+        [
+            {"id": "filterByRefId", "options": {"include": "A|B"}},
+            join("target"),
+            {
+                "id": "filterByValue",
+                "options": {
+                    "filters": [
+                        {"fieldName": "executor", "config": {"id": "isNotNull"}}
+                    ],
+                    "type": "include",
+                    "match": "all",
+                },
+            },
+            {"id": "sortBy", "options": {"sort": [{"field": "opened", "desc": True}]}},
+            *keep_fields(
+                names,
+                {
+                    "target": "PR",
+                    "executor": "Executor",
+                    "reviewer": "Reviewer",
+                    "opened": "Opened",
+                    "state": "State",
+                    "Value #A": "Review rounds",
+                    "Value #B": "Waiting",
+                },
+                [],
+            ),
+        ],
+        [
+            by_name(
+                "PR",
+                ("custom.width", 80),
+                ("mappings", SHORT_LINKS),
+                ("links", [link("Open on GitHub", "${__value.raw}")]),
+            ),
+            *[
+                by_name(
+                    column,
+                    cell("color-text"),
+                    ("mappings", [value_map({k: ("", c) for k, c in KIND.items()})]),
+                )
+                for column in ("Executor", "Reviewer")
+            ],
+            by_name("State", ("custom.width", 80)),
+            by_name("Review rounds", ("custom.width", 110)),
+            by_name("Opened", ("custom.width", 180)),
+            by_name(
+                "Waiting",
+                ("custom.width", 100),
+                ("unit", "s"),
+                cell("color-background", mode="basic"),
+                (
+                    "thresholds",
+                    steps((None, "transparent"), (1800, LOOK_SOON), (3600, ACT_NOW)),
+                ),
+                ("noValue", "–"),
+            ),
+        ],
+        description="The last 14 PRs, open and merged. Waiting: observed wait "
+        "for a review by the other kind.",
+        no_value="No PRs in 14 days",
+    )
+
+
+# ------------------------------------------------------ Redirect pages
+
+
+def redirect(agent: str, name: str) -> Json:
+    board = Board(f"epic-agent-{agent}", f"Agents · {name}", [])
+    board.add(
+        text(
+            f"This page moved. **[Open {name} on the agent page ›]"
+            f"(/d/epic-agent?var-agent={agent})** · [Cockpit](/d/epic-agents)"
+        ),
+        0,
+        0,
+        24,
+        3,
+    )
+    return board.render()
+
+
 def build() -> dict[str, Json]:
-    pages = {"overview.json": overview()}
-    for agent, name in AGENTS.items():
-        pages[f"{agent}.json"] = agent_page(agent, name)
+    pages = {
+        "overview.json": cockpit(),
+        "agent.json": agent_detail(),
+        "delivery.json": delivery_page(),
+    }
+    for agent, name in LEGACY_PAGES.items():
+        pages[f"{agent}.json"] = redirect(agent, name)
     return pages
 
 
