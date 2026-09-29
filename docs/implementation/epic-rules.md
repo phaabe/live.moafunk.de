@@ -157,7 +157,10 @@ Priority, first match wins:
    and stop working on that PR. The loop skips PRs and issues with that label.
 3. `merge`: the other agent approved the current head and checks are green.
 4. `fix`: the other agent requested changes for the current head.
-5. `fix-checks`, then `resolve-conflict`, for the agent's own PRs.
+5. `fix-checks`, then `resolve-conflict`, for the agent's own PRs. The
+   `epic-guard` status reports waiting (draft, missing verdict, running
+   checks) as pending, so the loop waits on it; a failed guard is a real
+   break and gets `fix-checks`.
 6. `review`: the other agent's ready (non-draft) PR has no verdict from this
    agent for its current head.
 7. `continue`: the agent's draft PR, or its In progress issue without a PR.

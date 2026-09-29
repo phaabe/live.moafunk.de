@@ -288,16 +288,21 @@ STREAM = frozenset({"project::Stream"})
 
 
 class GuardCheckTest(unittest.TestCase):
-    FAILED_GUARD = {"name": "epic-guard", "conclusion": "FAILURE"}
+    # The guard publishes a commit status. Waiting is pending; failure is real.
+    FAILED_GUARD = {"context": "epic-guard", "state": "FAILURE"}
+    PENDING_GUARD = {"context": "epic-guard", "state": "PENDING"}
 
-    def test_failed_guard_is_no_fix_checks(self) -> None:
-        # The guard fails until the reviewer's verdict exists: wait, do not fix.
-        p = pr(
-            1,
-            "Claude",
-            statusCheckRollup=[{"conclusion": "SUCCESS"}, self.FAILED_GUARD],
-        )
-        self.assertEqual(first("Claude", [p]).action, "idle")
+    def test_failed_guard_needs_fix_checks(self) -> None:
+        # Wrong lane or bad metadata: a real break the author must fix.
+        for guard in (self.FAILED_GUARD, {"context": "epic-guard", "state": "ERROR"}):
+            with self.subTest(guard=guard):
+                p = pr(
+                    1,
+                    "Claude",
+                    statusCheckRollup=[{"conclusion": "SUCCESS"}, guard],
+                )
+                self.assertEqual(checks_state(p), "failed")
+                self.assertEqual(first("Claude", [p]).action, "fix-checks")
 
     def test_failed_guard_blocks_merge(self) -> None:
         p = pr(
@@ -306,7 +311,20 @@ class GuardCheckTest(unittest.TestCase):
             comments=[verdict("APPROVED", "Codex", A, "t1")],
             statusCheckRollup=[self.FAILED_GUARD],
         )
-        self.assertEqual(first("Claude", [p]).action, "idle")
+        self.assertEqual(first("Claude", [p]).action, "fix-checks")
+
+    def test_pending_guard_is_no_action(self) -> None:
+        # Waiting for the verdict or for running checks: no fix, no merge.
+        for comments in ([], [verdict("APPROVED", "Codex", A, "t1")]):
+            with self.subTest(comments=comments):
+                p = pr(
+                    1,
+                    "Claude",
+                    comments=comments,
+                    statusCheckRollup=[{"conclusion": "SUCCESS"}, self.PENDING_GUARD],
+                )
+                self.assertEqual(checks_state(p), "pending")
+                self.assertEqual(first("Claude", [p]).action, "idle")
 
     def test_green_guard_allows_merge(self) -> None:
         p = pr(

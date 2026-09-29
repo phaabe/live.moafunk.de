@@ -101,7 +101,8 @@ STAGE_SPLIT = re.compile(r"\bthen\b|→|->")
 ISSUE_URL = re.compile(rf"https://github\.com/{re.escape(REPO)}/issues/(\d+)")
 EPIC = 312
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
-# Merge gate, not a code check (".github/epic-lanes.yml" lists it as ignored).
+# Merge gate: its success is required for "green". It reports waiting (draft,
+# missing verdict, running checks) as pending and only real breaks as failure.
 GUARD_CHECKS = {"epic-guard"}
 # The guard's publisher job fails when any open PR is not ready, so it says
 # nothing about this PR. The `epic-guard` status is the gate.
@@ -177,10 +178,10 @@ def verdicts(pr: dict[str, Any], by: str) -> list[dict[str, Any]]:
 def checks_state(pr: dict[str, Any]) -> str:
     """'green', 'failed' or 'pending' for the PR head.
 
-    The epic guard fails on purpose until the reviewer's verdict for the head
-    exists. That is no code failure to fix, so a failed guard counts as
-    pending: no `fix-checks`, and no merge until it is green. A missing guard
-    status also counts as pending: the publisher may not have run yet.
+    The epic guard reports waiting as pending, so a failed guard is a real
+    break (lane, metadata, a failed check) and counts as failed. No merge until
+    the guard is green. A missing guard status counts as pending: the publisher
+    may not have run yet.
     """
     states = []
     guard_green = False
@@ -190,8 +191,6 @@ def checks_state(pr: dict[str, Any]) -> str:
             continue
         state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
         if name in GUARD_CHECKS:
-            if state in FAILED:
-                state = "PENDING"
             guard_green = guard_green or state in GREEN
         states.append(state)
     if any(s in FAILED for s in states):
