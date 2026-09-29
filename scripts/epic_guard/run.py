@@ -172,6 +172,9 @@ def verify(
         same_head = [p for p in open_pulls(gh) if p.get("head", {}).get("sha") == head]
         if len(same_head) != 1 or same_head[0].get("number") != number:
             errors.append("open PRs sharing this head changed; retry")
+        # Older trusted bases return only plain errors; keep them failing closed.
+        waiting_type = getattr(checker, "WaitingReason", ())
+        failures = [error for error in errors if not isinstance(error, waiting_type)]
     except (
         ValueError,
         TypeError,
@@ -180,11 +183,18 @@ def verify(
         subprocess.SubprocessError,
     ) as exc:
         errors = [str(exc)]
+        failures = errors
     if writer:
+        if failures:
+            state, description = "failure", failures[0]
+        elif errors:
+            state, description = "pending", "waiting for checks: " + "; ".join(errors)
+        else:
+            state, description = "success", "Verdict, lanes and checks pass"
         writer(
             head,
-            "failure" if errors else "success",
-            errors[0] if errors else "Verdict, lanes and checks pass",
+            state,
+            description,
         )
     return errors
 
