@@ -87,6 +87,18 @@ class Agent:
         return self.home / self.gate_name
 
     @property
+    def events_name(self) -> str:
+        return f"{self.kind}-ticks.jsonl"
+
+    @property
+    def events_checkpoint_name(self) -> str:
+        return self.checkpoint_name.replace("ticks-", "events-", 1)
+
+    @property
+    def permissions_checkpoint_name(self) -> str:
+        return self.checkpoint_name.replace("ticks-", "permissions-", 1)
+
+    @property
     def checkpoint_name(self) -> str:
         # Legacy names match the tick ledger checkpoints written before agents.
         prefix = "ticks-" if self.layout == "legacy" else "ticks-agents-"

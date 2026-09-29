@@ -10,7 +10,38 @@ discovery.file "runners" {
 
 loki.source.file "runners" {
   targets    = discovery.file.runners.targets
+  forward_to = [loki.process.permissions.receiver]
+}
+
+// Permission gate lines ("<time> allow|deny ...") keep their own time and get
+// a decision label. Loki rejects lines older than one week, so older lines
+// are dropped here; the collector's counter still covers the whole file.
+loki.process "permissions" {
   forward_to = [loki.write.local.receiver]
+
+  stage.match {
+    selector = "{stream=\"permissions\"}"
+
+    stage.regex {
+      expression = "^(?P<ts>\\S+) (?P<decision>allow|deny) "
+    }
+
+    stage.timestamp {
+      source = "ts"
+      format = "RFC3339"
+    }
+
+    stage.labels {
+      values = {
+        decision = "",
+      }
+    }
+
+    stage.drop {
+      older_than          = "167h"
+      drop_counter_reason = "older_than_loki_limit"
+    }
+  }
 }
 
 loki.write "local" {

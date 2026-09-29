@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 import tempfile
 import unittest
@@ -595,6 +596,430 @@ class LedgerTest(unittest.TestCase):
         self.checkpoint.unlink()
         samples = self.run_cycle(self.ledger(), NOON)
         self.assertEqual(samples['epic_tokens_today{agent="codex"}'], 2000)
+
+    def test_deeply_nested_action_line_is_ignored(self) -> None:
+        # Model output can print a line that looks like the selector's JSON.
+        ledger = self.ledger()
+        ledger.update(NOON)
+        self.append(
+            tick(NOON, 0, action='{"action": ' + "[" * 20_000 + "]" * 20_000 + "}")
+        )
+        ledger.update(NOON + 5)
+        self.assertEqual(
+            (self.last(ledger)["outcome"], self.last(ledger)["action"]), ("ok", "")
+        )
+
+    def test_v4_checkpoint_keeps_its_counters(self) -> None:
+        ledger = self.ledger()
+        ledger.update(NOON)
+        self.append(tick(NOON, 0))
+        ledger.update(NOON + 5)
+        ledger.save()
+        data = json.loads(self.checkpoint.read_text())
+        del data["first_start"]
+        data["v"] = 4  # as written before events existed
+        self.checkpoint.write_text(json.dumps(data))
+        again = self.ledger()
+        again.update(NOON + 10)
+        self.assertEqual((again.state["v"], again.state["totals"]["ok"]), (5, 1))
+
+
+def event(kind: str, start: float, **fields: object) -> str:
+    data: dict[str, object] = {"v": 1, "event": kind, "tick": iso(start)}
+    if kind == "finish":
+        data.update(
+            at=iso(start + 60),
+            exit=0,
+            outcome="ok",
+            phase="record",
+            action="review",
+            pr=7,
+            issue=None,
+            tokens=None,
+        )
+    data.update(fields)
+    return json.dumps(data) + "\n"
+
+
+class EventLedgerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.file = self.root / "codex-ticks.jsonl"
+        self.file.write_text("")
+        self.log = self.root / "codex.log"
+        self.log.write_text("")
+
+    def events(self) -> ticks.EventLedger:
+        return ticks.EventLedger(
+            "codex",
+            self.file,
+            self.root / "runtime/events-codex.json",
+            monitor.action_labels,
+            source="events",
+        )
+
+    def append(self, *lines: str) -> None:
+        with self.file.open("a") as out:
+            out.write("".join(lines))
+
+    def test_finish_gives_real_end_and_runner_outcome(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)  # baseline: counters start here
+        self.append(
+            event("start", NOON),
+            event(
+                "finish", NOON, exit=75, outcome="blocked", phase="result", tokens=1234
+            ),
+        )
+        ledger.update(NOON + 300)
+        [t] = ledger.ticks
+        self.assertEqual(
+            (t["end"], t["outcome"], t["phase"], t["exit"]),
+            (NOON + 60, "blocked", "result", 75),
+        )
+        self.assertEqual(
+            (t["action"], t["target"], t["tokens"]), ("review", f"{URL}/pull/7", 1234)
+        )
+        self.assertEqual(ledger.state["totals"]["blocked"], 1)
+        self.assertEqual(ledger.rejected, 0)
+        self.assertTrue(ledger.active)
+
+    def test_invalid_events_are_rejected_and_counted(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append(
+            "not json\n",
+            json.dumps({"v": 2, "event": "start", "tick": iso(NOON)}) + "\n",
+            event("finish", NOON),  # orphan finish
+            event("start", NOON),
+            event("finish", NOON + 5),  # other tick
+            event("finish", NOON, at=iso(NOON - 1)),  # before its start
+            event("finish", NOON, outcome="interrupted"),
+            event("finish", NOON, phase="thinking"),
+            event("finish", NOON, exit=True),
+            event("finish", NOON, tokens=-1),
+            event("start", NOON - 60),  # out of order
+            event("pause", NOON),
+        )
+        ledger.update(NOON + 300)
+        self.assertEqual(ledger.rejected, 11)
+        self.assertEqual(ledger.ticks, [])
+        self.assertIsNotNone(ledger.state["open"])  # the valid start stays open
+
+    def test_start_without_finish_is_interrupted(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append(event("start", NOON), event("start", NOON + 600))
+        ledger.update(NOON + 700)
+        [t] = ledger.ticks
+        self.assertEqual((t["outcome"], t["end"]), ("interrupted", None))
+        self.assertEqual(ledger.state["open"]["tick"], iso(NOON + 600))
+
+    def test_history_before_the_baseline_is_not_counted(self) -> None:
+        self.append(event("start", NOON), event("finish", NOON))
+        ledger = self.events()
+        ledger.update(NOON + 300)
+        self.assertEqual(len(ledger.ticks), 1)
+        self.assertEqual(sum(ledger.state["totals"].values()), 0)
+
+    def test_restart_keeps_rejections_out_of_the_replay(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append("bad\n", event("start", NOON), event("finish", NOON))
+        ledger.update(NOON + 300)
+        ledger.save()
+        again = self.events()
+        again.update(NOON + 600)
+        self.assertEqual((len(again.ticks), again.rejected), (1, 0))
+        self.assertEqual(again.state["totals"]["ok"], 1)
+
+    def test_merge_counts_each_tick_once_and_marks_the_source(self) -> None:
+        log = ticks.LogLedger(
+            "codex",
+            self.log,
+            self.root / "runtime/ticks-codex.json",
+            monitor.action_labels,
+        )
+        events = self.events()
+        log.update(NOON - 3600)
+        events.update(NOON - 3600)
+        with self.log.open("a") as out:
+            out.write(tick(NOON - 1800, 1))  # old runner: log only
+        log.update(NOON - 1700)
+        # New runner: the tick is in the log and in the events.
+        with self.log.open("a") as out:
+            out.write(tick(NOON, 0))
+        self.append(event("start", NOON), event("finish", NOON))
+        events.update(NOON + 300)
+        log.count_before = events.peek
+        log.update(NOON + 300)
+        view = ticks.merge(log, events)
+        self.assertEqual(
+            [(t["outcome"], t.get("source", "log")) for t in view.state["ticks"]],
+            [("error", "log"), ("ok", "events")],
+        )
+        self.assertEqual(view.state["totals"]["ok"], 1)
+        self.assertEqual(view.state["totals"]["error"], 1)
+        metrics = Metrics()
+        ticks.export(metrics, view, NOON + 300)
+        samples = metrics.samples()
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 1)
+        self.assertTrue(any('source="events"' in key for key in samples))
+
+    def test_merge_without_events_is_the_log(self) -> None:
+        log = ticks.LogLedger(
+            "codex", self.log, self.root / "runtime/t.json", monitor.action_labels
+        )
+        log.update(NOON)
+        self.assertIs(ticks.merge(log, self.events()).state, log.state)
+
+    # Codex review of https://github.com/phaabe/live.moafunk.de/pull/469
+    def test_deep_nesting_and_oversized_lines_are_rejected(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append("[" * 2000 + "]" * 2000 + "\n", "[" * 40_000 + "\n")
+        ledger.update(NOON + 5)
+        self.assertEqual(ledger.rejected, 2)
+
+    def test_events_file_appearing_between_polls_counts_in_full(self) -> None:
+        self.file.unlink()
+        log = ticks.LogLedger(
+            "codex",
+            self.log,
+            self.root / "runtime/ticks-codex.json",
+            monitor.action_labels,
+        )
+        events = self.events()
+        log.update(NOON - 3600)
+        with self.assertRaises(FileNotFoundError):
+            events.update(NOON - 3600)
+        # An old-runner tick finishes after the new runner's first tick.
+        with self.log.open("a") as out:
+            out.write(tick(NOON - 1800, None) + tick(NOON, 0))
+        self.file.write_text("")
+        self.append(event("start", NOON), event("finish", NOON))
+        events.update(NOON + 300)
+        log.count_before = events.peek
+        log.update(NOON + 300)
+        view = ticks.merge(log, events)
+        self.assertEqual(view.state["totals"]["ok"], 1)  # from the events
+        self.assertEqual(view.state["totals"]["interrupted"], 1)  # the old tick
+
+    def log_ledger(self) -> ticks.LogLedger:
+        return ticks.LogLedger(
+            "codex",
+            self.log,
+            self.root / "runtime/ticks-codex.json",
+            monitor.action_labels,
+        )
+
+    def run_tick(self, start: float) -> None:
+        """One whole tick in the runner's order: start event, log, finish."""
+        self.append(event("start", start))
+        with self.log.open("a") as out:
+            out.write(tick(start, 0))
+        self.append(event("finish", start))
+
+    def poll(
+        self,
+        now: float,
+        *,
+        between: Callable[[], None] | None = None,
+        ledgers: tuple[ticks.LogLedger, ticks.EventLedger] | None = None,
+    ) -> ticks.TickView:
+        """One collector cycle; without `ledgers` as after a restart.
+
+        `between` runs after the events read, before the log read.
+        """
+        log, events = ledgers or (self.log_ledger(), self.events())
+        if between is not None:
+            read = events.update
+
+            def race(at: float) -> None:
+                del events.update  # once: kept ledgers read normally later
+                try:
+                    read(at)
+                finally:
+                    between()
+
+            events.update = race  # type: ignore[method-assign]
+        return monitor.ledger_metrics(monitor.Metrics(), log, events, now)
+
+    def test_first_tick_between_polls_is_counted_once(self) -> None:
+        # Codex review rounds 2 and 3: the log counted the tick before the
+        # events were read, then the events counted it again, also after a
+        # restart between the two polls; with or without an events file.
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                self.setUp()
+                if missing:
+                    self.file.unlink()
+                self.poll(NOON - 60)
+                self.poll(NOON + 5, between=lambda: self.run_tick(NOON))
+                view = self.poll(NOON + 10)
+                self.assertEqual(view.state["totals"]["ok"], 1)
+                self.assertEqual(len(view.state["ticks"]), 1)
+
+    def test_many_ticks_between_polls_are_each_counted_once(self) -> None:
+        # Codex review round 3: a fixed list of counted ticks overflowed.
+        def many() -> None:
+            for i in range(250):
+                self.run_tick(NOON - 250 * 60 + i * 60)
+
+        self.poll(NOON - 250 * 60 - 60)
+        self.poll(NOON + 5, between=many)
+        view = self.poll(NOON + 10)
+        self.assertEqual(view.state["totals"]["ok"], 250)
+
+    def test_log_rotation_between_reads_loses_no_count(self) -> None:
+        # Codex review round 4: the log never saw tick A, so it must not
+        # decide about the events' ticks.
+        def rotate() -> None:
+            self.run_tick(NOON)
+            self.log.rename(self.root / "codex.log.1")
+            self.log.write_text("")
+            self.run_tick(NOON + 120)
+
+        self.poll(NOON - 60)
+        self.poll(NOON + 200, between=rotate)
+        view = self.poll(NOON + 300)
+        self.assertEqual(view.state["totals"]["ok"], 2)
+
+    def test_failed_log_save_then_restart_loses_no_count(self) -> None:
+        # Codex review round 4: the events must not rely on log state that
+        # was never saved.
+        self.poll(NOON - 60)
+        running = (self.log_ledger(), self.events())
+        with patch.object(running[0], "save", side_effect=OSError("disk")):
+            self.poll(NOON + 5, between=lambda: self.run_tick(NOON), ledgers=running)
+            self.poll(NOON + 10, ledgers=running)
+        view = self.poll(NOON + 15)
+        self.assertEqual(view.state["totals"]["ok"], 1)
+
+    def test_failed_save_without_events_file_is_reported(self) -> None:
+        # Codex review round 5: this save must not stop the collector.
+        self.file.unlink()
+        metrics = monitor.Metrics()
+        log, events = self.log_ledger(), self.events()
+        with patch.object(events, "save", side_effect=OSError("disk")):
+            monitor.ledger_metrics(metrics, log, events, NOON)
+        self.assertIn(
+            'epic_tick_events_read_success{agent="codex"} 0', metrics.render()
+        )
+
+    def test_unreadable_events_file_is_not_a_missing_one(self) -> None:
+        # Codex review round 5: the log counted the tick because the events
+        # file could not be read, then the events counted it too.
+        def locked() -> None:
+            self.run_tick(NOON)
+            self.file.chmod(0)
+
+        self.poll(NOON - 60)
+        self.poll(NOON + 5, between=locked)
+        self.file.chmod(0o600)
+        view = self.poll(NOON + 10)
+        self.assertEqual(view.state["totals"]["ok"], 1)
+
+    def test_events_rotated_after_the_log_decided_lose_no_count(self) -> None:
+        # Codex review round 5: the log skipped tick A by a start on disk,
+        # then the events file was rotated before the event ledger read it.
+        self.poll(NOON - 60)
+        self.poll(NOON + 5, between=lambda: self.run_tick(NOON))
+        self.file.rename(self.root / "codex-ticks.jsonl.1")
+        self.run_tick(NOON + 120)
+        view = self.poll(NOON + 200)
+        self.assertEqual(view.state["totals"]["ok"], 2)
+
+    def test_events_rotated_between_peek_and_read_lose_no_count(self) -> None:
+        # The same rotation inside one cycle: the log's read is rolled back
+        # and counts the tick on the next cycle.
+        log, events = self.log_ledger(), self.events()
+        self.poll(NOON - 60)
+        peek = events.peek
+
+        def rotating() -> float:
+            start = peek()
+            if start < float("inf") and events.first_start() == float("inf"):
+                self.file.rename(self.root / "codex-ticks.jsonl.1")
+                self.file.write_text("")
+            return start
+
+        events.peek = rotating  # type: ignore[method-assign]
+        self.poll(NOON + 5, between=lambda: self.run_tick(NOON), ledgers=(log, events))
+        view = self.poll(NOON + 10, ledgers=(log, events))
+        self.assertEqual(view.state["totals"]["ok"], 1)
+
+    def test_deploy_after_the_old_collector_counted_a_tick(self) -> None:
+        # The old collector (v4, no event reader) counted the runner's first
+        # event tick from the log; the new one has no event checkpoint yet.
+        old = self.log_ledger()
+        old.update(NOON - 60)
+        self.run_tick(NOON)
+        old.update(NOON + 5)
+        old.save()
+        path = self.root / "runtime/ticks-codex.json"
+        data = json.loads(path.read_text())
+        del data["first_start"]
+        path.write_text(json.dumps(data | {"v": 4}))
+        view = self.poll(NOON + 10)
+        self.assertEqual(view.state["totals"]["ok"], 1)
+
+    def test_first_start_survives_trimming_and_restarts(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        for i in range(3):
+            self.append(event("start", NOON + i * 60), event("finish", NOON + i * 60))
+        with patch.object(ticks, "LEDGER_SIZE", 2):
+            ledger.update(NOON + 300)
+        ledger.save()
+        self.assertEqual(len(ledger.state["ticks"]), 2)
+        again = self.events()
+        again.update(NOON + 600)
+        self.assertEqual(again.first_start(), NOON)
+
+    def test_restart_while_the_events_file_is_missing_keeps_its_state(self) -> None:
+        events = self.events()
+        events.update(NOON)
+        self.append(event("start", NOON), event("finish", NOON))
+        events.update(NOON + 300)
+        events.save()
+        self.file.unlink()
+        again = self.events()
+        with self.assertRaises(FileNotFoundError):
+            again.update(NOON + 600)
+        self.assertTrue(again.active)
+        self.assertEqual(again.state["totals"]["ok"], 1)
+
+
+class DecisionLedgerTest(unittest.TestCase):
+    def test_counts_survive_a_restart_and_foreign_checkpoints_are_rebuilt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "claude-permissions.log"
+            log.write_text("")
+            checkpoint = root / "permissions-claude.json"
+
+            def ledger() -> ticks.DecisionLedger:
+                return ticks.DecisionLedger(
+                    "claude", log, checkpoint, monitor.action_labels
+                )
+
+            first = ledger()
+            first.update(NOON)
+            log.write_text("2026-09-28T11:00:00Z deny 'x' (no)\n")
+            first.update(NOON + 5)
+            first.save()
+            again = ledger()
+            again.update(NOON + 10)
+            self.assertEqual(again.state["totals"], {"allow": 0, "deny": 1})
+            # A tick checkpoint has other totals: rebuilt, not trusted.
+            tick_ledger = ticks.LogLedger(
+                "claude", log, checkpoint, monitor.action_labels
+            )
+            with self.assertLogs(level="WARNING"):
+                tick_ledger.update(NOON + 15)
 
 
 if __name__ == "__main__":

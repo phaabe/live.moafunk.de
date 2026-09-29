@@ -777,7 +777,7 @@ def agent_page(agent: str, name: str) -> Json:
     board.add(
         logs(
             "Tick summary",
-            f'{{agent="{agent}"}} |~ "^(tick: |\\\\{{\\"action\\")"',
+            f'{{agent="{agent}", stream!="permissions"}} |~ "^(tick: |\\\\{{\\"action\\")"',
             "Start, selected action, result and exit of each tick.",
         ),
         0,
@@ -788,7 +788,7 @@ def agent_page(agent: str, name: str) -> Json:
     board.add(
         logs(
             "Full log",
-            f'{{agent="{agent}"}} |~ "(?i)$search"',
+            f'{{agent="{agent}", stream!="permissions"}} |~ "(?i)$search"',
             "Everything the runner and model wrote. Use the Search box above.",
         ),
         0,

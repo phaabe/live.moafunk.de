@@ -44,7 +44,12 @@ class TickTests(unittest.TestCase):
             shutil.copyfile(ROOT / filename, self.runner.parent / filename)
         selector = self.repo / "scripts/epic/next_action.py"
         selector.parent.mkdir(parents=True)
-        for helper in ("tick_gate.py", "github_quota.py", "agents.py"):
+        for helper in (
+            "tick_gate.py",
+            "github_quota.py",
+            "agents.py",
+            "tick_events.py",
+        ):
             shutil.copyfile(
                 ROOT.parent / "scripts/epic" / helper, selector.parent / helper
             )
@@ -99,6 +104,8 @@ class TickTests(unittest.TestCase):
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read()}) + '\\n')\n"
             "print('fake Codex stdout', flush=True)\n"
+            "if os.environ.get('TEST_TOKENS'):\n"
+            "    print('tokens used', os.environ['TEST_TOKENS'], sep='\\n', flush=True)\n"
             "print('fake Codex stderr', file=sys.stderr, flush=True)\n"
             "if os.environ.get('TEST_SOCKET'):\n"
             "    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:\n"
@@ -151,6 +158,9 @@ class TickTests(unittest.TestCase):
         self.assertTrue(entries)
         for entry in entries.values():
             entry["at"] = 0
+            # The stored expiry is what the runner obeys.
+            if "until" in entry:
+                entry["until"] = 0
         path.write_text(json.dumps(entries))
 
     def block_issue_then_select_draft_pr(self) -> dict[str, object]:
@@ -773,6 +783,63 @@ class TickTests(unittest.TestCase):
         self.assertEqual(connection.recv(1), b"")
         self.assertFalse(self.lock.exists())
         self.assertFalse(self.record.exists())
+
+    def tick_events(self, state: Path | None = None) -> list[dict[str, object]]:
+        path = (state or self.state) / "codex-ticks.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def last_finish(self) -> tuple[object, ...]:
+        events = self.tick_events()
+        start, finish = events[-2], events[-1]
+        self.assertEqual((start["event"], finish["event"]), ("start", "finish"))
+        self.assertEqual(start["tick"], finish["tick"])
+        return finish["exit"], finish["outcome"], finish["phase"]
+
+    def test_events_name_each_exit_path(self) -> None:
+        blocked = json.dumps({"status": "blocked", "summary": "Commit denied."})
+        for env, expected in (
+            ({}, (0, "ok", "record")),
+            ({"TEST_RESULT": blocked}, (75, "blocked", "result")),
+            ({"TEST_RESULT": "[]"}, None),
+            ({"TEST_CODEX_EXIT": "17"}, (17, "error", "model")),
+            ({"TEST_SELECTOR_EXIT": "1"}, (23, "error", "select")),
+            ({"TEST_DECISION": json.dumps({"action": "idle"})}, (0, "ok", "select")),
+        ):
+            with self.subTest(env=env):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.env.update(env)
+                code = self.run_tick().returncode
+                for key in env:
+                    del self.env[key]
+                if expected is None:  # invalid model result: fails in the result stage
+                    self.assertNotEqual(code, 0)
+                    expected = (code, "error", "result")
+                self.assertEqual(self.last_finish(), expected)
+        self.env["TEST_DECISION"] = json.dumps(
+            {"action": "review", "pr": 406, "sha": "a" * 40}
+        )
+
+    def test_finish_event_carries_action_and_this_ticks_tokens(self) -> None:
+        self.env["TEST_TOKENS"] = "1,234"
+        self.assertEqual(self.run_tick().returncode, 0)
+        finish = self.tick_events()[-1]
+        self.assertEqual(
+            (finish["action"], finish["pr"], finish["tokens"]), ("review", 406, 1234)
+        )
+
+    def test_timeout_writes_a_timeout_event(self) -> None:
+        self.env["EPIC_TICK_TIMEOUT_SECONDS"] = "1"
+        process, _ = self.blocked_tick()
+        self.assertEqual(process.wait(timeout=15), 124)
+        self.assertEqual(self.last_finish(), (124, "timeout", "model"))
+
+    def test_two_agents_of_one_kind_write_separate_event_files(self) -> None:
+        for agent in ("codex", "codex-2"):
+            self.env["EPIC_AGENT_ID"] = agent
+            self.assertEqual(self.run_tick().returncode, 0)
+        for agent in ("codex", "codex-2"):
+            events = self.tick_events(self.state / "agents" / agent)
+            self.assertEqual([e["event"] for e in events], ["start", "finish"])
 
     def test_term_stops_child_before_releasing_lock(self) -> None:
         process, connection = self.blocked_tick()

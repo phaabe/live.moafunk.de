@@ -186,9 +186,9 @@ A tick runs from start to finish of one runner invocation that holds the lock.
 Outcome enum, severity order for "worst": ok 1 < blocked 2 < timeout 3 <
 killed 4 < interrupted 5 < error 6.
 
-Phase enum (where a failed tick stopped), runner-owned, replaces free-text
-reasons: `lock`, `select`, `gate`, `backoff`, `model`, `result`, `verify`,
-`record`, `unknown`.
+Phase enum (the stage a tick ended in), runner-owned, replaces free-text
+reasons: `lock`, `refresh`, `select`, `quota`, `backoff`, `gate`, `model`,
+`result`, `verify`, `record`, `unknown`.
 
 ### Events file (preferred source, PR 3)
 
@@ -202,10 +202,16 @@ state dir (`agents/<id>/` for registered agents). Each line is one atomic `print
 ```
 
 - `outcome` and `phase` are set by the script, which knows each path:
-  Codex `record` returns 3 → `blocked`, 75 → `error`/`result`; selector
-  failure → `error`/`select`; `run_bounded` 124/143 → `timeout`/`killed`.
-- `tokens` (Codex): the runner reads the last `tokens used` count from the
-  session's own captured output (numeric only). Best effort; `null` if absent.
+  Codex blocked result → `blocked`/`result`; invalid result →
+  `error`/`result`; Claude GitHub quota stop → `blocked`/`quota`; selector
+  failure → `error`/`select`; `run_bounded` 124 → `timeout`, 129/130/143 →
+  `killed`. Written by `scripts/epic/tick_events.py`; the finish event is
+  written before the lock is released.
+- The finish time is the event's `at`, so event ticks have a real duration.
+- Once an agent has events, its log ledger stops counting; history before
+  the first event still comes from the log.
+- `tokens` (Codex): the last `tokens used` count printed after this tick's
+  start offset in its log (numeric only). Best effort; `null` if absent.
 - Who can write the file: Codex's sandbox write roots do not include
   `~/.local/state` (seen in the session header). For Claude this is **not**
   proven: `permission_gate.py` only answers prompts; it does not block file
@@ -368,14 +374,15 @@ Same as v3.2 PR 2, with per-agent paths:
   older ones. Tick `source` label: `events`, `events_unverified` or `log`.
 - `epic_backoff_info{agent, target, head, estimated, current_head}`: active
   entries only; value = `until`. `estimated="true"` for old entries without
-  `until`. `current_head` = `true`/`false`/`unknown` from the last successful
-  GitHub snapshot. The latest entry per `(target, head)` wins.
+  `until` (runner default 900 s). `current_head` = `true`/`false`/`unknown`
+  from the PR heads of the last successful GitHub poll (held in memory; the
+  runner loop reads them). Keys are unique per `(target, head)`.
 - `epic_permission_decisions_total{agent, decision}` counter from an
   incremental read of the agent's permissions log (same checkpoint rules).
   Only for kinds with a permission gate.
-- Alloy: permissions logs as a second stream per agent, label
-  `stream="permissions"` (legacy `claude-permissions.log` gets
-  `agent="claude"`). `stage.regex` `^(?P<ts>\S+) (?P<decision>allow|deny) ` →
+- Alloy: permissions logs as a second stream per agent, listed by the
+  collector with `stream="permissions"`. `loki.process` with a
+  `stage.match` on that stream: `stage.regex` `^(?P<ts>\S+) (?P<decision>allow|deny) ` →
   `stage.timestamp` (RFC3339) → `stage.labels` (`decision`) → `stage.drop`
   `older_than = "167h"` (Loki rejects lines older than one week).
   Runner-log queries add `stream!="permissions"`.
@@ -620,6 +627,51 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 | Codex finding | Change |
 |---|---|
 | legacy Claude runner passed the relative path to the gate helper | Claude runner always exports the absolute `EPIC_STATE_DIR` |
+
+### PR 3 review, round 1
+
+| Codex finding | Change |
+|---|---|
+| blocker: deeply nested JSON stops the collector | event lines over 4 KiB rejected before parsing; nesting errors caught for events, backoff, lock files and the log's action line |
+| blocker: a FIFO events file hangs the helper under the lock | helper opens files non-blocking and without following links, regular files only, 10 s hard deadline |
+| failed start event emptied `tick_verify --since` | the real start time is always kept; event writing is tracked apart |
+| counts lost at the switch to events | a file that appears later counts from byte 0; the log keeps counting ticks that started before the first event |
+| restart during a missing events file forgot its state | the checkpoint loads even when the file is missing; event mode is kept |
+
+### PR 3 review, round 2
+
+| Codex finding | Change |
+|---|---|
+| a first tick between two polls could be counted by the log and the events | the log checks the events file on disk (see round 4) |
+| the nested action-line test never ran | moved into its test class; fails without the fix |
+
+### PR 3 review, round 3
+
+| Codex finding | Change |
+|---|---|
+| a restart between the two polls counted the tick twice | no log state is used by the events any more (see round 4) |
+| v4 migration lost what the log had counted | same: v4 had no events, so the old collector counted from the log only |
+| a list of 200 counted ticks could overflow | the list is gone |
+| (found while fixing) the first event start moved when the ticks list was trimmed | saved once in the event checkpoint |
+
+### PR 3 review, round 4
+
+| Codex finding | Change |
+|---|---|
+| log rotation between reads: a boundary from the log hid a tick the log never saw | the events count every tick they have; the log counts a tick only if the events file has no start at or before it, read from disk after the tick's lines |
+| a failed log save let the events skip a count that was never saved | same: the decision uses the events file, which survives restarts and failed saves; a missing events file is saved as empty, so it counts from byte 0 when it appears |
+
+### PR 3 review, round 5
+
+| Codex finding | Change |
+|---|---|
+| a failed save with no events file stopped the collector | the save is inside the event read's error handling |
+| an unreadable events file looked like a missing one, so the log counted the tick too | the error is raised; the log read rolls back and is retried |
+| the events file rotated after the log skipped a tick by a start the events had not read | the monitor reads the events again at once; if that start is gone, the log read rolls back and counts the tick next cycle |
+
+Accepted limit: a tick that ends while the collector is being upgraded may be
+missed once (the new collector has no event checkpoint yet and starts at the
+file's end).
 
 ## Appendix — panel spec from design v2
 

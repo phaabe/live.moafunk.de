@@ -1502,7 +1502,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{agent=\"codex\"} |~ \"^(tick: |\\\\{\\\"action\\\")\"",
+          "expr": "{agent=\"codex\", stream!=\"permissions\"} |~ \"^(tick: |\\\\{\\\"action\\\")\"",
           "queryType": "range"
         }
       ],
@@ -1532,7 +1532,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{agent=\"codex\"} |~ \"(?i)$search\"",
+          "expr": "{agent=\"codex\", stream!=\"permissions\"} |~ \"(?i)$search\"",
           "queryType": "range"
         }
       ],

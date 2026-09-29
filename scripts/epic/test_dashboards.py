@@ -35,7 +35,11 @@ class DashboardTest(unittest.TestCase):
                 self.assertEqual(len(logs), 2)
                 for panel in logs:
                     self.assertEqual(panel["datasource"]["uid"], "agent-loki")
-                    self.assertIn(f'{{agent="{agent}"}}', panel["targets"][0]["expr"])
+                    # Runner logs only: the permission gate has its own stream.
+                    self.assertIn(
+                        f'{{agent="{agent}", stream!="permissions"}}',
+                        panel["targets"][0]["expr"],
+                    )
 
     def test_panels_have_unique_ids_and_known_datasources(self) -> None:
         for name, page in dashboards.build().items():

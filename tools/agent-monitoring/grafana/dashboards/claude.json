@@ -1502,7 +1502,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{agent=\"claude\"} |~ \"^(tick: |\\\\{\\\"action\\\")\"",
+          "expr": "{agent=\"claude\", stream!=\"permissions\"} |~ \"^(tick: |\\\\{\\\"action\\\")\"",
           "queryType": "range"
         }
       ],
@@ -1532,7 +1532,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{agent=\"claude\"} |~ \"(?i)$search\"",
+          "expr": "{agent=\"claude\", stream!=\"permissions\"} |~ \"(?i)$search\"",
           "queryType": "range"
         }
       ],

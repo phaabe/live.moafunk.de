@@ -503,6 +503,223 @@ class AgentRowsTest(unittest.TestCase):
                 seen.append(family)
         self.assertEqual(text.count("# TYPE epic_agent_info gauge"), 1)
 
+    def write_events(self, home: Path, kind: str, *lines: dict[str, object]) -> None:
+        with (home / f"{kind}-ticks.jsonl").open("a") as out:
+            for line in lines:
+                out.write(json.dumps({"v": 1, **line}) + "\n")
+
+    def test_events_are_the_source_once_a_runner_writes_them(self) -> None:
+        codex = self.agent("codex")
+        claude = self.agent("claude")
+        for home in (codex, claude):
+            (home / f"{home.name}-ticks.jsonl").write_text("")
+        self.run_at(NOW)
+        tick = "1970-01-01T00:30:00Z"
+        for home, kind in ((codex, "codex"), (claude, "claude")):
+            self.write_events(
+                home,
+                kind,
+                {"event": "start", "tick": tick},
+                {
+                    "event": "finish",
+                    "tick": tick,
+                    "at": "1970-01-01T00:31:00Z",
+                    "exit": 75,
+                    "outcome": "blocked",
+                    "phase": "result",
+                    "action": "fix",
+                    "pr": 5,
+                    "issue": None,
+                    "tokens": 10,
+                },
+                {"event": "finish", "tick": tick},  # orphan: rejected
+            )
+        text = self.run_at(NOW + 5)
+        self.assertIn('source="events"', text)
+        self.assertIn('source="events_unverified"', text)
+        self.assertIn('epic_ticks_total{agent="codex",outcome="blocked"} 1\n', text)
+        self.assertIn('epic_tick_events_rejected_total{agent="codex"} 1\n', text)
+        self.assertIn('epic_tick_events_read_success{agent="claude"} 1\n', text)
+        self.assertIn('outcome_text="blocked 75 · result"', text)
+
+    def test_vanished_events_file_is_a_read_failure(self) -> None:
+        home = self.agent("codex")
+        self.write_events(
+            home, "codex", {"event": "start", "tick": "1970-01-01T00:30:00Z"}
+        )
+        self.run_at(NOW)
+        (home / "codex-ticks.jsonl").unlink()
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW + 5)
+        self.assertIn('epic_tick_events_read_success{agent="codex"} 0\n', text)
+
+    def test_runner_without_events_is_not_a_failure(self) -> None:
+        self.agent("codex", (1_000, 0, "{}"))
+        text = self.run_at(NOW)
+        self.assertIn('epic_tick_events_read_success{agent="codex"} 1\n', text)
+        self.assertIn('source="log"', text)
+
+    def test_event_checkpoints_go_with_their_agent(self) -> None:
+        home = self.agent("codex-2")
+        self.write_events(
+            home, "codex", {"event": "start", "tick": "1970-01-01T00:30:00Z"}
+        )
+        self.run_at(NOW)
+        checkpoint = self.root / "runtime/events-agents-codex-2.json"
+        self.assertTrue(checkpoint.exists())
+        shutil.rmtree(home)
+        self.run_at(NOW + 5)
+        self.assertFalse(checkpoint.exists())
+
+    def test_backoff_exports_active_delays_without_reasons(self) -> None:
+        home = self.agent("codex")
+        sha, other = "a" * 40, "b" * 40
+        (home / "codex-backoff.json").write_text(
+            json.dumps(
+                {
+                    f"pr:7:{sha}": {"at": 1_900, "until": 2_800, "reason": "SECRET"},
+                    f"pr:8:{sha}": {"at": 1_500, "reason": "old entry"},  # estimated
+                    f"pr:9:{sha}": {"at": 100, "until": 1_000, "reason": "expired"},
+                    f"issue:{URL}/issues/5": {
+                        "at": 1_900,
+                        "until": 2_500,
+                        "reason": "x",
+                    },
+                }
+            )
+        )
+        heads = {f"{URL}/pull/7": sha, f"{URL}/pull/8": other}
+        text = monitor.runner_metrics(
+            self.root, False, NOW, alive=lambda _: False, heads=heads
+        )
+        rows = [
+            line for line in text.splitlines() if line.startswith("epic_backoff_info")
+        ]
+        self.assertEqual(len(rows), 3)
+        self.assertIn(
+            f'epic_backoff_info{{agent="codex",current_head="true",estimated="false",'
+            f'head="{sha}",target="{URL}/pull/7"}} 2800',
+            text,
+        )
+        self.assertIn(
+            f'current_head="false",estimated="true",head="{sha}",target="{URL}/pull/8"}} 2400',
+            text,
+        )
+        self.assertIn(
+            f'current_head="unknown",estimated="false",head="",target="{URL}/issues/5"',
+            text,
+        )
+        self.assertNotIn("SECRET", text)
+        self.assertIn('epic_backoff_read_success{agent="codex"} 1\n', text)
+
+    def test_backoff_heads_are_unknown_before_a_github_poll(self) -> None:
+        home = self.agent("codex")
+        (home / "codex-backoff.json").write_text(
+            json.dumps(
+                {f"pr:7:{'a' * 40}": {"at": 1_900, "until": 2_800, "reason": "x"}}
+            )
+        )
+        text = monitor.runner_metrics(self.root, False, NOW, alive=lambda _: False)
+        self.assertIn('current_head="unknown"', text)
+
+    def test_bad_backoff_file_is_reported_and_collection_goes_on(self) -> None:
+        home = self.agent("codex")
+        (home / "codex-backoff.json").write_text(json.dumps({"rm -rf /": {"at": 1}}))
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW)
+        self.assertIn('epic_backoff_read_success{agent="codex"} 0\n', text)
+        self.assertIn('epic_agent_presence_info{agent="codex"', text)
+        self.assertNotIn("rm -rf", text)
+
+    def test_claude_agents_have_no_backoff_series(self) -> None:
+        self.agent("claude")
+        self.assertNotIn("epic_backoff", self.run_at(NOW))
+
+    def test_permission_decisions_are_counted_without_commands(self) -> None:
+        home = self.agent("claude")
+        log = home / "claude-permissions.log"
+        log.write_text("2026-09-28T10:00:00Z allow 'old' (history)\n")
+        self.run_at(NOW)  # baseline: history is not counted
+        with log.open("a") as out:
+            out.write("2026-09-28T11:00:00Z deny 'git push --force SECRET' (no)\n")
+            out.write("2026-09-28T11:01:00Z allow 'git push origin feat/x' (ok)\n")
+            out.write("2026-09-28T11:02:00Z deny 'gh pr merge 9' (no)\n")
+            out.write("garbage line\n")
+        text = self.run_at(NOW + 5)
+        self.assertIn(
+            'epic_permission_decisions_total{agent="claude",decision="deny"} 2\n', text
+        )
+        self.assertIn(
+            'epic_permission_decisions_total{agent="claude",decision="allow"} 1\n', text
+        )
+        self.assertIn('epic_permission_read_success{agent="claude"} 1\n', text)
+        self.assertNotIn("SECRET", text)
+
+    def test_permission_counters_exist_before_the_first_decision(self) -> None:
+        self.agent("claude")
+        text = self.run_at(NOW)
+        self.assertIn(
+            'epic_permission_decisions_total{agent="claude",decision="deny"} 0\n', text
+        )
+        self.assertIn('epic_permission_read_success{agent="claude"} 1\n', text)
+
+    def test_codex_agents_have_no_permission_series(self) -> None:
+        self.agent("codex")
+        self.assertNotIn("epic_permission", self.run_at(NOW))
+
+    def test_permission_log_is_a_second_loki_stream(self) -> None:
+        home = self.agent("claude-2")
+        (home / "claude-permissions.log").write_text("")
+        (self.agent("codex") / "claude-permissions.log").write_text("")  # not a gate
+        rows = json.loads(monitor.alloy_targets(agents.discover(self.root, NOW)))
+        streams = sorted(
+            (r["labels"]["agent"], r["labels"].get("stream", "runner")) for r in rows
+        )
+        self.assertEqual(
+            streams,
+            [("claude-2", "permissions"), ("claude-2", "runner"), ("codex", "runner")],
+        )
+
+    def test_deeply_nested_backoff_does_not_stop_collection(self) -> None:
+        # Codex review on PR 469: RecursionError escaped the collector loop.
+        (self.agent("codex") / "codex-backoff.json").write_text(
+            "[" * 20_000 + "]" * 20_000
+        )
+        self.agent("claude")
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW)
+        self.assertIn('epic_backoff_read_success{agent="codex"} 0\n', text)
+        self.assertIn('epic_agent_presence_info{agent="claude"', text)
+
+    def test_missing_events_after_restart_keep_counts_and_report_failure(self) -> None:
+        home = self.agent("codex")
+        self.write_events(home, "codex")  # empty file: baseline 0 from here
+        self.run_at(NOW)
+        tick = "1970-01-01T00:30:00Z"
+        self.write_events(
+            home,
+            "codex",
+            {"event": "start", "tick": tick},
+            {
+                "event": "finish",
+                "tick": tick,
+                "at": "1970-01-01T00:31:00Z",
+                "exit": 0,
+                "outcome": "ok",
+                "phase": "record",
+                "action": None,
+                "tokens": None,
+            },
+        )
+        ok = 'epic_ticks_total{agent="codex",outcome="ok"}'
+        self.assertIn(f"{ok} 1\n", self.run_at(NOW + 5))
+        (home / "codex-ticks.jsonl").unlink()
+        self.ledgers = monitor.Ledgers(self.root / "runtime")  # restart
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW + 10)
+        self.assertIn(f"{ok} 1\n", text)
+        self.assertIn('epic_tick_events_read_success{agent="codex"} 0\n', text)
+
     def test_registry_problems_are_published(self) -> None:
         (self.root / "claude.log").write_text("")
         self.agent("claude")
@@ -840,6 +1057,16 @@ class TaskContextTest(unittest.TestCase):
         text = monitor.github_metrics(self.state, NOW)
         self.assertIn(f'level="Subtask",target="{URL}/pull/417"', text)
         self.assertIn("epic_task_context_info{", text)
+
+
+class HeadsTest(unittest.TestCase):
+    def test_successful_github_poll_records_pr_heads(self) -> None:
+        state = snapshot(prs=[pull_request(7, "Codex")])
+        with tempfile.TemporaryDirectory() as directory:
+            monitor.LATEST.heads = None
+            self.addCleanup(setattr, monitor.LATEST, "heads", None)
+            self.assertTrue(monitor.collect_github(Path(directory), 5, lambda _: state))
+        self.assertEqual(monitor.LATEST.heads, {f"{URL}/pull/7": HEAD})
 
 
 class PublicationTest(unittest.TestCase):
