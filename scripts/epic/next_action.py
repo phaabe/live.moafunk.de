@@ -22,6 +22,12 @@ one, get actions. Everything else is frozen. No file or an empty file: all.
             or tickets and the leaves before it in the epic's batch order
   idle      nothing to do
 
+Inside each action the order is priority, then age: `priority::high`, then
+`priority::medium` (also no label), then `priority::low`; then the lowest PR or
+issue number (claims: lowest wave before the number). A PR takes the highest
+priority of its own labels and its `Issue:` tickets. Priority only orders; it
+never makes a PR or issue eligible.
+
 Usage:
   next_action.py --agent claude|codex        one JSON action
   next_action.py --status                    all pending actions, both agents
@@ -65,6 +71,10 @@ MAX_OPEN_PRS = 2
 PAUSE_FILE = Path.home() / ".epic-pause"
 FOCUS_FILE = Path.home() / ".epic-focus"
 ESCALATION_LABEL = "needs-anton"
+# Rank per priority label, lower first. No label counts as medium.
+PRIORITIES = {"priority::high": 0, "priority::medium": 1, "priority::low": 2}
+DEFAULT_PRIORITY = PRIORITIES["priority::medium"]
+PRIORITY_NAMES = {rank: name.split("::")[1] for name, rank in PRIORITIES.items()}
 
 VERDICT = re.compile(
     r"^Review: (APPROVED|CHANGES REQUESTED) by (Claude|Codex) at ([0-9a-f]{40})$"
@@ -114,10 +124,16 @@ class Action:
     sha: str | None = None
     issue: str | None = None
     comments: list[str] = field(default_factory=list)
+    # For --status only. Kept out of the JSON so runner fingerprints stay stable.
+    priority: int = DEFAULT_PRIORITY
 
     def to_json(self) -> str:
         return json.dumps(
-            {k: v for k, v in asdict(self).items() if v not in (None, [])}
+            {
+                k: v
+                for k, v in asdict(self).items()
+                if v not in (None, []) and k != "priority"
+            }
         )
 
 
@@ -192,6 +208,13 @@ def labels(item: dict[str, Any]) -> set[str]:
         if isinstance(name, str):
             names.add(name)
     return names
+
+
+def priority_rank(names: set[str]) -> int:
+    """Rank of the highest priority label; no label is medium."""
+    return min(
+        (PRIORITIES[n] for n in names if n in PRIORITIES), default=DEFAULT_PRIORITY
+    )
 
 
 def findings(
@@ -271,14 +294,19 @@ def read_focus(path: Path) -> frozenset[str]:
     return frozenset(line for line in stripped if line and not line.startswith("#"))
 
 
+def pr_labels(pr: dict[str, Any], issue_labels: dict[int, set[str]]) -> set[str]:
+    """A PR's own labels plus the labels of its `Issue:` tickets."""
+    found = set(labels(pr))
+    for n in issue_numbers(pr.get("body") or ""):
+        found |= issue_labels.get(n, set())
+    return found
+
+
 def in_focus(
     focus: frozenset[str], pr: dict[str, Any], issue_labels: dict[int, set[str]]
 ) -> bool:
     """A PR is in focus through its own labels or its `Issue:` tickets' labels."""
-    found = set(labels(pr))
-    for n in issue_numbers(pr.get("body") or ""):
-        found |= issue_labels.get(n, set())
-    return bool(found & focus)
+    return bool(pr_labels(pr, issue_labels) & focus)
 
 
 def decide(
@@ -297,13 +325,19 @@ def decide(
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
     peer = other(agent)
-    # Project boards may hold issues from other repositories with the same number.
+    # Linked tickets that are not on the board; fetch_state() reads their labels.
     issue_labels = {
-        i["content"]["number"]: labels(i)
-        for i in state.get("items", [])
-        if (i.get("content") or {}).get("type") == "Issue"
-        and ISSUE_URL.fullmatch(i["content"].get("url") or "")
+        int(n): set(names) for n, names in (state.get("linked_labels") or {}).items()
     }
+    # Project boards may hold issues from other repositories with the same number.
+    issue_labels.update(
+        {
+            i["content"]["number"]: labels(i)
+            for i in state.get("items", [])
+            if (i.get("content") or {}).get("type") == "Issue"
+            and ISSUE_URL.fullmatch(i["content"].get("url") or "")
+        }
+    )
     all_prs = [p for p in state.get("prs", []) if p.get("baseRefName") in BASES]
     # Escalated PRs get no PR action, but still link their issue and count as open.
     # So do PRs outside the focus: they are frozen, not forgotten.
@@ -315,60 +349,52 @@ def decide(
     ]
     mine = [p for p in prs if pr_author(p) == agent]
     theirs = [p for p in prs if pr_author(p) == peer]
-    ranked: dict[str, list[Action]] = {}
+    # Each kind's list is sorted by this key: priority, then age (number).
+    ranked: dict[str, list[tuple[tuple[Any, ...], Action]]] = {}
 
-    def add(kind: str, act: Action) -> None:
-        ranked.setdefault(kind, []).append(act)
+    def add(kind: str, act: Action, *order: Any) -> None:
+        ranked.setdefault(kind, []).append(((act.priority, *order), act))
+
+    def pr_action(p: dict[str, Any], kind: str, reason: str, **kw: Any) -> None:
+        rank = priority_rank(pr_labels(p, issue_labels))
+        n = p["number"]
+        add(
+            kind,
+            Action(kind, reason, pr=n, sha=p["headRefOid"], priority=rank, **kw),
+            n,
+        )
 
     for p in mine:
-        n, head = p["number"], p["headRefOid"]
+        head = p["headRefOid"]
         if p.get("isDraft"):
-            add("continue", Action("continue", "my draft PR", pr=n, sha=head))
+            pr_action(p, "continue", "my draft PR")
             continue
         theirs_v = verdicts(p, peer)
         latest = theirs_v[-1] if theirs_v else None
         rounds = len({v["sha"] for v in theirs_v if v["state"] == "CHANGES REQUESTED"})
         if latest and latest["sha"] == head and latest["state"] == "CHANGES REQUESTED":
             if rounds >= MAX_ROUNDS:
-                add(
+                pr_action(
+                    p,
                     "escalate",
-                    Action(
-                        "escalate",
-                        f"{rounds} changes-requested rounds; add label {ESCALATION_LABEL} and ask Anton",
-                        pr=n,
-                        sha=head,
-                        comments=[latest["url"]] if latest.get("url") else [],
-                    ),
+                    f"{rounds} changes-requested rounds; add label {ESCALATION_LABEL} and ask Anton",
+                    comments=[latest["url"]] if latest.get("url") else [],
                 )
                 continue
             previous = theirs_v[-2]["at"] if len(theirs_v) > 1 else None
-            add(
+            pr_action(
+                p,
                 "fix",
-                Action(
-                    "fix",
-                    f"{peer} requested changes for the current head",
-                    pr=n,
-                    sha=head,
-                    comments=findings(p, latest, previous),
-                ),
+                f"{peer} requested changes for the current head",
+                comments=findings(p, latest, previous),
             )
             continue
         checks = checks_state(p)
         if p.get("mergeable") == "CONFLICTING":
-            add(
-                "resolve-conflict",
-                Action(
-                    "resolve-conflict", "PR conflicts with its base", pr=n, sha=head
-                ),
-            )
+            pr_action(p, "resolve-conflict", "PR conflicts with its base")
             continue
         if checks == "failed":
-            add(
-                "fix-checks",
-                Action(
-                    "fix-checks", "checks failed on the current head", pr=n, sha=head
-                ),
-            )
+            pr_action(p, "fix-checks", "checks failed on the current head")
             continue
         if (
             latest
@@ -376,29 +402,15 @@ def decide(
             and latest["state"] == "APPROVED"
             and checks == "green"
         ):
-            add(
-                "merge",
-                Action(
-                    "merge",
-                    f"{peer} approved the current head; checks green",
-                    pr=n,
-                    sha=head,
-                ),
-            )
+            pr_action(p, "merge", f"{peer} approved the current head; checks green")
 
     for p in theirs:
         if p.get("isDraft"):
             continue
-        n, head = p["number"], p["headRefOid"]
+        head = p["headRefOid"]
         if not any(v["sha"] == head for v in verdicts(p, agent)):
-            add(
-                "review",
-                Action(
-                    "review",
-                    f"{peer}'s PR has no verdict from {agent} for its head",
-                    pr=n,
-                    sha=head,
-                ),
+            pr_action(
+                p, "review", f"{peer}'s PR has no verdict from {agent} for its head"
             )
 
     linked = set()
@@ -413,27 +425,49 @@ def decide(
         and ESCALATION_LABEL not in labels(i)
         and (not focus or labels(i) & focus)
     ]
-    items.sort(key=lambda i: (str(i.get("wave") or "9"), i["content"]["number"]))
     done = done_leaves(state)
     batch = batch_blockers(state, agent)
     for i in items:
         number, url = i["content"]["number"], i["content"]["url"]
         if number in linked:
             continue
+        rank = priority_rank(labels(i))
+        wave = str(i.get("wave") or "9")
         if i.get("status") == "In progress":
+            # Same queue and key as draft PRs: priority, then number.
             add(
                 "continue",
-                Action("continue", "my In progress leaf has no PR yet", issue=url),
+                Action(
+                    "continue",
+                    "my In progress leaf has no PR yet",
+                    issue=url,
+                    priority=rank,
+                ),
+                number,
             )
         elif i.get("status") == "Ready" and open_mine < MAX_OPEN_PRS:
             blockers = sorted((start_after(i) | batch.get(number, set())) - done)
             if blockers:
                 add(
                     "wait",
-                    Action("wait", f"starts after {', '.join(blockers)}", issue=url),
+                    Action(
+                        "wait",
+                        f"starts after {', '.join(blockers)}",
+                        issue=url,
+                        priority=rank,
+                    ),
+                    wave,
+                    number,
                 )
             else:
-                add("claim", Action("claim", "Ready leaf assigned to me", issue=url))
+                add(
+                    "claim",
+                    Action(
+                        "claim", "Ready leaf assigned to me", issue=url, priority=rank
+                    ),
+                    wave,
+                    number,
+                )
 
     order = [
         "escalate",
@@ -447,7 +481,11 @@ def decide(
     ]
     if include_waiting:
         order = [*order, "wait"]
-    actions = [a for kind in order for a in ranked.get(kind, [])]
+    actions = [
+        a
+        for kind in order
+        for _, a in sorted(ranked.get(kind, []), key=lambda entry: entry[0])
+    ]
     if any(a.action == "continue" for a in actions):
         actions = [
             a for a in actions if a.action != "claim"
@@ -584,6 +622,18 @@ def fetch_state() -> dict[str, Any]:
             + ["--json", "number,body", "--limit", "300"]
         )
     items = project_items()
+    # Priority and focus read the labels of a PR's `Issue:` tickets. Read the
+    # ones that are not on the board.
+    on_board = {
+        (item.get("content") or {}).get("number")
+        for item in items
+        if ISSUE_URL.fullmatch((item.get("content") or {}).get("url") or "")
+    }
+    linked_labels: dict[str, list[str]] = {}
+    for n in sorted({n for pr in prs for n in issue_numbers(pr.get("body") or "")}):
+        if n not in on_board:
+            issue = gh_json(["api", f"repos/{REPO}/issues/{n}"])
+            linked_labels[str(n)] = sorted(labels(issue))
     for item in items:
         # Only Ready issues need their readiness comments ("Start after ...").
         content = item.get("content") or {}
@@ -609,6 +659,7 @@ def fetch_state() -> dict[str, Any]:
     return {
         "prs": prs,
         "items": items,
+        "linked_labels": linked_labels,
         "merged_prs": merged,
         "batch_order": batch_order,
     }
@@ -625,7 +676,8 @@ def status(
         lines.append(f"\n{agent}:")
         for a in decide(agent, state, paused, include_waiting=True, focus=focus):
             target = f"PR {a.pr}" if a.pr else (a.issue or "")
-            lines.append(f"  {a.action:<17} {target:<55} {a.reason}")
+            level = PRIORITY_NAMES[a.priority] if target else ""
+            lines.append(f"  {a.action:<17} {level:<6} {target:<55} {a.reason}")
     unknown = [
         p["number"]
         for p in state.get("prs", [])

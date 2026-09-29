@@ -161,9 +161,18 @@ Priority, first match wins:
 6. `review`: the other agent's ready (non-draft) PR has no verdict from this
    agent for its current head.
 7. `continue`: the agent's draft PR, or its In progress issue without a PR.
-8. `claim`: a Ready issue with Executor set to this agent, lowest wave first.
-   Not while the agent has work to continue or two open PRs.
+8. `claim`: a Ready issue with Executor set to this agent. Not while the agent
+   has work to continue or two open PRs.
 9. `idle`.
+
+Order inside one step: priority label first (`priority::high`, then
+`priority::medium` or no priority label, then `priority::low`; with several,
+the highest counts), then the oldest (lowest PR or issue number). A PR takes
+the highest priority of its own labels and its `Issue:` tickets. `continue` is
+one queue for draft PRs and In progress issues. Claims sort by priority, then
+lowest wave, then number. Priority only orders work: it never skips a step and
+never bypasses pause, escalation, focus, "Start after", the batch order, lanes
+or the two-open-PR limit. `--status` shows each item's priority.
 
 Focus: Anton can limit both loops to some labels by writing them into
 `~/.epic-focus`, one per line (for example `project::Stream`). Then only issues

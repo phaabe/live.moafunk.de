@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import next_action
 from next_action import (
     MAX_ROUNDS,
     checks_state,
     comments_from_rest,
     decide,
+    priority_rank,
     read_focus,
     status,
 )
@@ -577,6 +581,224 @@ class BatchOrderTest(unittest.TestCase):
         state = self.state(338)
         state["batch_order"] = [BATCH.replace("Scope, in order", "Scope")]
         self.assertEqual(decide("Codex", state)[0].action, "claim")
+
+
+HIGH, MEDIUM, LOW = "priority::high", "priority::medium", "priority::low"
+
+
+def lbl(*names: str) -> list[dict]:
+    return [{"name": n} for n in names]
+
+
+class PriorityTest(unittest.TestCase):
+    """Inside one action: priority (high, medium or none, low), then age."""
+
+    def targets(self, agent: str, prs=(), items=(), **kw) -> list[tuple]:
+        state = {"prs": list(prs), "items": list(items), **kw}
+        return [(a.action, a.pr or a.issue) for a in decide(agent, state)]
+
+    def test_rank(self) -> None:
+        self.assertEqual(priority_rank({HIGH}), 0)
+        self.assertEqual(priority_rank({MEDIUM}), 1)
+        self.assertEqual(priority_rank(set()), 1)
+        self.assertEqual(priority_rank({"project::Stream"}), 1)
+        self.assertEqual(priority_rank({LOW}), 2)
+
+    def test_conflicting_labels_take_the_highest(self) -> None:
+        self.assertEqual(priority_rank({LOW, HIGH}), 0)
+        self.assertEqual(priority_rank({LOW, MEDIUM}), 1)
+
+    def test_older_pr_is_reviewed_first(self) -> None:
+        # `gh pr list` returns the newest first.
+        prs = [pr(7, "Codex"), pr(3, "Codex")]
+        self.assertEqual(self.targets("Claude", prs), [("review", 3), ("review", 7)])
+
+    def test_priority_pr_is_reviewed_before_older_pr(self) -> None:
+        prs = [pr(3, "Codex"), pr(7, "Codex", labels=lbl(HIGH))]
+        self.assertEqual(self.targets("Claude", prs)[0], ("review", 7))
+
+    def test_three_levels_and_no_label(self) -> None:
+        prs = [
+            pr(1, "Codex", labels=lbl(LOW)),
+            pr(2, "Codex"),
+            pr(3, "Codex", labels=lbl(MEDIUM)),
+            pr(4, "Codex", labels=lbl(HIGH)),
+        ]
+        self.assertEqual([t[1] for t in self.targets("Claude", prs)], [4, 2, 3, 1])
+
+    def test_pr_takes_priority_from_its_board_ticket(self) -> None:
+        prs = [pr(3, "Codex"), pr(7, "Codex")]  # tickets 903 and 907
+        items = [item(907, "Codex", "In progress", labels=[HIGH])]
+        self.assertEqual(self.targets("Claude", prs, items)[0], ("review", 7))
+
+    def test_pr_takes_priority_from_linked_ticket_off_the_board(self) -> None:
+        prs = [pr(3, "Codex"), pr(7, "Codex")]
+        state = {"linked_labels": {"907": [HIGH]}}
+        self.assertEqual(self.targets("Claude", prs, **state)[0], ("review", 7))
+
+    def test_ticket_label_beats_low_pr_label(self) -> None:
+        prs = [pr(3, "Codex"), pr(7, "Codex", labels=lbl(LOW))]
+        items = [item(907, "Codex", "In progress", labels=[HIGH])]
+        self.assertEqual(self.targets("Claude", prs, items)[0], ("review", 7))
+
+    def test_low_priority_pr_goes_last(self) -> None:
+        prs = [pr(3, "Codex", labels=lbl(LOW)), pr(7, "Codex")]
+        self.assertEqual(self.targets("Claude", prs)[0], ("review", 7))
+
+    def test_priority_keeps_action_order(self) -> None:
+        # A priority review never goes before a plain merge of my own PR.
+        prs = [
+            pr(5, "Codex", labels=lbl(HIGH)),
+            pr(9, "Claude", comments=[verdict("APPROVED", "Codex", A, "t1")]),
+        ]
+        self.assertEqual(self.targets("Claude", prs), [("merge", 9), ("review", 5)])
+
+    def test_merges_sorted_by_priority_then_age(self) -> None:
+        ok = [verdict("APPROVED", "Codex", A, "t1")]
+        prs = [
+            pr(9, "Claude", comments=ok),
+            pr(5, "Claude", comments=ok),
+            pr(8, "Claude", comments=ok, labels=lbl(HIGH)),
+        ]
+        self.assertEqual([t[1] for t in self.targets("Claude", prs)], [8, 5, 9])
+
+    def test_priority_in_progress_ticket_before_draft_pr(self) -> None:
+        prs = [pr(3, "Claude", isDraft=True)]
+        items = [item(20, "Claude", "In progress", labels=[HIGH])]
+        self.assertEqual(
+            self.targets("Claude", prs, items),
+            [("continue", f"{R}/20"), ("continue", 3)],
+        )
+
+    def test_continue_queue_is_oldest_first_without_priority(self) -> None:
+        prs = [pr(30, "Claude", isDraft=True)]
+        items = [item(20, "Claude", "In progress")]
+        self.assertEqual(
+            self.targets("Claude", prs, items),
+            [("continue", f"{R}/20"), ("continue", 30)],
+        )
+
+    def test_priority_claim_before_older_and_lower_wave(self) -> None:
+        items = [
+            item(10, "Claude", "Ready", "0"),
+            item(20, "Claude", "Ready", "1", labels=[HIGH]),
+            item(5, "Claude", "Ready", "0", labels=[LOW]),
+        ]
+        self.assertEqual(
+            [t[1] for t in self.targets("Claude", items=items)],
+            [f"{R}/20", f"{R}/10", f"{R}/5"],
+        )
+
+    def test_same_priority_claims_by_wave_then_number(self) -> None:
+        items = [
+            item(10, "Claude", "Ready", "1", labels=[HIGH]),
+            item(30, "Claude", "Ready", "0", labels=[HIGH]),
+            item(20, "Claude", "Ready", "0", labels=[HIGH]),
+        ]
+        self.assertEqual(
+            [t[1] for t in self.targets("Claude", items=items)],
+            [f"{R}/20", f"{R}/30", f"{R}/10"],
+        )
+
+    def test_priority_claim_not_before_own_fix_or_review(self) -> None:
+        fix = pr(1, "Claude", comments=[verdict("CHANGES REQUESTED", "Codex", A, "t1")])
+        items = [item(20, "Claude", "Ready", labels=[HIGH])]
+        self.assertEqual(first("Claude", [fix], items).action, "fix")
+        self.assertEqual(first("Claude", [pr(2, "Codex")], items).action, "review")
+
+    def test_priority_claim_not_while_work_continues(self) -> None:
+        items = [
+            item(20, "Claude", "Ready", labels=[HIGH]),
+            item(30, "Claude", "In progress"),
+        ]
+        self.assertEqual(self.targets("Claude", items=items), [("continue", f"{R}/30")])
+
+    def test_priority_claim_waits_for_start_after(self) -> None:
+        blocked = item(20, "Claude", "Ready", labels=[HIGH])
+        blocked["readiness"] = f"Start after {R}/19."
+        items = [blocked, item(30, "Claude", "Ready")]
+        self.assertEqual(self.targets("Claude", items=items), [("claim", f"{R}/30")])
+
+    def test_priority_claim_respects_open_pr_limit(self) -> None:
+        prs = [pr(1, "Claude"), pr(2, "Claude")]
+        items = [item(20, "Claude", "Ready", labels=[HIGH])]
+        self.assertEqual(first("Claude", prs, items).action, "idle")
+
+    def test_priority_does_not_bypass_pause(self) -> None:
+        items = [item(20, "Claude", "Ready", labels=[HIGH])]
+        self.assertEqual(first("Claude", items=items, paused=True).action, "stop")
+
+    def test_priority_does_not_bypass_focus(self) -> None:
+        prs = [pr(3, "Codex", labels=lbl(HIGH))]
+        items = [item(20, "Claude", "Ready", labels=[HIGH])]
+        state = {"prs": prs, "items": items}
+        self.assertEqual(decide("Claude", state, focus=STREAM)[0].action, "idle")
+
+    def test_priority_does_not_bypass_escalation(self) -> None:
+        prs = [pr(3, "Codex", labels=lbl(HIGH, "needs-anton"))]
+        self.assertEqual(first("Claude", prs).action, "idle")
+
+    def test_linked_ticket_off_the_board_counts_for_focus(self) -> None:
+        state = {"prs": [pr(3, "Codex")], "linked_labels": {"903": ["project::Stream"]}}
+        self.assertEqual(decide("Claude", state, focus=STREAM)[0].action, "review")
+
+    def test_priority_stays_out_of_the_action_json(self) -> None:
+        a = first("Claude", [pr(3, "Codex", labels=lbl(HIGH))])
+        self.assertEqual(
+            json.loads(a.to_json()),
+            {"action": "review", "reason": a.reason, "pr": 3, "sha": A},
+        )
+
+    def test_status_marks_priority(self) -> None:
+        state = {
+            "prs": [pr(3, "Codex", labels=lbl(HIGH)), pr(4, "Codex")],
+            "items": [item(20, "Claude", "Ready", labels=[LOW])],
+        }
+        lines = status(state, False).splitlines()
+        self.assertTrue(any("high" in x and "PR 3" in x for x in lines))
+        self.assertTrue(any("medium" in x and "PR 4" in x for x in lines))
+        self.assertTrue(any("low" in x and f"{R}/20" in x for x in lines))
+        idle = [x for x in lines if x.strip().startswith("idle")]
+        self.assertTrue(idle and not any("medium" in x for x in idle))
+
+
+class FetchLinkedLabelsTest(unittest.TestCase):
+    def test_reads_labels_only_for_linked_tickets_off_the_board(self) -> None:
+        calls: list[list[str]] = []
+        board = [item(903, "Codex", "In progress", labels=[HIGH])]
+        prs = [pr(3, "Codex"), pr(7, "Codex")]  # tickets 903 and 907
+        for p in prs:
+            p.pop("comments")
+
+        def run(args: list[str], timeout: int = 120) -> str:
+            calls.append(args)
+            if args[:2] == ["pr", "list"]:
+                open_prs = (
+                    "--state" in args and args[args.index("--state") + 1] == "open"
+                )
+                first_base = args[args.index("--base") + 1] == "dev/312-interim"
+                return json.dumps(prs if open_prs and first_base else [])
+            endpoint = args[-1] if args[-2:-1] != ["--jq"] else args[-3]
+            if endpoint.endswith("/comments?per_page=100"):
+                return json.dumps([[]])
+            if args[-2:] == ["--jq", "{comments}"]:
+                return json.dumps({"comments": 0})
+            if endpoint == "repos/phaabe/live.moafunk.de/issues/907":
+                return json.dumps({"labels": [{"name": LOW}]})
+            raise AssertionError(f"unexpected gh call {args}")
+
+        with (
+            patch.object(next_action, "run_gh", run),
+            patch.object(next_action, "project_items", lambda: board),
+        ):
+            state = next_action.fetch_state()
+        self.assertEqual(state["linked_labels"], {"907": [LOW]})
+        issue_reads = [
+            a for a in calls if a[-1].endswith(("/issues/903", "/issues/907"))
+        ]
+        self.assertEqual(
+            issue_reads, [["api", "repos/phaabe/live.moafunk.de/issues/907"]]
+        )
 
 
 def rest(i: int, body: str, edited: bool = False) -> dict:
