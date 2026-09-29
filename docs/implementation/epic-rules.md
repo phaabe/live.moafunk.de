@@ -220,7 +220,8 @@ the start state: a target that was closed or changed (`updated_at`) since
 selection is skipped.
 
 Fairness: the selector lists all actions in order (`--candidates`). The tick
-runs the first one whose target is free, unchanged and no suppressed repeat. A
+runs the first one whose target is free, unchanged and no suppressed repeat.
+It tries every candidate, with no cap, so later ones are never starved. A
 repeat record is kept per target, so one blocked target never blocks the
 others.
 
