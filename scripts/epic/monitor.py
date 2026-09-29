@@ -368,24 +368,45 @@ class Ledgers:
         self.runtime = runtime
         self.ledgers: dict[tuple[str, Path], ticks.LogLedger] = {}
 
+    def opener(self, agent: agents.Agent, name: str) -> Callable[[], BinaryIO]:
+        def opener() -> BinaryIO:
+            stream = agent.open(name)
+            if stream is None:
+                raise FileNotFoundError(agent.home / name)
+            return stream
+
+        return opener
+
     def get(self, agent: agents.Agent) -> ticks.LogLedger:
+        """The legacy log ledger."""
         key = (agent.id, agent.log)
         if key not in self.ledgers:
-
-            def opener() -> BinaryIO:
-                stream = agent.open(agent.log_name)
-                if stream is None:
-                    raise FileNotFoundError(agent.log)
-                return stream
-
             self.ledgers[key] = ticks.LogLedger(
                 agent.id,
                 agent.log,
                 self.runtime / agent.checkpoint_name,
                 action_labels,
-                opener,
+                self.opener(agent, agent.log_name),
             )
         return self.ledgers[key]
+
+    def events(self, agent: agents.Agent) -> ticks.EventLedger:
+        """The runner's tick events. Codex cannot write the state dir; the
+        Claude model might, so its events are marked unverified."""
+        path = agent.home / agent.events_name
+        key = (agent.id, path)
+        if key not in self.ledgers:
+            self.ledgers[key] = ticks.EventLedger(
+                agent.id,
+                path,
+                self.runtime / agent.events_checkpoint_name,
+                action_labels,
+                self.opener(agent, agent.events_name),
+                source="events" if agent.kind == "codex" else "events_unverified",
+            )
+        ledger = self.ledgers[key]
+        assert isinstance(ledger, ticks.EventLedger)
+        return ledger
 
     def prune(self, active: list[agents.Agent]) -> None:
         """Drop ledgers and checkpoints of agents that are gone.
@@ -394,16 +415,21 @@ class Ledgers:
         with a new inode, which would count old ticks again. This also covers
         agents that vanished while the collector was stopped.
         """
-        keep = {(agent.id, agent.log) for agent in active}
+        keep = {(a.id, a.log) for a in active} | {
+            (a.id, a.home / a.events_name) for a in active
+        }
         for key in [key for key in self.ledgers if key not in keep]:
             del self.ledgers[key]
-        names = {agent.checkpoint_name for agent in active}
-        for path in self.runtime.glob("ticks-*.json"):
-            try:
-                if path.name not in names:
-                    path.unlink()
-            except OSError:
-                logging.warning("Cannot remove an old tick checkpoint")
+        names = {a.checkpoint_name for a in active} | {
+            a.events_checkpoint_name for a in active
+        }
+        for pattern in ("ticks-*.json", "events-*.json"):
+            for path in self.runtime.glob(pattern):
+                try:
+                    if path.name not in names:
+                        path.unlink()
+                except OSError:
+                    logging.warning("Cannot remove an old tick checkpoint")
 
 
 def runner_sample(
@@ -475,8 +501,8 @@ def runner_sample(
     return runner
 
 
-def last_start(ledger: ticks.LogLedger | None) -> float | None:
-    state = ledger.state if ledger else None
+def last_start(view: ticks.TickView | None) -> float | None:
+    state = view.state if view else None
     if not state:
         return None
     try:
@@ -508,13 +534,13 @@ def agent_metrics(
     if agent.retired_at is not None:
         return Row(agent, "retired")
     runner = runner_sample(metrics, agent, now, alive)
-    ledger = ledgers.get(agent) if ledgers is not None else None
-    if ledger is not None:
-        ledger_metrics(metrics, ledger, now)
+    view = None
+    if ledgers is not None:
+        view = ledger_metrics(metrics, ledgers.get(agent), ledgers.events(agent), now)
     budget = runner.budget or agent.budget
     metrics.add("agent_budget_seconds", budget, agent=name)
     started = max(
-        (t for t in (runner.started, last_start(ledger)) if t is not None),
+        (t for t in (runner.started, last_start(view)) if t is not None),
         default=None,
     )
     # No tick starts during a pause, so a pause never makes an agent late.
@@ -537,7 +563,7 @@ def agent_metrics(
                 "agent_next_tick_seconds", started + agent.interval - now, agent=name
             )
     row = Row(agent, presence, runner.action if presence == "running" else None)
-    recent = ledger.ticks[-ticks.RECENT :] if ledger is not None else []
+    recent = view.state.get("ticks", [])[-ticks.RECENT :] if view else []
     for age, tick in enumerate(reversed(recent)):
         metrics.add(
             "agent_recent",
@@ -684,26 +710,56 @@ def publish_local(args: argparse.Namespace, ledgers: Ledgers) -> None:
     )
 
 
-def ledger_metrics(metrics: Metrics, ledger: ticks.LogLedger, now: float) -> None:
-    """Read new log lines, persist the checkpoint, then publish the ledger."""
+def ledger_metrics(
+    metrics: Metrics,
+    log: ticks.LogLedger,
+    events: ticks.EventLedger,
+    now: float,
+) -> ticks.TickView:
+    """Read new events and log lines, persist checkpoints, publish the ticks.
+
+    Events are read first: once a runner writes them, the log ledger stops
+    counting, so a tick is never counted twice.
+    """
+    name = log.agent
     ok = True
     try:
-        ledger.update(now)
-        ledger.save()
+        events.update(now)
+        events.save()
+    except FileNotFoundError:
+        # A runner without events yet is fine; the log still covers it. A
+        # file that vanished after events were read is a read failure.
+        ok = not events.active
+        if not ok:
+            logging.warning("Tick events of %s are missing", name)
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        logging.warning("Cannot read %s tick events", name)
+        ok = False
+    metrics.add("tick_events_read_success", int(ok), agent=name)
+    metrics.add(
+        "tick_events_rejected_total", events.rejected, metric_type="counter", agent=name
+    )
+    log.counting = not events.active
+    ok = True
+    try:
+        log.update(now)
+        log.save()
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
         # Keep the last ledger; a missing or unreadable log is reported, not zeroed.
-        logging.warning("Cannot read %s tick ledger", ledger.agent)
+        logging.warning("Cannot read %s tick ledger", name)
         ok = False
-    metrics.add("tick_ledger_read_success", int(ok), agent=ledger.agent)
+    metrics.add("tick_ledger_read_success", int(ok), agent=name)
+    view = ticks.merge(log, events)
     sample = Metrics()
     try:
-        ticks.export(sample, ledger, now)
+        ticks.export(sample, view, now)
     except (ValueError, KeyError, TypeError, OverflowError):
-        logging.warning("Cannot export %s tick ledger", ledger.agent)
-        metrics.add("tick_ledger_export_success", 0, agent=ledger.agent)
-        return
+        logging.warning("Cannot export %s tick ledger", name)
+        metrics.add("tick_ledger_export_success", 0, agent=name)
+        return view
     metrics.merge(sample)
-    metrics.add("tick_ledger_export_success", 1, agent=ledger.agent)
+    metrics.add("tick_ledger_export_success", 1, agent=name)
+    return view
 
 
 def github_metrics(state: Json, now: float) -> str:

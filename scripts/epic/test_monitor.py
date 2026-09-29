@@ -503,6 +503,74 @@ class AgentRowsTest(unittest.TestCase):
                 seen.append(family)
         self.assertEqual(text.count("# TYPE epic_agent_info gauge"), 1)
 
+    def write_events(self, home: Path, kind: str, *lines: dict[str, object]) -> None:
+        with (home / f"{kind}-ticks.jsonl").open("a") as out:
+            for line in lines:
+                out.write(json.dumps({"v": 1, **line}) + "\n")
+
+    def test_events_are_the_source_once_a_runner_writes_them(self) -> None:
+        codex = self.agent("codex")
+        claude = self.agent("claude")
+        for home in (codex, claude):
+            (home / f"{home.name}-ticks.jsonl").write_text("")
+        self.run_at(NOW)
+        tick = "1970-01-01T00:30:00Z"
+        for home, kind in ((codex, "codex"), (claude, "claude")):
+            self.write_events(
+                home,
+                kind,
+                {"event": "start", "tick": tick},
+                {
+                    "event": "finish",
+                    "tick": tick,
+                    "at": "1970-01-01T00:31:00Z",
+                    "exit": 75,
+                    "outcome": "blocked",
+                    "phase": "result",
+                    "action": "fix",
+                    "pr": 5,
+                    "issue": None,
+                    "tokens": 10,
+                },
+                {"event": "finish", "tick": tick},  # orphan: rejected
+            )
+        text = self.run_at(NOW + 5)
+        self.assertIn('source="events"', text)
+        self.assertIn('source="events_unverified"', text)
+        self.assertIn('epic_ticks_total{agent="codex",outcome="blocked"} 1\n', text)
+        self.assertIn('epic_tick_events_rejected_total{agent="codex"} 1\n', text)
+        self.assertIn('epic_tick_events_read_success{agent="claude"} 1\n', text)
+        self.assertIn('outcome_text="blocked 75 · result"', text)
+
+    def test_vanished_events_file_is_a_read_failure(self) -> None:
+        home = self.agent("codex")
+        self.write_events(
+            home, "codex", {"event": "start", "tick": "1970-01-01T00:30:00Z"}
+        )
+        self.run_at(NOW)
+        (home / "codex-ticks.jsonl").unlink()
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW + 5)
+        self.assertIn('epic_tick_events_read_success{agent="codex"} 0\n', text)
+
+    def test_runner_without_events_is_not_a_failure(self) -> None:
+        self.agent("codex", (1_000, 0, "{}"))
+        text = self.run_at(NOW)
+        self.assertIn('epic_tick_events_read_success{agent="codex"} 1\n', text)
+        self.assertIn('source="log"', text)
+
+    def test_event_checkpoints_go_with_their_agent(self) -> None:
+        home = self.agent("codex-2")
+        self.write_events(
+            home, "codex", {"event": "start", "tick": "1970-01-01T00:30:00Z"}
+        )
+        self.run_at(NOW)
+        checkpoint = self.root / "runtime/events-agents-codex-2.json"
+        self.assertTrue(checkpoint.exists())
+        shutil.rmtree(home)
+        self.run_at(NOW + 5)
+        self.assertFalse(checkpoint.exists())
+
     def test_registry_problems_are_published(self) -> None:
         (self.root / "claude.log").write_text("")
         self.agent("claude")

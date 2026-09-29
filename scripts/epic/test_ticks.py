@@ -599,3 +599,155 @@ class LedgerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def event(kind: str, start: float, **fields: object) -> str:
+    data: dict[str, object] = {"v": 1, "event": kind, "tick": iso(start)}
+    if kind == "finish":
+        data.update(
+            at=iso(start + 60),
+            exit=0,
+            outcome="ok",
+            phase="record",
+            action="review",
+            pr=7,
+            issue=None,
+            tokens=None,
+        )
+    data.update(fields)
+    return json.dumps(data) + "\n"
+
+
+class EventLedgerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.file = self.root / "codex-ticks.jsonl"
+        self.file.write_text("")
+        self.log = self.root / "codex.log"
+        self.log.write_text("")
+
+    def events(self) -> ticks.EventLedger:
+        return ticks.EventLedger(
+            "codex",
+            self.file,
+            self.root / "runtime/events-codex.json",
+            monitor.action_labels,
+            source="events",
+        )
+
+    def append(self, *lines: str) -> None:
+        with self.file.open("a") as out:
+            out.write("".join(lines))
+
+    def test_finish_gives_real_end_and_runner_outcome(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)  # baseline: counters start here
+        self.append(
+            event("start", NOON),
+            event(
+                "finish", NOON, exit=75, outcome="blocked", phase="result", tokens=1234
+            ),
+        )
+        ledger.update(NOON + 300)
+        [t] = ledger.ticks
+        self.assertEqual(
+            (t["end"], t["outcome"], t["phase"], t["exit"]),
+            (NOON + 60, "blocked", "result", 75),
+        )
+        self.assertEqual(
+            (t["action"], t["target"], t["tokens"]), ("review", f"{URL}/pull/7", 1234)
+        )
+        self.assertEqual(ledger.state["totals"]["blocked"], 1)
+        self.assertEqual(ledger.rejected, 0)
+        self.assertTrue(ledger.active)
+
+    def test_invalid_events_are_rejected_and_counted(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append(
+            "not json\n",
+            json.dumps({"v": 2, "event": "start", "tick": iso(NOON)}) + "\n",
+            event("finish", NOON),  # orphan finish
+            event("start", NOON),
+            event("finish", NOON + 5),  # other tick
+            event("finish", NOON, at=iso(NOON - 1)),  # before its start
+            event("finish", NOON, outcome="interrupted"),
+            event("finish", NOON, phase="thinking"),
+            event("finish", NOON, exit=True),
+            event("finish", NOON, tokens=-1),
+            event("start", NOON - 60),  # out of order
+            event("pause", NOON),
+        )
+        ledger.update(NOON + 300)
+        self.assertEqual(ledger.rejected, 11)
+        self.assertEqual(ledger.ticks, [])
+        self.assertIsNotNone(ledger.state["open"])  # the valid start stays open
+
+    def test_start_without_finish_is_interrupted(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append(event("start", NOON), event("start", NOON + 600))
+        ledger.update(NOON + 700)
+        [t] = ledger.ticks
+        self.assertEqual((t["outcome"], t["end"]), ("interrupted", None))
+        self.assertEqual(ledger.state["open"]["tick"], iso(NOON + 600))
+
+    def test_history_before_the_baseline_is_not_counted(self) -> None:
+        self.append(event("start", NOON), event("finish", NOON))
+        ledger = self.events()
+        ledger.update(NOON + 300)
+        self.assertEqual(len(ledger.ticks), 1)
+        self.assertEqual(sum(ledger.state["totals"].values()), 0)
+
+    def test_restart_keeps_rejections_out_of_the_replay(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append("bad\n", event("start", NOON), event("finish", NOON))
+        ledger.update(NOON + 300)
+        ledger.save()
+        again = self.events()
+        again.update(NOON + 600)
+        self.assertEqual((len(again.ticks), again.rejected), (1, 0))
+        self.assertEqual(again.state["totals"]["ok"], 1)
+
+    def test_merge_counts_each_tick_once_and_marks_the_source(self) -> None:
+        log = ticks.LogLedger(
+            "codex",
+            self.log,
+            self.root / "runtime/ticks-codex.json",
+            monitor.action_labels,
+        )
+        events = self.events()
+        log.update(NOON - 3600)
+        events.update(NOON - 3600)
+        with self.log.open("a") as out:
+            out.write(tick(NOON - 1800, 1))  # old runner: log only
+        log.update(NOON - 1700)
+        # New runner: the tick is in the log and in the events.
+        with self.log.open("a") as out:
+            out.write(tick(NOON, 0))
+        self.append(event("start", NOON), event("finish", NOON))
+        events.update(NOON + 300)
+        log.counting = not events.active
+        log.update(NOON + 300)
+        view = ticks.merge(log, events)
+        self.assertEqual(
+            [(t["outcome"], t.get("source", "log")) for t in view.state["ticks"]],
+            [("error", "log"), ("ok", "events")],
+        )
+        self.assertEqual(view.state["totals"]["ok"], 1)
+        self.assertEqual(view.state["totals"]["error"], 1)
+        metrics = Metrics()
+        ticks.export(metrics, view, NOON + 300)
+        samples = metrics.samples()
+        self.assertEqual(samples['epic_ticks_total{agent="codex",outcome="ok"}'], 1)
+        self.assertTrue(any('source="events"' in key for key in samples))
+
+    def test_merge_without_events_is_the_log(self) -> None:
+        log = ticks.LogLedger(
+            "codex", self.log, self.root / "runtime/t.json", monitor.action_labels
+        )
+        log.update(NOON)
+        self.assertIs(ticks.merge(log, self.events()).state, log.state)

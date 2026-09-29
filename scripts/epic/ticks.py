@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 import json
 import logging
 import math
@@ -175,6 +176,8 @@ class LogLedger:
         self.opener = opener or (lambda: self.log.open("rb"))
         self.state: Json | None = None
         self.dirty = False
+        # False once the runner writes events: then only events are counted.
+        self.counting = True
 
     def fresh(self, now: float, size: int) -> Json:
         return {
@@ -323,30 +326,56 @@ class LogLedger:
         phase = ""
         if kind in FAILURES:
             phase = "select" if tick["gh_failed"] else "unknown"
+        self.record(
+            tick["tick"],
+            # The log has no finish time; a live read is up to one cycle late.
+            now if live else None,
+            exit_code,
+            kind,
+            phase,
+            tick["action"],
+            tick["target"],
+            tick["tokens"],
+            live and self.counting,
+        )
+
+    def record(
+        self,
+        tick: str,
+        end: float | None,
+        exit_code: int | None,
+        kind: str,
+        phase: str,
+        action: str,
+        target: str,
+        tokens: int | None,
+        counted: bool,
+    ) -> None:
+        state = self.state
+        assert state is not None
         # Starts can share a second; the exported label must stay unique. The
         # export window is this tick plus the RECENT - 1 before it.
         taken = {t["id"] for t in state["ticks"][-(RECENT - 1) :]}
-        tick_id, n = tick["tick"], 1
+        tick_id, n = tick, 1
         while tick_id in taken:
             n += 1
-            tick_id = f"{tick['tick']}#{n}"
+            tick_id = f"{tick}#{n}"
         state["ticks"].append(
             {
                 "id": tick_id,
-                "tick": tick["tick"],
-                "start": utc(tick["tick"]),
-                # The log has no finish time; a live read is up to one cycle late.
-                "end": now if live else None,
+                "tick": tick,
+                "start": utc(tick),
+                "end": end,
                 "exit": exit_code,
                 "outcome": kind,
                 "phase": phase,
-                "action": tick["action"],
-                "target": tick["target"],
-                "tokens": tick["tokens"],
+                "action": action,
+                "target": target,
+                "tokens": tokens,
             }
         )
         del state["ticks"][:-LEDGER_SIZE]
-        if live:
+        if counted:
             state["totals"][kind] += 1
 
     def save(self) -> None:
@@ -370,16 +399,198 @@ class LogLedger:
         return self.state["ticks"] if self.state else []
 
 
+# What a runner may name in an event (see tick_events.py). "interrupted" is
+# never written: the ledger infers it from a start without a finish.
+EVENT_OUTCOMES = ("ok", "blocked", "timeout", "killed", "error")
+PHASES = (
+    "lock",
+    "refresh",
+    "select",
+    "quota",
+    "backoff",
+    "gate",
+    "model",
+    "result",
+    "verify",
+    "record",
+    "unknown",
+)
+TICK_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+
+
+class EventLedger(LogLedger):
+    """Incremental reader of a runner's tick events (`<kind>-ticks.jsonl`).
+
+    Same checkpoint and counting rules as the log ledger; each line is one
+    JSON event. A line is checked after the fact (the lock is gone by then):
+    schema and enums, one finish per start, finish after start, starts in
+    order. Anything else is rejected, counted and skipped.
+    """
+
+    def __init__(self, *args: Any, source: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.source = source
+        self.rejected = 0
+        self.pending = 0
+
+    @property
+    def active(self) -> bool:
+        """The runner writes events, so they are the counted source."""
+        return bool(self.state and (self.state["ticks"] or self.state["open"]))
+
+    def update(self, now: float) -> None:
+        self.pending = 0
+        super().update(now)
+        # Rejections of a read that was rolled back are not counted.
+        self.rejected += self.pending
+
+    def reject(self) -> None:
+        self.pending += 1
+
+    def feed(self, line: str, end: int, now: float) -> None:
+        state = self.state
+        assert state is not None
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return self.reject()
+        if not isinstance(event, dict) or event.get("v") != 1:
+            return self.reject()
+        tick = event.get("tick")
+        if not isinstance(tick, str) or not TICK_TIME.fullmatch(tick):
+            return self.reject()
+        try:
+            start = utc(tick)
+        except ValueError:
+            return self.reject()
+        if event.get("event") == "start":
+            previous = state["open"]["tick"] if state["open"] else None
+            if previous is None and state["ticks"]:
+                previous = state["ticks"][-1]["tick"]
+            if previous is not None and start < utc(previous):
+                return self.reject()
+            if state["open"] is not None:
+                self.finish(None, end, now)  # no finish before the next start
+            state["open"] = dict.fromkeys(OPEN_KEYS, False) | {
+                "tick": tick,
+                "action": "",
+                "target": "",
+                "tokens": None,
+            }
+            return None
+        if event.get("event") != "finish":
+            return self.reject()
+        if state["open"] is None or state["open"]["tick"] != tick:
+            return self.reject()  # orphan finish
+        values = self.finish_values(event, start)
+        if values is None:
+            return self.reject()
+        state["open"] = None
+        self.record(tick, *values, end > state["baseline"])
+        return None
+
+    def finish_values(self, event: Json, start: float) -> tuple[Any, ...] | None:
+        at, code, tokens = event.get("at"), event.get("exit"), event.get("tokens")
+        if not isinstance(at, str) or not TICK_TIME.fullmatch(at):
+            return None
+        try:
+            finished = utc(at)
+        except ValueError:
+            return None
+        if (
+            finished < start
+            or type(code) is not int
+            or not 0 <= code <= 255
+            or event.get("outcome") not in EVENT_OUTCOMES
+            or event.get("phase") not in PHASES
+            or not (tokens is None or (type(tokens) is int and 0 <= tokens < 10**15))
+        ):
+            return None
+        action, target = "", ""
+        if event.get("action") is not None:
+            try:
+                labels = self.normalize(
+                    {
+                        "action": event["action"],
+                        "pr": event.get("pr"),
+                        "issue": event.get("issue"),
+                    }
+                )
+            except (ValueError, TypeError):
+                return None
+            action, target = labels["action"], labels["target"]
+        return (
+            finished,
+            code,
+            event["outcome"],
+            event["phase"],
+            action,
+            target,
+            tokens,
+        )
+
+    def finish(self, exit_code: int | None, end: int, now: float) -> None:
+        """A start without a finish: the runner was stopped hard."""
+        state = self.state
+        assert state is not None
+        tick, state["open"] = state["open"], None
+        live = end > state["baseline"]
+        self.record(
+            tick["tick"], None, None, "interrupted", "unknown", "", "", None, live
+        )
+
+
+@dataclass
+class TickView:
+    """The ticks one agent exports: legacy log history, then events."""
+
+    agent: str
+    state: Json
+
+
+def merge(log: LogLedger, events: EventLedger | None) -> TickView:
+    """Log ticks before the first event, then event ticks; totals of both.
+
+    The log ledger stops counting once events exist, so a tick is counted by
+    exactly one of them.
+    """
+    if events is None or not events.active or events.state is None:
+        return TickView(log.agent, log.state or {})
+    first = events.state["open"]["tick"] if events.state["open"] else None
+    if events.state["ticks"]:
+        first = events.state["ticks"][0]["tick"]
+    cutoff = utc(first) if first else math.inf
+    older = [t for t in log.ticks if t["start"] < cutoff]
+    newer = [t | {"source": events.source} for t in events.state["ticks"]]
+    log_state = log.state or {}
+    totals = dict.fromkeys(SEVERITY, 0)
+    for source in (log_state.get("totals", {}), events.state["totals"]):
+        for kind, count in source.items():
+            totals[kind] += count
+    return TickView(
+        log.agent,
+        {
+            "ticks": (older + newer)[-LEDGER_SIZE:],
+            "totals": totals,
+            "coverage_start": min(
+                log_state.get("coverage_start", math.inf),
+                events.state["coverage_start"],
+            ),
+            "open": events.state["open"],
+        },
+    )
+
+
 def hour_label(bucket: float) -> tuple[str, str]:
     """Local day and hour of a UTC hour; the repeated autumn hour gets "b"."""
     local = datetime.fromtimestamp(bucket, tz=LOCAL)
     return local.strftime("%Y-%m-%d"), f"{local.hour:02d}" + ("b" if local.fold else "")
 
 
-def export(metrics: Sink, ledger: LogLedger, now: float) -> None:
+def export(metrics: Sink, ledger: LogLedger | TickView, now: float) -> None:
     """Publish counters and ledger-derived gauges for one agent."""
     state = ledger.state
-    if state is None:
+    if not state:
         return
     agent = ledger.agent
     for kind in SEVERITY:
@@ -407,7 +618,7 @@ def export(metrics: Sink, ledger: LogLedger, now: float) -> None:
         phase=last["phase"],
         action=last["action"],
         target=last["target"],
-        source="log",
+        source=last.get("source", "log"),
     )
     failures = 0
     for tick in reversed(ticks):
@@ -465,5 +676,5 @@ def export(metrics: Sink, ledger: LogLedger, now: float) -> None:
             exit="" if tick["exit"] is None else str(tick["exit"]),
             phase=tick["phase"],
             tokens="" if tick["tokens"] is None else str(tick["tokens"]),
-            source="log",
+            source=tick.get("source", "log"),
         )
