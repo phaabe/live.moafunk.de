@@ -116,6 +116,10 @@ class RunnerMetricsTest(unittest.TestCase):
         (self.root / "claude.lock").mkdir()
         text = monitor.runner_metrics(self.root, False, NOW)
         self.assertIn('epic_runner_state{agent="claude",state="unknown"} 1\n', text)
+        # Codex review round 3: an ownerless lock looked like a late agent.
+        self.assertIn(
+            'epic_agent_presence_info{agent="claude",presence="unknown"} 1\n', text
+        )
 
     def test_malformed_owner_does_not_hide_other_agent(self) -> None:
         for owner in (

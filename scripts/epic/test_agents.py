@@ -141,6 +141,16 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(registry.conflicts, ["claude"])
         self.assertEqual(registry.rejected["conflict"], 1)
 
+    def test_old_retirement_keeps_the_id_from_legacy_files(self) -> None:
+        # Codex review round 3: after 24 h the legacy log revived "claude".
+        (self.root / "claude.log").write_text("")
+        agents.register(self.root, "claude", NOW)
+        agents.retire(self.root, "claude", NOW)
+        later = NOW + agents.RETIRED_KEEP + 1
+        registry = agents.discover(self.root, later)
+        self.assertEqual(registry.agents, [])
+        self.assertEqual(registry.conflicts, ["claude"])
+
     def test_limit_keeps_legacy_and_oldest_registrations(self) -> None:
         (self.root / "codex.log").write_text("")
         for i in range(13):

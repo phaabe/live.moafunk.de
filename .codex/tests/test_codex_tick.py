@@ -442,6 +442,15 @@ class TickTests(unittest.TestCase):
         self.assertTrue((custom / "codex-result.json").exists())
         self.assertFalse(self.state.exists())
 
+    def test_relative_state_dir_is_resolved_before_changing_directory(self) -> None:
+        # Codex review round 3: the runner cds to the checkout after start.
+        self.env["EPIC_STATE_DIR"] = "relative state"
+        self.assertEqual(self.run_tick().returncode, 0)  # cwd is self.home
+        custom = self.home / "relative state"
+        self.assertIn("tick: finished exit=0", (custom / "codex.log").read_text())
+        self.assertTrue((custom / "codex-gate.json").exists())
+        self.assertFalse((custom / "codex.lock").exists())
+
     def test_unset_state_dir_uses_the_home_default(self) -> None:
         del self.env["EPIC_STATE_DIR"]
         self.assertEqual(self.run_tick().returncode, 0)

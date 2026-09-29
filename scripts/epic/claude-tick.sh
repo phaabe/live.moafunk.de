@@ -24,6 +24,8 @@ select_timeout=${EPIC_SELECT_TIMEOUT_SECONDS:-120}
 # Optional agent id (claude, claude-2, ...). A registered agent keeps the same
 # files as the legacy state dir in its own folder, agents/<id>/.
 agent_id=${EPIC_AGENT_ID:-}
+# The runner changes directory later; keep every path absolute.
+[[ "$state_dir" == /* ]] || state_dir="${PWD}/${state_dir}"
 registry_dir=$state_dir
 
 if [[ -e "${HOME}/.epic-pause" ]]; then

@@ -150,7 +150,7 @@ order):
 | `idle` | no tick runs, and the last tick start is within `2 × interval + budget` |
 | `late` | no tick start for longer than `2 × interval + budget_seconds`, loop not paused: the schedule may be broken |
 | `new` | registered, but no tick seen yet (becomes `late` after the same limit) |
-| `unknown` | the lock or gate could not be read this cycle; never shown as idle or late |
+| `unknown` | the lock or gate could not be read this cycle, or a lock has no owner; never shown as idle or late |
 | `retired` | `retired_at` is set |
 
 - `late` is the "is it still alive?" signal. There is no heartbeat besides
@@ -606,6 +606,14 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 | round 1 #5 open after a restart | delete every checkpoint without a current agent at once |
 | blocker: an unreadable agent folder stops collection | all probes of an entry inside the per-entry boundary |
 | failed runner read shown as idle or late | new presence `unknown` |
+
+### PR 2 review, round 3
+
+| Codex finding | Change |
+|---|---|
+| lock without owner shown as idle or late | also presence `unknown` |
+| old retirement let legacy files revive the id | every valid registration owns its id, shown or not |
+| relative `EPIC_STATE_DIR` broke runners after `cd` | runners make the state dir absolute first |
 
 ## Appendix — panel spec from design v2
 

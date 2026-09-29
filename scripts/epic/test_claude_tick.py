@@ -254,6 +254,18 @@ class ClaudeTickTest(unittest.TestCase):
             self.calls_made(),
             [["git", "pull -q --ff-only"], ["select"], ["gate", "check"]],
         )
+    def test_relative_state_dir_is_resolved_before_changing_directory(self) -> None:
+        runner = subprocess.Popen(
+            ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")],
+            env={**self.env, "EPIC_STATE_DIR": "relative state"},
+            cwd=self.root,
+        )
+        self.assertEqual(runner.wait(timeout=30), 0)
+        custom = self.root / "relative state"
+        self.assertIn("tick: finished exit=0", (custom / "claude.log").read_text())
+        self.assertFalse((custom / "claude.lock").exists())
+        self.assertFalse((self.repo / "relative state").exists())
+
     def test_unset_state_dir_uses_the_home_default(self) -> None:
         env = {k: v for k, v in self.env.items() if k != "EPIC_STATE_DIR"}
         runner = subprocess.Popen(

@@ -252,6 +252,9 @@ def discover(state_dir: Path, now: float) -> Registry:
     rejected: Counter[str] = Counter()
     active: list[Agent] = []
     retired: list[Agent] = []
+    # Every valid registration owns its id, even when too old to show, so
+    # old legacy files never bring a retired id back.
+    ids: set[str] = set()
     try:
         folder = walk(state_dir, ("agents",))
         try:
@@ -280,11 +283,11 @@ def discover(state_dir: Path, now: float) -> Registry:
         except INVALID:
             rejected["invalid"] += 1
             continue
+        ids.add(agent.id)
         if agent.retired_at is None:
             active.append(agent)
         elif now - agent.retired_at < RETIRED_KEEP:
             retired.append(agent)
-    ids = {agent.id for agent in active + retired}
     legacy: list[Agent] = []
     conflicts: list[str] = []
     for kind in KINDS:

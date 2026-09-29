@@ -519,8 +519,9 @@ def agent_metrics(
     )
     # No tick starts during a pause, so a pause never makes an agent late.
     overdue = 2 * agent.interval + budget
-    if runner.state is None:
-        presence = "unknown"  # a failed read never looks like idle or late
+    if runner.state in (None, "unknown"):
+        # A failed read or a lock without owner never looks idle or late.
+        presence = "unknown"
     elif runner.state in ("running", "overdue"):
         presence = "running"
     elif started is None:
