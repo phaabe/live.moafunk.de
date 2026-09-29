@@ -52,14 +52,14 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(((((sum(epic_needs_operator and on() (time() - epic_github_snapshot_timestamp_seconds < 300))) or vector(0)) + ((sum(epic_handoff_stalled and on() (time() - epic_handoff_observed_timestamp_seconds < 300))) or vector(0)) + ((count((epic_tick_consecutive_failures and on(agent) epic_runner_read_success == 1 and on(agent) epic_tick_ledger_read_success == 1 and on(agent) epic_tick_events_read_success == 1 and on(agent) epic_tick_ledger_export_success == 1) >= 3)) or vector(0)) + ((count(epic_agent_presence == 4)) or vector(0)) + ((count(count by (target) (epic_agent_collision) > 1)) or vector(0)) + ((count((sum by (agent) (increase(epic_permission_decisions_total{decision=\"deny\"}[1h])) and on(agent) epic_agent_info) >= 5)) or vector(0)) + ((count(count by (agent) (epic_backoff_info) >= 3)) or vector(0)) + ((count((epic_handoff_wait_seconds and on() (time() - epic_handoff_observed_timestamp_seconds < 300)) > 3600)) or vector(0))) > 0) or (-1 * sum(epic_pause_requested == 1)) or vector(0)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "expr": "(((((sum(epic_needs_operator and on() (time() - epic_github_snapshot_timestamp_seconds < 300))) or vector(0)) + ((sum(epic_handoff_stalled and on() (time() - epic_handoff_observed_timestamp_seconds < 300))) or vector(0)) + ((count((epic_tick_consecutive_failures and on(agent) epic_runner_read_success == 1 and on(agent) epic_tick_ledger_read_success == 1 and on(agent) epic_tick_events_read_success == 1 and on(agent) epic_tick_ledger_export_success == 1) >= 3)) or vector(0)) + ((count((epic_agent_presence == 4 and on(agent) epic_runner_read_success == 1 and on(agent) epic_tick_ledger_read_success == 1 and on(agent) epic_tick_events_read_success == 1 and on(agent) epic_tick_ledger_export_success == 1))) or vector(0)) + ((count(count by (target) (epic_agent_collision) > 1)) or vector(0)) + ((count((sum by (agent) (increase(epic_permission_decisions_total{decision=\"deny\"}[1h])) and on(agent) epic_agent_info) >= 5)) or vector(0)) + ((count(count by (agent) (epic_backoff_info) >= 3)) or vector(0)) + ((count((epic_handoff_wait_seconds and on() (time() - epic_handoff_observed_timestamp_seconds < 300)) > 3600)) or vector(0))) > 0) or (-1 * sum(epic_pause_requested == 1)) or vector(0)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
           "instant": true,
           "range": false,
           "legendFormat": "value"
         },
         {
           "refId": "B",
-          "expr": "(((((sum(epic_needs_operator and on() (time() - epic_github_snapshot_timestamp_seconds < 300))) or vector(0)) + ((sum(epic_handoff_stalled and on() (time() - epic_handoff_observed_timestamp_seconds < 300))) or vector(0)) + ((count((epic_tick_consecutive_failures and on(agent) epic_runner_read_success == 1 and on(agent) epic_tick_ledger_read_success == 1 and on(agent) epic_tick_events_read_success == 1 and on(agent) epic_tick_ledger_export_success == 1) >= 3)) or vector(0)) + ((count(epic_agent_presence == 4)) or vector(0)) + ((count(count by (target) (epic_agent_collision) > 1)) or vector(0)) + ((count((sum by (agent) (increase(epic_permission_decisions_total{decision=\"deny\"}[1h])) and on(agent) epic_agent_info) >= 5)) or vector(0)) + ((count(count by (agent) (epic_backoff_info) >= 3)) or vector(0)) + ((count((epic_handoff_wait_seconds and on() (time() - epic_handoff_observed_timestamp_seconds < 300)) > 3600)) or vector(0))) > 0) or (-1 * sum(epic_pause_requested == 1)) or vector(0)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "expr": "(((((sum(epic_needs_operator and on() (time() - epic_github_snapshot_timestamp_seconds < 300))) or vector(0)) + ((sum(epic_handoff_stalled and on() (time() - epic_handoff_observed_timestamp_seconds < 300))) or vector(0)) + ((count((epic_tick_consecutive_failures and on(agent) epic_runner_read_success == 1 and on(agent) epic_tick_ledger_read_success == 1 and on(agent) epic_tick_events_read_success == 1 and on(agent) epic_tick_ledger_export_success == 1) >= 3)) or vector(0)) + ((count((epic_agent_presence == 4 and on(agent) epic_runner_read_success == 1 and on(agent) epic_tick_ledger_read_success == 1 and on(agent) epic_tick_events_read_success == 1 and on(agent) epic_tick_ledger_export_success == 1))) or vector(0)) + ((count(count by (target) (epic_agent_collision) > 1)) or vector(0)) + ((count((sum by (agent) (increase(epic_permission_decisions_total{decision=\"deny\"}[1h])) and on(agent) epic_agent_info) >= 5)) or vector(0)) + ((count(count by (agent) (epic_backoff_info) >= 3)) or vector(0)) + ((count((epic_handoff_wait_seconds and on() (time() - epic_handoff_observed_timestamp_seconds < 300)) > 3600)) or vector(0))) > 0) or (-1 * sum(epic_pause_requested == 1)) or vector(0)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
           "instant": true,
           "range": false,
           "legendFormat": "caption"
@@ -1079,14 +1079,14 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((count(epic_agent_presence == 4)) or vector(0)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "expr": "((count((epic_agent_presence == 4 and on(agent) epic_runner_read_success == 1 and on(agent) epic_tick_ledger_read_success == 1 and on(agent) epic_tick_events_read_success == 1 and on(agent) epic_tick_ledger_export_success == 1))) or vector(0)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
           "instant": true,
           "range": false,
           "legendFormat": "value"
         },
         {
           "refId": "B",
-          "expr": "((count(epic_agent_presence == 4)) or vector(0)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "expr": "((count((epic_agent_presence == 4 and on(agent) epic_runner_read_success == 1 and on(agent) epic_tick_ledger_read_success == 1 and on(agent) epic_tick_events_read_success == 1 and on(agent) epic_tick_ledger_export_success == 1))) or vector(0)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
           "instant": true,
           "range": false,
           "legendFormat": "caption"

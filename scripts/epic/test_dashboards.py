@@ -141,6 +141,20 @@ class DashboardTest(unittest.TestCase):
                     ):
                         self.assertIn(o["matcher"]["options"], shown | kept)
 
+    def test_unknown_tick_duration_is_not_shown_as_seconds(self) -> None:
+        """Codex review round 4: the collector exports -1 for a tick
+        without a finish time."""
+        [panel] = [
+            p for p in panels(pages()["agent.json"]) if p["title"] == "Tick history"
+        ]
+        [duration] = [
+            o
+            for o in panel["fieldConfig"]["overrides"]
+            if o["matcher"]["options"] == "Duration"
+        ]
+        mappings = {p["id"]: p["value"] for p in duration["properties"]}["mappings"]
+        self.assertEqual(mappings[0]["options"]["-1"]["text"], "unknown")
+
     def test_log_panels_keep_permission_lines_apart(self) -> None:
         page = pages()["agent.json"]
         logs = {p["title"]: p for p in panels(page) if p["type"] == "logs"}
@@ -408,6 +422,7 @@ class QuerySemanticsTest(unittest.TestCase):
             )
         ]
         failing = panel_expr("overview.json", "Agents failing")
+        late = panel_expr("overview.json", "Agents late")
         needs = panel_expr("overview.json", "Needs Anton")
         column = panel_expr("overview.json", "Agents", ref="G")
         self.run_promtool(
@@ -420,6 +435,10 @@ class QuerySemanticsTest(unittest.TestCase):
                         {
                             "series": 'epic_tick_consecutive_failures{agent="codex"}',
                             "values": "3x10",
+                        },
+                        {
+                            "series": 'epic_agent_presence{agent="codex"}',
+                            "values": "4x10",
                         },
                         # The value is the registration time, not 1.
                         {
@@ -439,10 +458,22 @@ class QuerySemanticsTest(unittest.TestCase):
                             "eval_time": "2m",
                             "exp_samples": [{"labels": "{}", "value": 1}],
                         },
+                        # Failing and late: two reasons.
                         {
                             "expr": needs,
                             "eval_time": "2m",
+                            "exp_samples": [{"labels": "{}", "value": 2}],
+                        },
+                        {
+                            "expr": late,
+                            "eval_time": "2m",
                             "exp_samples": [{"labels": "{}", "value": 1}],
+                        },
+                        # Codex review round 4: late from cached timing.
+                        {
+                            "expr": late,
+                            "eval_time": "5m",
+                            "exp_samples": [{"labels": "{}", "value": 0}],
                         },
                         # The ledger cannot be read from 3 min on.
                         {

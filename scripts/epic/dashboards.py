@@ -41,6 +41,8 @@ TRUSTED = "".join(
     )
 )
 FAILURES = f"(epic_tick_consecutive_failures{TRUSTED})"
+# Late comes from tick timing too: cached timing after a failed read is not.
+LATE = f"(epic_agent_presence == 4{TRUSTED})"
 # For sparklines: the whole series only while delivery data is fresh now, so
 # the "last value" reducer never shows an expired number.
 FRESH_AT_END = (
@@ -371,7 +373,7 @@ def needs_anton() -> str:
             f"sum(epic_needs_operator{GITHUB})",
             f"sum(epic_handoff_stalled{HANDOFF})",
             f"count({FAILURES} >= 3)",
-            "count(epic_agent_presence == 4)",
+            f"count({LATE})",
             "count(count by (target) (epic_agent_collision) > 1)",
             'count((sum by (agent) (increase(epic_permission_decisions_total{decision="deny"}[1h])) '
             "and on(agent) epic_agent_info) >= 5)",
@@ -589,7 +591,7 @@ def attention_tiles(board: Board) -> None:
         ),
         (
             "Agents late",
-            "count(epic_agent_presence == 4)",
+            f"count({LATE})",
             "all on schedule",
             "missed the schedule",
         ),
@@ -1484,7 +1486,13 @@ def tick_history(a: str) -> Json:
                 cell("color-background", mode="basic"),
                 ("mappings", [value_map({k: ("", c) for k, c in OUTCOME.items()})]),
             ),
-            by_name("Duration", ("unit", "s"), ("noValue", "running")),
+            by_name(
+                "Duration",
+                ("unit", "s"),
+                ("noValue", "running"),
+                # -1: the tick has no finish time (old log import, interrupted).
+                ("mappings", [value_map({"-1": ("unknown", MUTED)})]),
+            ),
             by_name("Tokens", ("noValue", "–")),
             by_name("Started", ("custom.width", 170)),
             by_name("Exit", ("custom.width", 50)),

@@ -749,6 +749,13 @@ file's end).
 | running fixture ticks started before the finished ones; the ledger rejected them | finished ticks end before the running start |
 | the paused preview kept starting ticks | no new ticks while paused |
 
+### PR 5 review, round 4 (approved)
+
+| Codex finding | Change |
+|---|---|
+| P2: late alert, tile and "Needs Anton" trusted cached tick timing after a failed read | same read and export checks as the failing alert |
+| P3: a tick without a finish time showed "-1 s" | Duration maps -1 to "unknown" |
+
 ### PR 5, design check at 1600 and 1280 px
 
 | Blueprint | Change |

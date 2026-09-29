@@ -118,6 +118,14 @@ tests:
         values: 2x20
       - series: epic_agent_presence{agent="claude-new"}
         values: _x5 4x15
+      - series: epic_runner_read_success{agent="claude-new"}
+        values: _x5 1x15
+      - series: epic_tick_ledger_read_success{agent="claude-new"}
+        values: _x5 1x15
+      - series: epic_tick_events_read_success{agent="claude-new"}
+        values: _x5 1x15
+      - series: epic_tick_ledger_export_success{agent="claude-new"}
+        values: _x5 1x15
       - series: epic_agent_collision{agent="claude-new",target="https://github.com/phaabe/live.moafunk.de/pull/7"}
         values: _x5 1x3 _x12
     alert_rule_test:
@@ -164,3 +172,21 @@ tests:
         values: 1x20
     alert_rule_test:
       - {alertname: AgentHandoffStalled, eval_time: 15m, exp_alerts: []}
+
+  # Late from cached timing after the events file became unreadable: no alert.
+  - interval: 1m
+    input_series:
+      - series: epic_local_snapshot_timestamp_seconds
+        values: 0+60x20
+      - series: epic_agent_presence{agent="codex"}
+        values: 4x20
+      - series: epic_runner_read_success{agent="codex"}
+        values: 1x20
+      - series: epic_tick_ledger_read_success{agent="codex"}
+        values: 1x20
+      - series: epic_tick_events_read_success{agent="codex"}
+        values: 1 1 0x18
+      - series: epic_tick_ledger_export_success{agent="codex"}
+        values: 1x20
+    alert_rule_test:
+      - {alertname: AgentLate, eval_time: 15m, exp_alerts: []}

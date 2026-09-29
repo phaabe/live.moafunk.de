@@ -842,6 +842,21 @@
               {
                 "id": "noValue",
                 "value": "running"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "-1": {
+                        "index": 0,
+                        "color": "#9A9BA6",
+                        "text": "unknown"
+                      }
+                    }
+                  }
+                ]
               }
             ]
           },
