@@ -176,7 +176,7 @@ fi
 check_quota
 tick_phase=select
 select_exit=0
-run_bounded "${select_timeout}s" python3 scripts/epic/next_action.py --agent codex \
+run_bounded "${select_timeout}s" python3 scripts/epic/next_action.py --agent codex --candidates \
     > "${lock_dir}/action.json" || select_exit=$?
 if [[ "$select_exit" == 4 ]]; then
     tick_phase=quota
@@ -185,51 +185,115 @@ if [[ "$select_exit" == 4 ]]; then
 elif [[ "$select_exit" != 0 ]]; then
     exit "$select_exit"
 fi
-action=$(python3 -c '
+candidates=$(cat "${lock_dir}/action.json")
+printf '%s\n' "$candidates"
+
+release_target() {
+    exec 8>&- 9>&-
+}
+
+# Called from `if`, so every error must be handled explicitly.
+lock_target() {
+    local listed path result=0
+    local targets=()
+    listed=$(python3 scripts/epic/target_lock.py paths \
+        --action-file "${lock_dir}/action.json") || exit 1
+    while IFS= read -r path; do
+        if [[ -n "$path" ]]; then
+            targets+=("$path")
+        fi
+    done <<< "$listed"
+    if [[ "${#targets[@]}" == 0 ]]; then
+        return 0
+    elif [[ "${#targets[@]}" -gt 2 ]]; then
+        printf 'tick: an action has at most two targets\n' >&2
+        exit 1
+    fi
+    exec 8>> "${targets[0]}" || exit 1
+    if [[ "${#targets[@]}" == 2 ]]; then
+        exec 9>> "${targets[1]}" || exit 1
+        python3 scripts/epic/target_lock.py acquire --fd 8 --fd 9 || result=$?
+    else
+        python3 scripts/epic/target_lock.py acquire --fd 8 || result=$?
+    fi
+    if [[ "$result" == 0 ]]; then
+        return 0
+    fi
+    release_target
+    if [[ "$result" == 75 ]]; then
+        return 1
+    fi
+    exit "$result"
+}
+
+# Try every candidate, but start at most one model session.
+selected=0
+while IFS= read -r candidate; do
+    if [[ -z "$candidate" ]]; then
+        continue
+    fi
+    if [[ -e "${HOME}/.epic-pause" ]]; then
+        exit 0
+    fi
+    check_quota
+    tick_phase=select
+    printf '%s\n' "$candidate" > "${lock_dir}/action.json"
+    action=$(python3 -c '
 import json, sys
 value = json.load(sys.stdin)
 action = value.get("action") if isinstance(value, dict) else None
 if action not in {"stop", "idle", "merge", "fix", "fix-checks", "resolve-conflict",
-                  "review", "continue", "claim", "escalate"}:
+                  "review", "continue", "claim", "escalate", "adopt"}:
     raise SystemExit("tick: invalid selector action")
 print(action)
 ' < "${lock_dir}/action.json")
-cat "${lock_dir}/action.json"
-case "$action" in
-    idle|stop) exit 0 ;;
-esac
-
-if [[ -e "${HOME}/.epic-pause" ]]; then
+    case "$action" in
+        idle|stop) exit 0 ;;
+    esac
+    tick_phase=lock
+    if ! lock_target; then
+        printf 'tick: target locked by another runner; next candidate\n'
+        continue
+    fi
+    check_quota
+    tick_phase=backoff
+    backoff=0
+    python3 .codex/tick_backoff.py check --action-file "${lock_dir}/action.json" \
+        --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
+    if [[ "$backoff" == 3 ]]; then
+        release_target
+        continue
+    elif [[ "$backoff" == 4 ]]; then
+        tick_phase=quota
+        tick_outcome=blocked
+        exit 75
+    elif [[ "$backoff" != 0 ]]; then
+        exit "$backoff"
+    fi
+    check_quota
+    tick_phase=gate
+    gate=0
+    python3 scripts/epic/tick_gate.py check --agent codex \
+        --action-file "${lock_dir}/action.json" || gate=$?
+    if [[ "$gate" == 3 ]]; then
+        release_target
+        continue
+    elif [[ "$gate" == 4 ]]; then
+        tick_phase=quota
+        tick_outcome=blocked
+        exit 75
+    elif [[ "$gate" != 0 ]]; then
+        exit "$gate"
+    fi
+    selected=1
+    break
+done <<< "$candidates"
+if [[ "$selected" != 1 ]]; then
+    printf 'tick: no candidate to run\n'
     exit 0
 fi
-check_quota
-tick_phase=backoff
-backoff=0
-python3 .codex/tick_backoff.py check --action-file "${lock_dir}/action.json" \
-    --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
-if [[ "$backoff" == 3 ]]; then
-    exit 0
-elif [[ "$backoff" == 4 ]]; then
-    tick_phase=quota
-    tick_outcome=blocked
-    exit 75
-elif [[ "$backoff" != 0 ]]; then
-    exit "$backoff"
-fi
-check_quota
-tick_phase=gate
-gate=0
-python3 scripts/epic/tick_gate.py check --agent codex \
-    --action-file "${lock_dir}/action.json" || gate=$?
-if [[ "$gate" == 3 ]]; then
-    exit 0
-elif [[ "$gate" == 4 ]]; then
-    tick_phase=quota
-    tick_outcome=blocked
-    exit 75
-elif [[ "$gate" != 0 ]]; then
-    exit "$gate"
-fi
+# The hook reads this exact selection, while its target lock is held.
+export EPIC_ACTION_FILE="${lock_dir}/action.json"
 
 # The session uses this decision; it must not select a second task.
 cat .codex/epic-tick.md > "${lock_dir}/prompt.txt"
@@ -250,6 +314,37 @@ run_bounded "${tick_timeout}s" codex exec --cd "$repo_root" \
     --color never --output-schema "${repo_root}/.codex/tick-result.schema.json" \
     --output-last-message "${state_dir}/codex-result.json" \
     - < "${lock_dir}/prompt.txt" || model_exit=$?
+# A completed adoption needs GitHub evidence before clearing its cooldown.
+# Other outcomes still go through record below, including malformed results.
+if [[ "$action" == adopt && "$model_exit" == 0 ]] && python3 -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tick_backoff import result_outcome
+sys.exit(result_outcome(Path(sys.argv[2]), 0)[0])
+' "${repo_root}/.codex" "${state_dir}/codex-result.json"; then
+    tick_phase=quota
+    quota=0
+    python3 scripts/epic/github_quota.py check --state-dir "$registry_dir" || quota=$?
+    if [[ "$quota" == 3 ]]; then
+        tick_outcome=blocked
+        exit 75
+    elif [[ "$quota" != 0 ]]; then
+        exit "$quota"
+    fi
+    tick_phase=verify
+    verify=0
+    python3 scripts/epic/tick_verify.py --agent codex \
+        --action-file "${lock_dir}/action.json" --since "$tick_started" || verify=$?
+    if [[ "$verify" == 4 ]]; then
+        tick_phase=quota
+        tick_outcome=blocked
+        exit 75
+    elif [[ "$verify" != 0 ]]; then
+        printf 'tick: adopt verification failed exit=%s\n' "$verify" >&2
+        model_exit=$verify
+    fi
+fi
 # Finish local records even if another agent stored a quota wait during the model.
 outcome=0
 if [[ "$model_exit" == 0 ]]; then

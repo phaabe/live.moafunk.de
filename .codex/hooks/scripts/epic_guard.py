@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -133,8 +134,46 @@ def check_base(base: str | None, head: str | None) -> None:
         raise ValueError(f"Only heads {TRUNK} and ci/312-epic-guard may target main.")
 
 
+def selected_adopt_body_edit(args: list[str]) -> bool:
+    """Allow one body-file PATCH for the runner's selected adopt target."""
+    if (
+        len(args) != 5
+        or args[:2] != ["--method", "PATCH"]
+        or args[3] != "-F"
+        or not args[4].startswith("body=@")
+    ):
+        return False
+    target = re.fullmatch(
+        r"repos/phaabe/live\.moafunk\.de/pulls/([1-9][0-9]*)", args[2]
+    )
+    body_path = Path(args[4][len("body=@") :])
+    action_path = Path(os.environ.get("EPIC_ACTION_FILE", ""))
+    if (
+        target is None
+        or not body_path.is_absolute()
+        or ".." in body_path.parts
+        or not action_path.is_absolute()
+    ):
+        return False
+    action = json.loads(action_path.read_text())
+    if (
+        not isinstance(action, dict)
+        or action.get("action") != "adopt"
+        or type(action.get("pr")) is not int
+        or action["pr"] != int(target[1])
+        or not isinstance(action.get("sha"), str)
+        or re.fullmatch(r"[0-9a-fA-F]{40}", action["sha"]) is None
+        or not isinstance(action.get("body_sha"), str)
+        or re.fullmatch(r"[0-9a-fA-F]{64}", action["body_sha"]) is None
+    ):
+        return False
+    # Keep file inspection here so this exception cannot bypass verdict checks.
+    check_verdict(body_path.read_text())
+    return True
+
+
 def check_api(args: list[str], cwd: Path) -> None:
-    """Inspect typed file fields and refuse REST PR writes."""
+    """Inspect typed file fields and limit REST PR writes to selected adoption."""
     value_flags = {
         "-f",
         "--raw-field",
@@ -208,6 +247,8 @@ def check_api(args: list[str], cwd: Path) -> None:
     path = unquote(endpoint.path).rstrip("/")
     method = method or ("POST" if has_fields or body_input else "GET")
     if re.search(r"/pulls(?:/|$)", path) and (method != "GET" or body_input):
+        if selected_adopt_body_edit(args):
+            return
         raise ValueError("Use gh pr commands instead of gh api for PR writes.")
 
 
