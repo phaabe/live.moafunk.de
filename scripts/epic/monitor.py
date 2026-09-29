@@ -778,6 +778,7 @@ def runner_metrics(
         [(row.agent.kind, row.presence) for row in rows if row.presence != "retired"],
         paused,
         now,
+        registry_ok=not sum(registry.rejected.values()) and not registry.conflicts,
     )
     running = Counter(
         row.action["target"]
@@ -1082,10 +1083,11 @@ def collect_github(
         state = fetch(timeout)
         now = time.time()
         metrics = github_metrics(state, now)
-        # A failed poll changes no clock: it never gets here.
+        # Saved only after the poll is published: a failed poll changes no clock.
         handoff = clock.observe(epic_view(state), now) if clock else None
         atomic_write(output / "github.prom", metrics)
-        if handoff is not None:
+        if clock is not None and handoff is not None:
+            clock.save(handoff)
             LATEST.handoff = handoff
         LATEST.prs = epic_view(state)["prs"]
         # Read by the runner loop to tell whether a backoff head is current.
@@ -1180,6 +1182,16 @@ def collect_remote(args: argparse.Namespace, clock: delivery.HandoffClock) -> bo
     return collect_delivery(args.output, cache, args.github_timeout) and ok
 
 
+def run_once(args: argparse.Namespace) -> None:
+    """One remote cycle, then local metrics that include its handoff."""
+    clock = delivery.HandoffClock(args.output.parent / "handoff.json")
+    LATEST.handoff = clock.load()
+    ok = collect_remote(args, clock)
+    publish_local(args, Ledgers(args.output.parent))
+    if not ok:
+        raise SystemExit(1)
+
+
 def run(args: argparse.Namespace) -> None:
     stopped = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -1248,10 +1260,7 @@ def main() -> None:
         except BlockingIOError:
             parser.error("another collector owns this output directory")
         if args.once:
-            publish_local(args, Ledgers(args.output.parent))
-            clock = delivery.HandoffClock(args.output.parent / "handoff.json")
-            if not collect_remote(args, clock):
-                raise SystemExit(1)
+            run_once(args)
         else:
             run(args)
 

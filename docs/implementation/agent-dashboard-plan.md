@@ -689,6 +689,17 @@ Accepted limit: a tick that ends while the collector is being upgraded may be
 missed once (the new collector has no event checkpoint yet and starts at the
 file's end).
 
+### PR 4 review, round 1
+
+| Codex finding | Change |
+|---|---|
+| a failed publication still saved the handoff clock | the clock is saved only after `github.prom` is written |
+| an unreadable registration could let the stalled flag fire | no stalled flag while the registry rejects an entry or has a conflict |
+| a clock change repeated a day label | days are Berlin calendar dates |
+| the closed-PR page limit cut the window short silently | the fetch fails and the last snapshot stays |
+| comment history had no memory bound | read one page at a time; over 1 000 comments the PR is reported as incomplete |
+| `--once` published local metrics before the handoff | it loads the saved clock, collects, then publishes |
+
 ## Appendix — panel spec from design v2
 
 Grid is Grafana units (24 columns, 30 px rows). Colors: Claude `#E0875A`,

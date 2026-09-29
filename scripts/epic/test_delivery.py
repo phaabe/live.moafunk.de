@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import delivery
 import monitor
@@ -47,7 +49,11 @@ class HandoffClockTest(unittest.TestCase):
         self.path = Path(directory.name) / "runtime/handoff.json"
 
     def observe(self, prs: list[monitor.Json], now: float) -> delivery.Handoff:
-        return delivery.HandoffClock(self.path).observe(snapshot(prs=prs), now)
+        """One published poll: observe, then save."""
+        clock = delivery.HandoffClock(self.path)
+        handoff = clock.observe(snapshot(prs=prs), now)
+        clock.save(handoff)
+        return handoff
 
     def test_both_directions_wait_for_the_other_kind(self) -> None:
         handoff = self.observe(
@@ -249,6 +255,8 @@ class FakeGitHub:
         self.calls: list[str] = []
 
     def __call__(self, args: list[str]) -> object:
+        # REST only: GraphQL is the budget the agents run out of.
+        assert args[0] == "api" and "graphql" not in args, args
         path = next(a for a in args if a.startswith("repos/"))
         self.calls.append(path)
         if "state=open" in path:
@@ -260,8 +268,9 @@ class FakeGitHub:
                 else []
             )
         number = int(path.split("/issues/")[1].split("/")[0].split("?")[0])
-        if path.endswith("/comments?per_page=100"):
-            return [self.comments.get(number, [])]
+        if "/comments?per_page=100&page=" in path:
+            page = int(path.rsplit("=", 1)[1])
+            return self.comments.get(number, [])[(page - 1) * 100 : page * 100]
         return {"comments": self.counts.get(number, len(self.comments.get(number, [])))}
 
 
@@ -486,6 +495,135 @@ class CollectDeliveryTest(unittest.TestCase):
                     "epic_delivery_collection_success 0\n",
                     (root / "delivery-health.prom").read_text(),
                 )
+
+
+class ReviewRoundOneTest(unittest.TestCase):
+    """Codex review of https://github.com/phaabe/live.moafunk.de/pull/475."""
+
+    def test_failed_publication_changes_no_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clock = delivery.HandoffClock(root / "handoff.json")
+            self.addCleanup(setattr, monitor.LATEST, "handoff", None)
+            waiting = snapshot(prs=[pull_request(7, "Claude")])
+            self.assertTrue(
+                monitor.collect_github(root, 5, lambda _: waiting, clock=clock)
+            )
+            saved, before = clock.path.read_text(), monitor.LATEST.handoff
+            write = monitor.atomic_write
+
+            def fail_github(path: Path, text: str) -> None:
+                if path.name == "github.prom":
+                    raise OSError("disk full")
+                write(path, text)
+
+            # The PR stopped waiting, but the poll cannot be published.
+            with (
+                patch("monitor.atomic_write", side_effect=fail_github),
+                self.assertLogs(level="ERROR"),
+            ):
+                self.assertFalse(
+                    monitor.collect_github(root, 5, lambda _: snapshot(), clock=clock)
+                )
+            self.assertEqual(clock.path.read_text(), saved)
+            self.assertIs(monitor.LATEST.handoff, before)
+
+    def test_rejected_registration_stops_the_stalled_flag(self) -> None:
+        handoff = delivery.Handoff(
+            NOW,
+            (
+                delivery.Wait(f"{URL}/pull/1", HEAD, "claude", "codex", NOW - 3600),
+                delivery.Wait(f"{URL}/pull/2", HEAD, "codex", "claude", NOW - 3600),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # No agents: nobody can act.
+            text = monitor.runner_metrics(
+                root, False, NOW, alive=lambda _: False, handoff=handoff
+            )
+            self.assertIn("epic_handoff_stalled 1\n", text)
+            # An agent whose registration cannot be read may be running.
+            bad = root / "agents/codex-2/agent.json"
+            bad.parent.mkdir(parents=True)
+            bad.write_text("{")
+            text = monitor.runner_metrics(
+                root, False, NOW, alive=lambda _: False, handoff=handoff
+            )
+            self.assertIn("epic_handoff_stalled 0\n", text)
+
+    def test_days_are_calendar_days_across_a_clock_change(self) -> None:
+        # 2026-10-25 23:30 in Berlin, the evening of the change to winter time.
+        now = datetime(2026, 10, 25, 22, 30, tzinfo=timezone.utc).timestamp()
+        sink = Sink()
+        delivery.delivery_metrics(
+            sink, {"v": 1, "fetched_at": now, "open": [], "merged": {}}, [], now
+        )
+        days = [
+            line
+            for line in sink.render().splitlines()
+            if line.startswith("epic_merged_prs_day{")
+        ]
+        self.assertEqual(len(days), len(set(days)))
+        self.assertEqual(
+            len({line.split('day="')[1][:10] for line in days}), delivery.WINDOW_DAYS
+        )
+        self.assertIn('day="2026-10-12"', "".join(days))
+
+    def test_window_cut_short_by_the_page_budget_fails_the_fetch(self) -> None:
+        recent = [rest_pr(1000 + i, "Claude", NOW - 60, None) for i in range(100)]
+        github = FakeGitHub([], [], {})
+        github.closed = recent  # every page is full and inside the window
+
+        def closed_pages(args: list[str]) -> object:
+            path = next(a for a in args if a.startswith("repos/"))
+            if "state=closed" in path:
+                return recent
+            return FakeGitHub.__call__(github, args)
+
+        with self.assertRaises(RuntimeError):
+            delivery.fetch_delivery(None, NOW, closed_pages)
+
+    def test_comment_history_is_read_in_pages_and_bounded(self) -> None:
+        merged = rest_pr(7, "Claude", NOW - 2 * DAY, NOW - DAY)
+        comments = [
+            rest_comment(f"note {i}", iso(NOW - 2 * DAY + i)) for i in range(149)
+        ]
+        comments.append(
+            rest_comment(f"Review: APPROVED by Codex at {HEAD}", iso(NOW - DAY))
+        )
+        github = FakeGitHub([], [merged], {7: comments})
+        entry = delivery.fetch_delivery(None, NOW, github)["merged"]["7"]
+        self.assertEqual((entry["rounds"], entry["complete"]), (1, True))
+        # Too long a history is not read at all and is reported.
+        github = FakeGitHub([], [merged], {7: comments}, {7: delivery.MAX_COMMENTS + 1})
+        entry = delivery.fetch_delivery(None, NOW, github)["merged"]["7"]
+        self.assertEqual((entry["rounds"], entry["complete"]), (None, False))
+        self.assertFalse(any("/comments" in call for call in github.calls))
+
+    def test_once_publishes_local_metrics_after_the_remote_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = argparse.Namespace(output=root / "metrics")
+            saved = delivery.Handoff(NOW, ())
+            delivery.HandoffClock(root / "handoff.json").save(saved)
+            seen: list[object] = []
+            self.addCleanup(setattr, monitor.LATEST, "handoff", None)
+
+            def remote(_: object, clock: delivery.HandoffClock) -> bool:
+                seen.append(("remote", monitor.LATEST.handoff))
+                return False
+
+            def local(*_: object) -> None:
+                seen.append("local")
+
+            with (
+                patch("monitor.collect_remote", remote),
+                patch("monitor.publish_local", local),
+            ):
+                with self.assertRaises(SystemExit):
+                    monitor.run_once(args)
+        self.assertEqual(seen, [("remote", saved), "local"])
 
 
 if __name__ == "__main__":

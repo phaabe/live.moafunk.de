@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import math
@@ -46,6 +46,7 @@ MEDIAN_DAYS = 7
 REVALIDATE = 30 * 60
 FLOW_ROWS = 14
 MAX_CLOSED_PAGES = 10
+MAX_COMMENTS = 1000
 LEAF_BOX = re.compile(r"^- \[([ xX])\] \*\*([A-Z]\d+\.\d+\.\d+)\*\*", re.M)
 
 
@@ -139,27 +140,31 @@ class HandoffClock:
         return Handoff(observed, waits)
 
     def observe(self, state: Json, now: float) -> Handoff:
-        """Restart the clock for new heads; drop PRs that no longer wait."""
+        """Restart the clock for new heads; drop PRs that no longer wait.
+
+        Nothing is saved: the caller saves only after it published the poll.
+        """
         before = self.load()
         seen = {f"{w.target}@{w.head}": w.since for w in before.waits} if before else {}
         waits = tuple(
             Wait(target, head, waiter, waits_for, min(seen.get(key, now), now))
             for key, (target, head, waiter, waits_for) in sorted(waiting(state).items())
         )
-        handoff = Handoff(now, waits)
+        return Handoff(now, waits)
+
+    def save(self, handoff: Handoff) -> None:
         try:
             atomic_json(
                 self.path,
                 {
                     "v": 1,
-                    "observed_at": now,
-                    "waits": [asdict(wait) for wait in waits],
+                    "observed_at": handoff.observed_at,
+                    "waits": [asdict(wait) for wait in handoff.waits],
                 },
             )
         except OSError:
             # The metrics still show this observation; the clock may restart.
             logging.warning("Cannot save handoff state")
-        return handoff
 
 
 def handoff_metrics(
@@ -168,6 +173,7 @@ def handoff_metrics(
     presence: list[tuple[str, str]],
     paused: bool,
     now: float,
+    registry_ok: bool = True,
 ) -> None:
     """Waits and the suspected stall; `presence` is (kind, presence) per agent."""
     if handoff is None:
@@ -190,8 +196,10 @@ def handoff_metrics(
         kind in KINDS and state in ("running", "new", "unknown")
         for kind, state in presence
     )
+    # A rejected or conflicting registration hides an agent that may act.
     stalled = (
         long_waits == set(KINDS)
+        and registry_ok
         and not paused
         and not active
         and now - handoff.observed_at <= HANDOFF_FRESH
@@ -246,7 +254,10 @@ def fetch_delivery(
                         "draft": bool(row.get("draft")),
                     }
                 )
-        for number in range(1, MAX_CLOSED_PAGES + 1):
+        for number in range(1, MAX_CLOSED_PAGES + 2):
+            if number > MAX_CLOSED_PAGES:
+                # Never publish a window that was cut short.
+                raise RuntimeError("closed PRs exceed the page budget")
             # Newest updates first: a PR merged in the window was updated in it.
             page = gh(
                 [
@@ -280,24 +291,33 @@ def fetch_delivery(
 
 
 def comment_rounds(gh: Callable[[list[str]], Any], entry: Json, now: float) -> Json:
+    """Review rounds from the full comment history, read one page at a time.
+
+    A history over MAX_COMMENTS is not read (memory stays bounded) and, like
+    a history that does not match the count, is reported as incomplete.
+    """
     n = entry["number"]
-    pages = gh(
-        [
-            "api",
-            "--paginate",
-            "--slurp",
-            f"repos/{epic.REPO}/issues/{n}/comments?per_page=100",
-        ]
-    )
+    incomplete = {"rounds": None, "complete": False, "checked": now}
     count = gh(["api", f"repos/{epic.REPO}/issues/{n}", "--jq", "{comments}"])[
         "comments"
     ]
-    try:
-        comments = epic.comments_from_rest(
-            [row for page in pages for row in page], count
+    if type(count) is not int or not 0 <= count <= MAX_COMMENTS:
+        return incomplete
+    rows: list[Json] = []
+    for page in range(1, MAX_COMMENTS // 100 + 2):
+        batch = gh(
+            [
+                "api",
+                f"repos/{epic.REPO}/issues/{n}/comments?per_page=100&page={page}",
+            ]
         )
+        rows += batch
+        if len(batch) < 100 or len(rows) > count:
+            break
+    try:
+        comments = epic.comments_from_rest(rows, count)
     except ValueError:
-        return {"rounds": None, "complete": False, "checked": now}
+        return incomplete
     return {
         "rounds": rounds(comments, entry["executor"]),
         "complete": True,
@@ -346,7 +366,9 @@ def delivery_metrics(
     incomplete = sum(not row["complete"] for row in merged)
     metrics.add("delivery_complete", int(incomplete == 0))
     metrics.add("delivery_incomplete_prs", incomplete)
-    days = [local_day(now - offset * 86400) for offset in range(WINDOW_DAYS)]
+    # Calendar days: a day is not always 86 400 s long in Berlin.
+    today = datetime.fromtimestamp(now, LOCAL).date()
+    days = [str(today - timedelta(days=offset)) for offset in range(WINDOW_DAYS)]
     counts: dict[tuple[str, str], int] = {}
     for row in merged:
         key = (row["executor"] or "unknown", local_day(row["merged"]))
