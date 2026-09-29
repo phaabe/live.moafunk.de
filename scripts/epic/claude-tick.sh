@@ -175,6 +175,11 @@ cd "$repo_root"
 tick_phase=refresh
 # Keep the runner on the latest scripts and tick instructions. The checkout only
 # runs ticks, so a failed fast-forward (local changes, diverged) stops the tick.
+# First restore GitNexus-only changes in AGENTS.md / CLAUDE.md; any other
+# tracked change stops the tick untouched (gitnexus_noise.py).
+if ! python3 scripts/epic/gitnexus_noise.py; then
+    exit 1
+fi
 if ! git pull -q --ff-only; then
     printf 'tick: git pull --ff-only failed; fix the runner checkout\n' >&2
     exit 1
