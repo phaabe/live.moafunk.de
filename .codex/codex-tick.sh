@@ -66,6 +66,8 @@ PY
     )
 fi
 # Fresh backoff lookup and action recheck each have a separate bounded read.
+# Preparation can run for several candidates. This budget estimates one;
+# the live runner PID keeps the lock even when candidate scanning takes longer.
 budget=$((3 * pull_timeout + select_timeout + 2 * recheck_timeout + tick_timeout + 20))
 if [[ -n "$agent_id" ]]; then
     python3 "${repo_root}/scripts/epic/agents.py" --state-dir "$registry_dir" \
@@ -261,7 +263,7 @@ lock_target() {
 
 # Try every candidate, but start at most one model session.
 selected=0
-handoff_pending=0
+target_blocked=0
 model_root="$repo_root"
 while IFS= read -r candidate; do
     if [[ -z "$candidate" ]]; then
@@ -369,9 +371,9 @@ print(action)
                 --state-dir "$state_dir" > "${lock_dir}/worktree.txt" || worktree_exit=$?
             case "$worktree_exit" in
                 0) model_root=$(cat "${lock_dir}/worktree.txt") ;;
-                3|75)
-                    if [[ "$worktree_exit" == 75 ]]; then
-                        handoff_pending=1
+                3|7|75)
+                    if [[ "$worktree_exit" != 3 ]]; then
+                        target_blocked=1
                     fi
                     discard_seen
                     release_target
@@ -396,7 +398,7 @@ print(action)
 done <<< "$candidates"
 if [[ "$selected" != 1 ]]; then
     printf 'tick: no candidate to run\n'
-    if [[ "$handoff_pending" == 1 ]]; then
+    if [[ "$target_blocked" == 1 ]]; then
         tick_outcome=blocked
         exit 75
     fi

@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from feature_git import BRANCH, Refused, common_dir, git
+import tick_backoff
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/epic"))
 import github_quota  # noqa: E402
@@ -93,8 +94,15 @@ def metadata(action: dict[str, Any]) -> tuple[str | None, str, int, str | None]:
             raise Refused(
                 "selected PR must be open, assigned to Codex and link one issue"
             )
-        head, base = pr["head"], pr["base"]
-        if any(part["repo"]["full_name"] != REPO for part in (head, base)):
+        head, base = pr.get("head"), pr.get("base")
+        if any(
+            not isinstance(part, dict)
+            or not isinstance(part.get("repo"), dict)
+            or not isinstance(part.get("ref"), str)
+            for part in (head, base)
+        ):
+            raise Refused("malformed PR branch metadata")
+        if any(part["repo"].get("full_name") != REPO for part in (head, base)):
             raise Refused("selected PR must use the expected repository, not a fork")
         if base["ref"] not in BASES:
             raise Refused("selected PR has a forbidden base")
@@ -102,7 +110,7 @@ def metadata(action: dict[str, Any]) -> tuple[str | None, str, int, str | None]:
         if (
             not isinstance(sha, str)
             or not re.fullmatch(r"[0-9a-f]{40}", sha)
-            or head["sha"] != sha
+            or head.get("sha") != sha
         ):
             raise Refused("selected PR head changed")
         return head["ref"], base["ref"], int(match[1]), sha
@@ -180,36 +188,85 @@ def handoff_record(
         == tick_gate.SKIP
     ):
         return False
+    # The gate keeps one entry per target, so this replaces its previous result.
+    # Normal action fingerprints differ and still reach the local availability check.
     tick_gate.record("codex", handoff, now, state, ttl)
     return True
 
 
+def repeated_handoff(
+    runner: Path, action: dict[str, Any], state: Path
+) -> tuple[str, Path] | None:
+    """Skip ownership reads only while a checked handoff is still unchanged."""
+    records_file, seen_file = state / "codex-gate.json", state / "codex-gate-seen.json"
+    if not records_file.exists() or not seen_file.exists():
+        return None
+    records = json.loads(records_file.read_text())
+    seen = json.loads(seen_file.read_text())
+    if not isinstance(records, dict) or not isinstance(seen, dict):
+        raise ValueError("invalid handoff gate state")
+    record = tick_gate.target_record(records, action)
+    if record is not None and not isinstance(record, dict):
+        raise ValueError("invalid handoff gate record")
+    if not record or seen.get("fingerprint") != tick_gate.fingerprint(action):
+        return None
+    previous = record.get("action", {})
+    if not isinstance(previous, dict):
+        raise ValueError("invalid handoff gate action")
+    if previous.get("action") != "worktree-handoff":
+        return None
+    branch, path = previous.get("branch"), previous.get("path")
+    if (
+        not isinstance(branch, str)
+        or not BRANCH.fullmatch(branch)
+        or not isinstance(path, str)
+    ):
+        return None
+    handoff = {**action, "action": "worktree-handoff", "branch": branch, "path": path}
+    ttl = int(os.environ.get("EPIC_REPEAT_TTL_SECONDS", tick_gate.DEFAULT_TTL))
+    if not tick_gate.should_skip(
+        handoff, seen.get("updated_at"), record, time.time(), ttl
+    ):
+        return None
+    occupied = Path(path)
+    if (
+        occupied != feature_root(runner) / branch
+        and worktrees(runner).get(occupied) == f"refs/heads/{branch}"
+    ):
+        return branch, occupied
+    return None
+
+
+def record_refusal(action: dict[str, Any], state: Path, reason: str) -> None:
+    """Use the normal target cooldown without recording a completed session."""
+    ttl = tick_backoff.positive_int(os.environ.get("EPIC_BLOCKED_RETRY_SECONDS", "900"))
+    now = time.time()
+    entries = tick_backoff.load_entries(state)
+    entries[tick_backoff.target_key(action)] = {
+        "at": now,
+        "until": now + ttl,
+        "reason": f"worktree refused: {reason}",
+    }
+    tick_backoff.save_entries(state, entries)
+
+
 class Handoff(Refused):
     def __init__(self, branch: str, path: Path) -> None:
-        super().__init__(f"handoff needed: {branch} in {path}")
+        message = f"handoff needed: {branch} in {path}"
+        if not path.exists():
+            message += "; checkout is missing; after checking its registration, run git worktree prune"
+        super().__init__(message)
         self.branch = branch
         self.path = path
 
 
 def prepare(runner: Path, action: dict[str, Any]) -> Path:
-    validate_repository(runner)
     branch, base, number, sha = metadata(action)
     known = refs(runner)
     if branch is None:
-        candidates = {
-            ref.removeprefix("refs/heads/").removeprefix("refs/remotes/origin/")
-            for ref in known
-        }
-        candidates = {
-            name
-            for name in candidates
-            if BRANCH.fullmatch(name) and name.split("/", 1)[1].startswith(f"{number}-")
-        }
-        if len(candidates) > 1:
-            raise Refused(
-                "multiple branches match the selected issue; manual choice needed"
-            )
-        branch = next(iter(candidates), f"feat/{number}-codex-work")
+        # Issue numbers identify the work, not the owner of arbitrary shared refs.
+        # Noncanonical branches are resumed only through a validated Codex PR.
+        branch = f"feat/{number}-codex-work"
     if (
         not isinstance(branch, str)
         or not BRANCH.fullmatch(branch)
@@ -298,13 +355,24 @@ def main() -> int:
         if action.get("action") not in EDIT_ACTIONS:
             print(runner)
             return 0
+        # A wrong runner repository is a global error, not one blocked target.
+        validate_repository(runner)
         try:
+            held = repeated_handoff(runner, action, args.state_dir)
+            if held is not None:
+                raise Handoff(*held)
             destination = prepare(runner, action)
         except Handoff as error:
             if not handoff_record(action, error.branch, error.path, args.state_dir):
                 return 3
             print(error, file=sys.stderr)
             return 75
+        except QuotaWait:
+            raise
+        except Refused as error:
+            record_refusal(action, args.state_dir, str(error))
+            print(f"worktree: target refused: {error}", file=sys.stderr)
+            return 7
         print(destination)
         return 0
     except github_quota.QuotaExhausted as error:

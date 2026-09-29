@@ -101,24 +101,38 @@ with this worktree as `--cd`; the runner checkout holds no feature work.
 
 The helper checks the origin, current Codex ownership, issue status, allowed
 base, branch name and PR head. A PR must have one `Executor: Codex` line and
-one `Issue:` link; forks and branches for another issue are refused. New claims
-use `feat/<issue>-codex-work` from `origin/dev/312-interim`. A unique existing
-issue branch or the PR's branch is reused. Ambiguous issue branches need a
-manual choice. The preceding runner pull refreshes origin refs; a PR head that
-does not match those refs stops the tick. Existing worktrees retain local edits
-and unpublished commits; a local PR branch must contain the selected head.
+one `Issue:` link; forks and branches for another issue are refused. Issue-only
+claims and continuations always use `feat/<issue>-codex-work`, deliberately
+independent of the issue title. New branches start from `origin/dev/312-interim`.
+Other issue branches may belong to a human or Claude and are ignored. To resume
+one, select its open PR with `Executor: Codex`. The preceding runner pull
+refreshes origin refs; a PR head that does not match those refs is refused.
+Existing worktrees retain local edits and unpublished commits; a local PR
+branch must contain the selected head.
 The helper never rebases or resets a checkout to make it match.
+
+A target-specific refusal exits the helper with code 7, stores the normal
+blocked-target cooldown and tries the next candidate. This covers invalid PR
+metadata, missing refs, a local branch behind its PR and occupied destinations.
+The runner retries after `EPIC_BLOCKED_RETRY_SECONDS`; repeated ticks do not
+extend the cooldown. A wrong runner repository or a failed GitHub read still
+stops the tick.
 
 If normal `git worktree add` refuses a branch held elsewhere, the tick logs
 `handoff needed: <branch> in <path>` and starts no model for it. The existing
 repeat gate stores a handoff fingerprint containing the branch and occupying
-path, including for `continue`. It suppresses another request for the normal
-repeat TTL while the condition is unchanged. No blocked-target cooldown is
+path, including for `continue`. This replaces that target's previous gate
+result. It suppresses another request for the normal repeat TTL while the
+condition is unchanged. Later ticks check the recorded branch's local
+occupancy before making extra ownership reads. Release, changed GitHub state
+or TTL expiry requires fresh ownership checks. No blocked-target cooldown is
 created. The human must release their checkout manually; the next tick checks
 Git again and can acquire the branch immediately after release. The runner
 never forces acquisition or switches, resets, stashes or removes another
-checkout. Feature-worktree deletion and detached-review cleanup are separate
-work. No installed Git permissions are changed by this preparation step.
+checkout. If the checkout was deleted outside Git, the message asks its operator
+to check the registration and run `git worktree prune`. The runner never prunes
+it automatically. Feature-worktree deletion and detached-review cleanup are
+separate work. No installed Git permissions are changed by this preparation step.
 
 A scheduler must set `PATH` so `gh`, `codex`, Python and GNU `timeout` are
 available. For Apple Silicon Homebrew, include `/opt/homebrew/bin` along with

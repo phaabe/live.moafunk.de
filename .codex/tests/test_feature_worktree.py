@@ -32,6 +32,8 @@ class FeatureWorktreeTests(unittest.TestCase):
                 del self.env[name]
         self.state = self.fixture.state
         self.state.mkdir(parents=True)
+        self.metadata_calls = self.fixture.root / "worktree-metadata-calls"
+        self.env["TEST_WORKTREE_METADATA_CALLS"] = str(self.metadata_calls)
         self.worktrees = self.repo.with_name(
             self.repo.name.removesuffix("-runner") + "-wt"
         )
@@ -42,6 +44,8 @@ class FeatureWorktreeTests(unittest.TestCase):
         selector.write_text(
             "def project_items():\n"
             "    import json, os\n"
+            "    with open(os.environ['TEST_WORKTREE_METADATA_CALLS'], 'a') as calls:\n"
+            "        calls.write('board\\n')\n"
             "    return json.loads(os.environ['TEST_BOARD'])\n" + selector.read_text()
         )
         gh = self.fixture.bin / "gh"
@@ -51,13 +55,19 @@ class FeatureWorktreeTests(unittest.TestCase):
             "import json, os, sys\n"
             "if (sys.argv[1:3] == ['api', '-i']\n"
             "        and sys.argv[-1].endswith('/pulls/431')):\n"
+            "    with open(os.environ['TEST_WORKTREE_METADATA_CALLS'], 'a') as calls:\n"
+            "        calls.write('pr\\n')\n"
             "    status = int(os.environ.get('TEST_WORKTREE_HTTP_STATUS', '200'))\n"
             "    print(f'HTTP/2.0 {status} Test\\n\\n' + os.environ['TEST_WORKTREE_PR'])\n"
             "    sys.exit(0 if status == 200 else 1)\n"
             "if sys.argv[1:] == ['api', 'repos/phaabe/live.moafunk.de/pulls/431']:\n"
+            "    with open(os.environ['TEST_WORKTREE_METADATA_CALLS'], 'a') as calls:\n"
+            "        calls.write('pr\\n')\n"
             "    print(os.environ['TEST_WORKTREE_PR'])\n"
             "    sys.exit(0)\n"
             "if sys.argv[1:] == ['api', 'repos/phaabe/live.moafunk.de/issues/430']:\n"
+            "    with open(os.environ['TEST_WORKTREE_METADATA_CALLS'], 'a') as calls:\n"
+            "        calls.write('issue\\n')\n"
             "    print(os.environ['TEST_WORKTREE_ISSUE'])\n"
             "    sys.exit(0)\n" + original
         )
@@ -128,13 +138,15 @@ class FeatureWorktreeTests(unittest.TestCase):
         self.env["TEST_DECISION"] = json.dumps(self.action)
         return self.fixture.run_tick()
 
-    def use_pr(self, action: str = "fix") -> None:
+    def use_pr(self, action: str = "fix", branch: str = BRANCH) -> None:
         self.action = {"action": action, "pr": 431, "sha": self.head}
-        self.git("update-ref", f"refs/remotes/origin/{BRANCH}", self.head)
+        self.pr["head"]["ref"] = branch
+        self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+        self.git("update-ref", f"refs/remotes/origin/{branch}", self.head)
 
-    def assert_refused(self) -> None:
+    def assert_refused(self, code: int = 7) -> None:
         result = self.prepare()
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         self.assertFalse(self.destination.exists())
         self.assertEqual(self.git("rev-parse", "HEAD"), self.head)
         self.assertEqual(self.git("status", "--porcelain"), "")
@@ -154,6 +166,18 @@ class FeatureWorktreeTests(unittest.TestCase):
         )
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), self.head)
         self.assertEqual(self.git("branch", "--show-current"), BASE)
+
+    def test_claim_ignores_other_agents_remote_issue_branch(self) -> None:
+        remote = "refs/remotes/origin/fix/430-claude-leaf"
+        self.git("update-ref", remote, self.head)
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(self.destination))
+        self.assertEqual(self.git("rev-parse", remote), self.head)
+        self.assertEqual(self.git("for-each-ref", "refs/heads/fix/430-claude-leaf"), "")
+        self.assertEqual(
+            self.git("branch", "--show-current", cwd=self.destination), BRANCH
+        )
 
     def test_dirty_tree_and_unpublished_commit_resume_unchanged(self) -> None:
         self.use_pr()
@@ -219,6 +243,7 @@ class FeatureWorktreeTests(unittest.TestCase):
         self.action["sha"] = published
         self.pr["head"]["sha"] = published
         self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+        first_requests = None
         for expected in (75, 0):
             result = self.run_tick()
             self.assertEqual(result.returncode, expected, result.stderr)
@@ -226,6 +251,10 @@ class FeatureWorktreeTests(unittest.TestCase):
             self.assertEqual(self.git("rev-parse", "HEAD", cwd=foreign), self.head)
             self.assertEqual(index_path.read_bytes(), index)
             self.assertEqual((foreign / "tracked.txt").read_text(), "operator work\n")
+            if first_requests is None:
+                first_requests = self.metadata_calls.read_bytes()
+            else:
+                self.assertEqual(self.metadata_calls.read_bytes(), first_requests)
         self.assertEqual(
             (self.state / "codex.log")
             .read_text()
@@ -254,6 +283,7 @@ class FeatureWorktreeTests(unittest.TestCase):
             )
         )
         before = index_path.read_bytes()
+        first_requests = None
         for expected in (75, 0):
             result = self.run_tick()
             self.assertEqual(result.returncode, expected, result.stderr)
@@ -266,6 +296,10 @@ class FeatureWorktreeTests(unittest.TestCase):
             self.assertEqual(self.fixture.tick_events()[-1]["event"], "finish")
             if expected == 75:
                 self.assertEqual(self.fixture.tick_events()[-1]["phase"], "gate")
+            if first_requests is None:
+                first_requests = self.metadata_calls.read_bytes()
+            else:
+                self.assertEqual(self.metadata_calls.read_bytes(), first_requests)
         log = (self.state / "codex.log").read_text()
         self.assertEqual(log.count(f"handoff needed: {BRANCH} in {foreign}"), 1)
         self.git("switch", "--detach", cwd=foreign)
@@ -275,9 +309,11 @@ class FeatureWorktreeTests(unittest.TestCase):
         self.assertEqual(
             self.git("branch", "--show-current", cwd=self.destination), BRANCH
         )
+        self.assertNotEqual(self.metadata_calls.read_bytes(), first_requests)
 
-    def test_available_local_issue_branch_is_reused(self) -> None:
+    def test_available_local_owned_pr_branch_is_reused(self) -> None:
         branch = "fix/430-existing-work"
+        self.use_pr(branch=branch)
         self.git("branch", branch)
         result = self.prepare()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -298,6 +334,97 @@ class FeatureWorktreeTests(unittest.TestCase):
         self.assertEqual(call["action"]["action"], "review")
         self.assertEqual(call["action"]["pr"], 406)
         self.assertFalse(self.destination.exists())
+
+    def test_destination_failure_cools_down_and_allows_later_review(self) -> None:
+        self.destination.mkdir(parents=True)
+        marker = self.destination / "operator-file"
+        marker.write_text("do not change\n")
+        self.fixture.candidates(self.action, self.fixture.review_action(406))
+        first = self.fixture.run_tick()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        [call] = [
+            json.loads(line) for line in self.fixture.calls.read_text().splitlines()
+        ]
+        self.assertEqual(call["action"]["action"], "review")
+        self.assertEqual(call["action"]["pr"], 406)
+        cooldown = self.state / "codex-backoff.json"
+        before = cooldown.read_bytes()
+        entry = json.loads(before)[f"issue:{ISSUE}"]
+        self.assertEqual(entry["until"] - entry["at"], 900)
+        requests = self.metadata_calls.read_bytes()
+        self.assertEqual(marker.read_text(), "do not change\n")
+        second = self.fixture.run_tick()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(cooldown.read_bytes(), before)
+        self.assertEqual(self.metadata_calls.read_bytes(), requests)
+        self.assertEqual(len(self.fixture.calls.read_text().splitlines()), 1)
+        marker.unlink()
+        self.destination.rmdir()
+        self.fixture.expire_cooldown()
+        third = self.fixture.run_tick()
+        self.assertEqual(third.returncode, 0, third.stderr)
+        calls = [
+            json.loads(line) for line in self.fixture.calls.read_text().splitlines()
+        ]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[-1]["action"]["action"], "claim")
+        self.assertEqual(
+            self.git("branch", "--show-current", cwd=self.destination), BRANCH
+        )
+
+    def test_missing_foreign_worktree_handoff_explains_prune(self) -> None:
+        foreign = self.fixture.root.resolve() / "removed developer checkout"
+        self.git("worktree", "add", "-b", BRANCH, str(foreign))
+        shutil.rmtree(foreign)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        log = (self.state / "codex.log").read_text()
+        self.assertIn(f"handoff needed: {BRANCH} in {foreign}", log)
+        self.assertIn("git worktree prune", log)
+
+    def test_handoff_revalidates_metadata_after_github_change(self) -> None:
+        self.use_pr()
+        foreign = self.fixture.root.resolve() / "developer checkout"
+        self.git("worktree", "add", "-b", BRANCH, str(foreign))
+        first = self.run_tick()
+        self.assertEqual(first.returncode, 75, first.stderr)
+        requests = self.metadata_calls.read_bytes()
+        self.fixture.updated_at.write_text("2026-09-28T03:01:00Z")
+        self.pr["body"] = f"Executor: Claude\nIssue: {ISSUE}\n"
+        self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+        changed = self.run_tick()
+        self.assertEqual(changed.returncode, 75, changed.stderr)
+        self.assertNotEqual(self.metadata_calls.read_bytes(), requests)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertFalse(self.destination.exists())
+        self.assertTrue((self.state / "codex-backoff.json").exists())
+
+    def test_expired_handoff_revalidates_metadata(self) -> None:
+        self.use_pr()
+        foreign = self.fixture.root.resolve() / "developer checkout"
+        self.git("worktree", "add", "-b", BRANCH, str(foreign))
+        self.assertEqual(self.run_tick().returncode, 75)
+        requests = self.metadata_calls.read_bytes()
+        record_file = self.state / "codex-gate.json"
+        record = json.loads(record_file.read_text())
+        record["at"] = 0
+        record["targets"]["431"]["at"] = 0
+        record_file.write_text(json.dumps(record))
+        renewed = self.run_tick()
+        self.assertEqual(renewed.returncode, 75, renewed.stderr)
+        self.assertNotEqual(self.metadata_calls.read_bytes(), requests)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+
+    def test_malformed_gate_state_is_global_error_without_cooldown(self) -> None:
+        (self.state / "codex-gate.json").write_text("[]")
+        (self.state / "codex-gate-seen.json").write_text("{}")
+        result = self.prepare()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+        self.assertFalse(self.metadata_calls.exists())
 
     def test_shared_metadata_failure_starts_no_model_and_sets_no_cooldown(self) -> None:
         self.use_pr()
@@ -329,29 +456,36 @@ class FeatureWorktreeTests(unittest.TestCase):
 
     def test_malformed_metadata_is_refused_without_traceback(self) -> None:
         self.use_pr()
-        for metadata in ([], None, {"head": None}):
+        for metadata in ([], None, {"head": None}, {**self.pr, "head": None}):
             with self.subTest(metadata=metadata):
                 self.env["TEST_WORKTREE_PR"] = json.dumps(metadata)
                 result = self.prepare()
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
                 self.assertFalse(self.destination.exists())
 
-    def test_remote_issue_branch_is_reused(self) -> None:
+    def test_remote_owned_pr_branch_is_reused(self) -> None:
         branch = "fix/430-published-work"
-        self.git("update-ref", f"refs/remotes/origin/{branch}", self.head)
+        self.use_pr(branch=branch)
         result = self.prepare()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), str(self.worktrees / branch))
 
-    def test_ambiguous_issue_branches_are_refused(self) -> None:
+    def test_continue_ignores_other_issue_branches(self) -> None:
+        self.action["action"] = "continue"
+        self.board[0]["status"] = "In progress"
+        self.env["TEST_BOARD"] = json.dumps(self.board)
         self.git("branch", "fix/430-one")
         self.git("branch", "feat/430-two")
-        self.assert_refused()
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(self.destination))
+        for branch in ("fix/430-one", "feat/430-two"):
+            self.assertEqual(self.git("rev-parse", branch), self.head)
 
     def test_wrong_origin_is_refused(self) -> None:
         self.git("remote", "set-url", "origin", "https://github.com/other/repo.git")
-        self.assert_refused()
+        self.assert_refused(code=1)
 
     def test_stale_remote_head_is_refused(self) -> None:
         self.use_pr()
@@ -375,7 +509,7 @@ class FeatureWorktreeTests(unittest.TestCase):
         marker = self.destination / "operator-file"
         marker.write_text("do not change\n")
         result = self.prepare()
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
         self.assertEqual(marker.read_text(), "do not change\n")
         self.assertEqual(list(self.destination.iterdir()), [marker])
 
@@ -384,7 +518,7 @@ class FeatureWorktreeTests(unittest.TestCase):
         self.git("worktree", "add", "-b", "fix/999-other-task", str(self.destination))
         (self.destination / "tracked.txt").write_text("operator work\n")
         result = self.prepare()
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
         self.assertEqual(
             self.git("branch", "--show-current", cwd=self.destination),
             "fix/999-other-task",
