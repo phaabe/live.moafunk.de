@@ -28,6 +28,8 @@ if [[ -n "$agent_id" ]]; then
 fi
 # The gate helper reads the state dir from the environment.
 export EPIC_STATE_DIR="$state_dir"
+# One GitHub quota for all agents: its wait file lives in the shared state dir.
+export EPIC_QUOTA_DIR="$registry_dir"
 lock_dir="${state_dir}/codex.lock"
 
 mkdir -p "$state_dir"

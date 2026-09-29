@@ -256,6 +256,7 @@ class ClaudeTickTest(unittest.TestCase):
             self.calls_made(),
             [["git", "pull -q --ff-only"], ["select"], ["gate", "check"]],
         )
+
     def test_relative_state_dir_is_resolved_before_changing_directory(self) -> None:
         runner = subprocess.Popen(
             ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")],
@@ -296,9 +297,19 @@ class ClaudeTickTest(unittest.TestCase):
         self.assertIn("tick: finished exit=0", (home / "claude.log").read_text())
         self.assertFalse((self.state / "claude.log").exists())
         self.assertFalse((home / "claude.lock").exists())
-        config = self.calls_made()[2][1].split("--mcp-config ", 1)[1].split(" --", 1)[0]
+        model = next(c for c in self.calls_made() if c[0] == "claude")
+        config = model[1].split("--mcp-config ", 1)[1].split(" --", 1)[0]
         server = json.loads(config)["mcpServers"]["epic-gate"]
         self.assertEqual(server["env"], {"EPIC_STATE_DIR": str(home)})
+
+    def test_registered_agent_obeys_the_shared_quota_wait(self) -> None:
+        # The GraphQL quota belongs to the GitHub user, not to one agent.
+        self.store_wait()
+        env = {"EPIC_AGENT_ID": "claude-2"}
+        self.assertEqual(self.run_tick(**env).wait(timeout=30), 0)
+        self.assertFalse(self.calls.exists())  # no git, gh, selector or model
+        log = (self.state / "agents/claude-2/claude.log").read_text()
+        self.assertIn("retry at 2099-01-01", log)
 
     def test_agent_id_of_another_kind_is_refused(self) -> None:
         runner = subprocess.Popen(

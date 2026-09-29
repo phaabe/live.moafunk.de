@@ -38,14 +38,14 @@ if [[ -n "$agent_id" ]]; then
     fi
     state_dir="${registry_dir}/agents/${agent_id}"
 fi
-# The gate helpers read the state dir from the environment, after the cd.
+# The Python helpers read the state dir from the environment, after the cd.
 export EPIC_STATE_DIR="$state_dir"
+# One GitHub quota for all agents: its wait file lives in the shared state dir.
+export EPIC_QUOTA_DIR="$registry_dir"
 lock_dir="${state_dir}/claude.lock"
 
 mkdir -p "$state_dir"
 exec >> "${state_dir}/claude.log" 2>&1
-# The Python helpers read the same state directory.
-export EPIC_STATE_DIR="$state_dir"
 for duration in "$tick_timeout" "$select_timeout"; do
     if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
         printf 'tick: timeout must be a positive integer in seconds\n' >&2
@@ -72,7 +72,7 @@ fi
 quota_open() {
     local result=0
     python3 "${repo_root}/scripts/epic/github_quota.py" check \
-        --state-dir "$state_dir" || result=$?
+        --state-dir "$registry_dir" || result=$?
     if [[ "$result" == 0 ]]; then
         return 0
     elif [[ "$result" == 3 ]]; then
