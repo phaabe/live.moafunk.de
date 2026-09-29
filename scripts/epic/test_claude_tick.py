@@ -83,6 +83,18 @@ class ClaudeTickTest(unittest.TestCase):
             "    f.write(f'{n}\\n')\n"
             "sys.exit(int(os.environ.get('TEST_NOISE_EXIT', '0')))\n"
         )
+        # Worktree step: its own call file, so the call indexes above stay.
+        (self.repo / "scripts/epic/runner_worktree.py").write_text(
+            "import json, os, sys\n"
+            "with open(os.environ['TEST_CALLS'] + '.worktree', 'a') as f:\n"
+            "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if os.environ.get('TEST_WORKTREE_OUT'):\n"
+            "    print(os.environ['TEST_WORKTREE_OUT'])\n"
+            "code = int(os.environ.get('TEST_WORKTREE_EXIT', '0'))\n"
+            "only = os.environ.get('TEST_WORKTREE_PR')\n"
+            "action = json.load(open(sys.argv[sys.argv.index('--action-file') + 1]))\n"
+            "sys.exit(0 if only and str(action.get('pr')) != only else code)\n"
+        )
         (self.repo / "scripts/epic/tick_verify.py").write_text(
             "import json, os, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
@@ -104,6 +116,8 @@ class ClaudeTickTest(unittest.TestCase):
             'python3 -c \'import json, sys; print(json.dumps(["claude", " ".join(sys.argv[1:])]))\' "$@" >> "$TEST_CALLS"\n'
             'echo $$ > "$TEST_MODEL_PID"\n'
             'printf \'%s\\n%s\\n\' "${EPIC_ACTION_FILE:-}" "${EPIC_TRUSTED_ROOT:-}" > "$TEST_CALLS.modelenv"\n'
+            'printf \'%s\' "${EPIC_WORKTREE:-}" > "$TEST_CALLS.worktree-env"\n'
+            'cat > "$TEST_CALLS.prompt"\n'
             # Another runner stores a quota wait while this session runs.
             'if [[ -n "${TEST_MODEL_WAIT:-}" ]]; then\n'
             '    printf \'{"retry_at": "2099-01-01T00:00:00Z"}\' > "$EPIC_STATE_DIR/github-quota-wait.json"\n'
@@ -641,6 +655,158 @@ class ClaudeTickTest(unittest.TestCase):
         self.assertEqual(env["EPIC_TRUSTED_ROOT"], str(self.repo.resolve()))
         self.assertEqual(env["EPIC_SHARED_READER"], "1")
         self.assertIn("HOME", env)
+
+    def worktree_calls(self) -> list[list[str]]:
+        path = Path(str(self.calls) + ".worktree")
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_worktree_goes_to_the_model(self) -> None:
+        wt = "/runner-wt/feat/1-x"
+        self.assertEqual(self.run_tick(TEST_WORKTREE_OUT=wt).wait(timeout=30), 0)
+        args = self.model_targets()[0]
+        self.assertTrue(args.endswith(f"--add-dir {wt}"))
+        self.assertEqual(Path(str(self.calls) + ".worktree-env").read_text(), wt)
+        prompt = Path(str(self.calls) + ".prompt").read_text()
+        self.assertIn(f"Runner worktree (edit only here): {wt}", prompt)
+        (call,) = self.worktree_calls()
+        default = self.repo.resolve().parent / "live.moafunk.de-claude-wt"
+        self.assertEqual(call[call.index("--dir") + 1], str(default))
+        self.assertEqual(call[call.index("--repo") + 1], str(self.repo.resolve()))
+
+    def test_action_without_worktree_adds_no_dir(self) -> None:
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertNotIn("--add-dir", self.model_targets()[0])
+        self.assertEqual(Path(str(self.calls) + ".worktree-env").read_text(), "")
+        self.assertNotIn(
+            "Runner worktree (edit only here)",
+            Path(str(self.calls) + ".prompt").read_text(),
+        )
+
+    def test_worktree_stop_starts_no_model_and_tries_the_next_candidate(self) -> None:
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        runner = self.run_tick(
+            TEST_CANDIDATES=candidates, TEST_WORKTREE_EXIT="3", TEST_WORKTREE_PR="1"
+        )
+        self.assertEqual(runner.wait(timeout=30), 0)
+        self.assertEqual(len(self.model_targets()), 1)
+        self.assertIn('"pr": 2', Path(str(self.calls) + ".prompt").read_text())
+        self.assertIn(
+            "fix stopped before the model", (self.state / "claude.log").read_text()
+        )
+
+    def test_only_stopped_candidates_start_no_model_and_record_nothing(self) -> None:
+        self.assertEqual(self.run_tick(TEST_WORKTREE_EXIT="3").wait(timeout=30), 0)
+        self.assertEqual(self.model_targets(), [])
+        self.assertNotIn(["gate", "record"], self.calls_made())
+        self.assertFalse((self.state / "claude-gate-seen.json").exists())
+        self.assertFalse((self.state / "claude.lock").exists())
+
+    def test_worktree_quota_error_stops_the_tick(self) -> None:
+        self.assertEqual(self.run_tick(TEST_WORKTREE_EXIT="4").wait(timeout=30), 75)
+        self.assertEqual(self.model_targets(), [])
+        self.assertFalse((self.state / "claude-gate-seen.json").exists())
+        self.assertEqual(self.finish(), (75, "blocked", "quota"))
+
+    def test_worktree_error_stops_the_tick(self) -> None:
+        self.assertEqual(self.run_tick(TEST_WORKTREE_EXIT="1").wait(timeout=30), 1)
+        self.assertEqual(self.model_targets(), [])
+        self.assertFalse((self.state / "claude-gate-seen.json").exists())
+
+    def test_each_runner_has_its_own_worktree_dir(self) -> None:
+        runner = self.run_tick(EPIC_AGENT_ID="claude-2")
+        self.assertEqual(runner.wait(timeout=30), 0)
+        (call,) = self.worktree_calls()
+        expected = self.repo.resolve().parent / "live.moafunk.de-claude-2-wt"
+        self.assertEqual(call[call.index("--dir") + 1], str(expected))
+
+    def test_relative_worktree_dir_is_refused(self) -> None:
+        runner = self.run_tick(EPIC_WORKTREE_DIR="wt")
+        self.assertEqual(runner.wait(timeout=30), 2)
+        self.assertFalse(self.calls.exists())
+
+    def test_branch_held_by_a_human_checkout_needs_handoff(self) -> None:
+        """Real Git and the real helper: no model and no foreign change until
+        the human releases the branch; the repeat stays quiet."""
+        real_git = shutil.which("git")
+        assert real_git
+        branch = "feat/1-held"
+        root = self.root.resolve()
+
+        def git(cwd: Path, *args: str) -> str:
+            return subprocess.run(
+                [real_git, *args], cwd=cwd, check=True, capture_output=True, text=True
+            ).stdout
+
+        origin = root / "phaabe" / "live.moafunk.de.git"
+        origin.parent.mkdir()
+        git(root, "init", "-q", "--bare", str(origin))
+        git(self.repo, "init", "-q")
+        git(self.repo, "config", "user.name", "t")
+        git(self.repo, "config", "user.email", "t@t")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "base")
+        git(self.repo, "remote", "add", "origin", str(origin))
+        git(self.repo, "push", "-q", "origin", "HEAD:refs/heads/dev/312-interim")
+        git(self.repo, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+        git(self.repo, "fetch", "-q", "origin")
+        human = root / "human"
+        git(self.repo, "worktree", "add", "-q", str(human), branch)
+        (human / "draft.txt").write_text("human work\n")
+
+        def human_state() -> tuple[str, str, str]:
+            return (
+                git(human, "rev-parse", "HEAD"),
+                git(human, "status", "--porcelain"),
+                (human / "draft.txt").read_text(),
+            )
+
+        before = human_state()
+        # The real helper, importing the real modules instead of the stubs.
+        epic = ROOT / "scripts/epic"
+        (self.repo / "scripts/epic/runner_worktree.py").write_text(
+            "import runpy, sys\n"
+            f"sys.path.insert(0, {str(epic)!r})\n"
+            f"runpy.run_path({str(epic / 'runner_worktree.py')!r}, run_name='__main__')\n"
+        )
+        # Git is real, except the runner's own pull.
+        (self.root / "bin/git").write_text(
+            "#!/bin/bash\n"
+            'if [[ "$1" == pull ]]; then\n'
+            '    printf \'["git", "%s"]\\n\' "$*" >> "$TEST_CALLS"\n'
+            "    exit 0\n"
+            "fi\n"
+            f'exec {real_git} "$@"\n'
+        )
+        pr = {
+            "state": "open",
+            "head": {"ref": branch, "repo": {"full_name": "phaabe/live.moafunk.de"}},
+            "base": {"ref": "dev/312-interim"},
+            "body": "Executor: Claude\nReviewer: Codex\n",
+        }
+        wt = root / "claude-wt"
+        env = {"TEST_GH_OUT": json.dumps(pr), "EPIC_WORKTREE_DIR": str(wt)}
+        log = self.state / "claude.log"
+        handoff = f"handoff needed: {branch} in {human}"
+
+        for _ in range(2):
+            self.assertEqual(self.run_tick(**env).wait(timeout=60), 0)
+            self.assertEqual(self.model_targets(), [])
+            self.assertEqual(human_state(), before)
+            self.assertFalse((wt / branch).exists())
+        self.assertEqual(log.read_text().count(handoff), 1)
+        self.assertIn(
+            "worktree: target 1 unchanged since the last report", log.read_text()
+        )
+        self.assertNotIn(["gate", "record"], self.calls_made())
+
+        # Manual handoff: the human releases the branch; the next tick runs.
+        (human / "draft.txt").unlink()
+        git(self.repo, "worktree", "remove", str(human))
+        self.assertEqual(self.run_tick(**env).wait(timeout=60), 0)
+        (args,) = self.model_targets()
+        self.assertTrue(args.endswith(f"--add-dir {wt / branch}"))
+        self.assertEqual(git(wt / branch, "branch", "--show-current").strip(), branch)
 
 
 if __name__ == "__main__":
