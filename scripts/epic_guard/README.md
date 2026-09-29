@@ -110,6 +110,9 @@ shared check explicitly before merging.
 The `Epic guard` workflow's `epic-guard-runner` job writes the `epic-guard`
 status. It refreshes on PR-target events, issue comments, statuses, checks,
 completed named workflows, manual dispatch and a ten-minute schedule.
+The per-PR `epic-guard` status is the verdict; `epic-guard-runner` succeeds
+once all statuses are published and fails only when the run itself fails
+(API, publication or event errors).
 The workflow uses an explicit `workflow_run.workflows` list, including
 `EPIC - Integration checks`; update it when adding or renaming CI workflows.
 After installation on the default branch, finish a CI run and confirm it
