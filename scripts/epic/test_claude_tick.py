@@ -41,8 +41,18 @@ class ClaudeTickTest(unittest.TestCase):
         ):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / rel, self.repo / rel)
+        # --recheck: exits from TEST_RECHECK_EXITS in order (the last repeats).
         (self.repo / "scripts/epic/next_action.py").write_text(
-            "import json, os, sys\n"
+            "import json, os, sys, time\n"
+            "if '--recheck' in sys.argv:\n"
+            "    calls = os.environ['TEST_CALLS']\n"
+            "    pr = json.load(open(sys.argv[-1])).get('pr')\n"
+            "    with open(calls, 'a') as f:\n"
+            "        f.write(json.dumps(['recheck', pr]) + '\\n')\n"
+            "    time.sleep(float(os.environ.get('TEST_RECHECK_SLEEP', '0')))\n"
+            "    codes = os.environ.get('TEST_RECHECK_EXITS', '0').split(',')\n"
+            "    n = sum(1 for line in open(calls) if line.startswith('[\"recheck\"'))\n"
+            "    sys.exit(int(codes[min(n, len(codes)) - 1]))\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(['select']) + '\\n')\n"
             "if os.environ.get('TEST_SELECT_WAIT'):\n"
@@ -58,6 +68,8 @@ class ClaudeTickTest(unittest.TestCase):
             "if sys.argv[1] == 'check' and os.environ.get('TEST_GATE_WAIT'):\n"
             f"    {WAIT_WRITE}\n"
             "if sys.argv[1] == 'check':\n"
+            "    seen = os.path.join(os.environ['EPIC_STATE_DIR'], 'claude-gate-seen.json')\n"
+            "    open(seen, 'w').write('{}')\n"
             "    sys.exit(int(os.environ.get('TEST_GATE_EXIT', '0')))\n"
             "with open(os.environ['TEST_CALLS'] + '.env', 'a') as f:\n"
             "    f.write(os.environ.get('EPIC_STATE_DIR', '') + '\\n')\n"
@@ -91,6 +103,7 @@ class ClaudeTickTest(unittest.TestCase):
             # JSON-encode: the arguments include the gate's JSON config.
             'python3 -c \'import json, sys; print(json.dumps(["claude", " ".join(sys.argv[1:])]))\' "$@" >> "$TEST_CALLS"\n'
             'echo $$ > "$TEST_MODEL_PID"\n'
+            'printf \'%s\\n%s\\n\' "${EPIC_ACTION_FILE:-}" "${EPIC_TRUSTED_ROOT:-}" > "$TEST_CALLS.modelenv"\n'
             # Another runner stores a quota wait while this session runs.
             'if [[ -n "${TEST_MODEL_WAIT:-}" ]]; then\n'
             '    printf \'{"retry_at": "2099-01-01T00:00:00Z"}\' > "$EPIC_STATE_DIR/github-quota-wait.json"\n'
@@ -540,6 +553,94 @@ class ClaudeTickTest(unittest.TestCase):
             os.kill(pid, 0)
         self.assertFalse((self.state / "claude.lock").exists())
         self.assertNotIn(["gate", "record"], self.calls_made())
+
+    # Shared reader (EPIC_SHARED_READER=1): exit codes 5 and 6, --recheck.
+
+    def shared(self, **env: str) -> subprocess.Popen[bytes]:
+        return self.run_tick(EPIC_SHARED_READER="1", **env)
+
+    def rechecks(self) -> list[object]:
+        return [c[1] for c in self.calls_made() if c[0] == "recheck"]
+
+    def test_reader_off_runs_no_recheck(self) -> None:
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertEqual(self.rechecks(), [])
+        self.assertEqual(len(self.model_targets()), 1)
+
+    def test_reader_on_rechecks_before_the_model(self) -> None:
+        self.assertEqual(self.shared().wait(timeout=30), 0)
+        kinds = [c[0] for c in self.calls_made()]
+        self.assertEqual(kinds[kinds.index("gate") + 1], "recheck")
+        self.assertEqual(kinds[kinds.index("recheck") + 1], "claude")
+
+    def test_blocked_selection_ends_the_tick_blocked(self) -> None:
+        self.assertEqual(self.shared(TEST_SELECT_EXIT="5").wait(timeout=30), 75)
+        self.assertEqual([c[0] for c in self.calls_made()], ["git", "select"])
+        self.assertEqual(self.finish(), (75, "blocked", "select"))
+
+    def test_stale_candidate_is_skipped_for_the_next_one(self) -> None:
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        runner = self.shared(TEST_CANDIDATES=candidates, TEST_RECHECK_EXITS="6,0")
+        self.assertEqual(runner.wait(timeout=30), 0)
+        self.assertEqual(self.rechecks(), [1, 2])
+        gates = [c for c in self.calls_made() if c[0] == "gate"]
+        self.assertEqual(
+            gates, [["gate", "check"], ["gate", "check"], ["gate", "record"]]
+        )
+        self.assertEqual(len(self.model_targets()), 1)
+
+    def test_only_stale_candidates_start_no_model_and_keep_no_seen_state(self) -> None:
+        self.assertEqual(self.shared(TEST_RECHECK_EXITS="6").wait(timeout=30), 0)
+        self.assertEqual(self.model_targets(), [])
+        self.assertNotIn(["gate", "record"], self.calls_made())
+        self.assertFalse((self.state / "claude-gate-seen.json").exists())
+        self.assertEqual(self.finish(), (0, "ok", "recheck"))
+
+    def test_blocked_recheck_ends_the_tick_blocked(self) -> None:
+        self.assertEqual(self.shared(TEST_RECHECK_EXITS="5").wait(timeout=30), 75)
+        self.assertEqual(self.model_targets(), [])
+        self.assertNotIn(["gate", "record"], self.calls_made())
+        self.assertFalse((self.state / "claude-gate-seen.json").exists())
+        self.assertEqual(self.finish(), (75, "blocked", "recheck"))
+        self.assertFalse((self.state / "claude.lock").exists())
+
+    def test_recheck_timeout_is_a_blocked_read(self) -> None:
+        runner = self.shared(EPIC_RECHECK_TIMEOUT_SECONDS="1", TEST_RECHECK_SLEEP="20")
+        self.assertEqual(runner.wait(timeout=40), 75)
+        self.assertEqual(self.model_targets(), [])
+        self.assertEqual(self.finish(), (75, "blocked", "recheck"))
+
+    def test_recheck_quota_error_stops_the_tick(self) -> None:
+        self.assertEqual(self.shared(TEST_RECHECK_EXITS="4").wait(timeout=30), 75)
+        self.assertEqual(self.model_targets(), [])
+        self.assertFalse((self.state / "claude-gate-seen.json").exists())
+        self.assertEqual(self.finish(), (75, "blocked", "quota"))
+
+    def test_bad_recheck_timeout_is_refused(self) -> None:
+        runner = self.shared(EPIC_RECHECK_TIMEOUT_SECONDS="0")
+        self.assertEqual(runner.wait(timeout=30), 2)
+        self.assertFalse(self.calls.exists())
+
+    def test_budgets_include_the_recheck_time(self) -> None:
+        env = {"EPIC_AGENT_ID": "claude-2", "EPIC_RECHECK_TIMEOUT_SECONDS": "30"}
+        self.assertEqual(self.shared(**env).wait(timeout=30), 0)
+        agent = json.loads((self.state / "agents/claude-2/agent.json").read_text())
+        self.assertEqual(agent["budget_seconds"], 120 + 30 + 1800 + 10)
+
+    def test_model_and_gate_get_the_write_check_inputs(self) -> None:
+        self.assertEqual(self.shared().wait(timeout=30), 0)
+        action_file, trusted = (
+            Path(str(self.calls) + ".modelenv").read_text().splitlines()
+        )
+        self.assertEqual(action_file, str(self.state / "claude.lock/action.json"))
+        self.assertEqual(trusted, str(self.repo.resolve()))
+        args = self.model_targets()[0]
+        config = json.loads(args.split("--mcp-config ", 1)[1].split(" --", 1)[0])
+        env = config["mcpServers"]["epic-gate"]["env"]
+        self.assertEqual(env["EPIC_TRUSTED_ROOT"], str(self.repo.resolve()))
+        self.assertEqual(env["EPIC_SHARED_READER"], "1")
+        self.assertIn("HOME", env)
 
 
 if __name__ == "__main__":

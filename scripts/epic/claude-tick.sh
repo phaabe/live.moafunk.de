@@ -18,6 +18,16 @@
 # blocked target never starves the others. The target lock is held on file
 # descriptors 8 and 9 until the tick and all its children exited.
 #
+# Shared reader (EPIC_SHARED_READER=1, off by default; github_state.py): the
+# selector reads the shared REST snapshot. Its exit 5 (read blocked) ends the
+# tick as blocked with exit 75. After the gate check, `next_action.py
+# --recheck` reads the target fresh within EPIC_RECHECK_TIMEOUT_SECONDS: 6
+# (stale) skips that candidate, 5 or a timeout ends the tick as blocked. In
+# both cases no model starts and no gate record or cooldown is written; the
+# state the gate saw is discarded. The recheck time is part of the lock and
+# registration budgets. The model session gets EPIC_ACTION_FILE and
+# EPIC_TRUSTED_ROOT, so the write checks (write_checks.py) know the action.
+#
 # Run from a scheduler or a loop, for example:
 #   while true; do /bin/bash scripts/epic/claude-tick.sh; sleep 600; done
 set -euo pipefail
@@ -62,17 +72,29 @@ tick_outcome=auto
 
 mkdir -p "$state_dir"
 exec >> "$log_file" 2>&1
+shared_reader=0
+recheck_timeout=0
+if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
+    shared_reader=1
+    recheck_timeout=${EPIC_RECHECK_TIMEOUT_SECONDS:-60}
+fi
 for duration in "$tick_timeout" "$select_timeout"; do
     if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
         printf 'tick: timeout must be a positive integer in seconds\n' >&2
         exit 2
     fi
 done
+if [[ "$shared_reader" == 1 && ! "$recheck_timeout" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'tick: timeout must be a positive integer in seconds\n' >&2
+    exit 2
+fi
+# Lock and registration budget: selection, recheck, model and cleanup.
+budget=$((select_timeout + recheck_timeout + tick_timeout + 10))
 if [[ -n "$agent_id" ]]; then
     python3 "${repo_root}/scripts/epic/agents.py" --state-dir "$registry_dir" \
         register --id "$agent_id" --kind claude --label "${EPIC_AGENT_LABEL:-}" \
         --interval "${EPIC_AGENT_INTERVAL_SECONDS:-600}" \
-        --budget "$((select_timeout + tick_timeout + 10))"
+        --budget "$budget"
 fi
 if command -v timeout >/dev/null 2>&1; then
     timeout_bin=timeout
@@ -102,14 +124,20 @@ quota_stop() {
     tick_phase=quota
     exit 75
 }
+# A blocked or timed-out GitHub read (shared reader): no action from it.
+read_blocked() {
+    printf 'tick: GitHub read blocked in %s; no action\n' "$1" >&2
+    tick_outcome=blocked
+    tick_phase=$1
+    exit 75
+}
 
 if ! quota_open; then
     exit 0
 fi
 
 # Same lock helper as the Codex runner, with its own lock directory.
-if python3 "${repo_root}/.codex/epic_lock.py" "$lock_dir" "$$" \
-    "$((select_timeout + tick_timeout + 10))"; then
+if python3 "${repo_root}/.codex/epic_lock.py" "$lock_dir" "$$" "$budget"; then
     :
 else
     result=$?
@@ -199,6 +227,7 @@ case "$select" in
     0) ;;
     3) exit 0 ;;
     4) quota_stop ;;
+    5) read_blocked select ;;
     *) exit "$select" ;;
 esac
 candidates=$(cat "${lock_dir}/action.json")
@@ -211,6 +240,11 @@ fi
 
 release_target() {
     exec 8>&- 9>&-
+}
+# The gate check saved the state it saw for its record; a candidate that does
+# not run must not leave it behind.
+discard_seen() {
+    rm -f "${state_dir}/claude-gate-seen.json"
 }
 # Locks the targets of action.json on fds 8 and 9. 1 when another runner holds one.
 # Called from `if`, where set -e is off: every failure exits explicitly.
@@ -293,6 +327,34 @@ while IFS= read -r candidate; do
     elif [[ "$gate" != 0 ]]; then
         exit "$gate"
     fi
+    if [[ "$shared_reader" == 1 ]]; then
+        tick_phase=recheck
+        recheck=0
+        run_bounded "${recheck_timeout}s" python3 scripts/epic/next_action.py \
+            --agent claude --recheck "${lock_dir}/action.json" || recheck=$?
+        case "$recheck" in
+            0) ;;
+            6)
+                discard_seen
+                release_target
+                printf 'tick: %s is stale on GitHub; next candidate\n' "$action"
+                continue
+                ;;
+            4)
+                discard_seen
+                quota_stop
+                ;;
+            # 124 and 137: timeout stopped the recheck.
+            5|124|137)
+                discard_seen
+                read_blocked recheck
+                ;;
+            *)
+                discard_seen
+                exit "$recheck"
+                ;;
+        esac
+    fi
     selected=1
     break
 done <<< "$candidates"
@@ -320,13 +382,25 @@ tick_phase=model
 # push and merge. permission_gate.py answers those prompts: it approves only
 # feature-branch pushes and head-pinned squash merges, and denies the rest.
 # The gate reads the selected action: `adopt` may edit only that PR's body.
+# With the shared reader the gate also reads GitHub fresh before a push or merge
+# (write_checks.py), so it needs the reader's settings and gh's environment.
 gate_config=$(python3 -c '
-import json, sys
+import json, os, sys
+env = {"EPIC_STATE_DIR": sys.argv[2], "EPIC_ACTION_FILE": sys.argv[3]}
+if os.environ.get("EPIC_SHARED_READER") == "1":
+    env["EPIC_TRUSTED_ROOT"] = sys.argv[4]
+    for name, value in os.environ.items():
+        if name.startswith(("EPIC_", "GH_")) or name in (
+            "HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "XDG_CONFIG_HOME"
+        ):
+            env.setdefault(name, value)
 print(json.dumps({"mcpServers": {"epic-gate": {
-    "command": "python3", "args": [sys.argv[1]],
-    "env": {"EPIC_STATE_DIR": sys.argv[2], "EPIC_ACTION_FILE": sys.argv[3]}}}}))
-' "${repo_root}/scripts/epic/permission_gate.py" "$state_dir" "${lock_dir}/action.json")
+    "command": "python3", "args": [sys.argv[1]], "env": env}}}))
+' "${repo_root}/scripts/epic/permission_gate.py" "$state_dir" "${lock_dir}/action.json" \
+    "$repo_root")
+# The write-check hook (.claude/hooks/scripts/epic_guard.py) reads these two.
 run_bounded "${tick_timeout}s" \
+    env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
     --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \
     < "${lock_dir}/prompt.txt"
