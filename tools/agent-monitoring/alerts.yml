@@ -54,6 +54,7 @@ groups:
         expr: >-
           epic_handoff_stalled == 1
           and on() (time() - epic_local_snapshot_timestamp_seconds < 30)
+          and on() (time() - epic_handoff_observed_timestamp_seconds < 300)
         for: 5m
         labels: {severity: warning}
         annotations:

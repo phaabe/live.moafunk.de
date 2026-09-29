@@ -729,7 +729,27 @@ file's end).
 | failing alert trusted an unreadable tick history | also needs tick ledger read, events read and export success |
 | outcome timeline went on through a collector outage | local freshness guard per step |
 | retired agents stayed in the 24 h timeline | presence at the end of the range (`@ end()`) |
-| median tiles kept an expired value | the series only while delivery data is fresh at the range end; promtool checks the instant case, the range case was checked in the preview |
+| median tiles kept an expired value | the series only while delivery data is fresh at the range end; promtool checks it |
+
+### PR 5 review, round 2
+
+| Codex finding | Change |
+|---|---|
+| median tiles kept a median that the collector stopped publishing | the median must also exist at the range end; promtool test through a subquery, like Grafana's range |
+| failure tile, "Needs Anton" and the Failed column trusted an unreadable tick history | same read and export checks as the alert; the column shows "?" |
+| handoff waits kept growing while GitHub was not seen | waits, stall and "Needs Anton" only while the handoff was observed in the last 5 min; the stall alert too |
+
+### PR 5, design check at 1600 and 1280 px
+
+| Blueprint | Change |
+|---|---|
+| tiles: value on the left, caption under it, "4 / 8" | canvas tiles with their own title; a stat panel can only center |
+| page chrome "Agent loop › Cockpit", tab row | folder "Agent loop", titles without "Agents ·", one link row on every page |
+| 8 agents fit the table | fixture "normal" has the design's 8 agents; widths fit 1280 px |
+| 24 h of outcomes | the preview writes 24 h of fixture history into its Prometheus |
+| handoff per direction with the oldest PR | one row per direction: oldest PR, wait, PR count, reviewers |
+| open PRs: PR, executor, leaf, review, CI, rounds, age | same columns (task instead of leaf); new `epic_pr_opened_timestamp_seconds` and `epic_pr_review_rounds` |
+| kind stripe, 20 tick cells, "21m" inside the outcome, kind squares in the timeline, "38/58" | not possible in Grafana 13 or would add a label that changes each minute; kept the dot, the counts, the Ago column |
 
 ## Appendix — panel spec from design v2
 

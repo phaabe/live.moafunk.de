@@ -1,6 +1,6 @@
 {
   "uid": "epic-delivery",
-  "title": "Agents · Delivery",
+  "title": "Delivery",
   "tags": [
     "agents",
     "epic"
@@ -25,6 +25,16 @@
       "title": "Agent detail",
       "url": "/d/epic-agent",
       "targetBlank": false
+    },
+    {
+      "title": "Delivery",
+      "url": "/d/epic-delivery",
+      "targetBlank": false
+    },
+    {
+      "title": "Epic #312 on GitHub ↗",
+      "url": "https://github.com/phaabe/live.moafunk.de/issues/312",
+      "targetBlank": true
     }
   ],
   "templating": {
@@ -137,7 +147,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_review_rounds_median and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600) and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds < 600)[1m:] @ end())",
+          "expr": "epic_review_rounds_median and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600) and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds < 600)[1m:] @ end()) and on() (epic_review_rounds_median @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -204,7 +214,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_time_to_merge_median_seconds and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600) and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds < 600)[1m:] @ end())",
+          "expr": "epic_time_to_merge_median_seconds and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600) and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds < 600)[1m:] @ end()) and on() (epic_time_to_merge_median_seconds @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -453,7 +463,7 @@
         },
         {
           "refId": "B",
-          "expr": "max by (target) (epic_handoff_wait_seconds) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "expr": "max by (target) (epic_handoff_wait_seconds and on() (time() - epic_handoff_observed_timestamp_seconds < 300)) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
           "instant": true,
           "range": false,
           "legendFormat": "",

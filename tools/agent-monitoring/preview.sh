@@ -20,5 +20,14 @@ python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir" --output "
 # Alloy reads the fixture logs, not the real ones.
 EPIC_STATE_DIR="$state_dir" AGENT_RUNTIME=./runtime-preview docker compose -p agent-monitoring-preview \
     -f tools/agent-monitoring/compose.yaml up -d
+# 24 h of outcome history for the timeline, written into the preview's own
+# Prometheus volume (its data dir is /prometheus/data); loaded on restart.
+history_dir=$(mktemp -d)
+python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir" --history "$history_dir/history.om"
+docker run --rm -v agent-monitoring-preview_prometheus-data:/prometheus -v "$history_dir:/in:ro" \
+    --entrypoint promtool prom/prometheus:v3.15.0 \
+    tsdb create-blocks-from openmetrics /in/history.om /prometheus/data >/dev/null
+rm -rf "$history_dir"
+docker compose -p agent-monitoring-preview -f tools/agent-monitoring/compose.yaml restart prometheus
 printf 'Preview: http://127.0.0.1:%s (scenario %s)\n' "$AGENT_GRAFANA_PORT" "$scenario"
 exec python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir" --output "$output"

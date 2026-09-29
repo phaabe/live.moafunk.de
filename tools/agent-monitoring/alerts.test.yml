@@ -140,6 +140,8 @@ tests:
     input_series:
       - series: epic_local_snapshot_timestamp_seconds
         values: 0+60x20
+      - series: epic_handoff_observed_timestamp_seconds
+        values: 0+60x20
       - series: epic_handoff_stalled
         values: 0 1x10 0x9
     alert_rule_test:
@@ -150,3 +152,15 @@ tests:
           - exp_labels: {severity: warning}
             exp_annotations: {summary: Both kinds wait over 30 min for a review and no agent can act}
       - {alertname: AgentHandoffStalled, eval_time: 14m, exp_alerts: []}
+
+  # Waits grow from cached data while GitHub is not seen: no stall alert.
+  - interval: 1m
+    input_series:
+      - series: epic_local_snapshot_timestamp_seconds
+        values: 0+60x20
+      - series: epic_handoff_observed_timestamp_seconds
+        values: 0x20
+      - series: epic_handoff_stalled
+        values: 1x20
+    alert_rule_test:
+      - {alertname: AgentHandoffStalled, eval_time: 15m, exp_alerts: []}

@@ -449,6 +449,26 @@ class DeliveryMetricsTest(unittest.TestCase):
             2,
         )
 
+    def test_every_open_pr_has_its_age_and_known_rounds(self) -> None:
+        """The cockpit's Open PRs table; the flow table keeps only the newest."""
+        rows = [
+            {"number": n, "created": NOW - 60 * n, "executor": "claude", "draft": False}
+            for n in (8, 9)
+        ]
+        pr = pull_request(
+            9, "Claude", comments=[verdict("CHANGES REQUESTED", "Codex", OTHER)]
+        )
+        sink = Sink()
+        delivery.delivery_metrics(sink, self.data(open_prs=rows), [pr], NOW)
+        for n in (8, 9):
+            self.assertEqual(
+                sink.value("pr_opened_timestamp_seconds", target=f"{URL}/pull/{n}"),
+                NOW - 60 * n,
+            )
+        self.assertEqual(sink.value("pr_review_rounds", target=f"{URL}/pull/9"), 1)
+        # Not in the selector snapshot: rounds unknown.
+        self.assertIsNone(sink.value("pr_review_rounds", target=f"{URL}/pull/8"))
+
 
 class AreaLeavesTest(unittest.TestCase):
     def test_leaves_count_once_per_area_and_kind(self) -> None:

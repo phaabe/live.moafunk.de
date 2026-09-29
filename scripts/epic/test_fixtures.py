@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -43,8 +45,23 @@ class FixturesTest(unittest.TestCase):
         self.assertEqual(self.text.count("epic_agent_collision{"), 2)
         self.presence("failing")
         self.assertIn('epic_tick_consecutive_failures{agent="codex"} 4', self.text)
-        self.presence("normal")
-        self.assertIn('epic_backoff_info{agent="codex"', self.text)
+        # The design's "normal" frame: 4 running, 3 idle, 1 new.
+        self.assertEqual(
+            sorted(self.presence("normal").items()),
+            sorted(
+                {
+                    "claude": "running",
+                    "claude-2": "running",
+                    "codex": "running",
+                    "codex-review": "running",
+                    "claude-docs": "idle",
+                    "codex-2": "idle",
+                    "codex-ops": "idle",
+                    "claude-3": "new",
+                }.items()
+            ),
+        )
+        self.assertIn('epic_backoff_info{agent="codex-ops"', self.text)
 
     def test_never_deletes_a_dir_it_did_not_make(self) -> None:
         foreign = self.root / "real"
@@ -72,6 +89,80 @@ class FixturesTest(unittest.TestCase):
         fixtures.build_state(state, fixtures.scenario("single")[0], time.time())
         self.assertEqual(state.stat().st_ino, inode)
         self.assertEqual([p.name for p in (state / "agents").iterdir()], ["claude"])
+
+    def test_a_long_preview_stays_normal(self) -> None:
+        """Idle agents tick when due and running ticks end before the
+        budget, so after 2 h nobody is late or over budget."""
+        specs, _ = fixtures.scenario("normal")
+        state = self.root / "state"
+        start = time.time()
+        fixtures.build_state(state, specs, start)
+        starts = fixtures.last_starts(specs, start)
+        for minute in range(0, 121, 1):
+            fixtures.advance(state, specs, starts, start + 60 * minute)
+        later = start + 7200
+        text = monitor.runner_metrics(
+            state,
+            False,
+            later,
+            ledgers=monitor.Ledgers(self.root / "rt"),
+            alive=lambda pid: True,
+        )
+        presence = dict(
+            re.findall(
+                r'epic_agent_presence_info\{agent="([^"]+)",presence="(\w+)"', text
+            )
+        )
+        self.assertNotIn("late", presence.values())
+        self.assertEqual(presence["codex"], "running")
+        # The new agent had its first tick.
+        self.assertEqual(presence["claude-3"], "idle")
+        for agent, value in re.findall(
+            r'epic_tick_elapsed_seconds\{agent="([^"]+)"\} (\S+)', text
+        ):
+            with self.subTest(agent=agent):
+                self.assertLess(float(value), 1800)
+
+    def test_late_and_failing_agents_do_not_recover(self) -> None:
+        for name, agent in (("late", "codex"), ("failing", "codex")):
+            specs, _ = fixtures.scenario(name)
+            [spec] = [s for s in specs if s.id == agent]
+            self.assertFalse(spec.live)
+
+
+class HistoryTest(unittest.TestCase):
+    def test_history_covers_24_h_per_ticking_agent(self) -> None:
+        specs, _ = fixtures.scenario("normal")
+        now = 1_790_000_000.0
+        text = fixtures.history(specs, now)
+        self.assertTrue(text.endswith("# EOF\n"))
+        agents_seen = set(re.findall(r'epic_tick_last_outcome\{agent="([^"]+)"', text))
+        # claude-3 is new: no ticks yet.
+        self.assertEqual(agents_seen, {s.id for s in specs} - {"claude-3"})
+        times = [
+            int(line.rsplit(" ", 1)[1])
+            for line in text.splitlines()
+            if line.startswith("epic_local")
+        ]
+        self.assertEqual(times[-1] - times[0], 24 * 3600)
+        self.assertLess(times[-1], now)
+
+    @unittest.skipUnless(shutil.which("docker"), "needs docker for promtool")
+    def test_promtool_accepts_the_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.om"
+            path.write_text(
+                fixtures.history(fixtures.scenario("single")[0], time.time(), hours=3)
+            )
+            result = subprocess.run(
+                ["docker", "run", "--rm", "-v", f"{directory}:/w", "-w", "/w"]
+                + ["--entrypoint", "promtool", "prom/prometheus:v3.15.0"]
+                + ["tsdb", "create-blocks-from", "openmetrics", "history.om", "out"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class PreviewRuntimeTest(unittest.TestCase):

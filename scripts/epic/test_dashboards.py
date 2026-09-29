@@ -200,9 +200,35 @@ class DashboardTest(unittest.TestCase):
                         self.assertIn(metric, published)
 
 
-def panel_expr(page: str, title: str) -> str:
-    [panel] = [p for p in panels(pages()[page]) if p["title"] == title]
-    return panel["targets"][0]["expr"]
+def title_of(panel: dashboards.Json) -> str:
+    """The panel title, or the title a canvas tile draws itself."""
+    if panel["type"] == "canvas":
+        return panel["options"]["root"]["elements"][0]["config"]["text"]["fixed"]
+    return panel["title"]
+
+
+def panel_expr(page: str, title: str, ref: str = "A") -> str:
+    # The "Agents" tile and table share a title; their query ids differ.
+    [expr] = [
+        t["expr"]
+        for p in panels(pages()[page])
+        if title_of(p) == title
+        for t in p.get("targets", [])
+        if t["refId"] == ref
+    ]
+    return expr
+
+
+def as_range(expr: str) -> str:
+    """The last value over 20 min at 1 min steps, like Grafana's "last not
+    null" on a range query: "@ end()" is the outer query's time."""
+    return f"last_over_time(({expr})[20m:1m])"
+
+
+LOCAL_FRESH = {
+    "series": "epic_local_snapshot_timestamp_seconds",
+    "values": "0+60x25",
+}
 
 
 def docker_ready() -> bool:
@@ -240,7 +266,9 @@ class QuerySemanticsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_timeline_gaps_when_stale_and_hides_retired_agents(self) -> None:
-        expr = panel_expr("overview.json", "Tick outcomes · 24 h")
+        expr = panel_expr(
+            "overview.json", "Tick outcomes · last 24 h · held until the next tick"
+        )
         self.run_promtool(
             [
                 {
@@ -319,13 +347,171 @@ class QuerySemanticsTest(unittest.TestCase):
                     ],
                     "promql_expr_test": [
                         {
-                            "expr": expr,
+                            "expr": as_range(expr),
                             "eval_time": "5m",
                             "exp_samples": [
                                 {"labels": "epic_review_rounds_median", "value": 2}
                             ],
                         },
-                        {"expr": expr, "eval_time": "20m", "exp_samples": []},
+                        {"expr": as_range(expr), "eval_time": "20m", "exp_samples": []},
+                    ],
+                }
+            ]
+        )
+
+    def test_medians_show_nothing_once_the_median_is_gone(self) -> None:
+        """Codex review round 2: the 7-day window empties while delivery data
+        stays fresh; the collector then stops publishing the median."""
+        for title, name in (
+            ("Median review rounds", "epic_review_rounds_median"),
+            ("Median time to merge", "epic_time_to_merge_median_seconds"),
+        ):
+            expr = panel_expr("delivery.json", title)
+            with self.subTest(title=title):
+                self.run_promtool(
+                    [
+                        {
+                            "interval": "1m",
+                            "input_series": [
+                                {
+                                    "series": "epic_delivery_snapshot_timestamp_seconds",
+                                    "values": "0+60x25",
+                                },
+                                {"series": name, "values": "2x5 stale"},
+                            ],
+                            "promql_expr_test": [
+                                {
+                                    "expr": as_range(expr),
+                                    "eval_time": "5m",
+                                    "exp_samples": [{"labels": name, "value": 2}],
+                                },
+                                {
+                                    "expr": as_range(expr),
+                                    "eval_time": "15m",
+                                    "exp_samples": [],
+                                },
+                            ],
+                        }
+                    ]
+                )
+
+    def test_failures_count_only_while_the_history_is_read(self) -> None:
+        """Codex review round 2: cached failures of an agent whose later
+        ticks cannot be read are not "failing"."""
+        health = [
+            {"series": f'epic_{name}{{agent="codex"}}', "values": value}
+            for name, value in (
+                ("runner_read_success", "1x10"),
+                ("tick_ledger_read_success", "1 1 1 0x8"),
+                ("tick_events_read_success", "1x10"),
+                ("tick_ledger_export_success", "1x10"),
+            )
+        ]
+        failing = panel_expr("overview.json", "Agents failing")
+        needs = panel_expr("overview.json", "Needs Anton")
+        column = panel_expr("overview.json", "Agents", ref="G")
+        self.run_promtool(
+            [
+                {
+                    "interval": "1m",
+                    "input_series": [
+                        LOCAL_FRESH,
+                        *health,
+                        {
+                            "series": 'epic_tick_consecutive_failures{agent="codex"}',
+                            "values": "3x10",
+                        },
+                        # The value is the registration time, not 1.
+                        {
+                            "series": 'epic_agent_info{agent="codex"}',
+                            "values": "1790000000x10",
+                        },
+                        # A new agent has no count yet: no value, not unknown.
+                        {
+                            "series": 'epic_agent_info{agent="claude-3"}',
+                            "values": "1790000000x10",
+                        },
+                        {"series": "epic_pause_requested", "values": "0x10"},
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": failing,
+                            "eval_time": "2m",
+                            "exp_samples": [{"labels": "{}", "value": 1}],
+                        },
+                        {
+                            "expr": needs,
+                            "eval_time": "2m",
+                            "exp_samples": [{"labels": "{}", "value": 1}],
+                        },
+                        # The ledger cannot be read from 3 min on.
+                        {
+                            "expr": failing,
+                            "eval_time": "5m",
+                            "exp_samples": [{"labels": "{}", "value": 0}],
+                        },
+                        {
+                            "expr": needs,
+                            "eval_time": "5m",
+                            "exp_samples": [{"labels": "{}", "value": 0}],
+                        },
+                        # The table says "unknown" (-1), not a count.
+                        {
+                            "expr": column,
+                            "eval_time": "5m",
+                            "exp_samples": [{"labels": '{agent="codex"}', "value": -1}],
+                        },
+                    ],
+                }
+            ]
+        )
+
+    def test_handoff_waits_hide_while_github_is_not_seen(self) -> None:
+        """Codex review round 2: cached waits keep growing when GitHub polls
+        fail; they must not raise "Needs Anton" or the waiting tile."""
+        wait = (
+            'epic_handoff_wait_seconds{target="https://x/pull/1",'
+            'waiter_kind="claude",waits_for_kind="codex"}'
+        )
+        needs = panel_expr("overview.json", "Needs Anton")
+        waiting = panel_expr("overview.json", "PRs waiting > 30 min")
+        oldest = panel_expr("overview.json", "Handoff · per kind", ref="C")
+        self.run_promtool(
+            [
+                {
+                    "interval": "1m",
+                    "input_series": [
+                        LOCAL_FRESH,
+                        # GitHub is last seen at 1 min.
+                        {
+                            "series": "epic_handoff_observed_timestamp_seconds",
+                            "values": "0 60x15",
+                        },
+                        {"series": wait, "values": "3700+60x15"},
+                        {"series": "epic_pause_requested", "values": "0x15"},
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": needs,
+                            "eval_time": "2m",
+                            "exp_samples": [{"labels": "{}", "value": 1}],
+                        },
+                        {
+                            "expr": waiting,
+                            "eval_time": "2m",
+                            "exp_samples": [{"labels": "{}", "value": 1}],
+                        },
+                        {
+                            "expr": needs,
+                            "eval_time": "10m",
+                            "exp_samples": [{"labels": "{}", "value": 0}],
+                        },
+                        {
+                            "expr": waiting,
+                            "eval_time": "10m",
+                            "exp_samples": [{"labels": "{}", "value": 0}],
+                        },
+                        {"expr": oldest, "eval_time": "10m", "exp_samples": []},
                     ],
                 }
             ]

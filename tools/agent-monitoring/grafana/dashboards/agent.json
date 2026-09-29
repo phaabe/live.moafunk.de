@@ -1,6 +1,6 @@
 {
   "uid": "epic-agent",
-  "title": "Agents · Agent detail",
+  "title": "Agent detail",
   "tags": [
     "agents",
     "epic"
@@ -22,9 +22,19 @@
       "targetBlank": false
     },
     {
+      "title": "Agent detail",
+      "url": "/d/epic-agent",
+      "targetBlank": false
+    },
+    {
       "title": "Delivery",
       "url": "/d/epic-delivery",
       "targetBlank": false
+    },
+    {
+      "title": "Epic #312 on GitHub ↗",
+      "url": "https://github.com/phaabe/live.moafunk.de/issues/312",
+      "targetBlank": true
     }
   ],
   "templating": {

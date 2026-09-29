@@ -77,16 +77,22 @@ collision; it does not prevent it.
 
 | Page · panel | Meaning |
 | --- | --- |
-| Cockpit · tiles | Needs Anton, pause, agents running / registered, agents failing 3 times in a row, late agents, collisions, PRs waiting > 30 min, data age |
+| Cockpit · tiles | Needs Anton, pause, agents running / registered, agents failing 3 times in a row, late agents, collisions, PRs waiting > 30 min, data age. Each has a caption under the value |
+| Needs Anton | Counts: needs-anton labels, a stalled handoff, an agent failing 3 times in a row or late, a collision, ≥ 5 denials in 1 h or ≥ 3 backoffs on one agent, a PR waiting > 60 min. Amber "paused" when the pause is the only reason |
 | Cockpit · Agents | One row per agent, running first: presence, current or last action and its task, tick elapsed / budget, last outcome, time since the last tick, failures in a row, the last 20 outcomes as counts, next tick, Codex backoffs, Claude denials in 1 h |
 | Cockpit · Tick outcomes | Last outcome per agent over 24 h; retired agents are hidden |
-| Cockpit · Handoff | Per kind: PRs waiting for the other kind's review, the longest wait, and how many agents of the reviewer kind are registered |
-| Cockpit · Epic progress, Open PRs | Checklist leaves per area and kind; open PRs with the other kind's verdict and CI |
+| Cockpit · Handoff | Per direction (Claude PRs → Codex review and back): the oldest waiting PR, its wait, the number of waiting PRs, and how many agents of the reviewer kind are registered |
+| Cockpit · Epic progress, Open PRs | Checklist leaves per area and kind; open PRs with executor, task, the other kind's verdict, CI, review rounds and age |
 | Agent detail | Ticks today, success rate, median duration, blocked sessions, tokens (Codex); tick history; worst outcome per hour for 7 days; backoff; permission gate and denials (Claude); errors and the full runner log from Loki |
 | Delivery | Burn-up of checklist leaves, merged PRs per day, PR flow with review rounds and waits, medians of review rounds and time to merge |
 
 Panels for data a kind does not report say so in grey. When local data is
-stale, tiles show "—" and each agent row says "data stale".
+stale, tiles show "—" and each agent row says "data stale". Failure counts
+show "?" while an agent's tick history cannot be read. Waits are hidden
+while GitHub has not been seen for 5 min.
+
+Open the cockpit with `?kiosk` to hide Grafana's own bars: the page then
+fits a 1600 × 1000 or 1280 × 1000 window like the design.
 
 The design had one 8 px cell per tick for the last 20 ticks. Grafana 13 table
 columns are at least 50 px wide, so the cockpit shows counts instead
@@ -104,6 +110,10 @@ scenarios: normal, single, busy, full, late, failing, collision, retired,
 paused, stale. It runs a second stack on port 13001 next to the real one,
 writes its state under `$TMPDIR`, and never calls GitHub. It refuses to run
 next to a collector in the same checkout.
+It also writes 24 h of made-up tick outcomes into the preview's own
+Prometheus, so the timeline is full. While it runs, idle agents tick when due,
+so a long preview stays in its scenario. Open
+`http://127.0.0.1:13001/d/epic-agents?kiosk` to compare with the design.
 
 ```bash
 bash tools/agent-monitoring/preview.sh collision   # http://127.0.0.1:13001
