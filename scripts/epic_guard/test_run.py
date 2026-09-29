@@ -81,13 +81,41 @@ class RunnerTests(unittest.TestCase):
             return run.main()
 
     def test_main_publish_returns_zero_for_guard_errors(self) -> None:
-        self.api.data["comments"] = []
-        self.api.data["pr"]["comments"] = 0
+        self.api.data["comments"][0]["body"] = self.api.data["comments"][0][
+            "body"
+        ].replace("APPROVED", "CHANGES REQUESTED")
         with patch.object(
             run, "publish", side_effect=lambda *s: self.statuses.append(s)
         ):
             self.assertEqual(self.main("--pr", "406", "--publish"), 0)
         self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
+
+    def test_review_and_draft_waiting_publish_pending_but_block_local_mode(
+        self,
+    ) -> None:
+        for reason in ("draft", "missing verdict", "stale verdict", "all"):
+            with self.subTest(reason=reason):
+                self.api = BaseAPI()
+                if reason in {"draft", "all"}:
+                    self.api.data["pr"]["draft"] = True
+                if reason in {"missing verdict", "all"}:
+                    self.api.data["comments"] = []
+                    self.api.data["pr"]["comments"] = 0
+                if reason == "stale verdict":
+                    self.api.data["comments"][0]["body"] = self.api.data["comments"][0][
+                        "body"
+                    ].replace(HEAD, OLD)
+                if reason == "all":
+                    self.api.data["check_runs"][0].update(
+                        status="queued", conclusion=None
+                    )
+                with patch.object(
+                    run, "publish", side_effect=lambda *s: self.statuses.append(s)
+                ):
+                    self.assertEqual(self.main("--pr", "406", "--publish"), 0)
+                self.assertEqual(self.statuses[-1][:2], (HEAD, "pending"))
+                self.assertIn("waiting for PR readiness", self.statuses[-1][2])
+                self.assertEqual(self.main("--pr", "406"), 1)
 
     def test_running_check_publishes_pending_and_blocks_local_mode(self) -> None:
         for status in ("queued", "in_progress"):
@@ -129,12 +157,13 @@ class RunnerTests(unittest.TestCase):
             "check",
             "status",
             "verdict",
-            "stale verdict",
+            "malformed verdict",
             "lane",
             "metadata",
         ):
             with self.subTest(error=error):
                 self.api = BaseAPI()
+                self.api.data["pr"]["draft"] = True
                 self.api.data["check_runs"][0].update(
                     status="in_progress", conclusion=None
                 )
@@ -153,15 +182,19 @@ class RunnerTests(unittest.TestCase):
                         {"id": 1, "context": "deployment", "state": "failure"}
                     ]
                 elif error == "verdict":
-                    self.api.data["comments"] = []
-                    self.api.data["pr"]["comments"] = 0
-                elif error == "stale verdict":
+                    self.api.data["comments"][0]["body"] = self.api.data["comments"][0][
+                        "body"
+                    ].replace("APPROVED", "CHANGES REQUESTED")
+                elif error == "malformed verdict":
+                    self.api.data["comments"][0]["body"] += " trailing text"
+                elif error == "lane":
                     self.api.data["comments"][0]["body"] = self.api.data["comments"][0][
                         "body"
                     ].replace(HEAD, OLD)
-                elif error == "lane":
                     self.api.data["files"][0]["filename"] = "unassigned.txt"
                 else:
+                    self.api.data["comments"] = []
+                    self.api.data["pr"]["comments"] = 0
                     self.api.data["pr"]["body"] += "\nExecutor: Codex"
                 self.assertTrue(self.verify())
                 self.assertEqual(self.statuses[-1][:2], (HEAD, "failure"))
@@ -297,7 +330,7 @@ class RunnerTests(unittest.TestCase):
                     [s[:2] for s in self.statuses],
                     [
                         (HEAD, "pending"),
-                        (HEAD, "failure"),
+                        (HEAD, "pending" if error == "missing verdict" else "failure"),
                         ("c" * 40, "pending"),
                         ("c" * 40, "success"),
                     ],

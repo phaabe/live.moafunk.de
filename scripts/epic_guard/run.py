@@ -188,7 +188,10 @@ def verify(
         if failures:
             state, description = "failure", failures[0]
         elif errors:
-            state, description = "pending", "waiting for checks: " + "; ".join(errors)
+            state, description = (
+                "pending",
+                "waiting for PR readiness: " + "; ".join(errors),
+            )
         else:
             state, description = "success", "Verdict, lanes and checks pass"
         writer(
