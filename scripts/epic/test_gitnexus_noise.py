@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().with_name("gitnexus_noise.py")
+sys.path.insert(0, str(SCRIPT.parent))
+import gitnexus_noise  # noqa: E402
+
 DOC = (
     "# Guide\n\nHand-written text.\n\n"
     "<!-- gitnexus:start -->\n"
@@ -176,6 +183,85 @@ class NoiseTest(unittest.TestCase):
         (self.repo / ".gitnexus/.analyze.lock").write_text(f"{dead.pid}\n")
         self.assertEqual(self.run_helper().returncode, 0)
         self.assertEqual(self.status(), "")
+
+    # In-process runs below: an analyzer starts at an exact point of the run.
+
+    def start_analyzer(self, lock: Path, seconds: str = "2") -> int:
+        # Detached, so init reaps it: a zombie child still looks alive to kill 0.
+        pid = int(
+            subprocess.run(
+                ["sh", "-c", f"sleep {seconds} >/dev/null 2>&1 & echo $!"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        self.addCleanup(self.kill_quietly, pid)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(f"{pid}\n")
+        return pid
+
+    @staticmethod
+    def kill_quietly(pid: int) -> None:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def run_in_process(self, wait: float = 10) -> int:
+        with (
+            mock.patch.dict(os.environ, {"HOME": str(self.home)}),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            return gitnexus_noise.run(self.repo, wait)
+
+    def test_analyzer_starting_during_check_keeps_its_lock(self) -> None:
+        self.noise()
+        lock = self.repo / ".gitnexus/.analyze.lock"
+        real_check = gitnexus_noise.check
+        calls: list[int] = []
+
+        def check(repo: Path) -> list[str]:
+            if not calls:
+                calls.append(self.start_analyzer(lock))
+            else:
+                calls.append(0)
+            return real_check(repo)
+
+        with mock.patch.object(gitnexus_noise, "check", check):
+            self.assertEqual(self.run_in_process(), 0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(lock.read_text(), f"{calls[0]}\n")
+        self.assertEqual(self.status(), "")
+
+    def test_global_refresh_during_restore_is_restored_again(self) -> None:
+        self.noise()
+        lock = self.home / ".claude/logs/gitnexus/runner.lock"
+        real_git = gitnexus_noise.git
+        pids: list[int] = []
+
+        def git(repo: Path, *args: str) -> str:
+            out = real_git(repo, *args)
+            if args[0] == "restore" and not pids:
+                pids.append(self.start_analyzer(lock))
+                self.noise("CLAUDE.md")  # the refresh rewrites the block
+            return out
+
+        with mock.patch.object(gitnexus_noise, "git", git):
+            self.assertEqual(self.run_in_process(), 0)
+        self.assertEqual(lock.read_text(), f"{pids[0]}\n")
+        self.assertEqual(self.status(), "")
+
+    def test_analyzer_that_keeps_starting_stops_the_tick(self) -> None:
+        self.noise()
+        lock = self.repo / ".gitnexus/.analyze.lock"
+        pid = self.start_analyzer(lock, "30")
+        with (
+            mock.patch.object(gitnexus_noise, "wait_for_analyze", lambda *_: None),
+            self.assertRaises(gitnexus_noise.Stop),
+        ):
+            self.run_in_process()
+        self.assertEqual(lock.read_text(), f"{pid}\n")
 
 
 if __name__ == "__main__":

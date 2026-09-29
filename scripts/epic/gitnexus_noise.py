@@ -14,10 +14,13 @@ and every changed line strictly between the markers in HEAD. Staged changes,
 conflicts, mode or type changes and any other tracked change stop the tick.
 Untracked files are ignored and never touched.
 
-Before the check and restore it waits for a running analyze (the project
-`.gitnexus/.analyze.lock` and the machine-wide
-`~/.claude/logs/gitnexus/<checkout>.lock`) and then holds the project lock, so
-an analyze cannot write between check and restore.
+It waits for a running analyze (the project `.gitnexus/.analyze.lock` and the
+machine-wide `~/.claude/logs/gitnexus/<checkout>.lock`) before the check. It
+never writes or removes those locks: the analyzer hooks do not share an atomic
+lock protocol, so taking one could clobber a live owner. Instead, if an analyze
+started during check and restore, it waits and checks again (up to ROUNDS
+times). An analyze that starts after the last check can still rewrite the
+block before the pull; that pull fails once and the next tick restores it.
 
 Usage:
   gitnexus_noise.py [--repo DIR] [--wait SECONDS]
@@ -37,6 +40,7 @@ FILES = ("AGENTS.md", "CLAUDE.md")
 START = "<!-- gitnexus:start -->"
 END = "<!-- gitnexus:end -->"
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
+ROUNDS = 3
 
 
 class Stop(Exception):
@@ -157,26 +161,22 @@ def run(repo: Path, wait: float) -> int:
         return 0
     project_lock = repo / ".gitnexus" / ".analyze.lock"
     global_lock = Path.home() / ".claude/logs/gitnexus" / f"{repo.name}.lock"
-    wait_for_analyze([project_lock, global_lock], wait)
-    held = project_lock.parent.is_dir()
-    if held:
-        project_lock.write_text(f"{os.getpid()}\n")
-    try:
+    locks = [project_lock, global_lock]
+    restored: set[str] = set()
+    for _ in range(ROUNDS):
+        wait_for_analyze(locks, wait)
         files = check(repo)
-        if not files:
-            return 0
-        git(repo, "restore", "--worktree", "--", *files)
-        if changed(repo):
-            raise Stop("checkout still has tracked changes after restore")
-    finally:
-        if held and project_lock.exists():
-            try:
-                if int(project_lock.read_text().strip()) == os.getpid():
-                    project_lock.unlink()
-            except (OSError, ValueError):
-                pass
-    print(f"tick: restored GitNexus-only changes in {' '.join(files)}")
-    return 0
+        if files:
+            git(repo, "restore", "--worktree", "--", *files)
+            restored.update(files)
+        # An analyze that started meanwhile may write again: check once more.
+        if any(pid_alive(lock) for lock in locks) or changed(repo):
+            continue
+        if restored:
+            names = " ".join(sorted(restored))
+            print(f"tick: restored GitNexus-only changes in {names}")
+        return 0
+    raise Stop("GitNexus analyze kept changing the checkout; retry next tick")
 
 
 def main(argv: list[str] | None = None) -> int:
