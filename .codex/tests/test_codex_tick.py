@@ -44,7 +44,7 @@ class TickTests(unittest.TestCase):
             shutil.copyfile(ROOT / filename, self.runner.parent / filename)
         selector = self.repo / "scripts/epic/next_action.py"
         selector.parent.mkdir(parents=True)
-        for helper in ("tick_gate.py", "agents.py"):
+        for helper in ("tick_gate.py", "github_quota.py", "agents.py"):
             shutil.copyfile(
                 ROOT.parent / "scripts/epic" / helper, selector.parent / helper
             )
@@ -66,7 +66,8 @@ class TickTests(unittest.TestCase):
             "import os, pathlib, sys, time\n"
             "assert sys.argv[1:] == ['pull', '--ff-only']\n"
             "assert pathlib.Path.cwd() == pathlib.Path(os.environ['TEST_REPO']).resolve()\n"
-            "assert (pathlib.Path.home() / '.local/state/epic-loop/codex.lock/owner.json').exists()\n"
+            # The runner exports its own state dir; the lock is held there.
+            "assert (pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex.lock/owner.json').exists()\n"
             "with open(os.environ['TEST_PULLS'], 'a') as f: f.write('pull\\n')\n"
             "if os.environ.get('TEST_PAUSE_AFTER_PULL'):\n"
             "    (pathlib.Path.home() / '.epic-pause').touch()\n"
