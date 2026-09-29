@@ -11,10 +11,13 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 state_dir="${AGENT_PREVIEW_STATE_DIR:-${TMPDIR:-/tmp}/agent-monitoring-preview/state}"
 export AGENT_GRAFANA_PORT="${AGENT_GRAFANA_PORT:-13001}"
 export AGENT_PROMETHEUS_PORT="${AGENT_PROMETHEUS_PORT:-19091}"
+# Absolute, so the fixtures (run from the repo root) and Compose (relative
+# to compose.yaml) use the same dir.
+mkdir -p "$state_dir"
+state_dir=$(cd "$state_dir" && pwd -P)
 cd "$repo_root"
 # Its own runtime dir: the collector's checkpoints and metrics stay untouched.
 output=tools/agent-monitoring/runtime-preview/metrics
-mkdir -p "$state_dir"
 # Build the state first, so Alloy mounts a dir that already has the logs.
 python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir" --output "$output" --once
 # Alloy reads the fixture logs, not the real ones.

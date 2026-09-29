@@ -739,6 +739,16 @@ file's end).
 | failure tile, "Needs Anton" and the Failed column trusted an unreadable tick history | same read and export checks as the alert; the column shows "?" |
 | handoff waits kept growing while GitHub was not seen | waits, stall and "Needs Anton" only while the handoff was observed in the last 5 min; the stall alert too |
 
+### PR 5 review, round 3
+
+| Codex finding | Change |
+|---|---|
+| P1: a symlinked `runtime-preview/metrics` could point at the real metrics | the preview refuses a metrics dir that links out; `--output` must be a `metrics` dir |
+| handoff table showed "0 waiting" while GitHub was not seen | reviewer rows need the same freshness; the table says "No current data" |
+| a relative `AGENT_PREVIEW_STATE_DIR` meant two dirs | `preview.sh` makes it absolute first |
+| running fixture ticks started before the finished ones; the ledger rejected them | finished ticks end before the running start |
+| the paused preview kept starting ticks | no new ticks while paused |
+
 ### PR 5, design check at 1600 and 1280 px
 
 | Blueprint | Change |

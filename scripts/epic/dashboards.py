@@ -996,7 +996,8 @@ def handoff_table() -> Json:
     )
     waits = f"(epic_handoff_wait_seconds{HANDOFF})"
     queries = {
-        "A": reviewers,
+        # All rows vanish while GitHub is not seen: no "0 waiting" guess.
+        "A": f"({reviewers}){HANDOFF}",
         "B": f"count by (waiter_kind) ({waits}){LOCAL}",
         "C": f"topk by (waiter_kind) (1, {waits}){LOCAL}",
     }
@@ -1059,6 +1060,7 @@ def handoff_table() -> Json:
         "kind: the oldest one and how long it waits. Amber: over 15 min, or no "
         "agent of the reviewer kind. Red: over 30 min. Empty when GitHub data "
         "is stale.",
+        no_value="No current data",
     )
 
 

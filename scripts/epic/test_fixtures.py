@@ -129,6 +129,49 @@ class FixturesTest(unittest.TestCase):
             [spec] = [s for s in specs if s.id == agent]
             self.assertFalse(spec.live)
 
+    def test_normal_events_are_all_accepted(self) -> None:
+        """Codex review round 3: running ticks started before the finished
+        ones, so the ledger rejected them."""
+        specs, _ = fixtures.scenario("normal")
+        state = self.root / "state"
+        start = time.time()
+        fixtures.build_state(state, specs, start)
+        starts = fixtures.last_starts(specs, start)
+        ledgers = monitor.Ledgers(self.root / "rt")
+        text = ""
+        for minute in range(0, 31, 5):
+            now = start + 60 * minute
+            fixtures.advance(state, specs, starts, now)
+            text = monitor.runner_metrics(
+                state, False, now, ledgers=ledgers, alive=lambda pid: True
+            )
+        rejected = re.findall(r"epic_tick_events_rejected_total\{[^}]*\} (\S+)", text)
+        self.assertEqual(len(rejected), len(specs))
+        self.assertEqual({float(v) for v in rejected}, {0.0})
+
+    def test_a_paused_preview_starts_no_ticks(self) -> None:
+        """Codex review round 3."""
+        runtime = self.root / "runtime-preview"
+        state = self.root / "state"
+        start = time.time()
+        clock = iter([start, *[start + 3600] * 1000])
+        with patch.object(fixtures.time, "time", lambda: next(clock)):
+            fixtures.main(
+                [
+                    "paused",
+                    "--state-dir",
+                    str(state),
+                    "--output",
+                    str(runtime / "metrics"),
+                    "--once",
+                ]
+            )
+        for events in state.glob("agents/*/*-ticks.jsonl"):
+            with self.subTest(agent=events.parent.name):
+                # build_state and advance() write different JSON spacing.
+                starts = len(re.findall(r'"event":\s*"start"', events.read_text()))
+                self.assertEqual(starts, 20)
+
 
 class HistoryTest(unittest.TestCase):
     def test_history_covers_24_h_per_ticking_agent(self) -> None:
@@ -189,6 +232,34 @@ class PreviewRuntimeTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 fixtures.prepare_runtime(runtime)
         self.assertFalse(runtime.exists())
+
+    def test_a_symlinked_metrics_dir_is_refused(self) -> None:
+        """Codex review round 3: a marked preview dir whose metrics dir
+        links to the real stack's metrics."""
+        real = self.root / "runtime" / "metrics"
+        real.mkdir(parents=True)
+        (real / "runners.prom").write_text("real\n")
+        runtime = self.root / "runtime-preview"
+        runtime.mkdir()
+        (runtime / ".preview").write_text("")
+        (runtime / "metrics").symlink_to(real)
+        with self.assertRaises(SystemExit):
+            fixtures.prepare_runtime(runtime)
+        self.assertEqual((real / "runners.prom").read_text(), "real\n")
+
+    def test_output_must_be_a_metrics_dir(self) -> None:
+        with self.assertRaises(SystemExit):
+            fixtures.main(
+                [
+                    "normal",
+                    "--state-dir",
+                    str(self.root / "s"),
+                    "--output",
+                    str(self.root / "out"),
+                    "--once",
+                ]
+            )
+        self.assertFalse((self.root / "s").exists())
 
     def test_a_preview_runtime_is_cleaned_and_locked(self) -> None:
         runtime = self.root / "runtime-preview"

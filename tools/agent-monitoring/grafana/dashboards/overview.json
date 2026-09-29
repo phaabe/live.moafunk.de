@@ -3156,7 +3156,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "label_replace(epic_agents_registered_kind{kind=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30), \"waiter_kind\", \"claude\", \"\", \"\") or label_replace(epic_agents_registered_kind{kind=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30), \"waiter_kind\", \"codex\", \"\", \"\")",
+          "expr": "(label_replace(epic_agents_registered_kind{kind=\"codex\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30), \"waiter_kind\", \"claude\", \"\", \"\") or label_replace(epic_agents_registered_kind{kind=\"claude\"} and on() (time() - epic_local_snapshot_timestamp_seconds < 30), \"waiter_kind\", \"codex\", \"\", \"\")) and on() (time() - epic_handoff_observed_timestamp_seconds < 300)",
           "instant": true,
           "range": false,
           "legendFormat": "",
@@ -3224,7 +3224,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "noValue": "–",
+          "noValue": "No current data",
           "custom": {
             "filterable": false,
             "align": "auto",

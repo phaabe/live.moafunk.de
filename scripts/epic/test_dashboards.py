@@ -476,6 +476,7 @@ class QuerySemanticsTest(unittest.TestCase):
         needs = panel_expr("overview.json", "Needs Anton")
         waiting = panel_expr("overview.json", "PRs waiting > 30 min")
         oldest = panel_expr("overview.json", "Handoff · per kind", ref="C")
+        reviewers = panel_expr("overview.json", "Handoff · per kind", ref="A")
         self.run_promtool(
             [
                 {
@@ -489,6 +490,10 @@ class QuerySemanticsTest(unittest.TestCase):
                         },
                         {"series": wait, "values": "3700+60x15"},
                         {"series": "epic_pause_requested", "values": "0x15"},
+                        {
+                            "series": 'epic_agents_registered_kind{kind="codex"}',
+                            "values": "1x15",
+                        },
                     ],
                     "promql_expr_test": [
                         {
@@ -512,6 +517,8 @@ class QuerySemanticsTest(unittest.TestCase):
                             "exp_samples": [{"labels": "{}", "value": 0}],
                         },
                         {"expr": oldest, "eval_time": "10m", "exp_samples": []},
+                        # No reviewer row that would read as "0 waiting".
+                        {"expr": reviewers, "eval_time": "10m", "exp_samples": []},
                     ],
                 }
             ]

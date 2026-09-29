@@ -37,6 +37,7 @@ class StartScriptTest(unittest.TestCase):
         for rel in (
             "tools/agent-monitoring/run.sh",
             "tools/agent-monitoring/service.sh",
+            "tools/agent-monitoring/preview.sh",
         ):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / rel, self.repo / rel)
@@ -115,6 +116,26 @@ class StartScriptTest(unittest.TestCase):
         with plist.open("rb") as source:
             argv = plistlib.load(source)["ProgramArguments"]
         self.assertEqual(argv[-2:], ["--state-dir", str(custom)])
+
+    def test_preview_gives_fixtures_and_compose_one_absolute_state_dir(self) -> None:
+        """Codex review round 3: the fixtures run from the repo root and
+        Compose resolves paths next to compose.yaml; a relative dir split."""
+        self.stub("docker", "python3")
+        self.run_script("preview.sh", "normal", AGENT_PREVIEW_STATE_DIR="rel/state")
+        expected = str((self.caller / "rel/state").resolve())
+        calls = self.calls_made()
+        fixture_dirs = {
+            argv[argv.index("--state-dir") + 1]
+            for tool, _, argv in calls
+            if tool == "python3" and isinstance(argv, list)
+        }
+        compose_dirs = {
+            env
+            for tool, env, argv in calls
+            if tool == "docker" and isinstance(argv, list) and "up" in argv
+        }
+        self.assertEqual(fixture_dirs, {expected})
+        self.assertEqual(compose_dirs, {expected})
 
 
 class DefaultStateDirTest(unittest.TestCase):

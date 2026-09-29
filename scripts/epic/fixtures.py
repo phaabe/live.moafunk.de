@@ -227,10 +227,15 @@ def build_state(root: Path, specs: list[Spec], now: float) -> None:
             budget=spec.budget,
         )
         outcomes = spec.outcomes.split()
+        # Finished ticks end before a running tick starts: the ledger
+        # rejects a start older than the previous one.
+        last = spec.last_start_ago
+        if spec.running is not None:
+            last = max(last, spec.running_for + spec.interval)
         events, log = home / f"{kind}-ticks.jsonl", home / f"{kind}.log"
         with events.open("w") as ev, log.open("w") as out:
             for i, outcome in enumerate(outcomes):
-                ago = spec.last_start_ago + (len(outcomes) - 1 - i) * spec.interval
+                ago = last + (len(outcomes) - 1 - i) * spec.interval
                 start = now - ago
                 code = {"ok": 0, "blocked": 75, "timeout": 124, "killed": 143}.get(
                     outcome, 1
@@ -573,6 +578,12 @@ def prepare_runtime(runtime: Path) -> BinaryIO:
         if any(runtime.iterdir()):
             raise SystemExit(f"{runtime} is not a preview runtime dir; refusing it")
         marker.write_text("made by scripts/epic/fixtures.py\n")
+    # A symlinked metrics dir could point at the real stack's metrics.
+    metrics = runtime / "metrics"
+    if metrics.is_symlink() or (
+        metrics.exists() and metrics.resolve().parent != runtime.resolve()
+    ):
+        raise SystemExit(f"{metrics} is a link out of the preview dir; refusing it")
     lock = (runtime / "collector.lock").open("ab")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -613,6 +624,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.history:
         args.history.write_text(history(specs, time.time()))
         return 0
+    if args.output.name != "metrics":
+        raise SystemExit("--output must be a metrics dir inside a preview runtime")
     runtime = args.output.parent
     # Never next to a real collector: it owns this lock while it runs.
     _lock = prepare_runtime(runtime)  # held while the preview runs
@@ -630,7 +643,8 @@ def main(argv: list[str] | None = None) -> int:
     cycle = 0
     while True:
         now = time.time()
-        advance(args.state_dir, specs, starts, now)
+        if not paused:  # a paused loop starts no ticks
+            advance(args.state_dir, specs, starts, now)
         publish_remote(args.output, now, args.scenario == "stale")
         monitor.publish_local(local, ledgers)
         if cycle == 1:
