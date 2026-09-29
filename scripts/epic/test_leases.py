@@ -321,6 +321,76 @@ class StoreTest(Case):
                 leases.handoff(new, old.root)  # done: running it again is harmless
                 self.store = new
 
+    def test_bad_input_never_reaches_the_store(self) -> None:
+        before = self.store.file.read_bytes()
+        for argv in (
+            ["--issue", "0"],
+            ["--issue", "-3"],
+            ["--issue", "5", "--head", "typo"],
+            ["--issue", "5", "--files", "../x"],
+        ):
+            with self.subTest(argv=argv):
+                out = self.cli(
+                    "acquire", "--action", "claim", "--owner", "claude", *argv
+                )
+                self.assertEqual(out.returncode, INVALID, out.stderr)
+        self.assertEqual(self.store.file.read_bytes(), before)
+        self.assertEqual(self.cli("list").returncode, OK)
+
+    def test_invalid_change_is_not_written(self) -> None:
+        rec = self.claim(5, files=["a/**"])
+        before = self.store.file.read_bytes()
+        with self.assertRaises(ValueError):
+            leases.renew(
+                self.store,
+                owner="claude",
+                key="impl:5",
+                generation=rec["generation"],
+                pr=0,
+            )
+        with self.assertRaises(ValueError):
+            with self.store.transaction() as data:
+                data["leases"]["impl:5"]["files"] = []
+        self.assertEqual(self.store.file.read_bytes(), before)
+        leases.listing(self.store)
+
+    def test_store_is_registered_before_it_exists(self) -> None:
+        other = self.tmp / "fresh"
+        store = Store(other / "v1", other / "ptr", 0.3, self.clock)
+        with mock.patch.object(Store, "write_pointer", side_effect=Blocked("full")):
+            with self.assertRaises(Blocked):
+                leases.init(store)
+        self.assertFalse(store.file.exists())  # nothing usable, nothing to split
+        with self.assertRaises(Blocked):
+            leases.acquire(store, action="claim", owner="claude", issue=5)
+
+    def test_failed_save_after_registration_retries_with_a_new_floor(self) -> None:
+        other = self.tmp / "fresh"
+        store = Store(other / "v1", other / "ptr", 0.3, self.clock)
+        with mock.patch.object(Store, "save", side_effect=Blocked("full")):
+            with self.assertRaises(Blocked):
+                leases.init(store)
+        first = json.loads(store.pointer.read_text())["store"]
+        with self.assertRaises(Refused):
+            leases.init(store)
+        with mock.patch(
+            "leases.secrets.randbits",
+            side_effect=[(first >> leases.GENERATION_BITS) - 1, 7],
+        ):
+            leases.init(store, recreate=True)
+        self.assertEqual(store.read()["floor"], 8 << leases.GENERATION_BITS)
+
+    def test_unregistered_store_blocks(self) -> None:
+        pointer = json.loads(self.pointer.read_text())
+        spare = 99 << leases.GENERATION_BITS
+        pointer.update(store=spare, floors=[*pointer["floors"], spare])
+        self.pointer.write_text(json.dumps(pointer))
+        with self.assertRaises(Blocked):
+            self.claim(5)
+        self.pointer.unlink()
+        with self.assertRaises(Blocked):
+            leases.listing(self.store)
+
     def test_store_files_are_private(self) -> None:
         self.assertEqual(self.root.stat().st_mode & 0o777, 0o700)
 

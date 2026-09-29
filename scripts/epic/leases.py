@@ -410,8 +410,8 @@ class Store:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def pointer_data(self) -> Json | None:
-        """{"root": path, "floors": [...]}: the current root and every
-        generation floor issued through this pointer."""
+        """{"root": path, "store": floor, "floors": [...]}: the current root,
+        the floor of the one store allowed there, and every floor issued."""
         try:
             data = json.loads(self.pointer.read_text())
         except FileNotFoundError:
@@ -423,6 +423,7 @@ class Store:
             not isinstance(data.get("root"), str)
             or not isinstance(floors, list)
             or not all(type(f) is int for f in floors)
+            or data.get("store") not in floors
         ):
             raise Blocked(f"corrupt root pointer {self.pointer}")
         return data
@@ -437,7 +438,9 @@ class Store:
         try:
             self.pointer.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             tmp = self.pointer.with_name(f".{self.pointer.name}.{os.getpid()}")
-            tmp.write_text(json.dumps({"root": str(self.root), "floors": floors}))
+            tmp.write_text(
+                json.dumps({"root": str(self.root), "store": floor, "floors": floors})
+            )
             os.replace(tmp, self.pointer)
         except OSError as err:
             raise Blocked(f"cannot write {self.pointer}: {err}") from None
@@ -486,20 +489,35 @@ class Store:
 
     @contextmanager
     def transaction(self) -> Generator[Json]:
-        """Lock, read, yield for changes, write only if something changed."""
+        """Lock, read, yield for changes. The result is validated like a load
+        before it is written: a bad change is exit 2 and writes nothing."""
         with self.locked():
-            self.check_root()
-            data = self.load()
+            data = self.registered()
             before = copy.deepcopy(data)
             yield data
             if data != before:
                 data["version"] += 1
+                try:
+                    validate_store(data)
+                except (ValueError, TypeError, KeyError) as err:
+                    raise ValueError(f"refusing an invalid change: {err}") from None
                 self.save(data)
 
     def read(self) -> Json:
         with self.locked(shared=True):
-            self.check_root()
-            return self.load()
+            return self.registered()
+
+    def registered(self) -> Json:
+        """The store, only if the pointer names this root and this store's
+        floor. The caller holds the lock."""
+        self.check_root()
+        data = self.load()
+        pointer = self.pointer_data()
+        if pointer is None or pointer["store"] != data["floor"]:
+            raise Blocked(
+                f"lease store {self.file} is not registered in {self.pointer}"
+            )
+        return data
 
 
 def validate_store(data: Any) -> None:
@@ -664,8 +682,10 @@ def init(store: Store, recreate: bool = False) -> Json:
                 "then run leases.py init --recreate"
             )
         data = new_store(store.root, new_floor(pointer["floors"] if pointer else []))
-        store.save(data)
+        # Register first: a store the pointer does not name is never used.
+        # If the save then fails, `init --recreate` retries with a new floor.
         store.write_pointer(data["floor"])
+        store.save(data)
         return data
 
 
@@ -715,6 +735,11 @@ def agent_of(owner: str) -> str:
 
 
 def lease_key(action: str, issue: int | None, pr: int | None, head: str | None) -> str:
+    for name, value in (("issue", issue), ("pr", pr)):
+        if value is not None and (type(value) is not int or value <= 0):
+            raise ValueError(f"bad {name} {value!r}")
+    if head is not None and not SHA.fullmatch(head):
+        raise ValueError(f"bad head {head!r}: need a 40-char SHA")
     if action == "review":
         if pr is None or head is None or not SHA.fullmatch(head):
             raise ValueError("review needs --pr and a 40-char --head")
