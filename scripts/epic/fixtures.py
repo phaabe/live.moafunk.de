@@ -480,7 +480,10 @@ def github_snapshot() -> monitor.Json:
             "isDraft": False,
             "labels": [],
             "mergeable": "MERGEABLE",
-            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS"},
+                {"context": "epic-guard", "state": "SUCCESS"},
+            ],
             "comments": [],
             **extra,
         }

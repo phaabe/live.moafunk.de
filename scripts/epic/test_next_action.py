@@ -6,7 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from next_action import MAX_ROUNDS, comments_from_rest, decide, read_focus, status
+from next_action import (
+    MAX_ROUNDS,
+    checks_state,
+    comments_from_rest,
+    decide,
+    read_focus,
+    status,
+)
 
 A = "a" * 40
 B = "b" * 40
@@ -37,7 +44,10 @@ def pr(
         "isDraft": False,
         "labels": [],
         "mergeable": "MERGEABLE",
-        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"context": "epic-guard", "state": "SUCCESS"},
+        ],
         "comments": comments or [],
     }
     base.update(kw)
@@ -307,6 +317,69 @@ class GuardCheckTest(unittest.TestCase):
         rollup = [self.FAILED_GUARD, {"name": "backend-ci", "conclusion": "FAILURE"}]
         p = pr(1, "Claude", statusCheckRollup=rollup)
         self.assertEqual(first("Claude", [p]).action, "fix-checks")
+
+    def test_no_checks_reported_blocks_merge(self) -> None:
+        # Checks that have not started yet are not green.
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            statusCheckRollup=[],
+        )
+        self.assertEqual(first("Claude", [p]).action, "idle")
+
+    def test_failed_runner_job_does_not_block_merge(self) -> None:
+        # The runner fails for other PRs; the epic-guard status is the gate.
+        rollup = [
+            {"context": "epic-guard", "state": "SUCCESS"},
+            {"name": "backend-ci", "conclusion": "SUCCESS"},
+            {"name": "epic-guard-runner", "conclusion": "FAILURE"},
+        ]
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            statusCheckRollup=rollup,
+        )
+        self.assertEqual(first("Claude", [p]).action, "merge")
+
+    def test_missing_guard_status_blocks_merge(self) -> None:
+        # The publisher has not posted this PR's epic-guard status yet.
+        for runner in (
+            {"conclusion": "FAILURE"},
+            {"status": "QUEUED"},
+            {"status": "IN_PROGRESS"},
+        ):
+            with self.subTest(runner=runner):
+                rollup = [
+                    {"name": "backend-ci", "conclusion": "SUCCESS"},
+                    {"name": "epic-guard-runner", **runner},
+                ]
+                p = pr(
+                    1,
+                    "Claude",
+                    comments=[verdict("APPROVED", "Codex", A, "t1")],
+                    statusCheckRollup=rollup,
+                )
+                self.assertEqual(checks_state(p), "pending")
+                self.assertEqual(first("Claude", [p]).action, "idle")
+
+    def test_missing_guard_keeps_failed_check_actionable(self) -> None:
+        rollup = [
+            {"name": "backend-ci", "conclusion": "FAILURE"},
+            {"name": "epic-guard-runner", "status": "IN_PROGRESS"},
+        ]
+        p = pr(1, "Claude", statusCheckRollup=rollup)
+        self.assertEqual(first("Claude", [p]).action, "fix-checks")
+
+    def test_only_runner_job_is_pending(self) -> None:
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            statusCheckRollup=[{"name": "epic-guard-runner", "conclusion": "SUCCESS"}],
+        )
+        self.assertEqual(first("Claude", [p]).action, "idle")
 
 
 class FocusTest(unittest.TestCase):

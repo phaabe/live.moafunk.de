@@ -45,7 +45,10 @@ def pull_request(number: int, agent: str, **overrides: object) -> monitor.Json:
         "baseRefName": "dev/312-interim",
         "isDraft": False,
         "mergeable": "MERGEABLE",
-        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"context": "epic-guard", "state": "SUCCESS"},
+        ],
         "comments": [],
         "labels": [],
     }
