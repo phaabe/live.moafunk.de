@@ -615,6 +615,12 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 | old retirement let legacy files revive the id | every valid registration owns its id, shown or not |
 | relative `EPIC_STATE_DIR` broke runners after `cd` | runners make the state dir absolute first |
 
+### PR 2 review, round 4
+
+| Codex finding | Change |
+|---|---|
+| legacy Claude runner passed the relative path to the gate helper | Claude runner always exports the absolute `EPIC_STATE_DIR` |
+
 ## Appendix — panel spec from design v2
 
 Grid is Grafana units (24 columns, 30 px rows). Colors: Claude `#E0875A`,

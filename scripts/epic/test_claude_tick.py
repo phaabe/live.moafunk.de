@@ -56,6 +56,8 @@ class ClaudeTickTest(unittest.TestCase):
             f"    {WAIT_WRITE}\n"
             "if sys.argv[1] == 'check':\n"
             "    sys.exit(int(os.environ.get('TEST_GATE_EXIT', '0')))\n"
+            "with open(os.environ['TEST_CALLS'] + '.env', 'a') as f:\n"
+            "    f.write(os.environ.get('EPIC_STATE_DIR', '') + '\\n')\n"
         )
         (self.repo / "scripts/epic/tick_verify.py").write_text(
             "import json, os, sys\n"
@@ -265,6 +267,11 @@ class ClaudeTickTest(unittest.TestCase):
         self.assertIn("tick: finished exit=0", (custom / "claude.log").read_text())
         self.assertFalse((custom / "claude.lock").exists())
         self.assertFalse((self.repo / "relative state").exists())
+        # Codex review round 4: the gate helper runs after the cd.
+        gate_dirs = set(Path(f"{self.calls}.env").read_text().split("\n")) - {""}
+        self.assertEqual(
+            {str(Path(d).resolve()) for d in gate_dirs}, {str(custom.resolve())}
+        )
 
     def test_unset_state_dir_uses_the_home_default(self) -> None:
         env = {k: v for k, v in self.env.items() if k != "EPIC_STATE_DIR"}

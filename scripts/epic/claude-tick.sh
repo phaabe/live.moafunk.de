@@ -37,8 +37,9 @@ if [[ -n "$agent_id" ]]; then
         exit 2
     fi
     state_dir="${registry_dir}/agents/${agent_id}"
-    export EPIC_STATE_DIR="$state_dir"
 fi
+# The gate helpers read the state dir from the environment, after the cd.
+export EPIC_STATE_DIR="$state_dir"
 lock_dir="${state_dir}/claude.lock"
 
 mkdir -p "$state_dir"
