@@ -150,6 +150,7 @@ order):
 | `idle` | no tick runs, and the last tick start is within `2 × interval + budget` |
 | `late` | no tick start for longer than `2 × interval + budget_seconds`, loop not paused: the schedule may be broken |
 | `new` | registered, but no tick seen yet (becomes `late` after the same limit) |
+| `unknown` | the lock or gate could not be read this cycle; never shown as idle or late |
 | `retired` | `retired_at` is set |
 
 - `late` is the "is it still alive?" signal. There is no heartbeat besides
@@ -159,8 +160,7 @@ order):
   Their history stays in Prometheus (30 days).
 - A pause never makes an agent late (no tick starts on purpose), and no next
   tick is exported. The Paused tile shows the pause.
-- Deleting `agents/<id>/` removes the agent at once. Its checkpoint
-  `runtime/ticks-<id>.json` is deleted with it after 7 days.
+- Deleting `agents/<id>/` removes the agent and its checkpoint at once.
 
 ### Collisions
 
@@ -292,7 +292,7 @@ Collector:
 |---|---|---|
 | `epic_agent_info` | agent, kind, label, layout (`legacy`/`registered`) | value = registered_at (legacy: first seen) |
 | `epic_agent_budget_seconds` | agent | registered budget (running tick: lock `max_age` wins) |
-| `epic_agent_presence` | agent | severity: running 1, idle 2, new 3, late 4, retired 0 |
+| `epic_agent_presence` | agent | severity: running 1, idle 2, new 3, late 4, unknown 5, retired 0 |
 | `epic_agent_presence_info` | agent, presence | 1; for tables |
 | `epic_agent_interval_seconds` | agent | expected tick interval |
 | `epic_agent_last_start_timestamp_seconds` | agent | last tick start seen (ledger or lock) |
@@ -329,9 +329,10 @@ Collector reads:
   dir, one folder at a time with `O_NOFOLLOW`, and must be a regular file.
 - A malformed `agent.json` (huge numbers, deep nesting, bad Unicode) rejects
   only that agent; a bad label falls back to the id.
-- A vanished agent's checkpoint is deleted, so a restored log is not counted
-  again. Leftovers from agents that vanished while the collector was stopped
-  go after 7 days.
+- Every checkpoint without a current agent is deleted, also after a
+  collector restart, so a restored log is never counted again. A returning
+  agent starts with fresh counters.
+- One unreadable or swapped agent folder rejects only that agent.
 - Metric samples are grouped by family, as the text format requires.
 
 Scrape size:
@@ -597,6 +598,14 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 | 6 false collision from an old target | running rows use only the current action |
 | 7 retired agents hidden at capacity | separate cap for retired agents |
 | 8 missing tests | tests for all of the above |
+
+### PR 2 review, round 2
+
+| Codex finding | Change |
+|---|---|
+| round 1 #5 open after a restart | delete every checkpoint without a current agent at once |
+| blocker: an unreadable agent folder stops collection | all probes of an entry inside the per-entry boundary |
+| failed runner read shown as idle or late | new presence `unknown` |
 
 ## Appendix — panel spec from design v2
 

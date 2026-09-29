@@ -264,16 +264,18 @@ def discover(state_dir: Path, now: float) -> Registry:
         names = []  # A link or a file where the agents folder belongs.
         rejected["invalid"] += 1
     for name in names:
-        entry = lstat_entry(state_dir, "agents", name)
-        if entry is None or not (
-            stat.S_ISDIR(entry.st_mode) or stat.S_ISLNK(entry.st_mode)
-        ):
-            continue  # Not an agent folder.
-        if stat.S_ISDIR(entry.st_mode) and not lstat_entry(
-            state_dir, "agents", name, "agent.json"
-        ):
-            continue  # Being created.
+        # Every probe of an entry sits inside the boundary: a folder without
+        # read permission or one swapped during the checks rejects only itself.
         try:
+            entry = lstat_entry(state_dir, "agents", name)
+            if entry is None or not (
+                stat.S_ISDIR(entry.st_mode) or stat.S_ISLNK(entry.st_mode)
+            ):
+                continue  # Not an agent folder.
+            if stat.S_ISDIR(entry.st_mode) and not lstat_entry(
+                state_dir, "agents", name, "agent.json"
+            ):
+                continue  # Being created.
             agent = load(state_dir, name, now)
         except INVALID:
             rejected["invalid"] += 1

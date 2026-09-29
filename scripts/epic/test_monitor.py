@@ -415,17 +415,49 @@ class AgentRowsTest(unittest.TestCase):
         (home / "codex.log").write_text(content)
         self.assertIn(f"{ok} 0\n", self.run_at(NOW + 15))
 
-    def test_left_over_checkpoints_go_after_a_week(self) -> None:
-        # From an agent that vanished while the collector was stopped.
-        runtime = self.root / "runtime"
-        runtime.mkdir()
-        old = runtime / "ticks-agents-codex-gone.json"
-        old.write_text("{}")
+    def test_agent_gone_across_a_restart_does_not_count_old_ticks(self) -> None:
+        # Codex review round 2: the agent vanished while the collector was
+        # stopped, so no ledger in memory knew about it.
+        home = self.agent("codex-2")
+        log = home / "codex.log"
         self.run_at(NOW)
-        self.assertTrue(old.exists())
-        os.utime(old, (NOW, NOW))
-        self.run_at(NOW + monitor.CHECKPOINT_KEEP + 1)
-        self.assertFalse(old.exists())
+        log.write_text(tick_log((1_000, 0, "{}")))
+        ok = 'epic_ticks_total{agent="codex-2",outcome="ok"}'
+        self.assertIn(f"{ok} 1\n", self.run_at(NOW + 5))
+        content = log.read_text()
+        shutil.rmtree(home)
+        self.ledgers = monitor.Ledgers(self.root / "runtime")  # restart
+        self.run_at(NOW + 10)
+        self.assertFalse((self.root / "runtime/ticks-agents-codex-2.json").exists())
+        home = self.agent("codex-2")
+        (home / "codex.log").write_text(content)
+        self.ledgers = monitor.Ledgers(self.root / "runtime")  # restart again
+        self.assertIn(f"{ok} 0\n", self.run_at(NOW + 15))
+
+    def test_unreadable_agent_folder_rejects_only_itself(self) -> None:
+        # Codex review round 2: a PermissionError escaped discovery.
+        self.agent("codex")
+        locked = self.agent("claude-2")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        text = self.run_at(NOW)
+        self.assertIn('epic_agent_registry_rejected{reason="invalid"} 1\n', text)
+        self.assertIn('epic_agent_presence_info{agent="codex",presence="new"} 1', text)
+        self.assertNotIn('agent="claude-2"', text)
+
+    def test_failed_runner_read_is_unknown_not_idle_or_late(self) -> None:
+        # Codex review round 2: an unreadable lock looked like a late agent.
+        home = self.agent("claude", (100, 0, "{}"), interval=60, budget=100)
+        (home / "claude.lock").mkdir()
+        (home / "claude.lock/owner.json").write_text("{broken")
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW)
+        self.assertIn(
+            'epic_agent_presence_info{agent="claude",presence="unknown"} 1', text
+        )
+        self.assertIn('epic_agent_presence{agent="claude"} 5', text)
+        self.assertIn('epic_agents_registered{presence="late"} 0', text)
+        self.assertNotIn("epic_agent_next_tick_seconds", text)
 
     def test_running_tick_without_an_action_has_no_old_target(self) -> None:
         # Codex review: the last target of a selecting agent made a collision.

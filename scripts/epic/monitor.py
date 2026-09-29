@@ -33,9 +33,9 @@ import ticks
 # GitHub and the existing selector use heterogeneous JSON objects.
 Json = dict[str, Any]
 # Presence severity; retired is 0 so "worst presence" ignores it.
-PRESENCE = {"retired": 0, "running": 1, "idle": 2, "new": 3, "late": 4}
-PRESENCE_ORDER = ("running", "idle", "new", "late", "retired")
-CHECKPOINT_KEEP = 7 * 86_400
+# unknown: the runner's lock or gate could not be read this cycle.
+PRESENCE = {"retired": 0, "running": 1, "idle": 2, "new": 3, "late": 4, "unknown": 5}
+PRESENCE_ORDER = ("running", "idle", "new", "late", "unknown", "retired")
 MAX_STATE_FILE = 65_536
 TAIL = 131_072
 STATUSES = ("Backlog", "Ready", "In progress", "In review", "Done", "Unknown")
@@ -387,21 +387,20 @@ class Ledgers:
             )
         return self.ledgers[key]
 
-    def prune(self, active: list[agents.Agent], now: float) -> None:
+    def prune(self, active: list[agents.Agent]) -> None:
+        """Drop ledgers and checkpoints of agents that are gone.
+
+        A vanished agent starts fresh if it comes back: its log may return
+        with a new inode, which would count old ticks again. This also covers
+        agents that vanished while the collector was stopped.
+        """
         keep = {(agent.id, agent.log) for agent in active}
-        names = {agent.checkpoint_name for agent in active}
         for key in [key for key in self.ledgers if key not in keep]:
-            # A vanished agent starts fresh if it comes back: its log may
-            # return with a new inode, which would count old ticks again.
-            checkpoint = self.ledgers.pop(key).checkpoint
-            if checkpoint.name not in names:
-                checkpoint.unlink(missing_ok=True)
-        for path in self.runtime.glob("ticks-agents-*.json"):
+            del self.ledgers[key]
+        names = {agent.checkpoint_name for agent in active}
+        for path in self.runtime.glob("ticks-*.json"):
             try:
-                if (
-                    path.name not in names
-                    and now - path.stat().st_mtime > CHECKPOINT_KEEP
-                ):
+                if path.name not in names:
                     path.unlink()
             except OSError:
                 logging.warning("Cannot remove an old tick checkpoint")
@@ -520,7 +519,9 @@ def agent_metrics(
     )
     # No tick starts during a pause, so a pause never makes an agent late.
     overdue = 2 * agent.interval + budget
-    if runner.state in ("running", "overdue"):
+    if runner.state is None:
+        presence = "unknown"  # a failed read never looks like idle or late
+    elif runner.state in ("running", "overdue"):
         presence = "running"
     elif started is None:
         since = agent.registered_at
@@ -589,7 +590,7 @@ def runner_metrics(
     for name in registry.conflicts:
         metrics.add("agent_conflict", 1, agent=name)
     if ledgers is not None:
-        ledgers.prune(registry.agents, now)
+        ledgers.prune(registry.agents)
     rows = [
         agent_metrics(metrics, agent, paused, now, alive, ledgers)
         for agent in registry.agents
