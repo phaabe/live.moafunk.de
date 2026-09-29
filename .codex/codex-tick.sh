@@ -54,11 +54,11 @@ if [[ -n "$agent_id" ]]; then
     python3 "${repo_root}/scripts/epic/agents.py" --state-dir "$registry_dir" \
         register --id "$agent_id" --kind codex --label "${EPIC_AGENT_LABEL:-}" \
         --interval "${EPIC_AGENT_INTERVAL_SECONDS:-180}" \
-        --budget "$((select_timeout + tick_timeout + 10))"
+        --budget "$((2 * pull_timeout + select_timeout + tick_timeout + 20))"
 fi
 # Store the original timeout budget so shorter later ticks cannot reclaim early.
 if python3 "${repo_root}/.codex/epic_lock.py" "$lock_dir" "$$" \
-    "$((pull_timeout + select_timeout + tick_timeout + 10))"; then
+    "$((2 * pull_timeout + select_timeout + tick_timeout + 20))"; then
     :
 else
     result=$?
@@ -151,6 +151,18 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
 fi
 check_quota
 printf 'tick: refreshing runner checkout\n'
+tick_phase=refresh
+# Only the shared helper decides which tracked changes are safe to restore.
+noise_exit=0
+run_bounded "${pull_timeout}s" python3 scripts/epic/gitnexus_noise.py || noise_exit=$?
+if [[ "$noise_exit" != 0 ]]; then
+    printf 'tick: checkout noise check failed exit=%s; stopping\n' "$noise_exit" >&2
+    exit "$noise_exit"
+fi
+if [[ -e "${HOME}/.epic-pause" ]]; then
+    exit 0
+fi
+check_quota
 tick_phase=refresh
 pull_exit=0
 run_bounded "${pull_timeout}s" git pull --ff-only || pull_exit=$?
