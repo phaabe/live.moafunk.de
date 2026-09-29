@@ -248,20 +248,12 @@ lock_target() {
     exit "$result"
 }
 
-max_candidates=${EPIC_MAX_CANDIDATES:-10}
-if [[ ! "$max_candidates" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'tick: EPIC_MAX_CANDIDATES must be a positive integer\n' >&2
-    exit 2
-fi
-tried=0
+# No cap: a cap that restarts at the top every tick starves later candidates
+# while the first ones stay blocked. A skipped candidate costs one REST read.
 selected=0
 while IFS= read -r candidate; do
     if [[ -z "$candidate" ]]; then
         continue
-    fi
-    tried=$((tried + 1))
-    if [[ "$tried" -gt "$max_candidates" ]]; then
-        break
     fi
     printf '%s\n' "$candidate" > "${lock_dir}/action.json"
     action=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["action"])' \

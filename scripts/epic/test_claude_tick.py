@@ -174,6 +174,30 @@ class ClaudeTickTest(unittest.TestCase):
         )
         self.assertEqual(len(self.model_targets()), 1)
 
+    def test_candidate_after_many_suppressed_ones_still_runs(self) -> None:
+        # Codex review on https://github.com/phaabe/live.moafunk.de/issues/488:
+        # a cap of ten starved candidate eleven while the first ten stayed blocked.
+        blocked = [
+            {"action": "review", "reason": "t", "pr": n, "sha": "b" * 40}
+            for n in range(1, 12)
+        ]
+        last = {"action": "review", "reason": "t", "pr": 12, "sha": "c" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (*blocked, last))
+        (self.repo / "scripts/epic/tick_gate.py").write_text(
+            "import json, os, sys\n"
+            "pr = json.load(open(sys.argv[-1]))['pr']\n"
+            "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
+            "    f.write(json.dumps(['gate', sys.argv[1], pr]) + '\\n')\n"
+            "sys.exit(3 if sys.argv[1] == 'check' and pr != 12 else 0)\n"
+        )
+        self.assertEqual(self.run_tick(TEST_CANDIDATES=candidates).wait(timeout=60), 0)
+        gates = [c for c in self.calls_made() if c[0] == "gate"]
+        self.assertEqual(
+            gates,
+            [["gate", "check", n] for n in range(1, 13)] + [["gate", "record", 12]],
+        )
+        self.assertEqual(len(self.model_targets()), 1)
+
     def test_quota_wait_from_a_skipped_gate_stops_the_candidate_loop(self) -> None:
         # Codex review on PR 497: the next candidate's gate read GitHub anyway.
         second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
