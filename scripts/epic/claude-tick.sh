@@ -43,9 +43,18 @@ export EPIC_STATE_DIR="$state_dir"
 # One GitHub quota for all agents: its wait file lives in the shared state dir.
 export EPIC_QUOTA_DIR="$registry_dir"
 lock_dir="${state_dir}/claude.lock"
+log_file="${state_dir}/claude.log"
+events_file="${state_dir}/claude-ticks.jsonl"
+events="${repo_root}/scripts/epic/tick_events.py"
+# Tick events for the monitor: the stage the tick is in, and an outcome when
+# the runner knows better than the exit code (see tick_events.py).
+tick_started=""
+tick_offset=0
+tick_phase=lock
+tick_outcome=auto
 
 mkdir -p "$state_dir"
-exec >> "${state_dir}/claude.log" 2>&1
+exec >> "$log_file" 2>&1
 for duration in "$tick_timeout" "$select_timeout"; do
     if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
         printf 'tick: timeout must be a positive integer in seconds\n' >&2
@@ -82,6 +91,8 @@ quota_open() {
 }
 quota_stop() {
     printf 'tick: stopped on the GitHub GraphQL quota; wait stored\n' >&2
+    tick_outcome=blocked
+    tick_phase=quota
     exit 75
 }
 
@@ -106,6 +117,12 @@ cleanup() {
     # always comes after it (the monitor pairs start and finish lines).
     # A failed log write must not skip the lock release below (set -e).
     printf 'tick: finished exit=%s\n' "$result" || true
+    if [[ -n "$tick_started" ]]; then
+        python3 "$events" finish --file "$events_file" --tick "$tick_started" \
+            --exit "$result" --phase "$tick_phase" --outcome "$tick_outcome" \
+            --action-file "${lock_dir}/action.json" \
+            --log "$log_file" --since "$tick_offset" || true
+    fi
     rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json"
     rmdir "$lock_dir"
 }
@@ -144,15 +161,23 @@ run_bounded() {
     return "$result"
 }
 
-tick_started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-printf '\ntick: started %s repo=%s\n' "$tick_started" "$repo_root"
+started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+printf '\ntick: started %s repo=%s\n' "$started" "$repo_root"
+if tick_offset=$(python3 "$events" start --file "$events_file" --tick "$started" \
+    --log "$log_file"); then
+    tick_started=$started
+else
+    tick_offset=0
+fi
 cd "$repo_root"
+tick_phase=refresh
 # Keep the runner on the latest scripts and tick instructions. The checkout only
 # runs ticks, so a failed fast-forward (local changes, diverged) stops the tick.
 if ! git pull -q --ff-only; then
     printf 'tick: git pull --ff-only failed; fix the runner checkout\n' >&2
     exit 1
 fi
+tick_phase=select
 select=0
 run_bounded "${select_timeout}s" \
     python3 scripts/epic/next_action.py --agent claude > "${lock_dir}/action.json" \
@@ -166,6 +191,7 @@ esac
 cat "${lock_dir}/action.json"
 # The other runner may have stored a quota wait while the selector ran.
 if ! quota_open; then
+    tick_phase=quota
     exit 0
 fi
 action=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
@@ -182,6 +208,7 @@ case "$action" in
         ;;
 esac
 
+tick_phase=gate
 gate=0
 python3 scripts/epic/tick_gate.py check --agent claude \
     --action-file "${lock_dir}/action.json" || gate=$?
@@ -203,9 +230,11 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 if ! quota_open; then
+    tick_phase=quota
     exit 0
 fi
 printf 'tick: %s with model=%s effort=%s\n' "$action" "$model" "$effort"
+tick_phase=model
 # `claude -p` cannot show a prompt, and the project settings ask before every
 # push and merge. permission_gate.py answers those prompts: it approves only
 # feature-branch pushes and head-pinned squash merges, and denies the rest.
@@ -224,8 +253,11 @@ run_bounded "${tick_timeout}s" \
 # skipped as a repeat after the reset.
 if ! quota_open; then
     printf 'tick: not verified, GitHub quota wait\n' >&2
+    tick_outcome=blocked
+    tick_phase=quota
     exit 75
 fi
+tick_phase=verify
 verify=0
 python3 scripts/epic/tick_verify.py --agent claude \
     --action-file "${lock_dir}/action.json" --since "$tick_started" || verify=$?
@@ -234,6 +266,10 @@ if [[ "$verify" == 4 ]]; then
 fi
 # Any other verify failure still records the gate, so it is reported without
 # a retry storm.
+tick_phase=record
 python3 scripts/epic/tick_gate.py record --agent claude \
     --action-file "${lock_dir}/action.json"
+if [[ "$verify" != 0 ]]; then
+    tick_phase=verify
+fi
 exit "$verify"

@@ -34,6 +34,7 @@ class ClaudeTickTest(unittest.TestCase):
             "scripts/epic/claude-tick.sh",
             "scripts/epic/github_quota.py",
             "scripts/epic/agents.py",
+            "scripts/epic/tick_events.py",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",
         ):
@@ -322,6 +323,52 @@ class ClaudeTickTest(unittest.TestCase):
         self.assertIn(b"EPIC_AGENT_ID must look like claude", error)
         self.assertFalse(self.state.exists())
         self.assertFalse(self.calls.exists())
+
+    def tick_events(self, state: Path | None = None) -> list[dict[str, object]]:
+        path = (state or self.state) / "claude-ticks.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def finish(self) -> tuple[object, ...]:
+        start, finish = self.tick_events()
+        self.assertEqual((start["event"], finish["event"]), ("start", "finish"))
+        self.assertEqual(start["tick"], finish["tick"])
+        return finish["exit"], finish["outcome"], finish["phase"]
+
+    def test_events_name_each_exit_path(self) -> None:
+        for env, expected in (
+            ({}, (0, "ok", "record")),
+            ({"TEST_VERIFY_EXIT": "1"}, (1, "error", "verify")),
+            ({"TEST_SELECT_EXIT": "4"}, (75, "blocked", "quota")),
+            ({"TEST_SELECT_EXIT": "3"}, (0, "ok", "select")),
+            ({"TEST_SELECT_EXIT": "9"}, (9, "error", "select")),
+            ({"TEST_GATE_EXIT": "4"}, (75, "blocked", "quota")),
+            ({"TEST_GIT_EXIT": "1"}, (1, "error", "refresh")),
+        ):
+            with self.subTest(env=env):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.run_tick(**env).wait(timeout=30)
+                self.assertEqual(self.finish(), expected)
+
+    def test_finish_event_carries_the_selected_action(self) -> None:
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        finish = self.tick_events()[-1]
+        self.assertEqual((finish["action"], finish["pr"]), ("fix", 1))
+        self.assertIsNone(finish["tokens"])
+
+    def test_term_writes_a_killed_event_before_the_lock_is_released(self) -> None:
+        runner = self.run_tick(TEST_MODEL_SLEEP="60")
+        deadline = time.time() + 20
+        while not self.model_pid.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        runner.send_signal(signal.SIGTERM)
+        self.assertEqual(runner.wait(timeout=30), 143)
+        self.assertEqual(self.finish(), (143, "killed", "model"))
+
+    def test_registered_agent_writes_events_in_its_own_folder(self) -> None:
+        self.assertEqual(self.run_tick(EPIC_AGENT_ID="claude-2").wait(timeout=30), 0)
+        home = self.state / "agents/claude-2"
+        self.assertEqual(self.tick_events(home)[-1]["outcome"], "ok")
+        self.assertFalse((self.state / "claude-ticks.jsonl").exists())
 
     def test_term_stops_the_model_before_the_lock_is_released(self) -> None:
         # Codex review on PR 412: TERM removed the lock but left the model running.

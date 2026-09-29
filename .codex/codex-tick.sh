@@ -31,9 +31,18 @@ export EPIC_STATE_DIR="$state_dir"
 # One GitHub quota for all agents: its wait file lives in the shared state dir.
 export EPIC_QUOTA_DIR="$registry_dir"
 lock_dir="${state_dir}/codex.lock"
+log_file="${state_dir}/codex.log"
+events_file="${state_dir}/codex-ticks.jsonl"
+events="${repo_root}/scripts/epic/tick_events.py"
+# Tick events for the monitor: the stage the tick is in, and an outcome when
+# the runner knows better than the exit code (see tick_events.py).
+tick_started=""
+tick_offset=0
+tick_phase=lock
+tick_outcome=auto
 
 mkdir -p "$state_dir"
-exec >> "${state_dir}/codex.log" 2>&1
+exec >> "$log_file" 2>&1
 for duration in "$tick_timeout" "$select_timeout" "$pull_timeout" "$blocked_retry"; do
     if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
         printf 'tick: timeout and retry delay must be positive integers in seconds\n' >&2
@@ -65,6 +74,12 @@ cleanup() {
     # always comes after it (the monitor pairs start and finish lines).
     # A failed log write must not skip the lock release below (set -e).
     printf 'tick: finished exit=%s\n' "$result" || true
+    if [[ -n "$tick_started" ]]; then
+        python3 "$events" finish --file "$events_file" --tick "$tick_started" \
+            --exit "$result" --phase "$tick_phase" --outcome "$tick_outcome" \
+            --action-file "${lock_dir}/action.json" \
+            --log "$log_file" --since "$tick_offset" || true
+    fi
     rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json"
     rmdir "$lock_dir"
 }
@@ -88,7 +103,14 @@ trap 'interrupt 129' HUP
 trap 'interrupt 130' INT
 trap 'interrupt 143' TERM
 
-printf '\ntick: started %s repo=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$repo_root"
+started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+printf '\ntick: started %s repo=%s\n' "$started" "$repo_root"
+if tick_offset=$(python3 "$events" start --file "$events_file" --tick "$started" \
+    --log "$log_file"); then
+    tick_started=$started
+else
+    tick_offset=0
+fi
 if command -v timeout >/dev/null 2>&1; then
     timeout_bin=timeout
 elif command -v gtimeout >/dev/null 2>&1; then
@@ -114,6 +136,7 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 printf 'tick: refreshing runner checkout\n'
+tick_phase=refresh
 pull_exit=0
 run_bounded "${pull_timeout}s" git pull --ff-only || pull_exit=$?
 if [[ "$pull_exit" != 0 ]]; then
@@ -123,6 +146,7 @@ fi
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+tick_phase=select
 run_bounded "${select_timeout}s" python3 scripts/epic/next_action.py --agent codex \
     > "${lock_dir}/action.json"
 action=$(python3 -c '
@@ -142,6 +166,7 @@ esac
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+tick_phase=backoff
 backoff=0
 python3 .codex/tick_backoff.py check --action-file "${lock_dir}/action.json" \
     --state-dir "$state_dir" --ttl "$blocked_retry" || backoff=$?
@@ -150,6 +175,7 @@ if [[ "$backoff" == 3 ]]; then
 elif [[ "$backoff" != 0 ]]; then
     exit "$backoff"
 fi
+tick_phase=gate
 gate=0
 python3 scripts/epic/tick_gate.py check --agent codex \
     --action-file "${lock_dir}/action.json" || gate=$?
@@ -170,6 +196,7 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
 fi
 # Never accept the previous session's final result if this session fails to write.
 : > "${state_dir}/codex-result.json"
+tick_phase=model
 model_exit=0
 run_bounded "${tick_timeout}s" codex exec --cd "$repo_root" \
     --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
@@ -177,6 +204,9 @@ run_bounded "${tick_timeout}s" codex exec --cd "$repo_root" \
     --output-last-message "${state_dir}/codex-result.json" \
     - < "${lock_dir}/prompt.txt" || model_exit=$?
 outcome=0
+if [[ "$model_exit" == 0 ]]; then
+    tick_phase=result
+fi
 python3 .codex/tick_backoff.py record --action-file "${lock_dir}/action.json" \
     --state-dir "$state_dir" --ttl "$blocked_retry" \
     --result-file "${state_dir}/codex-result.json" --exit-code "$model_exit" || outcome=$?
@@ -187,8 +217,12 @@ elif [[ "$outcome" != 0 && "$outcome" != 3 ]]; then
 fi
 # A valid blocked result is a seen no-op, not an unrecorded process failure.
 # Keep the shared gate's longer suppression after the short cooldown expires.
+tick_phase=record
 python3 scripts/epic/tick_gate.py record --agent codex \
     --action-file "${lock_dir}/action.json"
 if [[ "$outcome" == 3 ]]; then
+    # The model reported a valid blocked result; the runner waits to retry.
+    tick_outcome=blocked
+    tick_phase=result
     exit 75
 fi
