@@ -61,6 +61,11 @@ PLAN_TITLE = re.compile(r"^\[([A-Z]\d+(?:\.\d+)*)\][ \t]*")
 LEAF_MARKERS = re.compile(r"^(?:\*\*[^*]+\*\*[ \t]*|v\d+(?:[ \t]*\([^)]*\))?:[ \t]*)+")
 
 
+# Labels are cut at 300 characters, except these, which the collector
+# builds itself from fixed parts (never from runner or GitHub text).
+LONG_LABELS = {"recent_strip": 1200}
+
+
 class Metrics:
     """Prometheus text, grouped by metric family.
 
@@ -86,7 +91,7 @@ class Metrics:
         escaped = []
         for key, value_text in sorted(labels.items()):
             text = (
-                str(value_text)[:300]
+                str(value_text)[: LONG_LABELS.get(key, 300)]
                 .replace("\\", "\\\\")
                 .replace("\n", "\\n")
                 .replace('"', '\\"')
@@ -356,7 +361,7 @@ class Runner:
     gate_action: dict[str, str] | None = None
 
 
-# Last-20 counts: ok first, then failures from the worst down.
+# Last-20 counts (the strip's hover text): ok first, then the worst down.
 RECENT_SHORT = (
     ("ok", "ok"),
     ("error", "err"),
@@ -367,13 +372,47 @@ RECENT_SHORT = (
 )
 
 
+# Colors of the last-20 strip: dashboards.OUTCOME and EMPTY_SLOT.
+STRIP_COLORS = {
+    "ok": "#5AB45F",
+    "blocked": "#5B8DEF",
+    "timeout": "#E8B530",
+    "killed": "#A57BE0",
+    "interrupted": "#E5484D",
+    "error": "#E5484D",
+}
+STRIP_EMPTY = "#22252B"
+BAR = '<i style="width:4px;background:{}"></i>'
+
+
+def recent_strip(outcomes: list[str]) -> str:
+    """One bar per tick, oldest left, for the cockpit's Markdown cell.
+
+    Empty slots fill the left while an agent has fewer than 20 ticks. The
+    counts show on hover.
+    """
+    counts = Counter(outcomes)
+    title = " · ".join(
+        f"{counts[kind]} {short}" for kind, short in RECENT_SHORT if counts[kind]
+    )
+    bars = [STRIP_EMPTY] * (ticks.RECENT - len(outcomes)) + [
+        STRIP_COLORS[outcome] for outcome in outcomes
+    ]
+    return (
+        f'<span title="{title or "no ticks"}" style="display:inline-flex;'
+        'gap:1px;height:16px;vertical-align:middle">'
+        + "".join(BAR.format(color) for color in bars)
+        + "</span>"
+    )
+
+
 @dataclass
 class Row:
     agent: agents.Agent
     presence: str
     action: dict[str, str] | None = None
     outcome_text: str = ""
-    recent_text: str = ""
+    recent_strip: str = recent_strip([])
 
 
 class Ledgers:
@@ -708,13 +747,10 @@ def agent_metrics(
             agent=name,
             slot=f"{ticks.RECENT - age:02d}",
         )
+    # Grafana 13 table columns are at least 50 px wide, too wide for 20
+    # cells: one Markdown cell draws the strip.
+    row.recent_strip = recent_strip([tick["outcome"] for tick in recent])
     if recent:
-        # Grafana 13 table columns are at least 50 px wide, too wide for a
-        # 20-cell strip, so the cockpit shows these counts instead.
-        counts = Counter(tick["outcome"] for tick in recent)
-        row.recent_text = " · ".join(
-            f"{counts[kind]} {short}" for kind, short in RECENT_SHORT if counts[kind]
-        )
         last = recent[-1]
         exit_text = "" if last["exit"] is None else f" {last['exit']}"
         phase = f" · {last['phase']}" if last["phase"] else ""
@@ -812,7 +848,7 @@ def runner_metrics(
             action_text=action_text(row, collision),
             target=target,
             outcome_text=row.outcome_text,
-            recent_text=row.recent_text,
+            recent_strip=row.recent_strip,
         )
     return metrics.render()
 

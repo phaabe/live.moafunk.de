@@ -272,7 +272,12 @@ def table_panel(
                 "color": {"mode": "thresholds"},
                 "thresholds": steps((None, NEUTRAL)),
             },
-            "overrides": overrides,
+            # Grafana adds "filter for value" buttons to each cell for
+            # Prometheus data; only an override on every field removes them.
+            "overrides": [
+                *overrides,
+                override("byRegexp", ".*", ("filterable", False)),
+            ],
         },
         "options": {
             "showHeader": header,
@@ -753,7 +758,7 @@ def agent_table() -> Json:
         "outcome_text",
         "Value #F",
         "Value #G",
-        "recent_text",
+        "recent_strip",
         "Value #I",
         "Value #J",
         "Value #K",
@@ -773,7 +778,7 @@ def agent_table() -> Json:
         "outcome_text": "Last outcome",
         "Value #F": "Ago",
         "Value #G": "Failed",
-        "recent_text": "Last 20",
+        "recent_strip": "Last 20",
         "Value #I": "Next tick",
         "Value #J": "Backoff",
         "Value #K": "Denied 1 h",
@@ -874,19 +879,8 @@ def agent_table() -> Json:
         by_name(
             "Last 20",
             ("custom.width", 116),
-            cell("color-background", mode="basic"),
-            ("color", {"mode": "fixed", "fixedColor": "transparent"}),
-            # The worst outcome in the last 20 ticks sets the color.
-            (
-                "mappings",
-                [
-                    regex_map(".*\\b(err|int)\\b.*", OUTCOME["error"], 0),
-                    regex_map(".*\\bkil\\b.*", OUTCOME["killed"], 1),
-                    regex_map(".*\\btmo\\b.*", OUTCOME["timeout"], 2),
-                    regex_map(".*\\bblk\\b.*", OUTCOME["blocked"], 3),
-                    regex_map("^\\d+ ok$", OUTCOME["ok"], 4),
-                ],
-            ),
+            # The collector sends one colored bar per tick as HTML.
+            cell("markdown"),
         ),
         by_name(
             "Next tick",
@@ -931,7 +925,7 @@ def agent_table() -> Json:
         transformations,
         overrides,
         description="One row per registered agent, running first. Last 20: "
-        "outcome counts of the last 20 ticks, colored by the worst. Backoff: "
+        "one bar per tick, newest right; hover for counts. Backoff: "
         "Codex retry delays. Denied: Claude permission gate.",
     )
     return panel

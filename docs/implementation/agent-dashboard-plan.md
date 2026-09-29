@@ -766,7 +766,8 @@ file's end).
 | 24 h of outcomes | the preview writes 24 h of fixture history into its Prometheus |
 | handoff per direction with the oldest PR | one row per direction: oldest PR, wait, PR count, reviewers |
 | open PRs: PR, executor, leaf, review, CI, rounds, age | same columns (task instead of leaf); new `epic_pr_opened_timestamp_seconds` and `epic_pr_review_rounds` |
-| kind stripe, 20 tick cells, "21m" inside the outcome, kind squares in the timeline, "38/58" | not possible in Grafana 13 or would add a label that changes each minute; kept the dot, the counts, the Ago column |
+| kind stripe, "21m" inside the outcome, kind squares in the timeline, "38/58" | not possible in Grafana 13 or would add a label that changes each minute; kept the dot and the Ago column |
+| 20 tick cells | after the merge: one Markdown cell with 20 HTML bars from the `recent_strip` label (up to 1200 characters; other labels stay cut at 300) |
 
 ## Appendix — panel spec from design v2
 

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import re
 import tempfile
 import time
 import unittest
@@ -56,6 +57,45 @@ def snapshot(**overrides: object) -> monitor.Json:
     result = {"items": [], "prs": [], "merged_prs": []}
     result.update(overrides)
     return result
+
+
+def strip_label(*outcomes: str) -> str:
+    """recent_strip as it appears in the text format (escaped quotes)."""
+    return monitor.recent_strip(list(outcomes)).replace('"', '\\"')
+
+
+class RecentStripTest(unittest.TestCase):
+    """The cockpit wants one bar per tick; Grafana 13 table columns are at
+    least 50 px wide, so a Markdown cell draws the 20 bars."""
+
+    def bars(self, html: str) -> list[str]:
+        return re.findall(r"background:(#[0-9A-F]{6})", html)
+
+    def test_one_bar_per_tick_newest_right_empty_slots_left(self) -> None:
+        html = monitor.recent_strip(["ok", "blocked", "error"])
+        bars = self.bars(html)
+        self.assertEqual(len(bars), 20)
+        self.assertEqual(bars[:17], [monitor.STRIP_EMPTY] * 17)
+        self.assertEqual(bars[17:], ["#5AB45F", "#5B8DEF", "#E5484D"])
+        self.assertIn('title="1 ok · 1 err · 1 blk"', html)
+
+    def test_no_ticks_is_an_empty_strip(self) -> None:
+        html = monitor.recent_strip([])
+        self.assertEqual(self.bars(html), [monitor.STRIP_EMPTY] * 20)
+        self.assertIn('title="no ticks"', html)
+
+    def test_the_longest_strip_is_not_cut(self) -> None:
+        html = monitor.recent_strip(["interrupted"] * 20)
+        self.assertLessEqual(len(html), monitor.LONG_LABELS["recent_strip"])
+        metrics = monitor.Metrics()
+        metrics.add("row", 1, recent_strip=html)
+        self.assertTrue(metrics.render().rstrip().endswith('</span>"} 1'))
+
+    def test_colors_match_the_dashboard(self) -> None:
+        import dashboards
+
+        self.assertEqual(monitor.STRIP_COLORS, dashboards.OUTCOME)
+        self.assertEqual(monitor.STRIP_EMPTY, dashboards.EMPTY_SLOT)
 
 
 class RunnerMetricsTest(unittest.TestCase):
@@ -366,7 +406,8 @@ class AgentRowsTest(unittest.TestCase):
         # Idle rows show the last tick's action; exit 75 without a blocked line is error.
         self.assertIn(
             'epic_agent_row_info{action_text="last: claim",agent="codex",'
-            'outcome_text="error 75 · unknown",recent_text="1 err",target=""} 1',
+            'outcome_text="error 75 · unknown",'
+            f'recent_strip="{strip_label("error")}",target=""}} 1',
             text,
         )
         # Order: running first, then kind, then id.
@@ -393,9 +434,10 @@ class AgentRowsTest(unittest.TestCase):
         self.assertIn('epic_agent_recent{agent="codex",slot="19"} 6', text)
         self.assertIn('epic_agent_recent{agent="codex",slot="18"} 1', text)
         self.assertNotIn('slot="17"', text)
-        # The cockpit shows counts: Grafana columns are too wide for a strip.
+        # One bar per tick, oldest left, in one cell.
         self.assertIn(
-            'outcome_text="timeout 124 · unknown",recent_text="1 ok · 1 err · 1 tmo"',
+            'outcome_text="timeout 124 · unknown",'
+            f'recent_strip="{strip_label("ok", "error", "timeout")}"',
             text,
         )
 
@@ -481,7 +523,7 @@ class AgentRowsTest(unittest.TestCase):
         self.assertNotIn("epic_agent_collision", text)
         self.assertIn(
             'epic_agent_row_info{action_text="selecting",agent="claude",'
-            'outcome_text="ok 0",recent_text="1 ok",target=""} 1',
+            f'outcome_text="ok 0",recent_strip="{strip_label("ok")}",target=""}} 1',
             text,
         )
 
