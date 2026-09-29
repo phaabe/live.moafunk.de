@@ -44,7 +44,10 @@ def pr(
         "isDraft": False,
         "labels": [],
         "mergeable": "MERGEABLE",
-        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"context": "epic-guard", "state": "SUCCESS"},
+        ],
         "comments": comments or [],
     }
     base.update(kw)
@@ -340,14 +343,34 @@ class GuardCheckTest(unittest.TestCase):
         )
         self.assertEqual(first("Claude", [p]).action, "merge")
 
-    def test_failed_runner_job_is_no_fix_checks(self) -> None:
+    def test_missing_guard_status_blocks_merge(self) -> None:
+        # The publisher has not posted this PR's epic-guard status yet.
+        for runner in (
+            {"conclusion": "FAILURE"},
+            {"status": "QUEUED"},
+            {"status": "IN_PROGRESS"},
+        ):
+            with self.subTest(runner=runner):
+                rollup = [
+                    {"name": "backend-ci", "conclusion": "SUCCESS"},
+                    {"name": "epic-guard-runner", **runner},
+                ]
+                p = pr(
+                    1,
+                    "Claude",
+                    comments=[verdict("APPROVED", "Codex", A, "t1")],
+                    statusCheckRollup=rollup,
+                )
+                self.assertEqual(checks_state(p), "pending")
+                self.assertEqual(first("Claude", [p]).action, "idle")
+
+    def test_missing_guard_keeps_failed_check_actionable(self) -> None:
         rollup = [
-            {"name": "backend-ci", "conclusion": "SUCCESS"},
-            {"name": "epic-guard-runner", "conclusion": "FAILURE"},
+            {"name": "backend-ci", "conclusion": "FAILURE"},
+            {"name": "epic-guard-runner", "status": "IN_PROGRESS"},
         ]
         p = pr(1, "Claude", statusCheckRollup=rollup)
-        self.assertEqual(checks_state(p), "green")
-        self.assertNotEqual(first("Claude", [p]).action, "fix-checks")
+        self.assertEqual(first("Claude", [p]).action, "fix-checks")
 
     def test_only_runner_job_is_pending(self) -> None:
         p = pr(

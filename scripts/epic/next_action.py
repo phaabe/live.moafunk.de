@@ -163,21 +163,24 @@ def checks_state(pr: dict[str, Any]) -> str:
 
     The epic guard fails on purpose until the reviewer's verdict for the head
     exists. That is no code failure to fix, so a failed guard counts as
-    pending: no `fix-checks`, and no merge until it is green. No checks
-    reported yet also counts as pending.
+    pending: no `fix-checks`, and no merge until it is green. A missing guard
+    status also counts as pending: the publisher may not have run yet.
     """
     states = []
+    guard_green = False
     for c in pr.get("statusCheckRollup") or []:
         name = c.get("name") or c.get("context")
         if name in IGNORED_CHECKS:
             continue
         state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
-        if name in GUARD_CHECKS and state in FAILED:
-            state = "PENDING"
+        if name in GUARD_CHECKS:
+            if state in FAILED:
+                state = "PENDING"
+            guard_green = guard_green or state in GREEN
         states.append(state)
     if any(s in FAILED for s in states):
         return "failed"
-    if states and all(s in GREEN for s in states):
+    if guard_green and all(s in GREEN for s in states):
         return "green"
     return "pending"
 
