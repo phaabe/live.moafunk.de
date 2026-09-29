@@ -55,6 +55,15 @@ class TickTests(unittest.TestCase):
             shutil.copyfile(
                 ROOT.parent / "scripts/epic" / helper, selector.parent / helper
             )
+        self.noise_checks = self.root / "noise-checks"
+        (selector.parent / "gitnexus_noise.py").write_text(
+            "import os, pathlib, sys, time\n"
+            "pathlib.Path(os.environ['TEST_NOISE_CHECKS']).write_text('checked')\n"
+            "if os.environ.get('TEST_NOISE_SLEEP'): time.sleep(60)\n"
+            "if os.environ.get('TEST_PAUSE_AFTER_NOISE'):\n"
+            "    (pathlib.Path.home() / '.epic-pause').touch()\n"
+            "sys.exit(int(os.environ.get('TEST_NOISE_EXIT', '0')))\n"
+        )
         selector.write_text(
             "import os, pathlib, sys, time\n"
             "from github_quota import QuotaExhausted, record, stop_on_quota\n"
@@ -76,7 +85,10 @@ class TickTests(unittest.TestCase):
         git.write_text(
             "#!/usr/bin/env python3\n"
             "import os, pathlib, sys, time\n"
-            "assert sys.argv[1:] == ['pull', '--ff-only']\n"
+            f"REAL_GIT = {REAL_GIT!r}\n"
+            "if sys.argv[1:] != ['pull', '--ff-only']:\n"
+            "    os.execv(REAL_GIT, [REAL_GIT, *sys.argv[1:]])\n"
+            "assert pathlib.Path(os.environ['TEST_NOISE_CHECKS']).exists()\n"
             "assert pathlib.Path.cwd() == pathlib.Path(os.environ['TEST_REPO']).resolve()\n"
             # The runner exports its own state dir; the lock is held there.
             "assert (pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex.lock/owner.json').exists()\n"
@@ -157,6 +169,7 @@ class TickTests(unittest.TestCase):
             "TEST_GH_CALLS": str(self.gh_calls),
             "TEST_SELECTIONS": str(self.selections),
             "TEST_PULLS": str(self.pulls),
+            "TEST_NOISE_CHECKS": str(self.noise_checks),
             "TEST_REPO": str(self.repo),
             "TEST_UPDATED_AT": str(self.updated_at),
             "TEST_DECISION": json.dumps(
@@ -613,6 +626,123 @@ class TickTests(unittest.TestCase):
         self.assertFalse(self.lock.exists())
         self.assertFalse(self.pulls.exists())
 
+    def assert_no_work_after_noise_failure(self) -> None:
+        self.assertFalse(self.pulls.exists())
+        self.assertFalse(self.selections.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.gh_calls.exists())
+        self.assertFalse(self.lock.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+
+    def test_noise_failure_stops_before_pull_and_records_reason(self) -> None:
+        self.env["TEST_NOISE_EXIT"] = "1"
+        self.assertEqual(self.run_tick().returncode, 1)
+        self.assert_no_work_after_noise_failure()
+        self.assertIn(
+            "checkout noise check failed exit=1", (self.state / "codex.log").read_text()
+        )
+
+    def test_noise_timeout_stops_before_pull(self) -> None:
+        self.env["TEST_NOISE_SLEEP"] = "1"
+        self.env["EPIC_PULL_TIMEOUT_SECONDS"] = "1"
+        self.assertEqual(self.run_tick().returncode, 124)
+        self.assert_no_work_after_noise_failure()
+        self.assertEqual(self.last_finish(), (124, "timeout", "refresh"))
+
+    def test_pause_during_noise_check_stops_before_pull(self) -> None:
+        self.env["TEST_PAUSE_AFTER_NOISE"] = "1"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assert_no_work_after_noise_failure()
+
+    def test_real_noise_helper_preserves_work_and_cleans_only_generated_blocks(
+        self,
+    ) -> None:
+        assert REAL_GIT is not None
+        helper = self.repo / "scripts/epic/gitnexus_noise.py"
+        shutil.copyfile(ROOT.parent / "scripts/epic/gitnexus_noise.py", helper)
+        # The pull boundary verifies the real helper already cleaned the tree.
+        pull_stub = self.bin / "git"
+        stub = pull_stub.read_text().replace(
+            "assert pathlib.Path(os.environ['TEST_NOISE_CHECKS']).exists()",
+            "assert subprocess.check_output([REAL_GIT, 'status', '--porcelain', "
+            "'--untracked-files=no'], text=True) == ''",
+        )
+        pull_stub.write_text(
+            stub.replace(
+                "import os, pathlib, sys, time",
+                "import os, pathlib, sys, time, subprocess",
+            )
+        )
+        self.env["TEST_DECISION"] = json.dumps({"action": "idle"})
+        doc = (
+            "Header\n<!-- gitnexus:start -->\nstats 1\n<!-- gitnexus:end -->\nFooter\n"
+        )
+        agent_doc = self.repo / "AGENTS.md"
+        claude_doc = self.repo / "CLAUDE.md"
+        for path in (agent_doc, claude_doc):
+            path.write_text(doc)
+
+        def git(*args: str) -> str:
+            return subprocess.check_output(
+                [REAL_GIT, "-C", str(self.repo), *args],
+                text=True,
+                stderr=subprocess.STDOUT,
+                env=self.env,
+            )
+
+        git("init", "-q")
+        git("add", ".")
+        git(
+            "-c",
+            "user.name=Runner test",
+            "-c",
+            "user.email=runner@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "fixture",
+        )
+        config = self.repo / ".codex/config.toml"
+        config.write_text("# local configuration\n")
+        for case in ("clean", "noise", "outside", "staged", "broken", "other"):
+            with self.subTest(case=case):
+                for record in (self.pulls, self.selections):
+                    record.unlink(missing_ok=True)
+                git("restore", "--staged", "--worktree", ".")
+                if case != "clean":
+                    agent_doc.write_text(doc.replace("stats 1", "stats 2"))
+                    claude_doc.write_text(doc.replace("stats 1", "stats 3"))
+                if case == "outside":
+                    claude_doc.write_text(
+                        claude_doc.read_text().replace("Footer", "Human edit")
+                    )
+                elif case == "staged":
+                    git("add", "AGENTS.md")
+                elif case == "broken":
+                    claude_doc.write_text(
+                        claude_doc.read_text().replace("<!-- gitnexus:end -->", "")
+                    )
+                elif case == "other":
+                    (self.runner.parent / "epic-tick.md").write_text("Human edit\n")
+                before = git("diff", "HEAD")
+                staged = git("diff", "--cached")
+                result = self.run_tick()
+                if case in {"clean", "noise"}:
+                    self.assertEqual(
+                        result.returncode, 0, (self.state / "codex.log").read_text()
+                    )
+                    self.assertEqual(self.pulls.read_text(), "pull\n")
+                    self.assertEqual(agent_doc.read_text(), doc)
+                    self.assertEqual(claude_doc.read_text(), doc)
+                else:
+                    self.assertEqual(result.returncode, 1)
+                    self.assert_no_work_after_noise_failure()
+                    self.assertEqual(git("diff", "HEAD"), before)
+                    self.assertEqual(git("diff", "--cached"), staged)
+                self.assertEqual(config.read_text(), "# local configuration\n")
+
     def test_failed_pull_stops_before_selection_and_releases_lock(self) -> None:
         self.env["TEST_PULL_EXIT"] = "17"
         self.assertEqual(self.run_tick().returncode, 17)
@@ -837,7 +967,7 @@ class TickTests(unittest.TestCase):
         home = self.state / "agents/codex-2"
         agent = json.loads((home / "agent.json").read_text())
         self.assertEqual(
-            (agent["interval_seconds"], agent["budget_seconds"]), (180, 30)
+            (agent["interval_seconds"], agent["budget_seconds"]), (180, 60)
         )
         self.assertIn("tick: finished exit=75", (home / "codex.log").read_text())
         self.assertTrue((home / "codex-backoff.json").exists())
@@ -1103,7 +1233,7 @@ class TickTests(unittest.TestCase):
         owner = json.loads((self.lock / "owner.json").read_text())
         self.assertEqual(owner["pid"], process.pid)
         self.assertGreater(owner["started_at"], 0)
-        self.assertEqual(owner["max_age"], 40)
+        self.assertEqual(owner["max_age"], 60)
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertTrue(self.lock.is_dir())
