@@ -3,9 +3,9 @@
 Work item: https://github.com/phaabe/live.moafunk.de/issues/339
 Epic: https://github.com/phaabe/live.moafunk.de/issues/312
 
-Status: in progress. The local results below cover the recorded commit only.
-Media isolation and worker walkthrough evidence remain open; no device is
-qualified by these tests.
+Status: documentation evidence recorded; review pending. The local results
+below cover their recorded commits only. Executable media isolation remains
+open; no device is qualified by these tests.
 
 ## Scope and ownership
 
@@ -28,15 +28,56 @@ before editing another lane's files.
 
 | Leaf | Evidence before completion |
 | --- | --- |
-| P1.2.1 | Claim and In progress status are recorded on the issue. The lane map separates coordination documents from backend integration files. Two independent worker claims and their final file diffs still need linked evidence. Activation is not verified. |
+| P1.2.1 | Claim and In progress status are recorded on the issue. The parallel-worker evidence below links two overlapping claims and their final diffs: six backend files and four workflow files, with no shared path. Activation is not verified. |
 | P1.2.2 | Commands, local results and fixture boundaries are recorded below. Keep failures and unrun checks visible when repeating the baseline on another commit. |
 | P1.2.3 | [Protocol](test-protocol.md) defines the isolation and fault gates. The current harness has fixed ports and inherits Docker context; executable refusal tests are still required. |
-| P1.2.5 | [Checklist posted on the epic](https://github.com/phaabe/live.moafunk.de/issues/312#issuecomment-5890843126). A fresh-worker Wave 0 walkthrough is still required; writing the checklist alone does not pass the leaf. |
+| P1.2.5 | [Checklist posted on the epic](https://github.com/phaabe/live.moafunk.de/issues/312#issuecomment-5890843126). The fresh-worker walkthrough below reproduces P1.2.2 focused checks from a clean checkout without reading review history. |
 
 P1.2.4 is already done except revision maintenance, per the
 [readiness comment](https://github.com/phaabe/live.moafunk.de/issues/339#issuecomment-5855257018).
 No accepted plan revision is changed by this work. Keep its source links and
 unique leaf IDs intact.
+
+## Parallel-worker evidence: 2026-09-28
+
+| Worker | Claim and reviewed result | Final file scope |
+| --- | --- | --- |
+| Claude, B1.1.6 | [Claim at 00:46 UTC](https://github.com/phaabe/live.moafunk.de/issues/350#issuecomment-5861386934); [final diff](https://github.com/phaabe/live.moafunk.de/pull/410/files) at `a2a836b0df17c8772ffea04a40c0a10f5a1b668f`; merged at 12:18 UTC. | Six files under `backend/src/`: `broadcast_tests.rs`, `db.rs`, `handlers/api.rs`, `scheduler.rs`, `stream_bridge.rs` and `telegram_notify.rs`. |
+| Codex, O1.2.4 | [Claim at 08:38 UTC](https://github.com/phaabe/live.moafunk.de/issues/381#issuecomment-5866447216); [final diff](https://github.com/phaabe/live.moafunk.de/pull/417/files) at `50a804fa086e314f096fd967a4c3d1c954c3444d`; merged at 12:30 UTC. | Four files under `.github/workflows/`: `README.md`, `epic-ci.yml`, `frontend.yml` and `tests/integration-ci.test.cjs`. |
+
+Both claims were open from 08:38 to 12:18 UTC, on separate feature branches
+targeting `dev/312-interim`. Comparing the complete final file lists gives
+zero shared paths. Only Claude edited the backend integration hotspots;
+Codex's broader workflow claim also reserved `backend.yml`, which its final
+diff did not change. Claude's final diff includes the notification helper in
+the same backend lane, as recorded in its PR body.
+
+This verifies independent file ownership for those two workers. It does not
+prove atomic multi-runner claims; that remains the separate work tracked in
+https://github.com/phaabe/live.moafunk.de/issues/456.
+
+On 2026-09-29 the [project](https://github.com/users/anneoneone/projects/2)
+records this issue as In progress, Executor Codex, Wave 0 and Area Coordination.
+Activation is Not applicable for this documentation work; this field is not
+media, device or production verification.
+
+## Remaining ops work
+
+P1.2.3 remains on https://github.com/phaabe/live.moafunk.de/issues/339. A separate
+ops PR must claim the launcher, configuration and refusal-test files under
+`docs/stream-rework/local-test-harness/` before editing. Its acceptance checks
+are the [media protocol](test-protocol.md): refusal before unsafe execution,
+two concurrent isolated runs, independent media decoding and scoped teardown.
+Keep the issue In progress until the required evidence exists. Documentation
+review does not close this gate or establish activation evidence.
+
+Do not list P1.2.3 in this documentation PR's `Leaf IDs:` metadata. The runner
+counts leaves named by merged PRs as completed prerequisites, even when the
+issue checklist is still open. The ops PR may list P1.2.3 after its evidence
+passes. The runner also treats an issue URL in a merged PR's `Issue:` metadata
+as a completed prerequisite. Work requiring media isolation must therefore wait
+for P1.2.3 evidence, not merely a merged PR naming this issue. No new issue or
+duplicate leaf is needed.
 
 ## Baseline capture format
 
@@ -96,6 +137,55 @@ Node differs from CI, so these results are not a Node 20 qualification.
 No test failure has been waived. The initial workflow failure was resolved by
 the documented dependency install. Do not reuse these counts for newer code.
 
+The [workflow Clippy inventory](../../.github/workflows/README.md#clippy-baseline)
+records 38 warning locations at `59edabaa430e24f05f9398d9cd33019eaa60d7f4`.
+That is historical evidence, not a strict Clippy result for either run here.
+
+### Fresh-worker walkthrough: 2026-09-29
+
+A fresh Codex worker started from the P1.2.2 issue, readiness comment,
+[anchors](anchors-v2.md), canonical rules and repository instructions, without
+reading PR review history. It used the existing documentation claim and
+[PR](https://github.com/phaabe/live.moafunk.de/pull/452), with the coordinator
+retaining sole ownership of these files.
+
+Source: `e0b7de2bb7e090e8832ddfae5ad81d8424254674`, in a separate detached
+checkout. `git status --short` was empty before installing dependencies and
+after verification. Only these three documentation files differ from the
+recorded `e319efe17e376e5a0cdaa26b8ebefe10d4114418` baseline; application and
+test sources match. The worker used the exact commands and directories in
+the reproduction table above.
+
+Host: macOS arm64. Python 3.13.7; Node 26.3.0; npm 11.16.0; Vitest 1.6.1;
+Cargo 1.98.0. Node still differs from CI's Node 20.
+
+| Repeated check | Result |
+| --- | --- |
+| Locked frontend install | Exit 0; 321 packages. |
+| Guard tests | Exit 0; 42 passed. |
+| Workflow tests | Exit 0; 12 passed, zero failed or skipped. |
+| Frontend tests | Exit 0; 23 files, 168 tests passed. |
+| Frontend lint and types | Both exit 0. |
+| Rust formatting | Exit 0. |
+| Backend tests, strict Clippy and frontend build | Not rerun; do not attribute the earlier backend results to this walkthrough. |
+| Media harness and devices | Not run. |
+
+Anchor corrections found by the worker, at that source:
+
+- O1.2.4's historical statement that workflows lack Rust tests and Clippy is
+  obsolete. `epic-ci.yml` runs formatting, tests and Clippy at lines 53, 57 and
+  61. The historical anchor file remains a baseline, not current code.
+- Frontend tests also live in `frontend/src/admin/composables/__tests__/`.
+- Frontend workflow lint/test locations moved to lines 95/98; integration
+  frontend checks are at `epic-ci.yml` lines 88–100.
+- Canonical rules section 0 selects `dev/312-interim`, overriding the issue's
+  historical integration-branch wording.
+
+Outcome: the fresh worker reproduced the focused baseline without production
+access or review-history guidance. This supplies P1.2.5 walkthrough evidence
+for the P1.2.2 documentation/test-inventory leaf. It does not test a new runtime
+feature, executable media isolation or device behavior.
+
 ## Focused tests and fixture boundaries
 
 | Change area | Focused command (inside its package) | Existing isolation |
@@ -149,4 +239,5 @@ owner before editing.
 Walkthrough acceptance: a fresh worker must follow one Ready Wave 0 leaf using
 its issue and anchors without review-history archaeology. Record the chosen
 leaf, claim, anchor corrections, focused commands, resulting PR and outcome.
-That walkthrough and a pair of non-overlapping worker claims remain open.
+The walkthrough and pair of non-overlapping claims are recorded above.
+Executable P1.2.3 verification remains open in the ops lane.
