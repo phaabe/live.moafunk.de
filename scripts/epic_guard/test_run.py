@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import io
 import json
 import subprocess
 import unittest
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -59,6 +61,64 @@ class RunnerTests(unittest.TestCase):
         return run.verify(
             406, gh or self.api, lambda *args: self.statuses.append(args), HEAD
         )
+
+    def main(self, *args: str) -> int:
+        with (
+            patch("sys.argv", ["run.py", *args]),
+            patch("sys.stdout", new_callable=io.StringIO),
+            patch.dict(
+                run.os.environ,
+                {
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_REPOSITORY": run.REPO,
+                    "GITHUB_RUN_ID": "123",
+                },
+            ),
+            patch.object(run, "api", self.api),
+            patch.object(run, "verify", partial(run.verify, gh=self.api)),
+        ):
+            return run.main()
+
+    def test_main_publish_returns_zero_for_guard_errors(self) -> None:
+        self.api.data["comments"] = []
+        with patch.object(run, "publish", side_effect=lambda *s: self.statuses.append(s)):
+            self.assertEqual(self.main("--pr", "406", "--publish"), 0)
+        self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
+
+    def test_main_publish_returns_one_for_publication_failures(self) -> None:
+        for failed_write in (0, 1):
+            with self.subTest(failed_write=failed_write):
+                failure = subprocess.CalledProcessError(1, ["gh", "api"])
+                with patch.object(
+                    run.subprocess, "run", side_effect=[None] * failed_write + [failure]
+                ) as command:
+                    self.assertEqual(self.main("--pr", "406", "--publish"), 1)
+                self.assertEqual(command.call_count, failed_write + 1)
+
+    def test_main_publish_returns_one_for_api_failure(self) -> None:
+        with (
+            patch.object(
+                self, "api", side_effect=subprocess.CalledProcessError(1, ["gh", "api"])
+            ),
+            patch.object(run, "publish") as publish,
+        ):
+            self.assertEqual(self.main("--pr", "406", "--publish"), 1)
+        publish.assert_not_called()
+
+    def test_main_publish_returns_one_for_bad_event(self) -> None:
+        with (
+            patch.object(run.Path, "read_text", return_value='{"repository": {}}'),
+            patch.object(run, "publish") as publish,
+        ):
+            self.assertEqual(self.main("--event", "event.json", "--publish"), 1)
+        publish.assert_not_called()
+
+    def test_main_local_exit_code_reports_guard_errors(self) -> None:
+        with patch.object(run, "publish") as publish:
+            self.assertEqual(self.main("--pr", "406"), 0)
+            self.api.data["comments"] = []
+            self.assertEqual(self.main("--pr", "406"), 1)
+        publish.assert_not_called()
 
     def test_loads_only_base_blobs_and_publishes_exact_head(self) -> None:
         self.assertEqual(self.verify(), [])

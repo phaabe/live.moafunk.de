@@ -245,7 +245,7 @@ def main() -> int:
                 expected_head=args.expected_head,
             )
         print(json.dumps(result, indent=2))
-        return int(any(result.values()))
+        return 0 if args.publish else int(any(result.values()))
     except (
         ValueError,
         TypeError,
