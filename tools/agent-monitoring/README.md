@@ -79,7 +79,7 @@ collision; it does not prevent it.
 | --- | --- |
 | Cockpit · tiles | Needs Anton, pause, agents running / registered, agents failing 3 times in a row, late agents, collisions, PRs waiting > 30 min, data age. Each has a caption under the value |
 | Needs Anton | Counts: needs-anton labels, a stalled handoff, an agent failing 3 times in a row or late, a collision, ≥ 5 denials in 1 h or ≥ 3 backoffs on one agent, a PR waiting > 60 min. Amber "paused" when the pause is the only reason |
-| Cockpit · Agents | One row per agent, running first: presence, current or last action and its task, tick elapsed / budget, last outcome, time since the last tick, failures in a row, the last 20 outcomes as counts, next tick, Codex backoffs, Claude denials in 1 h |
+| Cockpit · Agents | One row per agent, running first: presence, current or last action and its task, tick elapsed / budget, last outcome, time since the last tick, failures in a row, the last 20 outcomes as bars, next tick, Codex backoffs, Claude denials in 1 h |
 | Cockpit · Tick outcomes | Last outcome per agent over 24 h; retired agents are hidden |
 | Cockpit · Handoff | Per direction (Claude PRs → Codex review and back): the oldest waiting PR, its wait, the number of waiting PRs, and how many agents of the reviewer kind are registered |
 | Cockpit · Epic progress, Open PRs | Checklist leaves per area and kind; open PRs with executor, task, the other kind's verdict, CI, review rounds and age |
@@ -94,9 +94,10 @@ while GitHub has not been seen for 5 min.
 Open the cockpit with `?kiosk` to hide Grafana's own bars: the page then
 fits a 1600 × 1000 or 1280 × 1000 window like the design.
 
-The design had one 8 px cell per tick for the last 20 ticks. Grafana 13 table
-columns are at least 50 px wide, so the cockpit shows counts instead
-("16 ok · 1 err · 1 tmo"), colored by the worst outcome.
+"Last 20" draws one bar per tick, newest right (no hover text: Grafana's
+sanitizer drops `title`). Grafana 13 table columns are at least 50 px wide,
+so the collector sends the 20 bars as HTML in one label (`recent_strip`) and
+the column is a Markdown cell. Table cells have no "filter for value" buttons.
 
 Alerts (`alerts.yml`) are per agent, so new agents are covered:
 `AgentFailingRepeatedly` (3 failed ticks in a row, 1 min), `AgentLate`

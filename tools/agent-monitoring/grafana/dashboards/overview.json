@@ -2159,7 +2159,7 @@
     {
       "type": "table",
       "title": "Agents",
-      "description": "One row per registered agent, running first. Last 20: outcome counts of the last 20 ticks, colored by the worst. Backoff: Codex retry delays. Denied: Claude permission gate.",
+      "description": "One row per registered agent, running first. Last 20: one bar per tick, newest right. Backoff: Codex retry delays. Denied: Claude permission gate.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -2280,7 +2280,7 @@
                 "outcome_text",
                 "Value #F",
                 "Value #G",
-                "recent_text",
+                "recent_strip",
                 "Value #I",
                 "Value #J",
                 "Value #K",
@@ -2308,7 +2308,7 @@
               "outcome_text": 7,
               "Value #F": 8,
               "Value #G": 9,
-              "recent_text": 10,
+              "recent_strip": 10,
               "Value #I": 11,
               "Value #J": 12,
               "Value #K": 13,
@@ -2327,7 +2327,7 @@
               "outcome_text": "Last outcome",
               "Value #F": "Ago",
               "Value #G": "Failed",
-              "recent_text": "Last 20",
+              "recent_strip": "Last 20",
               "Value #I": "Next tick",
               "Value #J": "Backoff",
               "Value #K": "Denied 1 h"
@@ -2826,71 +2826,8 @@
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background",
-                  "mode": "basic"
+                  "type": "markdown"
                 }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "transparent"
-                }
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "regex",
-                    "options": {
-                      "pattern": ".*\\b(err|int)\\b.*",
-                      "result": {
-                        "index": 0,
-                        "color": "#E5484D"
-                      }
-                    }
-                  },
-                  {
-                    "type": "regex",
-                    "options": {
-                      "pattern": ".*\\bkil\\b.*",
-                      "result": {
-                        "index": 1,
-                        "color": "#A57BE0"
-                      }
-                    }
-                  },
-                  {
-                    "type": "regex",
-                    "options": {
-                      "pattern": ".*\\btmo\\b.*",
-                      "result": {
-                        "index": 2,
-                        "color": "#E8B530"
-                      }
-                    }
-                  },
-                  {
-                    "type": "regex",
-                    "options": {
-                      "pattern": ".*\\bblk\\b.*",
-                      "result": {
-                        "index": 3,
-                        "color": "#5B8DEF"
-                      }
-                    }
-                  },
-                  {
-                    "type": "regex",
-                    "options": {
-                      "pattern": "^\\d+ ok$",
-                      "result": {
-                        "index": 4,
-                        "color": "#5AB45F"
-                      }
-                    }
-                  }
-                ]
               }
             ]
           },
@@ -3037,6 +2974,18 @@
               {
                 "id": "custom.hidden",
                 "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "filterable",
+                "value": false
               }
             ]
           }
@@ -3418,6 +3367,18 @@
                     }
                   ]
                 }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "filterable",
+                "value": false
               }
             ]
           }
@@ -4000,6 +3961,18 @@
               {
                 "id": "custom.hidden",
                 "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "filterable",
+                "value": false
               }
             ]
           }

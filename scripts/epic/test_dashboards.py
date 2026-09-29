@@ -155,6 +155,34 @@ class DashboardTest(unittest.TestCase):
         mappings = {p["id"]: p["value"] for p in duration["properties"]}["mappings"]
         self.assertEqual(mappings[0]["options"]["-1"]["text"], "unknown")
 
+    def test_tables_have_no_filter_buttons(self) -> None:
+        """The cells' "filter for value" buttons only add ad hoc filters."""
+        for name, page in pages().items():
+            for panel in panels(page):
+                if panel["type"] != "table":
+                    continue
+                with self.subTest(page=name, panel=panel["title"]):
+                    self.assertIn(
+                        dashboards.override("byRegexp", ".*", ("filterable", False)),
+                        panel["fieldConfig"]["overrides"],
+                    )
+
+    def test_last_20_is_a_markdown_strip(self) -> None:
+        [table] = [
+            p
+            for p in panels(pages()["overview.json"])
+            if p["title"] == "Agents" and p["type"] == "table"
+        ]
+        [last] = [
+            o
+            for o in table["fieldConfig"]["overrides"]
+            if o["matcher"]["options"] == "Last 20"
+        ]
+        cells = [
+            p["value"] for p in last["properties"] if p["id"] == "custom.cellOptions"
+        ]
+        self.assertEqual(cells, [{"type": "markdown"}])
+
     def test_log_panels_keep_permission_lines_apart(self) -> None:
         page = pages()["agent.json"]
         logs = {p["title"]: p for p in panels(page) if p["type"] == "logs"}
