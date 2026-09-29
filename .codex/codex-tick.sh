@@ -133,10 +133,23 @@ run_bounded() {
     return "$result"
 }
 
+check_quota() {
+    tick_phase=quota
+    local result=0
+    python3 "${repo_root}/scripts/epic/github_quota.py" check \
+        --state-dir "$registry_dir" || result=$?
+    if [[ "$result" == 3 ]]; then
+        exit 0
+    elif [[ "$result" != 0 ]]; then
+        exit "$result"
+    fi
+}
+
 cd "$repo_root"
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+check_quota
 printf 'tick: refreshing runner checkout\n'
 tick_phase=refresh
 pull_exit=0
@@ -148,9 +161,18 @@ fi
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+check_quota
 tick_phase=select
+select_exit=0
 run_bounded "${select_timeout}s" python3 scripts/epic/next_action.py --agent codex \
-    > "${lock_dir}/action.json"
+    > "${lock_dir}/action.json" || select_exit=$?
+if [[ "$select_exit" == 4 ]]; then
+    tick_phase=quota
+    tick_outcome=blocked
+    exit 75
+elif [[ "$select_exit" != 0 ]]; then
+    exit "$select_exit"
+fi
 action=$(python3 -c '
 import json, sys
 value = json.load(sys.stdin)
@@ -168,21 +190,31 @@ esac
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+check_quota
 tick_phase=backoff
 backoff=0
 python3 .codex/tick_backoff.py check --action-file "${lock_dir}/action.json" \
-    --state-dir "$state_dir" --ttl "$blocked_retry" || backoff=$?
+    --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
 if [[ "$backoff" == 3 ]]; then
     exit 0
+elif [[ "$backoff" == 4 ]]; then
+    tick_phase=quota
+    tick_outcome=blocked
+    exit 75
 elif [[ "$backoff" != 0 ]]; then
     exit "$backoff"
 fi
+check_quota
 tick_phase=gate
 gate=0
 python3 scripts/epic/tick_gate.py check --agent codex \
     --action-file "${lock_dir}/action.json" || gate=$?
 if [[ "$gate" == 3 ]]; then
     exit 0
+elif [[ "$gate" == 4 ]]; then
+    tick_phase=quota
+    tick_outcome=blocked
+    exit 75
 elif [[ "$gate" != 0 ]]; then
     exit "$gate"
 fi
@@ -197,6 +229,7 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 # Never accept the previous session's final result if this session fails to write.
+check_quota
 : > "${state_dir}/codex-result.json"
 tick_phase=model
 model_exit=0
@@ -205,14 +238,22 @@ run_bounded "${tick_timeout}s" codex exec --cd "$repo_root" \
     --color never --output-schema "${repo_root}/.codex/tick-result.schema.json" \
     --output-last-message "${state_dir}/codex-result.json" \
     - < "${lock_dir}/prompt.txt" || model_exit=$?
+# Finish local records even if another agent stored a quota wait during the model.
 outcome=0
 if [[ "$model_exit" == 0 ]]; then
     tick_phase=result
 fi
 python3 .codex/tick_backoff.py record --action-file "${lock_dir}/action.json" \
-    --state-dir "$state_dir" --ttl "$blocked_retry" \
+    --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" \
     --result-file "${state_dir}/codex-result.json" --exit-code "$model_exit" || outcome=$?
-if [[ "$model_exit" != 0 ]]; then
+if [[ "$outcome" == 4 ]]; then
+    tick_phase=quota
+    tick_outcome=blocked
+    if [[ "$model_exit" != 0 ]]; then
+        exit "$model_exit"
+    fi
+    exit 75
+elif [[ "$model_exit" != 0 ]]; then
     exit "$model_exit"
 elif [[ "$outcome" != 0 && "$outcome" != 3 ]]; then
     exit "$outcome"

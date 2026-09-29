@@ -9,6 +9,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -32,6 +33,7 @@ class TickTests(unittest.TestCase):
         self.updated_at = self.root / "updated-at"
         self.updated_at.write_text("2026-09-28T03:00:00Z")
         self.calls = self.root / "codex-calls.jsonl"
+        self.gh_calls = self.root / "gh-calls.jsonl"
         self.pr_queries = self.root / "pr-queries.jsonl"
         self.selections = self.root / "selector-calls"
         self.pulls = self.root / "pull-calls"
@@ -54,11 +56,16 @@ class TickTests(unittest.TestCase):
                 ROOT.parent / "scripts/epic" / helper, selector.parent / helper
             )
         selector.write_text(
-            "import os, pathlib, sys\n"
+            "import os, pathlib, sys, time\n"
+            "from github_quota import QuotaExhausted, record, stop_on_quota\n"
             "assert sys.argv[1:] == ['--agent', 'codex']\n"
             "assert pathlib.Path(os.environ['TEST_PULLS']).exists()\n"
             "with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('call\\n')\n"
             "if os.environ.get('TEST_SELECTOR_EXIT'): sys.exit(23)\n"
+            "if os.environ.get('TEST_SELECT_QUOTA'):\n"
+            "    sys.exit(stop_on_quota(QuotaExhausted('selector exhausted')))\n"
+            "if os.environ.get('TEST_WAIT_AFTER_SELECT'):\n"
+            "    record(pathlib.Path(os.environ['EPIC_QUOTA_DIR']), time.time(), os.environ['TEST_RESET'])\n"
             "if os.environ.get('TEST_PAUSE_AFTER_SELECT'):\n"
             "    (pathlib.Path.home() / '.epic-pause').touch()\n"
             "print(os.environ['TEST_DECISION'])\n"
@@ -83,7 +90,22 @@ class TickTests(unittest.TestCase):
         gh = self.bin / "gh"
         gh.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, os, pathlib, sys\n"
+            "import json, os, pathlib, sys, time\n"
+            "with open(os.environ['TEST_GH_CALLS'], 'a') as f:\n"
+            "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:3] == ['api', 'graphql']:\n"
+            "    assert sys.argv[3:] == ['-f', 'query=query{rateLimit{resetAt}}']\n"
+            "    print(json.dumps({'data': {'rateLimit': {'resetAt': os.environ['TEST_RESET']}}}))\n"
+            "    sys.exit(0)\n"
+            "boundary = 'pr' if sys.argv[1:3] == ['pr', 'view'] else 'gate'\n"
+            "if sys.argv[1:3] == ['pr', 'list']: boundary = 'selector'\n"
+            "if os.environ.get('TEST_GH_QUOTA') == boundary:\n"
+            "    print(json.dumps({'errors': [{'type': 'RATE_LIMITED'}]}))\n"
+            "    sys.exit(0)\n"
+            "if os.environ.get('TEST_WAIT_AFTER_GATE') and boundary == 'gate':\n"
+            "    sys.path.insert(0, str(pathlib.Path(os.environ['TEST_REPO']) / 'scripts/epic'))\n"
+            "    from github_quota import record\n"
+            "    record(pathlib.Path(os.environ['EPIC_QUOTA_DIR']), time.time(), os.environ['TEST_RESET'])\n"
             "if os.environ.get('TEST_GH_FAILURE'): sys.exit(7)\n"
             "if sys.argv[1:3] == ['pr', 'view']:\n"
             "    assert sys.argv[4:] == ['--repo', 'phaabe/live.moafunk.de', "
@@ -112,6 +134,11 @@ class TickTests(unittest.TestCase):
             "        s.connect(os.environ['TEST_SOCKET'])\n"
             "        s.sendall(b'ready')\n"
             "        s.recv(1)\n"
+            "if os.environ.get('TEST_WAIT_DURING_MODEL'):\n"
+            "    sys.path.insert(0, str(pathlib.Path(os.environ['TEST_REPO']) / 'scripts/epic'))\n"
+            "    import time\n"
+            "    from github_quota import record\n"
+            "    record(pathlib.Path(os.environ['EPIC_QUOTA_DIR']), time.time(), os.environ['TEST_RESET'])\n"
             "if os.environ.get('TEST_REMOVE_GATE_SNAPSHOT'):\n"
             "    (pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex-gate-seen.json').unlink()\n"
             "if not os.environ.get('TEST_RESULT_MISSING'):\n"
@@ -127,6 +154,7 @@ class TickTests(unittest.TestCase):
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "TEST_CALLS": str(self.calls),
             "TEST_PR_QUERIES": str(self.pr_queries),
+            "TEST_GH_CALLS": str(self.gh_calls),
             "TEST_SELECTIONS": str(self.selections),
             "TEST_PULLS": str(self.pulls),
             "TEST_REPO": str(self.repo),
@@ -162,6 +190,338 @@ class TickTests(unittest.TestCase):
             if "until" in entry:
                 entry["until"] = 0
         path.write_text(json.dumps(entries))
+
+    def quota_clock(self) -> None:
+        """Control the clock at the Python process boundary, outside product code."""
+        self.clock = self.root / "clock"
+        self.clock.write_text("2000000000")
+        self.env["TEST_CLOCK"] = str(self.clock)
+        self.env["TEST_RESET"] = "2033-05-18T03:43:20Z"  # clock + 600 seconds
+        python = self.bin / "python3"
+        python.write_text(
+            f"#!{sys.executable}\n"
+            "import os, pathlib, runpy, sys, time\n"
+            "time.time = lambda: float(pathlib.Path(os.environ['TEST_CLOCK']).read_text())\n"
+            "sys.argv = sys.argv[1:]\n"
+            "if sys.argv[0] == '-c':\n"
+            "    code = sys.argv[1]\n"
+            "    sys.argv = ['-c', *sys.argv[2:]]\n"
+            "    exec(compile(code, '<string>', 'exec'), {'__name__': '__main__'})\n"
+            "else:\n"
+            "    sys.path.insert(0, str(pathlib.Path(sys.argv[0]).resolve().parent))\n"
+            "    runpy.run_path(sys.argv[0], run_name='__main__')\n"
+        )
+        python.chmod(0o755)
+
+    def store_quota_wait(self) -> dict[str, object]:
+        """Seed exactly the shared helper's persisted format through its CLI."""
+        result = subprocess.run(
+            [
+                str(self.bin / "python3"),
+                str(self.repo / "scripts/epic/github_quota.py"),
+                "record",
+                "--state-dir",
+                str(self.state),
+                "--reset-at",
+                self.env["TEST_RESET"],
+            ],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads((self.state / "github-quota-wait.json").read_text())
+
+    def assert_quota_only(self, *, model_calls: int = 0) -> None:
+        self.assertTrue((self.state / "github-quota-wait.json").exists())
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse(self.lock.exists())
+        calls = self.calls.read_text().splitlines() if self.calls.exists() else []
+        self.assertEqual(len(calls), model_calls)
+
+    def test_shared_quota_wait_prevents_pull_api_and_model_until_reset(self) -> None:
+        self.quota_clock()
+        wait = self.store_quota_wait()
+        self.assertEqual(wait["retry_at"], "2033-05-18T03:44:20Z")
+        for now in (2000000000, 2000000659):
+            with self.subTest(now=now):
+                self.clock.write_text(str(now))
+                self.assertEqual(self.run_tick().returncode, 0)
+                self.assertFalse(self.pulls.exists())
+                self.assertFalse(self.selections.exists())
+                self.assertFalse(self.gh_calls.exists())
+                self.assert_quota_only()
+                self.assertEqual(self.last_finish(), (0, "ok", "quota"))
+        self.clock.write_text("2000000660")
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertEqual(self.selections.read_text(), "call\n")
+        self.assertTrue(self.record.exists())
+
+    def test_registered_agent_obeys_the_shared_root_quota_wait(self) -> None:
+        self.quota_clock()
+        self.store_quota_wait()
+        self.env["EPIC_AGENT_ID"] = "codex-2"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertFalse(self.pulls.exists())
+        self.assertFalse(self.gh_calls.exists())
+        self.assertFalse(self.calls.exists())
+        agent = self.state / "agents/codex-2"
+        for name in ("github-quota-wait.json", "codex-gate.json", "codex-backoff.json"):
+            self.assertFalse((agent / name).exists(), name)
+
+    def test_malformed_quota_wait_fails_without_git_api_or_model(self) -> None:
+        self.state.mkdir(parents=True)
+        (self.state / "github-quota-wait.json").write_text('{"retry_at": null}')
+        self.assertEqual(self.run_tick().returncode, 2)
+        self.assertFalse(self.pulls.exists())
+        self.assertFalse(self.gh_calls.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+
+    def test_selector_quota_exit_defers_without_target_state(self) -> None:
+        self.quota_clock()
+        self.env["TEST_SELECT_QUOTA"] = "1"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assert_quota_only()
+        self.assertEqual(self.last_finish(), (75, "blocked", "quota"))
+        queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
+        self.assertEqual(
+            queries, [["api", "graphql", "-f", "query=query{rateLimit{resetAt}}"]]
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        self.assertEqual(self.selections.read_text(), "call\n")
+
+    def test_real_selector_http_200_quota_stops_before_an_action_is_used(self) -> None:
+        self.quota_clock()
+        shutil.copyfile(
+            ROOT.parent / "scripts/epic/next_action.py",
+            self.repo / "scripts/epic/next_action.py",
+        )
+        self.env["TEST_GH_QUOTA"] = "selector"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assert_quota_only()
+        queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(queries[0][:2], ["pr", "list"])
+        self.assertEqual(
+            queries[1], ["api", "graphql", "-f", "query=query{rateLimit{resetAt}}"]
+        )
+
+    def test_real_selector_nonquota_failure_stays_visible(self) -> None:
+        shutil.copyfile(
+            ROOT.parent / "scripts/epic/next_action.py",
+            self.repo / "scripts/epic/next_action.py",
+        )
+        self.env["TEST_GH_FAILURE"] = "1"
+        self.assertNotEqual(self.run_tick().returncode, 0)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse((self.state / "github-quota-wait.json").exists())
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+        self.assertIn("CalledProcessError", (self.state / "codex.log").read_text())
+
+    def test_gate_http_200_quota_error_defers_without_target_state(self) -> None:
+        self.quota_clock()
+        self.env["TEST_GH_QUOTA"] = "gate"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assert_quota_only()
+        self.assertEqual(self.last_finish(), (75, "blocked", "quota"))
+        self.assertFalse((self.state / "codex-gate-seen.json").exists())
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 2)
+
+    def test_quota_during_pr_cooldown_lookup_preserves_issue_state(self) -> None:
+        self.quota_clock()
+        self.block_issue_then_select_draft_pr()
+        backoff = self.state / "codex-backoff.json"
+        previous_backoff = backoff.read_bytes()
+        previous_gate = self.record.read_bytes()
+        self.env["TEST_GH_QUOTA"] = "pr"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertTrue((self.state / "github-quota-wait.json").exists())
+        self.assertEqual(backoff.read_bytes(), previous_backoff)
+        self.assertEqual(self.record.read_bytes(), previous_gate)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_wait_created_during_selection_prevents_gate_and_model(self) -> None:
+        self.quota_clock()
+        self.env["TEST_WAIT_AFTER_SELECT"] = "1"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertFalse(self.gh_calls.exists())
+        self.assert_quota_only()
+        self.assertEqual(self.last_finish(), (0, "ok", "quota"))
+
+    def test_wait_created_during_gate_prevents_model(self) -> None:
+        self.quota_clock()
+        self.env["TEST_WAIT_AFTER_GATE"] = "1"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        self.assert_quota_only()
+        self.assertEqual(self.last_finish(), (0, "ok", "quota"))
+
+    def prepare_wait_during_model(self) -> tuple[Path, bytes]:
+        self.quota_clock()
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Permission denied."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.expire_cooldown()
+        self.updated_at.write_text("2026-09-28T03:01:00Z")
+        backoff = self.state / "codex-backoff.json"
+        previous_gate = self.record.read_bytes()
+        del self.env["TEST_RESULT"]
+        self.env["TEST_WAIT_DURING_MODEL"] = "1"
+        return backoff, previous_gate
+
+    def test_wait_during_completed_model_records_success_and_clears_backoff(
+        self,
+    ) -> None:
+        backoff, previous_gate = self.prepare_wait_during_model()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(json.loads(backoff.read_text()), {})
+        self.assertNotEqual(self.record.read_bytes(), previous_gate)
+        self.assertEqual(
+            json.loads(self.record.read_text())["updated_at"],
+            self.updated_at.read_text(),
+        )
+        self.assertTrue((self.state / "github-quota-wait.json").exists())
+        self.assertEqual(self.last_finish(), (0, "ok", "record"))
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_wait_during_blocked_model_records_gate_and_target_cooldown(self) -> None:
+        backoff, previous_gate = self.prepare_wait_during_model()
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Build needs a dependency."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        entry = json.loads(backoff.read_text())[f"pr:406:{'a' * 40}"]
+        self.assertEqual(
+            entry["reason"], "model reported blocked: Build needs a dependency."
+        )
+        self.assertGreater(entry["until"], float(self.clock.read_text()))
+        self.assertNotEqual(self.record.read_bytes(), previous_gate)
+        self.assertEqual(self.last_finish(), (75, "blocked", "result"))
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_wait_during_failed_model_preserves_exit_and_records_failure(self) -> None:
+        backoff, previous_gate = self.prepare_wait_during_model()
+        self.env["TEST_CODEX_EXIT"] = "17"
+        self.assertEqual(self.run_tick().returncode, 17)
+        entry = json.loads(backoff.read_text())[f"pr:406:{'a' * 40}"]
+        self.assertEqual(entry["reason"], "model exited 17")
+        self.assertGreater(entry["until"], float(self.clock.read_text()))
+        self.assertEqual(self.record.read_bytes(), previous_gate)
+        self.assertEqual(self.last_finish(), (17, "error", "model"))
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_model_quota_result_reuses_a_concurrent_wait_without_querying_reset(
+        self,
+    ) -> None:
+        self.quota_clock()
+        self.env["TEST_WAIT_DURING_MODEL"] = "1"
+        self.env["TEST_RESULT"] = json.dumps(
+            {
+                "status": "blocked",
+                "summary": "GitHub GraphQL quota exhausted.",
+                "reason_code": "github_rate_limit",
+                "retry_at": None,
+            }
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assert_quota_only(model_calls=1)
+        queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
+        self.assertEqual(len(queries), 1)
+        self.assertEqual(
+            queries[0][:2], ["api", "repos/phaabe/live.moafunk.de/issues/406"]
+        )
+        wait = json.loads((self.state / "github-quota-wait.json").read_text())
+        self.assertEqual(wait["reset_at"], self.env["TEST_RESET"])
+        self.assertEqual(wait["retry_at"], "2033-05-18T03:44:20Z")
+        self.assertEqual(wait["source"], "caller")
+        self.assertEqual(self.last_finish(), (75, "blocked", "quota"))
+
+    def test_model_quota_result_waits_then_renews_without_target_backoff(self) -> None:
+        self.quota_clock()
+        self.env["TEST_RESULT"] = json.dumps(
+            {
+                "status": "blocked",
+                "summary": "GitHub GraphQL quota exhausted.",
+                "reason_code": "github_rate_limit",
+                "retry_at": self.env["TEST_RESET"],
+            }
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assert_quota_only(model_calls=1)
+        original_wait = (self.state / "github-quota-wait.json").read_bytes()
+        queries = self.gh_calls.read_bytes()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(self.gh_calls.read_bytes(), queries)
+        self.assertEqual(
+            (self.state / "github-quota-wait.json").read_bytes(), original_wait
+        )
+        self.clock.write_text("2000000660")
+        self.env["TEST_RESET"] = "2033-05-18T03:53:20Z"
+        result = json.loads(self.env["TEST_RESULT"])
+        result["retry_at"] = self.env["TEST_RESET"]
+        self.env["TEST_RESULT"] = json.dumps(result)
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assert_quota_only(model_calls=2)
+        self.assertNotEqual(
+            (self.state / "github-quota-wait.json").read_bytes(), original_wait
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assert_quota_only(model_calls=2)
+
+    def test_completed_result_with_nullable_quota_fields_records_success(self) -> None:
+        self.env["TEST_RESULT"] = json.dumps(
+            {
+                "status": "completed",
+                "summary": "Done.",
+                "reason_code": None,
+                "retry_at": None,
+            }
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertTrue(self.record.exists())
+        self.assertFalse((self.state / "github-quota-wait.json").exists())
+
+    def test_model_failure_with_quota_result_preserves_exit_and_shared_wait(
+        self,
+    ) -> None:
+        self.quota_clock()
+        self.env["TEST_CODEX_EXIT"] = "17"
+        self.env["TEST_RESULT"] = json.dumps(
+            {
+                "status": "blocked",
+                "summary": "GitHub GraphQL quota exhausted.",
+                "reason_code": "github_rate_limit",
+                "retry_at": self.env["TEST_RESET"],
+            }
+        )
+        self.assertEqual(self.run_tick().returncode, 17)
+        self.assert_quota_only(model_calls=1)
+        queries = self.gh_calls.read_bytes()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(self.gh_calls.read_bytes(), queries)
+        self.assert_quota_only(model_calls=1)
+
+    def test_registered_agent_records_new_quota_wait_at_shared_root(self) -> None:
+        self.quota_clock()
+        self.env["EPIC_AGENT_ID"] = "codex-2"
+        self.env["TEST_SELECT_QUOTA"] = "1"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertTrue((self.state / "github-quota-wait.json").exists())
+        agent = self.state / "agents/codex-2"
+        for name in ("github-quota-wait.json", "codex-gate.json", "codex-backoff.json"):
+            self.assertFalse((agent / name).exists(), name)
+        queries = self.gh_calls.read_bytes()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(self.gh_calls.read_bytes(), queries)
+        self.assertFalse(self.calls.exists())
 
     def block_issue_then_select_draft_pr(self) -> dict[str, object]:
         issue = "https://github.com/phaabe/live.moafunk.de/issues/381"
