@@ -69,6 +69,12 @@ MERGEABLE = {True: "MERGEABLE", False: "CONFLICTING", None: "UNKNOWN"}
 # Actions whose rule reads a verdict: their recheck adds GraphQL edit evidence.
 VERDICT_ACTIONS = {"merge", "fix", "escalate"}
 STATE_KEYS = ("prs", "items", "linked_labels", "merged_prs", "batch_order")
+# Write hooks run the fresh check with this host timeout (.claude/settings.json,
+# .codex/hooks.json). A Claude Code hook that times out does not block the
+# write, so the check must end first; the margin covers start-up.
+HOOK_TIMEOUT_SECONDS = 90
+HOOK_MARGIN_SECONDS = 10
+IDENTITY_TIMEOUT_SECONDS = 30
 
 
 class ConfigError(Exception):
@@ -119,6 +125,12 @@ def settings(env: Mapping[str, str] | None = None) -> Settings:
             "EPIC_SNAPSHOT_LOCK_SECONDS + EPIC_SNAPSHOT_REFRESH_SECONDS "
             f"({found.lock} + {found.refresh}) must be below "
             f"EPIC_SELECT_TIMEOUT_SECONDS ({select})"
+        )
+    if found.recheck + HOOK_MARGIN_SECONDS > HOOK_TIMEOUT_SECONDS:
+        raise ConfigError(
+            f"EPIC_RECHECK_TIMEOUT_SECONDS ({found.recheck}) must be at most "
+            f"{HOOK_TIMEOUT_SECONDS - HOOK_MARGIN_SECONDS}, so write checks end "
+            f"before the {HOOK_TIMEOUT_SECONDS}s hook timeout"
         )
     return found
 
@@ -372,10 +384,13 @@ _LOGINS: dict[str, str] = {}
 
 
 def resolve_namespace(
-    http: Http = gh_http, env: Mapping[str, str] | None = None
+    http: Http = gh_http,
+    env: Mapping[str, str] | None = None,
+    timeout: float = IDENTITY_TIMEOUT_SECONDS,
 ) -> Namespace:
     """Cache key: API host, gh login, API version, format, repo, project, bases,
-    schema and the auth-context version. Resolved before any cache use."""
+    schema and the auth-context version. Resolved before any cache use.
+    `timeout` bounds the one login read."""
     values: Mapping[str, str] = os.environ if env is None else env
     if values.get("GH_HOST") not in (None, "", "github.com"):
         raise ConfigError("the shared reader supports github.com only (GH_HOST)")
@@ -385,7 +400,7 @@ def resolve_namespace(
     if login is None:
         url = full_url("user")
         started = time.monotonic()
-        response = http(url, None, 30)
+        response = http(url, None, timeout)
         scopes = response.headers.get("x-oauth-scopes")
         result = "200" if response.status == 200 else "error"
         record = log_record("identity", url, response.status, result, started, scopes)
@@ -948,7 +963,8 @@ def load_guard(root: Path | None = None) -> ModuleType:
 class FreshReader:
     """Reads for one check right before a write or a model start.
 
-    Never uses the snapshot and never writes ETag entries.
+    Never uses the snapshot and never writes ETag entries. `seconds` bounds
+    every read, the login read included.
     """
 
     def __init__(
@@ -957,9 +973,18 @@ class FreshReader:
         seconds: float,
         http: Http = gh_http,
         root: Path | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ):
-        self.ns = resolve_namespace(http)
-        self.client = Client(self.ns, purpose, seconds, writable=False, http=http)
+        deadline = clock() + seconds
+        self.ns = resolve_namespace(
+            http, timeout=min(IDENTITY_TIMEOUT_SECONDS, seconds)
+        )
+        left = deadline - clock()
+        if left <= 0:
+            raise ReadBlocked(f"{purpose}: the gh login read took too long")
+        self.client = Client(
+            self.ns, purpose, left, writable=False, http=http, clock=clock
+        )
         self.purpose = purpose
         self.root = root
 

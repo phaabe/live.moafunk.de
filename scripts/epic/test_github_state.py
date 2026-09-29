@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import github_state as gs
 import next_action as na
+import write_checks as wc
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures" / "gh_i"
@@ -334,6 +335,67 @@ class FreshReads(Env):
             self.client().json(f"{REPO}/issues/1")
 
 
+class SlowGitHub:
+    """FakeGitHub on a fake clock. A read slower than its timeout hangs until
+    the timeout and fails, as gh_http does."""
+
+    def __init__(self, gh: FakeGitHub, delays: dict[str, float], default: float):
+        self.gh, self.delays, self.default = gh, delays, default
+        self.now = 0.0
+        self.timeouts: list[tuple[str, float]] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def __call__(self, url: str, etag: str | None, timeout: float) -> gs.Response:
+        self.timeouts.append((gs.path_of(url), timeout))
+        delay = self.delays.get(gs.path_of(url), self.default)
+        if delay > timeout:
+            self.now += timeout
+            raise gs.ReadBlocked(f"GitHub read timed out: {gs.path_of(url)}")
+        self.now += delay
+        return self.gh(url, etag, timeout)
+
+
+class FreshDeadline(Env):
+    def reader(self, slow: SlowGitHub, seconds: float) -> gs.FreshReader:
+        return gs.FreshReader("write-check", seconds, http=slow, clock=slow.clock)
+
+    def test_login_read_counts_in_the_deadline(self) -> None:
+        slow = SlowGitHub(self.gh, {"user": 25}, 1)
+        reader = self.reader(slow, 60)
+        self.assertEqual(slow.timeouts, [("user", 30)])
+        self.assertEqual(reader.client.deadline - slow.now, 35)
+
+    def test_login_read_never_waits_longer_than_the_deadline(self) -> None:
+        slow = SlowGitHub(self.gh, {"user": 100}, 1)
+        with self.assertRaisesRegex(gs.ReadBlocked, "timed out"):
+            self.reader(slow, 20)
+        self.assertEqual((slow.timeouts, slow.now), ([("user", 20)], 20))
+
+    def test_login_read_that_uses_the_whole_deadline_blocks(self) -> None:
+        slow = SlowGitHub(self.gh, {"user": 10}, 1)
+        with self.assertRaisesRegex(gs.ReadBlocked, "login read took too long"):
+            self.reader(slow, 10)
+
+    def test_slow_login_and_reads_end_before_the_hook_timeout(self) -> None:
+        # Worst case: the login read almost times out, then every read hangs.
+        action = self.root / "action.json"
+        action.write_text(json.dumps({"action": "fix", "pr": 5, "sha": A}))
+        seconds = gs.settings().recheck
+        slow = SlowGitHub(self.gh, {"user": 29}, 1000)
+        with patch.dict(os.environ, {"EPIC_ACTION_FILE": str(action)}):
+            refused = wc.guard(
+                "Bash",
+                {"command": "git push origin feat/5-x"},
+                str(self.root),
+                lambda: self.reader(slow, seconds),
+            )
+        self.assertIn("fresh GitHub read failed", refused or "")
+        self.assertLessEqual(slow.now, seconds)
+        self.assertLessEqual(slow.now + gs.HOOK_MARGIN_SECONDS, gs.HOOK_TIMEOUT_SECONDS)
+
+
 class Config(Env):
     def test_defaults(self) -> None:
         self.assertEqual(gs.settings(), gs.Settings(120, 50, 45, 60))
@@ -343,6 +405,27 @@ class Config(Env):
             with patch.dict(os.environ, {"EPIC_SNAPSHOT_MAX_AGE_SECONDS": value}):
                 with self.assertRaises(gs.ConfigError):
                     gs.settings()
+
+    def test_recheck_must_end_before_the_hook_timeout(self) -> None:
+        with patch.dict(os.environ, {"EPIC_RECHECK_TIMEOUT_SECONDS": "80"}):
+            self.assertEqual(gs.settings().recheck, 80)
+        with patch.dict(os.environ, {"EPIC_RECHECK_TIMEOUT_SECONDS": "81"}):
+            with self.assertRaisesRegex(gs.ConfigError, "hook timeout"):
+                gs.settings()
+
+    def test_hook_timeouts_match_the_check_limit(self) -> None:
+        root = HERE.parents[1]
+        claude = json.loads((root / ".claude/settings.json").read_text())
+        codex = json.loads((root / ".codex/hooks.json").read_text())
+        timeouts = [
+            hook["timeout"]
+            for config in (claude, codex)
+            for group in config["hooks"]["PreToolUse"]
+            for hook in group["hooks"]
+            if "epic-guard" in hook["command"]
+        ]
+        self.assertGreaterEqual(len(timeouts), 3)
+        self.assertEqual(set(timeouts), {gs.HOOK_TIMEOUT_SECONDS})
 
     def test_lock_and_refresh_must_fit_the_select_timeout(self) -> None:
         with patch.dict(os.environ, {"EPIC_SELECT_TIMEOUT_SECONDS": "95"}):

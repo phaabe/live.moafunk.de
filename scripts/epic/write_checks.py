@@ -1,23 +1,27 @@
-"""Fresh GitHub checks right before each write of the headless Claude runner.
+"""Fresh GitHub checks right before each write of a headless runner.
 
 Cached data only nominates work (github_state.py). Right before a write, this
 module reads what that write needs fresh from GitHub and refuses the write when
 it no longer holds, or when the read fails. The ownership check of
 https://github.com/phaabe/live.moafunk.de/issues/456 runs after this one.
 
-Active only with EPIC_SHARED_READER=1 and EPIC_ACTION_FILE set (claude-tick.sh
-sets it for the model session). Interactive sessions are not checked.
+Active only with EPIC_SHARED_READER=1 and EPIC_ACTION_FILE set (the runner
+sets it for the model session). Interactive sessions are not checked. The
+caller names the agent (Claude or Codex); "this agent" below means that one.
 
   Write                          Fresh check
   claim (board write or claim    the selector still gives this claim: Ready,
-  comment on the issue)          Executor Claude, no blockers, a free slot;
-                                 once In progress for Claude, owner writes pass
+  comment on the issue)          Executor this agent, no blockers, a free
+                                 slot; once In progress for this agent, owner
+                                 writes pass
   board write in a continue      the named item is the tick's issue (or the
-                                 PR's `Issue:` ticket), In progress for Claude
+                                 PR's `Issue:` ticket), In progress for this
+                                 agent
   push, PR create                PR open and not merged, branch is the PR's
-                                 head; without a PR: issue In progress with
-                                 Executor Claude, branch names the issue, no
-                                 merged or closed PR for the branch
+                                 head, every issue of the PR In progress with
+                                 Executor this agent; without a PR: the same
+                                 for the tick's issue, branch names the issue,
+                                 no merged or closed PR for the branch
   verdict comment                review action for this PR and SHA; PR open,
                                  not draft, head equals the reviewed head
   other PR comment or PR write   PR open
@@ -49,7 +53,8 @@ import github_state as gs
 import next_action as na
 from github_quota import QuotaExhausted
 
-AGENT = "Claude"
+AGENT = "Claude"  # default for callers that name no agent
+AGENTS = ("Claude", "Codex")
 PUSH_ACTIONS = {"fix", "fix-checks", "resolve-conflict", "continue", "claim"}
 CREATE_ACTIONS = {"continue", "claim"}
 BOARD_ACTIONS = {"claim", "continue"}
@@ -425,7 +430,15 @@ def tool_writes(tool_name: str, tool_input: dict[str, Any], cwd: str) -> list[Wr
 class Context:
     """The selected action and the fresh reads one tool call needs, read once."""
 
-    def __init__(self, action: dict[str, Any], reader: Callable[[], gs.FreshReader]):
+    def __init__(
+        self,
+        action: dict[str, Any],
+        reader: Callable[[], gs.FreshReader],
+        agent: str = AGENT,
+    ):
+        if agent not in AGENTS:
+            raise ValueError(f"unknown agent {agent!r}")
+        self.agent = agent
         self.action = action
         self.kind = action.get("action")
         self.pr = action.get("pr") if isinstance(action.get("pr"), int) else None
@@ -479,10 +492,10 @@ def common(ctx: Context) -> str | None:
         author = na.pr_author({"body": pull.get("body") or ""})
         if ctx.kind == "adopt":
             # Before the body edit the PR has no owner; after it, this agent.
-            if author not in (None, AGENT):
-                return f"PR {ctx.pr} Executor is {author}, not {AGENT}"
+            if author not in (None, ctx.agent):
+                return f"PR {ctx.pr} Executor is {author}, not {ctx.agent}"
         else:
-            expected = na.other(AGENT) if ctx.kind == "review" else AGENT
+            expected = na.other(ctx.agent) if ctx.kind == "review" else ctx.agent
             if author != expected:
                 return f"PR {ctx.pr} Executor is {author or 'not set'}, not {expected}"
         if focus:
@@ -497,30 +510,39 @@ def common(ctx: Context) -> str | None:
     return None
 
 
+def owned(ctx: Context, number: int) -> str | None:
+    """The issue is In progress with this agent as Executor."""
+    item = ctx.item(number)
+    if item is None:
+        return f"issue {number} is not on the board"
+    if item.get("status") != "In progress" or item.get("executor") != ctx.agent:
+        return (
+            f"issue {number} is {item.get('status')} with Executor "
+            f"{item.get('executor')}, not In progress for {ctx.agent}"
+        )
+    return None
+
+
 def owned_issue(ctx: Context) -> str | None:
     """The action's issue is In progress with this agent as Executor."""
     if ctx.issue is None:
         return "the action names no issue"
-    item = ctx.item(ctx.issue)
-    if item is None:
-        return f"issue {ctx.issue} is not on the board"
-    if item.get("status") != "In progress" or item.get("executor") != AGENT:
-        return (
-            f"issue {ctx.issue} is {item.get('status')} with Executor "
-            f"{item.get('executor')}, not In progress for {AGENT}"
-        )
-    return None
+    return owned(ctx, ctx.issue)
 
 
 def claim_or_owned(ctx: Context) -> str | None:
     """Before the claim: the selector still gives it (Ready, Executor, no
     blockers, a free slot). After it: the issue is In progress for this agent."""
     item = ctx.item(ctx.issue) if ctx.issue is not None else None
-    if item and item.get("status") == "In progress" and item.get("executor") == AGENT:
+    if (
+        item
+        and item.get("status") == "In progress"
+        and item.get("executor") == ctx.agent
+    ):
         return None
     focus = na.read_focus(na.FOCUS_FILE)
     enabled = na.read_actions(os.environ.get(na.ACTIONS_ENV))
-    return gs.recheck(AGENT, ctx.action, focus, enabled, False, ctx.reader)
+    return gs.recheck(ctx.agent, ctx.action, focus, enabled, False, ctx.reader)
 
 
 def issue_write(ctx: Context) -> str | None:
@@ -553,10 +575,10 @@ def check_board(ctx: Context, write: Write) -> str | None:
         return f"board item {write.item} is issue {number}, not this tick's issue"
     if ctx.kind == "claim":
         return claim_or_owned(ctx)
-    if item.get("status") != "In progress" or item.get("executor") != AGENT:
+    if item.get("status") != "In progress" or item.get("executor") != ctx.agent:
         return (
             f"issue {number} is {item.get('status')} with Executor "
-            f"{item.get('executor')}, not In progress for {AGENT}"
+            f"{item.get('executor')}, not In progress for {ctx.agent}"
         )
     return None
 
@@ -582,7 +604,18 @@ def check_push(ctx: Context, write: Write) -> str | None:
             if pull.get("state") == "open":
                 return f"PR {ctx.pr} is still open; its branch stays"
             return None
-        return open_pr(ctx, ctx.pr)
+        reason = open_pr(ctx, ctx.pr)
+        if reason:
+            return reason
+        # The owner pushes only for issues it holds: all of the PR's issues.
+        issues = ctx.targets() - {ctx.pr}
+        if not issues:
+            return f"PR {ctx.pr} names no issue (Issue: line)"
+        for number in sorted(issues):
+            reason = owned(ctx, number)
+            if reason:
+                return reason
+        return None
     reason = owned_issue(ctx)
     if reason:
         return reason
@@ -654,8 +687,10 @@ def guard(
     tool_input: dict[str, Any],
     cwd: str,
     reader: Callable[[], gs.FreshReader] | None = None,
+    agent: str | None = None,
 ) -> str | None:
-    """None to allow the tool call, else why it is refused."""
+    """None to allow the tool call, else why it is refused. `agent` is the
+    runner's agent, Claude or Codex (default AGENT)."""
     if not active():
         return None
     try:
@@ -669,7 +704,7 @@ def guard(
         return gs.FreshReader("write-check", gs.settings().recheck)
 
     try:
-        ctx = Context(load_action(), reader or make_reader)
+        ctx = Context(load_action(), reader or make_reader, agent or AGENT)
         for write in writes:
             reason = check_write(ctx, write)
             if reason:
