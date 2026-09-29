@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -217,6 +218,106 @@ class RunnerMetricsTest(unittest.TestCase):
         self.assertIn('epic_last_observed_exit_code{agent="codex"} 0\n', text)
         self.assertIn('epic_log_modified_timestamp_seconds{agent="codex"} 1400\n', text)
         self.assertNotIn("private model output", text)
+
+    def test_running_tick_exports_its_whole_budget(self) -> None:
+        self.owner(max_age=1930)
+        text = monitor.runner_metrics(self.root, False, NOW, alive=lambda _: True)
+        self.assertIn('epic_tick_budget_seconds{agent="claude"} 1930\n', text)
+
+    def test_outcome_severity_is_published_once(self) -> None:
+        text = monitor.runner_metrics(self.root, False, NOW)
+        self.assertEqual(text.count("# TYPE epic_outcome_severity gauge"), 1)
+        self.assertIn('epic_outcome_severity{outcome="error"} 6\n', text)
+
+    def test_ledgers_publish_ticks_for_both_agents(self) -> None:
+        for agent in monitor.AGENTS:
+            (self.root / f"{agent}.log").write_text(
+                "\ntick: started 1970-01-01T00:10:00Z repo=/x\ntick: finished exit=0\n"
+            )
+        ledgers = monitor.make_ledgers(self.root, self.root / "runtime")
+        text = monitor.runner_metrics(self.root, False, NOW, ledgers=ledgers)
+        self.assertEqual(text.count("# TYPE epic_ticks_total counter"), 1)
+        for agent in monitor.AGENTS:
+            self.assertIn(f'epic_tick_ledger_read_success{{agent="{agent}"}} 1\n', text)
+            self.assertIn(f'epic_tick_last_outcome{{agent="{agent}"}} 1\n', text)
+        self.assertTrue((self.root / "runtime/ticks-codex.json").exists())
+
+    def test_missing_log_is_reported_not_zeroed(self) -> None:
+        log = self.root / "codex.log"
+        log.write_text(
+            "\ntick: started 1970-01-01T00:10:00Z repo=/x\ntick: finished exit=1\n"
+        )
+        (self.root / "claude.log").write_text("")
+        ledgers = monitor.make_ledgers(self.root, self.root / "runtime")
+        monitor.runner_metrics(self.root, False, NOW, ledgers=ledgers)
+        log.unlink()
+        with self.assertLogs(level="WARNING"):
+            text = monitor.runner_metrics(self.root, False, NOW + 5, ledgers=ledgers)
+        self.assertIn('epic_tick_ledger_read_success{agent="codex"} 0\n', text)
+        self.assertIn('epic_tick_last_outcome{agent="codex"} 6\n', text)
+        # A broken ledger never hides the runner state.
+        self.assertIn('epic_runner_state{agent="codex",state="inactive"} 1\n', text)
+
+
+# Samples per scrape at the fetch limits; guards against unbounded label growth.
+SCRAPE_BUDGET = 7000
+
+
+class ScrapeSizeTest(unittest.TestCase):
+    def test_max_size_snapshot_and_full_ledgers_stay_under_budget(self) -> None:
+        """Fetch limits: 500 project items; 100 open and 300 merged PRs per base
+        (two bases). Full ledgers: 2 000 ticks per agent over the 7-day window."""
+        body = "\n".join(f"- [ ] **B1.{i}.1** Leaf {i}." for i in range(5))
+        items = [
+            plan_issue(
+                1000 + i,
+                f"[B1.{i}] Task {i}",
+                "Task",
+                body,
+                area="Backend",
+                executor="Claude" if i % 2 else "Codex",
+            )
+            for i in range(500)
+        ]
+        prs = [
+            pull_request(
+                2000 + i,
+                "Claude" if i % 2 else "Codex",
+                body=f"Executor: Claude\nLeaf IDs: B1.{i % 500}.1\n"
+                f"Issue: {URL}/issues/{1000 + i % 500}",
+                baseRefName=("dev/312-interim", "dev/streaming-architecture")[i % 2],
+            )
+            for i in range(200)
+        ]
+        merged = [
+            {
+                "number": 3000 + i,
+                "body": f"Executor: Codex\nLeaf IDs: B1.{i % 500}.1\n"
+                f"Issue: {URL}/issues/{1000 + i % 500}",
+            }
+            for i in range(600)
+        ]
+        github = monitor.github_metrics(
+            snapshot(items=items, prs=prs, merged_prs=merged), NOW
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for agent in monitor.AGENTS:
+                (root / f"{agent}.log").write_text(
+                    "".join(
+                        "\ntick: started "
+                        + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(i * 300))
+                        + ' repo=/x\n{"action": "review", "pr": 7}\n'
+                        f"tick: finished exit={(0, 1, 124)[i % 3]}\n"
+                        for i in range(2000)
+                    )
+                )
+            ledgers = monitor.make_ledgers(root, root / "runtime")
+            runners = monitor.runner_metrics(root, False, 2000 * 300, ledgers=ledgers)
+        samples = [
+            line for line in (github + runners).splitlines() if not line.startswith("#")
+        ]
+        self.assertLess(len(samples), SCRAPE_BUDGET)
 
 
 class GithubMetricsTest(unittest.TestCase):

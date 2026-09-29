@@ -25,6 +25,7 @@ import time
 from typing import Any
 
 import next_action as epic
+import ticks
 
 # GitHub and the existing selector use heterogeneous JSON objects.
 Json = dict[str, Any]
@@ -57,7 +58,9 @@ class Metrics:
         self.lines: list[str] = []
         self.names: set[str] = set()
 
-    def add(self, name: str, value: float, **labels: str) -> None:
+    def add(
+        self, name: str, value: float, *, kind: str = "gauge", **labels: str
+    ) -> None:
         name = f"epic_{name}"
         if not math.isfinite(value):
             raise ValueError("metric must be finite")
@@ -65,7 +68,7 @@ class Metrics:
             self.lines.extend(
                 [
                     f"# HELP {name} {name.removeprefix('epic_').replace('_', ' ')}",
-                    f"# TYPE {name} gauge",
+                    f"# TYPE {name} {kind}",
                 ]
             )
             self.names.add(name)
@@ -303,10 +306,13 @@ def runner_metrics(
     paused: bool,
     now: float,
     alive: Callable[[int], bool] = process_alive,
+    ledgers: dict[str, ticks.LogLedger] | None = None,
 ) -> str:
     metrics = Metrics()
     metrics.add("local_snapshot_timestamp_seconds", now)
     metrics.add("pause_requested", int(paused))
+    for kind, severity in ticks.SEVERITY.items():
+        metrics.add("outcome_severity", severity, outcome=kind)
     for agent in AGENTS:
         sample = Metrics()
         try:
@@ -327,6 +333,8 @@ def runner_metrics(
                 if live and elapsed > budget:
                     state = "overdue"
                 sample.add("tick_elapsed_seconds", elapsed, agent=agent)
+                # Whole runner budget: selector, model and kill grace.
+                sample.add("tick_budget_seconds", budget, agent=agent)
                 # Shell redirection creates this file before the selector runs.
                 action = read_object(lock / "action.json", allow_empty=True)
                 if action is not None:
@@ -368,6 +376,8 @@ def runner_metrics(
         except (OSError, ValueError, KeyError, TypeError, OverflowError):
             logging.warning("Cannot read %s runner metadata", agent)
             metrics.add("runner_read_success", 0, agent=agent)
+        if ledgers is not None:
+            ledger_metrics(metrics, ledgers[agent], now)
     # Deduplicate HELP/TYPE lines shared by the two runner samples.
     seen: set[str] = set()
     lines = []
@@ -378,6 +388,40 @@ def runner_metrics(
             seen.add(line)
         lines.append(line)
     return "\n".join(lines) + "\n"
+
+
+def ledger_metrics(metrics: Metrics, ledger: ticks.LogLedger, now: float) -> None:
+    """Read new log lines, persist the checkpoint, then publish the ledger."""
+    ok = True
+    try:
+        ledger.update(now)
+        ledger.save()
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        # Keep the last ledger; a missing or unreadable log is reported, not zeroed.
+        logging.warning("Cannot read %s tick ledger", ledger.agent)
+        ok = False
+    metrics.add("tick_ledger_read_success", int(ok), agent=ledger.agent)
+    sample = Metrics()
+    try:
+        ticks.export(sample, ledger, now)
+    except (ValueError, KeyError, TypeError, OverflowError):
+        logging.warning("Cannot export %s tick ledger", ledger.agent)
+        metrics.add("tick_ledger_export_success", 0, agent=ledger.agent)
+        return
+    metrics.lines.extend(sample.lines)
+    metrics.add("tick_ledger_export_success", 1, agent=ledger.agent)
+
+
+def make_ledgers(state_dir: Path, runtime: Path) -> dict[str, ticks.LogLedger]:
+    return {
+        agent: ticks.LogLedger(
+            agent,
+            state_dir / f"{agent}.log",
+            runtime / f"ticks-{agent}.json",
+            action_labels,
+        )
+        for agent in AGENTS
+    }
 
 
 def github_metrics(state: Json, now: float) -> str:
@@ -538,11 +582,17 @@ def run(args: argparse.Namespace) -> None:
 
     thread = threading.Thread(target=github_loop, daemon=True)
     thread.start()
+    ledgers = make_ledgers(args.state_dir, args.output.parent)
     try:
         while not stopped.is_set():
             atomic_write(
                 args.output / "runners.prom",
-                runner_metrics(args.state_dir, args.pause_file.exists(), time.time()),
+                runner_metrics(
+                    args.state_dir,
+                    args.pause_file.exists(),
+                    time.time(),
+                    ledgers=ledgers,
+                ),
             )
             stopped.wait(args.interval)
     finally:
@@ -590,7 +640,12 @@ def main() -> None:
         if args.once:
             atomic_write(
                 args.output / "runners.prom",
-                runner_metrics(args.state_dir, args.pause_file.exists(), time.time()),
+                runner_metrics(
+                    args.state_dir,
+                    args.pause_file.exists(),
+                    time.time(),
+                    ledgers=make_ledgers(args.state_dir, args.output.parent),
+                ),
             )
             if not collect_github(args.output, args.github_timeout):
                 raise SystemExit(1)

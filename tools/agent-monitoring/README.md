@@ -111,6 +111,16 @@ Grafana and Prometheus; no external notifications are sent.
   earlier tick or be absent. No error rate is inferred from this sample.
   Exit 75 is shown as "blocked": Codex's session ended with a valid blocked
   result and its runner waits before trying the same task again.
+- The tick ledger (`scripts/epic/ticks.py`) reads each runner log once in
+  full, then only new lines. It names each tick's outcome: ok, blocked,
+  timeout, killed, interrupted (no finish line) or error. Exit 75 is blocked
+  only if the runner logged a blocked result. A marker in the log cannot
+  prove who wrote it, so this data is best effort (`source="log"`).
+  Counters (`epic_ticks_total`) count only ticks that finish after the
+  collector started reading; older history fills the other tick panels. The
+  log has no finish time, so a tick's end is the time the collector read it
+  (up to 5 s late), or unknown for history. The checkpoint is
+  `runtime/ticks-<agent>.json`; delete it to rebuild (counters restart at 0).
 - Log lines get the time Alloy read them. On the first start, older lines all
   get that start time. Lines over 16 KB are cut.
 - Token costs, model utilization, per-task percentage and completion ETA are
