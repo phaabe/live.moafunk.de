@@ -721,6 +721,16 @@ file's end).
 | comment history had no memory bound | read one page at a time; over 1 000 comments the PR is reported as incomplete |
 | `--once` published local metrics before the handoff | it loads the saved clock, collects, then publishes |
 
+### PR 5 review, round 1
+
+| Codex finding | Change |
+|---|---|
+| P1: the preview could delete a stopped collector's checkpoints and metrics | own `runtime-preview/` dir (`AGENT_RUNTIME` in compose); refuses the collector's runtime and any unmarked dir |
+| failing alert trusted an unreadable tick history | also needs tick ledger read, events read and export success |
+| outcome timeline went on through a collector outage | local freshness guard per step |
+| retired agents stayed in the 24 h timeline | presence at the end of the range (`@ end()`) |
+| median tiles kept an expired value | the series only while delivery data is fresh at the range end; promtool checks the instant case, the range case was checked in the preview |
+
 ## Appendix — panel spec from design v2
 
 Grid is Grafana units (24 columns, 30 px rows). Colors: Claude `#E0875A`,

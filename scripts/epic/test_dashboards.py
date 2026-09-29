@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -196,6 +198,138 @@ class DashboardTest(unittest.TestCase):
                 for metric in re.findall(r"\bepic_\w+", expr):
                     with self.subTest(page=name, metric=metric):
                         self.assertIn(metric, published)
+
+
+def panel_expr(page: str, title: str) -> str:
+    [panel] = [p for p in panels(pages()[page]) if p["title"] == title]
+    return panel["targets"][0]["expr"]
+
+
+def docker_ready() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        return (
+            subprocess.run(
+                ["docker", "info"], capture_output=True, timeout=20
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@unittest.skipUnless(docker_ready(), "needs docker for promtool")
+class QuerySemanticsTest(unittest.TestCase):
+    """Codex review of https://github.com/phaabe/live.moafunk.de/pull/479:
+    the generated queries, evaluated by Prometheus's own test tool."""
+
+    def run_promtool(self, tests: list[dashboards.Json]) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "queries.test.yml"
+            # JSON is valid YAML.
+            path.write_text(json.dumps({"evaluation_interval": "1m", "tests": tests}))
+            result = subprocess.run(
+                ["docker", "run", "--rm", "-v", f"{directory}:/w:ro", "-w", "/w"]
+                + ["--entrypoint", "promtool", "prom/prometheus:v3.15.0"]
+                + ["test", "rules", "queries.test.yml"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_timeline_gaps_when_stale_and_hides_retired_agents(self) -> None:
+        expr = panel_expr("overview.json", "Tick outcomes · 24 h")
+        self.run_promtool(
+            [
+                {
+                    "interval": "1m",
+                    "input_series": [
+                        # The collector stops at 5 min; node-exporter keeps
+                        # serving the last file.
+                        {
+                            "series": "epic_local_snapshot_timestamp_seconds",
+                            "values": "0+60x5 300x10",
+                        },
+                        {
+                            "series": 'epic_tick_last_outcome{agent="claude"}',
+                            "values": "1x15",
+                        },
+                        {
+                            "series": 'epic_agent_presence{agent="claude"}',
+                            "values": "1x15",
+                        },
+                        {
+                            "series": 'epic_tick_last_outcome{agent="codex"}',
+                            "values": "6x15",
+                        },
+                        # codex is retired at 3 min.
+                        {
+                            "series": 'epic_agent_presence{agent="codex"}',
+                            "values": "2 2 2 0x12",
+                        },
+                    ],
+                    # promtool evaluates instant queries, so "@ end()" is the
+                    # evaluation time here; in Grafana it is the range end.
+                    "promql_expr_test": [
+                        {
+                            "expr": expr,
+                            "eval_time": "2m",
+                            "exp_samples": [
+                                {
+                                    "labels": 'epic_tick_last_outcome{agent="claude"}',
+                                    "value": 1,
+                                },
+                                {
+                                    "labels": 'epic_tick_last_outcome{agent="codex"}',
+                                    "value": 6,
+                                },
+                            ],
+                        },
+                        {
+                            "expr": expr,
+                            "eval_time": "4m",
+                            "exp_samples": [
+                                {
+                                    "labels": 'epic_tick_last_outcome{agent="claude"}',
+                                    "value": 1,
+                                }
+                            ],
+                        },
+                        {"expr": expr, "eval_time": "10m", "exp_samples": []},
+                    ],
+                }
+            ]
+        )
+
+    def test_medians_show_nothing_once_delivery_data_is_stale(self) -> None:
+        expr = panel_expr("delivery.json", "Median review rounds")
+        self.run_promtool(
+            [
+                {
+                    "interval": "1m",
+                    "input_series": [
+                        # Delivery collection stops at 5 min.
+                        {
+                            "series": "epic_delivery_snapshot_timestamp_seconds",
+                            "values": "0+60x5 300x20",
+                        },
+                        {"series": "epic_review_rounds_median", "values": "2x25"},
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": expr,
+                            "eval_time": "5m",
+                            "exp_samples": [
+                                {"labels": "epic_review_rounds_median", "value": 2}
+                            ],
+                        },
+                        {"expr": expr, "eval_time": "20m", "exp_samples": []},
+                    ],
+                }
+            ]
+        )
 
 
 if __name__ == "__main__":

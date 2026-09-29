@@ -1534,7 +1534,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tick_last_outcome and on(agent) (epic_agent_presence > 0)",
+          "expr": "epic_tick_last_outcome and on(agent) (epic_agent_presence > 0) and on(agent) (epic_agent_presence @ end() > 0) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
           "instant": false,
           "range": true,
           "legendFormat": "{{agent}}"

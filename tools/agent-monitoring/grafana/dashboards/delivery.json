@@ -137,7 +137,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_review_rounds_median and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)",
+          "expr": "epic_review_rounds_median and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600) and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds < 600)[1m:] @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -204,7 +204,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_time_to_merge_median_seconds and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)",
+          "expr": "epic_time_to_merge_median_seconds and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600) and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds < 600)[1m:] @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""

@@ -12,11 +12,13 @@ state_dir="${AGENT_PREVIEW_STATE_DIR:-${TMPDIR:-/tmp}/agent-monitoring-preview/s
 export AGENT_GRAFANA_PORT="${AGENT_GRAFANA_PORT:-13001}"
 export AGENT_PROMETHEUS_PORT="${AGENT_PROMETHEUS_PORT:-19091}"
 cd "$repo_root"
-mkdir -p "$state_dir" tools/agent-monitoring/runtime/metrics tools/agent-monitoring/runtime/alloy
+# Its own runtime dir: the collector's checkpoints and metrics stay untouched.
+output=tools/agent-monitoring/runtime-preview/metrics
+mkdir -p "$state_dir"
 # Build the state first, so Alloy mounts a dir that already has the logs.
-python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir" --once
+python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir" --output "$output" --once
 # Alloy reads the fixture logs, not the real ones.
-EPIC_STATE_DIR="$state_dir" docker compose -p agent-monitoring-preview \
+EPIC_STATE_DIR="$state_dir" AGENT_RUNTIME=./runtime-preview docker compose -p agent-monitoring-preview \
     -f tools/agent-monitoring/compose.yaml up -d
 printf 'Preview: http://127.0.0.1:%s (scenario %s)\n' "$AGENT_GRAFANA_PORT" "$scenario"
-exec python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir"
+exec python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir" --output "$output"

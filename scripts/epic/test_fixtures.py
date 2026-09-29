@@ -74,5 +74,42 @@ class FixturesTest(unittest.TestCase):
         self.assertEqual([p.name for p in (state / "agents").iterdir()], ["claude"])
 
 
+class PreviewRuntimeTest(unittest.TestCase):
+    """Codex review of https://github.com/phaabe/live.moafunk.de/pull/479."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+
+    def test_a_stopped_collectors_runtime_keeps_its_checkpoints(self) -> None:
+        runtime = self.root / "runtime"
+        (runtime / "metrics").mkdir(parents=True)
+        (runtime / "ticks-claude.json").write_text("{}")
+        (runtime / "metrics" / "runners.prom").write_text("real\n")
+        with self.assertRaises(SystemExit):
+            fixtures.prepare_runtime(runtime)
+        self.assertEqual((runtime / "ticks-claude.json").read_text(), "{}")
+        self.assertEqual((runtime / "metrics" / "runners.prom").read_text(), "real\n")
+
+    def test_the_collectors_runtime_path_is_refused(self) -> None:
+        runtime = self.root / "tools/agent-monitoring/runtime"
+        with patch.object(fixtures, "REAL_RUNTIME", runtime):
+            with self.assertRaises(SystemExit):
+                fixtures.prepare_runtime(runtime)
+        self.assertFalse(runtime.exists())
+
+    def test_a_preview_runtime_is_cleaned_and_locked(self) -> None:
+        runtime = self.root / "runtime-preview"
+        lock = fixtures.prepare_runtime(runtime)
+        self.addCleanup(lock.close)
+        (runtime / "ticks-claude.json").write_text("{}")
+        with self.assertRaises(SystemExit):
+            fixtures.prepare_runtime(runtime)  # the lock is held
+        lock.close()
+        fixtures.prepare_runtime(runtime).close()
+        self.assertFalse((runtime / "ticks-claude.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

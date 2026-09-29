@@ -7,7 +7,8 @@ services:
       - --collector.textfile
       - --collector.textfile.directory=/metrics
     volumes:
-      - ./runtime/metrics:/metrics:ro
+      # preview.sh sets AGENT_RUNTIME to its own runtime-preview dir.
+      - ${AGENT_RUNTIME:-./runtime}/metrics:/metrics:ro
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -67,7 +68,7 @@ services:
       # Runner logs contain model transcripts; they stay on this Mac.
       - ${EPIC_STATE_DIR:-${HOME}/.local/state/epic-loop}:/logs:ro
       # The collector's list of logs to ship (see alloy.alloy).
-      - ./runtime/alloy:/targets:ro
+      - ${AGENT_RUNTIME:-./runtime}/alloy:/targets:ro
       - alloy-data:/var/lib/alloy
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

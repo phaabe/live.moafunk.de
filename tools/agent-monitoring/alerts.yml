@@ -21,10 +21,14 @@ groups:
           summary: Runner lock or metadata needs inspection
       # Per agent: a new agent is covered without a rule change. All are
       # silent while local data is stale; AgentCollectorStale reports that.
+      # Failures count only while the tick history is read and exported.
       - alert: AgentFailingRepeatedly
         expr: >-
           epic_tick_consecutive_failures >= 3
           and on(agent) epic_runner_read_success == 1
+          and on(agent) epic_tick_ledger_read_success == 1
+          and on(agent) epic_tick_events_read_success == 1
+          and on(agent) epic_tick_ledger_export_success == 1
           and on() (time() - epic_local_snapshot_timestamp_seconds < 30)
         for: 1m
         labels: {severity: warning}

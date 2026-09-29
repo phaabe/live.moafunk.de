@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import shutil
 import time
+from typing import BinaryIO
 
 import agents
 import delivery
@@ -347,6 +348,41 @@ def publish_remote(output: Path, now: float, stale: bool) -> None:
     monitor.atomic_write(output / "github-health.prom", health.render())
 
 
+REAL_RUNTIME = Path(__file__).resolve().parents[2] / "tools/agent-monitoring/runtime"
+
+
+def prepare_runtime(runtime: Path) -> BinaryIO:
+    """Lock and empty a preview runtime dir; return the held lock.
+
+    The collector's runtime dir holds checkpoints and the metrics the real
+    stack reads, so only a dir marked `.preview` (or a new one) is used.
+    """
+    if runtime.resolve() == REAL_RUNTIME.resolve():
+        raise SystemExit("refusing the collector's runtime dir; use runtime-preview")
+    runtime.mkdir(parents=True, exist_ok=True)
+    marker = runtime / ".preview"
+    if not marker.exists():
+        if any(runtime.iterdir()):
+            raise SystemExit(f"{runtime} is not a preview runtime dir; refusing it")
+        marker.write_text("made by scripts/epic/fixtures.py\n")
+    lock = (runtime / "collector.lock").open("ab")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        raise SystemExit("a collector owns this runtime dir; stop it first") from None
+    # Metrics and checkpoints of an earlier scenario.
+    for pattern in (
+        "metrics/*.prom",
+        "ticks-*.json",
+        "events-*.json",
+        "permissions-*.json",
+    ):
+        for old in runtime.glob(pattern):
+            old.unlink()
+    return lock
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -354,30 +390,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("scenario", choices=SCENARIOS)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument(
-        "--output", type=Path, default=Path("tools/agent-monitoring/runtime/metrics")
+        "--output",
+        type=Path,
+        default=Path("tools/agent-monitoring/runtime-preview/metrics"),
     )
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
     specs, paused = scenario(args.scenario)
     runtime = args.output.parent
-    runtime.mkdir(parents=True, exist_ok=True)
     # Never next to a real collector: it owns this lock while it runs.
-    lock = (runtime / "collector.lock").open("a")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        parser.error("a collector owns this output directory; stop it first")
+    _lock = prepare_runtime(runtime)  # held while the preview runs
     now = time.time()
     build_state(args.state_dir, specs, now)
     pause = args.state_dir / ".epic-pause"
     if paused:
         pause.write_text("fixture\n")
     args.output.mkdir(parents=True, exist_ok=True)
-    for old in args.output.glob("*.prom"):
-        old.unlink()
-    for pattern in ("ticks-*.json", "events-*.json", "permissions-*.json"):
-        for old in runtime.glob(pattern):
-            old.unlink()  # checkpoints of an earlier scenario
     ledgers = monitor.Ledgers(runtime)
     local = argparse.Namespace(
         state_dir=args.state_dir, pause_file=pause, output=args.output

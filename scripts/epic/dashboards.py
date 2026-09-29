@@ -27,6 +27,12 @@ LEGACY_PAGES = {"claude": "Claude", "codex": "Codex"}
 LOCAL = " and on() (time() - epic_local_snapshot_timestamp_seconds < 30)"
 GITHUB = " and on() (time() - epic_github_snapshot_timestamp_seconds < 300)"
 DELIVERY = " and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)"
+# For sparklines: the whole series only while delivery data is fresh now, so
+# the "last value" reducer never shows an expired number.
+FRESH_AT_END = (
+    " and on() last_over_time((time() - epic_delivery_snapshot_timestamp_seconds"
+    " < 600)[1m:] @ end())"
+)
 
 # Design v2 colors.
 KIND = {"claude": "#E0875A", "codex": "#35C2C2"}
@@ -704,7 +710,10 @@ def outcome_timeline() -> Json:
         "hideTimeOverride": True,
         "targets": [
             ranged(
-                "epic_tick_last_outcome and on(agent) (epic_agent_presence > 0)",
+                # A gap while the collector is down; agents retired or gone
+                # by the end of the range are hidden.
+                "epic_tick_last_outcome and on(agent) (epic_agent_presence > 0)"
+                " and on(agent) (epic_agent_presence @ end() > 0)" + LOCAL,
                 legend="{{agent}}",
             )
         ],
@@ -1326,7 +1335,7 @@ def delivery_page() -> Json:
     board.add(
         stat(
             "Median review rounds",
-            [ranged(f"epic_review_rounds_median{DELIVERY}")],
+            [ranged(f"epic_review_rounds_median{DELIVERY}{FRESH_AT_END}")],
             thresholds=steps((None, NEUTRAL), (2.5, LOOK_SOON)),
             graph="area",
             time_from="7d",
@@ -1341,7 +1350,7 @@ def delivery_page() -> Json:
     board.add(
         stat(
             "Median time to merge",
-            [ranged(f"epic_time_to_merge_median_seconds{DELIVERY}")],
+            [ranged(f"epic_time_to_merge_median_seconds{DELIVERY}{FRESH_AT_END}")],
             unit="s",
             thresholds=steps((None, NEUTRAL), (6 * 3600, LOOK_SOON)),
             graph="area",
