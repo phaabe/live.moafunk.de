@@ -55,6 +55,9 @@ from github_quota import (
 REPO = "phaabe/live.moafunk.de"
 PROJECT_OWNER = "anneoneone"
 PROJECT_NUMBER = "2"
+PROJECT_API = f"users/{PROJECT_OWNER}/projectsV2/{PROJECT_NUMBER}"
+# Board fields that fetch_state() callers read (selector, monitor, delivery).
+PROJECT_FIELDS = ("Status", "Wave", "Executor", "Labels", "Area", "Level")
 BASES = ("dev/312-interim", "dev/streaming-architecture")
 AGENTS = ("Claude", "Codex")
 MAX_ROUNDS = 3
@@ -470,6 +473,60 @@ def gh_json(args: list[str]) -> Any:
     return json.loads(run_gh(args))
 
 
+def rest_rows(endpoint: str) -> list[dict[str, Any]]:
+    """All rows of a paginated REST list. A failed page raises; no partial list."""
+    pages = gh_json(["api", "--paginate", "--slurp", endpoint])
+    return [row for page in pages for row in page]
+
+
+def item_from_rest(row: dict[str, Any]) -> dict[str, Any]:
+    """Map a Projects REST item to the `gh project item-list --format json` shape.
+
+    Single-select values stay strings (wave "0" must not become 0); unset is None.
+    """
+    values = {f.get("name"): f.get("value") for f in row.get("fields") or []}
+
+    def single(name: str) -> str | None:
+        value = values.get(name)
+        return None if value is None else str(value["name"]["raw"])
+
+    source = row.get("content") or {}
+    content: dict[str, Any] = {"type": row.get("content_type")}
+    for key in ("number", "title", "body"):
+        if key in source:
+            content[key] = source[key]
+    # REST `url` is the API address; monitor.py matches the web address.
+    if source.get("html_url"):
+        content["url"] = source["html_url"]
+    return {
+        "id": row.get("node_id"),
+        "title": source.get("title"),
+        "content": content,
+        "status": single("Status"),
+        "wave": single("Wave"),
+        "executor": single("Executor"),
+        "area": single("Area"),
+        "level": single("Level"),
+        "labels": [lbl["name"] for lbl in values.get("Labels") or []],
+    }
+
+
+def project_items() -> list[dict[str, Any]]:
+    """Board items via REST. `gh project item-list` cost 203 GraphQL points a tick."""
+    fields = {
+        f.get("name"): f.get("id")
+        for f in rest_rows(f"{PROJECT_API}/fields?per_page=100")
+    }
+    missing = [name for name in PROJECT_FIELDS if fields.get(name) is None]
+    if missing:
+        raise ValueError(f"project board lacks fields: {', '.join(missing)}")
+    query = "&".join(f"fields[]={fields[name]}" for name in PROJECT_FIELDS)
+    return [
+        item_from_rest(row)
+        for row in rest_rows(f"{PROJECT_API}/items?per_page=100&{query}")
+    ]
+
+
 def fetch_state() -> dict[str, Any]:
     fields = (
         "number,title,body,baseRefName,headRefName,headRefOid,isDraft,labels,"
@@ -516,19 +573,7 @@ def fetch_state() -> dict[str, Any]:
             ["pr", "list", "--repo", REPO, "--state", "merged", "--base", base]
             + ["--json", "number,body", "--limit", "300"]
         )
-    items = gh_json(
-        [
-            "project",
-            "item-list",
-            PROJECT_NUMBER,
-            "--owner",
-            PROJECT_OWNER,
-            "--format",
-            "json",
-            "--limit",
-            "500",
-        ]
-    )["items"]
+    items = project_items()
     for item in items:
         # Only Ready issues need their readiness comments ("Start after ...").
         content = item.get("content") or {}
