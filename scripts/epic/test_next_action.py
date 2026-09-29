@@ -6,7 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from next_action import MAX_ROUNDS, comments_from_rest, decide, read_focus, status
+from next_action import (
+    MAX_ROUNDS,
+    checks_state,
+    comments_from_rest,
+    decide,
+    read_focus,
+    status,
+)
 
 A = "a" * 40
 B = "b" * 40
@@ -307,6 +314,49 @@ class GuardCheckTest(unittest.TestCase):
         rollup = [self.FAILED_GUARD, {"name": "backend-ci", "conclusion": "FAILURE"}]
         p = pr(1, "Claude", statusCheckRollup=rollup)
         self.assertEqual(first("Claude", [p]).action, "fix-checks")
+
+    def test_no_checks_reported_blocks_merge(self) -> None:
+        # Checks that have not started yet are not green.
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            statusCheckRollup=[],
+        )
+        self.assertEqual(first("Claude", [p]).action, "idle")
+
+    def test_failed_runner_job_does_not_block_merge(self) -> None:
+        # The runner fails for other PRs; the epic-guard status is the gate.
+        rollup = [
+            {"context": "epic-guard", "state": "SUCCESS"},
+            {"name": "backend-ci", "conclusion": "SUCCESS"},
+            {"name": "epic-guard-runner", "conclusion": "FAILURE"},
+        ]
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            statusCheckRollup=rollup,
+        )
+        self.assertEqual(first("Claude", [p]).action, "merge")
+
+    def test_failed_runner_job_is_no_fix_checks(self) -> None:
+        rollup = [
+            {"name": "backend-ci", "conclusion": "SUCCESS"},
+            {"name": "epic-guard-runner", "conclusion": "FAILURE"},
+        ]
+        p = pr(1, "Claude", statusCheckRollup=rollup)
+        self.assertEqual(checks_state(p), "green")
+        self.assertNotEqual(first("Claude", [p]).action, "fix-checks")
+
+    def test_only_runner_job_is_pending(self) -> None:
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            statusCheckRollup=[{"name": "epic-guard-runner", "conclusion": "SUCCESS"}],
+        )
+        self.assertEqual(first("Claude", [p]).action, "idle")
 
 
 class FocusTest(unittest.TestCase):
