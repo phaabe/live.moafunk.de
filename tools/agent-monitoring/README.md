@@ -144,6 +144,20 @@ Grafana and Prometheus; no external notifications are sent.
   (up to 5 s late), or unknown for history. The checkpoint is
   `runtime/ticks-<agent>.json` (`ticks-agents-<id>.json` for registered
   agents); delete it to rebuild (counters restart at 0).
+- Runners also write `<kind>-ticks.jsonl`: one start and one finish event per
+  tick, with the outcome and stage the runner knows (a quota stop or a
+  blocked result is "blocked", not "error") and the real finish time. Once a
+  runner writes events, they replace the log as the counted source
+  (`source="events"` for Codex; `events_unverified` for Claude, whose model
+  might write that file). Invalid lines are counted in
+  `epic_tick_events_rejected_total` and skipped.
+- `epic_backoff_info` lists Codex retry delays that are still active (value =
+  when the delay ends), and whether the PR head is still current. The reason
+  text is never exported.
+- `epic_permission_decisions_total` counts the Claude permission gate's allow
+  and deny answers. Its log is also a Loki stream (`stream="permissions"`,
+  label `decision`); lines older than 167 hours are not sent (Loki rejects
+  lines older than a week).
 - An agent is late when no tick started for longer than twice its interval
   plus its tick budget. A pause never makes an agent late.
 - Log lines get the time Alloy read them. On the first start, older lines all

@@ -186,9 +186,9 @@ A tick runs from start to finish of one runner invocation that holds the lock.
 Outcome enum, severity order for "worst": ok 1 < blocked 2 < timeout 3 <
 killed 4 < interrupted 5 < error 6.
 
-Phase enum (where a failed tick stopped), runner-owned, replaces free-text
-reasons: `lock`, `select`, `gate`, `backoff`, `model`, `result`, `verify`,
-`record`, `unknown`.
+Phase enum (the stage a tick ended in), runner-owned, replaces free-text
+reasons: `lock`, `refresh`, `select`, `quota`, `backoff`, `gate`, `model`,
+`result`, `verify`, `record`, `unknown`.
 
 ### Events file (preferred source, PR 3)
 
@@ -202,10 +202,16 @@ state dir (`agents/<id>/` for registered agents). Each line is one atomic `print
 ```
 
 - `outcome` and `phase` are set by the script, which knows each path:
-  Codex `record` returns 3 → `blocked`, 75 → `error`/`result`; selector
-  failure → `error`/`select`; `run_bounded` 124/143 → `timeout`/`killed`.
-- `tokens` (Codex): the runner reads the last `tokens used` count from the
-  session's own captured output (numeric only). Best effort; `null` if absent.
+  Codex blocked result → `blocked`/`result`; invalid result →
+  `error`/`result`; Claude GitHub quota stop → `blocked`/`quota`; selector
+  failure → `error`/`select`; `run_bounded` 124 → `timeout`, 129/130/143 →
+  `killed`. Written by `scripts/epic/tick_events.py`; the finish event is
+  written before the lock is released.
+- The finish time is the event's `at`, so event ticks have a real duration.
+- Once an agent has events, its log ledger stops counting; history before
+  the first event still comes from the log.
+- `tokens` (Codex): the last `tokens used` count printed after this tick's
+  start offset in its log (numeric only). Best effort; `null` if absent.
 - Who can write the file: Codex's sandbox write roots do not include
   `~/.local/state` (seen in the session header). For Claude this is **not**
   proven: `permission_gate.py` only answers prompts; it does not block file
@@ -368,14 +374,15 @@ Same as v3.2 PR 2, with per-agent paths:
   older ones. Tick `source` label: `events`, `events_unverified` or `log`.
 - `epic_backoff_info{agent, target, head, estimated, current_head}`: active
   entries only; value = `until`. `estimated="true"` for old entries without
-  `until`. `current_head` = `true`/`false`/`unknown` from the last successful
-  GitHub snapshot. The latest entry per `(target, head)` wins.
+  `until` (runner default 900 s). `current_head` = `true`/`false`/`unknown`
+  from the PR heads of the last successful GitHub poll (held in memory; the
+  runner loop reads them). Keys are unique per `(target, head)`.
 - `epic_permission_decisions_total{agent, decision}` counter from an
   incremental read of the agent's permissions log (same checkpoint rules).
   Only for kinds with a permission gate.
-- Alloy: permissions logs as a second stream per agent, label
-  `stream="permissions"` (legacy `claude-permissions.log` gets
-  `agent="claude"`). `stage.regex` `^(?P<ts>\S+) (?P<decision>allow|deny) ` →
+- Alloy: permissions logs as a second stream per agent, listed by the
+  collector with `stream="permissions"`. `loki.process` with a
+  `stage.match` on that stream: `stage.regex` `^(?P<ts>\S+) (?P<decision>allow|deny) ` →
   `stage.timestamp` (RFC3339) → `stage.labels` (`decision`) → `stage.drop`
   `older_than = "167h"` (Loki rejects lines older than one week).
   Runner-log queries add `stream!="permissions"`.
