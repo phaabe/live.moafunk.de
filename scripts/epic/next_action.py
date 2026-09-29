@@ -18,6 +18,8 @@ one, get actions. Everything else is frozen. No file or an empty file: all.
   resolve-conflict  my PR conflicts with its base
   review    the other agent's ready PR has no verdict from me for its head
   continue  my draft PR, or my In progress leaf without a PR
+  adopt     a focus PR with no owner line whose files route to me (routing.py);
+            only when EPIC_FOCUS_ACTIONS lists `adopt`
   claim     a Ready leaf with Executor = me, after its "Start after" leaves
             or tickets and the leaves before it in the epic's batch order
   idle      nothing to do
@@ -30,6 +32,7 @@ never makes a PR or issue eligible.
 
 Usage:
   next_action.py --agent claude|codex        one JSON action
+  next_action.py --agent ... --candidates    all actions, one JSON per line
   next_action.py --status                    all pending actions, both agents
   next_action.py ... --state-file state.json use saved state (tests, dry runs)
   next_action.py ... --focus project::Stream  override ~/.epic-focus (repeatable)
@@ -41,13 +44,16 @@ Exit codes: 0 action printed, 3 a GraphQL quota wait is stored (no GitHub call),
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+from urllib.parse import quote
 
 from github_quota import (
     DEFERRED,
@@ -57,6 +63,9 @@ from github_quota import (
     run_gh,
     stop_on_quota,
 )
+
+if TYPE_CHECKING:
+    from routing import Route
 
 REPO = "phaabe/live.moafunk.de"
 PROJECT_OWNER = "anneoneone"
@@ -71,6 +80,13 @@ MAX_OPEN_PRS = 2
 PAUSE_FILE = Path.home() / ".epic-pause"
 FOCUS_FILE = Path.home() / ".epic-focus"
 ESCALATION_LABEL = "needs-anton"
+# New actions are emitted only when listed in EPIC_FOCUS_ACTIONS (comma list).
+# One is added in both runners after both its Claude and Codex leaves merged.
+NEW_ACTIONS = frozenset({"adopt"})
+ACTIONS_ENV = "EPIC_FOCUS_ACTIONS"
+# PR body lines `adopt` adds, at line start.
+OWNER_KEYS = ("Epic", "Executor", "Lane", "Reviewer", "Leaf IDs", "Issue")
+OWNER_KEY_LINE = re.compile(rf"^(?:{'|'.join(OWNER_KEYS)}):")
 # Rank per priority label, lower first. No label counts as medium.
 PRIORITIES = {"priority::high": 0, "priority::medium": 1, "priority::low": 2}
 DEFAULT_PRIORITY = PRIORITIES["priority::medium"]
@@ -124,6 +140,12 @@ class Action:
     sha: str | None = None
     issue: str | None = None
     comments: list[str] = field(default_factory=list)
+    # The target's `updated_at` at selection. The runner skips the action when
+    # it changed before the target lock was taken (tick_gate.py check).
+    updated_at: str | None = None
+    # adopt only: the lane to write, and the hash of the body it must keep.
+    lane: str | None = None
+    body_sha: str | None = None
     # For --status only. Kept out of the JSON so runner fingerprints stay stable.
     priority: int = DEFAULT_PRIORITY
 
@@ -153,6 +175,25 @@ def pr_author(pr: dict[str, Any]) -> str | None:
         return m.group(1)
     m = REVIEWER_LINE.search(body)
     return other(m.group(1)) if m else None
+
+
+def body_digest(body: str) -> str:
+    """SHA-256 of a PR body without the `adopt` lines, blank lines and line ends.
+
+    `adopt` must keep the original body: this digest is equal before and after.
+    """
+    kept = [
+        line.rstrip()
+        for line in (body or "").splitlines()
+        if line.strip() and not OWNER_KEY_LINE.match(line)
+    ]
+    return hashlib.sha256("\n".join(kept).encode()).hexdigest()
+
+
+def read_actions(value: str | None) -> frozenset[str]:
+    """New actions enabled by EPIC_FOCUS_ACTIONS; unknown names are ignored."""
+    names = {part.strip() for part in (value or "").split(",")}
+    return frozenset(names & NEW_ACTIONS)
 
 
 def verdicts(pr: dict[str, Any], by: str) -> list[dict[str, Any]]:
@@ -309,18 +350,46 @@ def in_focus(
     return bool(pr_labels(pr, issue_labels) & focus)
 
 
+def board_executors(state: dict[str, Any]) -> dict[int, str]:
+    """Executor project field of PRs on the board, by PR number."""
+    return {
+        i["content"]["number"]: i["executor"]
+        for i in state.get("items", [])
+        if (i.get("content") or {}).get("type") == "PullRequest"
+        and i.get("executor") in AGENTS
+    }
+
+
+def pr_route(
+    pr: dict[str, Any], state: dict[str, Any], rules: list[dict[str, Any]] | None
+) -> Route:
+    """Routing for a PR without an owner line: board Executor, else file owners."""
+    # Imported here: the Codex runner tests copy this file without routing.py.
+    from routing import load_rules, route
+
+    executor = board_executors(state).get(pr["number"])
+    files = pr.get("files")
+    if executor or not files:
+        return route(executor, files, [], "adopt")
+    return route(None, files, load_rules() if rules is None else rules, "adopt")
+
+
 def decide(
     agent: str,
     state: dict[str, Any],
     paused: bool = False,
     include_waiting: bool = False,
     focus: frozenset[str] = frozenset(),
+    enabled: frozenset[str] = frozenset(),
+    rules: list[dict[str, Any]] | None = None,
 ) -> list[Action]:
     """All actions for the agent, highest priority first. Never empty.
 
     `include_waiting` adds `wait` entries (Ready leaves blocked by "Start after")
     for --status; they are never returned as the action to do.
     `focus` limits actions to issues and PRs with one of these labels.
+    `enabled` lists the new actions (NEW_ACTIONS) that may be emitted.
+    `rules` are the lane map's file rules (default: .github/epic-lanes.yml).
     """
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
@@ -360,7 +429,15 @@ def decide(
         n = p["number"]
         add(
             kind,
-            Action(kind, reason, pr=n, sha=p["headRefOid"], priority=rank, **kw),
+            Action(
+                kind,
+                reason,
+                pr=n,
+                sha=p["headRefOid"],
+                priority=rank,
+                updated_at=p.get("updatedAt"),
+                **kw,
+            ),
             n,
         )
 
@@ -413,6 +490,21 @@ def decide(
                 p, "review", f"{peer}'s PR has no verdict from {agent} for its head"
             )
 
+    # A focus PR without an owner line: only the routed agent adopts it.
+    if focus and "adopt" in enabled:
+        for p in prs:
+            if pr_author(p) is not None:
+                continue
+            routed = pr_route(p, state, rules)
+            if routed.agent == agent:
+                pr_action(
+                    p,
+                    "adopt",
+                    f"no owner line; {routed.reason}",
+                    lane=routed.lane,
+                    body_sha=body_digest(p.get("body") or ""),
+                )
+
     linked = set()
     for p in all_prs:
         linked |= issue_numbers(p.get("body") or "")
@@ -442,6 +534,7 @@ def decide(
                     "my In progress leaf has no PR yet",
                     issue=url,
                     priority=rank,
+                    updated_at=i["content"].get("updated_at"),
                 ),
                 number,
             )
@@ -463,7 +556,11 @@ def decide(
                 add(
                     "claim",
                     Action(
-                        "claim", "Ready leaf assigned to me", issue=url, priority=rank
+                        "claim",
+                        "Ready leaf assigned to me",
+                        issue=url,
+                        priority=rank,
+                        updated_at=i["content"].get("updated_at"),
                     ),
                     wave,
                     number,
@@ -477,6 +574,7 @@ def decide(
         "resolve-conflict",
         "review",
         "continue",
+        "adopt",
         "claim",
     ]
     if include_waiting:
@@ -540,7 +638,7 @@ def item_from_rest(row: dict[str, Any]) -> dict[str, Any]:
 
     source = row.get("content") or {}
     content: dict[str, Any] = {"type": row.get("content_type")}
-    for key in ("number", "title", "body"):
+    for key in ("number", "title", "body", "updated_at"):
         if key in source:
             content[key] = source[key]
     # REST `url` is the API address; monitor.py matches the web address.
@@ -575,10 +673,56 @@ def project_items() -> list[dict[str, Any]]:
     ]
 
 
-def fetch_state() -> dict[str, Any]:
+class QuotaWait(Exception):
+    """The other runner stored a GraphQL quota wait during this read."""
+
+
+def search_issues(
+    label: str, fetch: Callable[[list[str]], Any] | None = None
+) -> list[dict[str, Any]]:
+    """Open issues with this label, all pages. Partial results raise."""
+    fetch = fetch or gh_json
+    query = quote(f'repo:{REPO} is:issue is:open label:"{label}"')
+    pages = fetch(
+        ["api", "--paginate", "--slurp", f"search/issues?q={query}&per_page=100"]
+    )
+    if any(page.get("incomplete_results") for page in pages):
+        raise ValueError(f"search for label {label} is incomplete; retry")
+    return [row for page in pages for row in page.get("items") or []]
+
+
+def focus_issues(
+    focus: frozenset[str],
+    fetch: Callable[[list[str]], Any] | None = None,
+    now: Callable[[], float] = time.time,
+) -> list[dict[str, Any]]:
+    """Open issues with a focus label, on the board or not. One entry per issue.
+
+    Checks the shared quota wait before each search: the other runner can
+    store one at any time.
+    """
+    found: dict[int, dict[str, Any]] = {}
+    for label in sorted(focus):
+        wait, retry_at = quota_check(STATE_DIR, now())
+        if wait == DEFERRED:
+            raise QuotaWait(retry_at)
+        for row in search_issues(label, fetch):
+            if "pull_request" in row or row["number"] in found:
+                continue
+            found[row["number"]] = {
+                "number": row["number"],
+                "url": row.get("html_url") or issue_url(row["number"]),
+                "title": row.get("title"),
+                "labels": sorted(labels(row)),
+                "updated_at": row.get("updated_at"),
+            }
+    return [found[n] for n in sorted(found)]
+
+
+def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
     fields = (
         "number,title,body,baseRefName,headRefName,headRefOid,isDraft,labels,"
-        "mergeable,statusCheckRollup"
+        "mergeable,statusCheckRollup,updatedAt"
     )
     prs: list[dict[str, Any]] = []
     for base in BASES:
@@ -615,6 +759,12 @@ def fetch_state() -> dict[str, Any]:
         pr["comments"] = comments_from_rest(
             [row for page in pages for row in page], count
         )
+        # Routing of a PR without an owner line needs its files.
+        if pr.get("baseRefName") in BASES and pr_author(pr) is None:
+            pr["files"] = sorted(
+                row["filename"]
+                for row in rest_rows(f"repos/{REPO}/pulls/{n}/files?per_page=100")
+            )
     merged: list[dict[str, Any]] = []
     for base in BASES:
         merged += gh_json(
@@ -662,29 +812,129 @@ def fetch_state() -> dict[str, Any]:
         "linked_labels": linked_labels,
         "merged_prs": merged,
         "batch_order": batch_order,
+        # Focus issues also off the board, so --status can name them.
+        "focus_issues": focus_issues(focus) if focus else [],
     }
 
 
+def pr_reason(
+    agent: str,
+    p: dict[str, Any],
+    state: dict[str, Any],
+    enabled: frozenset[str],
+    rules: list[dict[str, Any]] | None,
+) -> str:
+    """Why a focus PR gets no action from this agent."""
+    if ESCALATION_LABEL in labels(p):
+        return ESCALATION_LABEL
+    author = pr_author(p)
+    if author is None:
+        routed = pr_route(p, state, rules)
+        if routed.agent is None:
+            return f"no owner; {routed.reason}"
+        if routed.agent != agent:
+            return f"no owner; routed to {routed.agent}"
+        if "adopt" not in enabled:
+            return f"no owner; adopt is not in {ACTIONS_ENV}"
+        return "no owner"
+    if p.get("isDraft"):
+        return f"draft of {author}"
+    if author == agent:
+        return f"waiting for {other(agent)}'s review or checks"
+    return f"reviewed by {agent} for the current head"
+
+
+def issue_reason(
+    agent: str, number: int, item: dict[str, Any] | None, linked: set[int]
+) -> str:
+    """Why a focus issue gets no action from this agent."""
+    if item is None:
+        return "not on board"
+    if ESCALATION_LABEL in labels(item):
+        return ESCALATION_LABEL
+    if number in linked:
+        return "has an open PR"
+    if item.get("executor") != agent:
+        return f"Executor is {item.get('executor') or 'not set'}"
+    if item.get("status") not in ("Ready", "In progress"):
+        return f"blocked: status {item.get('status') or 'not set'}"
+    return "blocked: other work to continue or two open PRs"
+
+
+def no_action(
+    agent: str,
+    state: dict[str, Any],
+    focus: frozenset[str],
+    enabled: frozenset[str],
+    rules: list[dict[str, Any]] | None,
+    acted: list[Action],
+) -> list[tuple[str, str]]:
+    """(target, reason) for each focus item this agent has no action for."""
+    issue_labels = {
+        int(n): set(names) for n, names in (state.get("linked_labels") or {}).items()
+    }
+    board = {
+        i["content"]["number"]: i
+        for i in state.get("items", [])
+        if (i.get("content") or {}).get("type") == "Issue"
+        and ISSUE_URL.fullmatch(i["content"].get("url") or "")
+    }
+    issue_labels.update({n: labels(i) for n, i in board.items()})
+    prs = [p for p in state.get("prs", []) if p.get("baseRefName") in BASES]
+    linked = {n for p in prs for n in issue_numbers(p.get("body") or "")}
+    acted_prs = {a.pr for a in acted if a.pr}
+    acted_issues = {a.issue for a in acted if a.issue}
+    found = []
+    for p in sorted(prs, key=lambda p: p["number"]):
+        if p["number"] not in acted_prs and in_focus(focus, p, issue_labels):
+            found.append(
+                (f"PR {p['number']}", pr_reason(agent, p, state, enabled, rules))
+            )
+    issues = {n: issue_url(n) for n, i in board.items() if labels(i) & focus}
+    issues.update({i["number"]: i["url"] for i in state.get("focus_issues") or []})
+    for n in sorted(issues):
+        if issues[n] not in acted_issues:
+            found.append((issues[n], issue_reason(agent, n, board.get(n), linked)))
+    return found
+
+
 def status(
-    state: dict[str, Any], paused: bool, focus: frozenset[str] = frozenset()
+    state: dict[str, Any],
+    paused: bool,
+    focus: frozenset[str] = frozenset(),
+    enabled: frozenset[str] = frozenset(),
+    rules: list[dict[str, Any]] | None = None,
 ) -> str:
     lines = [
         f"Paused: {'yes' if paused else 'no'}",
         f"Focus: {', '.join(sorted(focus)) if focus else 'all'}",
+        f"New actions: {', '.join(sorted(enabled)) or 'none'}",
     ]
     for agent in AGENTS:
         lines.append(f"\n{agent}:")
-        for a in decide(agent, state, paused, include_waiting=True, focus=focus):
+        acted = decide(
+            agent,
+            state,
+            paused,
+            include_waiting=True,
+            focus=focus,
+            enabled=enabled,
+            rules=rules,
+        )
+        for a in acted:
             target = f"PR {a.pr}" if a.pr else (a.issue or "")
             level = PRIORITY_NAMES[a.priority] if target else ""
             lines.append(f"  {a.action:<17} {level:<6} {target:<55} {a.reason}")
+        if focus and not paused:
+            for target, reason in no_action(agent, state, focus, enabled, rules, acted):
+                lines.append(f"  {'no action':<17} {'':<6} {target:<55} {reason}")
     unknown = [
         p["number"]
         for p in state.get("prs", [])
         if p.get("baseRefName") in BASES and not pr_author(p)
     ]
-    if unknown:
-        lines.append(f"\nPRs without an Author or Reviewer line (ignored): {unknown}")
+    if unknown and not focus:
+        lines.append(f"\nPRs without an owner line (adopt needs a focus): {unknown}")
     return "\n".join(lines)
 
 
@@ -695,6 +945,11 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--agent", choices=[a.lower() for a in AGENTS])
     group.add_argument("--status", action="store_true")
+    parser.add_argument(
+        "--candidates",
+        action="store_true",
+        help="print every action, one JSON per line (the runner tries them in order)",
+    )
     parser.add_argument("--state-file", type=Path)
     parser.add_argument(
         "--dump-state", type=Path, help="save the fetched state as JSON"
@@ -706,6 +961,7 @@ def main() -> int:
 
     paused = PAUSE_FILE.exists()
     focus = frozenset(args.focus) if args.focus else read_focus(FOCUS_FILE)
+    enabled = read_actions(os.environ.get(ACTIONS_ENV))
     if not args.state_file:
         # A stored GraphQL quota wait means zero GitHub calls until it expires.
         wait, retry_at = quota_check(STATE_DIR, time.time())
@@ -719,17 +975,24 @@ def main() -> int:
         state = (
             json.loads(args.state_file.read_text())
             if args.state_file
-            else fetch_state()
+            else fetch_state(focus)
         )
+    except QuotaWait as wait:
+        print(f"quota: GitHub GraphQL quota wait, retry at {wait}", file=sys.stderr)
+        return DEFERRED
     except QuotaExhausted as error:
         # No action from a partial read: the tick stops here.
         return stop_on_quota(error)
     if args.dump_state:
         args.dump_state.write_text(json.dumps(state, indent=1))
     if args.status:
-        print(status(state, paused, focus))
-    else:
-        print(decide(args.agent.capitalize(), state, paused, focus=focus)[0].to_json())
+        print(status(state, paused, focus, enabled))
+        return 0
+    actions = decide(
+        args.agent.capitalize(), state, paused, focus=focus, enabled=enabled
+    )
+    for a in actions if args.candidates else actions[:1]:
+        print(a.to_json())
     return 0
 
 

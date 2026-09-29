@@ -161,9 +161,27 @@ Priority, first match wins:
 6. `review`: the other agent's ready (non-draft) PR has no verdict from this
    agent for its current head.
 7. `continue`: the agent's draft PR, or its In progress issue without a PR.
-8. `claim`: a Ready issue with Executor set to this agent. Not while the agent
+8. `adopt`: a focus PR with no owner line (`Executor:`, `Author:` or
+   `Reviewer:`) whose files route to this agent (see Routing below). The agent
+   adds the `Epic:`, `Executor:`, `Lane:`, `Reviewer:`, `Leaf IDs:` and `Issue:`
+   lines and keeps the rest of the body. A PR with any owner line is never
+   adopted.
+9. `claim`: a Ready issue with Executor set to this agent. Not while the agent
    has work to continue or two open PRs.
-9. `idle`.
+10. `idle`.
+
+New actions: `adopt` (and later actions of
+https://github.com/phaabe/live.moafunk.de/issues/487) are emitted only when
+the comma list `EPIC_FOCUS_ACTIONS` names them, for example `adopt`. An action
+is added to the list of both runners only after both its Claude and its Codex
+leaves are merged.
+
+Routing, for an item without an owner (`scripts/epic/routing.py`):
+an existing Executor (project field or PR line) always wins. Otherwise each
+file's owner comes from `file_rules` in `.github/epic-lanes.yml` (first
+matching pattern). One agent owns all files: that agent. Owners differ, a file
+has no rule, or the files share no lane: `needs-anton`, no action. No files
+known yet (an issue before refinement): Claude, for `refine` only.
 
 Order inside one step: priority label first (`priority::high`, then
 `priority::medium` or no priority label, then `priority::low`; with several,
@@ -177,9 +195,30 @@ or the two-open-PR limit. `--status` shows each item's priority.
 Focus: Anton can limit both loops to some labels by writing them into
 `~/.epic-focus`, one per line (for example `project::Stream`). Then only issues
 with one of these labels, and PRs whose own labels or `Issue:` ticket have one,
-get actions. All other PRs are frozen: no review, fix or merge. They still count
-toward the two-open-PR limit. No file or an empty file means all work. Every
-PR needs an `Issue:` line naming its ticket, or it is frozen under a focus.
+get actions. A PR with a focus label of its own is in focus without an `Issue:`
+line. All other PRs are frozen: no review, fix or merge. They still count
+toward the two-open-PR limit. No file or an empty file means all work, and no
+`adopt`. Focus issues that are not on the project board are found by a REST
+search per label (`search/issues`, all pages, no duplicates; a stored quota
+wait stops it). `--status` lists every focus item without an action and why:
+no owner (with the routing result), draft of the other agent, not on board,
+blocked (status, other work, two open PRs), `needs-anton`.
+
+Per-target lock: every runner on this machine takes an `flock` on one file per
+issue or PR number in `~/.local/state/epic-loop/target-locks/` (override:
+`EPIC_LOCK_DIR`; it does not follow `EPIC_STATE_DIR`). An action with a PR and
+an issue locks both, lowest number first. The tick opens the lock files on
+descriptors 8 and 9 and keeps them until it ends; its children inherit them, so
+a killed tick keeps the lock until its model session has exited too. The OS
+frees the lock when the last holder dies: no stale lock, no age reclaim. Lock
+files are never deleted. After taking the lock, `tick_gate.py check` rechecks
+the start state: a target that was closed or changed (`updated_at`) since
+selection is skipped.
+
+Fairness: the selector lists all actions in order (`--candidates`). The tick
+runs the first one whose target is free, unchanged and no suppressed repeat. A
+repeat record is kept per target, so one blocked target never blocks the
+others.
 
 Claude runs ticks headless with `scripts/epic/claude-tick.sh` (or `/epic-tick`
 by hand). Codex runs the same script from its own runner. A runner starts a
@@ -201,8 +240,10 @@ prompts, and the project settings ask before every push and merge. So
 `claude-tick.sh` hands those prompts to `scripts/epic/permission_gate.py`. It
 approves only `git push [-u] origin <branch>` and `git push origin --delete
 <branch>` for `feat/`, `fix/`, `chore/`, `docs/`, `test/` and `refactor/`
-branches, and `gh pr merge <n> --repo phaabe/live.moafunk.de --squash
-[--delete-branch] --match-head-commit <sha>`. It denies everything else and
+branches, `gh pr merge <n> --repo phaabe/live.moafunk.de --squash
+[--delete-branch] --match-head-commit <sha>`, and, only in an `adopt` tick for
+PR `<n>`, `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F
+body=@<file>`. It denies everything else and
 logs each decision to `claude-permissions.log` in the state directory.
 `python3 scripts/epic/next_action.py --status`
 shows the queue for both agents.

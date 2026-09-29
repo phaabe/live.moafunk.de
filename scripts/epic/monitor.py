@@ -49,6 +49,7 @@ ACTIONS = (
     "resolve-conflict",
     "review",
     "continue",
+    "adopt",
     "claim",
     "wait",
 )

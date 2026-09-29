@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from tick_gate import (
     fingerprint,
     record as save,
     should_skip,
+    stale,
     target_number,
 )
 
@@ -66,8 +68,11 @@ class CheckRecordTest(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         self.updated = "t1"
 
-    def tick(self, now: float) -> int:
-        return check("claude", CLAIM, lambda _: self.updated, now, TTL, self.dir)
+    def tick(self, now: float, action: dict = CLAIM) -> int:
+        def lookup(_: dict) -> dict:
+            return {"updated_at": self.updated, "state": "open"}
+
+        return check("claude", action, lookup, now, TTL, self.dir)
 
     def test_noop_tick_skips_the_next_one(self) -> None:
         self.assertEqual(self.tick(1000.0), 0)
@@ -90,6 +95,61 @@ class CheckRecordTest(unittest.TestCase):
         self.assertEqual(self.tick(1000.0), 0)
         with self.assertRaises(ValueError):
             save("claude", {"action": "review", "pr": 5}, 1010.0, self.dir)
+
+    def test_suppressed_target_does_not_block_others(self) -> None:
+        # Starvation: a no-op on 338 must not stop a later action on PR 5.
+        review = {"action": "review", "pr": 5, "sha": "a" * 40}
+        for action in (CLAIM, review):
+            self.assertEqual(self.tick(1000.0, action), 0)
+            save("claude", action, 1010.0, self.dir)
+        self.assertEqual(self.tick(1020.0, CLAIM), SKIP)
+        self.assertEqual(self.tick(1020.0, review), SKIP)
+        self.assertEqual(self.tick(1020.0, {**review, "pr": 6}), 0)
+
+    def test_top_level_stays_the_last_session_for_the_monitor(self) -> None:
+        self.assertEqual(self.tick(1000.0), 0)
+        save("claude", CLAIM, 1010.0, self.dir)
+        data = json.loads((self.dir / "claude-gate.json").read_text())
+        self.assertEqual((data["action"], data["at"]), (CLAIM, 1010.0))
+        self.assertEqual(set(data["targets"]), {"338"})
+
+    def test_old_single_record_still_skips_its_target(self) -> None:
+        (self.dir / "claude-gate.json").write_text(
+            json.dumps(record(CLAIM) | {"action": CLAIM})
+        )
+        self.assertEqual(self.tick(1100.0), SKIP)
+
+    def test_expired_target_records_are_dropped(self) -> None:
+        self.assertEqual(self.tick(1000.0), 0)
+        save("claude", CLAIM, 1010.0, self.dir)
+        review = {"action": "review", "pr": 5, "sha": "a" * 40}
+        self.assertEqual(self.tick(1010.0 + TTL, review), 0)
+        save("claude", review, 1010.0 + TTL, self.dir, TTL)
+        data = json.loads((self.dir / "claude-gate.json").read_text())
+        self.assertEqual(set(data["targets"]), {"5"})
+
+    def test_changed_target_is_skipped_without_a_seen_record(self) -> None:
+        # Recheck after the lock: another runner acted since selection.
+        action = {**CLAIM, "updated_at": "t0"}
+        self.assertEqual(self.tick(1000.0, action), SKIP)
+        self.assertFalse((self.dir / "claude-gate-seen.json").exists())
+
+
+class StaleTest(unittest.TestCase):
+    def test_same_start_state_runs(self) -> None:
+        self.assertIsNone(
+            stale({"updated_at": "t1"}, {"updated_at": "t1", "state": "open"})
+        )
+
+    def test_closed_target_is_stale(self) -> None:
+        self.assertIsNotNone(stale(CLAIM, {"updated_at": "t1", "state": "closed"}))
+
+    def test_changed_target_is_stale(self) -> None:
+        self.assertIsNotNone(stale({"updated_at": "t1"}, {"updated_at": "t2"}))
+
+    def test_without_selection_time_or_target_nothing_is_stale(self) -> None:
+        self.assertIsNone(stale(CLAIM, {"updated_at": "t2", "state": None}))
+        self.assertIsNone(stale({"updated_at": "t1"}, None))
 
 
 if __name__ == "__main__":
