@@ -118,10 +118,8 @@ def verify(
     gh: Api = api,
     writer: Publish | None = None,
     expected_head: str | None = None,
-    *,
-    raise_on_error: bool = False,
 ) -> list[str]:
-    """Use trusted base code; optionally raise execution errors after publishing."""
+    """Use trusted base code and publish verification errors as PR verdicts."""
     pull = gh(f"repos/{REPO}/pulls/{number}")
     head = pull.get("head", {}).get("sha", "")
     if not SHA.fullmatch(head):
@@ -182,10 +180,6 @@ def verify(
         subprocess.SubprocessError,
     ) as exc:
         errors = [str(exc)]
-        if raise_on_error and not isinstance(exc, GuardRefusal):
-            if writer:
-                writer(head, "failure", errors[0])
-            raise
     if writer:
         writer(
             head,
@@ -253,7 +247,6 @@ def main() -> int:
                 number,
                 writer=publish if args.publish else None,
                 expected_head=args.expected_head,
-                raise_on_error=args.publish,
             )
         print(json.dumps(result, indent=2))
         return 0 if args.publish else int(any(result.values()))

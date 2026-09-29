@@ -112,7 +112,10 @@ status. It refreshes on PR-target events, issue comments, statuses, checks,
 completed named workflows, manual dispatch and a ten-minute schedule.
 The per-PR `epic-guard` status is the verdict; `epic-guard-runner` succeeds
 once all statuses are published and fails only when the run itself fails
-(API, publication or event errors).
+(event selection or status publication errors).
+Verification errors for an individual PR publish a failure verdict and let
+the remaining PRs refresh; if its head cannot be read, no status can be
+published and the run fails.
 The workflow uses an explicit `workflow_run.workflows` list, including
 `EPIC - Integration checks`; update it when adding or renaming CI workflows.
 After installation on the default branch, finish a CI run and confirm it
