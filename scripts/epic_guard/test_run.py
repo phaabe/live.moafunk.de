@@ -5,9 +5,12 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import io
 import json
 import subprocess
+import tempfile
 import unittest
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -59,6 +62,207 @@ class RunnerTests(unittest.TestCase):
         return run.verify(
             406, gh or self.api, lambda *args: self.statuses.append(args), HEAD
         )
+
+    def main(self, *args: str) -> int:
+        with (
+            patch("sys.argv", ["run.py", *args]),
+            patch("sys.stdout", new_callable=io.StringIO),
+            patch.dict(
+                run.os.environ,
+                {
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_REPOSITORY": run.REPO,
+                    "GITHUB_RUN_ID": "123",
+                },
+            ),
+            patch.object(run, "api", self.api),
+            patch.object(run, "verify", partial(run.verify, gh=self.api)),
+        ):
+            return run.main()
+
+    def test_main_publish_returns_zero_for_guard_errors(self) -> None:
+        self.api.data["comments"] = []
+        self.api.data["pr"]["comments"] = 0
+        with patch.object(
+            run, "publish", side_effect=lambda *s: self.statuses.append(s)
+        ):
+            self.assertEqual(self.main("--pr", "406", "--publish"), 0)
+        self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
+
+    def test_main_publish_returns_one_for_publication_failures(self) -> None:
+        for failed_write in (0, 1):
+            with self.subTest(failed_write=failed_write):
+                failure = subprocess.CalledProcessError(1, ["gh", "api"])
+                with patch.object(
+                    run.subprocess, "run", side_effect=[None] * failed_write + [failure]
+                ) as command:
+                    self.assertEqual(self.main("--pr", "406", "--publish"), 1)
+                self.assertEqual(command.call_count, failed_write + 1)
+
+    def test_main_publish_returns_one_for_api_failure(self) -> None:
+        with (
+            patch.object(
+                self, "api", side_effect=subprocess.CalledProcessError(1, ["gh", "api"])
+            ),
+            patch.object(run, "publish") as publish,
+        ):
+            self.assertEqual(self.main("--pr", "406", "--publish"), 1)
+        publish.assert_not_called()
+
+    def test_main_publish_returns_one_for_bad_event(self) -> None:
+        with (
+            patch.object(run.Path, "read_text", return_value='{"repository": {}}'),
+            patch.object(run, "publish") as publish,
+        ):
+            self.assertEqual(self.main("--event", "event.json", "--publish"), 1)
+        publish.assert_not_called()
+
+    def test_main_publish_returns_zero_for_late_api_failures(self) -> None:
+        api = self.api
+        for failure in (
+            subprocess.CalledProcessError(1, ["gh", "api"]),
+            subprocess.TimeoutExpired(["gh", "api"], 60),
+            json.JSONDecodeError("invalid response", "", 0),
+            OSError("API unavailable"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                self.statuses.clear()
+
+                def gh(endpoint: str) -> dict | list:
+                    if "/contents/" in endpoint:
+                        raise failure
+                    return api(endpoint)
+
+                with (
+                    patch.object(self, "api", gh),
+                    patch.object(
+                        run, "publish", side_effect=lambda *s: self.statuses.append(s)
+                    ),
+                ):
+                    self.assertEqual(self.main("--pr", "406", "--publish"), 0)
+                self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
+
+    def test_main_publish_returns_zero_for_graphql_error_response(self) -> None:
+        api = self.api
+
+        def gh(endpoint: str) -> dict | list:
+            if endpoint.startswith("graphql?"):
+                return {"errors": [{"message": "API unavailable"}]}
+            return api(endpoint)
+
+        with (
+            patch.object(self, "api", gh),
+            patch.object(
+                run, "publish", side_effect=lambda *s: self.statuses.append(s)
+            ),
+        ):
+            self.assertEqual(self.main("--pr", "406", "--publish"), 0)
+        self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
+
+    def test_main_publish_refreshes_all_prs_despite_guard_errors(self) -> None:
+        for error in (
+            "missing verdict",
+            "untrusted base",
+            "PR changed during collection; retry",
+            "comment changed between REST and GraphQL reads; retry",
+            "missing comment edit evidence",
+        ):
+            with self.subTest(error=error):
+                self.statuses.clear()
+                failing = BaseAPI()
+                failing.data["comments"] = []
+                failing.data["pr"]["comments"] = 0
+                if error == "untrusted base":
+                    failing.data["pr"]["base"]["ref"] = "unsupported"
+                passing = BaseAPI()
+                passing.data["pr"]["number"] = 407
+                passing.data["pr"]["head"]["sha"] = "c" * 40
+                passing.data["comments"][0]["body"] = passing.data["comments"][0][
+                    "body"
+                ].replace(HEAD, "c" * 40)
+                passing.data["check_runs"][0]["head_sha"] = "c" * 40
+                pulls = [failing.data["pr"], passing.data["pr"]]
+                active = failing
+
+                def gh(endpoint: str) -> dict | list:
+                    nonlocal active
+                    if "/pulls?" in endpoint:
+                        return copy.deepcopy(pulls)
+                    if endpoint.endswith("/pulls/407"):
+                        active = passing
+                        endpoint = endpoint.replace("/pulls/407", "/pulls/406")
+                    if (
+                        active is failing
+                        and "/comments?" in endpoint
+                        and error not in {"missing verdict", "untrusted base"}
+                    ):
+                        raise ValueError(error)
+                    return active(endpoint)
+
+                event = json.dumps({"repository": {"full_name": run.REPO}})
+                with (
+                    tempfile.TemporaryDirectory() as directory,
+                    patch.object(self, "api", gh),
+                    patch.object(
+                        run, "publish", side_effect=lambda *s: self.statuses.append(s)
+                    ),
+                ):
+                    event_path = Path(directory) / "event.json"
+                    event_path.write_text(event)
+                    self.assertEqual(
+                        self.main("--event", str(event_path), "--publish"), 0
+                    )
+                if "retry" in error or "edit evidence" in error:
+                    self.assertEqual(self.statuses[1][2], error)
+                self.assertEqual(
+                    [s[:2] for s in self.statuses],
+                    [
+                        (HEAD, "pending"),
+                        (HEAD, "failure"),
+                        ("c" * 40, "pending"),
+                        ("c" * 40, "success"),
+                    ],
+                )
+
+    def test_main_publish_returns_one_when_event_listing_fails(self) -> None:
+        event = json.dumps({"repository": {"full_name": run.REPO}})
+        with (
+            patch.object(run.Path, "read_text", return_value=event),
+            patch.object(
+                self, "api", side_effect=subprocess.CalledProcessError(1, ["gh", "api"])
+            ),
+            patch.object(run, "publish") as publish,
+        ):
+            self.assertEqual(self.main("--event", "event.json", "--publish"), 1)
+        publish.assert_not_called()
+
+    def test_main_publish_returns_one_when_failure_status_cannot_be_published(self) -> None:
+        api = self.api
+
+        def gh(endpoint: str) -> dict | list:
+            if "/comments?" in endpoint:
+                raise ValueError("PR changed during collection; retry")
+            return api(endpoint)
+
+        with (
+            patch.object(self, "api", gh),
+            patch.object(
+                run,
+                "publish",
+                side_effect=[None, subprocess.CalledProcessError(1, ["gh", "api"])],
+            ) as publish,
+        ):
+            self.assertEqual(self.main("--pr", "406", "--publish"), 1)
+        self.assertEqual(publish.call_count, 2)
+        self.assertEqual(publish.call_args.args[:2], (HEAD, "failure"))
+
+    def test_main_local_exit_code_reports_guard_errors(self) -> None:
+        with patch.object(run, "publish") as publish:
+            self.assertEqual(self.main("--pr", "406"), 0)
+            self.api.data["comments"] = []
+            self.api.data["pr"]["comments"] = 0
+            self.assertEqual(self.main("--pr", "406"), 1)
+        publish.assert_not_called()
 
     def test_loads_only_base_blobs_and_publishes_exact_head(self) -> None:
         self.assertEqual(self.verify(), [])

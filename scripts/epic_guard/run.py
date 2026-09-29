@@ -27,6 +27,10 @@ Api = Callable[[str], Any]
 Publish = Callable[[str, str, str], None]
 
 
+class GuardRefusal(ValueError):
+    """A PR cannot pass the guard, but the refresh can continue."""
+
+
 def api(endpoint: str) -> Any:
     command = ["gh", "api", "--method", "GET", endpoint]
     if endpoint.startswith("graphql?"):
@@ -115,7 +119,7 @@ def verify(
     writer: Publish | None = None,
     expected_head: str | None = None,
 ) -> list[str]:
-    """Never import code from the PR head, even when it changes this gate."""
+    """Use trusted base code and publish verification errors as PR verdicts."""
     pull = gh(f"repos/{REPO}/pulls/{number}")
     head = pull.get("head", {}).get("sha", "")
     if not SHA.fullmatch(head):
@@ -129,13 +133,13 @@ def verify(
             or base.get("repo", {}).get("full_name") != REPO
             or not SHA.fullmatch(base.get("sha", ""))
         ):
-            raise ValueError("PR has an untrusted base")
+            raise GuardRefusal("PR has an untrusted base")
         if expected_head is not None and head != expected_head:
-            raise ValueError("PR head differs from expected head")
+            raise GuardRefusal("PR head differs from expected head")
         # A commit status is shared by every PR at that head. Refuse ambiguity.
         same_head = [p for p in open_pulls(gh) if p.get("head", {}).get("sha") == head]
         if len(same_head) != 1 or same_head[0].get("number") != number:
-            raise ValueError("head must belong to exactly one open PR")
+            raise GuardRefusal("head must belong to exactly one open PR")
         with tempfile.TemporaryDirectory(prefix="epic-guard-") as directory:
             script = Path(directory) / "check.py"
             policy_path = Path(directory) / "epic-lanes.yml"
@@ -245,7 +249,7 @@ def main() -> int:
                 expected_head=args.expected_head,
             )
         print(json.dumps(result, indent=2))
-        return int(any(result.values()))
+        return 0 if args.publish else int(any(result.values()))
     except (
         ValueError,
         TypeError,
