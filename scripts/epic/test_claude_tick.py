@@ -60,6 +60,15 @@ class ClaudeTickTest(unittest.TestCase):
             "with open(os.environ['TEST_CALLS'] + '.env', 'a') as f:\n"
             "    f.write(os.environ.get('EPIC_STATE_DIR', '') + '\\n')\n"
         )
+        # Records how many calls came before it, to prove it runs before the pull.
+        (self.repo / "scripts/epic/gitnexus_noise.py").write_text(
+            "import os, sys\n"
+            "calls = os.environ['TEST_CALLS']\n"
+            "n = len(open(calls).read().splitlines()) if os.path.exists(calls) else 0\n"
+            "with open(calls + '.noise', 'a') as f:\n"
+            "    f.write(f'{n}\\n')\n"
+            "sys.exit(int(os.environ.get('TEST_NOISE_EXIT', '0')))\n"
+        )
         (self.repo / "scripts/epic/tick_verify.py").write_text(
             "import json, os, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
@@ -160,6 +169,18 @@ class ClaudeTickTest(unittest.TestCase):
     def test_failed_pull_stops_the_tick(self) -> None:
         self.assertEqual(self.run_tick(TEST_GIT_EXIT="1").wait(timeout=30), 1)
         self.assertEqual(self.calls_made(), [["git", "pull -q --ff-only"]])
+        self.assertFalse((self.state / "claude.lock").exists())
+
+    def test_noise_check_runs_before_the_pull(self) -> None:
+        self.assertEqual(self.run_tick(TEST_SELECT_EXIT="3").wait(timeout=30), 0)
+        noise = Path(str(self.calls) + ".noise").read_text().splitlines()
+        self.assertEqual(noise, ["0"])
+        self.assertEqual(self.calls_made()[0], ["git", "pull -q --ff-only"])
+
+    def test_unclean_checkout_stops_before_the_pull(self) -> None:
+        self.assertEqual(self.run_tick(TEST_NOISE_EXIT="1").wait(timeout=30), 1)
+        self.assertFalse(self.calls.exists())
+        self.assertIn("tick: finished exit=1", (self.state / "claude.log").read_text())
         self.assertFalse((self.state / "claude.lock").exists())
 
     def store_wait(self, retry_at: str = "2099-01-01T00:00:00Z") -> None:

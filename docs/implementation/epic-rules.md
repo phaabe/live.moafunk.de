@@ -184,7 +184,10 @@ a whole queue to Ready at once and let each readiness comment name the ticket
 before it. Each runner checkout only runs ticks and holds no work. Every
 tick starts with `git pull --ff-only` there, so merged changes to
 `scripts/epic/`, `.claude/commands/epic/` or `.codex/` apply on the next tick;
-a failed pull stops the tick. A headless session cannot answer permission
+a failed pull stops the tick. Before the pull, `claude-tick.sh` runs
+`scripts/epic/gitnexus_noise.py`: it restores changes that sit only inside the
+GitNexus block of `AGENTS.md` / `CLAUDE.md`, and stops the tick on any other
+tracked change without touching it. A headless session cannot answer permission
 prompts, and the project settings ask before every push and merge. So
 `claude-tick.sh` hands those prompts to `scripts/epic/permission_gate.py`. It
 approves only `git push [-u] origin <branch>` and `git push origin --delete
