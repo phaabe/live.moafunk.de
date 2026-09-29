@@ -635,6 +635,51 @@ class AgentRowsTest(unittest.TestCase):
         self.agent("claude")
         self.assertNotIn("epic_backoff", self.run_at(NOW))
 
+    def test_permission_decisions_are_counted_without_commands(self) -> None:
+        home = self.agent("claude")
+        log = home / "claude-permissions.log"
+        log.write_text("2026-09-28T10:00:00Z allow 'old' (history)\n")
+        self.run_at(NOW)  # baseline: history is not counted
+        with log.open("a") as out:
+            out.write("2026-09-28T11:00:00Z deny 'git push --force SECRET' (no)\n")
+            out.write("2026-09-28T11:01:00Z allow 'git push origin feat/x' (ok)\n")
+            out.write("2026-09-28T11:02:00Z deny 'gh pr merge 9' (no)\n")
+            out.write("garbage line\n")
+        text = self.run_at(NOW + 5)
+        self.assertIn(
+            'epic_permission_decisions_total{agent="claude",decision="deny"} 2\n', text
+        )
+        self.assertIn(
+            'epic_permission_decisions_total{agent="claude",decision="allow"} 1\n', text
+        )
+        self.assertIn('epic_permission_read_success{agent="claude"} 1\n', text)
+        self.assertNotIn("SECRET", text)
+
+    def test_permission_counters_exist_before_the_first_decision(self) -> None:
+        self.agent("claude")
+        text = self.run_at(NOW)
+        self.assertIn(
+            'epic_permission_decisions_total{agent="claude",decision="deny"} 0\n', text
+        )
+        self.assertIn('epic_permission_read_success{agent="claude"} 1\n', text)
+
+    def test_codex_agents_have_no_permission_series(self) -> None:
+        self.agent("codex")
+        self.assertNotIn("epic_permission", self.run_at(NOW))
+
+    def test_permission_log_is_a_second_loki_stream(self) -> None:
+        home = self.agent("claude-2")
+        (home / "claude-permissions.log").write_text("")
+        (self.agent("codex") / "claude-permissions.log").write_text("")  # not a gate
+        rows = json.loads(monitor.alloy_targets(agents.discover(self.root, NOW)))
+        streams = sorted(
+            (r["labels"]["agent"], r["labels"].get("stream", "runner")) for r in rows
+        )
+        self.assertEqual(
+            streams,
+            [("claude-2", "permissions"), ("claude-2", "runner"), ("codex", "runner")],
+        )
+
     def test_registry_problems_are_published(self) -> None:
         (self.root / "claude.log").write_text("")
         self.agent("claude")

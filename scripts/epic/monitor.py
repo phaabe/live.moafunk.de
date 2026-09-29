@@ -408,6 +408,22 @@ class Ledgers:
         assert isinstance(ledger, ticks.EventLedger)
         return ledger
 
+    def permissions(self, agent: agents.Agent) -> ticks.DecisionLedger:
+        """Allow/deny counts of the Claude permission gate."""
+        path = agent.home / PERMISSIONS_FILE
+        key = (agent.id, path)
+        if key not in self.ledgers:
+            self.ledgers[key] = ticks.DecisionLedger(
+                agent.id,
+                path,
+                self.runtime / agent.permissions_checkpoint_name,
+                action_labels,
+                self.opener(agent, PERMISSIONS_FILE),
+            )
+        ledger = self.ledgers[key]
+        assert isinstance(ledger, ticks.DecisionLedger)
+        return ledger
+
     def prune(self, active: list[agents.Agent]) -> None:
         """Drop ledgers and checkpoints of agents that are gone.
 
@@ -416,14 +432,22 @@ class Ledgers:
         agents that vanished while the collector was stopped.
         """
         keep = {(a.id, a.log) for a in active} | {
-            (a.id, a.home / a.events_name) for a in active
+            (a.id, a.home / name)
+            for a in active
+            for name in (a.events_name, PERMISSIONS_FILE)
         }
         for key in [key for key in self.ledgers if key not in keep]:
             del self.ledgers[key]
-        names = {a.checkpoint_name for a in active} | {
-            a.events_checkpoint_name for a in active
+        names = {
+            name
+            for a in active
+            for name in (
+                a.checkpoint_name,
+                a.events_checkpoint_name,
+                a.permissions_checkpoint_name,
+            )
         }
-        for pattern in ("ticks-*.json", "events-*.json"):
+        for pattern in ("ticks-*.json", "events-*.json", "permissions-*.json"):
             for path in self.runtime.glob(pattern):
                 try:
                     if path.name not in names:
@@ -502,6 +526,37 @@ def runner_sample(
 
 
 BACKOFF_FILE = "codex-backoff.json"
+PERMISSIONS_FILE = "claude-permissions.log"
+
+
+def permission_metrics(
+    metrics: Metrics, ledger: ticks.DecisionLedger, now: float
+) -> None:
+    """Allow/deny counts; a gate that never ran has no file yet."""
+    ok = True
+    try:
+        ledger.update(now)
+        ledger.save()
+    except FileNotFoundError:
+        ok = ledger.state is None  # vanished after it was read: a failure
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        ok = False
+    if not ok:
+        logging.warning("Cannot read %s permission log", ledger.agent)
+    metrics.add("permission_read_success", int(ok), agent=ledger.agent)
+    totals = (
+        ledger.state["totals"] if ledger.state else dict.fromkeys(ticks.DECISIONS, 0)
+    )
+    for decision in ticks.DECISIONS:
+        metrics.add(
+            "permission_decisions_total",
+            totals[decision],
+            metric_type="counter",
+            agent=ledger.agent,
+            decision=decision,
+        )
+
+
 # The Codex runner's default retry delay, for entries stored without `until`.
 BACKOFF_DEFAULT = 900
 BACKOFF_KEY = re.compile(
@@ -599,6 +654,8 @@ def agent_metrics(
         return Row(agent, "retired")
     runner = runner_sample(metrics, agent, now, alive)
     backoff_metrics(metrics, agent, now, heads)
+    if ledgers is not None and agent.kind == "claude":
+        permission_metrics(metrics, ledgers.permissions(agent), now)
     view = None
     if ledgers is not None:
         view = ledger_metrics(metrics, ledgers.get(agent), ledgers.events(agent), now)
@@ -747,6 +804,27 @@ def alloy_targets(registry: agents.Registry) -> str:
         path = "/".join(("/logs", *agent.rel, agent.log_name))
         rows.append(
             {"targets": ["localhost"], "labels": {"__path__": path, "agent": agent.id}}
+        )
+    for agent in registry.agents:
+        # The permission gate's decisions: a second stream per Claude agent.
+        if agent.kind != "claude":
+            continue
+        try:
+            entry = agent.lstat(PERMISSIONS_FILE)
+        except OSError:
+            continue
+        if entry is None or not stat.S_ISREG(entry.st_mode):
+            continue
+        path = "/".join(("/logs", *agent.rel, PERMISSIONS_FILE))
+        rows.append(
+            {
+                "targets": ["localhost"],
+                "labels": {
+                    "__path__": path,
+                    "agent": agent.id,
+                    "stream": "permissions",
+                },
+            }
         )
     return json.dumps(rows, indent=2) + "\n"
 

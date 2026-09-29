@@ -203,10 +203,13 @@ class LogLedger:
                 "Tick checkpoint for %s is unreadable; rebuilding", self.agent
             )
             return None
-        if not valid_checkpoint(data):
+        if not self.valid(data):
             logging.warning("Tick checkpoint for %s is invalid; rebuilding", self.agent)
             return None
         return data
+
+    def valid(self, data: object) -> bool:
+        return valid_checkpoint(data)
 
     def update(self, now: float) -> None:
         with self.opener() as stream:
@@ -538,6 +541,37 @@ class EventLedger(LogLedger):
         self.record(
             tick["tick"], None, None, "interrupted", "unknown", "", "", None, live
         )
+
+
+DECISION = re.compile(r"\S+ (allow|deny) ")
+DECISIONS = ("allow", "deny")
+
+
+class DecisionLedger(LogLedger):
+    """Counts allow/deny lines of the Claude permission gate's log.
+
+    Only the decision word is read; commands and reasons stay in the file.
+    Same incremental reading and baseline as the tick ledgers.
+    """
+
+    def fresh(self, now: float, size: int) -> Json:
+        return super().fresh(now, size) | {"totals": dict.fromkeys(DECISIONS, 0)}
+
+    def valid(self, data: object) -> bool:
+        if not isinstance(data, dict) or set(data.get("totals") or {}) != set(
+            DECISIONS
+        ):
+            return False
+        return valid_checkpoint(data | {"totals": dict.fromkeys(SEVERITY, 0)}) and all(
+            type(n) is int and n >= 0 for n in data["totals"].values()
+        )
+
+    def feed(self, line: str, end: int, now: float) -> None:
+        state = self.state
+        assert state is not None
+        match = DECISION.match(line)
+        if match and end > state["baseline"]:
+            state["totals"][match[1]] += 1
 
 
 @dataclass

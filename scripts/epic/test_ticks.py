@@ -751,3 +751,32 @@ class EventLedgerTest(unittest.TestCase):
         )
         log.update(NOON)
         self.assertIs(ticks.merge(log, self.events()).state, log.state)
+
+
+class DecisionLedgerTest(unittest.TestCase):
+    def test_counts_survive_a_restart_and_foreign_checkpoints_are_rebuilt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "claude-permissions.log"
+            log.write_text("")
+            checkpoint = root / "permissions-claude.json"
+
+            def ledger() -> ticks.DecisionLedger:
+                return ticks.DecisionLedger(
+                    "claude", log, checkpoint, monitor.action_labels
+                )
+
+            first = ledger()
+            first.update(NOON)
+            log.write_text("2026-09-28T11:00:00Z deny 'x' (no)\n")
+            first.update(NOON + 5)
+            first.save()
+            again = ledger()
+            again.update(NOON + 10)
+            self.assertEqual(again.state["totals"], {"allow": 0, "deny": 1})
+            # A tick checkpoint has other totals: rebuilt, not trusted.
+            tick_ledger = ticks.LogLedger(
+                "claude", log, checkpoint, monitor.action_labels
+            )
+            with self.assertLogs(level="WARNING"):
+                tick_ledger.update(NOON + 15)
