@@ -235,7 +235,8 @@ function handlePostToolUse(input) {
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
 
-  const analyzeCmd = `gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+  // Keep tracked AGENTS.md / CLAUDE.md / skills unchanged on reindex.
+  const analyzeCmd = `gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''} --skip-agents-md --index-only`;
   sendHookResponse(
     'PostToolUse',
     `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
