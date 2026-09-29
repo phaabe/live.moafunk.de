@@ -119,6 +119,17 @@ Gate state uses `~/.local/state/epic-loop/codex-gate*.json`, or `EPIC_STATE_DIR`
 if set. The runner's log and lock use that same directory. Registered agents
 use its `agents/<id>` subdirectory while quota waits remain shared at the root.
 
+With `EPIC_SHARED_READER=1`, the runner calls `next_action.py --recheck` after
+the gate and before starting Codex. Exit 6 skips the stale candidate; exit 5
+or a recheck timeout ends the tick as blocked (exit 75). These paths discard
+temporary gate state and write no completion, repeat or cooldown record.
+The shared-reader switch remains off by default.
+
+The enabled write hook reads GitHub again before claims, pushes, comments,
+verdicts and merges. It loads the checker from the runner's trusted checkout.
+Direct pushes and installed feature-helper pushes both require an In progress
+issue owned by Codex. Failed reads block the write. The hook timeout is 90 seconds.
+
 Before that gate, `.codex/tick_backoff.py` delays blocked or failed targets for
 15 minutes (`EPIC_BLOCKED_RETRY_SECONDS` overrides this). This also applies to
 `continue`, including a blocked `claim` followed by `continue` on the same issue.
@@ -187,7 +198,10 @@ individual `shell_environment_policy.set` overrides. Exporting them into the
 CLI process alone is insufficient when Codex uses `inherit = "core"` for tool
 commands. These overrides preserve other configured values and inheritance
 settings. If a shell environment include filter is configured, it must also
-allow these three names. See [Codex shell environment policy](https://learn.chatgpt.com/docs/config-file/config-advanced#shell-environment-policy).
+allow these names. When the shared reader is enabled, the runner also forwards
+`EPIC_SHARED_READER`, `EPIC_TRUSTED_ROOT` and configured cache, snapshot,
+recheck, selection and focus-action settings. The include filter must allow
+those names too. See [Codex shell environment policy](https://learn.chatgpt.com/docs/config-file/config-advanced#shell-environment-policy).
 
 Provision pinned build tools before starting unattended ticks. For the current
 Rust 1.98.0 pin, install it with `rustup toolchain install 1.98.0 --profile minimal
@@ -202,12 +216,17 @@ selection each have a 120-second limit; Codex has a 1,800-second limit, with a
 `EPIC_PULL_TIMEOUT_SECONDS`, `EPIC_SELECT_TIMEOUT_SECONDS` and
 `EPIC_TICK_TIMEOUT_SECONDS`. Errors and timeout exit codes propagate; a later
 invocation refreshes, selects again and checks the cooldown.
+With the shared reader enabled, fresh backoff lookup and action recheck each
+have a separate `EPIC_RECHECK_TIMEOUT_SECONDS` limit (default 60). Both limits
+are included in lock and agent-registration budgets. Snapshot lock wait plus
+refresh must fit below the selection timeout; invalid settings exit 2 before
+work starts.
 The lock stores the runner PID, Unix start time and original timeout budget in
 `owner.json`. It is held through child termination and removed on normal exit,
 errors and handled signals. A later tick reclaims and logs an abandoned lock
-only when the owner PID is dead and its age exceeds pull + selection + tick
-timeout + 10-second grace. It uses the larger of the stored and current budgets, so a
-shorter later tick cannot reclaim while an old child may still run. A live PID
+only when the owner PID is dead and its age exceeds the larger of the stored
+and current timeout budgets, so a shorter later tick cannot reclaim while an
+old child may still run. A live PID
 always keeps its lock, including a reused PID. A short OS file lock on
 `codex.guard` serializes recovery; keep that guard file in place.
 

@@ -39,6 +39,7 @@ class TickTests(unittest.TestCase):
         self.gh_calls = self.root / "gh-calls.jsonl"
         self.pr_queries = self.root / "pr-queries.jsonl"
         self.selections = self.root / "selector-calls"
+        self.rechecks = self.root / "recheck-calls"
         self.pulls = self.root / "pull-calls"
         self.runner = self.repo / ".codex/codex-tick.sh"
         self.runner.parent.mkdir(parents=True)
@@ -52,6 +53,7 @@ class TickTests(unittest.TestCase):
         for helper in (
             "tick_gate.py",
             "github_quota.py",
+            "github_state.py",
             "agents.py",
             "tick_events.py",
             "target_lock.py",
@@ -75,12 +77,23 @@ class TickTests(unittest.TestCase):
             "sys.exit(int(os.environ.get('TEST_NOISE_EXIT', '0')))\n"
         )
         selector_code = (
-            "import os, pathlib, sys, time\n"
+            "import json, os, pathlib, sys, time\n"
             "from github_quota import QuotaExhausted, record, stop_on_quota\n"
+            "if '--recheck' in sys.argv:\n"
+            "    assert sys.argv[1:4] == ['--agent', 'codex', '--recheck']\n"
+            "    seen = pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex-gate-seen.json'\n"
+            "    assert seen.exists(), 'recheck must follow the gate'\n"
+            "    action = json.loads(pathlib.Path(sys.argv[4]).read_text())\n"
+            "    with open(os.environ['TEST_RECHECKS'], 'a') as f:\n"
+            "        f.write(json.dumps(action) + '\\n')\n"
+            "    if os.environ.get('TEST_RECHECK_SLEEP'): time.sleep(60)\n"
+            "    exits = json.loads(os.environ.get('TEST_RECHECK_EXITS', '{}'))\n"
+            "    sys.exit(int(exits.get(str(action.get('pr')), os.environ.get('TEST_RECHECK_EXIT', '0'))))\n"
             "assert sys.argv[1:] == ['--agent', 'codex', '--candidates']\n"
             "assert pathlib.Path(os.environ['TEST_PULLS']).exists()\n"
             "with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('call\\n')\n"
             "if os.environ.get('TEST_SELECTOR_EXIT'): sys.exit(23)\n"
+            "if os.environ.get('TEST_SELECT_READ_EXIT'): sys.exit(int(os.environ['TEST_SELECT_READ_EXIT']))\n"
             "if os.environ.get('TEST_SELECT_QUOTA'):\n"
             "    sys.exit(stop_on_quota(QuotaExhausted('selector exhausted')))\n"
             "if os.environ.get('TEST_WAIT_AFTER_SELECT'):\n"
@@ -90,7 +103,7 @@ class TickTests(unittest.TestCase):
             "print(os.environ['TEST_DECISION'])\n"
         )
         selector.write_text(
-            "from selector_contract import EPIC, REPO, body_digest, issue_url, other\n"
+            "from selector_contract import BASES, EPIC, PROJECT_API, REPO, body_digest, issue_url, other\n"
             "if __name__ == '__main__':\n"
             + "\n".join(f"    {line}" for line in selector_code.splitlines())
             + "\n"
@@ -121,6 +134,18 @@ class TickTests(unittest.TestCase):
             "import json, os, pathlib, sys, time\n"
             "with open(os.environ['TEST_GH_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:3] == ['api', '-i']:\n"
+            "    if os.environ.get('TEST_FRESH_SLEEP'): time.sleep(60)\n"
+            "    status = 200\n"
+            "    if sys.argv[-1] == 'https://api.github.com/user':\n"
+            "        data = {'login': 'test-user'}\n"
+            "    else:\n"
+            "        assert sys.argv[-1] == 'https://api.github.com/repos/phaabe/live.moafunk.de/pulls/417'\n"
+            "        metadata = json.loads(os.environ['TEST_PR_METADATA'])\n"
+            "        data = {'body': metadata['body'], 'head': {'sha': metadata['headRefOid']}}\n"
+            "        status = int(os.environ.get('TEST_FRESH_STATUS', '200'))\n"
+            "    print(f'HTTP/2.0 {status} Test\\n\\n' + json.dumps(data))\n"
+            "    sys.exit(0 if status == 200 else 1)\n"
             "if sys.argv[1:3] == ['api', 'graphql']:\n"
             "    assert sys.argv[3:] == ['-f', 'query=query{rateLimit{resetAt}}']\n"
             "    print(json.dumps({'data': {'rateLimit': {'resetAt': os.environ['TEST_RESET']}}}))\n"
@@ -176,6 +201,7 @@ class TickTests(unittest.TestCase):
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    action_file = pathlib.Path(os.environ['EPIC_ACTION_FILE'])\n"
             "    assert action_file.is_absolute()\n"
+            "    assert os.environ['EPIC_TRUSTED_ROOT'] == str(pathlib.Path(os.environ['TEST_REPO']).resolve())\n"
             "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read(), "
             "'action_file': str(action_file), 'action': json.loads(action_file.read_text())}) + '\\n')\n"
             "if os.environ.get('TEST_MODEL_GUARD'):\n"
@@ -230,6 +256,7 @@ class TickTests(unittest.TestCase):
             "TEST_PR_QUERIES": str(self.pr_queries),
             "TEST_GH_CALLS": str(self.gh_calls),
             "TEST_SELECTIONS": str(self.selections),
+            "TEST_RECHECKS": str(self.rechecks),
             "TEST_PULLS": str(self.pulls),
             "TEST_NOISE_CHECKS": str(self.noise_checks),
             "TEST_REPO": str(self.repo),
@@ -244,6 +271,10 @@ class TickTests(unittest.TestCase):
             "EPIC_LOCK_DIR": str(self.target_locks),
             "EPIC_REPEAT_TTL_SECONDS": "10800",
             "EPIC_BLOCKED_RETRY_SECONDS": "900",
+            "EPIC_SHARED_READER": "0",
+            "EPIC_SNAPSHOT_LOCK_SECONDS": "1",
+            "EPIC_SNAPSHOT_REFRESH_SECONDS": "1",
+            "EPIC_RECHECK_TIMEOUT_SECONDS": "2",
         }
 
     def run_tick(self) -> subprocess.CompletedProcess[str]:
@@ -1424,7 +1455,7 @@ class TickTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(checked.read_text()), [0, 2])
 
-    def test_tool_child_receives_agent_paths_with_core_inheritance(self) -> None:
+    def tool_child_environment(self) -> dict[str, str]:
         custom = self.root / 'state with "quotes" \\ and 🚀'
         self.env["EPIC_STATE_DIR"] = str(custom)
         self.env["EPIC_AGENT_ID"] = "codex-2"
@@ -1448,9 +1479,7 @@ class TickTests(unittest.TestCase):
             "EPIC_QUOTA_DIR": str(custom),
             "EPIC_STATE_DIR": str(agent),
         }
-        self.assertEqual(
-            {name: seen["env"].get(name) for name in expected}, expected
-        )
+        self.assertEqual({name: seen["env"].get(name) for name in expected}, expected)
         self.assertEqual(seen["quota_root"], str(custom))
         self.assertEqual(seen["env"]["EXISTING_USER_SETTING"], "preserved")
         self.assertNotIn("EPIC_UNRELATED", seen["env"])
@@ -1462,6 +1491,30 @@ class TickTests(unittest.TestCase):
                 + json.dumps(value, ensure_ascii=False),
                 call["args"],
             )
+        return seen["env"]
+
+    def test_tool_child_receives_agent_paths_with_core_inheritance(self) -> None:
+        self.tool_child_environment()
+
+    def test_tool_child_keeps_shared_reader_checks_enabled(self) -> None:
+        self.env.update(
+            EPIC_SHARED_READER="1",
+            EPIC_CACHE_DIR=str(self.root / 'cache with "quotes"'),
+            EPIC_FOCUS_ACTIONS="adopt",
+        )
+        seen = self.tool_child_environment()
+        for name in (
+            "EPIC_SHARED_READER",
+            "EPIC_CACHE_DIR",
+            "EPIC_FOCUS_ACTIONS",
+            "EPIC_SNAPSHOT_LOCK_SECONDS",
+            "EPIC_SNAPSHOT_REFRESH_SECONDS",
+            "EPIC_RECHECK_TIMEOUT_SECONDS",
+            "EPIC_SELECT_TIMEOUT_SECONDS",
+        ):
+            self.assertEqual(seen[name], self.env[name])
+        self.assertEqual(seen["EPIC_TRUSTED_ROOT"], str(self.repo.resolve()))
+        self.assertNotIn("EPIC_SNAPSHOT_MAX_AGE_SECONDS", seen)
 
     def test_adopt_quota_wait_during_model_leaves_target_state_untouched(self) -> None:
         self.quota_clock()
@@ -1471,7 +1524,9 @@ class TickTests(unittest.TestCase):
         self.assert_quota_only(model_calls=1)
         self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
 
-    def test_adopt_verification_quota_stores_wait_without_success_or_cooldown(self) -> None:
+    def test_adopt_verification_quota_stores_wait_without_success_or_cooldown(
+        self,
+    ) -> None:
         self.quota_clock()
         self.adopt_action()
         self.env["TEST_GH_QUOTA"] = "verify"
@@ -1510,6 +1565,135 @@ class TickTests(unittest.TestCase):
                 self.assertFalse(self.selections.exists())
                 self.assertFalse(self.calls.exists())
                 self.assertFalse(self.lock.exists())
+
+    def assert_no_action_records(self) -> None:
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse(self.lock.exists())
+        for name in ("codex-gate-seen.json", "codex-backoff.json", "codex-result.json"):
+            self.assertFalse((self.state / name).exists(), name)
+
+    def test_shared_reader_rechecks_after_gate_and_before_model(self) -> None:
+        self.env["EPIC_SHARED_READER"] = "1"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.rechecks.read_text().splitlines()), 1)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_reader_off_omits_recheck_and_ignores_its_settings(self) -> None:
+        self.env["EPIC_RECHECK_TIMEOUT_SECONDS"] = "invalid"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertFalse(self.rechecks.exists())
+
+    def test_fresh_backoff_codes_preserve_records_and_start_no_model(self) -> None:
+        self.block_issue_then_select_draft_pr()
+        self.env["EPIC_SHARED_READER"] = "1"
+        cache = self.state / "github-cache"
+        cache.mkdir()
+        (cache / "auth-context").write_text("test")
+        original = {
+            name: (self.state / name).read_bytes()
+            for name in ("codex-backoff.json", "codex-gate.json", "codex-result.json")
+        }
+        for status, sha, expected in ((503, "a", 75), (200, "b", 0), (0, "a", 75)):
+            with self.subTest(status=status):
+                if status == 0:
+                    self.env["TEST_FRESH_SLEEP"] = "1"
+                    self.env["EPIC_RECHECK_TIMEOUT_SECONDS"] = "1"
+                self.env["TEST_FRESH_STATUS"] = str(status)
+                metadata = json.loads(self.env["TEST_PR_METADATA"])
+                metadata["headRefOid"] = sha * 40
+                self.env["TEST_PR_METADATA"] = json.dumps(metadata)
+                (self.state / "codex-gate-seen.json").write_text("old")
+                self.assertEqual(
+                    self.run_tick().returncode,
+                    expected,
+                    (self.state / "codex.log").read_text(),
+                )
+                for name, before in original.items():
+                    self.assertEqual((self.state / name).read_bytes(), before)
+                self.assertFalse((self.state / "codex-gate-seen.json").exists())
+                self.assertFalse(self.rechecks.exists())
+                self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+                if expected == 75:
+                    self.assertEqual(self.last_finish(), (75, "blocked", "backoff"))
+
+    def test_selector_read_codes_leave_no_action_records(self) -> None:
+        for code, expected in ((5, 75), (6, 0)):
+            with self.subTest(code=code):
+                self.env["TEST_SELECT_READ_EXIT"] = str(code)
+                self.state.mkdir(parents=True, exist_ok=True)
+                (self.state / "codex-gate-seen.json").write_text("old")
+                self.assertEqual(self.run_tick().returncode, expected)
+                self.assert_no_action_records()
+                if code == 5:
+                    self.assertEqual(self.last_finish(), (75, "blocked", "select"))
+
+    def test_recheck_failures_discard_seen_without_action_records(self) -> None:
+        self.env["EPIC_SHARED_READER"] = "1"
+        for code, expected in ((5, 75), (6, 0), (2, 2), (4, 75), (137, 75)):
+            with self.subTest(code=code):
+                self.env["TEST_RECHECK_EXIT"] = str(code)
+                self.assertEqual(self.run_tick().returncode, expected)
+                self.assert_no_action_records()
+                if code in (5, 137):
+                    self.assertEqual(self.last_finish(), (75, "blocked", "recheck"))
+
+    def test_stale_recheck_releases_target_and_tries_next_candidate(self) -> None:
+        self.env["EPIC_SHARED_READER"] = "1"
+        self.env["TEST_RECHECK_EXITS"] = json.dumps({"406": 6})
+        self.candidates(self.review_action(406), self.review_action(407))
+        self.assertEqual(self.run_tick().returncode, 0)
+        [call] = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual(call["action"]["pr"], 407)
+        self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"407"})
+        with (self.target_locks / "406.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_recheck_timeout_is_blocked_without_action_records(self) -> None:
+        self.env.update(
+            EPIC_SHARED_READER="1",
+            EPIC_RECHECK_TIMEOUT_SECONDS="1",
+            TEST_RECHECK_SLEEP="1",
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertEqual(self.last_finish(), (75, "blocked", "recheck"))
+        self.assert_no_action_records()
+
+    def test_shared_reader_validates_all_deadlines_before_work(self) -> None:
+        self.env["EPIC_SHARED_READER"] = "1"
+        for key, value in (
+            ("EPIC_RECHECK_TIMEOUT_SECONDS", "0"),
+            ("EPIC_RECHECK_TIMEOUT_SECONDS", "1.5"),
+            ("EPIC_SNAPSHOT_MAX_AGE_SECONDS", "bad"),
+            ("EPIC_SNAPSHOT_LOCK_SECONDS", "9"),
+            ("EPIC_SNAPSHOT_REFRESH_SECONDS", "10"),
+        ):
+            with self.subTest(key=key, value=value):
+                previous = self.env.get(key)
+                self.env[key] = value
+                self.assertEqual(self.run_tick().returncode, 2)
+                self.assertFalse(self.pulls.exists())
+                self.assertFalse(self.selections.exists())
+                self.assert_no_action_records()
+                if previous is None:
+                    del self.env[key]
+                else:
+                    self.env[key] = previous
+
+    def test_recheck_time_is_in_lock_and_registration_budgets(self) -> None:
+        self.env.update(
+            EPIC_SHARED_READER="1",
+            EPIC_AGENT_ID="codex-2",
+            EPIC_RECHECK_TIMEOUT_SECONDS="7",
+        )
+        process, connection = self.blocked_tick()
+        state = self.state / "agents/codex-2"
+        owner = json.loads((state / "codex.lock/owner.json").read_text())
+        agent = json.loads((state / "agent.json").read_text())
+        self.assertEqual(owner["max_age"], 74)
+        self.assertEqual(agent["budget_seconds"], 74)
+        connection.sendall(b"x")
+        self.assertEqual(process.wait(timeout=10), 0)
 
     def blocked_tick(self) -> tuple[subprocess.Popen[bytes], socket.socket]:
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

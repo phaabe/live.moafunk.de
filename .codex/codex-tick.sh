@@ -6,6 +6,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 state_dir="${EPIC_STATE_DIR:-${HOME}/.local/state/epic-loop}"
 tick_timeout=${EPIC_TICK_TIMEOUT_SECONDS:-1800}
 select_timeout=${EPIC_SELECT_TIMEOUT_SECONDS:-120}
+recheck_timeout=0
 pull_timeout=${EPIC_PULL_TIMEOUT_SECONDS:-120}
 blocked_retry=${EPIC_BLOCKED_RETRY_SECONDS:-900}
 # Optional agent id (codex, codex-2, ...). A registered agent keeps the same
@@ -50,15 +51,31 @@ for duration in "$tick_timeout" "$select_timeout" "$pull_timeout" "$blocked_retr
         exit 2
     fi
 done
+if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
+    # Validate the snapshot deadline before registration or any GitHub read.
+    recheck_timeout=$(python3 - "${repo_root}/scripts/epic" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import github_state
+try:
+    print(github_state.settings().recheck)
+except github_state.ConfigError as error:
+    print(f"tick: {error}", file=sys.stderr)
+    sys.exit(2)
+PY
+    )
+fi
+# Fresh backoff lookup and action recheck each have a separate bounded read.
+budget=$((2 * pull_timeout + select_timeout + 2 * recheck_timeout + tick_timeout + 20))
 if [[ -n "$agent_id" ]]; then
     python3 "${repo_root}/scripts/epic/agents.py" --state-dir "$registry_dir" \
         register --id "$agent_id" --kind codex --label "${EPIC_AGENT_LABEL:-}" \
         --interval "${EPIC_AGENT_INTERVAL_SECONDS:-180}" \
-        --budget "$((2 * pull_timeout + select_timeout + tick_timeout + 20))"
+        --budget "$budget"
 fi
 # Store the original timeout budget so shorter later ticks cannot reclaim early.
 if python3 "${repo_root}/.codex/epic_lock.py" "$lock_dir" "$$" \
-    "$((2 * pull_timeout + select_timeout + tick_timeout + 20))"; then
+    "$budget"; then
     :
 else
     result=$?
@@ -145,6 +162,17 @@ check_quota() {
     fi
 }
 
+discard_seen() {
+    rm -f "${state_dir}/codex-gate-seen.json"
+}
+
+read_blocked() {
+    discard_seen
+    printf 'tick: fresh GitHub read blocked in %s; stopping\n' "$tick_phase" >&2
+    tick_outcome=blocked
+    exit 75
+}
+
 cd "$repo_root"
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
@@ -182,6 +210,11 @@ if [[ "$select_exit" == 4 ]]; then
     tick_phase=quota
     tick_outcome=blocked
     exit 75
+elif [[ "$select_exit" == 5 ]]; then
+    read_blocked
+elif [[ "$select_exit" == 6 ]]; then
+    discard_seen
+    exit 0
 elif [[ "$select_exit" != 0 ]]; then
     exit "$select_exit"
 fi
@@ -258,15 +291,27 @@ print(action)
     check_quota
     tick_phase=backoff
     backoff=0
-    python3 .codex/tick_backoff.py check --action-file "${lock_dir}/action.json" \
-        --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
-    if [[ "$backoff" == 3 ]]; then
+    if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
+        run_bounded "${recheck_timeout}s" python3 .codex/tick_backoff.py check \
+            --action-file "${lock_dir}/action.json" --state-dir "$state_dir" \
+            --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
+        if [[ "$backoff" == 124 || "$backoff" == 137 ]]; then
+            read_blocked
+        fi
+    else
+        python3 .codex/tick_backoff.py check --action-file "${lock_dir}/action.json" \
+            --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
+    fi
+    if [[ "$backoff" == 3 || "$backoff" == 6 ]]; then
+        discard_seen
         release_target
         continue
     elif [[ "$backoff" == 4 ]]; then
         tick_phase=quota
         tick_outcome=blocked
         exit 75
+    elif [[ "$backoff" == 5 ]]; then
+        read_blocked
     elif [[ "$backoff" != 0 ]]; then
         exit "$backoff"
     fi
@@ -285,6 +330,33 @@ print(action)
     elif [[ "$gate" != 0 ]]; then
         exit "$gate"
     fi
+    if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
+        check_quota
+        tick_phase=recheck
+        recheck=0
+        run_bounded "${recheck_timeout}s" python3 scripts/epic/next_action.py \
+            --agent codex --recheck "${lock_dir}/action.json" || recheck=$?
+        case "$recheck" in
+            0) ;;
+            6)
+                discard_seen
+                release_target
+                printf 'tick: %s is stale on GitHub; next candidate\n' "$action"
+                continue
+                ;;
+            4)
+                discard_seen
+                tick_phase=quota
+                tick_outcome=blocked
+                exit 75
+                ;;
+            5|124|137) read_blocked ;;
+            *)
+                discard_seen
+                exit "$recheck"
+                ;;
+        esac
+    fi
     selected=1
     break
 done <<< "$candidates"
@@ -294,15 +366,26 @@ if [[ "$selected" != 1 ]]; then
 fi
 # The hook reads this exact selection, while its target lock is held.
 export EPIC_ACTION_FILE="${lock_dir}/action.json"
+export EPIC_TRUSTED_ROOT="$repo_root"
 
 # Codex may inherit only core variables in tool commands. Forward these paths
 # explicitly without changing the configured policy for other variables.
 model_environment=()
-for variable in EPIC_STATE_DIR EPIC_QUOTA_DIR EPIC_ACTION_FILE; do
+model_variables=(EPIC_STATE_DIR EPIC_QUOTA_DIR EPIC_ACTION_FILE)
+if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
+    model_variables+=(EPIC_SHARED_READER EPIC_TRUSTED_ROOT EPIC_CACHE_DIR
+        EPIC_SNAPSHOT_MAX_AGE_SECONDS EPIC_SNAPSHOT_LOCK_SECONDS
+        EPIC_SNAPSHOT_REFRESH_SECONDS EPIC_RECHECK_TIMEOUT_SECONDS
+        EPIC_SELECT_TIMEOUT_SECONDS EPIC_FOCUS_ACTIONS)
+fi
+for variable in "${model_variables[@]}"; do
     value=$(python3 -c '
 import json, os, sys
-print(json.dumps(os.environ[sys.argv[1]], ensure_ascii=False))
+value = os.environ.get(sys.argv[1])
+if value is not None:
+    print(json.dumps(value, ensure_ascii=False))
 ' "$variable")
+    [[ -n "$value" ]] || continue
     model_environment+=(-c "shell_environment_policy.set.${variable}=${value}")
 done
 

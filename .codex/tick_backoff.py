@@ -19,6 +19,7 @@ from typing import TypedDict
 # Reuse the shared quota contract without changing Claude-owned scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "epic"))
 import github_quota  # noqa: E402
+import github_state  # noqa: E402
 
 SKIP = 3
 BLOCKED = 3
@@ -27,6 +28,10 @@ REPO = "phaabe/live.moafunk.de"
 ISSUE_LINE = re.compile(
     rf"Issue:[ \t]*(https://github\.com/{re.escape(REPO)}/issues/[1-9][0-9]*)[ \t]*"
 )
+
+
+class StaleAction(ValueError):
+    """The selected PR head changed before its cooldown could transfer."""
 
 
 class Entry(TypedDict, total=False):
@@ -98,6 +103,40 @@ def save_entries(state_dir: Path, entries: dict[str, Entry]) -> None:
 
 
 def pr_issue(action: dict[str, object]) -> str | None:
+    if github_state.enabled():
+        reader = github_state.FreshReader("backoff", github_state.settings().recheck)
+        pull = reader.pull(action["pr"])
+        head = pull.get("head")
+        if (
+            "body" not in pull
+            or not isinstance(pull["body"], str | None)
+            or not isinstance(head, dict)
+            or not isinstance(head.get("sha"), str)
+            or github_state.SHA.fullmatch(head["sha"]) is None
+        ):
+            raise github_state.ReadBlocked("invalid PR metadata")
+        metadata = {"body": pull["body"] or "", "headRefOid": head["sha"]}
+        if metadata["headRefOid"] != action["sha"]:
+            raise StaleAction("PR head changed since action selection")
+    else:
+        metadata = legacy_pr_metadata(action)
+    if metadata.get("headRefOid") != action["sha"]:
+        raise ValueError("PR head changed since action selection")
+    declarations = [
+        line for line in metadata["body"].splitlines() if line.startswith("Issue:")
+    ]
+    if not declarations:
+        return None
+    if len(declarations) != 1:
+        raise ValueError("ambiguous PR Issue metadata")
+    match = ISSUE_LINE.fullmatch(declarations[0])
+    if match is None:
+        raise ValueError("invalid PR Issue metadata")
+    return match.group(1)
+
+
+def legacy_pr_metadata(action: dict[str, object]) -> dict[str, object]:
+    """Keep the old read path until both runners enable the shared reader."""
     response = subprocess.run(
         [
             "gh",
@@ -122,19 +161,7 @@ def pr_issue(action: dict[str, object]) -> str | None:
     metadata = json.loads(response.stdout)
     if not isinstance(metadata, dict) or not isinstance(metadata.get("body"), str):
         raise ValueError("invalid PR metadata")
-    if metadata.get("headRefOid") != action["sha"]:
-        raise ValueError("PR head changed since action selection")
-    declarations = [
-        line for line in metadata["body"].splitlines() if line.startswith("Issue:")
-    ]
-    if not declarations:
-        return None
-    if len(declarations) != 1:
-        raise ValueError("ambiguous PR Issue metadata")
-    match = ISSUE_LINE.fullmatch(declarations[0])
-    if match is None:
-        raise ValueError("invalid PR Issue metadata")
-    return match.group(1)
+    return metadata
 
 
 def check(action: dict[str, object], state_dir: Path, ttl: int, now: float) -> int:
@@ -300,6 +327,15 @@ def main() -> int:
         )
     except github_quota.QuotaExhausted as error:
         return github_quota.stop_on_quota(error, quota_dir)
+    except github_state.ConfigError as error:
+        logging.error("backoff: %s", error)
+        return 2
+    except github_state.ReadBlocked as error:
+        logging.error("backoff: read blocked: %s", error)
+        return 5
+    except StaleAction as error:
+        logging.info("backoff: skipped: %s", error)
+        return 6
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         logging.error("backoff: %s", error)
         return FAILED
