@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 import fcntl
 import json
@@ -144,6 +145,59 @@ class StoreTest(Case):
                     leases.check(self.store, key="impl:5", owner="claude", generation=1)
                 self.assertEqual(self.store.file.read_text(), raw)
 
+    def test_records_acquire_cannot_write_block(self) -> None:
+        a = self.claim(5, files=["a/**"])
+        leases.renew(
+            self.store, owner="claude", key="impl:5", generation=a["generation"], pr=50
+        )
+        self.claim(6, owner="codex", files=["b/**"])
+        leases.acquire(self.store, action="review", owner="codex", pr=50, head=HEAD_A)
+        good = json.loads(self.store.file.read_text())
+        floor = good["floor"]
+
+        def impl5(d: dict) -> dict:
+            return d["leases"]["impl:5"]
+
+        mutations = {
+            "impl without files": lambda d: impl5(d).update(files=[]),
+            "pending slot with a PR": lambda d: impl5(d).update(slot="pending"),
+            "PR slot without a PR": lambda d: d["leases"]["impl:6"].update(slot="pr"),
+            "review with files": lambda d: d["leases"][f"review:50:{HEAD_A}"].update(
+                files=["c/**"]
+            ),
+            "overlapping reservations": lambda d: d["leases"]["impl:6"].update(
+                files=["a/x.py"]
+            ),
+            "two leases on one PR": lambda d: d["leases"]["impl:6"].update(
+                pr=50, slot="pr"
+            ),
+            "generation not in history": lambda d: impl5(d).update(
+                generation=impl5(d)["generation"] - 1
+            ),
+            "key does not match issue": lambda d: impl5(d).update(issue=7),
+            "agent does not match owner": lambda d: impl5(d).update(agent="codex"),
+            "someone else's evidence": lambda d: impl5(d).update(
+                evidence=evidence("codex").to_json()
+            ),
+            "unknown field": lambda d: impl5(d).update(extra=1),
+            "unsafe glob": lambda d: impl5(d).update(files=["../x"]),
+            "generation outside the store": lambda d: d["generations"].update(
+                {"impl:9": floor - 1}
+            ),
+            "tentative not a bool": lambda d: impl5(d).update(tentative="no"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name):
+                data = json.loads(json.dumps(good))
+                mutate(data)
+                raw = json.dumps(data)
+                self.store.file.write_text(raw)
+                with self.assertRaises(Blocked):
+                    self.claim(7, owner="codex", files=["z/**"])
+                self.assertEqual(self.store.file.read_text(), raw)
+        self.store.file.write_text(json.dumps(good))
+        leases.listing(self.store)  # the unchanged store is valid
+
     def test_record_missing_a_field_is_corrupt(self) -> None:
         self.claim(5)
         data = json.loads(self.store.file.read_text())
@@ -226,6 +280,46 @@ class StoreTest(Case):
         self.assertEqual(
             self.claim(5, files=["a/**"])["generation"], rec["generation"] + 1
         )
+
+    def test_interrupted_handoff_can_be_finished(self) -> None:
+        rec = self.claim(5, files=["a/**"])
+        real_save = Store.save
+        for step in ("copy", "retire", "pointer"):
+            with self.subTest(step):
+                old, new = self.store, self.make_store(self.tmp / step / "v1")
+                calls = []
+
+                def save(store: Store, data: dict) -> None:
+                    calls.append(store.root)
+                    if (step, len(calls)) in (("copy", 1), ("retire", 2)):
+                        raise Blocked("disk full")
+                    real_save(store, data)
+
+                pointer = (
+                    mock.patch.object(
+                        Store, "write_pointer", side_effect=Blocked("disk full")
+                    )
+                    if step == "pointer"
+                    else nullcontext()
+                )
+                with mock.patch.object(Store, "save", save), pointer:
+                    with self.assertRaises(Blocked):
+                        leases.handoff(new, old.root)
+                if step == "retire":
+                    # The old store is still the source: work it takes now
+                    # must reach the new store too.
+                    self.claim(6, owner="codex", files=["b/**"])
+                leases.handoff(new, old.root)
+                got = leases.check(
+                    new, key="impl:5", owner="claude", generation=rec["generation"]
+                )
+                self.assertEqual(got["files"], ["a/**"])
+                if step == "retire":
+                    self.assertIn("impl:6", new.read()["leases"])
+                with self.assertRaises(Blocked):
+                    leases.listing(old)
+                leases.handoff(new, old.root)  # done: running it again is harmless
+                self.store = new
 
     def test_store_files_are_private(self) -> None:
         self.assertEqual(self.root.stat().st_mode & 0o777, 0o700)
@@ -503,13 +597,35 @@ class LifecycleTest(Case):
             leases.check(
                 self.store, key="impl:5", owner="claude", generation=first["generation"]
             )
-        # A lost store recreated by hand starts above every old generation.
+        # A lost store recreated by hand, at the same clock time.
         self.store.file.unlink()
-        self.clock.now += 1
         with self.assertRaises(Refused):
             leases.init(self.store)  # a lost store is never replaced by accident
         leases.init(self.store, recreate=True)
-        self.assertGreater(self.claim(5)["generation"], second["generation"])
+        third = self.claim(5)
+        self.assertNotIn(
+            third["generation"], (first["generation"], second["generation"])
+        )
+        for old in (first, second):
+            with self.assertRaises(Lost):
+                leases.check(
+                    self.store,
+                    key="impl:5",
+                    owner="claude",
+                    generation=old["generation"],
+                )
+
+    def test_recreated_store_never_reuses_an_incarnation(self) -> None:
+        used = self.store.read()["floor"]
+        self.store.file.unlink()
+        repeat = (used >> leases.GENERATION_BITS) - 1
+        with mock.patch("leases.secrets.randbits", side_effect=[repeat, 41]):
+            leases.init(self.store, recreate=True)
+        self.assertEqual(self.store.read()["floor"], 42 << leases.GENERATION_BITS)
+        self.assertEqual(
+            sorted(json.loads(self.pointer.read_text())["floors"]),
+            sorted([used, 42 << leases.GENERATION_BITS]),
+        )
 
     def test_stale_recheck_releases_only_a_tentative_lease(self) -> None:
         rec = self.claim(5, files=["a/**"])
@@ -890,6 +1006,24 @@ class TakeoverTest(Case):
         leases.check(
             self.store, key="impl:5", owner="claude-2", generation=self.gen + 1
         )
+
+    def test_recovery_record_survives_release_and_reacquire(self) -> None:
+        rec = self.take(FakeProvider())
+        leases.release(
+            self.store,
+            key="impl:5",
+            owner="claude-2",
+            generation=rec["generation"],
+            outcome="abandoned",
+        )
+        again = self.claim(5, files=["a/**"])
+        [kept] = again["handoffs"]
+        self.assertEqual(kept["worktree"], str(self.worktree))
+        self.assertIn("blob.bin", kept["status"])
+        with self.assertRaises(ValueError):
+            leases.clear_recovery(self.store, key="impl:5", index=1)
+        cleared = leases.clear_recovery(self.store, key="impl:5", index=0)
+        self.assertEqual(cleared["handoffs"], [])
 
     def test_no_provider_or_fixture_provider_refuses(self) -> None:
         self.assert_refused_and_unchanged(None)

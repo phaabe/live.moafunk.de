@@ -14,8 +14,11 @@ network call; callers read GitHub before they take the lock.
 A missing or corrupt store blocks (exit 5). It never turns into an empty store:
 only `init` creates one. `init` refuses while the root pointer
 (~/.local/state/epic-loop/leases-root) names another store, and needs
-`--recreate` when the pointer shows a store here was lost. Moving the root
-needs `handoff --from <old root>`, which copies every record and generation.
+`--recreate` when the pointer shows a store here was lost.
+Any record that acquire could not have written (for example an implementation
+lease without files, or two leases on one PR) also blocks. Moving the root
+needs `handoff --from <old root>`, which copies every record and generation;
+after a failure, running it again finishes it.
 
 Keys: `impl:<issue>` (or `impl:pr:<n>` for a PR without an `Issue:` line) for
 claim, continue, fix, fix-checks, resolve-conflict, escalate, merge and adopt;
@@ -29,9 +32,14 @@ the head they read fresh. One PR belongs to at most one implementation lease.
 `acquire` takes the key, the pending PR slot and the file reservation in one
 locked step. Slots per agent kind: open PRs plus pending claims, at most
 MAX_OPEN_PRS. PR numbers from the caller only add to the count; they never free
-a slot a lease still holds, and a PR of a pending claim counts once. Implementation leases never expire. Generations
-only go up: a released key comes back one higher, and a new store starts above
-any earlier one.
+a slot a lease still holds, and a PR of a pending claim counts once.
+Implementation leases never expire.
+
+Generations: each store has a random incarnation in the high 32 bits; a key's
+generation goes up by one per re-acquire or takeover. The root pointer lists
+every incarnation it issued, so a recreated store never repeats an old token,
+whatever the clock says. Takeover records stay on the key, across generations,
+until `clear-recovery` drops them.
 
 `takeover` is a manual command. It refuses unless a live process-evidence
 provider proves the old session stopped (see EvidenceProvider), no publication
@@ -55,6 +63,7 @@ Usage:
   leases.py flag --key K --reason TEXT
   leases.py list [--owner ID]
   leases.py takeover --key K --to ID
+  leases.py clear-recovery --key K --index N
 
 Exit codes: 0 ok, 2 bad input, 3 refused (held, slots full, files overlap,
 takeover not proved), 5 store blocked (lock timeout, missing, corrupt or moved
@@ -73,6 +82,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -86,6 +96,8 @@ OpenPrs = Mapping[int, "int | None"]
 
 OK, INVALID, REFUSED, BLOCKED, LOST = 0, 2, 3, 5, 7
 SCHEMA = 1
+# Generation = incarnation << 32 | counter: every store has its own range.
+GENERATION_BITS = 32
 LOCK_SECONDS = 10.0
 MAX_OPEN_PRS = 2
 REPO = "phaabe/live.moafunk.de"
@@ -189,6 +201,10 @@ def files_line(body: str) -> list[str] | None:
 def literal_prefix(glob: str) -> str:
     cut = min((i for i, c in enumerate(glob) if c in "*?"), default=len(glob))
     return glob[:cut]
+
+
+def file_clash(mine: list[str], theirs: list[str]) -> bool:
+    return any(overlaps(a, b) for a in mine for b in theirs)
 
 
 def overlaps(a: str, b: str) -> bool:
@@ -393,20 +409,35 @@ class Store:
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-    def pointed_root(self) -> Path | None:
+    def pointer_data(self) -> Json | None:
+        """{"root": path, "floors": [...]}: the current root and every
+        generation floor issued through this pointer."""
         try:
-            text = self.pointer.read_text().strip()
+            data = json.loads(self.pointer.read_text())
         except FileNotFoundError:
             return None
-        except OSError as err:
+        except (OSError, ValueError) as err:
             raise Blocked(f"cannot read {self.pointer}: {err}") from None
-        return Path(text) if text else None
+        floors = data.get("floors") if isinstance(data, dict) else None
+        if (
+            not isinstance(data.get("root"), str)
+            or not isinstance(floors, list)
+            or not all(type(f) is int for f in floors)
+        ):
+            raise Blocked(f"corrupt root pointer {self.pointer}")
+        return data
 
-    def write_pointer(self) -> None:
+    def pointed_root(self) -> Path | None:
+        data = self.pointer_data()
+        return Path(data["root"]) if data else None
+
+    def write_pointer(self, floor: int) -> None:
+        old = self.pointer_data()
+        floors = sorted(set(old["floors"] if old else []) | {floor})
         try:
             self.pointer.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             tmp = self.pointer.with_name(f".{self.pointer.name}.{os.getpid()}")
-            tmp.write_text(f"{self.root}\n")
+            tmp.write_text(json.dumps({"root": str(self.root), "floors": floors}))
             os.replace(tmp, self.pointer)
         except OSError as err:
             raise Blocked(f"cannot write {self.pointer}: {err}") from None
@@ -419,7 +450,7 @@ class Store:
                 f"run leases.py handoff --from {pointed}"
             )
 
-    def load(self) -> Json:
+    def load(self, retired_ok: bool = False) -> Json:
         """The store; the caller holds the lock. Never an empty default."""
         try:
             raw = self.file.read_text()
@@ -435,7 +466,7 @@ class Store:
             validate_store(data)
         except (ValueError, TypeError, KeyError) as err:
             raise Blocked(f"corrupt lease store {self.file}: {err}") from None
-        if data.get("handed_off_to"):
+        if data.get("handed_off_to") and not retired_ok:
             raise Blocked(f"lease store handed off to {data['handed_off_to']}")
         return data
 
@@ -472,36 +503,142 @@ class Store:
 
 
 def validate_store(data: Any) -> None:
+    """Every field that ownership, slots or reservations rely on, and the
+    links between records. Anything acquire could not have written is
+    corrupt."""
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise ValueError(f"not a schema {SCHEMA} lease store")
     for name in ("version", "floor"):
-        if type(data.get(name)) is not int:
+        if type(data.get(name)) is not int or data[name] < 0:
             raise ValueError(f"bad {name}")
+    floor = data["floor"]
+    if floor % (1 << GENERATION_BITS) or floor == 0:
+        raise ValueError("bad floor")
     gens, leases = data.get("generations"), data.get("leases")
     if not isinstance(gens, dict) or not isinstance(leases, dict):
         raise ValueError("generations and leases must be objects")
+    for key, gen in gens.items():
+        if type(gen) is not int or not floor < gen < floor + (1 << GENERATION_BITS):
+            raise ValueError(f"{key}: generation {gen!r} outside this store")
     for key, rec in leases.items():
-        if not isinstance(rec, dict) or rec.get("key") != key:
-            raise ValueError(f"bad record {key}")
-        missing = RECORD_KEYS - rec.keys()
-        if missing:
-            raise ValueError(f"{key}: missing {sorted(missing)}")
-        if rec.get("state") not in STATES:
-            raise ValueError(f"{key}: bad state {rec.get('state')!r}")
-        gen = rec.get("generation")
-        if type(gen) is not int or type(gens.get(key)) is not int or gen > gens[key]:
-            raise ValueError(f"{key}: generation missing from history")
-        if not isinstance(rec.get("files"), list):
-            raise ValueError(f"{key}: bad files")
+        validate_record(key, rec, gens)
+    live = [r for r in leases.values() if r["state"] in HELD]
+    for n, rec in enumerate(live):
+        for other in live[n + 1 :]:
+            if file_clash(rec["files"], other["files"]):
+                raise ValueError(f"{rec['key']} and {other['key']} share files")
+            if rec["kind"] == other["kind"] == "impl" and rec["pr"] is not None:
+                if rec["pr"] == other["pr"]:
+                    raise ValueError(f"{rec['key']} and {other['key']} share a PR")
 
 
-def new_store(root: Path, clock: Callable[[], float]) -> Json:
-    # Milliseconds since the epoch: a recreated store starts above every
-    # generation an earlier store handed out.
+def optional(value: Any, kind: type) -> bool:
+    return value is None or (type(value) is kind and (kind is not int or value > 0))
+
+
+def validate_record(key: str, rec: Any, gens: Json) -> None:
+    if not isinstance(rec, dict) or set(rec) != RECORD_KEYS or rec["key"] != key:
+        raise ValueError(f"{key}: bad record fields")
+    kind, state, owner = rec["kind"], rec["state"], rec["owner"]
+    problems = []
+    if state not in STATES:
+        problems.append("state")
+    if not isinstance(owner, str) or not ID.fullmatch(owner):
+        problems.append("owner")
+    elif rec["agent"] != agent_of(owner):
+        problems.append("agent")
+    if rec["generation"] != gens.get(key) or type(rec["generation"]) is not int:
+        problems.append("generation")
+    if not isinstance(rec["repo"], str) or not rec["repo"]:
+        problems.append("repo")
+    if not (optional(rec["issue"], int) and optional(rec["pr"], int)):
+        problems.append("issue/pr")
+    if rec["head"] is not None and not (
+        isinstance(rec["head"], str) and SHA.fullmatch(rec["head"])
+    ):
+        problems.append("head")
+    files = rec["files"]
+    if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+        problems.append("files")
+    elif files != sorted(set(files)) or any(safe_glob(f) != f for f in files):
+        problems.append("files")
+    for name in ("worktree", "branch", "reason"):
+        if not optional(rec[name], str):
+            problems.append(name)
+    if rec["outcome"] not in (None, *OUTCOMES):
+        problems.append("outcome")
+    if type(rec["tentative"]) is not bool:
+        problems.append("tentative")
+    if not isinstance(rec["uncertain"], list) or not all(
+        isinstance(u, str) for u in rec["uncertain"]
+    ):
+        problems.append("uncertain")
+    if not isinstance(rec["handoffs"], list) or not all(
+        isinstance(h, dict) for h in rec["handoffs"]
+    ):
+        problems.append("handoffs")
+    for name in ("acquired_at", "renewed_at"):
+        if type(rec[name]) not in (int, float):
+            problems.append(name)
+    if rec["evidence"] is not None:
+        try:
+            if ProcessEvidence.from_json(rec["evidence"]).owner != owner:
+                problems.append("evidence owner")
+        except ValueError:
+            problems.append("evidence")
+    if kind == "review":
+        if (
+            rec["action"] != "review"
+            or key != f"review:{rec['pr']}:{rec['head']}"
+            or rec["pr"] is None
+            or rec["head"] is None
+            or files != []
+            or rec["slot"] is not None
+        ):
+            problems.append("review key, files or slot")
+    elif kind == "impl":
+        want = f"impl:{rec['issue']}" if rec["issue"] is not None else None
+        if want is None and rec["pr"] is not None:
+            want = f"impl:pr:{rec['pr']}"
+        slot = None
+        if state in HELD:
+            slot = "pending" if rec["pr"] is None else "pr"
+        if (
+            rec["action"] not in IMPL_ACTIONS
+            or key != want
+            or not files
+            or rec["slot"] != slot
+            or state == "superseded"
+        ):
+            problems.append("impl key, files or slot")
+    else:
+        problems.append("kind")
+    if problems:
+        raise ValueError(f"{key}: bad {', '.join(problems)}")
+
+
+def safe_glob(glob: str) -> str | None:
+    try:
+        return normalize_glob(glob)
+    except ValueError:
+        return None
+
+
+def new_floor(used: list[int]) -> int:
+    """A random incarnation this pointer never issued: generations of a
+    recreated store cannot repeat a lost store's tokens, even if the clock
+    went back."""
+    while True:
+        floor = (secrets.randbits(30) + 1) << GENERATION_BITS
+        if floor not in used:
+            return floor
+
+
+def new_store(root: Path, floor: int) -> Json:
     return {
         "schema": SCHEMA,
         "version": 0,
-        "floor": int(clock() * 1000),
+        "floor": floor,
         "root": str(root),
         "generations": {},
         "leases": {},
@@ -513,7 +650,8 @@ def init(store: Store, recreate: bool = False) -> Json:
     only with `recreate`: a lost store is replaced on purpose, never by a
     runner."""
     with store.locked():
-        pointed = store.pointed_root()
+        pointer = store.pointer_data()
+        pointed = Path(pointer["root"]) if pointer else None
         if pointed is not None and pointed != store.root:
             raise Refused(
                 f"root pointer names {pointed}; use leases.py handoff --from {pointed}"
@@ -525,33 +663,45 @@ def init(store: Store, recreate: bool = False) -> Json:
                 f"the store at {store.file} was lost; check for owned work, "
                 "then run leases.py init --recreate"
             )
-        data = new_store(store.root, store.clock)
+        data = new_store(store.root, new_floor(pointer["floors"] if pointer else []))
         store.save(data)
-        store.write_pointer()
+        store.write_pointer(data["floor"])
         return data
 
 
 def handoff(store: Store, old_root: Path) -> Json:
-    """Move every record and generation from old_root, then retire old_root."""
+    """Move every record and generation from old_root, then retire old_root.
+
+    Three writes: the copy, the retired old store, the pointer. Running it
+    again after a failure finishes the job. Until the old store is retired it
+    stays the source, so a copy made before a failure is made again."""
     old = Store(old_root, store.pointer, store.lock_seconds, store.clock)
     if old.root == store.root:
         raise ValueError("old and new root are the same")
     with old.locked(), store.locked():
         pointed = store.pointed_root()
-        if pointed not in (None, old.root):
+        if pointed not in (None, old.root, store.root):
             raise Refused(f"root pointer names {pointed}, not {old.root}")
-        source = old.load()
+        source = old.load(retired_ok=True)
+        retired = source.get("handed_off_to")
+        if retired not in (None, str(store.root)):
+            raise Refused(f"{old.root} was handed off to {retired}")
         if store.file.exists():
-            raise Refused(f"lease store already exists at {store.file}")
-        data = copy.deepcopy(source)
-        data["root"] = str(store.root)
-        data["version"] += 1
-        data["handoff_from"] = str(old.root)
-        store.save(data)
-        source["handed_off_to"] = str(store.root)
-        source["version"] += 1
-        old.save(source)
-        store.write_pointer()
+            current = store.load()
+            if current.get("handoff_from") != str(old.root):
+                raise Refused(f"lease store already exists at {store.file}")
+        if retired:
+            data = store.load()
+        else:
+            data = copy.deepcopy(source)
+            data["root"] = str(store.root)
+            data["version"] += 1
+            data["handoff_from"] = str(old.root)
+            store.save(data)
+            source["handed_off_to"] = str(store.root)
+            source["version"] += 1
+            old.save(source)
+        store.write_pointer(data["floor"])
         return data
 
 
@@ -615,7 +765,7 @@ def file_conflicts(data: Json, key: str, files: list[str]) -> list[str]:
 
 
 def next_generation(data: Json, key: str) -> int:
-    gen = max(data["generations"].get(key, data["floor"]), data["floor"]) + 1
+    gen = data["generations"].get(key, data["floor"]) + 1
     data["generations"][key] = gen
     return gen
 
@@ -724,7 +874,8 @@ def acquire(
             "outcome": None,
             "released_at": None,
             "reason": None,
-            "handoffs": [],
+            # Recovery records outlive the lease until clear-recovery.
+            "handoffs": list(rec["handoffs"]) if rec else [],
         }
         data["leases"][key] = rec
         return copy.deepcopy(rec)
@@ -876,6 +1027,17 @@ def flag(store: Store, *, key: str, reason: str) -> Json:
         if rec is None or rec["state"] not in HELD:
             raise Refused(f"no held lease {key}")
         rec["state"], rec["reason"] = "needs-takeover", reason
+        return copy.deepcopy(rec)
+
+
+def clear_recovery(store: Store, *, key: str, index: int) -> Json:
+    """Drop one takeover record after its old worktree was cleaned up by hand.
+    The only way a recovery record goes away."""
+    with store.transaction() as data:
+        rec = data["leases"].get(key)
+        if rec is None or not 0 <= index < len(rec["handoffs"]):
+            raise ValueError(f"{key} has no recovery record {index}")
+        del rec["handoffs"][index]
         return copy.deepcopy(rec)
 
 
@@ -1109,6 +1271,10 @@ def parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list").add_argument("--owner")
 
+    p = sub.add_parser("clear-recovery")
+    p.add_argument("--key", required=True)
+    p.add_argument("--index", required=True, type=int)
+
     p = sub.add_parser("takeover")
     p.add_argument("--key", required=True)
     p.add_argument("--to", required=True)
@@ -1187,6 +1353,8 @@ def run(args: argparse.Namespace, store: Store) -> Any:
         return flag(store, key=args.key, reason=args.reason)
     if args.command == "list":
         return listing(store, args.owner)
+    if args.command == "clear-recovery":
+        return clear_recovery(store, key=args.key, index=args.index)
     return takeover(store, key=args.key, to=args.to, provider=load_provider())
 
 
