@@ -280,6 +280,56 @@ class EvaluationTests(unittest.TestCase):
         self.data["comments"] = [verdict(1, "CHANGES REQUESTED"), verdict(2)]
         self.assertEqual(self.errors(), [])
 
+    def test_missing_or_stale_verdict_is_typed_waiting(self) -> None:
+        for comments in (
+            [],
+            [verdict(sha=OLD)],
+            [verdict(state="CHANGES REQUESTED", sha=OLD)],
+            [verdict(), verdict(2, sha=OLD)],
+            [dict(verdict(), user={"login": "untrusted"})],
+        ):
+            with self.subTest(comments=comments):
+                self.data["comments"] = comments
+                errors = self.errors()
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], check.WaitingReason)
+
+    def test_invalid_review_stays_failure_even_for_an_old_head(self) -> None:
+        for sha in (HEAD, OLD):
+            for damage in ("malformed", "edited", "erased", "missing evidence"):
+                with self.subTest(sha=sha, damage=damage):
+                    comment = verdict(sha=sha)
+                    if damage == "malformed":
+                        comment["body"] += " trailing text"
+                    elif damage == "missing evidence":
+                        comment.pop("last_edited_at")
+                    else:
+                        comment["last_edited_at"] = comment["created_at"]
+                        if damage == "erased":
+                            comment["body"] = "No longer a verdict"
+                    self.data["comments"] = [comment]
+                    errors = self.errors()
+                    self.assertEqual(len(errors), 1)
+                    self.assertNotIsInstance(errors[0], check.WaitingReason)
+        self.data["comments"] = [verdict(state="CHANGES REQUESTED")]
+        self.assertNotIsInstance(self.errors()[0], check.WaitingReason)
+
+    def test_only_open_drafts_are_typed_waiting(self) -> None:
+        self.data["pr"]["draft"] = True
+        errors = self.errors()
+        self.assertEqual(errors, ["PR is a draft"])
+        self.assertIsInstance(errors[0], check.WaitingReason)
+        for draft in (True, False):
+            with self.subTest(draft=draft):
+                self.data["pr"].update(state="closed", draft=draft)
+                errors = self.errors()
+                self.assertEqual(errors, ["PR must be open"])
+                self.assertNotIsInstance(errors[0], check.WaitingReason)
+        for draft in (None, "true", 1):
+            with self.subTest(draft=draft):
+                self.data["pr"].update(state="open", draft=draft)
+                self.assertNotIsInstance(self.errors()[0], check.WaitingReason)
+
     def test_same_second_edit_rejected_and_missing_marker_fails_closed(self) -> None:
         comment = self.data["comments"][0]
         comment["last_edited_at"] = comment["created_at"]

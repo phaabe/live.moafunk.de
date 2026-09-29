@@ -24,7 +24,7 @@ LANES = {"setup", "ops", "backend", "frontend", "coordination"}
 
 
 class WaitingReason(str):
-    """A blocking check result that may pass once CI reports or completes."""
+    """A blocking result waiting for PR readiness, review or checks."""
 
 
 def load_policy(path: str | Path) -> Json:
@@ -318,7 +318,9 @@ def verdict_errors(
         ):
             candidates.append((comment, match))
     if not candidates:
-        return [f"missing standalone verdict by {reviewer}"]
+        if edited_at:
+            return ["reviewer comment was edited; post a new verdict"]
+        return [WaitingReason(f"missing standalone verdict by {reviewer}")]
     latest, match = max(
         candidates,
         key=lambda item: (item[0].get("created_at", ""), item[0].get("id", 0)),
@@ -334,7 +336,7 @@ def verdict_errors(
     ):
         return ["latest counterpart verdict was edited; post a new verdict"]
     if match[3] != head:
-        return ["latest counterpart verdict is for a different head"]
+        return [WaitingReason("latest counterpart verdict is for a different head")]
     if match[1] != "APPROVED":
         return ["latest counterpart verdict requests changes"]
     return []
@@ -394,8 +396,12 @@ def evaluate(
         return ["invalid head SHA"]
     if expected_head is not None and head != expected_head:
         errors.append("head does not match expected head")
-    if pull.get("state") != "open" or pull.get("draft") is not False:
-        errors.append("PR must be open and not a draft")
+    if pull.get("state") != "open":
+        errors.append("PR must be open")
+    elif pull.get("draft") is True:
+        errors.append(WaitingReason("PR is a draft"))
+    elif pull.get("draft") is not False:
+        errors.append("PR draft state is missing or invalid")
     if snapshot.get("repository") != policy["repository"] or any(
         pull.get(side, {}).get("repo", {}).get("full_name") != policy["repository"]
         for side in ("head", "base")
