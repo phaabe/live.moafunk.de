@@ -162,7 +162,7 @@ Priority, first match wins:
    agent for its current head.
 7. `continue`: the agent's draft PR, or its In progress issue without a PR.
 8. `adopt`: a focus PR with no owner line (`Executor:`, `Author:` or
-   `Reviewer:`) whose files route to this agent (see Routing below). The agent
+   `Reviewer:`, with any value) whose files route to this agent (see Routing below). The agent
    adds the `Epic:`, `Executor:`, `Lane:`, `Reviewer:`, `Leaf IDs:` and `Issue:`
    lines and keeps the rest of the body. A PR with any owner line is never
    adopted.
@@ -179,7 +179,8 @@ leaves are merged.
 Routing, for an item without an owner (`scripts/epic/routing.py`):
 an existing Executor (project field or PR line) always wins. Otherwise each
 file's owner comes from `file_rules` in `.github/epic-lanes.yml` (first
-matching pattern). One agent owns all files: that agent. Owners differ, a file
+matching pattern; a renamed file counts with its old and new path). A board
+Executor counts only for a PR of this repository. One agent owns all files: that agent. Owners differ, a file
 has no rule, or the files share no lane: `needs-anton`, no action. No files
 known yet (an issue before refinement): Claude, for `refine` only.
 

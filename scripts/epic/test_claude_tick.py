@@ -174,6 +174,18 @@ class ClaudeTickTest(unittest.TestCase):
         )
         self.assertEqual(len(self.model_targets()), 1)
 
+    def test_quota_wait_from_a_skipped_gate_stops_the_candidate_loop(self) -> None:
+        # Codex review on PR 497: the next candidate's gate read GitHub anyway.
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        runner = self.run_tick(
+            TEST_CANDIDATES=candidates, TEST_GATE_WAIT="1", TEST_GATE_EXIT="3"
+        )
+        self.assertEqual(runner.wait(timeout=30), 0)
+        gates = [c for c in self.calls_made() if c[0] == "gate"]
+        self.assertEqual(gates, [["gate", "check"]])
+        self.assertEqual(self.model_targets(), [])
+
     def test_two_runners_on_one_target_start_one_model(self) -> None:
         first = self.run_tick(TEST_MODEL_SLEEP="3")
         for _ in range(100):

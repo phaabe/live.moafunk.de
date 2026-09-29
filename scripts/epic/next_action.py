@@ -87,6 +87,9 @@ ACTIONS_ENV = "EPIC_FOCUS_ACTIONS"
 # PR body lines `adopt` adds, at line start.
 OWNER_KEYS = ("Epic", "Executor", "Lane", "Reviewer", "Leaf IDs", "Issue")
 OWNER_KEY_LINE = re.compile(rf"^(?:{'|'.join(OWNER_KEYS)}):")
+# Any owner line, with any value ("Executor: Anton", "Reviewer: TBD", "Executor: REPLACE").
+ANY_OWNER_LINE = re.compile(r"^[ \t]*(?:Executor|Author|Reviewer):", re.MULTILINE)
+PR_URL = re.compile(rf"https://github\.com/{re.escape(REPO)}/pull/(\d+)")
 # Rank per priority label, lower first. No label counts as medium.
 PRIORITIES = {"priority::high": 0, "priority::medium": 1, "priority::low": 2}
 DEFAULT_PRIORITY = PRIORITIES["priority::medium"]
@@ -350,12 +353,24 @@ def in_focus(
     return bool(pr_labels(pr, issue_labels) & focus)
 
 
+def ownerless(pr: dict[str, Any]) -> bool:
+    """True when the PR body has no owner line at all, known agent or not.
+
+    Only such a PR may be adopted: `adopt` must never overwrite an owner.
+    """
+    return pr_author(pr) is None and not ANY_OWNER_LINE.search(pr.get("body") or "")
+
+
 def board_executors(state: dict[str, Any]) -> dict[int, str]:
-    """Executor project field of PRs on the board, by PR number."""
+    """Executor project field of this repository's PRs on the board, by number.
+
+    The board also holds PRs of other repositories with the same numbers.
+    """
     return {
         i["content"]["number"]: i["executor"]
         for i in state.get("items", [])
         if (i.get("content") or {}).get("type") == "PullRequest"
+        and PR_URL.fullmatch(i["content"].get("url") or "")
         and i.get("executor") in AGENTS
     }
 
@@ -493,7 +508,7 @@ def decide(
     # A focus PR without an owner line: only the routed agent adopts it.
     if focus and "adopt" in enabled:
         for p in prs:
-            if pr_author(p) is not None:
+            if not ownerless(p):
                 continue
             routed = pr_route(p, state, rules)
             if routed.agent == agent:
@@ -719,6 +734,16 @@ def focus_issues(
     return [found[n] for n in sorted(found)]
 
 
+def changed_paths(rows: list[dict[str, Any]]) -> list[str]:
+    """Paths a PR touches. A rename counts with both paths, as in epic-guard."""
+    found = set()
+    for row in rows:
+        found.add(row["filename"])
+        if row.get("status") == "renamed" and row.get("previous_filename"):
+            found.add(row["previous_filename"])
+    return sorted(found)
+
+
 def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
     fields = (
         "number,title,body,baseRefName,headRefName,headRefOid,isDraft,labels,"
@@ -760,11 +785,9 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
             [row for page in pages for row in page], count
         )
         # Routing of a PR without an owner line needs its files.
-        if pr.get("baseRefName") in BASES and pr_author(pr) is None:
-            pr["files"] = sorted(
-                row["filename"]
-                for row in rest_rows(f"repos/{REPO}/pulls/{n}/files?per_page=100")
-            )
+        if pr.get("baseRefName") in BASES and ownerless(pr):
+            rows = rest_rows(f"repos/{REPO}/pulls/{n}/files?per_page=100")
+            pr["files"] = changed_paths(rows)
     merged: list[dict[str, Any]] = []
     for base in BASES:
         merged += gh_json(
@@ -828,6 +851,8 @@ def pr_reason(
     if ESCALATION_LABEL in labels(p):
         return ESCALATION_LABEL
     author = pr_author(p)
+    if author is None and not ownerless(p):
+        return "owner line names no known agent; fix it by hand"
     if author is None:
         routed = pr_route(p, state, rules)
         if routed.agent is None:

@@ -282,6 +282,12 @@ while IFS= read -r candidate; do
         printf 'tick: %s target locked by another runner; next candidate\n' "$action"
         continue
     fi
+    # A skipped candidate's gate (or the other runner) may have stored a quota
+    # wait: no further GitHub read then.
+    if ! quota_open; then
+        tick_phase=quota
+        exit 0
+    fi
     # After the lock: skip a repeat, or a target that changed since selection.
     tick_phase=gate
     gate=0

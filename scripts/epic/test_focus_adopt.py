@@ -130,13 +130,73 @@ class AdoptDecideTest(unittest.TestCase):
     def test_board_executor_wins_over_files(self) -> None:
         board = {
             "executor": "Codex",
-            "content": {"type": "PullRequest", "number": 484},
+            "content": {
+                "type": "PullRequest",
+                "number": 484,
+                "url": "https://github.com/phaabe/live.moafunk.de/pull/484",
+            },
         }
         got = actions("Codex", [ownerless()], items=[board])
         self.assertIn("adopt", [a.action for a in got])
         self.assertNotIn(
             "adopt", [a.action for a in actions("Claude", [ownerless()], items=[board])]
         )
+
+    def test_foreign_board_pr_does_not_override_the_owner(self) -> None:
+        # Codex review on PR 497: a PR of another repository with the same number.
+        foreign = {
+            "executor": "Codex",
+            "content": {
+                "type": "PullRequest",
+                "number": 484,
+                "url": "https://github.com/other/repo/pull/484",
+            },
+        }
+        self.assertIn(
+            "adopt",
+            [a.action for a in actions("Claude", [ownerless()], items=[foreign])],
+        )
+        self.assertNotIn(
+            "adopt",
+            [a.action for a in actions("Codex", [ownerless()], items=[foreign])],
+        )
+
+    def test_unknown_owner_line_is_never_adopted(self) -> None:
+        # Codex review on PR 497: any owner line blocks adopt, known agent or not.
+        for line in (
+            "Executor: Anton",
+            "Author: human",
+            "Reviewer: TBD",
+            "Executor: REPLACE",
+            "Executor:",
+            "  Reviewer: TBD",
+        ):
+            with self.subTest(line=line):
+                owned = ownerless(body=f"{ORIGINAL}\n{line}")
+                got = actions("Claude", [owned]) + actions("Codex", [owned])
+                self.assertNotIn("adopt", [a.action for a in got])
+                text = status({"prs": [owned]}, False, FOCUS, ADOPT, RULES)
+                self.assertIn("owner line names no known agent", text)
+
+    def test_cross_owner_rename_needs_anton(self) -> None:
+        # Codex review on PR 497: the old path of a rename counts, as in epic-guard.
+        rows = [
+            {
+                "filename": "scripts/epic/foo.py",
+                "previous_filename": ".codex/foo.py",
+                "status": "renamed",
+            },
+            {"filename": "scripts/epic/bar.py", "status": "modified"},
+        ]
+        files = next_action.changed_paths(rows)
+        self.assertEqual(
+            files, [".codex/foo.py", "scripts/epic/bar.py", "scripts/epic/foo.py"]
+        )
+        moved = ownerless(files=files)
+        for agent in ("Claude", "Codex"):
+            self.assertNotIn("adopt", [a.action for a in actions(agent, [moved])])
+        text = status({"prs": [moved]}, False, FOCUS, ADOPT, RULES)
+        self.assertIn("needs-anton: files have different owners", text)
 
     def test_adopt_only_when_listed(self) -> None:
         got = actions("Claude", [ownerless()], enabled=frozenset())
