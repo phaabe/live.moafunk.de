@@ -15,6 +15,6 @@ done
 [[ "$state_dir" == /* ]] || state_dir="${PWD}/${state_dir}"
 export EPIC_STATE_DIR="$state_dir"
 cd "$repo_root"
-mkdir -p tools/agent-monitoring/runtime/metrics
+mkdir -p tools/agent-monitoring/runtime/metrics tools/agent-monitoring/runtime/alloy
 docker compose -f tools/agent-monitoring/compose.yaml up -d
 exec python3 scripts/epic/monitor.py "$@" --state-dir "$state_dir"

@@ -3,17 +3,34 @@ set -euo pipefail
 umask 077
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-state_dir="${HOME}/.local/state/epic-loop"
-lock_dir="${state_dir}/codex.lock"
+state_dir="${EPIC_STATE_DIR:-${HOME}/.local/state/epic-loop}"
 tick_timeout=${EPIC_TICK_TIMEOUT_SECONDS:-1800}
 select_timeout=${EPIC_SELECT_TIMEOUT_SECONDS:-120}
 pull_timeout=${EPIC_PULL_TIMEOUT_SECONDS:-120}
 blocked_retry=${EPIC_BLOCKED_RETRY_SECONDS:-900}
+# Optional agent id (codex, codex-2, ...). A registered agent keeps the same
+# files as the legacy state dir in its own folder, agents/<id>/.
+agent_id=${EPIC_AGENT_ID:-}
+# The runner changes directory later; keep every path absolute.
+[[ "$state_dir" == /* ]] || state_dir="${PWD}/${state_dir}"
+registry_dir=$state_dir
 
 # Pause before any API call or session, even if dependencies are unavailable.
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+if [[ -n "$agent_id" ]]; then
+    if [[ ! "$agent_id" =~ ^codex(-[a-z0-9]{1,16})?$ ]]; then
+        printf 'tick: EPIC_AGENT_ID must look like codex or codex-2\n' >&2
+        exit 2
+    fi
+    state_dir="${registry_dir}/agents/${agent_id}"
+fi
+# The gate helper reads the state dir from the environment.
+export EPIC_STATE_DIR="$state_dir"
+# One GitHub quota for all agents: its wait file lives in the shared state dir.
+export EPIC_QUOTA_DIR="$registry_dir"
+lock_dir="${state_dir}/codex.lock"
 
 mkdir -p "$state_dir"
 exec >> "${state_dir}/codex.log" 2>&1
@@ -23,6 +40,12 @@ for duration in "$tick_timeout" "$select_timeout" "$pull_timeout" "$blocked_retr
         exit 2
     fi
 done
+if [[ -n "$agent_id" ]]; then
+    python3 "${repo_root}/scripts/epic/agents.py" --state-dir "$registry_dir" \
+        register --id "$agent_id" --kind codex --label "${EPIC_AGENT_LABEL:-}" \
+        --interval "${EPIC_AGENT_INTERVAL_SECONDS:-180}" \
+        --budget "$((select_timeout + tick_timeout + 10))"
+fi
 # Store the original timeout budget so shorter later ticks cannot reclaim early.
 if python3 "${repo_root}/.codex/epic_lock.py" "$lock_dir" "$$" \
     "$((pull_timeout + select_timeout + tick_timeout + 10))"; then

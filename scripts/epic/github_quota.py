@@ -40,8 +40,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+# The quota belongs to the GitHub user, so every agent shares one wait.
+# Registered agents point EPIC_STATE_DIR at their own folder; the runners set
+# EPIC_QUOTA_DIR to the shared state dir.
 STATE_DIR = Path(
-    os.environ.get("EPIC_STATE_DIR", Path.home() / ".local" / "state" / "epic-loop")
+    os.environ.get("EPIC_QUOTA_DIR")
+    or os.environ.get("EPIC_STATE_DIR", Path.home() / ".local" / "state" / "epic-loop")
 )
 WAIT_FILE = "github-quota-wait.json"
 MARGIN = 60

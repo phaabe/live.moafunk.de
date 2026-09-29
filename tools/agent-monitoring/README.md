@@ -46,6 +46,28 @@ bash tools/agent-monitoring/run.sh --state-dir /path/to/epic-loop
 docker compose -f tools/agent-monitoring/compose.yaml down
 ```
 
+## Run more agents
+
+A runner can run as its own agent. Set `EPIC_AGENT_ID` (for example
+`claude-2` or `codex-review`; the id starts with the kind) and schedule the
+runner as usual. Optional: `EPIC_AGENT_LABEL` (up to 40 characters) and
+`EPIC_AGENT_INTERVAL_SECONDS` (your schedule; default 600 for Claude, 180 for
+Codex). The interval decides when an agent counts as late.
+
+The runner registers in `agents/<id>/` of the state dir and keeps its lock,
+log and state files there. The collector and Alloy find it within 10 seconds.
+Runners without `EPIC_AGENT_ID` keep the old files and show as `claude` and
+`codex`. At most 12 agents are shown.
+
+```bash
+python3 scripts/epic/agents.py list              # what the collector sees
+python3 scripts/epic/agents.py retire --id claude-2
+```
+
+A retired agent stays visible for 24 hours. Agents of one kind share the
+selector, so two of them can pick the same PR. The dashboard shows this as a
+collision; it does not prevent it.
+
 ## What the dashboards show
 
 Every task is placed in the epic as a path:
@@ -120,7 +142,10 @@ Grafana and Prometheus; no external notifications are sent.
   collector started reading; older history fills the other tick panels. The
   log has no finish time, so a tick's end is the time the collector read it
   (up to 5 s late), or unknown for history. The checkpoint is
-  `runtime/ticks-<agent>.json`; delete it to rebuild (counters restart at 0).
+  `runtime/ticks-<agent>.json` (`ticks-agents-<id>.json` for registered
+  agents); delete it to rebuild (counters restart at 0).
+- An agent is late when no tick started for longer than twice its interval
+  plus its tick budget. A pause never makes an agent late.
 - Log lines get the time Alloy read them. On the first start, older lines all
   get that start time. Lines over 16 KB are cut.
 - Token costs, model utilization, per-task percentage and completion ETA are
@@ -136,7 +161,9 @@ JSON and bounded log tails; model text and prompts never enter metrics.
 Only sanitized `.prom` files are mounted into the textfile exporter.
 
 The runner logs are shown on the agent pages. Alloy reads the state directory
-read-only and sends `claude.log` and `codex.log` to Loki. These logs contain
+read-only, but only the logs the collector lists in
+`runtime/alloy/targets.json`: regular files of known agents, never links.
+Without a running collector, no new log lines reach Loki. These logs contain
 model transcripts, prompts and command output. They stay on this Mac: Loki and
 Alloy have no published ports, and Grafana binds to `127.0.0.1`. No container gets host
 credentials or source code.

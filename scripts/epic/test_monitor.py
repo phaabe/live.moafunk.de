@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
+import agents
 import monitor
 
 
 NOW = 2_000.0
+LEGACY = ("claude", "codex")
 HEAD = "a" * 40
 URL = "https://github.com/phaabe/live.moafunk.de"
 
@@ -59,6 +62,9 @@ class RunnerMetricsTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        # The monitor finds legacy agents by their log, as on the runner host.
+        for agent in LEGACY:
+            (self.root / f"{agent}.log").write_text("")
 
     def write_json(self, name: str, value: object) -> Path:
         path = self.root / name
@@ -93,7 +99,7 @@ class RunnerMetricsTest(unittest.TestCase):
 
     def test_inactive_runner_is_not_an_error(self) -> None:
         text = monitor.runner_metrics(self.root, False, NOW)
-        for agent in monitor.AGENTS:
+        for agent in LEGACY:
             self.assertIn(
                 f'epic_runner_state{{agent="{agent}",state="inactive"}} 1\n', text
             )
@@ -110,6 +116,10 @@ class RunnerMetricsTest(unittest.TestCase):
         (self.root / "claude.lock").mkdir()
         text = monitor.runner_metrics(self.root, False, NOW)
         self.assertIn('epic_runner_state{agent="claude",state="unknown"} 1\n', text)
+        # Codex review round 3: an ownerless lock looked like a late agent.
+        self.assertIn(
+            'epic_agent_presence_info{agent="claude",presence="unknown"} 1\n', text
+        )
 
     def test_malformed_owner_does_not_hide_other_agent(self) -> None:
         for owner in (
@@ -230,43 +240,340 @@ class RunnerMetricsTest(unittest.TestCase):
         self.assertIn('epic_outcome_severity{outcome="error"} 6\n', text)
 
     def test_ledgers_publish_ticks_for_both_agents(self) -> None:
-        for agent in monitor.AGENTS:
+        for agent in LEGACY:
             (self.root / f"{agent}.log").write_text(
                 "\ntick: started 1970-01-01T00:10:00Z repo=/x\ntick: finished exit=0\n"
             )
-        ledgers = monitor.make_ledgers(self.root, self.root / "runtime")
+        ledgers = monitor.Ledgers(self.root / "runtime")
         text = monitor.runner_metrics(self.root, False, NOW, ledgers=ledgers)
         self.assertEqual(text.count("# TYPE epic_ticks_total counter"), 1)
-        for agent in monitor.AGENTS:
+        for agent in LEGACY:
             self.assertIn(f'epic_tick_ledger_read_success{{agent="{agent}"}} 1\n', text)
             self.assertIn(f'epic_tick_last_outcome{{agent="{agent}"}} 1\n', text)
         self.assertTrue((self.root / "runtime/ticks-codex.json").exists())
 
     def test_missing_log_is_reported_not_zeroed(self) -> None:
-        log = self.root / "codex.log"
+        home = agents.register(self.root, "codex-2", 1.0)
+        log = home / "codex.log"
         log.write_text(
             "\ntick: started 1970-01-01T00:10:00Z repo=/x\ntick: finished exit=1\n"
         )
-        (self.root / "claude.log").write_text("")
-        ledgers = monitor.make_ledgers(self.root, self.root / "runtime")
+        ledgers = monitor.Ledgers(self.root / "runtime")
         monitor.runner_metrics(self.root, False, NOW, ledgers=ledgers)
         log.unlink()
         with self.assertLogs(level="WARNING"):
             text = monitor.runner_metrics(self.root, False, NOW + 5, ledgers=ledgers)
-        self.assertIn('epic_tick_ledger_read_success{agent="codex"} 0\n', text)
-        self.assertIn('epic_tick_last_outcome{agent="codex"} 6\n', text)
+        self.assertIn('epic_tick_ledger_read_success{agent="codex-2"} 0\n', text)
+        self.assertIn('epic_tick_last_outcome{agent="codex-2"} 6\n', text)
         # A broken ledger never hides the runner state.
-        self.assertIn('epic_runner_state{agent="codex",state="inactive"} 1\n', text)
+        self.assertIn('epic_runner_state{agent="codex-2",state="inactive"} 1\n', text)
+
+
+def tick_log(*ticks: tuple[float, int, str]) -> str:
+    """Log text for ticks given as (start, exit code, first JSON line)."""
+    return "".join(
+        "\ntick: started "
+        + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(start))
+        + f" repo=/x\n{action}\ntick: finished exit={code}\n"
+        for start, code, action in ticks
+    )
+
+
+class AgentRowsTest(unittest.TestCase):
+    """Presence, row text, collisions and the recent strip per agent."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.ledgers = monitor.Ledgers(self.root / "runtime")
+
+    def agent(self, agent_id: str, *ticks: tuple[float, int, str], **kw: float) -> Path:
+        home = agents.register(self.root, agent_id, kw.pop("at", 1.0), **kw)
+        (home / f"{agents.kind_of(agent_id)}.log").write_text(tick_log(*ticks))
+        return home
+
+    def run_at(self, now: float, *, paused: bool = False, alive: bool = True) -> str:
+        return monitor.runner_metrics(
+            self.root, paused, now, alive=lambda _: alive, ledgers=self.ledgers
+        )
+
+    def running(self, home: Path, kind: str, started: float, action: str) -> None:
+        lock = home / f"{kind}.lock"
+        lock.mkdir()
+        (lock / "owner.json").write_text(
+            json.dumps({"pid": 42, "started_at": started, "max_age": 300})
+        )
+        (lock / "action.json").write_text(action)
+
+    def test_presence_follows_interval_budget_and_pause(self) -> None:
+        # Late after 2 x interval + budget = 2 x 60 + 100 = 220 s without a start.
+        self.agent("claude-a", (1_000, 0, "{}"), interval=60, budget=100)
+        self.agent("codex-b", interval=60, budget=100, at=1_000)
+        agents.register(self.root, "codex-c", 1_000)
+        agents.retire(self.root, "codex-c", 1_100)
+        text = self.run_at(1_200)
+        self.assertIn(
+            'epic_agent_presence_info{agent="claude-a",presence="idle"} 1', text
+        )
+        self.assertIn(
+            'epic_agent_presence_info{agent="codex-b",presence="new"} 1', text
+        )
+        self.assertIn('epic_agent_presence{agent="codex-c"} 0', text)
+        self.assertNotIn('epic_runner_state{agent="codex-c"', text)
+        self.assertIn('epic_agent_next_tick_seconds{agent="claude-a"} -140', text)
+        text = self.run_at(1_221)
+        self.assertIn('epic_agent_presence{agent="claude-a"} 4', text)
+        self.assertIn(
+            'epic_agent_presence_info{agent="codex-b",presence="late"} 1', text
+        )
+        self.assertIn('epic_agents_registered{presence="late"} 2', text)
+        self.assertIn('epic_agents_registered_kind{kind="codex"} 1', text)
+        # A pause stops ticks on purpose: nobody is late and no tick is due.
+        text = self.run_at(1_221, paused=True)
+        self.assertIn(
+            'epic_agent_presence_info{agent="claude-a",presence="idle"} 1', text
+        )
+        self.assertIn(
+            'epic_agent_presence_info{agent="codex-b",presence="new"} 1', text
+        )
+        self.assertNotIn("epic_agent_next_tick_seconds", text)
+
+    def test_running_agent_row_and_collision(self) -> None:
+        pr = '{"action": "review", "pr": 7}'
+        first = self.agent("claude", (100, 1, "{}"))
+        second = self.agent("claude-2")
+        self.agent("codex", (200, 75, '{"action": "claim", "issue": "x"}'))
+        self.running(first, "claude", 1_900, pr)
+        self.running(second, "claude", 1_950, pr)
+        text = self.run_at(NOW)
+        target = f"{URL}/pull/7"
+        for name in ("claude", "claude-2"):
+            self.assertIn(
+                f'epic_agent_collision{{agent="{name}",target="{target}"}} 1', text
+            )
+            self.assertIn(
+                f'epic_agent_row_info{{action_text="collision · review PR 7",agent="{name}"',
+                text,
+            )
+        self.assertIn('epic_agent_budget_seconds{agent="claude"} 300', text)
+        self.assertIn(
+            'epic_agent_last_start_timestamp_seconds{agent="claude"} 1900', text
+        )
+        self.assertNotIn('epic_agent_next_tick_seconds{agent="claude"}', text)
+        # Idle rows show the last tick's action; exit 75 without a blocked line is error.
+        self.assertIn(
+            'epic_agent_row_info{action_text="last: claim",agent="codex",'
+            'outcome_text="error 75 · unknown",target=""} 1',
+            text,
+        )
+        # Order: running first, then kind, then id.
+        order = [
+            line.split('"')[1]
+            for line in text.splitlines()
+            if line.startswith("epic_agent_order{")
+        ]
+        self.assertEqual(order, ["claude", "claude-2", "codex"])
+
+    def test_one_running_agent_on_a_target_is_no_collision(self) -> None:
+        home = self.agent("claude")
+        self.running(home, "claude", 1_900, '{"action": "fix", "pr": 9}')
+        self.agent("codex", (1_800, 0, '{"action": "fix", "pr": 9}'))
+        text = self.run_at(NOW)
+        self.assertNotIn("epic_agent_collision", text)
+        self.assertIn('action_text="fix PR 9",agent="claude"', text)
+        self.assertIn('action_text="last: fix PR 9",agent="codex"', text)
+
+    def test_recent_strip_is_right_aligned(self) -> None:
+        self.agent("codex", *[(100 + i, (0, 1, 124)[i % 3], "{}") for i in range(3)])
+        text = self.run_at(NOW)
+        self.assertIn('epic_agent_recent{agent="codex",slot="20"} 3', text)
+        self.assertIn('epic_agent_recent{agent="codex",slot="19"} 6', text)
+        self.assertIn('epic_agent_recent{agent="codex",slot="18"} 1', text)
+        self.assertNotIn('slot="17"', text)
+
+    def test_agents_come_and_go_between_cycles(self) -> None:
+        self.run_at(NOW)
+        home = self.agent("codex-new", (1_000, 0, "{}"))
+        self.assertIn('epic_tick_last_outcome{agent="codex-new"} 1', self.run_at(NOW))
+        checkpoint = self.root / "runtime/ticks-agents-codex-new.json"
+        self.assertTrue(checkpoint.exists())
+        shutil.rmtree(home)
+        text = self.run_at(NOW + 5)
+        self.assertNotIn("codex-new", text)
+        self.assertEqual(self.ledgers.ledgers, {})
+        self.assertFalse(checkpoint.exists())
+
+    def test_returning_agent_does_not_count_old_ticks_again(self) -> None:
+        # Codex review: a restored log with a new inode was read as rotated.
+        home = self.agent("codex-2")
+        log = home / "codex.log"
+        self.run_at(NOW)
+        log.write_text(tick_log((1_000, 0, "{}")))
+        ok = 'epic_ticks_total{agent="codex-2",outcome="ok"}'
+        self.assertIn(f"{ok} 1\n", self.run_at(NOW + 5))
+        content = log.read_text()
+        shutil.rmtree(home)
+        self.run_at(NOW + 10)
+        home = self.agent("codex-2")
+        (home / "codex.log").write_text(content)
+        self.assertIn(f"{ok} 0\n", self.run_at(NOW + 15))
+
+    def test_agent_gone_across_a_restart_does_not_count_old_ticks(self) -> None:
+        # Codex review round 2: the agent vanished while the collector was
+        # stopped, so no ledger in memory knew about it.
+        home = self.agent("codex-2")
+        log = home / "codex.log"
+        self.run_at(NOW)
+        log.write_text(tick_log((1_000, 0, "{}")))
+        ok = 'epic_ticks_total{agent="codex-2",outcome="ok"}'
+        self.assertIn(f"{ok} 1\n", self.run_at(NOW + 5))
+        content = log.read_text()
+        shutil.rmtree(home)
+        self.ledgers = monitor.Ledgers(self.root / "runtime")  # restart
+        self.run_at(NOW + 10)
+        self.assertFalse((self.root / "runtime/ticks-agents-codex-2.json").exists())
+        home = self.agent("codex-2")
+        (home / "codex.log").write_text(content)
+        self.ledgers = monitor.Ledgers(self.root / "runtime")  # restart again
+        self.assertIn(f"{ok} 0\n", self.run_at(NOW + 15))
+
+    def test_unreadable_agent_folder_rejects_only_itself(self) -> None:
+        # Codex review round 2: a PermissionError escaped discovery.
+        self.agent("codex")
+        locked = self.agent("claude-2")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        text = self.run_at(NOW)
+        self.assertIn('epic_agent_registry_rejected{reason="invalid"} 1\n', text)
+        self.assertIn('epic_agent_presence_info{agent="codex",presence="new"} 1', text)
+        self.assertNotIn('agent="claude-2"', text)
+
+    def test_failed_runner_read_is_unknown_not_idle_or_late(self) -> None:
+        # Codex review round 2: an unreadable lock looked like a late agent.
+        home = self.agent("claude", (100, 0, "{}"), interval=60, budget=100)
+        (home / "claude.lock").mkdir()
+        (home / "claude.lock/owner.json").write_text("{broken")
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW)
+        self.assertIn(
+            'epic_agent_presence_info{agent="claude",presence="unknown"} 1', text
+        )
+        self.assertIn('epic_agent_presence{agent="claude"} 5', text)
+        self.assertIn('epic_agents_registered{presence="late"} 0', text)
+        self.assertNotIn("epic_agent_next_tick_seconds", text)
+
+    def test_running_tick_without_an_action_has_no_old_target(self) -> None:
+        # Codex review: the last target of a selecting agent made a collision.
+        pr = '{"action": "review", "pr": 7}'
+        first = self.agent("claude", (1_000, 0, pr))
+        second = self.agent("claude-2")
+        self.running(first, "claude", 1_900, "")
+        self.running(second, "claude", 1_950, pr)
+        text = self.run_at(NOW)
+        self.assertNotIn("epic_agent_collision", text)
+        self.assertIn(
+            'epic_agent_row_info{action_text="selecting",agent="claude",'
+            'outcome_text="ok 0",target=""} 1',
+            text,
+        )
+
+    def test_linked_lock_file_is_a_read_failure(self) -> None:
+        home = self.agent("claude-2")
+        secret = self.root / "secret.json"
+        secret.write_text('{"pid": 42, "started_at": 1900, "max_age": 300}')
+        (home / "claude.lock").mkdir()
+        (home / "claude.lock/owner.json").symlink_to(secret)
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW)
+        self.assertIn('epic_runner_read_success{agent="claude-2"} 0\n', text)
+        self.assertNotIn('epic_tick_elapsed_seconds{agent="claude-2"}', text)
+
+    def test_each_metric_family_is_contiguous(self) -> None:
+        # Codex review: the second agent's samples followed other families.
+        for name in ("claude", "codex", "codex-2"):
+            self.agent(name, (1_000, 1, '{"action": "fix", "pr": 3}'))
+        text = self.run_at(NOW)
+        seen: list[str] = []
+        for line in text.splitlines():
+            family = line.split()[2] if line.startswith("#") else line.split("{")[0]
+            family = family.split()[0]
+            if not seen or seen[-1] != family:
+                self.assertNotIn(family, seen, f"{family} is split")
+                seen.append(family)
+        self.assertEqual(text.count("# TYPE epic_agent_info gauge"), 1)
+
+    def test_registry_problems_are_published(self) -> None:
+        (self.root / "claude.log").write_text("")
+        self.agent("claude")
+        (self.root / "agents/codex-x").mkdir()
+        (self.root / "agents/codex-x/agent.json").write_text("[]")
+        text = self.run_at(NOW)
+        self.assertIn('epic_agent_conflict{agent="claude"} 1', text)
+        self.assertIn('epic_agent_registry_rejected{reason="invalid"} 1', text)
+        self.assertIn('epic_agent_registry_rejected{reason="limit"} 0', text)
+        self.assertIn(
+            'epic_agent_info{agent="claude",kind="claude",label="",layout="registered"} 1',
+            text,
+        )
+
+
+class AlloyTargetsTest(unittest.TestCase):
+    def test_only_regular_logs_of_known_agents_are_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "claude.log").write_text("x")
+            agents.register(root, "codex-2", 1.0)
+            (root / "agents/codex-2/codex.log").write_text("x")
+            linked = agents.register(root, "claude-3", 1.0)
+            (linked / "claude.log").symlink_to(root / "claude.log")
+            agents.register(root, "codex-4", 1.0)  # no log yet
+            unregistered = root / "agents/claude-5"
+            unregistered.mkdir()
+            (unregistered / "claude.log").write_text("x")
+            rows = json.loads(monitor.alloy_targets(agents.discover(root, NOW)))
+        self.assertEqual(
+            sorted((r["labels"]["agent"], r["labels"]["__path__"]) for r in rows),
+            [
+                ("claude", "/logs/claude.log"),
+                ("codex-2", "/logs/agents/codex-2/codex.log"),
+            ],
+        )
+
+    def test_alloy_reads_only_the_collector_list(self) -> None:
+        config = (
+            Path(__file__).resolve().parents[2] / "tools/agent-monitoring/alloy.alloy"
+        ).read_text()
+        self.assertIn('files            = ["/targets/targets.json"]', config)
+        self.assertNotIn("__path__", config)
+        self.assertNotIn("local.file_match", config)
+
+    def test_publish_writes_the_list_and_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "state").mkdir()
+            (root / "state/codex.log").write_text("")
+            args = monitor.argparse.Namespace(
+                state_dir=root / "state",
+                output=root / "runtime/metrics",
+                pause_file=root / "pause",
+            )
+            args.output.mkdir(parents=True)
+            monitor.publish_local(args, monitor.Ledgers(root / "runtime"))
+            targets = json.loads((root / "runtime/alloy/targets.json").read_text())
+            self.assertEqual(targets[0]["labels"]["agent"], "codex")
+            self.assertIn("epic_agent_info", (args.output / "runners.prom").read_text())
 
 
 # Samples per scrape at the fetch limits; guards against unbounded label growth.
-SCRAPE_BUDGET = 7000
+SCRAPE_BUDGET = 10_000
 
 
 class ScrapeSizeTest(unittest.TestCase):
     def test_max_size_snapshot_and_full_ledgers_stay_under_budget(self) -> None:
         """Fetch limits: 500 project items; 100 open and 300 merged PRs per base
-        (two bases). Full ledgers: 2 000 ticks per agent over the 7-day window."""
+        (two bases). Full ledgers: 2 000 ticks for each of the 12 agents over the
+        7-day window, one of them running."""
         body = "\n".join(f"- [ ] **B1.{i}.1** Leaf {i}." for i in range(5))
         items = [
             plan_issue(
@@ -302,8 +609,15 @@ class ScrapeSizeTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for agent in monitor.AGENTS:
-                (root / f"{agent}.log").write_text(
+            logs = [root / f"{agent}.log" for agent in LEGACY]
+            for i in range(agents.MAX_AGENTS - len(LEGACY)):
+                home = agents.register(root, f"claude-{i}", 1.0, label="x" * 40)
+                logs.append(home / "claude.log")
+            owner = root / "claude.lock/owner.json"
+            owner.parent.mkdir()
+            owner.write_text('{"pid": 1, "started_at": 599990, "max_age": 1930}')
+            for log in logs:
+                log.write_text(
                     "".join(
                         "\ntick: started "
                         + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(i * 300))
@@ -312,7 +626,7 @@ class ScrapeSizeTest(unittest.TestCase):
                         for i in range(2000)
                     )
                 )
-            ledgers = monitor.make_ledgers(root, root / "runtime")
+            ledgers = monitor.Ledgers(root / "runtime")
             runners = monitor.runner_metrics(root, False, 2000 * 300, ledgers=ledgers)
         samples = [
             line for line in (github + runners).splitlines() if not line.startswith("#")

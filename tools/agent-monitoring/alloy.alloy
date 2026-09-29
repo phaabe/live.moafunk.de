@@ -1,13 +1,15 @@
-// Ship the two runner logs to Loki. The log directory is mounted read-only.
-local.file_match "runners" {
-  path_targets = [
-    {"__path__" = "/logs/claude.log", "agent" = "claude"},
-    {"__path__" = "/logs/codex.log", "agent" = "codex"},
-  ]
+// Ship the runner logs to Loki. The log directory is mounted read-only.
+// Alloy follows links when it opens a file, and the agents can write their
+// folders, so Alloy never globs them. The collector lists the logs to ship
+// (regular files of known agents, never links) and rebuilds the list every
+// cycle; Alloy re-reads it every 10 s.
+discovery.file "runners" {
+  files            = ["/targets/targets.json"]
+  refresh_interval = "10s"
 }
 
 loki.source.file "runners" {
-  targets    = local.file_match.runners.targets
+  targets    = discovery.file.runners.targets
   forward_to = [loki.write.local.receiver]
 }
 

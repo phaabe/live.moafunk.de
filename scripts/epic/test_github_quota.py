@@ -173,6 +173,28 @@ class WaitTest(unittest.TestCase):
         )
 
 
+class SharedWaitTest(unittest.TestCase):
+    def test_quota_dir_wins_over_the_agent_state_dir(self) -> None:
+        # Registered agents have their own EPIC_STATE_DIR; the quota is shared.
+        script = (
+            "import github_quota, json; print(json.dumps(str(github_quota.STATE_DIR)))"
+        )
+        here = Path(__file__).resolve().parent
+        for env, expected in (
+            ({"EPIC_STATE_DIR": "/a/agents/x", "EPIC_QUOTA_DIR": "/a"}, "/a"),
+            ({"EPIC_STATE_DIR": "/a/agents/x"}, "/a/agents/x"),
+        ):
+            out = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=here,
+                env={**os.environ, "EPIC_QUOTA_DIR": "", **env},
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            self.assertEqual(json.loads(out), expected)
+
+
 class ScriptTest(unittest.TestCase):
     """The real scripts with a fake gh that counts GitHub calls."""
 

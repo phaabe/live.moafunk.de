@@ -33,6 +33,7 @@ class ClaudeTickTest(unittest.TestCase):
         for rel in (
             "scripts/epic/claude-tick.sh",
             "scripts/epic/github_quota.py",
+            "scripts/epic/agents.py",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",
         ):
@@ -55,6 +56,8 @@ class ClaudeTickTest(unittest.TestCase):
             f"    {WAIT_WRITE}\n"
             "if sys.argv[1] == 'check':\n"
             "    sys.exit(int(os.environ.get('TEST_GATE_EXIT', '0')))\n"
+            "with open(os.environ['TEST_CALLS'] + '.env', 'a') as f:\n"
+            "    f.write(os.environ.get('EPIC_STATE_DIR', '') + '\\n')\n"
         )
         (self.repo / "scripts/epic/tick_verify.py").write_text(
             "import json, os, sys\n"
@@ -253,6 +256,72 @@ class ClaudeTickTest(unittest.TestCase):
             self.calls_made(),
             [["git", "pull -q --ff-only"], ["select"], ["gate", "check"]],
         )
+
+    def test_relative_state_dir_is_resolved_before_changing_directory(self) -> None:
+        runner = subprocess.Popen(
+            ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")],
+            env={**self.env, "EPIC_STATE_DIR": "relative state"},
+            cwd=self.root,
+        )
+        self.assertEqual(runner.wait(timeout=30), 0)
+        custom = self.root / "relative state"
+        self.assertIn("tick: finished exit=0", (custom / "claude.log").read_text())
+        self.assertFalse((custom / "claude.lock").exists())
+        self.assertFalse((self.repo / "relative state").exists())
+        # Codex review round 4: the gate helper runs after the cd.
+        gate_dirs = set(Path(f"{self.calls}.env").read_text().split("\n")) - {""}
+        self.assertEqual(
+            {str(Path(d).resolve()) for d in gate_dirs}, {str(custom.resolve())}
+        )
+
+    def test_unset_state_dir_uses_the_home_default(self) -> None:
+        env = {k: v for k, v in self.env.items() if k != "EPIC_STATE_DIR"}
+        runner = subprocess.Popen(
+            ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")], env=env
+        )
+        self.assertEqual(runner.wait(timeout=30), 0)
+        default = Path(env["HOME"]) / ".local/state/epic-loop"
+        self.assertIn("tick: finished exit=0", (default / "claude.log").read_text())
+        self.assertFalse(self.state.exists())
+
+    def test_registered_agent_uses_its_own_folder(self) -> None:
+        env = {"EPIC_AGENT_ID": "claude-2", "EPIC_AGENT_LABEL": "docs"}
+        self.assertEqual(self.run_tick(**env).wait(timeout=30), 0)
+        home = self.state / "agents/claude-2"
+        agent = json.loads((home / "agent.json").read_text())
+        self.assertEqual(
+            (agent["kind"], agent["label"], agent["interval_seconds"]),
+            ("claude", "docs", 600),
+        )
+        self.assertEqual(agent["budget_seconds"], 1930)
+        self.assertIn("tick: finished exit=0", (home / "claude.log").read_text())
+        self.assertFalse((self.state / "claude.log").exists())
+        self.assertFalse((home / "claude.lock").exists())
+        model = next(c for c in self.calls_made() if c[0] == "claude")
+        config = model[1].split("--mcp-config ", 1)[1].split(" --", 1)[0]
+        server = json.loads(config)["mcpServers"]["epic-gate"]
+        self.assertEqual(server["env"], {"EPIC_STATE_DIR": str(home)})
+
+    def test_registered_agent_obeys_the_shared_quota_wait(self) -> None:
+        # The GraphQL quota belongs to the GitHub user, not to one agent.
+        self.store_wait()
+        env = {"EPIC_AGENT_ID": "claude-2"}
+        self.assertEqual(self.run_tick(**env).wait(timeout=30), 0)
+        self.assertFalse(self.calls.exists())  # no git, gh, selector or model
+        log = (self.state / "agents/claude-2/claude.log").read_text()
+        self.assertIn("retry at 2099-01-01", log)
+
+    def test_agent_id_of_another_kind_is_refused(self) -> None:
+        runner = subprocess.Popen(
+            ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")],
+            env={**self.env, "EPIC_AGENT_ID": "codex-2"},
+            stderr=subprocess.PIPE,
+        )
+        _, error = runner.communicate(timeout=30)
+        self.assertEqual(runner.returncode, 2)
+        self.assertIn(b"EPIC_AGENT_ID must look like claude", error)
+        self.assertFalse(self.state.exists())
+        self.assertFalse(self.calls.exists())
 
     def test_term_stops_the_model_before_the_lock_is_released(self) -> None:
         # Codex review on PR 412: TERM removed the lock but left the model running.

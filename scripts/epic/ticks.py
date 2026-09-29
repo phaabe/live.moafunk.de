@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 from zoneinfo import ZoneInfo
 
 Json = dict[str, Any]
@@ -120,7 +120,7 @@ def valid_checkpoint(data: object) -> bool:
 
 class Sink(Protocol):
     def add(
-        self, name: str, value: float, *, kind: str = ..., **labels: str
+        self, name: str, value: float, *, metric_type: str = ..., **labels: str
     ) -> None: ...
 
 
@@ -167,9 +167,12 @@ class LogLedger:
         log: Path,
         checkpoint: Path,
         normalize: Callable[[Json], dict[str, str]],
+        opener: Callable[[], BinaryIO] | None = None,
     ) -> None:
         self.agent, self.log, self.checkpoint = agent, log, checkpoint
         self.normalize = normalize
+        # The monitor passes a no-follow opener for model-writable folders.
+        self.opener = opener or (lambda: self.log.open("rb"))
         self.state: Json | None = None
         self.dirty = False
 
@@ -203,7 +206,10 @@ class LogLedger:
         return data
 
     def update(self, now: float) -> None:
-        stat = self.log.stat()
+        with self.opener() as stream:
+            self.update_from(stream, os.fstat(stream.fileno()), now)
+
+    def update_from(self, stream: BinaryIO, stat: os.stat_result, now: float) -> None:
         if self.state is None:
             self.state = self.load() or self.fresh(now, stat.st_size)
             self.dirty = True
@@ -217,12 +223,14 @@ class LogLedger:
             "open": dict(before["open"]) if before["open"] else None,
         }
         try:
-            self.read(state, stat, now)
+            self.read(state, stream, stat, now)
         except BaseException:
             self.state = before
             raise
 
-    def read(self, state: Json, stat: os.stat_result, now: float) -> None:
+    def read(
+        self, state: Json, stream: BinaryIO, stat: os.stat_result, now: float
+    ) -> None:
         if state["inode"] is not None and (
             stat.st_ino != state["inode"] or stat.st_size < state["offset"]
         ):
@@ -233,9 +241,8 @@ class LogLedger:
         state["inode"] = stat.st_ino
         if stat.st_size == state["offset"]:
             return
-        with self.log.open("rb") as stream:
-            stream.seek(state["offset"])
-            data = stream.read(stat.st_size - state["offset"])
+        stream.seek(state["offset"])
+        data = stream.read(stat.st_size - state["offset"])
         partial = state["partial"].encode("utf-8", "surrogateescape")
         position = state["offset"] - len(partial)
         buffer = partial + data
@@ -379,7 +386,7 @@ def export(metrics: Sink, ledger: LogLedger, now: float) -> None:
         metrics.add(
             "ticks_total",
             state["totals"][kind],
-            kind="counter",
+            metric_type="counter",
             agent=agent,
             outcome=kind,
         )
