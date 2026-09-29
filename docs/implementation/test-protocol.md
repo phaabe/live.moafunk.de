@@ -8,7 +8,9 @@ the legacy Compose examples as proof of isolation under this protocol.
 
 ## Current harness gaps
 
-Inspected at `e319efe17e376e5a0cdaa26b8ebefe10d4114418`:
+Reproducible source: `162556178ff83cea104d7cc36babe3ad8a0321fc`, retained in
+integration-branch history. Its harness files match the inspected feature
+checkout; only documentation differs (see the [baseline](baseline.md)).
 
 | File under `docs/stream-rework/local-test-harness/` | Gap |
 | --- | --- |
