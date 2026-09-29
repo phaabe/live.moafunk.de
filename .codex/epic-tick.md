@@ -12,6 +12,18 @@ that one action, then end this session. Do not call the selector again to pick
 more work, resume another session, start a background agent or enable a schedule.
 If the target or required state changed, stop and let a later tick decide.
 
+For `claim`, `continue`, `fix`, `fix-checks` and `resolve-conflict`, the runner
+has already prepared your feature worktree and started this session there.
+Its path is appended below. Edit only that checkout, on its selected branch.
+The fixed directory is the runner's sibling `<runner-name-without--runner>-wt`,
+for example `~/git/2_jobs/live.moafunk.de-codex-wt/<branch>`.
+Do not create or move feature worktrees, or switch another session's checkout.
+Preserve unfinished files and commits. If the checkout no longer matches the
+selected work, stop. A branch held elsewhere needs manual handoff: its human
+operator releases it, and a later tick prepares the runner checkout. Never use
+`--force` or `--ignore-other-worktrees` to acquire it, or reset, stash or remove
+the other checkout. Review actions keep their separate detached-checkout flow.
+
 ## Act
 
 | Action | Work |
@@ -24,7 +36,7 @@ If the target or required state changed, stop and let a later tick decide.
 | `review` | Review Claude's exact `sha` in a detached checkout. Run tests and probe edge cases. Post findings separately, then one standalone verdict: `Review: APPROVED by Codex at <sha>` or `Review: CHANGES REQUESTED by Codex at <sha>`. Recheck the head immediately before posting; if it changed, stop. |
 | `continue` | Resume the claimed issue or draft PR, in its own worktree. Finish the work and tests, commit, push, and mark the PR ready. Update the issue's project status only from recorded leaf evidence; use Done only when every leaf is done. |
 | `adopt` | Recheck the head equals `sha`, the PR is open and its body has no `Executor:`, `Author:` or `Reviewer:` line, with any value. Otherwise stop. Confirm its routed owner is Codex and determine a valid lane if the board Executor supplied ownership without `lane`. Find the issue it implements and its leaf IDs (or `setup`); if unclear, return blocked. Write a body file with the six metadata lines below at line start, preserving the original body text. Move existing metadata lines instead of duplicating them. Apply only `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<pr> -F body=@<absolute-file-path>`, using a literal path. Comment that Codex adopted the PR. Change nothing else. The runner verifies the body before accepting completion. |
-| `claim` | Read the issue and readiness comment. Pick only Ready leaves assigned to Codex. Check ownership, record leaf IDs/files/branch and set Status to In progress. Create `feat/<issue>-<slug>` from `origin/dev/312-interim` in its own worktree. Run GitNexus impact before editing. Open a draft PR early. |
+| `claim` | Read the issue and readiness comment. Pick only Ready leaves assigned to Codex. Check ownership, record leaf IDs/files/the prepared branch and set Status to In progress. Use the prepared worktree. Run GitNexus impact before editing. Open a draft PR early. |
 | `escalate` | Label the PR `needs-anton`, comment with the disagreement and open question, and stop. |
 
 For PR actions, recheck the expected head before editing or publishing. Retry

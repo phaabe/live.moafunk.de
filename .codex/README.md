@@ -91,6 +91,35 @@ Use a dedicated runner checkout on `dev/312-interim` with that branch as its
 upstream. Keep feature work in separate worktrees. Trust its project hooks
 before unattended use, as described above.
 
+Edit actions (`claim`, `continue`, `fix`, `fix-checks`, `resolve-conflict`) use
+`.codex/feature_worktree.py` before model launch. Their fixed directory is the
+runner's sibling, named by removing a final `-runner` and adding `-wt`.
+For `~/git/2_jobs/live.moafunk.de-codex-runner`, it is
+`~/git/2_jobs/live.moafunk.de-codex-wt/<branch>`. Each runner checkout therefore
+has its own directory. Keep that directory free of symlinks. The model starts
+with this worktree as `--cd`; the runner checkout holds no feature work.
+
+The helper checks the origin, current Codex ownership, issue status, allowed
+base, branch name and PR head. A PR must have one `Executor: Codex` line and
+one `Issue:` link; forks and branches for another issue are refused. New claims
+use `feat/<issue>-codex-work` from `origin/dev/312-interim`. A unique existing
+issue branch or the PR's branch is reused. Ambiguous issue branches need a
+manual choice. The preceding runner pull refreshes origin refs; a PR head that
+does not match those refs stops the tick. Existing worktrees retain local edits
+and unpublished commits; a local PR branch must contain the selected head.
+The helper never rebases or resets a checkout to make it match.
+
+If normal `git worktree add` refuses a branch held elsewhere, the tick logs
+`handoff needed: <branch> in <path>` and starts no model for it. The existing
+repeat gate stores a handoff fingerprint containing the branch and occupying
+path, including for `continue`. It suppresses another request for the normal
+repeat TTL while the condition is unchanged. No blocked-target cooldown is
+created. The human must release their checkout manually; the next tick checks
+Git again and can acquire the branch immediately after release. The runner
+never forces acquisition or switches, resets, stashes or removes another
+checkout. Feature-worktree deletion and detached-review cleanup are separate
+work. No installed Git permissions are changed by this preparation step.
+
 A scheduler must set `PATH` so `gh`, `codex`, Python and GNU `timeout` are
 available. For Apple Silicon Homebrew, include `/opt/homebrew/bin` along with
 `/usr/bin:/bin:/usr/sbin:/sbin`; use `/usr/local/bin` for Intel Homebrew. Add the
@@ -111,8 +140,9 @@ selected action. Exit 3 tries the next candidate; other gate errors stop
 the tick. An unchanged action and GitHub timestamp are skipped for three hours
 after the last completed or valid blocked result (`EPIC_REPEAT_TTL_SECONDS`
 overrides this).
-The shared gate never skips `continue`. Only a session that exits 0 and reports
-a valid completed or blocked result calls `record` with the same action file.
+The shared gate never skips ordinary `continue` actions. A handoff records its
+separate fingerprint before model launch. Otherwise, only a session that exits
+0 and reports a valid completed or blocked result calls `record` with the same action file.
 It records the GitHub state seen before
 the session, so feedback arriving during it triggers another tick.
 Gate state uses `~/.local/state/epic-loop/codex-gate*.json`, or `EPIC_STATE_DIR`
@@ -216,6 +246,8 @@ selection each have a 120-second limit; Codex has a 1,800-second limit, with a
 `EPIC_PULL_TIMEOUT_SECONDS`, `EPIC_SELECT_TIMEOUT_SECONDS` and
 `EPIC_TICK_TIMEOUT_SECONDS`. Errors and timeout exit codes propagate; a later
 invocation refreshes, selects again and checks the cooldown.
+Feature-worktree preparation has a separate `EPIC_PULL_TIMEOUT_SECONDS` limit,
+included in the runner's lock budget. A timeout stops before model launch.
 With the shared reader enabled, fresh backoff lookup and action recheck each
 have a separate `EPIC_RECHECK_TIMEOUT_SECONDS` limit (default 60). Both limits
 are included in lock and agent-registration budgets. Snapshot lock wait plus

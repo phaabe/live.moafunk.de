@@ -46,6 +46,14 @@ class TickTests(unittest.TestCase):
         shutil.copyfile(ROOT / "codex-tick.sh", self.runner)
         shutil.copyfile(ROOT / "epic-tick.md", self.runner.parent / "epic-tick.md")
         shutil.copyfile(ROOT / "epic_lock.py", self.runner.parent / "epic_lock.py")
+        (self.runner.parent / "feature_worktree.py").write_text(
+            "import argparse\n"
+            "parser = argparse.ArgumentParser()\n"
+            "parser.add_argument('--runner', required=True)\n"
+            "parser.add_argument('--action-file', required=True)\n"
+            "parser.add_argument('--state-dir', required=True)\n"
+            "print(parser.parse_args().runner)\n"
+        )
         for filename in ("tick_backoff.py", "tick-result.schema.json"):
             shutil.copyfile(ROOT / filename, self.runner.parent / filename)
         selector = self.repo / "scripts/epic/next_action.py"
@@ -1070,7 +1078,7 @@ class TickTests(unittest.TestCase):
         home = self.state / "agents/codex-2"
         agent = json.loads((home / "agent.json").read_text())
         self.assertEqual(
-            (agent["interval_seconds"], agent["budget_seconds"]), (180, 60)
+            (agent["interval_seconds"], agent["budget_seconds"]), (180, 70)
         )
         self.assertIn("tick: finished exit=75", (home / "codex.log").read_text())
         self.assertTrue((home / "codex-backoff.json").exists())
@@ -1690,8 +1698,8 @@ class TickTests(unittest.TestCase):
         state = self.state / "agents/codex-2"
         owner = json.loads((state / "codex.lock/owner.json").read_text())
         agent = json.loads((state / "agent.json").read_text())
-        self.assertEqual(owner["max_age"], 74)
-        self.assertEqual(agent["budget_seconds"], 74)
+        self.assertEqual(owner["max_age"], 84)
+        self.assertEqual(agent["budget_seconds"], 84)
         connection.sendall(b"x")
         self.assertEqual(process.wait(timeout=10), 0)
 
@@ -1723,7 +1731,7 @@ class TickTests(unittest.TestCase):
         owner = json.loads((self.lock / "owner.json").read_text())
         self.assertEqual(owner["pid"], process.pid)
         self.assertGreater(owner["started_at"], 0)
-        self.assertEqual(owner["max_age"], 60)
+        self.assertEqual(owner["max_age"], 70)
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertTrue(self.lock.is_dir())
