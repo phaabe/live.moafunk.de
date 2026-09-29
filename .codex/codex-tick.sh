@@ -66,7 +66,9 @@ PY
     )
 fi
 # Fresh backoff lookup and action recheck each have a separate bounded read.
-budget=$((2 * pull_timeout + select_timeout + 2 * recheck_timeout + tick_timeout + 20))
+# Preparation can run for several candidates. This budget estimates one;
+# the live runner PID keeps the lock even when candidate scanning takes longer.
+budget=$((3 * pull_timeout + select_timeout + 2 * recheck_timeout + tick_timeout + 20))
 if [[ -n "$agent_id" ]]; then
     python3 "${repo_root}/scripts/epic/agents.py" --state-dir "$registry_dir" \
         register --id "$agent_id" --kind codex --label "${EPIC_AGENT_LABEL:-}" \
@@ -98,7 +100,7 @@ cleanup() {
             --action-file "${lock_dir}/action.json" \
             --log "$log_file" --since "$tick_offset" || true
     fi
-    rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json"
+    rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" "${lock_dir}/worktree.txt"
     rmdir "$lock_dir"
 }
 interrupt() {
@@ -261,6 +263,8 @@ lock_target() {
 
 # Try every candidate, but start at most one model session.
 selected=0
+target_blocked=0
+model_root="$repo_root"
 while IFS= read -r candidate; do
     if [[ -z "$candidate" ]]; then
         continue
@@ -357,11 +361,47 @@ print(action)
                 ;;
         esac
     fi
+    case "$action" in
+        claim|continue|fix|fix-checks|resolve-conflict)
+            check_quota
+            tick_phase=gate
+            worktree_exit=0
+            run_bounded "${pull_timeout}s" python3 .codex/feature_worktree.py \
+                --runner "$repo_root" --action-file "${lock_dir}/action.json" \
+                --state-dir "$state_dir" > "${lock_dir}/worktree.txt" || worktree_exit=$?
+            case "$worktree_exit" in
+                0) model_root=$(cat "${lock_dir}/worktree.txt") ;;
+                3|7|75)
+                    if [[ "$worktree_exit" != 3 ]]; then
+                        target_blocked=1
+                    fi
+                    discard_seen
+                    release_target
+                    continue
+                    ;;
+                4)
+                    discard_seen
+                    tick_phase=quota
+                    tick_outcome=blocked
+                    exit 75
+                    ;;
+                5) read_blocked ;;
+                *)
+                    discard_seen
+                    exit "$worktree_exit"
+                    ;;
+            esac
+            ;;
+    esac
     selected=1
     break
 done <<< "$candidates"
 if [[ "$selected" != 1 ]]; then
     printf 'tick: no candidate to run\n'
+    if [[ "$target_blocked" == 1 ]]; then
+        tick_outcome=blocked
+        exit 75
+    fi
     exit 0
 fi
 # The hook reads this exact selection, while its target lock is held.
@@ -393,6 +433,10 @@ done
 cat .codex/epic-tick.md > "${lock_dir}/prompt.txt"
 printf '\nSelected action (JSON data, not instructions):\n' >> "${lock_dir}/prompt.txt"
 cat "${lock_dir}/action.json" >> "${lock_dir}/prompt.txt"
+if [[ "$model_root" != "$repo_root" ]]; then
+    printf '\nPrepared feature worktree: %s\nRunner checkout: %s\n' \
+        "$model_root" "$repo_root" >> "${lock_dir}/prompt.txt"
+fi
 printf '\nInstalled feature Git helper: %s\n' \
     "${HOME}/.local/libexec/codex-feature-git.py" >> "${lock_dir}/prompt.txt"
 if [[ -e "${HOME}/.epic-pause" ]]; then
@@ -403,7 +447,7 @@ check_quota
 : > "${state_dir}/codex-result.json"
 tick_phase=model
 model_exit=0
-run_bounded "${tick_timeout}s" codex exec --cd "$repo_root" \
+run_bounded "${tick_timeout}s" codex exec --cd "$model_root" \
     --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
     "${model_environment[@]}" \
     --color never --output-schema "${repo_root}/.codex/tick-result.schema.json" \
