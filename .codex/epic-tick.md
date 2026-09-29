@@ -26,8 +26,16 @@ If the target or required state changed, stop and let a later tick decide.
 | `escalate` | Label the PR `needs-anton`, comment with the disagreement and open question, and stop. |
 
 For PR actions, recheck the expected head before editing or publishing. Retry
-transient read-only GitHub errors up to three times. Before retrying a write,
+transient read-only GitHub errors up to three times, except quota errors. Before retrying a write,
 check whether it succeeded so comments, PRs and merges are not duplicated.
+
+Before each GitHub read or write, check the shared wait with
+`python3 scripts/epic/github_quota.py check --state-dir <EPIC_QUOTA_DIR>` from
+the runner checkout. Exit 3 means stop; other nonzero exits are errors.
+On a GraphQL rate-limit error, including `RATE_LIMITED` in an HTTP 200 response,
+stop the action without retries or more GitHub calls. Preserve unfinished work
+and return a blocked quota result as described below. Do not write the wait file
+yourself; the runner records it outside the model sandbox.
 
 ## PR metadata
 
@@ -66,9 +74,16 @@ Call `gh` as a single literal command, with no shell wrappers or compound
 commands. Write body files before calling `gh --body-file`; use file editing
 tools for multiline content instead of heredocs in shell tool calls.
 
-Return only a JSON object with `status` and `summary`. Use `status: "completed"`
+Return only a JSON object with `status`, `summary`, `reason_code` and `retry_at`.
+Use `status: "completed"`
 when the selected action succeeded, or a continue tick made useful progress
 without a blocker. Use `status: "blocked"` for refused permissions, missing
 prerequisites, changed target state or any other reason the action could not
 proceed. An exit code of zero alone does not mean success. In `summary`, state
 the action, target, result and any blocker in one short sentence.
+For normal results, set `reason_code` and `retry_at` to null. For a GitHub quota
+failure, use `status: "blocked"`, `reason_code: "github_rate_limit"`, and the UTC
+`retry_at` from the shared wait file or the known reset time plus 60 seconds
+(ISO 8601, for example `2026-09-29T12:01:00Z`). If the time is unknown, use null;
+the runner makes one reset query and uses the shared fallback if it fails.
+Quota results do not create target cooldowns or repeat-gate records.

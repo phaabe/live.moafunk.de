@@ -2,8 +2,10 @@
   "type": "object",
   "properties": {
     "status": { "type": "string", "enum": ["completed", "blocked"] },
-    "summary": { "type": "string" }
+    "summary": { "type": "string" },
+    "reason_code": { "type": ["string", "null"], "enum": ["github_rate_limit", null] },
+    "retry_at": { "type": ["string", "null"] }
   },
-  "required": ["status", "summary"],
+  "required": ["status", "summary", "reason_code", "retry_at"],
   "additionalProperties": false
 }

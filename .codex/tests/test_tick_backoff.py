@@ -119,7 +119,7 @@ class BackoffTests(unittest.TestCase):
                     "--json",
                     "body,headRefOid",
                 ],
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -249,6 +249,227 @@ class BackoffTests(unittest.TestCase):
         self.result.write_text(json.dumps({"status": "completed", "summary": "Done"}))
         self.assertEqual(self.record(code=17), 75)
         self.assertEqual(backoff.check(self.action, self.state, 900, 1001), 3)
+
+    def test_quota_result_preserves_target_state_and_uses_retry_time_once(self) -> None:
+        self.record()
+        path = self.state / "codex-backoff.json"
+        before = path.read_bytes()
+        self.result.write_text(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "GitHub quota exhausted",
+                    "reason_code": "github_rate_limit",
+                    "retry_at": "1970-01-01T01:00:00Z",
+                }
+            )
+        )
+        self.assertEqual(self.record(), 4)
+        self.assertEqual(path.read_bytes(), before)
+        wait = json.loads((self.state / "github-quota-wait.json").read_text())
+        self.assertEqual(wait["retry_at"], "1970-01-01T01:00:00Z")
+        self.assertEqual(wait["reset_at"], "1970-01-01T00:59:00Z")
+
+    def test_quota_result_validation_does_not_trust_summary_text(self) -> None:
+        for result in (
+            {
+                "status": "completed",
+                "summary": "rate limit",
+                "reason_code": "github_rate_limit",
+                "retry_at": None,
+            },
+            {
+                "status": "blocked",
+                "summary": "rate limit",
+                "reason_code": "other",
+                "retry_at": None,
+            },
+            {
+                "status": "blocked",
+                "summary": "rate limit",
+                "reason_code": "github_rate_limit",
+                "retry_at": "not a date",
+            },
+            {
+                "status": "blocked",
+                "summary": "rate limit",
+                "reason_code": "github_rate_limit",
+                "retry_at": "2030-01-01T01:00:00",
+            },
+            {
+                "status": "blocked",
+                "summary": "rate limit",
+                "reason_code": "github_rate_limit",
+                "retry_at": "2030-01-01T01:00:00+02:00",
+            },
+            {
+                "status": "blocked",
+                "summary": "rate limit",
+                "reason_code": None,
+                "retry_at": "2030-01-01T01:00:00Z",
+            },
+        ):
+            with self.subTest(result=result):
+                self.result.write_text(json.dumps(result))
+                self.assertEqual(self.record(), 75)
+                self.assertFalse((self.state / "github-quota-wait.json").exists())
+        self.result.write_text(
+            json.dumps({"status": "blocked", "summary": "GitHub rate limit"})
+        )
+        self.assertEqual(self.record(), 3)
+
+    def test_nullable_metadata_preserves_normal_results(self) -> None:
+        for status, expected in (("blocked", 3), ("completed", 0)):
+            with self.subTest(status=status):
+                self.result.write_text(
+                    json.dumps(
+                        {
+                            "status": status,
+                            "summary": "Normal result",
+                            "reason_code": None,
+                            "retry_at": None,
+                        }
+                    )
+                )
+                self.assertEqual(self.record(), expected)
+
+    def test_quota_result_with_nonzero_exit_preserves_target_state(self) -> None:
+        self.record()
+        path = self.state / "codex-backoff.json"
+        before = path.read_bytes()
+        self.result.write_text(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "Quota exhausted before exit",
+                    "reason_code": "github_rate_limit",
+                    "retry_at": "1970-01-01T01:00:00Z",
+                }
+            )
+        )
+        self.assertEqual(self.record(code=17), 4)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertTrue((self.state / "github-quota-wait.json").exists())
+
+    def test_unknown_reset_uses_shared_lookup_and_fallback(self) -> None:
+        self.result.write_text(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "Quota exhausted",
+                    "reason_code": "github_rate_limit",
+                    "retry_at": None,
+                }
+            )
+        )
+        response = subprocess.CompletedProcess([], 1, stdout="unavailable", stderr="")
+        with patch.object(
+            backoff.github_quota.subprocess, "run", return_value=response
+        ) as request:
+            self.assertEqual(self.record(), 4)
+        self.assertEqual(request.call_count, 1)
+        wait = json.loads((self.state / "github-quota-wait.json").read_text())
+        self.assertEqual(wait["source"], "fallback")
+        self.assertEqual(backoff.github_quota.parse_iso(wait["retry_at"]), 1900)
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+
+    def test_far_future_model_time_uses_authoritative_reset(self) -> None:
+        self.result.write_text(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "Quota exhausted",
+                    "reason_code": "github_rate_limit",
+                    "retry_at": "2027-12-31T00:00:00Z",
+                }
+            )
+        )
+        response = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=json.dumps(
+                {"data": {"rateLimit": {"resetAt": "1970-01-01T00:30:00Z"}}}
+            ),
+            stderr="",
+        )
+        with patch.object(
+            backoff.github_quota.subprocess, "run", return_value=response
+        ) as request:
+            self.assertEqual(self.record(), 4)
+        self.assertEqual(request.call_count, 1)
+        wait = json.loads((self.state / "github-quota-wait.json").read_text())
+        self.assertEqual(wait["retry_at"], "1970-01-01T00:31:00Z")
+        self.assertFalse((self.state / "codex-backoff.json").exists())
+
+    def test_model_time_at_upper_bound_needs_no_reset_query(self) -> None:
+        self.result.write_text(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "Quota exhausted",
+                    "reason_code": "github_rate_limit",
+                    "retry_at": backoff.github_quota.iso(4660),
+                }
+            )
+        )
+        with patch.object(backoff.github_quota.subprocess, "run") as request:
+            self.assertEqual(self.record(), 4)
+        request.assert_not_called()
+        wait = json.loads((self.state / "github-quota-wait.json").read_text())
+        self.assertEqual(backoff.github_quota.parse_iso(wait["retry_at"]), 4660)
+
+    def test_invalid_result_with_nonzero_exit_keeps_exit_reason(self) -> None:
+        for value in (
+            "",
+            "not json",
+            "[]",
+            '{"status":"completed"}',
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "Quota",
+                    "reason_code": "github_rate_limit",
+                    "retry_at": "bad",
+                }
+            ),
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "Quota",
+                    "reason_code": "bad",
+                    "retry_at": None,
+                }
+            ),
+        ):
+            with self.subTest(value=value):
+                self.result.write_text(value)
+                self.assertEqual(
+                    backoff.result_outcome(self.result, 124), (75, "model exited 124")
+                )
+        self.result.unlink()
+        self.assertEqual(
+            backoff.result_outcome(self.result, 137), (75, "model exited 137")
+        )
+
+    def test_quota_during_pr_lookup_cannot_transfer_cooldown(self) -> None:
+        self.record()
+        path = self.state / "codex-backoff.json"
+        before = path.read_bytes()
+        response = subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr="GraphQL: API rate limit already exceeded",
+        )
+        with patch.object(backoff.subprocess, "run", return_value=response):
+            with self.assertRaises(backoff.github_quota.QuotaExhausted):
+                backoff.check(
+                    {"action": "continue", "pr": 410, "sha": "a" * 40},
+                    self.state,
+                    900,
+                    1001,
+                )
+        self.assertEqual(path.read_bytes(), before)
 
     def test_nonzero_exit_overrides_blocked_output(self) -> None:
         self.assertEqual(self.record(code=17), 75)

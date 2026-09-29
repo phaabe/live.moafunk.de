@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta
 import json
 import logging
 import math
@@ -14,6 +15,10 @@ import sys
 import tempfile
 import time
 from typing import TypedDict
+
+# Reuse the shared quota contract without changing Claude-owned scripts.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "epic"))
+import github_quota  # noqa: E402
 
 SKIP = 3
 BLOCKED = 3
@@ -104,11 +109,16 @@ def pr_issue(action: dict[str, object]) -> str | None:
             "--json",
             "body,headRefOid",
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=30,
     )
+    if github_quota.is_quota_error(
+        ["pr", "view"], response.stdout or "", response.stderr or ""
+    ):
+        raise github_quota.QuotaExhausted(response.stderr or "GraphQL RATE_LIMITED")
+    response.check_returncode()
     metadata = json.loads(response.stdout)
     if not isinstance(metadata, dict) or not isinstance(metadata.get("body"), str):
         raise ValueError("invalid PR metadata")
@@ -154,19 +164,51 @@ def check(action: dict[str, object], state_dir: Path, ttl: int, now: float) -> i
 
 
 def result_outcome(result_file: Path, exit_code: int) -> tuple[int, str | None]:
-    if exit_code != 0:
-        return FAILED, f"model exited {exit_code}"
     try:
         result = json.loads(result_file.read_text())
     except (OSError, ValueError):
-        return FAILED, "missing or invalid final result"
+        return FAILED, (
+            f"model exited {exit_code}"
+            if exit_code
+            else "missing or invalid final result"
+        )
     if (
         not isinstance(result, dict)
-        or set(result) != {"status", "summary"}
+        or set(result)
+        not in (
+            {"status", "summary"},
+            {"status", "summary", "reason_code", "retry_at"},
+        )
         or result["status"] not in ("completed", "blocked")
         or not isinstance(result["summary"], str)
     ):
-        return FAILED, "invalid final result schema"
+        return FAILED, (
+            f"model exited {exit_code}" if exit_code else "invalid final result schema"
+        )
+    reason_code, retry_at = result.get("reason_code"), result.get("retry_at")
+    if reason_code == "github_rate_limit" and result["status"] == "blocked":
+        if retry_at is not None:
+            try:
+                if not isinstance(retry_at, str):
+                    raise ValueError("retry time must be a string")
+                at = datetime.fromisoformat(retry_at.replace("Z", "+00:00"))
+                if at.utcoffset() != timedelta(0):
+                    raise ValueError("retry time must be UTC")
+            except ValueError:
+                return FAILED, (
+                    f"model exited {exit_code}"
+                    if exit_code
+                    else "invalid quota retry time"
+                )
+        return github_quota.QUOTA, "model reported GitHub GraphQL quota exhausted"
+    if reason_code is not None or retry_at is not None:
+        return FAILED, (
+            f"model exited {exit_code}"
+            if exit_code
+            else "invalid quota result metadata"
+        )
+    if exit_code != 0:
+        return FAILED, f"model exited {exit_code}"
     if result["status"] == "blocked":
         summary = " ".join(result["summary"].split())[:240]
         return BLOCKED, f"model reported blocked: {summary}"
@@ -180,10 +222,33 @@ def record(
     exit_code: int,
     now: float,
     ttl: int,
+    quota_dir: Path | None = None,
 ) -> int:
+    outcome, reason = result_outcome(result_file, exit_code)
+    if outcome == github_quota.QUOTA:
+        quota_state = quota_dir or state_dir
+        waiting, existing_retry = github_quota.check(quota_state, now)
+        if waiting == github_quota.DEFERRED:
+            logging.warning("quota: %s; retry at %s", reason, existing_retry)
+            return outcome
+        retry_at = json.loads(result_file.read_text())["retry_at"]
+        # Model times beyond one quota window need a fresh authoritative reset.
+        if (
+            retry_at is not None
+            and github_quota.parse_iso(retry_at) > now + 3600 + github_quota.MARGIN
+        ):
+            retry_at = None
+        # The result names the retry time (already including the shared margin).
+        reset_at = (
+            github_quota.iso(github_quota.parse_iso(retry_at) - github_quota.MARGIN)
+            if retry_at is not None
+            else None
+        )
+        wait = github_quota.record(quota_state, now, reset_at)
+        logging.warning("quota: %s; retry at %s", reason, wait["retry_at"])
+        return outcome
     key = target_key(action)
     entries = load_entries(state_dir)
-    outcome, reason = result_outcome(result_file, exit_code)
     if reason is None:
         entries.pop(key, None)
     else:
@@ -206,10 +271,14 @@ def main() -> int:
     parser.add_argument("command", choices=("check", "record"))
     parser.add_argument("--action-file", required=True, type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
+    parser.add_argument("--quota-dir", type=Path)
     parser.add_argument("--ttl", required=True, type=positive_int)
     parser.add_argument("--result-file", type=Path)
     parser.add_argument("--exit-code", type=int)
     args = parser.parse_args()
+    quota_dir = args.quota_dir or Path(
+        os.environ.get("EPIC_QUOTA_DIR") or args.state_dir
+    )
     if args.command == "record" and (
         args.result_file is None or args.exit_code is None
     ):
@@ -227,7 +296,10 @@ def main() -> int:
             args.exit_code,
             time.time(),
             args.ttl,
+            quota_dir,
         )
+    except github_quota.QuotaExhausted as error:
+        return github_quota.stop_on_quota(error, quota_dir)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         logging.error("backoff: %s", error)
         return FAILED

@@ -108,7 +108,8 @@ a valid completed or blocked result calls `record` with the same action file.
 It records the GitHub state seen before
 the session, so feedback arriving during it triggers another tick.
 Gate state uses `~/.local/state/epic-loop/codex-gate*.json`, or `EPIC_STATE_DIR`
-if set; the runner's log and lock still use the default state directory.
+if set. The runner's log and lock use that same directory. Registered agents
+use its `agents/<id>` subdirectory while quota waits remain shared at the root.
 
 Before that gate, `.codex/tick_backoff.py` delays blocked or failed targets for
 15 minutes (`EPIC_BLOCKED_RETRY_SECONDS` overrides this). This also applies to
@@ -126,8 +127,10 @@ A different selected target or a new PR head can run immediately. Comments do
 not reset a cooldown. The selector still chooses one action per tick; a skipped
 target does not cause the runner to choose lower-priority work.
 
-The model writes `{ "status": "completed" | "blocked", "summary": "..." }`
-through Codex's output schema to `codex-result.json` in the same state directory.
+The model writes `status` (`completed` or `blocked`), `summary`, and nullable
+`reason_code` and `retry_at` fields through Codex's output schema to
+`codex-result.json` in the same state directory. Ordinary results set the last
+two fields to `null`.
 The runner clears that file before each session. Blocked, missing or malformed
 results exit 75 and start cooldown; a nonzero model exit starts cooldown and
 preserves its exit code. Completed work clears only that target's cooldown.
@@ -169,13 +172,122 @@ Missing/invalid owner metadata or unexpected lock contents require manual
 review. Confirm no tick or child session is running before removing such a
 lock. Do not clear another worktree's lock. All checkouts share it.
 
-This PR installs no scheduler. Run the local tests without GitHub writes or
+Run the local tests without GitHub writes or
 model calls:
 
 ```sh
 python3 -m unittest discover -s .codex/tests -v
 /bin/bash -n .codex/codex-tick.sh
 ```
+
+## GitHub quota waits
+
+The runner checks `scripts/epic/github_quota.py` before selection and before
+starting Codex. A shared wait skips both operations and exits 0. A new quota
+block exits 75; unreadable or invalid quota state exits 2. These paths do not
+record a completed action, a target cooldown or a repeat-gate entry.
+
+Both runners use the same `EPIC_QUOTA_DIR`, separate from per-agent result and
+cooldown directories. Registered Codex agents retain the registry's shared
+quota directory. A GraphQL response can contain a rate-limit error even when
+HTTP succeeds; stop on that error and defer until the shared reset time.
+Do not retry another target to work around the account's quota.
+
+If GitHub refuses a request during a model session, return a blocked result
+with `reason_code: "github_rate_limit"` and a UTC `retry_at` when known. Use
+`null` when the reset is unknown; the shared helper obtains or supplies the wait.
+Quota waits leave existing target cooldowns unchanged. Other failures retain
+the target cooldown and repeat-gate behavior described above.
+Valid quota results also record the shared wait when Codex exits nonzero;
+the runner preserves that nonzero exit code.
+An active shared wait is reused without another reset query. Model retry times
+more than one hour plus the safety margin ahead require a fresh reset query
+or the shared fallback. Quota stops use the monitor's `quota` phase.
+
+If another agent creates a wait during a model session, ordinary results still
+write their local cooldown and repeat records. Completed actions stay recorded,
+and failed sessions retain their exit code. The next tick observes the wait.
+
+## launchd scheduler example
+
+The tracked template is
+`launchd/de.moafunk.codex-epic-loop.plist.example` in this directory. It schedules
+one invocation every 180 seconds, with no `KeepAlive` restart loop. It installs
+nothing automatically. Keep `~/.epic-pause` in place while preparing or adopting
+the schedule; loading the job does not remove it.
+
+The measured selector read costs 109 GraphQL points. At 180 seconds, each
+runner can spend about 2,180 points per hour; two can spend 4,360 before any
+other requests. This reduces traffic but does not guarantee staying below the
+shared quota. The quota wait is still required.
+
+For a fresh installation, copy the template to a temporary file and replace
+every placeholder with an absolute path using a plist editor:
+
+- `__HOME__`: your home directory.
+- `__RUNNER_CHECKOUT__`: the dedicated runner checkout, containing this script.
+- `__CODEX_BIN_DIR__`: the directory containing your authenticated `codex` CLI.
+
+launchd does not expand `~`, `$HOME` or shell substitutions inside plist values.
+Keep each `ProgramArguments` entry as a separate string, including paths with
+spaces. Escape XML characters when editing raw XML. The template PATH includes
+Apple Silicon Homebrew (`/opt/homebrew/bin`) and Intel Homebrew (`/usr/local/bin`).
+Check that the chosen PATH also finds Python 3.10+, `gh` and GNU `timeout` or
+`gtimeout`. Create the log directory before loading:
+
+```sh
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.local/state/epic-loop"
+```
+
+For an existing installation, back up the installed plist and edit a copy of
+that file. Preserve its checkout, CLI path, environment and log destinations.
+Set `StartInterval` to integer `180`; remove any `KeepAlive` restart policy.
+Do not replace a configured plist with the unrendered template.
+
+```sh
+cp "$HOME/Library/LaunchAgents/de.moafunk.codex-epic-loop.plist" \
+  "$HOME/Library/LaunchAgents/de.moafunk.codex-epic-loop.plist.backup-$(date +%Y%m%dT%H%M%S)"
+```
+
+Before installing the edited file, validate it. Replace the sample path below
+with your rendered plist's absolute path. The check refuses leftover template
+markers and the wrong interval type; `plutil` checks plist syntax.
+
+```sh
+codex_plist='/absolute/path/to/rendered-codex-loop.plist'
+python3 - "$codex_plist" <<'PY'
+from pathlib import Path
+import plistlib
+import sys
+
+raw = Path(sys.argv[1]).read_bytes()
+assert b"__" not in raw, "Replace every template placeholder"
+data = plistlib.loads(raw)
+assert type(data["StartInterval"]) is int and data["StartInterval"] == 180
+assert "KeepAlive" not in data, "Remove the restart policy"
+PY
+plutil -lint "$codex_plist"
+```
+
+For adoption, wait for any running tick to finish, then unload the existing job
+before replacing its plist. Run this only if the job is loaded; a fresh
+installation skips this command:
+
+```sh
+launchctl bootout "gui/$(id -u)/de.moafunk.codex-epic-loop"
+```
+
+Install the validated file and load it once:
+
+```sh
+cp "$codex_plist" "$HOME/Library/LaunchAgents/de.moafunk.codex-epic-loop.plist"
+launchctl bootstrap "gui/$(id -u)" \
+  "$HOME/Library/LaunchAgents/de.moafunk.codex-epic-loop.plist"
+launchctl print "gui/$(id -u)/de.moafunk.codex-epic-loop"
+```
+
+These are manual operator commands. Do not clear `~/.epic-pause` as part of
+installation or adoption. Resume the loops separately after checking the setup.
 
 ## Unattended feature commits and pushes
 
