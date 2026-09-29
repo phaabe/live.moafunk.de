@@ -29,7 +29,6 @@ Json = dict[str, Any]
 LOCAL = ZoneInfo("Europe/Berlin")
 LEDGER_SIZE = 2000
 RECENT = 20
-COUNTED_KEEP = 200
 HOUR_DAYS = 7
 # A line longer than this is never a marker; skip it instead of buffering it.
 MAX_LINE = 65536
@@ -108,7 +107,8 @@ def valid_checkpoint(data: object) -> bool:
                 "ticks": list,
                 "totals": dict,
                 "coverage_start": float,
-                "counted": list,
+                "counted_until": (float, type(None)),
+                "first_start": (float, type(None)),
             },
         )
         and data["v"] == 5
@@ -118,8 +118,27 @@ def valid_checkpoint(data: object) -> bool:
         and all(typed(t, TICK_KEYS) and t["outcome"] in SEVERITY for t in data["ticks"])
         and set(data["totals"]) == set(SEVERITY)
         and all(type(n) is int and n >= 0 for n in data["totals"].values())
-        and all(type(t) is str for t in data["counted"])
     )
+
+
+def migrate_v4(data: Json) -> Json:
+    """v4 had no event ledger, so the log counted all its saved ticks."""
+    ticks = data.get("ticks")
+    starts = (
+        [
+            t["start"]
+            for t in ticks
+            if isinstance(t, dict) and type(t.get("start")) is float
+        ]
+        if isinstance(ticks, list)
+        else []
+    )
+    return {
+        **data,
+        "v": 5,
+        "counted_until": max(starts, default=None),
+        "first_start": None,
+    }
 
 
 class Sink(Protocol):
@@ -178,6 +197,7 @@ class LogLedger:
         # The monitor passes a no-follow opener for model-writable folders.
         self.opener = opener or (lambda: self.log.open("rb"))
         self.state: Json | None = None
+        self.loaded = False
         self.dirty = False
         # Once the runner writes events, only ticks that started before its
         # first event are counted here; later ones are counted by the events.
@@ -186,7 +206,8 @@ class LogLedger:
     def fresh(self, now: float, size: int) -> Json:
         return {
             "v": 5,
-            "counted": [],
+            "counted_until": None,
+            "first_start": None,
             "inode": None,
             "offset": 0,
             "baseline": size,
@@ -208,15 +229,33 @@ class LogLedger:
                 "Tick checkpoint for %s is unreadable; rebuilding", self.agent
             )
             return None
-        if isinstance(data, dict) and data.get("v") == 4 and "counted" not in data:
-            data = {**data, "v": 5, "counted": []}  # v4 had no counted list
+        if isinstance(data, dict) and data.get("v") == 4:
+            data = migrate_v4(data)
         if not self.valid(data):
             logging.warning("Tick checkpoint for %s is invalid; rebuilding", self.agent)
             return None
         return data
 
+    def saved(self) -> Json | None:
+        """The checkpoint, read once; later reads keep the state in memory."""
+        if self.loaded:
+            return None
+        self.loaded = True
+        return self.load()
+
+    def restore(self) -> None:
+        """Load the checkpoint before the first read, if there is one."""
+        if self.state is None:
+            self.state = self.saved()
+
     def valid(self, data: object) -> bool:
         return valid_checkpoint(data)
+
+    def last_counted(self) -> float:
+        """Start of the newest tick this ledger counted; -inf before any."""
+        if self.state is None or self.state["counted_until"] is None:
+            return -math.inf
+        return self.state["counted_until"]
 
     def update(self, now: float) -> None:
         try:
@@ -225,7 +264,7 @@ class LogLedger:
             if self.state is None:
                 # Keep the saved state while the file is away. Without one, a
                 # file that appears later is new, so all its lines count.
-                self.state = self.load() or self.fresh(now, 0)
+                self.state = self.saved() or self.fresh(now, 0)
                 self.dirty = True
             raise
         with stream:
@@ -233,7 +272,7 @@ class LogLedger:
 
     def update_from(self, stream: BinaryIO, stat: os.stat_result, now: float) -> None:
         if self.state is None:
-            self.state = self.load() or self.fresh(now, stat.st_size)
+            self.state = self.saved() or self.fresh(now, stat.st_size)
             self.dirty = True
         # All or nothing: an exception while parsing restores the old state, so
         # a tick is never counted without its offset being committed.
@@ -242,7 +281,6 @@ class LogLedger:
             **before,
             "ticks": list(before["ticks"]),
             "totals": dict(before["totals"]),
-            "counted": list(before["counted"]),
             "open": dict(before["open"]) if before["open"] else None,
         }
         try:
@@ -397,10 +435,11 @@ class LogLedger:
         del state["ticks"][:-LEDGER_SIZE]
         if counted:
             state["totals"][kind] += 1
-            # Which ticks this ledger counted, so another one never counts
-            # the same tick (the start time string is the tick's identity).
-            state["counted"].append(tick)
-            del state["counted"][:-COUNTED_KEEP]
+            # Ticks of one agent run one after another, so this boundary tells
+            # the event ledger which ticks this ledger already counted.
+            start = utc(tick)
+            if state["counted_until"] is None or start > state["counted_until"]:
+                state["counted_until"] = start
 
     def save(self) -> None:
         if not self.dirty or self.state is None:
@@ -457,10 +496,10 @@ class EventLedger(LogLedger):
         self.source = source
         self.rejected = 0
         self.pending = 0
-        # Set by the monitor: ticks the log ledger already counted. A whole
-        # first tick can pass between two polls, so the log may count it
-        # before the events file is seen.
-        self.counted_elsewhere: Callable[[str], bool] = lambda tick: False
+        # Set by the monitor: the log ledger counted every tick that started
+        # up to here. A whole first tick can pass between two polls, so the
+        # log may count it before the events file is seen.
+        self.log_counted_until = -math.inf
 
     @property
     def active(self) -> bool:
@@ -469,14 +508,10 @@ class EventLedger(LogLedger):
 
     def first_start(self) -> float:
         """Start of the oldest known event tick; inf before the first event."""
-        state = self.state
-        if not state:
+        # Saved once: trimming the ticks list must not move this boundary.
+        if not self.state or self.state["first_start"] is None:
             return math.inf
-        if state["ticks"]:
-            return state["ticks"][0]["start"]
-        if state["open"]:
-            return utc(state["open"]["tick"])
-        return math.inf
+        return self.state["first_start"]
 
     def update(self, now: float) -> None:
         self.pending = 0
@@ -514,6 +549,8 @@ class EventLedger(LogLedger):
                 return self.reject()
             if state["open"] is not None:
                 self.finish(None, end, now)  # no finish before the next start
+            if state["first_start"] is None:
+                state["first_start"] = start
             state["open"] = dict.fromkeys(OPEN_KEYS, False) | {
                 "tick": tick,
                 "action": "",
@@ -529,7 +566,7 @@ class EventLedger(LogLedger):
         if values is None:
             return self.reject()
         state["open"] = None
-        live = end > state["baseline"] and not self.counted_elsewhere(tick)
+        live = end > state["baseline"] and start > self.log_counted_until
         self.record(tick, *values, live)
         return None
 
@@ -578,7 +615,7 @@ class EventLedger(LogLedger):
         state = self.state
         assert state is not None
         tick, state["open"] = state["open"], None
-        live = end > state["baseline"] and not self.counted_elsewhere(tick["tick"])
+        live = end > state["baseline"] and utc(tick["tick"]) > self.log_counted_until
         self.record(
             tick["tick"], None, None, "interrupted", "unknown", "", "", None, live
         )

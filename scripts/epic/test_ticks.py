@@ -615,13 +615,14 @@ class LedgerTest(unittest.TestCase):
         ledger.update(NOON + 5)
         ledger.save()
         data = json.loads(self.checkpoint.read_text())
-        del data["counted"]
-        data["v"] = 4  # as written before the counted list existed
+        del data["counted_until"], data["first_start"]
+        data["v"] = 4  # as written before events existed
         self.checkpoint.write_text(json.dumps(data))
         again = self.ledger()
         again.update(NOON + 10)
         self.assertEqual(again.state["totals"]["ok"], 1)
-        self.assertEqual((again.state["v"], again.state["counted"]), (5, []))
+        # v4 had no events, so every saved tick was counted by the log.
+        self.assertEqual((again.state["v"], again.last_counted()), (5, NOON))
 
 
 def event(kind: str, start: float, **fields: object) -> str:
@@ -807,35 +808,81 @@ class EventLedgerTest(unittest.TestCase):
         self.assertEqual(view.state["totals"]["ok"], 1)  # from the events
         self.assertEqual(view.state["totals"]["interrupted"], 1)  # the old tick
 
-    def test_first_tick_between_polls_is_counted_once(self) -> None:
-        # Codex review round 2: the log counted the tick before the events
-        # file was seen, then the events counted it again.
-        self.file.unlink()
-        log = ticks.LogLedger(
+    def log_ledger(self) -> ticks.LogLedger:
+        return ticks.LogLedger(
             "codex",
             self.log,
             self.root / "runtime/ticks-codex.json",
             monitor.action_labels,
         )
-        events = self.events()
-        events.counted_elsewhere = lambda t: bool(
-            log.state and t in log.state["counted"]
-        )
-        log.update(NOON - 60)
-        with self.assertRaises(FileNotFoundError):
-            events.update(NOON - 60)  # poll 1: no events file yet
-        # The whole first tick of the new runner, after the events read.
-        with self.log.open("a") as out:
-            out.write(tick(NOON, 0))
-        self.file.write_text(event("start", NOON) + event("finish", NOON))
-        log.count_before = events.first_start()  # still inf
-        log.update(NOON + 5)  # poll 1: the log counts it
-        events.update(NOON + 10)  # poll 2: the events see it
-        log.count_before = events.first_start()
-        log.update(NOON + 10)
-        view = ticks.merge(log, events)
+
+    def poll(self, now: float, *, between: list[float] | None = None) -> ticks.TickView:
+        """One collector cycle with fresh ledgers, as after a restart.
+
+        `between` ticks run whole after the events read, before the log read.
+        """
+        log, events = self.log_ledger(), self.events()
+        if between:
+            read = events.update
+
+            def race(at: float) -> None:
+                try:
+                    read(at)
+                finally:
+                    with self.log.open("a") as out:
+                        out.write("".join(tick(t, 0) for t in between))
+                    self.append(
+                        *(event(k, t) for t in between for k in ("start", "finish"))
+                    )
+
+            events.update = race  # type: ignore[method-assign]
+        return monitor.ledger_metrics(monitor.Metrics(), log, events, now)
+
+    def test_first_tick_between_polls_is_counted_once(self) -> None:
+        # Codex review rounds 2 and 3: the log counted the tick before the
+        # events file was seen, then the events counted it again, also after
+        # a restart between the two polls. The events file exists but is
+        # empty, so the events ledger has a checkpoint from poll 1.
+        self.poll(NOON - 60)
+        self.poll(NOON + 5, between=[NOON])
+        view = self.poll(NOON + 10)
         self.assertEqual(view.state["totals"]["ok"], 1)
         self.assertEqual(len(view.state["ticks"]), 1)
+
+    def test_many_ticks_between_polls_are_each_counted_once(self) -> None:
+        # Codex review round 3: a fixed list of counted ticks overflowed.
+        self.poll(NOON - 60)
+        self.poll(NOON + 5, between=[NOON - 250 * 60 + i * 60 for i in range(250)])
+        view = self.poll(NOON + 10)
+        self.assertEqual(view.state["totals"]["ok"], 250)
+
+    def test_tick_counted_under_a_v4_checkpoint_is_not_counted_again(self) -> None:
+        # Codex review round 3: the v4 migration must keep what the log counted.
+        self.file.unlink()
+        self.poll(NOON - 60)
+        with self.log.open("a") as out:
+            out.write(tick(NOON, 0))
+        self.poll(NOON + 5)  # counted by the log; no events file yet
+        path = self.root / "runtime/ticks-codex.json"
+        data = json.loads(path.read_text())
+        del data["counted_until"], data["first_start"]
+        path.write_text(json.dumps(data | {"v": 4}))
+        self.append(event("start", NOON), event("finish", NOON))
+        view = self.poll(NOON + 10)
+        self.assertEqual(view.state["totals"]["ok"], 1)
+
+    def test_first_start_survives_trimming_and_restarts(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        for i in range(3):
+            self.append(event("start", NOON + i * 60), event("finish", NOON + i * 60))
+        with patch.object(ticks, "LEDGER_SIZE", 2):
+            ledger.update(NOON + 300)
+        ledger.save()
+        self.assertEqual(len(ledger.state["ticks"]), 2)
+        again = self.events()
+        again.update(NOON + 600)
+        self.assertEqual(again.first_start(), NOON)
 
     def test_restart_while_the_events_file_is_missing_keeps_its_state(self) -> None:
         events = self.events()

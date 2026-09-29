@@ -872,9 +872,10 @@ def ledger_metrics(
     """
     name = log.agent
     ok = True
-    events.counted_elsewhere = lambda tick: bool(
-        log.state and tick in log.state["counted"]
-    )
+    # After a restart the log's saved boundary must be known before the
+    # events are read, or a tick the log counted is counted again.
+    log.restore()
+    events.log_counted_until = log.last_counted()
     try:
         events.update(now)
         events.save()

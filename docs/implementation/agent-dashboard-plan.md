@@ -642,8 +642,17 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 
 | Codex finding | Change |
 |---|---|
-| a first tick between two polls could be counted by the log and the events | the log ledger remembers the ticks it counted (start time string, last 200); the event ledger skips those; v4 checkpoints migrate without a counter reset |
+| a first tick between two polls could be counted by the log and the events | the log ledger saves the boundary of what it counted (see round 3); the event ledger skips those ticks |
 | the nested action-line test never ran | moved into its test class; fails without the fix |
+
+### PR 3 review, round 3
+
+| Codex finding | Change |
+|---|---|
+| a restart between the two polls counted the tick twice | the monitor loads the log checkpoint before it reads the events |
+| v4 migration lost what the log had counted | v4 had no events, so the migration sets the boundary to the newest saved log tick |
+| a list of 200 counted ticks could overflow | replaced by one saved boundary: the start of the newest tick the log counted; one agent's ticks never overlap |
+| (found while fixing) the first event start moved when the ticks list was trimmed | saved once in the event checkpoint |
 
 ## Appendix — panel spec from design v2
 
