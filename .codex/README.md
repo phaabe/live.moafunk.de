@@ -182,6 +182,13 @@ existing approval settings; it never bypasses approvals or hook trust.
 Permission failures must return a blocked result and stop the tick. See
 [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
 
+Each tick passes `EPIC_STATE_DIR`, `EPIC_QUOTA_DIR` and `EPIC_ACTION_FILE` through
+individual `shell_environment_policy.set` overrides. Exporting them into the
+CLI process alone is insufficient when Codex uses `inherit = "core"` for tool
+commands. These overrides preserve other configured values and inheritance
+settings. If a shell environment include filter is configured, it must also
+allow these three names. See [Codex shell environment policy](https://learn.chatgpt.com/docs/config-file/config-advanced#shell-environment-policy).
+
 Provision pinned build tools before starting unattended ticks. For the current
 Rust 1.98.0 pin, install it with `rustup toolchain install 1.98.0 --profile minimal
 --component rustfmt --component clippy`, then verify `cargo +1.98.0 fmt --check`
