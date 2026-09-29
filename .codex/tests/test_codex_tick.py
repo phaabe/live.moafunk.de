@@ -158,6 +158,9 @@ class TickTests(unittest.TestCase):
         self.assertTrue(entries)
         for entry in entries.values():
             entry["at"] = 0
+            # The stored expiry is what the runner obeys.
+            if "until" in entry:
+                entry["until"] = 0
         path.write_text(json.dumps(entries))
 
     def block_issue_then_select_draft_pr(self) -> dict[str, object]:
