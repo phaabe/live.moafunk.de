@@ -82,6 +82,8 @@ class FakeReader:
 
 def item(n: int, status: str, executor: str = "Claude") -> dict[str, Any]:
     return {
+        "id": f"PVTI_{n}",
+        "rest_id": 50_000 + n,
         "status": status,
         "executor": executor,
         "content": {"type": "Issue", "number": n, "url": f"{ISSUES}/{n}"},
@@ -369,20 +371,81 @@ class Merges(Base):
 
 
 class Board(Base):
+    EDIT = "gh project item-edit --id {} --field-id F --single-select-option-id O"
+
     def test_claim_board_write_rechecks_the_claim(self) -> None:
         self.action(action="claim", issue=f"{ISSUES}/21")
-        cmd = "gh project item-edit --id X --field-id Y --single-select-option-id Z"
+        self.reader.items = [item(21, "Ready"), item(22, "Ready")]
         with patch.object(gs, "recheck", return_value=None) as recheck:
-            self.assertIsNone(self.bash(cmd))
+            self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
             recheck.assert_called_once()
         with patch.object(gs, "recheck", return_value="issue 21 is not Ready"):
-            self.assertIn("not Ready", self.bash(cmd) or "")
+            self.assertIn("not Ready", self.bash(self.EDIT.format("PVTI_21")) or "")
+        with patch.object(gs, "recheck", return_value=None):
+            self.assertIn("issue 22", self.bash(self.EDIT.format("PVTI_22")) or "")
+
+    def test_continue_board_write_checks_item_and_assignment(self) -> None:
+        # Codex review P1 on https://github.com/phaabe/live.moafunk.de/pull/511.
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress"), item(22, "In progress")]
+        self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+        self.assertIn("issue 22", self.bash(self.EDIT.format("PVTI_22")) or "")
+        self.assertIn("not on the board", self.bash(self.EDIT.format("PVTI_9")) or "")
+        self.assertIn(
+            "name the board item", self.bash("gh project item-add 2 --url x") or ""
+        )
+        self.reader.items = [item(21, "In progress", "Codex")]
+        self.assertIn("Executor Codex", self.bash(self.EDIT.format("PVTI_21")) or "")
+        self.reader.fail = gs.ReadBlocked("HTTP 502")
+        self.assertIn("read failed", self.bash(self.EDIT.format("PVTI_21")) or "")
+
+    def test_continue_on_a_pr_may_edit_its_issue_item(self) -> None:
+        self.action(action="continue", pr=5, sha=A)
+        self.reader.pulls[5] = pull(5, f"Executor: Claude\nIssue: {ISSUES}/21")
+        self.reader.items = [item(21, "In progress"), item(22, "In progress")]
+        rest = "gh api --method PATCH users/anneoneone/projectsV2/2/items/{} --input -"
+        self.assertIsNone(self.bash(rest.format(50_021)))
+        self.assertIsNotNone(self.bash(rest.format(50_022)))
+        mutation = (
+            "gh api graphql -f query='mutation {{ updateProjectV2ItemFieldValue("
+            'input: {{projectId: "P", itemId: "{}", fieldId: "F"}}) {{ clientMutationId }} }}\''
+        )
+        self.assertIsNone(self.bash(mutation.format("PVTI_21")))
+        self.assertIsNotNone(self.bash(mutation.format("PVTI_22")))
 
     def test_other_ticks_do_not_change_the_board(self) -> None:
         self.action(action="review", pr=5, sha=A)
         self.reader.pulls[5] = pull(5, "Executor: Codex")
-        cmd = "gh project item-edit --id X --field-id Y --single-select-option-id Z"
-        self.assertIn("board", self.bash(cmd) or "")
+        self.assertIn("board", self.bash(self.EDIT.format("PVTI_21")) or "")
+
+
+class ClaimComments(Base):
+    """Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/511."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.action(action="claim", issue=f"{ISSUES}/21")
+        self.cmd = "gh issue comment 21 --body 'Claim by Claude'"
+
+    def test_claim_comment_needs_the_claim_to_hold(self) -> None:
+        self.reader.items = [item(21, "In progress", "Codex")]
+        stale = "the selector now gives idle"
+        with patch.object(gs, "recheck", return_value=stale) as recheck:
+            self.assertEqual(self.bash(self.cmd), stale)
+            recheck.assert_called_once()
+        self.reader.items = [item(21, "Ready")]
+        with patch.object(gs, "recheck", return_value=None):
+            self.assertIsNone(self.bash(self.cmd))
+
+    def test_owner_comments_after_the_claim(self) -> None:
+        self.reader.items = [item(21, "In progress")]
+        with patch.object(gs, "recheck", side_effect=AssertionError("not needed")):
+            self.assertIsNone(self.bash(self.cmd))
+
+    def test_continue_comment_needs_ownership(self) -> None:
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress", "Codex")]
+        self.assertIn("Executor Codex", self.bash(self.cmd) or "")
 
 
 class Callers(Base):

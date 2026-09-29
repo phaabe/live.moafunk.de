@@ -519,11 +519,47 @@ class Snapshots(Env):
         got = self.read(build=self.build("after"))
         self.assertEqual(got.source, "refresh")
         self.assertFalse(ns.auth_blocked())
-        # A marker written after the refresh started stays.
+        # A marker newer than the refresh start stays, and the read is refused.
         later = time.time() + 121
-        ns.block_auth("401", later + 5)  # during the refresh below
-        self.read(now=lambda: later, build=self.build("x"))
+        ns.block_auth("401", later + 5)
+        with self.assertRaises(gs.ReadBlocked):
+            self.read(now=lambda: later, build=self.build("x"))
         self.assertTrue(ns.auth_blocked())
+
+    def test_access_loss_during_the_refresh_refuses_its_result(self) -> None:
+        # Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/511.
+        self.read()
+        ns = self.ns()
+        path = ns.dir / "snapshot.json"
+        before = path.read_bytes()
+        later = time.time() + 121
+
+        def build(client: gs.Client, focus: set[str]) -> dict[str, Any]:
+            ns.block_auth("403 on a known URL", later + 1)
+            return small_state("during loss")
+
+        with self.assertRaisesRegex(gs.ReadBlocked, "access loss"):
+            self.read(now=lambda: later, build=build)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertTrue(ns.auth_blocked())
+        # The next refresh that starts after the marker clears it.
+        after = later + 10
+        got = self.read(now=lambda: after, build=self.build("ok"))
+        self.assertEqual(got.source, "refresh")
+        self.assertFalse(ns.auth_blocked())
+
+    def test_refresh_older_than_the_max_age_is_refused(self) -> None:
+        # Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/511.
+        clock = [time.time()]
+
+        def slow(client: gs.Client, focus: set[str]) -> dict[str, Any]:
+            clock[0] += 2
+            return small_state("slow")
+
+        with patch.dict(os.environ, {"EPIC_SNAPSHOT_MAX_AGE_SECONDS": "1"}):
+            with self.assertRaisesRegex(gs.ReadBlocked, "longer than the max age"):
+                self.read(now=lambda: clock[0], build=slow)
+        self.assertFalse((self.ns().dir / "snapshot.json").exists())
 
     def test_focus_labels_are_part_of_the_snapshot(self) -> None:
         def build(client: gs.Client, focus: set[str]) -> dict[str, Any]:

@@ -9,8 +9,11 @@ Active only with EPIC_SHARED_READER=1 and EPIC_ACTION_FILE set (claude-tick.sh
 sets it for the model session). Interactive sessions are not checked.
 
   Write                          Fresh check
-  claim (board write, claim)     the selector still gives this claim: Ready,
-                                 Executor Claude, no blockers, a free slot
+  claim (board write or claim    the selector still gives this claim: Ready,
+  comment on the issue)          Executor Claude, no blockers, a free slot;
+                                 once In progress for Claude, owner writes pass
+  board write in a continue      the named item is the tick's issue (or the
+                                 PR's `Issue:` ticket), In progress for Claude
   push, PR create                PR open and not merged, branch is the PR's
                                  head; without a PR: issue In progress with
                                  Executor Claude, branch names the issue, no
@@ -68,6 +71,8 @@ WRAPPERS = {"env", "command", "nohup", "time", "exec"}
 SHELLS = {"bash", "sh", "zsh", "eval", "xargs", "python", "python3"}
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 OPERATORS = set(";&|()<>")
+# The item of a GraphQL ProjectV2 mutation: `itemId: "PVTI_..."` or `itemId=...`.
+ITEM_ID = re.compile(r"\bitemId\b\W{0,4}([A-Za-z0-9_-]+)")
 REPO_PATH = re.escape(na.REPO)
 # gh flags that take a value, for finding the positional arguments.
 GH_VALUE_FLAGS = {
@@ -95,6 +100,7 @@ class Write:
     sha: str | None = None
     branch: str | None = None
     delete: bool = False
+    item: str | None = None  # board item: node ID or numeric REST id
 
 
 def active(env: Mapping[str, str] | None = None) -> bool:
@@ -266,7 +272,8 @@ def api_writes(args: list[str], cwd: str, stdin: str) -> list[Write]:
     if endpoint == "graphql":
         text = " ".join(fields)
         if "mutation" in text and "ProjectV2" in text:
-            return [Write("board")]
+            m = ITEM_ID.search(text)
+            return [Write("board", item=m.group(1) if m else None)]
         return []
     if method == "GET":
         return []
@@ -288,7 +295,8 @@ def api_writes(args: list[str], cwd: str, stdin: str) -> list[Write]:
         return ""
 
     if "projectsV2" in endpoint:
-        return [Write("board")]
+        m = re.search(r"projectsV2/\d+/items/(\d+)$", endpoint)
+        return [Write("board", item=m.group(1) if m else None)]
     repo = rf"repos/{REPO_PATH}"
     if m := re.fullmatch(rf"{repo}/issues/(\d+)/comments", endpoint):
         return [comment_write(int(m.group(1)), body())]
@@ -316,7 +324,14 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
     if group == "api":
         return api_writes(words[2:], cwd, stdin)
     if group == "project" and len(words) > 2 and words[2].startswith("item-"):
-        return [Write("board")] if words[2] != "item-list" else []
+        if words[2] == "item-list":
+            return []
+        item = (
+            first(split_flags(words[3:])[0], "--id")
+            if words[2] == "item-edit"
+            else None
+        )
+        return [Write("board", item=item)]
     if group not in ("pr", "issue") or len(words) < 3:
         return []
     sub = words[2]
@@ -419,6 +434,7 @@ class Context:
         self._make_reader = reader
         self._reader: gs.FreshReader | None = None
         self._pulls: dict[int, dict[str, Any]] = {}
+        self._items: list[dict[str, Any]] | None = None
 
     @property
     def reader(self) -> gs.FreshReader:
@@ -438,8 +454,13 @@ class Context:
             found |= na.issue_numbers(self.pull(self.pr).get("body") or "")
         return found
 
+    def items(self) -> list[dict[str, Any]]:
+        if self._items is None:
+            self._items = self.reader.board_items()
+        return self._items
+
     def item(self, number: int) -> dict[str, Any] | None:
-        for item in self.reader.board_items():
+        for item in self.items():
             content = item.get("content") or {}
             if content.get("number") == number and na.ISSUE_URL.fullmatch(
                 content.get("url") or ""
@@ -486,6 +507,55 @@ def owned_issue(ctx: Context) -> str | None:
     if item.get("status") != "In progress" or item.get("executor") != AGENT:
         return (
             f"issue {ctx.issue} is {item.get('status')} with Executor "
+            f"{item.get('executor')}, not In progress for {AGENT}"
+        )
+    return None
+
+
+def claim_or_owned(ctx: Context) -> str | None:
+    """Before the claim: the selector still gives it (Ready, Executor, no
+    blockers, a free slot). After it: the issue is In progress for this agent."""
+    item = ctx.item(ctx.issue) if ctx.issue is not None else None
+    if item and item.get("status") == "In progress" and item.get("executor") == AGENT:
+        return None
+    focus = na.read_focus(na.FOCUS_FILE)
+    enabled = na.read_actions(os.environ.get(na.ACTIONS_ENV))
+    return gs.recheck(AGENT, ctx.action, focus, enabled, False, ctx.reader)
+
+
+def issue_write(ctx: Context) -> str | None:
+    """A write on the action's own issue in an issue tick (no PR yet)."""
+    if ctx.kind == "claim":
+        return claim_or_owned(ctx)
+    if ctx.kind == "continue":
+        return owned_issue(ctx)
+    return None
+
+
+def check_board(ctx: Context, write: Write) -> str | None:
+    """The item must be the tick's issue and still fit the action."""
+    if ctx.kind not in BOARD_ACTIONS:
+        return f"a {ctx.kind} tick does not change the board"
+    if not write.item:
+        return "name the board item (--id, items/<id> or itemId)"
+    item = next(
+        (i for i in ctx.items() if write.item in (i.get("id"), str(i.get("rest_id")))),
+        None,
+    )
+    if item is None:
+        return f"board item {write.item} is not on the board"
+    content = item.get("content") or {}
+    number = content.get("number")
+    if not na.ISSUE_URL.fullmatch(content.get("url") or ""):
+        return f"board item {write.item} is not an issue of {na.REPO}"
+    allowed = {ctx.issue} if ctx.pr is None else ctx.targets() - {ctx.pr}
+    if number not in allowed:
+        return f"board item {write.item} is issue {number}, not this tick's issue"
+    if ctx.kind == "claim":
+        return claim_or_owned(ctx)
+    if item.get("status") != "In progress" or item.get("executor") != AGENT:
+        return (
+            f"issue {number} is {item.get('status')} with Executor "
             f"{item.get('executor')}, not In progress for {AGENT}"
         )
     return None
@@ -561,15 +631,13 @@ def check_write(ctx: Context, write: Write) -> str | None:
             return f"PR {write.number} is not this tick's PR"
         if write.number not in ctx.targets():
             return f"#{write.number} is not this tick's target"
-        return open_pr(ctx, write.number) if write.number == ctx.pr else None
-    if write.kind == "board":
-        if ctx.kind not in BOARD_ACTIONS:
-            return f"a {ctx.kind} tick does not change the board"
-        if ctx.kind == "claim":
-            focus = na.read_focus(na.FOCUS_FILE)
-            enabled = na.read_actions(os.environ.get(na.ACTIONS_ENV))
-            return gs.recheck(AGENT, ctx.action, focus, enabled, False, ctx.reader)
+        if write.number == ctx.pr:
+            return open_pr(ctx, write.number)
+        if ctx.pr is None and write.number == ctx.issue:
+            return issue_write(ctx)
         return None
+    if write.kind == "board":
+        return check_board(ctx, write)
     return f"unknown write {write.kind}"
 
 

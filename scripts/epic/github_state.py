@@ -301,15 +301,26 @@ class Namespace:
     def block_auth(self, reason: str, now: float) -> None:
         write_json_atomic(self.auth_marker, {"at": now, "reason": reason})
 
-    def clear_auth(self, started: float) -> None:
-        """A refresh that started after the marker proves access again."""
+    def auth_marker_at(self) -> float | None:
+        """When access loss was reported; None without a marker. A marker
+        that cannot be read counts as reported now."""
         try:
             at = json.loads(self.auth_marker.read_text()).get("at")
         except FileNotFoundError:
-            return
+            return None
         except (OSError, ValueError, AttributeError):
-            at = None
-        if not isinstance(at, int | float) or at < started:
+            return float("inf")
+        return float(at) if isinstance(at, int | float) else float("inf")
+
+    def blocked_since(self, started: float) -> bool:
+        """True when access loss was reported at or after `started`."""
+        at = self.auth_marker_at()
+        return at is not None and at >= started
+
+    def clear_auth(self, started: float) -> None:
+        """A refresh that started after the marker proves access again."""
+        at = self.auth_marker_at()
+        if at is not None and at < started:
             self.auth_marker.unlink(missing_ok=True)
 
     def log_call(self, record: dict[str, Any]) -> None:
@@ -638,7 +649,9 @@ def open_pulls(client: Client) -> list[dict[str, Any]]:
     return rows
 
 
-def board_items(client: Client) -> list[dict[str, Any]]:
+def board_items(client: Client, rest_ids: bool = False) -> list[dict[str, Any]]:
+    """Board items in the fetch_state() shape. `rest_ids` adds each item's
+    numeric REST id as `rest_id` (write checks match item IDs with it)."""
     fields = {
         f.get("name"): f.get("id")
         for f in client.pages(f"{na.PROJECT_API}/fields?per_page=100")
@@ -647,10 +660,13 @@ def board_items(client: Client) -> list[dict[str, Any]]:
     if missing:
         raise ReadBlocked(f"project board lacks fields: {', '.join(missing)}")
     query = "&".join(f"fields[]={fields[name]}" for name in na.PROJECT_FIELDS)
-    return [
-        na.item_from_rest(row)
-        for row in client.pages(f"{na.PROJECT_API}/items?per_page=100&{query}")
-    ]
+    items = []
+    for row in client.pages(f"{na.PROJECT_API}/items?per_page=100&{query}"):
+        item = na.item_from_rest(row)
+        if rest_ids:
+            item["rest_id"] = row.get("id")
+        items.append(item)
+    return items
 
 
 def search_focus(client: Client, focus: set[str]) -> list[dict[str, Any]]:
@@ -892,8 +908,19 @@ def read_snapshot(
         client = Client(ns, "refresh", config.refresh, writable=True, http=http)
         state = build(client, labels)
         validate_state(state)
+        # Refuse, and keep the old snapshot, when access loss was reported
+        # during this refresh or the result is already older than the max age.
+        if ns.blocked_since(started):
+            raise ReadBlocked("access loss was reported during the refresh")
+        age = now() - started
+        if age > config.max_age:
+            raise ReadBlocked(
+                f"refresh took {age:.0f}s, longer than the max age {config.max_age}s"
+            )
         record = publish(ns, state, started, labels)
         ns.clear_auth(started)
+        if ns.blocked_since(started):
+            raise ReadBlocked("access loss was reported during the refresh")
         return as_snapshot(record, wanted, now(), "refresh")
 
 
@@ -960,7 +987,7 @@ class FreshReader:
         )
 
     def board_items(self) -> list[dict[str, Any]]:
-        return board_items(self.client)
+        return board_items(self.client, rest_ids=True)
 
     def graphql(self, endpoint: str) -> Any:
         """GraphQL for the merge guard's edit evidence only. Logged by purpose."""
