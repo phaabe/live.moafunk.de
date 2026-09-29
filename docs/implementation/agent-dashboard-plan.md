@@ -509,6 +509,27 @@ date. Manual: compare with design v2 at 1600 and 1280 px; reproduce the 10
 design scenarios (normal, single, busy, full, late, failing, collision,
 retired, paused, stale) with fixture state dirs.
 
+Built (issue https://github.com/phaabe/live.moafunk.de/issues/447).
+Decisions made while building:
+
+- Spike: per-query "Grouping to matrix" plus an outer join keeps one row per
+  agent in Grafana 13, also when an agent has no series for some queries. But
+  Grafana 13 table columns are at least 50 px wide, so 20 slot columns do not
+  fit. The fallback from this plan is used: one "Last 20" cell with counts
+  (`recent_text` on `epic_agent_row_info`), colored by the worst outcome.
+- The 6 px kind stripe is a colored dot for the same reason.
+- "Ago" is the age in minutes, not "x minutes ago", so the table fits 1280 px.
+- Stale local data: presence and last outcome fall back to "data stale" for
+  every agent, so the rows stay.
+- The 1 h denial window is limited to current agents; without it, an agent
+  that was removed shows up for an hour.
+- "PRs waiting > 30 min" turns red at 2; a single wait over 60 min raises
+  Needs Anton instead. The median tick duration has no budget-relative color.
+- `epic_last_observed_exit_code` is removed; the tick ledger names outcomes.
+- `scripts/epic/fixtures.py` and `tools/agent-monitoring/preview.sh` show the
+  10 design scenarios on a second stack; `alerts.test.yml` holds the
+  `promtool` tests.
+
 ## Out of scope
 
 - Starting, stopping or scheduling agents from the dashboard or collector.
