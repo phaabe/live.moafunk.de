@@ -49,7 +49,7 @@ def decide(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
         # Imported here: standard library only while the switch is off.
         import write_checks
 
-        refused = write_checks.guard(tool_name, tool_input, os.getcwd())
+        refused = write_checks.guard(tool_name, tool_input, os.getcwd(), agent="Claude")
         if refused:
             return False, f"fresh check: {refused}"
     return allowed, reason

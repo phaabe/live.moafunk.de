@@ -349,7 +349,7 @@ def runner_write_check(tool: str, tool_input: dict, cwd: str) -> None:
         import write_checks
     except Exception as exc:  # any import failure must block, not allow
         block(f"Runner write checks are unavailable: {exc!r}")
-    refused = write_checks.guard(tool, tool_input, cwd)
+    refused = write_checks.guard(tool, tool_input, cwd, agent="Claude")
     if refused:
         block(
             f"Runner write check: {refused}",

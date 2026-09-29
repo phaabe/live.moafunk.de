@@ -114,9 +114,15 @@ class Base(unittest.TestCase):
     def action(self, **action: Any) -> None:
         self.action_file.write_text(json.dumps({"reason": "r", **action}))
 
-    def bash(self, command: str, cwd: str | None = None) -> str | None:
+    def bash(
+        self, command: str, cwd: str | None = None, agent: str | None = None
+    ) -> str | None:
         return wc.guard(
-            "Bash", {"command": command}, cwd or str(self.root), lambda: self.reader
+            "Bash",
+            {"command": command},
+            cwd or str(self.root),
+            lambda: self.reader,
+            agent,
         )
 
 
@@ -313,12 +319,52 @@ class Comments(Base):
 class Pushes(Base):
     def test_fix_push_to_the_open_pr_branch(self) -> None:
         self.action(action="fix", pr=5, sha=A)
-        self.reader.pulls[5] = pull(5)
+        self.reader.pulls[5] = pull(5, f"Executor: Claude\nIssue: {ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
         self.assertIsNone(self.bash("git push origin feat/5-x"))
         self.assertIn("not PR 5", self.bash("git push origin feat/6-y") or "")
         self.reader.pulls[5]["merged_at"] = "2026-09-29T00:00:00Z"
         self.reader.pulls[5]["state"] = "closed"
         self.assertIn("merged", self.bash("git push origin feat/5-x") or "")
+
+    def test_pr_push_needs_every_issue_of_the_pr_owned(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        body = f"Executor: Claude\nIssue: {ISSUES}/21\nIssue: {ISSUES}/22"
+        self.reader.pulls[5] = pull(5, body)
+        self.reader.items = [item(21, "In progress"), item(22, "In progress")]
+        self.assertIsNone(self.bash("git push origin feat/5-x"))
+        for changed, reason in (
+            (item(22, "Done"), "issue 22 is Done"),
+            (item(22, "Ready"), "issue 22 is Ready"),
+            (item(22, "In progress", "Codex"), "not In progress for Claude"),
+        ):
+            with self.subTest(reason=reason):
+                self.reader.items[1] = changed
+                self.assertIn(reason, self.bash("git push origin feat/5-x") or "")
+        self.reader.items = [item(21, "In progress")]
+        self.assertIn("not on the board", self.bash("git push origin feat/5-x") or "")
+        self.reader.pulls[5] = pull(5)
+        self.assertIn("names no issue", self.bash("git push origin feat/5-x") or "")
+
+    def test_codex_push_needs_codex_ownership(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        self.reader.pulls[5] = pull(5, f"Executor: Codex\nIssue: {ISSUES}/21")
+        self.reader.items = [item(21, "In progress", "Codex")]
+        self.assertIsNone(self.bash("git push origin feat/5-x", agent="Codex"))
+        self.assertIn(
+            "Executor is Codex, not Claude", self.bash("git push origin feat/5-x") or ""
+        )
+        self.reader.items = [item(21, "In progress")]
+        self.assertIn(
+            "not In progress for Codex",
+            self.bash("git push origin feat/5-x", agent="Codex") or "",
+        )
+
+    def test_unknown_agent_is_refused(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        self.assertIn(
+            "unknown agent", self.bash("git push origin feat/5-x", agent="codex") or ""
+        )
 
     def test_review_tick_does_not_push(self) -> None:
         self.action(action="review", pr=5, sha=A)
@@ -481,7 +527,9 @@ class Callers(Base):
         trusted = self.root / "trusted"
         (trusted / "scripts/epic").mkdir(parents=True)
         (trusted / "scripts/epic/write_checks.py").write_text(
-            "def guard(tool, tool_input, cwd):\n    return 'PR 5 is merged'\n"
+            "def guard(tool, tool_input, cwd, agent=None):\n"
+            "    assert agent == 'Claude', agent\n"
+            "    return 'PR 5 is merged'\n"
         )
         blocked = self.hook(trusted)
         self.assertEqual(blocked.returncode, 2, blocked.stderr)
