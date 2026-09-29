@@ -642,17 +642,28 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 
 | Codex finding | Change |
 |---|---|
-| a first tick between two polls could be counted by the log and the events | the log ledger saves the boundary of what it counted (see round 3); the event ledger skips those ticks |
+| a first tick between two polls could be counted by the log and the events | the log checks the events file on disk (see round 4) |
 | the nested action-line test never ran | moved into its test class; fails without the fix |
 
 ### PR 3 review, round 3
 
 | Codex finding | Change |
 |---|---|
-| a restart between the two polls counted the tick twice | the monitor loads the log checkpoint before it reads the events |
-| v4 migration lost what the log had counted | v4 had no events, so the migration sets the boundary to the newest saved log tick |
-| a list of 200 counted ticks could overflow | replaced by one saved boundary: the start of the newest tick the log counted; one agent's ticks never overlap |
+| a restart between the two polls counted the tick twice | no log state is used by the events any more (see round 4) |
+| v4 migration lost what the log had counted | same: v4 had no events, so the old collector counted from the log only |
+| a list of 200 counted ticks could overflow | the list is gone |
 | (found while fixing) the first event start moved when the ticks list was trimmed | saved once in the event checkpoint |
+
+### PR 3 review, round 4
+
+| Codex finding | Change |
+|---|---|
+| log rotation between reads: a boundary from the log hid a tick the log never saw | the events count every tick they have; the log counts a tick only if the events file has no start at or before it, read from disk after the tick's lines |
+| a failed log save let the events skip a count that was never saved | same: the decision uses the events file, which survives restarts and failed saves; a missing events file is saved as empty, so it counts from byte 0 when it appears |
+
+Accepted limit: a tick that ends while the collector is being upgraded may be
+missed once (the new collector has no event checkpoint yet and starts at the
+file's end).
 
 ## Appendix — panel spec from design v2
 

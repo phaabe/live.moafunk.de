@@ -867,15 +867,13 @@ def ledger_metrics(
 ) -> ticks.TickView:
     """Read new events and log lines, persist checkpoints, publish the ticks.
 
-    Events are read first: once a runner writes them, the log ledger stops
-    counting, so a tick is never counted twice.
+    The events count every tick they have. The log ledger counts a tick only
+    if the events file has no start at or before it, checked on disk after
+    the tick's lines were read, so a tick is never counted twice or lost to
+    a restart, a rotation or a failed save.
     """
     name = log.agent
     ok = True
-    # After a restart the log's saved boundary must be known before the
-    # events are read, or a tick the log counted is counted again.
-    log.restore()
-    events.log_counted_until = log.last_counted()
     try:
         events.update(now)
         events.save()
@@ -883,7 +881,11 @@ def ledger_metrics(
         # A runner without events yet is fine; the log still covers it. A
         # file that vanished after events were read is a read failure.
         ok = not events.active
-        if not ok:
+        if ok:
+            # Saved, so a file that appears later counts from its first
+            # line, also after a restart.
+            events.save()
+        else:
             logging.warning("Tick events of %s are missing", name)
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
         logging.warning("Cannot read %s tick events", name)
@@ -892,7 +894,7 @@ def ledger_metrics(
     metrics.add(
         "tick_events_rejected_total", events.rejected, metric_type="counter", agent=name
     )
-    log.count_before = events.first_start()
+    log.count_before = events.peek
     ok = True
     try:
         log.update(now)

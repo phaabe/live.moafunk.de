@@ -107,7 +107,6 @@ def valid_checkpoint(data: object) -> bool:
                 "ticks": list,
                 "totals": dict,
                 "coverage_start": float,
-                "counted_until": (float, type(None)),
                 "first_start": (float, type(None)),
             },
         )
@@ -122,23 +121,8 @@ def valid_checkpoint(data: object) -> bool:
 
 
 def migrate_v4(data: Json) -> Json:
-    """v4 had no event ledger, so the log counted all its saved ticks."""
-    ticks = data.get("ticks")
-    starts = (
-        [
-            t["start"]
-            for t in ticks
-            if isinstance(t, dict) and type(t.get("start")) is float
-        ]
-        if isinstance(ticks, list)
-        else []
-    )
-    return {
-        **data,
-        "v": 5,
-        "counted_until": max(starts, default=None),
-        "first_start": None,
-    }
+    """v4 checkpoints only lack the event ledger's first start."""
+    return {**data, "v": 5, "first_start": None}
 
 
 class Sink(Protocol):
@@ -197,16 +181,15 @@ class LogLedger:
         # The monitor passes a no-follow opener for model-writable folders.
         self.opener = opener or (lambda: self.log.open("rb"))
         self.state: Json | None = None
-        self.loaded = False
         self.dirty = False
         # Once the runner writes events, only ticks that started before its
         # first event are counted here; later ones are counted by the events.
-        self.count_before = math.inf
+        # Asked only after the tick's lines were read (see EventLedger.peek).
+        self.count_before: Callable[[], float] = lambda: math.inf
 
     def fresh(self, now: float, size: int) -> Json:
         return {
             "v": 5,
-            "counted_until": None,
             "first_start": None,
             "inode": None,
             "offset": 0,
@@ -236,26 +219,8 @@ class LogLedger:
             return None
         return data
 
-    def saved(self) -> Json | None:
-        """The checkpoint, read once; later reads keep the state in memory."""
-        if self.loaded:
-            return None
-        self.loaded = True
-        return self.load()
-
-    def restore(self) -> None:
-        """Load the checkpoint before the first read, if there is one."""
-        if self.state is None:
-            self.state = self.saved()
-
     def valid(self, data: object) -> bool:
         return valid_checkpoint(data)
-
-    def last_counted(self) -> float:
-        """Start of the newest tick this ledger counted; -inf before any."""
-        if self.state is None or self.state["counted_until"] is None:
-            return -math.inf
-        return self.state["counted_until"]
 
     def update(self, now: float) -> None:
         try:
@@ -264,7 +229,7 @@ class LogLedger:
             if self.state is None:
                 # Keep the saved state while the file is away. Without one, a
                 # file that appears later is new, so all its lines count.
-                self.state = self.saved() or self.fresh(now, 0)
+                self.state = self.load() or self.fresh(now, 0)
                 self.dirty = True
             raise
         with stream:
@@ -272,7 +237,7 @@ class LogLedger:
 
     def update_from(self, stream: BinaryIO, stat: os.stat_result, now: float) -> None:
         if self.state is None:
-            self.state = self.saved() or self.fresh(now, stat.st_size)
+            self.state = self.load() or self.fresh(now, stat.st_size)
             self.dirty = True
         # All or nothing: an exception while parsing restores the old state, so
         # a tick is never counted without its offset being committed.
@@ -394,7 +359,7 @@ class LogLedger:
             tick["action"],
             tick["target"],
             tick["tokens"],
-            live and utc(tick["tick"]) < self.count_before,
+            live and utc(tick["tick"]) < self.count_before(),
         )
 
     def record(
@@ -435,11 +400,6 @@ class LogLedger:
         del state["ticks"][:-LEDGER_SIZE]
         if counted:
             state["totals"][kind] += 1
-            # Ticks of one agent run one after another, so this boundary tells
-            # the event ledger which ticks this ledger already counted.
-            start = utc(tick)
-            if state["counted_until"] is None or start > state["counted_until"]:
-                state["counted_until"] = start
 
     def save(self) -> None:
         if not self.dirty or self.state is None:
@@ -479,6 +439,8 @@ PHASES = (
     "unknown",
 )
 MAX_EVENT_LINE = 4096  # the runner writes each event below this size
+# The log ledger looks this far into an events file it has not read yet.
+PEEK_BYTES = 65536
 TICK_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 
 
@@ -496,10 +458,6 @@ class EventLedger(LogLedger):
         self.source = source
         self.rejected = 0
         self.pending = 0
-        # Set by the monitor: the log ledger counted every tick that started
-        # up to here. A whole first tick can pass between two polls, so the
-        # log may count it before the events file is seen.
-        self.log_counted_until = -math.inf
 
     @property
     def active(self) -> bool:
@@ -512,6 +470,30 @@ class EventLedger(LogLedger):
         if not self.state or self.state["first_start"] is None:
             return math.inf
         return self.state["first_start"]
+
+    def peek(self) -> float:
+        """First start in the events file, even before it was read.
+
+        The runner writes a tick's start event before the lines the log
+        ledger decides on, so asked after those lines were read, this finds
+        every tick that has events: the log never counts one of them.
+        """
+        known = self.first_start()
+        if known < math.inf:
+            return known
+        try:
+            with self.opener() as stream:
+                data = stream.read(PEEK_BYTES)
+        except FileNotFoundError:
+            return math.inf
+        except OSError:
+            logging.warning("Cannot peek at %s tick events", self.agent)
+            return math.inf
+        for raw in data.split(b"\n"):
+            start = start_of(raw.decode("utf-8", "replace"))
+            if start is not None:
+                return start
+        return math.inf
 
     def update(self, now: float) -> None:
         self.pending = 0
@@ -566,7 +548,7 @@ class EventLedger(LogLedger):
         if values is None:
             return self.reject()
         state["open"] = None
-        live = end > state["baseline"] and start > self.log_counted_until
+        live = end > state["baseline"]
         self.record(tick, *values, live)
         return None
 
@@ -615,7 +597,7 @@ class EventLedger(LogLedger):
         state = self.state
         assert state is not None
         tick, state["open"] = state["open"], None
-        live = end > state["baseline"] and utc(tick["tick"]) > self.log_counted_until
+        live = end > state["baseline"]
         self.record(
             tick["tick"], None, None, "interrupted", "unknown", "", "", None, live
         )
@@ -623,6 +605,28 @@ class EventLedger(LogLedger):
 
 DECISION = re.compile(r"\S+ (allow|deny) ")
 DECISIONS = ("allow", "deny")
+
+
+def start_of(line: str) -> float | None:
+    """Start time of a well-formed start event line, else None."""
+    if len(line) > MAX_EVENT_LINE:
+        return None
+    try:
+        event = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    if not (
+        isinstance(event, dict)
+        and event.get("v") == 1
+        and event.get("event") == "start"
+        and isinstance(event.get("tick"), str)
+        and TICK_TIME.fullmatch(event["tick"])
+    ):
+        return None
+    try:
+        return utc(event["tick"])
+    except ValueError:
+        return None
 
 
 class DecisionLedger(LogLedger):

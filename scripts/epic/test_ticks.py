@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 import tempfile
 import unittest
@@ -615,14 +616,12 @@ class LedgerTest(unittest.TestCase):
         ledger.update(NOON + 5)
         ledger.save()
         data = json.loads(self.checkpoint.read_text())
-        del data["counted_until"], data["first_start"]
+        del data["first_start"]
         data["v"] = 4  # as written before events existed
         self.checkpoint.write_text(json.dumps(data))
         again = self.ledger()
         again.update(NOON + 10)
-        self.assertEqual(again.state["totals"]["ok"], 1)
-        # v4 had no events, so every saved tick was counted by the log.
-        self.assertEqual((again.state["v"], again.last_counted()), (5, NOON))
+        self.assertEqual((again.state["v"], again.state["totals"]["ok"]), (5, 1))
 
 
 def event(kind: str, start: float, **fields: object) -> str:
@@ -754,7 +753,7 @@ class EventLedgerTest(unittest.TestCase):
             out.write(tick(NOON, 0))
         self.append(event("start", NOON), event("finish", NOON))
         events.update(NOON + 300)
-        log.count_before = events.first_start()
+        log.count_before = events.peek
         log.update(NOON + 300)
         view = ticks.merge(log, events)
         self.assertEqual(
@@ -802,7 +801,7 @@ class EventLedgerTest(unittest.TestCase):
         self.file.write_text("")
         self.append(event("start", NOON), event("finish", NOON))
         events.update(NOON + 300)
-        log.count_before = events.first_start()
+        log.count_before = events.peek
         log.update(NOON + 300)
         view = ticks.merge(log, events)
         self.assertEqual(view.state["totals"]["ok"], 1)  # from the events
@@ -816,58 +815,101 @@ class EventLedgerTest(unittest.TestCase):
             monitor.action_labels,
         )
 
-    def poll(self, now: float, *, between: list[float] | None = None) -> ticks.TickView:
-        """One collector cycle with fresh ledgers, as after a restart.
+    def run_tick(self, start: float) -> None:
+        """One whole tick in the runner's order: start event, log, finish."""
+        self.append(event("start", start))
+        with self.log.open("a") as out:
+            out.write(tick(start, 0))
+        self.append(event("finish", start))
 
-        `between` ticks run whole after the events read, before the log read.
+    def poll(
+        self,
+        now: float,
+        *,
+        between: Callable[[], None] | None = None,
+        ledgers: tuple[ticks.LogLedger, ticks.EventLedger] | None = None,
+    ) -> ticks.TickView:
+        """One collector cycle; without `ledgers` as after a restart.
+
+        `between` runs after the events read, before the log read.
         """
-        log, events = self.log_ledger(), self.events()
-        if between:
+        log, events = ledgers or (self.log_ledger(), self.events())
+        if between is not None:
             read = events.update
 
             def race(at: float) -> None:
+                del events.update  # once: kept ledgers read normally later
                 try:
                     read(at)
                 finally:
-                    with self.log.open("a") as out:
-                        out.write("".join(tick(t, 0) for t in between))
-                    self.append(
-                        *(event(k, t) for t in between for k in ("start", "finish"))
-                    )
+                    between()
 
             events.update = race  # type: ignore[method-assign]
         return monitor.ledger_metrics(monitor.Metrics(), log, events, now)
 
     def test_first_tick_between_polls_is_counted_once(self) -> None:
         # Codex review rounds 2 and 3: the log counted the tick before the
-        # events file was seen, then the events counted it again, also after
-        # a restart between the two polls. The events file exists but is
-        # empty, so the events ledger has a checkpoint from poll 1.
-        self.poll(NOON - 60)
-        self.poll(NOON + 5, between=[NOON])
-        view = self.poll(NOON + 10)
-        self.assertEqual(view.state["totals"]["ok"], 1)
-        self.assertEqual(len(view.state["ticks"]), 1)
+        # events were read, then the events counted it again, also after a
+        # restart between the two polls; with or without an events file.
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                self.setUp()
+                if missing:
+                    self.file.unlink()
+                self.poll(NOON - 60)
+                self.poll(NOON + 5, between=lambda: self.run_tick(NOON))
+                view = self.poll(NOON + 10)
+                self.assertEqual(view.state["totals"]["ok"], 1)
+                self.assertEqual(len(view.state["ticks"]), 1)
 
     def test_many_ticks_between_polls_are_each_counted_once(self) -> None:
         # Codex review round 3: a fixed list of counted ticks overflowed.
-        self.poll(NOON - 60)
-        self.poll(NOON + 5, between=[NOON - 250 * 60 + i * 60 for i in range(250)])
+        def many() -> None:
+            for i in range(250):
+                self.run_tick(NOON - 250 * 60 + i * 60)
+
+        self.poll(NOON - 250 * 60 - 60)
+        self.poll(NOON + 5, between=many)
         view = self.poll(NOON + 10)
         self.assertEqual(view.state["totals"]["ok"], 250)
 
-    def test_tick_counted_under_a_v4_checkpoint_is_not_counted_again(self) -> None:
-        # Codex review round 3: the v4 migration must keep what the log counted.
-        self.file.unlink()
+    def test_log_rotation_between_reads_loses_no_count(self) -> None:
+        # Codex review round 4: the log never saw tick A, so it must not
+        # decide about the events' ticks.
+        def rotate() -> None:
+            self.run_tick(NOON)
+            self.log.rename(self.root / "codex.log.1")
+            self.log.write_text("")
+            self.run_tick(NOON + 120)
+
         self.poll(NOON - 60)
-        with self.log.open("a") as out:
-            out.write(tick(NOON, 0))
-        self.poll(NOON + 5)  # counted by the log; no events file yet
+        self.poll(NOON + 200, between=rotate)
+        view = self.poll(NOON + 300)
+        self.assertEqual(view.state["totals"]["ok"], 2)
+
+    def test_failed_log_save_then_restart_loses_no_count(self) -> None:
+        # Codex review round 4: the events must not rely on log state that
+        # was never saved.
+        self.poll(NOON - 60)
+        running = (self.log_ledger(), self.events())
+        with patch.object(running[0], "save", side_effect=OSError("disk")):
+            self.poll(NOON + 5, between=lambda: self.run_tick(NOON), ledgers=running)
+            self.poll(NOON + 10, ledgers=running)
+        view = self.poll(NOON + 15)
+        self.assertEqual(view.state["totals"]["ok"], 1)
+
+    def test_deploy_after_the_old_collector_counted_a_tick(self) -> None:
+        # The old collector (v4, no event reader) counted the runner's first
+        # event tick from the log; the new one has no event checkpoint yet.
+        old = self.log_ledger()
+        old.update(NOON - 60)
+        self.run_tick(NOON)
+        old.update(NOON + 5)
+        old.save()
         path = self.root / "runtime/ticks-codex.json"
         data = json.loads(path.read_text())
-        del data["counted_until"], data["first_start"]
+        del data["first_start"]
         path.write_text(json.dumps(data | {"v": 4}))
-        self.append(event("start", NOON), event("finish", NOON))
         view = self.poll(NOON + 10)
         self.assertEqual(view.state["totals"]["ok"], 1)
 
