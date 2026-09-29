@@ -23,6 +23,10 @@ VERDICT = re.compile(
 LANES = {"setup", "ops", "backend", "frontend", "coordination"}
 
 
+class WaitingReason(str):
+    """A blocking check result that may pass once CI reports or completes."""
+
+
 def load_policy(path: str | Path) -> Json:
     """Read JSON-subset YAML without installing a YAML interpreter in CI."""
     policy = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -355,7 +359,9 @@ def check_errors(policy: Json, snapshot: Json, head: str) -> list[str]:
         accepted = {"success"}
         if name not in policy["required_checks"]:
             accepted.update({"skipped", "neutral"})
-        if run.get("status") != "completed" or run.get("conclusion") not in accepted:
+        if run.get("status") != "completed":
+            errors.append(WaitingReason(f"check {name}: not completed"))
+        elif run.get("conclusion") not in accepted:
             errors.append(f"check {name}: not successful")
     states: dict[str, Json] = {}
     for status in snapshot["statuses"]:
@@ -367,11 +373,13 @@ def check_errors(policy: Json, snapshot: Json, head: str) -> list[str]:
             states[name] = status
     for name, status in states.items():
         observed.add(name)
-        if status.get("state") != "success":
+        if status.get("state") == "pending":
+            errors.append(WaitingReason(f"status {name}: pending"))
+        elif status.get("state") != "success":
             errors.append(f"status {name}: not successful")
     for name in policy["required_checks"]:
         if name not in observed:
-            errors.append(f"required check missing: {name}")
+            errors.append(WaitingReason(f"required check missing: {name}"))
     return errors
 
 
