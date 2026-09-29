@@ -661,6 +661,14 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 | log rotation between reads: a boundary from the log hid a tick the log never saw | the events count every tick they have; the log counts a tick only if the events file has no start at or before it, read from disk after the tick's lines |
 | a failed log save let the events skip a count that was never saved | same: the decision uses the events file, which survives restarts and failed saves; a missing events file is saved as empty, so it counts from byte 0 when it appears |
 
+### PR 3 review, round 5
+
+| Codex finding | Change |
+|---|---|
+| a failed save with no events file stopped the collector | the save is inside the event read's error handling |
+| an unreadable events file looked like a missing one, so the log counted the tick too | the error is raised; the log read rolls back and is retried |
+| the events file rotated after the log skipped a tick by a start the events had not read | the monitor reads the events again at once; if that start is gone, the log read rolls back and counts the tick next cycle |
+
 Accepted limit: a tick that ends while the collector is being upgraded may be
 missed once (the new collector has no event checkpoint yet and starts at the
 file's end).

@@ -898,6 +898,59 @@ class EventLedgerTest(unittest.TestCase):
         view = self.poll(NOON + 15)
         self.assertEqual(view.state["totals"]["ok"], 1)
 
+    def test_failed_save_without_events_file_is_reported(self) -> None:
+        # Codex review round 5: this save must not stop the collector.
+        self.file.unlink()
+        metrics = monitor.Metrics()
+        log, events = self.log_ledger(), self.events()
+        with patch.object(events, "save", side_effect=OSError("disk")):
+            monitor.ledger_metrics(metrics, log, events, NOON)
+        self.assertIn(
+            'epic_tick_events_read_success{agent="codex"} 0', metrics.render()
+        )
+
+    def test_unreadable_events_file_is_not_a_missing_one(self) -> None:
+        # Codex review round 5: the log counted the tick because the events
+        # file could not be read, then the events counted it too.
+        def locked() -> None:
+            self.run_tick(NOON)
+            self.file.chmod(0)
+
+        self.poll(NOON - 60)
+        self.poll(NOON + 5, between=locked)
+        self.file.chmod(0o600)
+        view = self.poll(NOON + 10)
+        self.assertEqual(view.state["totals"]["ok"], 1)
+
+    def test_events_rotated_after_the_log_decided_lose_no_count(self) -> None:
+        # Codex review round 5: the log skipped tick A by a start on disk,
+        # then the events file was rotated before the event ledger read it.
+        self.poll(NOON - 60)
+        self.poll(NOON + 5, between=lambda: self.run_tick(NOON))
+        self.file.rename(self.root / "codex-ticks.jsonl.1")
+        self.run_tick(NOON + 120)
+        view = self.poll(NOON + 200)
+        self.assertEqual(view.state["totals"]["ok"], 2)
+
+    def test_events_rotated_between_peek_and_read_lose_no_count(self) -> None:
+        # The same rotation inside one cycle: the log's read is rolled back
+        # and counts the tick on the next cycle.
+        log, events = self.log_ledger(), self.events()
+        self.poll(NOON - 60)
+        peek = events.peek
+
+        def rotating() -> float:
+            start = peek()
+            if start < float("inf") and events.first_start() == float("inf"):
+                self.file.rename(self.root / "codex-ticks.jsonl.1")
+                self.file.write_text("")
+            return start
+
+        events.peek = rotating  # type: ignore[method-assign]
+        self.poll(NOON + 5, between=lambda: self.run_tick(NOON), ledgers=(log, events))
+        view = self.poll(NOON + 10, ledgers=(log, events))
+        self.assertEqual(view.state["totals"]["ok"], 1)
+
     def test_deploy_after_the_old_collector_counted_a_tick(self) -> None:
         # The old collector (v4, no event reader) counted the runner's first
         # event tick from the log; the new one has no event checkpoint yet.

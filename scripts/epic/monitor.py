@@ -859,6 +859,26 @@ def publish_local(args: argparse.Namespace, ledgers: Ledgers) -> None:
     )
 
 
+def read_events(events: ticks.EventLedger, now: float) -> bool:
+    """Read and save new tick events; False on a read or save failure."""
+    try:
+        try:
+            events.update(now)
+        except FileNotFoundError:
+            # A runner without events yet is fine; the log still covers it.
+            # A file that vanished after events were read is a read failure.
+            if events.active:
+                logging.warning("Tick events of %s are missing", events.agent)
+                return False
+        # Saved even without a file, so a file that appears later counts
+        # from its first line, also after a restart.
+        events.save()
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        logging.warning("Cannot read %s tick events", events.agent)
+        return False
+    return True
+
+
 def ledger_metrics(
     metrics: Metrics,
     log: ticks.LogLedger,
@@ -873,31 +893,23 @@ def ledger_metrics(
     a restart, a rotation or a failed save.
     """
     name = log.agent
-    ok = True
-    try:
-        events.update(now)
-        events.save()
-    except FileNotFoundError:
-        # A runner without events yet is fine; the log still covers it. A
-        # file that vanished after events were read is a read failure.
-        ok = not events.active
-        if ok:
-            # Saved, so a file that appears later counts from its first
-            # line, also after a restart.
-            events.save()
-        else:
-            logging.warning("Tick events of %s are missing", name)
-    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
-        logging.warning("Cannot read %s tick events", name)
-        ok = False
+    ok = read_events(events, now)
     metrics.add("tick_events_read_success", int(ok), agent=name)
     metrics.add(
         "tick_events_rejected_total", events.rejected, metric_type="counter", agent=name
     )
     log.count_before = events.peek
+    events.peeked = None
+    before = log.state
     ok = True
     try:
         log.update(now)
+        if events.peeked is not None:
+            # The log skipped ticks by starts the event ledger has not read.
+            # Read them now; if they are gone (rotated), retry next cycle.
+            if not read_events(events, now) or events.first_start() > events.peeked:
+                log.state = before
+                raise OSError("tick events changed while read")
         log.save()
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
         # Keep the last ledger; a missing or unreadable log is reported, not zeroed.

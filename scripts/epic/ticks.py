@@ -458,6 +458,7 @@ class EventLedger(LogLedger):
         self.source = source
         self.rejected = 0
         self.pending = 0
+        self.peeked: float | None = None
 
     @property
     def active(self) -> bool:
@@ -476,7 +477,10 @@ class EventLedger(LogLedger):
 
         The runner writes a tick's start event before the lines the log
         ledger decides on, so asked after those lines were read, this finds
-        every tick that has events: the log never counts one of them.
+        every tick that has events: the log never counts one of them. A
+        start found only on disk is kept in `peeked`, so the monitor can
+        check the event ledger read it before the log's decision is saved.
+        An unreadable file raises: it must not look like a missing one.
         """
         known = self.first_start()
         if known < math.inf:
@@ -486,12 +490,10 @@ class EventLedger(LogLedger):
                 data = stream.read(PEEK_BYTES)
         except FileNotFoundError:
             return math.inf
-        except OSError:
-            logging.warning("Cannot peek at %s tick events", self.agent)
-            return math.inf
         for raw in data.split(b"\n"):
             start = start_of(raw.decode("utf-8", "replace"))
             if start is not None:
+                self.peeked = start
                 return start
         return math.inf
 
