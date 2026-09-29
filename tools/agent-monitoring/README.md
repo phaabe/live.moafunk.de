@@ -158,6 +158,22 @@ Grafana and Prometheus; no external notifications are sent.
   and deny answers. Its log is also a Loki stream (`stream="permissions"`,
   label `decision`); lines older than 167 hours are not sent (Loki rejects
   lines older than a week).
+- Handoff (`epic_handoff_wait_seconds`, per kind): a PR waits for review
+  when the selector would offer the other kind a `review` for its head. The
+  clock starts when the collector first sees that head waiting, restarts on
+  a new head, and is kept in `runtime/handoff.json` across restarts. It is
+  the observed wait, not the time since the push. `epic_handoff_stalled` is
+  1 when both kinds have a PR waiting over 30 min, no pause, no agent of
+  either kind running, new or unreadable, and the observation is under
+  5 min old: a suspected stalled handoff.
+- Delivery (`delivery.prom`, per kind): merged PRs per day, review rounds
+  (heads the reviewer gave a verdict on) and time to merge for PRs merged in
+  the last 14 days; medians over the last 7. It uses REST calls only, after
+  each GitHub poll; merged PRs are cached in `runtime/delivery.json` and their
+  comments checked again every 30 min. A PR with incomplete comment history
+  sets `epic_delivery_complete 0` and is left out, not guessed.
+- `epic_area_leaves` counts checklist leaves per epic area and executor
+  kind; a leaf in several issues counts once.
 - An agent is late when no tick started for longer than twice its interval
   plus its tick budget. A pause never makes an agent late.
 - Log lines get the time Alloy read them. On the first start, older lines all
