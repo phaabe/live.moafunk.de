@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import subprocess
+import tempfile
 import unittest
 from functools import partial
 from pathlib import Path
@@ -81,7 +82,10 @@ class RunnerTests(unittest.TestCase):
 
     def test_main_publish_returns_zero_for_guard_errors(self) -> None:
         self.api.data["comments"] = []
-        with patch.object(run, "publish", side_effect=lambda *s: self.statuses.append(s)):
+        self.api.data["pr"]["comments"] = 0
+        with patch.object(
+            run, "publish", side_effect=lambda *s: self.statuses.append(s)
+        ):
             self.assertEqual(self.main("--pr", "406", "--publish"), 0)
         self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
 
@@ -113,10 +117,104 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(self.main("--event", "event.json", "--publish"), 1)
         publish.assert_not_called()
 
+    def test_main_publish_returns_one_for_late_api_failures(self) -> None:
+        api = self.api
+        for failure in (
+            subprocess.CalledProcessError(1, ["gh", "api"]),
+            subprocess.TimeoutExpired(["gh", "api"], 60),
+            json.JSONDecodeError("invalid response", "", 0),
+            OSError("API unavailable"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                self.statuses.clear()
+
+                def gh(endpoint: str) -> dict | list:
+                    if "/contents/" in endpoint:
+                        raise failure
+                    return api(endpoint)
+
+                with (
+                    patch.object(self, "api", gh),
+                    patch.object(
+                        run, "publish", side_effect=lambda *s: self.statuses.append(s)
+                    ),
+                ):
+                    self.assertEqual(self.main("--pr", "406", "--publish"), 1)
+                self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
+
+    def test_main_publish_returns_one_for_graphql_error_response(self) -> None:
+        api = self.api
+
+        def gh(endpoint: str) -> dict | list:
+            if endpoint.startswith("graphql?"):
+                return {"errors": [{"message": "API unavailable"}]}
+            return api(endpoint)
+
+        with (
+            patch.object(self, "api", gh),
+            patch.object(
+                run, "publish", side_effect=lambda *s: self.statuses.append(s)
+            ),
+        ):
+            self.assertEqual(self.main("--pr", "406", "--publish"), 1)
+        self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
+
+    def test_main_publish_refreshes_all_prs_despite_guard_errors(self) -> None:
+        for untrusted_base in (False, True):
+            with self.subTest(untrusted_base=untrusted_base):
+                self.statuses.clear()
+                failing = BaseAPI()
+                failing.data["comments"] = []
+                failing.data["pr"]["comments"] = 0
+                if untrusted_base:
+                    failing.data["pr"]["base"]["ref"] = "unsupported"
+                passing = BaseAPI()
+                passing.data["pr"]["number"] = 407
+                passing.data["pr"]["head"]["sha"] = "c" * 40
+                passing.data["comments"][0]["body"] = passing.data["comments"][0][
+                    "body"
+                ].replace(HEAD, "c" * 40)
+                passing.data["check_runs"][0]["head_sha"] = "c" * 40
+                pulls = [failing.data["pr"], passing.data["pr"]]
+                active = failing
+
+                def gh(endpoint: str) -> dict | list:
+                    nonlocal active
+                    if "/pulls?" in endpoint:
+                        return copy.deepcopy(pulls)
+                    if endpoint.endswith("/pulls/407"):
+                        active = passing
+                        endpoint = endpoint.replace("/pulls/407", "/pulls/406")
+                    return active(endpoint)
+
+                event = json.dumps({"repository": {"full_name": run.REPO}})
+                with (
+                    tempfile.TemporaryDirectory() as directory,
+                    patch.object(self, "api", gh),
+                    patch.object(
+                        run, "publish", side_effect=lambda *s: self.statuses.append(s)
+                    ),
+                ):
+                    event_path = Path(directory) / "event.json"
+                    event_path.write_text(event)
+                    self.assertEqual(
+                        self.main("--event", str(event_path), "--publish"), 0
+                    )
+                self.assertEqual(
+                    [s[:2] for s in self.statuses],
+                    [
+                        (HEAD, "pending"),
+                        (HEAD, "failure"),
+                        ("c" * 40, "pending"),
+                        ("c" * 40, "success"),
+                    ],
+                )
+
     def test_main_local_exit_code_reports_guard_errors(self) -> None:
         with patch.object(run, "publish") as publish:
             self.assertEqual(self.main("--pr", "406"), 0)
             self.api.data["comments"] = []
+            self.api.data["pr"]["comments"] = 0
             self.assertEqual(self.main("--pr", "406"), 1)
         publish.assert_not_called()
 
