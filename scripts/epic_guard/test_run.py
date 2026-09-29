@@ -89,6 +89,85 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(self.main("--pr", "406", "--publish"), 0)
         self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
 
+    def test_running_check_publishes_pending_and_blocks_local_mode(self) -> None:
+        for status in ("queued", "in_progress"):
+            with self.subTest(status=status):
+                self.api.data["check_runs"][0].update(status=status, conclusion=None)
+                self.assertTrue(self.verify())
+                self.assertEqual(self.statuses[-1][:2], (HEAD, "pending"))
+                self.assertIn("waiting for", self.statuses[-1][2])
+                self.assertIn("test", self.statuses[-1][2])
+                self.assertEqual(self.main("--pr", "406"), 1)
+
+    def test_pending_status_publishes_pending_and_blocks_local_mode(self) -> None:
+        self.api.data["statuses"] = [
+            {"id": 1, "context": "deployment", "state": "pending"}
+        ]
+        with patch.object(
+            run, "publish", side_effect=lambda *s: self.statuses.append(s)
+        ):
+            self.assertEqual(self.main("--pr", "406", "--publish"), 0)
+        self.assertEqual(self.statuses[-1][:2], (HEAD, "pending"))
+        self.assertIn("waiting for", self.statuses[-1][2])
+        self.assertIn("deployment", self.statuses[-1][2])
+        self.assertEqual(self.main("--pr", "406"), 1)
+
+    def test_missing_required_check_publishes_pending_and_blocks_local_mode(
+        self,
+    ) -> None:
+        self.api.data["check_runs"] = []
+        self.assertTrue(self.verify())
+        self.assertEqual(self.statuses[-1][:2], (HEAD, "pending"))
+        self.assertIn("waiting for", self.statuses[-1][2])
+        self.assertIn("test", self.statuses[-1][2])
+        self.assertEqual(self.main("--pr", "406"), 1)
+
+    def test_waiting_with_real_error_publishes_failure_and_blocks_local_mode(
+        self,
+    ) -> None:
+        for error in (
+            "check",
+            "status",
+            "verdict",
+            "stale verdict",
+            "lane",
+            "metadata",
+        ):
+            with self.subTest(error=error):
+                self.api = BaseAPI()
+                self.api.data["check_runs"][0].update(
+                    status="in_progress", conclusion=None
+                )
+                if error == "check":
+                    self.api.data["check_runs"].append(
+                        dict(
+                            self.api.data["check_runs"][0],
+                            id=20,
+                            name="failed-test",
+                            status="completed",
+                            conclusion="failure",
+                        )
+                    )
+                elif error == "status":
+                    self.api.data["statuses"] = [
+                        {"id": 1, "context": "deployment", "state": "failure"}
+                    ]
+                elif error == "verdict":
+                    self.api.data["comments"] = []
+                    self.api.data["pr"]["comments"] = 0
+                elif error == "stale verdict":
+                    self.api.data["comments"][0]["body"] = self.api.data["comments"][0][
+                        "body"
+                    ].replace(HEAD, OLD)
+                elif error == "lane":
+                    self.api.data["files"][0]["filename"] = "unassigned.txt"
+                else:
+                    self.api.data["pr"]["body"] += "\nExecutor: Codex"
+                self.assertTrue(self.verify())
+                self.assertEqual(self.statuses[-1][:2], (HEAD, "failure"))
+                self.assertNotIn("not completed", self.statuses[-1][2])
+                self.assertEqual(self.main("--pr", "406"), 1)
+
     def test_main_publish_returns_one_for_publication_failures(self) -> None:
         for failed_write in (0, 1):
             with self.subTest(failed_write=failed_write):
