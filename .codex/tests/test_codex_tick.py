@@ -161,6 +161,18 @@ class TickTests(unittest.TestCase):
         codex.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, pathlib, shlex, socket, subprocess, sys\n"
+            # Model core inheritance at the tool boundary, not the CLI process.
+            "tool_env = {key: os.environ[key] for key in ('HOME', 'PATH')}\n"
+            "tool_env['EXISTING_USER_SETTING'] = 'preserved'\n"
+            "for index, arg in enumerate(sys.argv[:-1]):\n"
+            "    if arg != '-c': continue\n"
+            "    key, value = sys.argv[index + 1].split('=', 1)\n"
+            "    assert key not in ('shell_environment_policy', "
+            "'shell_environment_policy.set', 'shell_environment_policy.inherit')\n"
+            "    prefix = 'shell_environment_policy.set.'\n"
+            "    if key.startswith(prefix):\n"
+            # The runner emits JSON strings, a TOML basic-string subset.
+            "        tool_env[key[len(prefix):]] = json.loads(value)\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    action_file = pathlib.Path(os.environ['EPIC_ACTION_FILE'])\n"
             "    assert action_file.is_absolute()\n"
@@ -179,9 +191,14 @@ class TickTests(unittest.TestCase):
             "'tool_input': {'cmd': command}}\n"
             "        hook = repo / '.codex/hooks/scripts/epic-guard.sh'\n"
             "        checked = subprocess.run(['/bin/bash', str(hook)], "
-            "input=json.dumps(payload), text=True, capture_output=True)\n"
+            "input=json.dumps(payload), text=True, capture_output=True, env=tool_env)\n"
             "        codes.append(checked.returncode)\n"
             "    pathlib.Path(os.environ['TEST_MODEL_GUARD']).write_text(json.dumps(codes))\n"
+            "if os.environ.get('TEST_MODEL_ENV_PROBE'):\n"
+            "    probe = subprocess.run([sys.executable, "
+            "os.environ['TEST_MODEL_ENV_PROBE']], env=tool_env, "
+            "capture_output=True, text=True, check=True)\n"
+            "    pathlib.Path(os.environ['TEST_MODEL_ENV_RESULT']).write_text(probe.stdout)\n"
             "print('fake Codex stdout', flush=True)\n"
             "if os.environ.get('TEST_TOKENS'):\n"
             "    print('tokens used', os.environ['TEST_TOKENS'], sep='\\n', flush=True)\n"
@@ -963,6 +980,15 @@ class TickTests(unittest.TestCase):
                 "workspace-write",
                 "-c",
                 "sandbox_workspace_write.network_access=true",
+                "-c",
+                "shell_environment_policy.set.EPIC_STATE_DIR="
+                + json.dumps(str(self.state), ensure_ascii=False),
+                "-c",
+                "shell_environment_policy.set.EPIC_QUOTA_DIR="
+                + json.dumps(str(self.state), ensure_ascii=False),
+                "-c",
+                "shell_environment_policy.set.EPIC_ACTION_FILE="
+                + json.dumps(str(self.lock / "action.json"), ensure_ascii=False),
                 "--color",
                 "never",
                 "--output-schema",
@@ -1397,6 +1423,45 @@ class TickTests(unittest.TestCase):
         result = self.run_tick()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(checked.read_text()), [0, 2])
+
+    def test_tool_child_receives_agent_paths_with_core_inheritance(self) -> None:
+        custom = self.root / 'state with "quotes" \\ and 🚀'
+        self.env["EPIC_STATE_DIR"] = str(custom)
+        self.env["EPIC_AGENT_ID"] = "codex-2"
+        self.env["EPIC_UNRELATED"] = "must not be forwarded"
+        probe = self.root / "tool-env-probe.py"
+        probe.write_text(
+            "import json, os, sys\n"
+            f"sys.path.insert(0, {str(self.repo / 'scripts/epic')!r})\n"
+            "from github_quota import STATE_DIR\n"
+            "print(json.dumps({'env': dict(os.environ), 'quota_root': str(STATE_DIR)}))\n"
+        )
+        output = self.root / "tool-env-result.json"
+        self.env["TEST_MODEL_ENV_PROBE"] = str(probe)
+        self.env["TEST_MODEL_ENV_RESULT"] = str(output)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        seen = json.loads(output.read_text())
+        agent = custom / "agents/codex-2"
+        expected = {
+            "EPIC_ACTION_FILE": str(agent / "codex.lock/action.json"),
+            "EPIC_QUOTA_DIR": str(custom),
+            "EPIC_STATE_DIR": str(agent),
+        }
+        self.assertEqual(
+            {name: seen["env"].get(name) for name in expected}, expected
+        )
+        self.assertEqual(seen["quota_root"], str(custom))
+        self.assertEqual(seen["env"]["EXISTING_USER_SETTING"], "preserved")
+        self.assertNotIn("EPIC_UNRELATED", seen["env"])
+        call = json.loads(self.calls.read_text())
+        for name, value in expected.items():
+            # Literal Unicode is valid TOML; JSON surrogate escapes are not.
+            self.assertIn(
+                f"shell_environment_policy.set.{name}="
+                + json.dumps(value, ensure_ascii=False),
+                call["args"],
+            )
 
     def test_adopt_quota_wait_during_model_leaves_target_state_untouched(self) -> None:
         self.quota_clock()
