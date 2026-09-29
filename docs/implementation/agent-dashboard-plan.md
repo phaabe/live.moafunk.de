@@ -638,6 +638,13 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 | counts lost at the switch to events | a file that appears later counts from byte 0; the log keeps counting ticks that started before the first event |
 | restart during a missing events file forgot its state | the checkpoint loads even when the file is missing; event mode is kept |
 
+### PR 3 review, round 2
+
+| Codex finding | Change |
+|---|---|
+| a first tick between two polls could be counted by the log and the events | the log ledger remembers the ticks it counted (start time string, last 200); the event ledger skips those; v4 checkpoints migrate without a counter reset |
+| the nested action-line test never ran | moved into its test class; fails without the fix |
+
 ## Appendix — panel spec from design v2
 
 Grid is Grafana units (24 columns, 30 px rows). Colors: Claude `#E0875A`,

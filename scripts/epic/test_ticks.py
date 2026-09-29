@@ -596,10 +596,6 @@ class LedgerTest(unittest.TestCase):
         samples = self.run_cycle(self.ledger(), NOON)
         self.assertEqual(samples['epic_tokens_today{agent="codex"}'], 2000)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_deeply_nested_action_line_is_ignored(self) -> None:
         # Model output can print a line that looks like the selector's JSON.
         ledger = self.ledger()
@@ -611,6 +607,21 @@ if __name__ == "__main__":
         self.assertEqual(
             (self.last(ledger)["outcome"], self.last(ledger)["action"]), ("ok", "")
         )
+
+    def test_v4_checkpoint_keeps_its_counters(self) -> None:
+        ledger = self.ledger()
+        ledger.update(NOON)
+        self.append(tick(NOON, 0))
+        ledger.update(NOON + 5)
+        ledger.save()
+        data = json.loads(self.checkpoint.read_text())
+        del data["counted"]
+        data["v"] = 4  # as written before the counted list existed
+        self.checkpoint.write_text(json.dumps(data))
+        again = self.ledger()
+        again.update(NOON + 10)
+        self.assertEqual(again.state["totals"]["ok"], 1)
+        self.assertEqual((again.state["v"], again.state["counted"]), (5, []))
 
 
 def event(kind: str, start: float, **fields: object) -> str:
@@ -796,6 +807,36 @@ class EventLedgerTest(unittest.TestCase):
         self.assertEqual(view.state["totals"]["ok"], 1)  # from the events
         self.assertEqual(view.state["totals"]["interrupted"], 1)  # the old tick
 
+    def test_first_tick_between_polls_is_counted_once(self) -> None:
+        # Codex review round 2: the log counted the tick before the events
+        # file was seen, then the events counted it again.
+        self.file.unlink()
+        log = ticks.LogLedger(
+            "codex",
+            self.log,
+            self.root / "runtime/ticks-codex.json",
+            monitor.action_labels,
+        )
+        events = self.events()
+        events.counted_elsewhere = lambda t: bool(
+            log.state and t in log.state["counted"]
+        )
+        log.update(NOON - 60)
+        with self.assertRaises(FileNotFoundError):
+            events.update(NOON - 60)  # poll 1: no events file yet
+        # The whole first tick of the new runner, after the events read.
+        with self.log.open("a") as out:
+            out.write(tick(NOON, 0))
+        self.file.write_text(event("start", NOON) + event("finish", NOON))
+        log.count_before = events.first_start()  # still inf
+        log.update(NOON + 5)  # poll 1: the log counts it
+        events.update(NOON + 10)  # poll 2: the events see it
+        log.count_before = events.first_start()
+        log.update(NOON + 10)
+        view = ticks.merge(log, events)
+        self.assertEqual(view.state["totals"]["ok"], 1)
+        self.assertEqual(len(view.state["ticks"]), 1)
+
     def test_restart_while_the_events_file_is_missing_keeps_its_state(self) -> None:
         events = self.events()
         events.update(NOON)
@@ -837,3 +878,7 @@ class DecisionLedgerTest(unittest.TestCase):
             )
             with self.assertLogs(level="WARNING"):
                 tick_ledger.update(NOON + 15)
+
+
+if __name__ == "__main__":
+    unittest.main()

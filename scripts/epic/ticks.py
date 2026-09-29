@@ -29,6 +29,7 @@ Json = dict[str, Any]
 LOCAL = ZoneInfo("Europe/Berlin")
 LEDGER_SIZE = 2000
 RECENT = 20
+COUNTED_KEEP = 200
 HOUR_DAYS = 7
 # A line longer than this is never a marker; skip it instead of buffering it.
 MAX_LINE = 65536
@@ -107,15 +108,17 @@ def valid_checkpoint(data: object) -> bool:
                 "ticks": list,
                 "totals": dict,
                 "coverage_start": float,
+                "counted": list,
             },
         )
-        and data["v"] == 4
+        and data["v"] == 5
         and data["offset"] >= 0
         and data["baseline"] >= 0
         and (data["open"] is None or typed(data["open"], OPEN_KEYS))
         and all(typed(t, TICK_KEYS) and t["outcome"] in SEVERITY for t in data["ticks"])
         and set(data["totals"]) == set(SEVERITY)
         and all(type(n) is int and n >= 0 for n in data["totals"].values())
+        and all(type(t) is str for t in data["counted"])
     )
 
 
@@ -182,7 +185,8 @@ class LogLedger:
 
     def fresh(self, now: float, size: int) -> Json:
         return {
-            "v": 4,
+            "v": 5,
+            "counted": [],
             "inode": None,
             "offset": 0,
             "baseline": size,
@@ -204,6 +208,8 @@ class LogLedger:
                 "Tick checkpoint for %s is unreadable; rebuilding", self.agent
             )
             return None
+        if isinstance(data, dict) and data.get("v") == 4 and "counted" not in data:
+            data = {**data, "v": 5, "counted": []}  # v4 had no counted list
         if not self.valid(data):
             logging.warning("Tick checkpoint for %s is invalid; rebuilding", self.agent)
             return None
@@ -236,6 +242,7 @@ class LogLedger:
             **before,
             "ticks": list(before["ticks"]),
             "totals": dict(before["totals"]),
+            "counted": list(before["counted"]),
             "open": dict(before["open"]) if before["open"] else None,
         }
         try:
@@ -390,6 +397,10 @@ class LogLedger:
         del state["ticks"][:-LEDGER_SIZE]
         if counted:
             state["totals"][kind] += 1
+            # Which ticks this ledger counted, so another one never counts
+            # the same tick (the start time string is the tick's identity).
+            state["counted"].append(tick)
+            del state["counted"][:-COUNTED_KEEP]
 
     def save(self) -> None:
         if not self.dirty or self.state is None:
@@ -446,6 +457,10 @@ class EventLedger(LogLedger):
         self.source = source
         self.rejected = 0
         self.pending = 0
+        # Set by the monitor: ticks the log ledger already counted. A whole
+        # first tick can pass between two polls, so the log may count it
+        # before the events file is seen.
+        self.counted_elsewhere: Callable[[str], bool] = lambda tick: False
 
     @property
     def active(self) -> bool:
@@ -514,7 +529,8 @@ class EventLedger(LogLedger):
         if values is None:
             return self.reject()
         state["open"] = None
-        self.record(tick, *values, end > state["baseline"])
+        live = end > state["baseline"] and not self.counted_elsewhere(tick)
+        self.record(tick, *values, live)
         return None
 
     def finish_values(self, event: Json, start: float) -> tuple[Any, ...] | None:
@@ -562,7 +578,7 @@ class EventLedger(LogLedger):
         state = self.state
         assert state is not None
         tick, state["open"] = state["open"], None
-        live = end > state["baseline"]
+        live = end > state["baseline"] and not self.counted_elsewhere(tick["tick"])
         self.record(
             tick["tick"], None, None, "interrupted", "unknown", "", "", None, live
         )

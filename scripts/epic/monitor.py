@@ -872,6 +872,9 @@ def ledger_metrics(
     """
     name = log.agent
     ok = True
+    events.counted_elsewhere = lambda tick: bool(
+        log.state and tick in log.state["counted"]
+    )
     try:
         events.update(now)
         events.save()
