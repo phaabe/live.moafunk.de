@@ -423,6 +423,22 @@ Same as v3.2 PR 3. Handoff is per kind, because GitHub knows only kinds:
 - Tests as in v3.2, plus the stalled rule with two agents of one kind (one
   running blocks "stalled").
 
+Built (issue https://github.com/phaabe/live.moafunk.de/issues/446), in
+`scripts/epic/delivery.py`. Decisions made while building:
+
+- Delivery uses REST only (`gh api .../pulls`, issue comments); GraphQL is
+  the scarce budget. Closed PRs are read newest update first and stop at the
+  window. A cold fetch is about 70 calls, a warm one about 6.
+- A pause does not clear handoff waits: the PR still waits. The stalled rule
+  excludes the pause instead.
+- Waits are published by the local loop from the last observation, so their
+  age is live; the stalled flag needs an observation under 5 min old.
+- Review rounds = heads with a valid verdict by the reviewer. Open PRs take
+  their rounds from the selector snapshot (complete comments); merged PRs
+  from the delivery cache.
+- A leaf in several issues takes the kind and area of an issue that names
+  them (parent tasks repeat leaves without an executor).
+
 ### PR 5 — Dashboards and alerts
 
 Three dashboards. Grid, colors and thresholds come from design v2 (appendix).
@@ -672,6 +688,17 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 Accepted limit: a tick that ends while the collector is being upgraded may be
 missed once (the new collector has no event checkpoint yet and starts at the
 file's end).
+
+### PR 4 review, round 1
+
+| Codex finding | Change |
+|---|---|
+| a failed publication still saved the handoff clock | the clock is saved only after `github.prom` is written |
+| an unreadable registration could let the stalled flag fire | no stalled flag while the registry rejects an entry or has a conflict |
+| a clock change repeated a day label | days are Berlin calendar dates |
+| the closed-PR page limit cut the window short silently | the fetch fails and the last snapshot stays |
+| comment history had no memory bound | read one page at a time; over 1 000 comments the PR is reported as incomplete |
+| `--once` published local metrics before the handoff | it loads the saved clock, collects, then publishes |
 
 ## Appendix — panel spec from design v2
 
