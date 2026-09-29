@@ -12,6 +12,12 @@
 # is fresh, so a tick never re-sends an old conversation. The model and effort
 # follow the action: bookkeeping actions use a smaller model.
 #
+# The selector lists every action in priority order. The tick runs the first
+# one it can: its target is not locked by another runner (target_lock.py), it
+# still matches GitHub, and it is no suppressed repeat (tick_gate.py). So one
+# blocked target never starves the others. The target lock is held on file
+# descriptors 8 and 9 until the tick and all its children exited.
+#
 # Run from a scheduler or a loop, for example:
 #   while true; do /bin/bash scripts/epic/claude-tick.sh; sleep 600; done
 set -euo pipefail
@@ -187,44 +193,120 @@ fi
 tick_phase=select
 select=0
 run_bounded "${select_timeout}s" \
-    python3 scripts/epic/next_action.py --agent claude > "${lock_dir}/action.json" \
-    || select=$?
+    python3 scripts/epic/next_action.py --agent claude --candidates \
+    > "${lock_dir}/action.json" || select=$?
 case "$select" in
     0) ;;
     3) exit 0 ;;
     4) quota_stop ;;
     *) exit "$select" ;;
 esac
-cat "${lock_dir}/action.json"
+candidates=$(cat "${lock_dir}/action.json")
+printf '%s\n' "$candidates"
 # The other runner may have stored a quota wait while the selector ran.
 if ! quota_open; then
     tick_phase=quota
     exit 0
 fi
-action=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
-    < "${lock_dir}/action.json")
 
-case "$action" in
-    idle|stop) exit 0 ;;
-    merge|escalate) model=sonnet effort=low ;;
-    claim) model=opus effort=medium ;;
-    review|fix|fix-checks|resolve-conflict|continue) model=opus effort=high ;;
-    *)
-        printf 'tick: unknown action %s\n' "$action" >&2
+release_target() {
+    exec 8>&- 9>&-
+}
+# Locks the targets of action.json on fds 8 and 9. 1 when another runner holds one.
+# Called from `if`, where set -e is off: every failure exits explicitly.
+lock_target() {
+    local listed path result=0
+    local targets=()
+    listed=$(python3 scripts/epic/target_lock.py paths \
+        --action-file "${lock_dir}/action.json") || exit 1
+    while IFS= read -r path; do
+        if [[ -n "$path" ]]; then
+            targets+=("$path")
+        fi
+    done <<< "$listed"
+    if [[ "${#targets[@]}" == 0 ]]; then
+        return 0
+    fi
+    if [[ "${#targets[@]}" -gt 2 ]]; then
+        printf 'tick: an action has at most two targets\n' >&2
         exit 1
-        ;;
-esac
+    fi
+    exec 8>> "${targets[0]}" || exit 1
+    if [[ "${#targets[@]}" == 2 ]]; then
+        exec 9>> "${targets[1]}" || exit 1
+        python3 scripts/epic/target_lock.py acquire --fd 8 --fd 9 || result=$?
+    else
+        python3 scripts/epic/target_lock.py acquire --fd 8 || result=$?
+    fi
+    if [[ "$result" == 0 ]]; then
+        return 0
+    fi
+    release_target
+    if [[ "$result" == 75 ]]; then
+        return 1
+    fi
+    exit "$result"
+}
 
-tick_phase=gate
-gate=0
-python3 scripts/epic/tick_gate.py check --agent claude \
-    --action-file "${lock_dir}/action.json" || gate=$?
-if [[ "$gate" == 3 ]]; then
+max_candidates=${EPIC_MAX_CANDIDATES:-10}
+if [[ ! "$max_candidates" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'tick: EPIC_MAX_CANDIDATES must be a positive integer\n' >&2
+    exit 2
+fi
+tried=0
+selected=0
+while IFS= read -r candidate; do
+    if [[ -z "$candidate" ]]; then
+        continue
+    fi
+    tried=$((tried + 1))
+    if [[ "$tried" -gt "$max_candidates" ]]; then
+        break
+    fi
+    printf '%s\n' "$candidate" > "${lock_dir}/action.json"
+    action=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
+        < "${lock_dir}/action.json")
+    case "$action" in
+        idle|stop) exit 0 ;;
+        merge|escalate) model=sonnet effort=low ;;
+        adopt) model=sonnet effort=medium ;;
+        claim) model=opus effort=medium ;;
+        review|fix|fix-checks|resolve-conflict|continue) model=opus effort=high ;;
+        *)
+            printf 'tick: unknown action %s\n' "$action" >&2
+            exit 1
+            ;;
+    esac
+    tick_phase=lock
+    if ! lock_target; then
+        printf 'tick: %s target locked by another runner; next candidate\n' "$action"
+        continue
+    fi
+    # A skipped candidate's gate (or the other runner) may have stored a quota
+    # wait: no further GitHub read then.
+    if ! quota_open; then
+        tick_phase=quota
+        exit 0
+    fi
+    # After the lock: skip a repeat, or a target that changed since selection.
+    tick_phase=gate
+    gate=0
+    python3 scripts/epic/tick_gate.py check --agent claude \
+        --action-file "${lock_dir}/action.json" || gate=$?
+    if [[ "$gate" == 3 ]]; then
+        release_target
+        continue
+    elif [[ "$gate" == 4 ]]; then
+        quota_stop
+    elif [[ "$gate" != 0 ]]; then
+        exit "$gate"
+    fi
+    selected=1
+    break
+done <<< "$candidates"
+if [[ "$selected" != 1 ]]; then
+    printf 'tick: no candidate to run\n'
     exit 0
-elif [[ "$gate" == 4 ]]; then
-    quota_stop
-elif [[ "$gate" != 0 ]]; then
-    exit "$gate"
 fi
 
 # The tick instructions without their frontmatter, plus the selected action.
@@ -245,11 +327,13 @@ tick_phase=model
 # `claude -p` cannot show a prompt, and the project settings ask before every
 # push and merge. permission_gate.py answers those prompts: it approves only
 # feature-branch pushes and head-pinned squash merges, and denies the rest.
+# The gate reads the selected action: `adopt` may edit only that PR's body.
 gate_config=$(python3 -c '
 import json, sys
 print(json.dumps({"mcpServers": {"epic-gate": {
-    "command": "python3", "args": [sys.argv[1]], "env": {"EPIC_STATE_DIR": sys.argv[2]}}}}))
-' "${repo_root}/scripts/epic/permission_gate.py" "$state_dir")
+    "command": "python3", "args": [sys.argv[1]],
+    "env": {"EPIC_STATE_DIR": sys.argv[2], "EPIC_ACTION_FILE": sys.argv[3]}}}}))
+' "${repo_root}/scripts/epic/permission_gate.py" "$state_dir" "${lock_dir}/action.json")
 run_bounded "${tick_timeout}s" \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
     --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \

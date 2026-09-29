@@ -35,6 +35,7 @@ class ClaudeTickTest(unittest.TestCase):
             "scripts/epic/github_quota.py",
             "scripts/epic/agents.py",
             "scripts/epic/tick_events.py",
+            "scripts/epic/target_lock.py",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",
         ):
@@ -47,7 +48,8 @@ class ClaudeTickTest(unittest.TestCase):
             "if os.environ.get('TEST_SELECT_WAIT'):\n"
             f"    {WAIT_WRITE}\n"
             "code = int(os.environ.get('TEST_SELECT_EXIT', '0'))\n"
-            f"print({json.dumps(json.dumps(ACTION))}) if code == 0 else sys.exit(code)\n"
+            f"out = os.environ.get('TEST_CANDIDATES') or {json.dumps(json.dumps(ACTION))}\n"
+            "print(out) if code == 0 else sys.exit(code)\n"
         )
         (self.repo / "scripts/epic/tick_gate.py").write_text(
             "import json, os, sys\n"
@@ -109,6 +111,7 @@ class ClaudeTickTest(unittest.TestCase):
             **os.environ,
             "HOME": str(home),
             "EPIC_STATE_DIR": str(self.state),
+            "EPIC_LOCK_DIR": str(self.root / "locks"),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "TEST_CALLS": str(self.calls),
             "TEST_MODEL_PID": str(self.model_pid),
@@ -122,6 +125,92 @@ class ClaudeTickTest(unittest.TestCase):
 
     def calls_made(self) -> list[list[str]]:
         return [json.loads(line) for line in self.calls.read_text().splitlines()]
+
+    def model_targets(self) -> list[str]:
+        """The selected action of each model session, from its prompt's last line."""
+        return [c[1] for c in self.calls_made() if c[0] == "claude"]
+
+    def test_locked_target_falls_through_to_the_next_candidate(self) -> None:
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        locks = self.root / "locks"
+        locks.mkdir()
+        holder = subprocess.Popen(
+            [
+                "/bin/bash",
+                "-c",
+                'exec 8>> "$1"; python3 "$2" acquire --fd 8 && exec sleep 30',
+                "_",
+                str(locks / "1.lock"),
+                str(ROOT / "scripts/epic/target_lock.py"),
+            ]
+        )
+        self.addCleanup(holder.kill)
+        time.sleep(0.5)
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        self.assertEqual(self.run_tick(TEST_CANDIDATES=candidates).wait(timeout=30), 0)
+        gates = [c for c in self.calls_made() if c[0] == "gate"]
+        self.assertEqual(gates, [["gate", "check"], ["gate", "record"]])
+        self.assertEqual(len(self.model_targets()), 1)
+        self.assertIn(
+            "locked by another runner", (self.state / "claude.log").read_text()
+        )
+
+    def test_suppressed_repeat_does_not_starve_the_next_target(self) -> None:
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        # The stub gate skips only the first check; the second candidate runs.
+        (self.repo / "scripts/epic/tick_gate.py").write_text(
+            "import json, os, sys\n"
+            "calls = os.environ['TEST_CALLS']\n"
+            "with open(calls, 'a') as f:\n"
+            "    f.write(json.dumps(['gate', sys.argv[1], json.load(open(sys.argv[-1]))['pr']]) + '\\n')\n"
+            "n = sum('\"check\"' in line for line in open(calls))\n"
+            "sys.exit(3 if sys.argv[1] == 'check' and n == 1 else 0)\n"
+        )
+        self.assertEqual(self.run_tick(TEST_CANDIDATES=candidates).wait(timeout=30), 0)
+        gates = [c for c in self.calls_made() if c[0] == "gate"]
+        self.assertEqual(
+            gates, [["gate", "check", 1], ["gate", "check", 2], ["gate", "record", 2]]
+        )
+        self.assertEqual(len(self.model_targets()), 1)
+
+    def test_quota_wait_from_a_skipped_gate_stops_the_candidate_loop(self) -> None:
+        # Codex review on PR 497: the next candidate's gate read GitHub anyway.
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        runner = self.run_tick(
+            TEST_CANDIDATES=candidates, TEST_GATE_WAIT="1", TEST_GATE_EXIT="3"
+        )
+        self.assertEqual(runner.wait(timeout=30), 0)
+        gates = [c for c in self.calls_made() if c[0] == "gate"]
+        self.assertEqual(gates, [["gate", "check"]])
+        self.assertEqual(self.model_targets(), [])
+
+    def test_two_runners_on_one_target_start_one_model(self) -> None:
+        first = self.run_tick(TEST_MODEL_SLEEP="3")
+        for _ in range(100):
+            if self.model_pid.exists():
+                break
+            time.sleep(0.05)
+        other_state = self.root / "state-2"
+        second = self.run_tick(EPIC_STATE_DIR=str(other_state))
+        self.assertEqual(second.wait(timeout=30), 0)
+        self.assertEqual(first.wait(timeout=30), 0)
+        self.assertEqual(len(self.model_targets()), 1)
+        self.assertIn("no candidate to run", (other_state / "claude.log").read_text())
+
+    def test_unknown_candidate_action_stops_the_tick(self) -> None:
+        bad = json.dumps({"action": "refine", "reason": "t", "issue": "x"})
+        self.assertEqual(self.run_tick(TEST_CANDIDATES=bad).wait(timeout=30), 1)
+        self.assertEqual(self.model_targets(), [])
+
+    def test_adopt_runs_sonnet(self) -> None:
+        adopt = {"action": "adopt", "reason": "t", "pr": 1, "sha": "a" * 40}
+        self.assertEqual(
+            self.run_tick(TEST_CANDIDATES=json.dumps(adopt)).wait(timeout=30), 0
+        )
+        (session,) = self.model_targets()
+        self.assertIn("--model sonnet --effort medium", session)
 
     def test_fix_runs_opus_and_records_the_gate(self) -> None:
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
@@ -155,7 +244,13 @@ class ClaudeTickTest(unittest.TestCase):
             server["args"],
             [str(self.repo.resolve() / "scripts/epic/permission_gate.py")],
         )
-        self.assertEqual(server["env"], {"EPIC_STATE_DIR": str(self.state)})
+        self.assertEqual(
+            server["env"],
+            {
+                "EPIC_STATE_DIR": str(self.state),
+                "EPIC_ACTION_FILE": str(self.state / "claude.lock/action.json"),
+            },
+        )
 
     def test_action_that_did_not_land_fails_the_tick_after_recording(self) -> None:
         # A denied push or merge exited 0 before; now the tick reports it.
@@ -324,7 +419,13 @@ class ClaudeTickTest(unittest.TestCase):
         model = next(c for c in self.calls_made() if c[0] == "claude")
         config = model[1].split("--mcp-config ", 1)[1].split(" --", 1)[0]
         server = json.loads(config)["mcpServers"]["epic-gate"]
-        self.assertEqual(server["env"], {"EPIC_STATE_DIR": str(home)})
+        self.assertEqual(
+            server["env"],
+            {
+                "EPIC_STATE_DIR": str(home),
+                "EPIC_ACTION_FILE": str(home / "claude.lock/action.json"),
+            },
+        )
 
     def test_registered_agent_obeys_the_shared_quota_wait(self) -> None:
         # The GraphQL quota belongs to the GitHub user, not to one agent.

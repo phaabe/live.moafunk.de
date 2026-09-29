@@ -8,6 +8,8 @@
   git push origin --delete <feature-branch>
   gh pr merge <n> --repo phaabe/live.moafunk.de --squash [--delete-branch]
       --match-head-commit <40-hex SHA>
+  gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F body=@<file>
+      only while the selected action (EPIC_ACTION_FILE) is `adopt` of PR <n>
 
 A feature branch starts with feat/, fix/, chore/, docs/, test/ or refactor/.
 Everything else is denied with a reason. The project hooks (epic-guard and
@@ -50,9 +52,14 @@ def decide(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
         return push(words[2:])
     if words[:3] == ["gh", "pr", "merge"]:
         return merge(words[3:])
+    if words[:2] == ["gh", "api"]:
+        return body_edit(words[2:], selected_action())
     return (
         False,
-        "only feature-branch pushes and head-pinned squash merges are approved",
+        (
+            "only feature-branch pushes, head-pinned squash merges and the adopt "
+            "PR-body edit are approved"
+        ),
     )
 
 
@@ -94,6 +101,38 @@ def merge(args: list[str]) -> tuple[bool, str]:
     if not SHA.match(seen.get("--match-head-commit", "")):
         return False, "merge needs --match-head-commit <40-char SHA>"
     return True, f"squash merge of PR {args[0]} at {seen['--match-head-commit'][:7]}"
+
+
+def selected_action() -> dict[str, Any]:
+    """The action of this tick, from EPIC_ACTION_FILE. Empty when unreadable."""
+    path = os.environ.get("EPIC_ACTION_FILE")
+    try:
+        action = json.loads(Path(path).read_text()) if path else {}
+    except (OSError, ValueError):
+        return {}
+    return action if isinstance(action, dict) else {}
+
+
+def body_edit(args: list[str], action: dict[str, Any]) -> tuple[bool, str]:
+    """`adopt` writes the PR body through REST: one exact command shape."""
+    shape = "`gh api --method PATCH repos/<repo>/pulls/<n> -F body=@<file>`"
+    if (
+        len(args) != 5
+        or args[:2] != ["--method", "PATCH"]
+        or args[3] != "-F"
+        or not args[4].startswith("body=@")
+    ):
+        return False, f"gh api is approved only as {shape}"
+    prefix = f"repos/{REPO}/pulls/"
+    number = args[2][len(prefix) :] if args[2].startswith(prefix) else ""
+    if not number.isdigit():
+        return False, f"body edit must target a PR of {REPO}"
+    body_file = args[4][len("body=@") :]
+    if not body_file or ".." in body_file.split("/"):
+        return False, "body file path is not plain"
+    if action.get("action") != "adopt" or action.get("pr") != int(number):
+        return False, f"PR {number} body may change only in an adopt tick for it"
+    return True, f"adopt body edit of PR {number}"
 
 
 def log_decision(tool_input: dict[str, Any], allowed: bool, reason: str) -> None:
