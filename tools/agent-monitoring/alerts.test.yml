@@ -1,0 +1,99 @@
+# promtool test rules; see README "Data and troubleshooting".
+rule_files: [alerts.yml]
+# Samples come once a minute: evaluate on them, so data is never 30 s old.
+evaluation_interval: 1m
+tests:
+  # Fresh data; codex fails 3 times in a row, then recovers.
+  - interval: 1m
+    input_series:
+      - series: epic_local_snapshot_timestamp_seconds
+        values: 0+60x20
+      - series: epic_runner_read_success{agent="codex"}
+        values: 1x20
+      - series: epic_tick_consecutive_failures{agent="codex"}
+        values: 0 3 3 3 3 0x15
+      - series: epic_runner_read_success{agent="claude"}
+        values: 1x20
+      - series: epic_tick_consecutive_failures{agent="claude"}
+        values: 0x20
+    alert_rule_test:
+      - {alertname: AgentFailingRepeatedly, eval_time: 1m, exp_alerts: []}
+      - alertname: AgentFailingRepeatedly
+        eval_time: 3m
+        exp_alerts:
+          - exp_labels: {severity: warning, agent: codex}
+            exp_annotations: {summary: "codex: the last 3 ticks failed"}
+      # Recovery.
+      - {alertname: AgentFailingRepeatedly, eval_time: 7m, exp_alerts: []}
+
+  # A read failure or stale data never reports failing ticks.
+  - interval: 1m
+    input_series:
+      - series: epic_local_snapshot_timestamp_seconds
+        values: 0+60x3 180x10
+      - series: epic_runner_read_success{agent="codex"}
+        values: 0x13
+      - series: epic_tick_consecutive_failures{agent="codex"}
+        values: 5x13
+      - series: epic_runner_read_success{agent="claude"}
+        values: 1x13
+      - series: epic_tick_consecutive_failures{agent="claude"}
+        values: 5x13
+      - series: epic_agent_presence{agent="claude"}
+        values: 4x13
+    alert_rule_test:
+      - alertname: AgentFailingRepeatedly
+        eval_time: 3m
+        exp_alerts:
+          - exp_labels: {severity: warning, agent: claude}
+            exp_annotations: {summary: "claude: the last 5 ticks failed"}
+      # Stale local data from 4 min on.
+      - {alertname: AgentFailingRepeatedly, eval_time: 10m, exp_alerts: []}
+      - {alertname: AgentLate, eval_time: 10m, exp_alerts: []}
+      - alertname: AgentCollectorStale
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: Host collector has stopped updating}
+
+  # A new agent appears late and is covered; late needs 5 min.
+  - interval: 1m
+    input_series:
+      - series: epic_local_snapshot_timestamp_seconds
+        values: 0+60x20
+      - series: epic_agent_presence{agent="codex"}
+        values: 2x20
+      - series: epic_agent_presence{agent="claude-new"}
+        values: _x5 4x15
+      - series: epic_agent_collision{agent="claude-new",target="https://github.com/phaabe/live.moafunk.de/pull/7"}
+        values: _x5 1x3 _x12
+    alert_rule_test:
+      - {alertname: AgentLate, eval_time: 8m, exp_alerts: []}
+      - alertname: AgentLate
+        eval_time: 11m
+        exp_alerts:
+          - exp_labels: {severity: warning, agent: claude-new}
+            exp_annotations: {summary: claude-new missed its schedule}
+      - alertname: AgentCollision
+        eval_time: 7m
+        exp_alerts:
+          - exp_labels: {severity: warning, agent: claude-new, target: "https://github.com/phaabe/live.moafunk.de/pull/7"}
+            exp_annotations: {summary: "claude-new works on https://github.com/phaabe/live.moafunk.de/pull/7 with another agent"}
+      # The series is gone (missing, after the 5 min lookback): no alert.
+      - {alertname: AgentCollision, eval_time: 15m, exp_alerts: []}
+
+  # Stalled handoff fires after 5 min, never on missing data.
+  - interval: 1m
+    input_series:
+      - series: epic_local_snapshot_timestamp_seconds
+        values: 0+60x20
+      - series: epic_handoff_stalled
+        values: 0 1x10 0x9
+    alert_rule_test:
+      - {alertname: AgentHandoffStalled, eval_time: 4m, exp_alerts: []}
+      - alertname: AgentHandoffStalled
+        eval_time: 7m
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: Both kinds wait over 30 min for a review and no agent can act}
+      - {alertname: AgentHandoffStalled, eval_time: 14m, exp_alerts: []}
