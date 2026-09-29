@@ -75,6 +75,10 @@ class WatchGuard(unittest.TestCase):
             "timeout 300 gh run watch 123",
             "gtimeout -k 5 300 gh run watch 1",
             "timeout --signal=INT 5m gh pr checks 1 --watch",
+            'echo "Waiting for CI" # poll checks\ngh pr checks 464 --watch',
+            'echo "Waiting for CI" # poll checks\ngh run watch 123',
+            "# wait for CI\ngh run watch 1",
+            "cd x;# note\ngh run watch 1",
         ):
             with self.subTest(cmd=cmd):
                 self.assertEqual(hook(cmd), 2)
@@ -107,6 +111,13 @@ class WatchGuard(unittest.TestCase):
             "echo 'gh pr checks 1 \\\n --watch'",
             "timeout 300 gh pr checks 464",
             "timeout 60 python3 scripts/gh_checks/wait_checks.py 464",
+            "echo hi # gh run watch 1",
+            "# gh pr checks 1 --watch",
+            "echo 'a # b'\necho ok",
+            'echo "issue#1" gh run watch',
+            "echo $# ${#x}",
+            "# don't use `gh run watch` here\necho ok",
+            "echo x # see $(gh pr checks 1 --watch)",
             "echo then gh run watch",
             "if true; then echo 'gh run watch'; fi",
             'cat <<< "gh run watch 1"',

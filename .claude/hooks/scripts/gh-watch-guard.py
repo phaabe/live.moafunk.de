@@ -126,7 +126,11 @@ def split_substitutions(command: str, heredoc: bool = False) -> tuple[str, list[
 
 
 def join_continuations(command: str) -> str:
-    """Drop backslash-newline outside single quotes, as the shell does."""
+    """Drop backslash-newline outside single quotes and comments, as the shell does.
+
+    A `#` at the start of a word, outside quotes, starts a comment up to (not
+    including) the newline, so the next line stays a separate command.
+    """
     out: list[str] = []
     quote = ""
     i = 0
@@ -138,6 +142,10 @@ def join_continuations(command: str) -> str:
                 continue
             out.append(command[i : i + 2])
             i += 2
+            continue
+        if c == "#" and not quote and (not out or out[-1][-1:] in " \t\n;&|()"):
+            end = command.find("\n", i)
+            i = len(command) if end == -1 else end
             continue
         if c in "'\"" and quote in ("", c):
             quote = "" if quote else c
@@ -151,6 +159,7 @@ def tokens(command: str) -> list[str]:
         join_continuations(command), posix=True, punctuation_chars=";&|()\n"
     )
     lexer.whitespace = " \t\r"
+    lexer.commenters = ""  # handled in join_continuations
     lexer.whitespace_split = True
     return list(lexer)
 
@@ -220,7 +229,8 @@ def is_watcher(argv: list[str], depth: int = 0) -> bool:
 
 def blocked(command: str, depth: int = 0) -> bool:
     command, expanded = drop_heredoc_bodies(command)
-    rest, bodies = split_substitutions(command)
+    # Comments go before substitutions: `# don't use `gh run watch`` is not run.
+    rest, bodies = split_substitutions(join_continuations(command))
     for body in expanded:
         bodies += split_substitutions(body, heredoc=True)[1]
     if depth < 3 and any(blocked(body, depth + 1) for body in bodies):
