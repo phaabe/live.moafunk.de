@@ -1,7 +1,7 @@
 ---
 description: Draft and create a well-formed GitHub issue with this repo's label taxonomy.
 argument-hint: <short task description>
-allowed-tools: Bash(gh issue:*), Bash(gh label list:*), Bash(.claude/hooks/scripts/gitnexus-ensure-fresh.sh), mcp__gitnexus__query, mcp__gitnexus__context, Read
+allowed-tools: Bash(gh api repos/{owner}/{repo}/labels:*), Bash(gh api repos/{owner}/{repo}/issues:*), Bash(.claude/hooks/scripts/gitnexus-ensure-fresh.sh), mcp__gitnexus__query, mcp__gitnexus__context, Read, Write
 model: opus
 ---
 
@@ -18,7 +18,7 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
    to find which functional area / files the work touches. Use the result to pick labels and write a precise body.
    - `backend/**` (Rust/Axum: handlers, recording, soundcloud, image_overlay, telegram) → `type::backend`.
    - `frontend/src/admin/**` (Vue admin SPA: pages, composables, components) → `type::admin_dashboard`.
-2. **Read the live label set**: `gh label list --limit 60`. Never invent labels — choose only from what exists.
+2. **Read the live label set** (REST, not GraphQL): `gh api repos/{owner}/{repo}/labels --paginate --jq '.[].name'`. Never invent labels — choose only from what exists.
    Apply **exactly one `type::*`** (backend vs admin_dashboard) and **the most specific `project::*`**:
    `project::Stream`, `project::recording`, `project::Instagram`, `project::Telegram`, `project::Soundcloud`,
    `project::ImgGen`, `project::Upload`, `project::Backup`, `project::Infrastructure`, `project::ExternalShows`,
@@ -39,15 +39,17 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
    ## Notes
    <constraints, links, related issues>
    ```
-5. **Show the full draft** (title + labels + body) to the user and ask for confirmation. Only then:
+5. **Show the full draft** (title + labels + body) to the user and ask for confirmation. Only then
+   write the body to a temp file and create the issue over REST:
    ```sh
-   gh issue create --title "<title>" --label "type::…" --label "project::…" --body "<body>"
+   gh api repos/{owner}/{repo}/issues -f title="<title>" -F body=@<body-file> \
+     -f 'labels[]=type::…' -f 'labels[]=project::…' --jq .html_url
    ```
 6. Print the created issue URL.
 
 ## Hard rules
 - Never create the issue without explicit confirmation of the rendered draft.
-- Only use labels returned by `gh label list` — if none fit a dimension, say so rather than guessing.
+- Only use labels returned by the label read in step 2 — if none fit a dimension, say so rather than guessing.
 - Keep it to ONE issue; if the task is clearly multi-part, recommend the decomposition workflow.
 
 Task: $ARGUMENTS

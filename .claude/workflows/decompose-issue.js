@@ -17,9 +17,9 @@ if (!TASK) {
 
 const REPO = 'live.moafunk.de'
 
-// Label taxonomy is read live by the agents (`gh label list`); these are the known dimensions.
+// Label taxonomy is read live by the agents (REST labels endpoint, not GraphQL); these are the known dimensions.
 const LABEL_GUIDE = `
-Apply EXACTLY ONE type:: label and the MOST SPECIFIC project:: label, only from \`gh label list\`:
+Apply EXACTLY ONE type:: label and the MOST SPECIFIC project:: label, only from the live label list:
 - type::backend          → backend/** (Rust/Axum: handlers, recording, soundcloud, image_overlay, telegram, models)
 - type::admin_dashboard  → frontend/src/admin/** (Vue 3 + Pinia admin SPA: pages, composables, components)
 - project::Stream | recording | Instagram | Telegram | Soundcloud | ImgGen | Upload | Backup
@@ -55,7 +55,7 @@ const breakdown = await agent(
     `Steps:\n` +
     `1. Use gitnexus_query({query, repo: "${REPO}"}) (and gitnexus_context for key symbols) to find which ` +
     `functional areas/files the work touches. Do NOT grep blindly.\n` +
-    `2. Run \`gh label list --limit 60\` to read the EXACT available labels.\n` +
+    `2. Run \`gh api repos/{owner}/{repo}/labels --paginate --jq '.[].name'\` (REST, not GraphQL) to read the EXACT available labels.\n` +
     `3. Split into independently-shippable sub-tasks, each with a Conventional-Commit-style title, the ` +
     `touched area, exact labels, a body (Context / Scope (GitNexus) / Acceptance criteria / Notes), and an ` +
     `acceptance-criteria list.\n${LABEL_GUIDE}\n` +
@@ -75,7 +75,7 @@ const refined = await pipeline(
     agent(
       `Refine this draft sub-issue for ${REPO} so it is crisp and correctly labeled.\n\n` +
         `DRAFT #${i + 1}:\n${JSON.stringify(st, null, 2)}\n\n` +
-        `- Verify every label exists via \`gh label list\` (drop/replace any that don't).\n` +
+        `- Verify every label exists via \`gh api repos/{owner}/{repo}/labels --paginate --jq '.[].name'\` (drop/replace any that don't).\n` +
         `- Ensure exactly one type:: label and one specific project:: label.\n` +
         `- Tighten the title (imperative, scoped) and make acceptance criteria observable.\n` +
         `- Keep the body in the Context / Scope (GitNexus) / Acceptance criteria / Notes format.\n` +
@@ -88,13 +88,13 @@ const subtasks = refined.filter(Boolean)
 log(`Refined ${subtasks.length}/${breakdown.subtasks.length} sub-issues`)
 
 // Drafts only — issue creation is a confirmed step in the main loop:
-//   1) gh issue create the parent (with a "- [ ] <child title>" checklist),
-//   2) gh issue create each child with its labels,
+//   1) create the parent (with a "- [ ] <child title>" checklist) via REST: gh api repos/{owner}/{repo}/issues,
+//   2) create each child with its labels the same way,
 //   3) edit the parent body to reference the created child numbers (- [ ] #N).
 return {
   repo: REPO,
   parentTitle: breakdown.parentTitle,
   parentSummary: breakdown.parentSummary,
   subtasks,
-  next: 'Present these drafts to the user; on confirmation, create the parent then each child via `gh issue create`, then link children in the parent checklist.',
+  next: 'Present these drafts to the user; on confirmation, create the parent then each child via REST (`gh api repos/{owner}/{repo}/issues -f title=... -F body=@file -f \'labels[]=...\'`), then link children in the parent checklist.',
 }

@@ -17,8 +17,8 @@ description: "Use when the user wants to review a pull request, understand what 
 ## Workflow
 
 ```
-1. gh pr diff <number>                                    → Get the raw diff
-2. gitnexus_detect_changes({scope: "compare", base_ref: "main"})  → Map diff to affected flows
+1. Get the diff with git (no GraphQL, see "Fetch the PR" below)  → Raw diff vs the PR's real base
+2. gitnexus_detect_changes({scope: "compare", base_ref: "origin/<base>"}) → Map diff to affected flows
 3. For each changed symbol:
    gitnexus_impact({target: "<symbol>", direction: "upstream"})    → Blast radius per change
 4. gitnexus_context({name: "<key symbol>"})               → Understand callers/callees
@@ -28,10 +28,29 @@ description: "Use when the user wants to review a pull request, understand what 
 
 > If "Index is stale" → run `gitnexus analyze` in terminal before reviewing.
 
+## Fetch the PR
+
+Don't use `gh pr diff` / `gh pr view` / `gh pr checkout`: they use the GraphQL budget.
+One REST call for the base branch, then plain git (free):
+
+```sh
+base=$(gh api repos/{owner}/{repo}/pulls/<n> --jq .base.ref)
+git fetch origin "+refs/heads/$base:refs/remotes/origin/$base" \
+                 "+refs/pull/<n>/head:refs/remotes/origin/pr/<n>"
+git diff "origin/$base...origin/pr/<n>"
+git log --oneline "origin/$base..origin/pr/<n>"
+```
+
+Use the same `origin/$base` everywhere — never assume `main`; PRs here also target other branches.
+`detect_changes` compares against the checked-out code, so run the analysis on the PR head
+(`git switch --detach origin/pr/<n>` with a clean tree, or a worktree), then
+`gitnexus_detect_changes({scope: "compare", base_ref: "origin/$base"})`.
+That way the diff and the impact report describe the same change.
+
 ## Checklist
 
 ```
-- [ ] Fetch PR diff (gh pr diff or git diff base...head)
+- [ ] Fetch PR diff with git (see "Fetch the PR"), base read from the PR
 - [ ] gitnexus_detect_changes to map changes to affected execution flows
 - [ ] gitnexus_impact on each non-trivial changed symbol
 - [ ] Review d=1 items (WILL BREAK) — are callers updated?
@@ -66,7 +85,7 @@ description: "Use when the user wants to review a pull request, understand what 
 **gitnexus_detect_changes** — map PR diff to affected execution flows:
 
 ```
-gitnexus_detect_changes({scope: "compare", base_ref: "main"})
+gitnexus_detect_changes({scope: "compare", base_ref: "origin/main"})
 
 → Changed: 8 symbols in 4 files
 → Affected processes: CheckoutFlow, RefundFlow, WebhookHandler
@@ -109,10 +128,10 @@ gitnexus_context({name: "validatePayment"})
 ## Example: "Review PR #42"
 
 ```
-1. gh pr diff 42 > /tmp/pr42.diff
+1. base=main (from the PR); git fetch as above; git diff origin/main...origin/pr/42
    → 4 files changed: payments.ts, checkout.ts, types.ts, utils.ts
 
-2. gitnexus_detect_changes({scope: "compare", base_ref: "main"})
+2. gitnexus_detect_changes({scope: "compare", base_ref: "origin/main"})
    → Changed symbols: validatePayment, PaymentInput, formatAmount
    → Affected processes: CheckoutFlow, RefundFlow
    → Risk: MEDIUM
