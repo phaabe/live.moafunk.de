@@ -19,6 +19,11 @@ Rules:
   4. `gh pr merge` needs `--match-head-commit <40-char SHA>`.
   5. Pull request writes through `gh api` are refused; use `gh pr create/merge`.
   6. MCP pull request creation follows rule 3; MCP merges are refused.
+  7. Headless runner with the shared reader (EPIC_SHARED_READER=1 and
+     EPIC_ACTION_FILE set by scripts/epic/claude-tick.sh): each GitHub write
+     is checked fresh right before it runs (scripts/epic/write_checks.py,
+     loaded from EPIC_TRUSTED_ROOT, the runner checkout). A stale target or a
+     failed read blocks the write. Interactive sessions are not affected.
 
 A command "creates or merges a pull request" when its text, outside the
 bodies of quoted-delimiter heredocs fed to a data command (gh, git, cat,
@@ -330,6 +335,28 @@ def check_command(cmd: str, cwd: str) -> None:
             )
 
 
+def runner_write_check(tool: str, tool_input: dict, cwd: str) -> None:
+    """Rule 7. Fails closed: if the check cannot load, the write is blocked."""
+    if os.environ.get("EPIC_SHARED_READER") != "1" or not os.environ.get(
+        "EPIC_ACTION_FILE"
+    ):
+        return
+    root = os.environ.get("EPIC_TRUSTED_ROOT") or os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..")
+    )
+    sys.path.insert(0, os.path.join(root, "scripts", "epic"))
+    try:
+        import write_checks
+    except Exception as exc:  # any import failure must block, not allow
+        block(f"Runner write checks are unavailable: {exc!r}")
+    refused = write_checks.guard(tool, tool_input, cwd)
+    if refused:
+        block(
+            f"Runner write check: {refused}",
+            "Stop this action; the next tick selects again from fresh GitHub state.",
+        )
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -353,6 +380,7 @@ def main() -> int:
         command = tool_input.get("command")
         if isinstance(command, str) and command:
             check_command(command, cwd)
+        runner_write_check(tool, tool_input, cwd)
     except Blocked as exc:
         print("BLOCKED by .claude/hooks/scripts/epic-guard.sh", file=sys.stderr)
         print(exc, file=sys.stderr)

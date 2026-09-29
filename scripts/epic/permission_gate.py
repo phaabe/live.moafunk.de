@@ -15,6 +15,11 @@ A feature branch starts with feat/, fix/, chore/, docs/, test/ or refactor/.
 Everything else is denied with a reason. The project hooks (epic-guard and
 others) still run for every approved command.
 
+With the shared reader (EPIC_SHARED_READER=1), an approved command is also
+checked fresh against GitHub right before it runs (write_checks.py): a push
+needs its PR open or its issue In progress for Claude, a merge the full merge
+guard. A failed read denies it.
+
 Speaks MCP over stdio: one JSON-RPC message per line, standard library only.
 """
 
@@ -39,6 +44,19 @@ SHELL_META = re.compile(r"[;&|<>`$\n\\]|\(|\)")
 
 def decide(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
     """(allowed, reason) for one permission prompt."""
+    allowed, reason = rule(tool_name, tool_input)
+    if allowed and os.environ.get("EPIC_SHARED_READER") == "1":
+        # Imported here: standard library only while the switch is off.
+        import write_checks
+
+        refused = write_checks.guard(tool_name, tool_input, os.getcwd())
+        if refused:
+            return False, f"fresh check: {refused}"
+    return allowed, reason
+
+
+def rule(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
+    """(allowed, reason) from the command shape alone."""
     if tool_name != "Bash":
         return False, f"the runner does not approve {tool_name} prompts"
     command = str(tool_input.get("command", "")).strip()

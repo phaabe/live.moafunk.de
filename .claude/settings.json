@@ -181,7 +181,7 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/epic-guard.sh\"",
-            "timeout": 5,
+            "timeout": 90,
             "statusMessage": "Epic-guard: checking epic PR rules..."
           },
           {
@@ -198,7 +198,7 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/scripts/epic-guard.sh\"",
-            "timeout": 5,
+            "timeout": 90,
             "statusMessage": "Epic-guard: checking epic PR rules..."
           }
         ]
