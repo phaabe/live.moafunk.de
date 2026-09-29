@@ -537,6 +537,19 @@ class Callers(Base):
         self.assertEqual(self.hook(trusted, EPIC_SHARED_READER="0").returncode, 0)
         self.assertEqual(self.hook(trusted, EPIC_ACTION_FILE="").returncode, 0)
 
+    def test_hook_blocks_when_the_check_raises(self) -> None:
+        # Exit 1 would not block in Claude Code; any error must exit 2.
+        self.action(action="fix", pr=5, sha=A)
+        trusted = self.root / "trusted"
+        (trusted / "scripts/epic").mkdir(parents=True)
+        (trusted / "scripts/epic/write_checks.py").write_text(
+            "def guard(tool, tool_input, cwd, agent=None):\n"
+            "    raise KeyError('head')\n"
+        )
+        blocked = self.hook(trusted)
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        self.assertIn("Runner write check failed", blocked.stderr)
+
     def test_hook_fails_closed_when_the_check_cannot_load(self) -> None:
         self.action(action="fix", pr=5, sha=A)
         broken = self.hook(self.root / "missing")
