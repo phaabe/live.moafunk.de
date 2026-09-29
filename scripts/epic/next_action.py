@@ -37,8 +37,21 @@ Usage:
   next_action.py ... --state-file state.json use saved state (tests, dry runs)
   next_action.py ... --focus project::Stream  override ~/.epic-focus (repeatable)
 
-Exit codes: 0 action printed, 3 a GraphQL quota wait is stored (no GitHub call),
-4 a read hit the GraphQL quota (wait stored, no action). See github_quota.py.
+  next_action.py --agent ... --recheck action.json
+                                             read the action's target fresh
+                                             and check the selector still
+                                             picks it (shared reader only)
+
+Shared reader (github_state.py): with EPIC_SHARED_READER=1, fetch_state()
+reads the shared REST snapshot instead of calling GitHub itself. Off by default
+until both runners handle exit codes 5 and 6.
+
+Exit codes: 0 action printed (or --recheck: still valid), 2 bad settings,
+3 a GraphQL quota wait is stored (no GitHub call), 4 a read hit the GraphQL
+quota (wait stored, no action), 5 the read is blocked (lock or refresh timeout,
+failed or partial read, REST rate limit, suspected access loss; nothing on
+stdout), 6 --recheck found the action stale. Only the runners translate 5 and 6.
+See github_quota.py and github_state.py.
 """
 
 from __future__ import annotations
@@ -743,7 +756,21 @@ def changed_paths(rows: list[dict[str, Any]]) -> list[str]:
     return sorted(found)
 
 
+SHARED_READER_ENV = "EPIC_SHARED_READER"
+READ_BLOCKED = 5
+STALE = 6
+
+
+def shared_reader() -> bool:
+    return os.environ.get(SHARED_READER_ENV) == "1"
+
+
 def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
+    if shared_reader():
+        # Imported here: the Codex runner tests copy this file alone.
+        import github_state
+
+        return github_state.read_snapshot(focus).state
     fields = (
         "number,title,body,baseRefName,headRefName,headRefOid,isDraft,labels,"
         "mergeable,statusCheckRollup,updatedAt"
@@ -981,11 +1008,30 @@ def main() -> int:
     parser.add_argument(
         "--focus", action="append", help=f"label to work on; overrides {FOCUS_FILE}"
     )
+    parser.add_argument(
+        "--recheck",
+        type=Path,
+        help="action JSON to check fresh against GitHub before the model starts",
+    )
     args = parser.parse_args()
+    if args.recheck and not args.agent:
+        parser.error("--recheck needs --agent")
 
     paused = PAUSE_FILE.exists()
     focus = frozenset(args.focus) if args.focus else read_focus(FOCUS_FILE)
     enabled = read_actions(os.environ.get(ACTIONS_ENV))
+    if args.recheck:
+        return run_recheck(args.agent, args.recheck, focus, enabled, paused)
+    # The shared reader's own errors; empty (catches nothing) when it is off.
+    reader_errors: tuple[type[Exception], ...] = ()
+    if shared_reader() and not args.state_file:
+        import github_state
+
+        reader_errors = (github_state.ConfigError, github_state.ReadBlocked)
+        try:
+            github_state.settings()
+        except github_state.ConfigError as error:
+            return reader_exit(error)
     if not args.state_file:
         # A stored GraphQL quota wait means zero GitHub calls until it expires.
         wait, retry_at = quota_check(STATE_DIR, time.time())
@@ -1007,6 +1053,8 @@ def main() -> int:
     except QuotaExhausted as error:
         # No action from a partial read: the tick stops here.
         return stop_on_quota(error)
+    except reader_errors as error:
+        return reader_exit(error)
     if args.dump_state:
         args.dump_state.write_text(json.dumps(state, indent=1))
     if args.status:
@@ -1017,6 +1065,58 @@ def main() -> int:
     )
     for a in actions if args.candidates else actions[:1]:
         print(a.to_json())
+    return 0
+
+
+def reader_exit(error: Exception) -> int:
+    """2 for bad settings, 5 for a blocked read; the reason goes to stderr."""
+    import github_state
+
+    if isinstance(error, github_state.ConfigError):
+        print(f"config: {error}", file=sys.stderr)
+        return 2
+    print(f"read blocked: {error}", file=sys.stderr)
+    return READ_BLOCKED
+
+
+def run_recheck(
+    agent: str,
+    action_file: Path,
+    focus: frozenset[str],
+    enabled: frozenset[str],
+    paused: bool,
+) -> int:
+    """Fresh check of one selected action: 0 still valid, 6 stale, 5 blocked.
+
+    Bounded by EPIC_RECHECK_TIMEOUT_SECONDS; the runner's own timeout around
+    this command is a little longer, so a slow read ends as 5 here.
+    """
+    import github_state
+
+    try:
+        action = json.loads(action_file.read_text())
+        if not isinstance(action, dict):
+            raise ValueError("action is not an object")
+    except (OSError, ValueError) as error:
+        print(f"recheck: bad action file: {error}", file=sys.stderr)
+        return 2
+    try:
+        seconds = max(1, github_state.settings().recheck - 5)
+        reader = github_state.FreshReader("recheck", seconds)
+        reason = github_state.recheck(
+            agent.capitalize(), action, focus, enabled, paused, reader
+        )
+    except QuotaExhausted as error:
+        return stop_on_quota(error)
+    except (github_state.ConfigError, github_state.ReadBlocked) as error:
+        return reader_exit(error)
+    except ValueError as error:
+        print(f"recheck: {error}", file=sys.stderr)
+        return 2
+    if reason:
+        print(f"recheck: stale, {reason}", file=sys.stderr)
+        return STALE
+    print("recheck: still valid", file=sys.stderr)
     return 0
 
 
