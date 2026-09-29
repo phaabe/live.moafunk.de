@@ -176,8 +176,9 @@ class LogLedger:
         self.opener = opener or (lambda: self.log.open("rb"))
         self.state: Json | None = None
         self.dirty = False
-        # False once the runner writes events: then only events are counted.
-        self.counting = True
+        # Once the runner writes events, only ticks that started before its
+        # first event are counted here; later ones are counted by the events.
+        self.count_before = math.inf
 
     def fresh(self, now: float, size: int) -> Json:
         return {
@@ -212,7 +213,16 @@ class LogLedger:
         return valid_checkpoint(data)
 
     def update(self, now: float) -> None:
-        with self.opener() as stream:
+        try:
+            stream = self.opener()
+        except FileNotFoundError:
+            if self.state is None:
+                # Keep the saved state while the file is away. Without one, a
+                # file that appears later is new, so all its lines count.
+                self.state = self.load() or self.fresh(now, 0)
+                self.dirty = True
+            raise
+        with stream:
             self.update_from(stream, os.fstat(stream.fileno()), now)
 
     def update_from(self, stream: BinaryIO, stat: os.stat_result, now: float) -> None:
@@ -298,8 +308,8 @@ class LogLedger:
             # The selector prints its JSON decision right after the start line.
             try:
                 labels = self.normalize(json.loads(line))
-            except (ValueError, TypeError):
-                return
+            except (ValueError, TypeError, RecursionError):
+                return  # model output can print anything here
             tick["action"], tick["target"] = labels["action"], labels["target"]
             return
         if tick["want_tokens"]:
@@ -339,7 +349,7 @@ class LogLedger:
             tick["action"],
             tick["target"],
             tick["tokens"],
-            live and self.counting,
+            live and utc(tick["tick"]) < self.count_before,
         )
 
     def record(
@@ -418,6 +428,7 @@ PHASES = (
     "record",
     "unknown",
 )
+MAX_EVENT_LINE = 4096  # the runner writes each event below this size
 TICK_TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 
 
@@ -439,7 +450,18 @@ class EventLedger(LogLedger):
     @property
     def active(self) -> bool:
         """The runner writes events, so they are the counted source."""
-        return bool(self.state and (self.state["ticks"] or self.state["open"]))
+        return self.first_start() < math.inf
+
+    def first_start(self) -> float:
+        """Start of the oldest known event tick; inf before the first event."""
+        state = self.state
+        if not state:
+            return math.inf
+        if state["ticks"]:
+            return state["ticks"][0]["start"]
+        if state["open"]:
+            return utc(state["open"]["tick"])
+        return math.inf
 
     def update(self, now: float) -> None:
         self.pending = 0
@@ -453,9 +475,12 @@ class EventLedger(LogLedger):
     def feed(self, line: str, end: int, now: float) -> None:
         state = self.state
         assert state is not None
+        # Untrusted: bound the size before parsing, and deep nesting is invalid.
+        if len(line) > MAX_EVENT_LINE:
+            return self.reject()
         try:
             event = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):
             return self.reject()
         if not isinstance(event, dict) or event.get("v") != 1:
             return self.reject()
@@ -585,15 +610,12 @@ class TickView:
 def merge(log: LogLedger, events: EventLedger | None) -> TickView:
     """Log ticks before the first event, then event ticks; totals of both.
 
-    The log ledger stops counting once events exist, so a tick is counted by
-    exactly one of them.
+    The log ledger counts only ticks that started before the first event, so a
+    tick is counted by exactly one of them.
     """
     if events is None or not events.active or events.state is None:
         return TickView(log.agent, log.state or {})
-    first = events.state["open"]["tick"] if events.state["open"] else None
-    if events.state["ticks"]:
-        first = events.state["ticks"][0]["tick"]
-    cutoff = utc(first) if first else math.inf
+    cutoff = events.first_start()
     older = [t for t in log.ticks if t["start"] < cutoff]
     newer = [t | {"source": events.source} for t in events.state["ticks"]]
     log_state = log.state or {}

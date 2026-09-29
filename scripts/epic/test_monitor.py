@@ -680,6 +680,46 @@ class AgentRowsTest(unittest.TestCase):
             [("claude-2", "permissions"), ("claude-2", "runner"), ("codex", "runner")],
         )
 
+    def test_deeply_nested_backoff_does_not_stop_collection(self) -> None:
+        # Codex review on PR 469: RecursionError escaped the collector loop.
+        (self.agent("codex") / "codex-backoff.json").write_text(
+            "[" * 20_000 + "]" * 20_000
+        )
+        self.agent("claude")
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW)
+        self.assertIn('epic_backoff_read_success{agent="codex"} 0\n', text)
+        self.assertIn('epic_agent_presence_info{agent="claude"', text)
+
+    def test_missing_events_after_restart_keep_counts_and_report_failure(self) -> None:
+        home = self.agent("codex")
+        self.write_events(home, "codex")  # empty file: baseline 0 from here
+        self.run_at(NOW)
+        tick = "1970-01-01T00:30:00Z"
+        self.write_events(
+            home,
+            "codex",
+            {"event": "start", "tick": tick},
+            {
+                "event": "finish",
+                "tick": tick,
+                "at": "1970-01-01T00:31:00Z",
+                "exit": 0,
+                "outcome": "ok",
+                "phase": "record",
+                "action": None,
+                "tokens": None,
+            },
+        )
+        ok = 'epic_ticks_total{agent="codex",outcome="ok"}'
+        self.assertIn(f"{ok} 1\n", self.run_at(NOW + 5))
+        (home / "codex-ticks.jsonl").unlink()
+        self.ledgers = monitor.Ledgers(self.root / "runtime")  # restart
+        with self.assertLogs(level="WARNING"):
+            text = self.run_at(NOW + 10)
+        self.assertIn(f"{ok} 1\n", text)
+        self.assertIn('epic_tick_events_read_success{agent="codex"} 0\n', text)
+
     def test_registry_problems_are_published(self) -> None:
         (self.root / "claude.log").write_text("")
         self.agent("claude")

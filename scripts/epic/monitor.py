@@ -149,7 +149,10 @@ def read_agent_object(
         raise ValueError(f"{parts[-1]} is too large")
     if allow_empty and not raw.strip():
         return None
-    data = json.loads(raw.decode("utf-8"))
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except RecursionError as error:  # deep nesting in an untrusted file
+        raise ValueError(f"too deeply nested: {parts[-1]}") from error
     if not isinstance(data, dict):
         raise ValueError(f"expected object: {parts[-1]}")
     return data
@@ -538,7 +541,8 @@ def permission_metrics(
         ledger.update(now)
         ledger.save()
     except FileNotFoundError:
-        ok = ledger.state is None  # vanished after it was read: a failure
+        # Never read before: no gate decision yet. Read before: it vanished.
+        ok = ledger.state is None or ledger.state["inode"] is None
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
         ok = False
     if not ok:
@@ -884,7 +888,7 @@ def ledger_metrics(
     metrics.add(
         "tick_events_rejected_total", events.rejected, metric_type="counter", agent=name
     )
-    log.counting = not events.active
+    log.count_before = events.first_start()
     ok = True
     try:
         log.update(now)

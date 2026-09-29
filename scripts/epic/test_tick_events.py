@@ -6,6 +6,9 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -148,3 +151,61 @@ class TickEventsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HelperNeverBlocksTest(unittest.TestCase):
+    """Codex review of https://github.com/phaabe/live.moafunk.de/pull/469."""
+
+    def run_helper(self, *args: str) -> subprocess.CompletedProcess[str]:
+        # Run as a process: a hang would fail the timeout, not freeze the suite.
+        return subprocess.run(
+            [sys.executable, str(Path(tick_events.__file__)), *args],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+    def test_fifo_files_fail_fast_instead_of_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            events, action, log = root / "e.jsonl", root / "action.json", root / "l.log"
+            for fifo in (events, action, log):
+                os.mkfifo(fifo)
+            result = self.run_helper(
+                "start", "--file", str(events), "--tick", TICK, "--log", str(log)
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("event write failed", result.stderr)
+            regular = root / "ok.jsonl"
+            result = self.run_helper(
+                "finish",
+                "--file",
+                str(regular),
+                "--tick",
+                TICK,
+                "--exit",
+                "0",
+                "--phase",
+                "model",
+                "--action-file",
+                str(action),
+                "--log",
+                str(log),
+                "--since",
+                "0",
+            )
+            self.assertEqual(result.returncode, 0)
+            finish = json.loads(regular.read_text())
+            self.assertEqual((finish["action"], finish["tokens"]), (None, None))
+
+    def test_linked_events_file_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "elsewhere.txt"
+            target.write_text("")
+            (root / "e.jsonl").symlink_to(target)
+            result = self.run_helper(
+                "start", "--file", str(root / "e.jsonl"), "--tick", TICK
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(target.read_text(), "")

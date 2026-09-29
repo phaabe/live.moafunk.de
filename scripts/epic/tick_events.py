@@ -22,8 +22,10 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
+import stat
 import sys
-from typing import Any
+from typing import Any, BinaryIO
 
 OUTCOMES = ("ok", "blocked", "timeout", "killed", "error")
 PHASES = (
@@ -47,6 +49,21 @@ MAX_LINE = 4096
 MAX_ACTION_FILE = 65_536
 # Only the end of the session's output is scanned for the token count.
 MAX_SCAN = 1_048_576
+# The helper runs while the runner holds its lock; it must never hang there.
+DEADLINE = 10
+
+
+def open_regular(path: Path, flags: int) -> int:
+    """Open without following links or blocking (a FIFO never waits here)."""
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(f"{path.name} is not a regular file")
+    return fd
+
+
+def read_regular(path: Path) -> BinaryIO:
+    return os.fdopen(open_regular(path, os.O_RDONLY), "rb")
 
 
 def outcome_of(exit_code: int) -> str:
@@ -66,9 +83,9 @@ def action_fields(path: Path | None) -> dict[str, Any]:
     if path is None:
         return fields
     try:
-        with path.open("rb") as stream:
+        with read_regular(path) as stream:
             data = json.loads(stream.read(MAX_ACTION_FILE).decode("utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return fields
     if not isinstance(data, dict):
         return fields
@@ -87,7 +104,7 @@ def tokens_since(log: Path | None, offset: int | None) -> int | None:
     if log is None or offset is None:
         return None
     try:
-        with log.open("rb") as stream:
+        with read_regular(log) as stream:
             size = os.fstat(stream.fileno()).st_size
             stream.seek(max(offset, size - MAX_SCAN, 0))
             text = stream.read().decode("utf-8", "replace")
@@ -105,7 +122,7 @@ def append(path: Path, event: dict[str, Any]) -> None:
     line = (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
     if len(line) >= MAX_LINE:
         raise ValueError("event line is too long")
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    fd = open_regular(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
     try:
         if os.write(fd, line) != len(line):
             raise OSError("short event write")
@@ -133,6 +150,9 @@ def main(argv: list[str] | None = None) -> int:
     finish.add_argument("--action-file", type=Path)
     finish.add_argument("--since", type=int)
     args = parser.parse_args(argv)
+    # A hard deadline: whatever blocks, the runner's cleanup goes on.
+    signal.signal(signal.SIGALRM, lambda *_: sys.exit("tick: event helper timed out"))
+    signal.alarm(DEADLINE)
     if not TICK.fullmatch(args.tick):
         parser.error("--tick must look like 2026-09-28T15:39:39Z")
     try:
@@ -142,7 +162,13 @@ def main(argv: list[str] | None = None) -> int:
                 {"v": 1, "event": "start", "tick": args.tick, "pid": os.getppid()},
             )
             # The runner passes this back to finish, to find its token count.
-            size = args.log.stat().st_size if args.log and args.log.exists() else 0
+            size = 0
+            if args.log is not None:
+                try:
+                    with read_regular(args.log) as stream:
+                        size = os.fstat(stream.fileno()).st_size
+                except OSError:
+                    size = 0
             print(size)
             return 0
         if not 0 <= args.exit_code <= 255:

@@ -600,6 +600,18 @@ class LedgerTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+    def test_deeply_nested_action_line_is_ignored(self) -> None:
+        # Model output can print a line that looks like the selector's JSON.
+        ledger = self.ledger()
+        ledger.update(NOON)
+        self.append(
+            tick(NOON, 0, action='{"action": ' + "[" * 20_000 + "]" * 20_000 + "}")
+        )
+        ledger.update(NOON + 5)
+        self.assertEqual(
+            (self.last(ledger)["outcome"], self.last(ledger)["action"]), ("ok", "")
+        )
+
 
 def event(kind: str, start: float, **fields: object) -> str:
     data: dict[str, object] = {"v": 1, "event": kind, "tick": iso(start)}
@@ -730,7 +742,7 @@ class EventLedgerTest(unittest.TestCase):
             out.write(tick(NOON, 0))
         self.append(event("start", NOON), event("finish", NOON))
         events.update(NOON + 300)
-        log.counting = not events.active
+        log.count_before = events.first_start()
         log.update(NOON + 300)
         view = ticks.merge(log, events)
         self.assertEqual(
@@ -751,6 +763,51 @@ class EventLedgerTest(unittest.TestCase):
         )
         log.update(NOON)
         self.assertIs(ticks.merge(log, self.events()).state, log.state)
+
+    # Codex review of https://github.com/phaabe/live.moafunk.de/pull/469
+    def test_deep_nesting_and_oversized_lines_are_rejected(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append("[" * 2000 + "]" * 2000 + "\n", "[" * 40_000 + "\n")
+        ledger.update(NOON + 5)
+        self.assertEqual(ledger.rejected, 2)
+
+    def test_events_file_appearing_between_polls_counts_in_full(self) -> None:
+        self.file.unlink()
+        log = ticks.LogLedger(
+            "codex",
+            self.log,
+            self.root / "runtime/ticks-codex.json",
+            monitor.action_labels,
+        )
+        events = self.events()
+        log.update(NOON - 3600)
+        with self.assertRaises(FileNotFoundError):
+            events.update(NOON - 3600)
+        # An old-runner tick finishes after the new runner's first tick.
+        with self.log.open("a") as out:
+            out.write(tick(NOON - 1800, None) + tick(NOON, 0))
+        self.file.write_text("")
+        self.append(event("start", NOON), event("finish", NOON))
+        events.update(NOON + 300)
+        log.count_before = events.first_start()
+        log.update(NOON + 300)
+        view = ticks.merge(log, events)
+        self.assertEqual(view.state["totals"]["ok"], 1)  # from the events
+        self.assertEqual(view.state["totals"]["interrupted"], 1)  # the old tick
+
+    def test_restart_while_the_events_file_is_missing_keeps_its_state(self) -> None:
+        events = self.events()
+        events.update(NOON)
+        self.append(event("start", NOON), event("finish", NOON))
+        events.update(NOON + 300)
+        events.save()
+        self.file.unlink()
+        again = self.events()
+        with self.assertRaises(FileNotFoundError):
+            again.update(NOON + 600)
+        self.assertTrue(again.active)
+        self.assertEqual(again.state["totals"]["ok"], 1)
 
 
 class DecisionLedgerTest(unittest.TestCase):

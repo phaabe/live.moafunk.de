@@ -628,6 +628,16 @@ implemented yet" (expected before PR 1). One real plan gap was fixed:
 |---|---|
 | legacy Claude runner passed the relative path to the gate helper | Claude runner always exports the absolute `EPIC_STATE_DIR` |
 
+### PR 3 review, round 1
+
+| Codex finding | Change |
+|---|---|
+| blocker: deeply nested JSON stops the collector | event lines over 4 KiB rejected before parsing; nesting errors caught for events, backoff, lock files and the log's action line |
+| blocker: a FIFO events file hangs the helper under the lock | helper opens files non-blocking and without following links, regular files only, 10 s hard deadline |
+| failed start event emptied `tick_verify --since` | the real start time is always kept; event writing is tracked apart |
+| counts lost at the switch to events | a file that appears later counts from byte 0; the log keeps counting ticks that started before the first event |
+| restart during a missing events file forgot its state | the checkpoint loads even when the file is missing; event mode is kept |
+
 ## Appendix — panel spec from design v2
 
 Grid is Grafana units (24 columns, 30 px rows). Colors: Claude `#E0875A`,

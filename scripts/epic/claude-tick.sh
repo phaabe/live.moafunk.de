@@ -49,6 +49,7 @@ events="${repo_root}/scripts/epic/tick_events.py"
 # Tick events for the monitor: the stage the tick is in, and an outcome when
 # the runner knows better than the exit code (see tick_events.py).
 tick_started=""
+events_open=0
 tick_offset=0
 tick_phase=lock
 tick_outcome=auto
@@ -117,7 +118,7 @@ cleanup() {
     # always comes after it (the monitor pairs start and finish lines).
     # A failed log write must not skip the lock release below (set -e).
     printf 'tick: finished exit=%s\n' "$result" || true
-    if [[ -n "$tick_started" ]]; then
+    if [[ "$events_open" == 1 ]]; then
         python3 "$events" finish --file "$events_file" --tick "$tick_started" \
             --exit "$result" --phase "$tick_phase" --outcome "$tick_outcome" \
             --action-file "${lock_dir}/action.json" \
@@ -161,11 +162,12 @@ run_bounded() {
     return "$result"
 }
 
-started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-printf '\ntick: started %s repo=%s\n' "$started" "$repo_root"
-if tick_offset=$(python3 "$events" start --file "$events_file" --tick "$started" \
-    --log "$log_file"); then
-    tick_started=$started
+tick_started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+printf '\ntick: started %s repo=%s\n' "$tick_started" "$repo_root"
+# A failed event write never changes the tick: it only skips the finish event.
+if tick_offset=$(python3 "$events" start --file "$events_file" \
+    --tick "$tick_started" --log "$log_file"); then
+    events_open=1
 else
     tick_offset=0
 fi

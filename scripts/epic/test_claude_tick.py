@@ -64,6 +64,8 @@ class ClaudeTickTest(unittest.TestCase):
             "import json, os, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(['verify', sys.argv[-2]]) + '\\n')\n"
+            "with open(os.environ['TEST_CALLS'] + '.since', 'w') as f:\n"
+            "    f.write(sys.argv[-1])\n"
             "sys.exit(int(os.environ.get('TEST_VERIFY_EXIT', '0')))\n"
         )
         bin_dir = self.root / "bin"
@@ -363,6 +365,15 @@ class ClaudeTickTest(unittest.TestCase):
         runner.send_signal(signal.SIGTERM)
         self.assertEqual(runner.wait(timeout=30), 143)
         self.assertEqual(self.finish(), (143, "killed", "model"))
+
+    def test_failed_event_write_keeps_the_verify_time_boundary(self) -> None:
+        # Codex review on PR 469: --since was empty when the start event failed.
+        self.state.mkdir(parents=True)
+        (self.state / "claude-ticks.jsonl").mkdir()  # not writable as a file
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        since = Path(f"{self.calls}.since").read_text()
+        self.assertRegex(since, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertFalse((self.state / "claude.lock").exists())
 
     def test_registered_agent_writes_events_in_its_own_folder(self) -> None:
         self.assertEqual(self.run_tick(EPIC_AGENT_ID="claude-2").wait(timeout=30), 0)
