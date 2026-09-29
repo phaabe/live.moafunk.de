@@ -253,6 +253,24 @@ logs each decision to `claude-permissions.log` in the state directory.
 `python3 scripts/epic/next_action.py --status`
 shows the queue for both agents.
 
+Runner worktrees: the Claude runner edits feature branches only in
+`<dir>/<branch>`, where `<dir>` is one fixed directory per runner
+(`EPIC_WORKTREE_DIR`, default `live.moafunk.de-<agent id>-wt` next to the runner
+checkout). For `claim`, `continue`, `fix`, `fix-checks` and `resolve-conflict`,
+`scripts/epic/runner_worktree.py` runs after the gate check and before the
+model. It checks the repository, the branch (a PR's head in this repository,
+a feature branch, an epic base, `Executor: Claude`; for an issue its one
+`<type>/<issue>-...` branch or a new `feat/<issue>-<slug>` from
+`origin/dev/312-interim`). Then it resumes the matching checkout unchanged or
+runs `git worktree add`. The model gets the path and may edit only there.
+When Git refuses a branch checked out elsewhere (for example a human session),
+no model starts and the log says `handoff needed: <branch> in <path>`. The
+same stop for the same action is reported once
+(`<agent>-handoff.json`, repeat TTL). Handoff is manual: Anton releases that
+checkout, and a later tick finds the branch free and creates the runner
+checkout. Nobody uses `--force` or `--ignore-other-worktrees`, or switches,
+resets, stashes or removes another session's checkout.
+
 GitHub GraphQL quota: both runners share one wait file,
 `github-quota-wait.json` in the state directory (`scripts/epic/github_quota.py`).
 When a GitHub read hits the GraphQL quota, also inside an HTTP 200 response,
