@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import agents
+import delivery
 import monitor
 
 
@@ -844,10 +845,45 @@ class ScrapeSizeTest(unittest.TestCase):
                     )
                 )
             ledgers = monitor.Ledgers(root / "runtime")
-            runners = monitor.runner_metrics(root, False, 2000 * 300, ledgers=ledgers)
+            # Every open PR waits for a review.
+            handoff = delivery.HandoffClock(root / "handoff.json").observe(
+                snapshot(prs=prs), 2000 * 300
+            )
+            runners = monitor.runner_metrics(
+                root, False, 2000 * 300, ledgers=ledgers, handoff=handoff
+            )
+        data = {
+            "v": 1,
+            "fetched_at": NOW,
+            "open": [
+                {
+                    "number": 2000 + i,
+                    "created": NOW,
+                    "executor": "claude",
+                    "draft": False,
+                }
+                for i in range(200)
+            ],
+            "merged": {
+                str(3000 + i): {
+                    "number": 3000 + i,
+                    "created": NOW - 60,
+                    "merged": NOW,
+                    "executor": "codex",
+                    "rounds": 1,
+                    "complete": True,
+                }
+                for i in range(600)
+            },
+        }
+        metrics = monitor.Metrics()
+        delivery.delivery_metrics(metrics, data, prs, NOW)
         samples = [
-            line for line in (github + runners).splitlines() if not line.startswith("#")
+            line
+            for line in (github + runners + metrics.render()).splitlines()
+            if not line.startswith("#")
         ]
+        self.assertTrue(any("handoff_wait_seconds" in line for line in samples))
         self.assertLess(len(samples), SCRAPE_BUDGET)
 
 

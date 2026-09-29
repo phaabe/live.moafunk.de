@@ -27,6 +27,7 @@ import time
 from typing import Any, BinaryIO
 
 import agents
+import delivery
 import next_action as epic
 import ticks
 
@@ -569,10 +570,15 @@ BACKOFF_KEY = re.compile(
 
 
 class Heads:
-    """PR heads from the last successful GitHub poll (None before the first)."""
+    """Data from the last successful GitHub poll (None before the first).
+
+    The GitHub thread replaces each attribute whole; the local loop reads it.
+    """
 
     def __init__(self) -> None:
         self.heads: dict[str, str] | None = None
+        self.prs: list[Json] | None = None
+        self.handoff: delivery.Handoff | None = None
 
 
 LATEST = Heads()
@@ -731,6 +737,7 @@ def runner_metrics(
     ledgers: Ledgers | None = None,
     registry: agents.Registry | None = None,
     heads: dict[str, str] | None = None,
+    handoff: delivery.Handoff | None = None,
 ) -> str:
     metrics = Metrics()
     metrics.add("local_snapshot_timestamp_seconds", now)
@@ -765,6 +772,13 @@ def runner_metrics(
             sum(row.agent.kind == kind and row.presence != "retired" for row in rows),
             kind=kind,
         )
+    delivery.handoff_metrics(
+        metrics,
+        handoff,
+        [(row.agent.kind, row.presence) for row in rows if row.presence != "retired"],
+        paused,
+        now,
+    )
     running = Counter(
         row.action["target"]
         for row in rows
@@ -855,6 +869,7 @@ def publish_local(args: argparse.Namespace, ledgers: Ledgers) -> None:
             ledgers=ledgers,
             registry=registry,
             heads=LATEST.heads,
+            handoff=LATEST.handoff,
         ),
     )
 
@@ -929,8 +944,8 @@ def ledger_metrics(
     return view
 
 
-def github_metrics(state: Json, now: float) -> str:
-    metrics = Metrics()
+def epic_view(state: Json) -> Json:
+    """The snapshot limited to this repository's issues and the epic's PRs."""
     # Project boards may contain issues from other repositories.
     items = [
         item
@@ -942,8 +957,15 @@ def github_metrics(state: Json, now: float) -> str:
         )
     ]
     prs = [pr for pr in state["prs"] if pr.get("baseRefName") in epic.BASES]
-    filtered = {**state, "items": items, "prs": prs}
+    return {**state, "items": items, "prs": prs}
+
+
+def github_metrics(state: Json, now: float) -> str:
+    metrics = Metrics()
+    filtered = epic_view(state)
+    items, prs = filtered["items"], filtered["prs"]
     metrics.add("github_snapshot_timestamp_seconds", now)
+    delivery.area_leaves(metrics, items)
     for agent in epic.AGENTS:
         label = agent.lower()
         mine = [item for item in items if item.get("executor") == agent]
@@ -1049,14 +1071,23 @@ def fetch_snapshot(timeout: float) -> Json:
 
 
 def collect_github(
-    output: Path, timeout: float, fetch: Callable[[float], Json] = fetch_snapshot
+    output: Path,
+    timeout: float,
+    fetch: Callable[[float], Json] = fetch_snapshot,
+    clock: delivery.HandoffClock | None = None,
 ) -> bool:
     began = time.monotonic()
     ok = False
     try:
         state = fetch(timeout)
-        metrics = github_metrics(state, time.time())
+        now = time.time()
+        metrics = github_metrics(state, now)
+        # A failed poll changes no clock: it never gets here.
+        handoff = clock.observe(epic_view(state), now) if clock else None
         atomic_write(output / "github.prom", metrics)
+        if handoff is not None:
+            LATEST.handoff = handoff
+        LATEST.prs = epic_view(state)["prs"]
         # Read by the runner loop to tell whether a backoff head is current.
         LATEST.heads = {
             f"{REPO_URL}/pull/{pr['number']}": pr.get("headRefOid", "")
@@ -1082,14 +1113,85 @@ def collect_github(
     return ok
 
 
+def fetch_delivery(cache: Path, timeout: float) -> Json:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--fetch-delivery",
+        str(cache),
+    ]
+    with subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as process:
+        try:
+            output, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            raise
+        if process.returncode:
+            raise RuntimeError(f"delivery collection exited {process.returncode}")
+    return json.loads(output)
+
+
+def collect_delivery(
+    output: Path,
+    cache: Path,
+    timeout: float,
+    fetch: Callable[[Path, float], Json] = fetch_delivery,
+) -> bool:
+    """Fetch delivery data; a failure keeps the last snapshot and cache."""
+    began = time.monotonic()
+    ok = False
+    try:
+        data = fetch(cache, timeout)
+        if not delivery.valid_delivery(data):
+            raise ValueError("invalid delivery data")
+        metrics = Metrics()
+        delivery.delivery_metrics(metrics, data, LATEST.prs, time.time())
+        delivery.atomic_json(cache, data)
+        atomic_write(output / "delivery.prom", metrics.render())
+        ok = True
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ) as error:
+        logging.error("Delivery collection failed: %s", type(error).__name__)
+    health = Metrics()
+    health.add("delivery_collection_success", int(ok))
+    health.add("delivery_collection_duration_seconds", time.monotonic() - began)
+    health.add("delivery_attempt_timestamp_seconds", time.time())
+    atomic_write(output / "delivery-health.prom", health.render())
+    return ok
+
+
+def collect_remote(args: argparse.Namespace, clock: delivery.HandoffClock) -> bool:
+    """One GitHub cycle: the selector snapshot and handoff, then delivery."""
+    ok = collect_github(args.output, args.github_timeout, clock=clock)
+    cache = args.output.parent / "delivery.json"
+    return collect_delivery(args.output, cache, args.github_timeout) and ok
+
+
 def run(args: argparse.Namespace) -> None:
     stopped = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stopped.set())
 
+    clock = delivery.HandoffClock(args.output.parent / "handoff.json")
+    # Saved waits show until the first poll; an old one never flags a stall.
+    LATEST.handoff = clock.load()
+
     def github_loop() -> None:
         while not stopped.is_set():
-            collect_github(args.output, args.github_timeout)
+            collect_remote(args, clock)
             stopped.wait(args.github_interval)
 
     thread = threading.Thread(target=github_loop, daemon=True)
@@ -1123,12 +1225,16 @@ def main() -> None:
     parser.add_argument("--github-timeout", type=float, default=90)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--fetch-state", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--fetch-delivery", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     if args.fetch_state:
         print(json.dumps(epic.fetch_state()))
+        return
+    if args.fetch_delivery is not None:
+        print(json.dumps(delivery.main_fetch(args.fetch_delivery, time.time())))
         return
     if any(
         not math.isfinite(value) or value <= 0
@@ -1143,7 +1249,8 @@ def main() -> None:
             parser.error("another collector owns this output directory")
         if args.once:
             publish_local(args, Ledgers(args.output.parent))
-            if not collect_github(args.output, args.github_timeout):
+            clock = delivery.HandoffClock(args.output.parent / "handoff.json")
+            if not collect_remote(args, clock):
                 raise SystemExit(1)
         else:
             run(args)
