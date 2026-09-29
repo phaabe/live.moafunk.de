@@ -27,8 +27,8 @@ The guard blocks:
   release into `main`. The interim branch cannot create a release into `main`.
   The approved setup exception is exactly `ci/312-epic-guard` → `main`.
 - PR merges without a 40-character `--match-head-commit` value.
-- REST PR writes through `gh api`, including implicit POSTs from field flags
-  and opaque `--input` bodies. Use `gh pr` commands instead. GET requests work.
+- REST PR writes through `gh api`, except the selected adoption body edit below.
+  Implicit POSTs and opaque `--input` bodies remain blocked. GET requests work.
 - MCP merges: use `gh pr merge --match-head-commit` instead. MCP PR creation
   follows the same base and head rules.
 
@@ -49,6 +49,14 @@ GitHub API clients or aliases. Shell `gh api` calls must also be single literal
 invocations, with flags after `api`. It does not
 verify GitHub approval, lane ownership or green checks. Those remain mandatory
 under the epic rules; the shared server checker is separate setup work.
+
+During an `adopt` tick the runner exports `EPIC_ACTION_FILE`, an absolute path
+to its locked selection. The guard permits exactly
+`gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F body=@<absolute-path>`
+for that selected PR. The action must include its head SHA and original body
+digest. Other targets, extra fields, relative paths and other write forms stay
+blocked. Body files still pass the verdict check. This command guard is not a
+replacement for checking the current head, owner and body before the write.
 
 ## Recovery if the guard blocks every tool
 
@@ -99,7 +107,7 @@ The runner never resets, stashes or discards local edits. Resolve pull failures
 in the operator checkout before retrying. Pause and lock contention skip the
 pull. Lock contention, pause, idle and stop exit 0 without starting Codex.
 Before a session, `scripts/epic/tick_gate.py check --agent codex` checks the
-selected action. Exit 3 skips the session and exits 0; other gate errors stop
+selected action. Exit 3 tries the next candidate; other gate errors stop
 the tick. An unchanged action and GitHub timestamp are skipped for three hours
 after the last completed or valid blocked result (`EPIC_REPEAT_TTL_SECONDS`
 overrides this).
@@ -124,8 +132,23 @@ fields or a changed head stop before starting the model and leave state intact.
 This lookup runs only when a PR continuation could inherit an active issue
 cooldown. Ticks without active issue cooldowns need no extra PR request.
 A different selected target or a new PR head can run immediately. Comments do
-not reset a cooldown. The selector still chooses one action per tick; a skipped
-target does not cause the runner to choose lower-priority work.
+not reset a cooldown. Adding `updated_at` to actions changes shared repeat-gate
+fingerprints, but not these cooldown keys or expiry times.
+
+The selector lists candidates once with `--candidates`. The tick tries them in
+priority order, without a count limit, and starts at most one model session.
+Busy target locks, active cooldowns, stale selections and suppressed repeats
+fall through to the next candidate. Pause and shared quota waits stop the tick.
+
+Target locks use `scripts/epic/target_lock.py` and the shared directory
+`~/.local/state/epic-loop/target-locks/`, independent of `EPIC_STATE_DIR` and
+agent IDs. If overriding `EPIC_LOCK_DIR`, every Claude and Codex runner on the
+machine must use the same path. The shell opens descriptors 8 and 9 in target
+number order and keeps them through the session and result recording. The
+timeout supervisor inherits them and holds them while waiting for Codex. If
+only the tick shell is killed, the surviving supervisor keeps the target locked
+until Codex exits. The OS releases the lock after the last holder exits. Lock
+files are never deleted. The repeat gate rechecks the target after locking.
 
 The model writes `status` (`completed` or `blocked`), `summary`, and nullable
 `reason_code` and `retry_at` fields through Codex's output schema to
@@ -138,6 +161,19 @@ Valid blocked results also retain the shared gate's three-hour suppression
 after cooldown expires, unless GitHub changed. Model failures and invalid
 results do not create a shared gate record. A blocked `continue` still retries
 after cooldown because local progress cannot be inferred from GitHub state.
+
+A completed `adopt` result also runs the shared `tick_verify.py` before clearing
+cooldown or recording completion. Missing metadata or changed original body
+fails the tick and starts target cooldown. A quota wait during verification
+stops without writing cooldown or repeat records. Other actions retain their
+existing result handling.
+
+Keep `adopt` out of `EPIC_FOCUS_ACTIONS` until both agent implementations are
+reviewed and merged. Then update and trust the changed Codex hook in the runner
+checkouts, verify the exact body-edit command is permitted, and add `adopt` to
+the comma list in both runner environments. Preserve any other enabled actions.
+Do not enable extra runner instances or remove a pause as part of this change.
+Observe the first adoption and its verifier result before treating it as active.
 
 Actions admitted by the gate start one fresh `codex exec` session using `epic-tick.md` plus
 the selected JSON. It uses the workspace-write sandbox with explicit network

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,6 +30,7 @@ class TickTests(unittest.TestCase):
         self.home = self.root / "home"
         self.home.mkdir()
         self.state = self.home / ".local/state/epic-loop"
+        self.target_locks = self.root / "target-locks"
         self.lock = self.state / "codex.lock"
         self.record = self.state / "codex-gate.json"
         self.updated_at = self.root / "updated-at"
@@ -51,10 +54,17 @@ class TickTests(unittest.TestCase):
             "github_quota.py",
             "agents.py",
             "tick_events.py",
+            "target_lock.py",
+            "routing.py",
+            "tick_verify.py",
         ):
             shutil.copyfile(
                 ROOT.parent / "scripts/epic" / helper, selector.parent / helper
             )
+        shutil.copyfile(
+            ROOT.parent / "scripts/epic/next_action.py",
+            selector.parent / "selector_contract.py",
+        )
         self.noise_checks = self.root / "noise-checks"
         (selector.parent / "gitnexus_noise.py").write_text(
             "import os, pathlib, sys, time\n"
@@ -64,10 +74,10 @@ class TickTests(unittest.TestCase):
             "    (pathlib.Path.home() / '.epic-pause').touch()\n"
             "sys.exit(int(os.environ.get('TEST_NOISE_EXIT', '0')))\n"
         )
-        selector.write_text(
+        selector_code = (
             "import os, pathlib, sys, time\n"
             "from github_quota import QuotaExhausted, record, stop_on_quota\n"
-            "assert sys.argv[1:] == ['--agent', 'codex']\n"
+            "assert sys.argv[1:] == ['--agent', 'codex', '--candidates']\n"
             "assert pathlib.Path(os.environ['TEST_PULLS']).exists()\n"
             "with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('call\\n')\n"
             "if os.environ.get('TEST_SELECTOR_EXIT'): sys.exit(23)\n"
@@ -78,6 +88,12 @@ class TickTests(unittest.TestCase):
             "if os.environ.get('TEST_PAUSE_AFTER_SELECT'):\n"
             "    (pathlib.Path.home() / '.epic-pause').touch()\n"
             "print(os.environ['TEST_DECISION'])\n"
+        )
+        selector.write_text(
+            "from selector_contract import EPIC, REPO, body_digest, issue_url, other\n"
+            "if __name__ == '__main__':\n"
+            + "\n".join(f"    {line}" for line in selector_code.splitlines())
+            + "\n"
         )
         self.bin = self.root / "bin"
         self.bin.mkdir()
@@ -111,6 +127,8 @@ class TickTests(unittest.TestCase):
             "    sys.exit(0)\n"
             "boundary = 'pr' if sys.argv[1:3] == ['pr', 'view'] else 'gate'\n"
             "if sys.argv[1:3] == ['pr', 'list']: boundary = 'selector'\n"
+            "if sys.argv[1:3] == ['api', 'repos/phaabe/live.moafunk.de/pulls/406']:\n"
+            "    boundary = 'verify'\n"
             "if os.environ.get('TEST_GH_QUOTA') == boundary:\n"
             "    print(json.dumps({'errors': [{'type': 'RATE_LIMITED'}]}))\n"
             "    sys.exit(0)\n"
@@ -119,6 +137,9 @@ class TickTests(unittest.TestCase):
             "    from github_quota import record\n"
             "    record(pathlib.Path(os.environ['EPIC_QUOTA_DIR']), time.time(), os.environ['TEST_RESET'])\n"
             "if os.environ.get('TEST_GH_FAILURE'): sys.exit(7)\n"
+            "if sys.argv[1:3] == ['api', 'repos/phaabe/live.moafunk.de/pulls/406']:\n"
+            "    print(json.dumps({'body': os.environ.get('TEST_ADOPT_BODY', '')}))\n"
+            "    sys.exit(0)\n"
             "if sys.argv[1:3] == ['pr', 'view']:\n"
             "    assert sys.argv[4:] == ['--repo', 'phaabe/live.moafunk.de', "
             "'--json', 'body,headRefOid']\n"
@@ -128,15 +149,39 @@ class TickTests(unittest.TestCase):
             "    print(os.environ['TEST_PR_METADATA'])\n"
             "    sys.exit(0)\n"
             "assert sys.argv[1] == 'api'\n"
-            "print(pathlib.Path(os.environ['TEST_UPDATED_AT']).read_text())\n"
+            "if os.environ.get('TEST_PAUSE_AFTER_GATE'):\n"
+            "    (pathlib.Path.home() / '.epic-pause').touch()\n"
+            "target = sys.argv[2].rsplit('/', 1)[-1]\n"
+            "states = json.loads(os.environ.get('TEST_TARGET_STATES', '{}'))\n"
+            "default_state = pathlib.Path(os.environ['TEST_UPDATED_AT']).read_text()\n"
+            "print(states.get(target, default_state))\n"
         )
         gh.chmod(0o755)
         codex = self.bin / "codex"
         codex.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, os, pathlib, socket, sys\n"
+            "import json, os, pathlib, shlex, socket, subprocess, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
-            "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read()}) + '\\n')\n"
+            "    action_file = pathlib.Path(os.environ['EPIC_ACTION_FILE'])\n"
+            "    assert action_file.is_absolute()\n"
+            "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read(), "
+            "'action_file': str(action_file), 'action': json.loads(action_file.read_text())}) + '\\n')\n"
+            "if os.environ.get('TEST_MODEL_GUARD'):\n"
+            "    repo = pathlib.Path(os.environ['TEST_REPO'])\n"
+            "    body = repo / 'adopt body.md'\n"
+            "    body.write_text(os.environ['TEST_ADOPT_BODY'])\n"
+            "    codes = []\n"
+            "    for number in (406, 407):\n"
+            "        command = ('gh api --method PATCH ' "
+            "+ f'repos/phaabe/live.moafunk.de/pulls/{number} -F ' "
+            "+ shlex.quote(f'body=@{body}'))\n"
+            "        payload = {'tool_name': 'exec_command', 'cwd': str(repo), "
+            "'tool_input': {'cmd': command}}\n"
+            "        hook = repo / '.codex/hooks/scripts/epic-guard.sh'\n"
+            "        checked = subprocess.run(['/bin/bash', str(hook)], "
+            "input=json.dumps(payload), text=True, capture_output=True)\n"
+            "        codes.append(checked.returncode)\n"
+            "    pathlib.Path(os.environ['TEST_MODEL_GUARD']).write_text(json.dumps(codes))\n"
             "print('fake Codex stdout', flush=True)\n"
             "if os.environ.get('TEST_TOKENS'):\n"
             "    print('tokens used', os.environ['TEST_TOKENS'], sep='\\n', flush=True)\n"
@@ -179,6 +224,7 @@ class TickTests(unittest.TestCase):
             "EPIC_SELECT_TIMEOUT_SECONDS": "10",
             "EPIC_PULL_TIMEOUT_SECONDS": "10",
             "EPIC_STATE_DIR": str(self.state),
+            "EPIC_LOCK_DIR": str(self.target_locks),
             "EPIC_REPEAT_TTL_SECONDS": "10800",
             "EPIC_BLOCKED_RETRY_SECONDS": "900",
         }
@@ -1182,6 +1228,201 @@ class TickTests(unittest.TestCase):
         self.assertEqual(self.run_tick().returncode, 23)
         self.assertFalse(self.lock.exists())
 
+    def candidates(self, *actions: dict[str, object]) -> None:
+        self.env["TEST_DECISION"] = "\n".join(json.dumps(a) for a in actions)
+
+    @staticmethod
+    def review_action(number: int) -> dict[str, object]:
+        return {"action": "review", "pr": number, "sha": "a" * 40}
+
+    def seed_repeat(self, *actions: dict[str, object]) -> None:
+        self.state.mkdir(parents=True, exist_ok=True)
+        targets = {
+            str(action["pr"]): {
+                "fingerprint": hashlib.sha256(
+                    json.dumps(action, sort_keys=True).encode()
+                ).hexdigest(),
+                "updated_at": self.updated_at.read_text(),
+                "at": time.time(),
+                "action": action,
+            }
+            for action in actions
+        }
+        self.record.write_text(json.dumps({"targets": targets}))
+
+    def test_repeat_candidates_do_not_starve_the_eleventh_target(self) -> None:
+        actions = [self.review_action(n) for n in range(400, 411)]
+        self.seed_repeat(*actions[:10])
+        self.candidates(*actions)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual([call["action"] for call in calls], [actions[-1]])
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 11)
+        self.assertEqual(json.loads(self.record.read_text())["action"], actions[-1])
+
+    def test_backoff_candidates_do_not_starve_the_eleventh_target(self) -> None:
+        actions = [self.review_action(n) for n in range(400, 411)]
+        self.state.mkdir(parents=True)
+        entries = {
+            f"pr:{action['pr']}:{action['sha']}": {
+                "at": time.time(),
+                "until": time.time() + 600,
+                "reason": "permission denied",
+            }
+            for action in actions[:10]
+        }
+        path = self.state / "codex-backoff.json"
+        path.write_text(json.dumps(entries))
+        self.candidates(*actions)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual([call["action"] for call in calls], [actions[-1]])
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        self.assertEqual(json.loads(path.read_text()), entries)
+
+    def test_busy_target_falls_through_without_a_github_read(self) -> None:
+        self.target_locks.mkdir()
+        self.candidates(self.review_action(406), self.review_action(407))
+        with (self.target_locks / "406.lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual([call["action"]["pr"] for call in calls], [407])
+        queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
+        self.assertEqual(len(queries), 1)
+        self.assertIn("issues/407", queries[0][1])
+
+    def test_skipped_candidate_releases_its_partial_issue_and_pr_locks(self) -> None:
+        self.target_locks.mkdir()
+        issue = "https://github.com/phaabe/live.moafunk.de/issues/338"
+        self.candidates(
+            {**self.review_action(406), "issue": issue},
+            {"action": "continue", "issue": issue},
+        )
+        with (self.target_locks / "406.lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual([call["action"]["action"] for call in calls], ["continue"])
+
+    def test_stale_and_closed_candidates_fall_through(self) -> None:
+        first = {**self.review_action(406), "updated_at": "2026-09-28T02:00:00Z"}
+        self.env["TEST_TARGET_STATES"] = json.dumps(
+            {"407": self.updated_at.read_text() + "\nclosed"}
+        )
+        self.candidates(first, self.review_action(407), self.review_action(408))
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual([call["action"]["pr"] for call in calls], [408])
+        self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"408"})
+
+    def test_quota_wait_after_skipped_candidate_stops_the_scan(self) -> None:
+        self.quota_clock()
+        first = {**self.review_action(406), "updated_at": "2026-09-28T02:00:00Z"}
+        self.candidates(first, self.review_action(407))
+        self.env["TEST_WAIT_AFTER_GATE"] = "1"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        self.assert_quota_only()
+        self.assertEqual(self.last_finish(), (0, "ok", "quota"))
+
+    def test_pause_after_skipped_candidate_stops_the_scan(self) -> None:
+        first = {**self.review_action(406), "updated_at": "2026-09-28T02:00:00Z"}
+        self.candidates(first, self.review_action(407))
+        self.env["TEST_PAUSE_AFTER_GATE"] = "1"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.record.exists())
+
+    def adopt_action(self) -> dict[str, object]:
+        action = {
+            **self.review_action(406),
+            "action": "adopt",
+            "lane": "setup",
+            "body_sha": hashlib.sha256(b"Original description.").hexdigest(),
+        }
+        self.candidates(action)
+        self.env["TEST_ADOPT_BODY"] = (
+            "Original description.\n\n"
+            "Epic: https://github.com/phaabe/live.moafunk.de/issues/312\n"
+            "Executor: Codex\n"
+            "Lane: setup\n"
+            "Reviewer: Claude\n"
+            "Leaf IDs: setup\n"
+            "Issue: https://github.com/phaabe/live.moafunk.de/issues/338\n"
+        )
+        return action
+
+    def test_adopt_records_success_only_after_real_body_verification(self) -> None:
+        action = self.adopt_action()
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())["action"], action)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual([call["action"] for call in calls], [action])
+        self.assertEqual(Path(calls[0]["action_file"]), self.lock / "action.json")
+        queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
+        self.assertEqual(queries[-1], ["api", "repos/phaabe/live.moafunk.de/pulls/406"])
+
+    def test_adopt_missing_owner_or_changed_original_records_failure(self) -> None:
+        self.adopt_action()
+        correct_body = self.env["TEST_ADOPT_BODY"]
+        for body in (
+            "Original description.",
+            correct_body.replace("Original", "Changed"),
+        ):
+            with self.subTest(body=body):
+                self.env["TEST_ADOPT_BODY"] = body
+                self.assertNotEqual(self.run_tick().returncode, 0)
+                self.assertFalse(self.record.exists())
+                entries = json.loads((self.state / "codex-backoff.json").read_text())
+                self.assertIn(f"pr:406:{'a' * 40}", entries)
+                self.assertNotEqual(self.last_finish()[1], "ok")
+                self.expire_cooldown()
+
+    def test_model_hook_receives_only_the_selected_adopt_permission(self) -> None:
+        self.adopt_action()
+        hooks = self.repo / ".codex/hooks/scripts"
+        hooks.mkdir(parents=True)
+        for filename in ("epic-guard.sh", "epic_guard.py"):
+            shutil.copyfile(ROOT / "hooks/scripts" / filename, hooks / filename)
+        checked = self.root / "guard-results.json"
+        self.env["TEST_MODEL_GUARD"] = str(checked)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(checked.read_text()), [0, 2])
+
+    def test_adopt_quota_wait_during_model_leaves_target_state_untouched(self) -> None:
+        self.quota_clock()
+        self.adopt_action()
+        self.env["TEST_WAIT_DURING_MODEL"] = "1"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assert_quota_only(model_calls=1)
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+
+    def test_adopt_verification_quota_stores_wait_without_success_or_cooldown(self) -> None:
+        self.quota_clock()
+        self.adopt_action()
+        self.env["TEST_GH_QUOTA"] = "verify"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assert_quota_only(model_calls=1)
+        self.assertEqual(self.last_finish(), (75, "blocked", "quota"))
+
+    def test_blocked_adopt_does_not_run_success_verification(self) -> None:
+        self.adopt_action()
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Body edit permission denied."}
+        )
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        self.assertEqual(self.last_finish(), (75, "blocked", "result"))
+
     def test_codex_failure_is_logged_and_unlocks(self) -> None:
         self.env["TEST_CODEX_EXIT"] = "17"
         self.assertEqual(self.run_tick().returncode, 17)
@@ -1240,6 +1481,42 @@ class TickTests(unittest.TestCase):
         connection.sendall(b"x")
         self.assertEqual(process.wait(timeout=10), 0)
         self.assertFalse(self.lock.exists())
+
+    def test_shared_target_lock_prevents_other_state_dir_session(self) -> None:
+        process, connection = self.blocked_tick()
+        self.env["EPIC_STATE_DIR"] = str(self.root / "second-runner")
+        del self.env["TEST_SOCKET"]
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        connection.sendall(b"x")
+        self.assertEqual(process.wait(timeout=10), 0)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+
+    def test_surviving_model_keeps_target_locked_after_runner_sigkill(self) -> None:
+        process, connection = self.blocked_tick()
+        process.kill()
+        self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
+        self.env["EPIC_STATE_DIR"] = str(self.root / "second-runner")
+        del self.env["TEST_SOCKET"]
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        connection.sendall(b"x")
+        self.assertEqual(connection.recv(1), b"")
+        # Wait for process exit, not an arbitrary lock age or stale-file reclaim.
+        deadline = time.monotonic() + 12
+        with (self.target_locks / "406.lock").open("a") as lock:
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        self.fail("target lock outlived the model process")
+                    time.sleep(0.01)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
 
     def test_feedback_during_session_is_not_suppressed(self) -> None:
         initial_updated_at = self.updated_at.read_text()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -25,8 +26,13 @@ class EpicGuardTest(unittest.TestCase):
         cwd: Path = ROOT,
         tool: str = "Bash",
         field: str = "command",
+        action_file: Path | None = None,
     ) -> None:
         payload = {"tool_name": tool, "cwd": str(cwd), "tool_input": {field: command}}
+        env = dict(os.environ)
+        env.pop("EPIC_ACTION_FILE", None)
+        if action_file is not None:
+            env["EPIC_ACTION_FILE"] = str(action_file)
         result = subprocess.run(
             ["/bin/bash", "-c", COMMAND],
             cwd=cwd,
@@ -34,6 +40,7 @@ class EpicGuardTest(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            env=env,
         )
         self.assertEqual(result.returncode, expected, (command, result.stderr))
         if expected == 2:
@@ -152,6 +159,111 @@ class EpicGuardTest(unittest.TestCase):
         for command, expected in cases:
             with self.subTest(command=command):
                 self.run_hook(command, expected)
+
+    def test_adopt_body_edit(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            path = Path(directory)
+            body = path / "body with spaces.md"
+            action_file = path / "action.json"
+            action_file.write_text(
+                json.dumps(
+                    {"action": "adopt", "pr": 5, "sha": SHA, "body_sha": "a" * 64}
+                )
+            )
+            command = (
+                "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/5 "
+                f"-F 'body=@{body}'"
+            )
+            body.write_text("Original body\nExecutor: Codex\n")
+            self.run_hook(command, 0, action_file=action_file)
+            self.run_hook(command, 0, cwd=ROOT / "backend", action_file=action_file)
+            self.run_hook(
+                command, 0, tool="exec_command", field="cmd", action_file=action_file
+            )
+            self.run_hook(command, 2)
+            self.run_hook(command, 2, action_file=action_file.relative_to(ROOT))
+            for verdict in (
+                CLAUDE_VERDICT,
+                CLAUDE_VERDICT.replace("APPROVED", "CHANGES REQUESTED"),
+            ):
+                body.write_text(verdict)
+                self.run_hook(command, 2, action_file=action_file)
+            body.unlink()
+            self.run_hook(command, 2, action_file=action_file)
+
+    def test_adopt_requires_matching_valid_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            body = Path(directory) / "body.md"
+            body.write_text("Original body\nExecutor: Codex\n")
+            action_file = Path(directory) / "action.json"
+            command = (
+                "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/5 "
+                f"-F body=@{body}"
+            )
+            valid = {"action": "adopt", "pr": 5, "sha": SHA, "body_sha": "a" * 64}
+            for action in (
+                {},
+                [],
+                None,
+                {**valid, "action": "review"},
+                {**valid, "pr": 6},
+                {**valid, "pr": "5"},
+                {**valid, "pr": True},
+                {**valid, "sha": "abc"},
+                {**valid, "body_sha": "abc"},
+                {key: value for key, value in valid.items() if key != "sha"},
+                {key: value for key, value in valid.items() if key != "body_sha"},
+            ):
+                with self.subTest(action=action):
+                    action_file.write_text(json.dumps(action))
+                    self.run_hook(command, 2, action_file=action_file)
+            action_file.write_text("{")
+            self.run_hook(command, 2, action_file=action_file)
+            action_file.unlink()
+            self.run_hook(command, 2, action_file=action_file)
+
+    def test_adopt_rejects_other_command_shapes(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            path = Path(directory)
+            body = path / "body.md"
+            body.write_text("Original body\nExecutor: Codex\n")
+            action_file = path / "action.json"
+            action_file.write_text(
+                json.dumps(
+                    {"action": "adopt", "pr": 5, "sha": SHA, "body_sha": "a" * 64}
+                )
+            )
+            endpoint = "repos/phaabe/live.moafunk.de/pulls/5"
+            command = f"gh api --method PATCH {endpoint} -F body=@{body}"
+            for changed in (
+                command.replace("/pulls/5", "/pulls/6"),
+                command.replace("/pulls/5", "/pulls/0"),
+                command.replace("/pulls/5", "/pulls/05"),
+                command.replace("phaabe/", "other/"),
+                command.replace(endpoint, "https://api.github.com/" + endpoint),
+                command.replace(endpoint, endpoint + "?state=open"),
+                command.replace(endpoint, endpoint + "/"),
+                command.replace(endpoint, endpoint + "/reviews"),
+                command.replace("--method PATCH", "-X PATCH"),
+                command.replace("--method PATCH", "--method=PATCH"),
+                command.replace("PATCH", "POST"),
+                command.replace("-F body=", "--field body="),
+                command.replace("-F body=", "-f body="),
+                command.replace(str(body), str(body.relative_to(ROOT))),
+                command.replace(str(body), str(path / ".." / path.name / "body.md")),
+                command.replace(str(body), "-"),
+                command.replace("-F body=@", "--input "),
+                command + " -f base=main",
+                command + f" -F body=@{body}",
+                command + " --hostname other.example",
+                command + " --header 'Authorization: x'",
+                command + " --silent",
+                command + " && gh pr merge 5",
+                "env " + command,
+                f"gh api {endpoint} --method PATCH -F body=@{body}",
+            ):
+                with self.subTest(command=changed):
+                    self.run_hook(changed, 2, action_file=action_file)
 
     def test_mcp_pr_tools(self) -> None:
         for tool in (
