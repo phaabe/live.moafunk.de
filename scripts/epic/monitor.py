@@ -38,7 +38,6 @@ Json = dict[str, Any]
 PRESENCE = {"retired": 0, "running": 1, "idle": 2, "new": 3, "late": 4, "unknown": 5}
 PRESENCE_ORDER = ("running", "idle", "new", "late", "unknown", "retired")
 MAX_STATE_FILE = 65_536
-TAIL = 131_072
 STATUSES = ("Backlog", "Ready", "In progress", "In review", "Done", "Unknown")
 ACTIONS = (
     "stop",
@@ -357,12 +356,24 @@ class Runner:
     gate_action: dict[str, str] | None = None
 
 
+# Last-20 counts: ok first, then failures from the worst down.
+RECENT_SHORT = (
+    ("ok", "ok"),
+    ("error", "err"),
+    ("interrupted", "int"),
+    ("killed", "kil"),
+    ("timeout", "tmo"),
+    ("blocked", "blk"),
+)
+
+
 @dataclass
 class Row:
     agent: agents.Agent
     presence: str
     action: dict[str, str] | None = None
     outcome_text: str = ""
+    recent_text: str = ""
 
 
 class Ledgers:
@@ -513,12 +524,6 @@ def runner_sample(
             with stream:
                 info = os.fstat(stream.fileno())
                 sample.add("log_modified_timestamp_seconds", info.st_mtime, agent=name)
-                # Bounded tail; never publish arbitrary log or model text.
-                stream.seek(max(0, info.st_size - TAIL))
-                tail = stream.read(TAIL).decode("utf-8", errors="replace")
-            finishes = re.findall(r"^tick: finished exit=(\d+)\s*$", tail, re.M)
-            if finishes:
-                sample.add("last_observed_exit_code", int(finishes[-1]), agent=name)
         metrics.merge(sample)
         metrics.add("runner_read_success", 1, agent=name)
         runner.state = state
@@ -704,6 +709,12 @@ def agent_metrics(
             slot=f"{ticks.RECENT - age:02d}",
         )
     if recent:
+        # Grafana 13 table columns are at least 50 px wide, too wide for a
+        # 20-cell strip, so the cockpit shows these counts instead.
+        counts = Counter(tick["outcome"] for tick in recent)
+        row.recent_text = " · ".join(
+            f"{counts[kind]} {short}" for kind, short in RECENT_SHORT if counts[kind]
+        )
         last = recent[-1]
         exit_text = "" if last["exit"] is None else f" {last['exit']}"
         phase = f" · {last['phase']}" if last["phase"] else ""
@@ -801,6 +812,7 @@ def runner_metrics(
             action_text=action_text(row, collision),
             target=target,
             outcome_text=row.outcome_text,
+            recent_text=row.recent_text,
         )
     return metrics.render()
 
