@@ -384,6 +384,94 @@ rebase in the same worktree.
 `python3 scripts/epic/next_action.py --status`
 shows the queue for both agents.
 
+Rebase policy (`scripts/epic/rebase_policy.py`, shared by both runners). Only a
+PR that GitHub reports as `CONFLICTING` gets `resolve-conflict`; a PR that is
+only behind its base is not rebased. Three values of one attempt stay apart:
+
+- **Old head**: the PR head before the rebase. It is also the lease value,
+  `--force-with-lease=refs/heads/<branch>:<old head>`, after local and remote
+  agree on it.
+- **Target tip**: the base tip the runner pins for this attempt before the
+  model starts. It is the rebase destination and part of the attempt key. The
+  gate approves the rebase, `--continue` and the lease push only onto it: a
+  rebase left by an earlier tick onto an older tip is aborted and started
+  again. It is never the lease value.
+- **Old series base**: `git merge-base <old head> <target tip>`, the base the
+  reviewed patch series was built on.
+
+Test proof. After the rebase and before the push, the owner runs
+`rebase_policy.py prove` from the runner checkout. It needs a clean worktree
+and index (no staged, unstaged or untracked change) before and after the
+tests, runs the suites the PR's files require (the files changed from the
+target tip to `HEAD`), and writes the proof (commit, tree, target tip,
+commands, results) to `rebase-proofs/` in the state directory. A failed or
+skipped suite (command not found) gives no valid proof. The gate refuses every
+lease push unless the proof is for the current `HEAD` commit and tree on the
+recorded onto commit, lists every required suite as passed, and the worktree
+is still clean. A later commit or an uncommitted edit makes the proof invalid.
+
+| Changed path | Suite | Command (in the worktree) |
+| --- | --- | --- |
+| `scripts/epic/**` | epic | `python3 scripts/epic/isolated_env.py scripts/epic` |
+| `.codex/**` | codex | `python3 scripts/epic/isolated_env.py .codex/tests` |
+| `scripts/epic_guard/**`, `.claude/hooks/**` | epic-guard | `python3 -m unittest discover -s scripts/epic_guard` |
+| `scripts/gh_checks/**` | gh-checks | `python3 -m unittest discover -s scripts/gh_checks` |
+| `backend/**` | backend | `cargo test --locked` in `backend/` |
+| `frontend/**` | frontend | `npm test -- --run` in `frontend/` |
+
+Other paths need no suite. `EPIC_REBASE_SUITES` (runner environment) may name a
+JSON file with another table of the same shape.
+
+Rebase record. After the model's session, the owner's runner posts one
+comment for a proven push (`rebase_policy.py publish`), at most once per new
+head. Exact body, no verdict, no trailing newline:
+
+```text
+Rebase record by <Owner>
+Repository: phaabe/live.moafunk.de
+PR: <number>
+Old head: <40-char SHA>
+New head: <40-char SHA>
+Old series base: <40-char SHA>
+Target tip: <40-char SHA>
+Conflicted files: <paths added during the rebase, ", "-separated, or none>
+Proof: <commit> tree <tree>; <suite>=passed, ... (or "no suites required")
+```
+
+For `resolve-conflict`, `tick_verify.py` needs a moved head, a valid proof for
+the new head and a valid record posted during the tick. A moved head alone is
+no success. This applies to the Claude runner now and to the Codex runner once
+https://github.com/phaabe/live.moafunk.de/issues/537 lands.
+
+Focused re-review. Before a `review`, the reviewer's runner computes the scope
+(`rebase_policy.py scope`) and appends it to the prompt. It is `focused` only
+when a valid record exists for the current head, its old head is the head of
+the reviewer's last verdict on this PR, the record's SHAs and ancestry check
+out locally (repository, PR, old series base = merge-base of old head and
+target tip, new head built on the target tip), all old objects are present,
+and the base has not advanced past the target tip since. The focused scope is:
+(1) `git range-diff` of the old and new patch series; (2) the base changes
+from the old series base to the target tip that touch the PR's files or
+symbols the PR calls or is called by; (3) the conflicted files; (4) every
+finding since the reviewer's last approval, when the last verdict requested
+changes (a later review need not repeat a finding for it to stay open). Anything else,
+or unclear impact, means a full review. The verdict still names the new head
+in the exact format of section 4.
+
+Attempt limit. One store for both runners, `rebase-attempts.json` in the
+shared state directory, keyed by PR, head and target tip. Each started
+`resolve-conflict` attempt counts once, also when it fails or times out; only a
+landed one does not count, and one whose model reported the GitHub quota is
+void. Pause, quota or read waits and lock skips start no attempt. Cooldown
+expiry and comments do not reset the count; only a new head or a new target
+tip does. At `EPIC_REBASE_ATTEMPT_LIMIT` counted attempts (default 2) no runner
+starts a model for that key, and the owner's runner adds the label
+`needs-anton`. If that post fails, the key stays suppressed and only the label
+post is retried, without a model. The Claude cooldown (`tick_cooldown.py`) is
+separate. The Codex runner uses the same store once
+https://github.com/phaabe/live.moafunk.de/issues/537 lands; until then a
+reviewer without a valid record simply does a full review.
+
 Runner worktrees: the Claude runner edits feature branches only in
 `<dir>/<branch>`, where `<dir>` is one fixed directory per runner
 (`EPIC_WORKTREE_DIR`, default `live.moafunk.de-<agent id>-wt` next to the runner

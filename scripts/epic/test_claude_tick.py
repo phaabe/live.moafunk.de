@@ -41,6 +41,7 @@ class RunnerHarness(unittest.TestCase):
             "scripts/epic/tick_events.py",
             "scripts/epic/target_lock.py",
             "scripts/epic/tick_cooldown.py",
+            "scripts/epic/rebase_policy.py",
             "scripts/epic/claude-result-schema.json",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",

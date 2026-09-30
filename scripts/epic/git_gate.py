@@ -37,6 +37,12 @@ local head. Continue and abort need Git's rebase state to match all three; an
 approved abort retires the record. The lease push needs a finished rebase onto
 the recorded commit and the PR head still at S; the gate never renews S.
 Missing or stale context refuses the command.
+
+Rebase policy (rebase_policy.py): a `resolve-conflict` rebase must go onto the
+target tip the runner pinned for this attempt (EPIC_ATTEMPT_FILE). Paths added
+during the recorded rebase are its conflicted files; the runner puts them into
+the rebase record. Every lease push needs a valid test proof for the current
+HEAD on the recorded onto commit, and a clean worktree and index.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import rebase_policy
 from github_quota import QuotaExhausted, run_gh
 from next_action import BASES, REPO, pr_author
 from runner_worktree import feature_branch, rebasing
@@ -386,6 +393,13 @@ def rebase(path: Path, args: list[str]) -> str:
     onto = git_out(
         top, "rev-parse", "--verify", f"refs/remotes/origin/{base}^{{commit}}"
     )
+    if action().get("action") == "resolve-conflict":
+        tip = pinned_tip(number, pinned, base)
+        if onto != tip:
+            raise Refused(
+                f"origin/{base} is {onto[:7]}, not the target tip {tip[:7]} pinned "
+                "for this attempt; fetch origin, or stop if the base moved on"
+            )
     orig = git_out(top, "rev-parse", "--verify", "HEAD")
     save_record(
         branch,
@@ -396,9 +410,37 @@ def rebase(path: Path, args: list[str]) -> str:
             "sha": pinned,
             "onto": onto,
             "orig": orig,
+            "conflicted": [],
         },
     )
     return f"rebase of {branch} onto origin/{base}, lease pinned at {pinned[:7]}"
+
+
+def this_attempt(record: dict[str, Any], number: int) -> None:
+    """A resolve-conflict tick may only finish or push a rebase onto its own
+    pinned target tip. A rebase left unfinished by an earlier tick onto an
+    older tip must be aborted and started again."""
+    if action().get("action") != "resolve-conflict":
+        return
+    tip = pinned_tip(number, str(record.get("sha")), str(record.get("base")))
+    if record.get("onto") != tip:
+        raise Refused(
+            f"the recorded rebase is onto {str(record.get('onto'))[:7]}, not this "
+            f"attempt's target tip {tip[:7]}; abort it and rebase again"
+        )
+
+
+def pinned_tip(number: int, head: str, base: str) -> str:
+    """The target tip the runner pinned for this resolve-conflict attempt."""
+    attempt = load_json("EPIC_ATTEMPT_FILE")
+    if (
+        attempt.get("pr") != number
+        or attempt.get("head") != head
+        or attempt.get("base") != base
+        or not SHA.match(str(attempt.get("tip") or ""))
+    ):
+        raise Refused("the runner's attempt pin is for another PR, head or base")
+    return str(attempt["tip"])
 
 
 def rebase_state(top: Path, name: str) -> str:
@@ -437,6 +479,7 @@ def rebase_step(path: Path, step: str) -> str:
         pr = open_pr(number, branch)
         if (pr.get("base") or {}).get("ref") != record.get("base"):
             raise Refused(f"PR {number} base changed during the rebase")
+        this_attempt(record, number)
     else:
         # Retired: after this approval the record approves no further
         # continue, abort, add or lease push, until a new approved rebase
@@ -496,6 +539,7 @@ def lease_push(path: Path, rest: list[str]) -> str:
         raise Refused(
             f"the lease must pin {record.get('sha')}, the head before the rebase"
         )
+    this_attempt(record, number)
     if rebasing(top) is not None or current_branch(top) != branch:
         raise Refused(f"{top} is not on {branch} with a finished rebase")
     if git(top, "merge-base", "--is-ancestor", record["onto"], "HEAD").returncode:
@@ -507,7 +551,25 @@ def lease_push(path: Path, rest: list[str]) -> str:
         raise Refused(
             f"PR {number} head moved since the rebase; the lease is not renewed"
         )
-    return f"lease push of {branch} over {pinned[:7]}"
+    proven(top, number, str(record["onto"]))
+    return f"lease push of {branch} over {pinned[:7]}, tests proven"
+
+
+def proven(top: Path, number: int, onto: str) -> None:
+    """A clean tree and a valid test proof for HEAD (rebase_policy.py)."""
+    try:
+        problem = rebase_policy.unclean(top)
+        head = git_out(top, "rev-parse", "--verify", "HEAD")
+        problem = problem or rebase_policy.proof_problem(
+            rebase_policy.load_proof(state_dir(), number, head), top, number, head, onto
+        )
+    except (rebase_policy.Problem, OSError, ValueError) as error:
+        problem = str(error)
+    if problem:
+        raise Refused(
+            f"no valid test proof: {problem}; run rebase_policy.py prove in the "
+            "clean worktree first"
+        )
 
 
 def delete(path: Path, branch: str) -> str:
@@ -545,6 +607,8 @@ def local_write(path: Path, verb: str, args: list[str]) -> str:
             raise Refused("add must be `add -- <paths...>`")
         for name in args[1:]:
             inside(top, name)
+        if rebasing(top) is not None:
+            resolved(ctx["branch"], top, args[1:])
         return f"add in {top}"
     if verb == "commit":
         if len(args) != 2 or args[0] != "--file":
@@ -559,6 +623,16 @@ def local_write(path: Path, verb: str, args: list[str]) -> str:
     if refspecs != [FETCH_REFSPEC]:
         raise Refused("origin has non-standard fetch refspecs")
     return f"fetch in {top}"
+
+
+def resolved(branch: str, top: Path, names: list[str]) -> None:
+    """Paths added during the recorded rebase: its conflicted files."""
+    record = records().get(branch) or {}
+    paths = set(record.get("conflicted") or [])
+    for name in names:
+        real = Path(os.path.realpath(top / name))
+        paths.add(str(real.relative_to(top)))
+    save_record(branch, {**record, "conflicted": sorted(paths)})
 
 
 def inside(top: Path, name: str) -> None:

@@ -1552,6 +1552,10 @@ def main() -> int:
 
         print("\nClaude cooldowns (tick_cooldown.py):")
         print("\n".join(status_lines(STATE_DIR, time.time())))
+        from rebase_policy import attempt_lines
+
+        print("\nRebase attempts (rebase_policy.py):")
+        print("\n".join(attempt_lines(STATE_DIR)))
         return 0
     actions = decide(
         args.agent.capitalize(),
