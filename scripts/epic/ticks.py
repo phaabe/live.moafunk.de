@@ -50,6 +50,19 @@ BLOCKED = "backoff: model reported blocked: "
 GH_FAILED = re.compile(r"subprocess\.CalledProcessError: Command '\['gh', ")
 # At most 15 digits: int() of a huge string raises, and no session is that big.
 TOKENS = re.compile(r"[0-9]{1,3}(?:,[0-9]{3}){0,4}|[0-9]{1,15}")
+# Claude session usage of a finish event (see tick_events.py). Kept apart from
+# Codex's `tokens`: unlike counters, never summed into one total.
+USAGE_COUNTERS = ("input", "output", "cache_read", "cache_write")
+USAGE_REASONS = (
+    "no-transcript",
+    "unreadable",
+    "too-large",
+    "no-usage",
+    "interrupted",
+    "malformed",
+    "subagents",
+)
+COVERAGES = ("complete", "partial", "unavailable")
 
 
 OPEN_KEYS = {
@@ -73,7 +86,54 @@ TICK_KEYS = {
     "action": str,
     "target": str,
     "tokens": (int, type(None)),
+    "usage": (dict, type(None)),
 }
+
+
+def valid_usage(value: object) -> bool:
+    """None (no Claude model session) or the event's usage object."""
+    if value is None:
+        return True
+    if not isinstance(value, dict) or set(value) != {
+        *USAGE_COUNTERS,
+        "complete",
+        "reason",
+    }:
+        return False
+    counts = [value[name] for name in USAGE_COUNTERS]
+    measured = all(type(n) is int and 0 <= n < 10**15 for n in counts)
+    if not measured and any(n is not None for n in counts):
+        return False
+    if value["complete"] is True:
+        return measured and value["reason"] is None
+    return value["complete"] is False and value["reason"] in USAGE_REASONS
+
+
+def coverage(usage: Json) -> str:
+    if usage["complete"]:
+        return "complete"
+    return "partial" if usage["input"] is not None else "unavailable"
+
+
+def compact(n: int) -> str:
+    for size, suffix in ((10**6, "M"), (10**3, "k")):
+        if n >= size:
+            return f"{n / size:.1f}{suffix}"
+    return str(n)
+
+
+def usage_label(usage: Json | None) -> str:
+    """Short text for the tick history; the counters stay apart."""
+    if usage is None:
+        return ""
+    if usage["input"] is None:
+        return f"unavailable: {usage['reason']}"
+    text = (
+        f"in {compact(usage['input'])} · out {compact(usage['output'])}"
+        f" · cache read {compact(usage['cache_read'])}"
+        f" · cache write {compact(usage['cache_write'])}"
+    )
+    return text if usage["complete"] else f"{text} · partial: {usage['reason']}"
 
 
 def typed(value: object, schema: dict[str, type | tuple[type, ...]]) -> bool:
@@ -110,11 +170,14 @@ def valid_checkpoint(data: object) -> bool:
                 "first_start": (float, type(None)),
             },
         )
-        and data["v"] == 5
+        and data["v"] == 6
         and data["offset"] >= 0
         and data["baseline"] >= 0
         and (data["open"] is None or typed(data["open"], OPEN_KEYS))
-        and all(typed(t, TICK_KEYS) and t["outcome"] in SEVERITY for t in data["ticks"])
+        and all(
+            typed(t, TICK_KEYS) and t["outcome"] in SEVERITY and valid_usage(t["usage"])
+            for t in data["ticks"]
+        )
         and set(data["totals"]) == set(SEVERITY)
         and all(type(n) is int and n >= 0 for n in data["totals"].values())
     )
@@ -123,6 +186,18 @@ def valid_checkpoint(data: object) -> bool:
 def migrate_v4(data: Json) -> Json:
     """v4 checkpoints only lack the event ledger's first start."""
     return {**data, "v": 5, "first_start": None}
+
+
+def migrate_v5(data: Json) -> Json:
+    """v5 ticks only lack the Claude session usage."""
+    ticks = data.get("ticks")
+    if not isinstance(ticks, list):
+        return data
+    return {
+        **data,
+        "v": 6,
+        "ticks": [t | {"usage": None} if isinstance(t, dict) else t for t in ticks],
+    }
 
 
 class Sink(Protocol):
@@ -189,7 +264,7 @@ class LogLedger:
 
     def fresh(self, now: float, size: int) -> Json:
         return {
-            "v": 5,
+            "v": 6,
             "first_start": None,
             "inode": None,
             "offset": 0,
@@ -214,6 +289,8 @@ class LogLedger:
             return None
         if isinstance(data, dict) and data.get("v") == 4:
             data = migrate_v4(data)
+        if isinstance(data, dict) and data.get("v") == 5:
+            data = migrate_v5(data)
         if not self.valid(data):
             logging.warning("Tick checkpoint for %s is invalid; rebuilding", self.agent)
             return None
@@ -373,6 +450,7 @@ class LogLedger:
         target: str,
         tokens: int | None,
         counted: bool,
+        usage: Json | None = None,
     ) -> None:
         state = self.state
         assert state is not None
@@ -395,6 +473,7 @@ class LogLedger:
                 "action": action,
                 "target": target,
                 "tokens": tokens,
+                "usage": usage,
             }
         )
         del state["ticks"][:-LEDGER_SIZE]
@@ -551,7 +630,8 @@ class EventLedger(LogLedger):
             return self.reject()
         state["open"] = None
         live = end > state["baseline"]
-        self.record(tick, *values, live)
+        *fields, usage = values
+        self.record(tick, *fields, live, usage=usage)
         return None
 
     def finish_values(self, event: Json, start: float) -> tuple[Any, ...] | None:
@@ -569,6 +649,8 @@ class EventLedger(LogLedger):
             or event.get("outcome") not in EVENT_OUTCOMES
             or event.get("phase") not in PHASES
             or not (tokens is None or (type(tokens) is int and 0 <= tokens < 10**15))
+            # Absent in Codex and older events.
+            or not valid_usage(event.get("usage"))
         ):
             return None
         action, target = "", ""
@@ -592,6 +674,7 @@ class EventLedger(LogLedger):
             action,
             target,
             tokens,
+            event.get("usage"),
         )
 
     def finish(self, exit_code: int | None, end: int, now: float) -> None:
@@ -766,6 +849,24 @@ def export(metrics: Sink, ledger: LogLedger | TickView, now: float) -> None:
             )
     if any(t["tokens"] is not None for t in ticks):
         metrics.add("tokens_today", sum(t["tokens"] or 0 for t in todays), agent=agent)
+    # Claude usage: each counter on its own, plus how many model ticks it
+    # fully covers. An unavailable count adds nothing and shows as coverage.
+    if any(t.get("usage") is not None for t in ticks):
+        used = [t["usage"] for t in todays if t.get("usage") is not None]
+        for name in USAGE_COUNTERS:
+            metrics.add(
+                "usage_tokens_today",
+                sum(u[name] or 0 for u in used),
+                agent=agent,
+                counter=name,
+            )
+        for kind in COVERAGES:
+            metrics.add(
+                "usage_ticks_today",
+                sum(coverage(u) == kind for u in used),
+                agent=agent,
+                coverage=kind,
+            )
 
     first_day = datetime.combine(
         today - timedelta(days=HOUR_DAYS - 1), datetime.min.time(), tzinfo=LOCAL
@@ -791,5 +892,6 @@ def export(metrics: Sink, ledger: LogLedger | TickView, now: float) -> None:
             exit="" if tick["exit"] is None else str(tick["exit"]),
             phase=tick["phase"],
             tokens="" if tick["tokens"] is None else str(tick["tokens"]),
+            usage=usage_label(tick.get("usage")),
             source=tick.get("source", "log"),
         )
