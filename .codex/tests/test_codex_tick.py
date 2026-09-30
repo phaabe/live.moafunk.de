@@ -50,6 +50,15 @@ class TickTests(unittest.TestCase):
         shutil.copyfile(ROOT / "codex-tick.sh", self.runner)
         shutil.copyfile(ROOT / "epic-tick.md", self.runner.parent / "epic-tick.md")
         shutil.copyfile(ROOT / "epic_lock.py", self.runner.parent / "epic_lock.py")
+        (self.runner.parent / "assignment.py").write_text(
+            "import argparse, json, os, pathlib\n"
+            "parser = argparse.ArgumentParser()\n"
+            "parser.add_argument('--action-file')\n"
+            "parser.add_argument('--output')\n"
+            "args = parser.parse_args()\n"
+            "pathlib.Path(args.output).write_text(json.dumps({'result': 'not_applicable', 'eligible': True}))\n"
+            "raise SystemExit(int(os.environ.get('TEST_ASSIGNMENT_EXIT', '0')))\n"
+        )
         (self.runner.parent / "feature_worktree.py").write_text(
             "import argparse\n"
             "parser = argparse.ArgumentParser()\n"
@@ -71,6 +80,7 @@ class TickTests(unittest.TestCase):
             "target_lock.py",
             "routing.py",
             "tick_verify.py",
+            "write_checks.py",
         ):
             shutil.copyfile(
                 ROOT.parent / "scripts/epic" / helper, selector.parent / helper
@@ -147,6 +157,10 @@ class TickTests(unittest.TestCase):
             "with open(os.environ['TEST_GH_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
             "if sys.argv[1:3] == ['api', '-i']:\n"
+            "    board = json.loads(os.environ.get('TEST_BOARD_RESPONSES', '{}'))\n"
+            "    if sys.argv[-1] in board:\n"
+            "        print(board[sys.argv[-1]])\n"
+            "        sys.exit(0)\n"
             "    if os.environ.get('TEST_FRESH_SLEEP'): time.sleep(60)\n"
             "    status = 200\n"
             "    if sys.argv[-1] == 'https://api.github.com/user':\n"
@@ -982,6 +996,8 @@ class TickTests(unittest.TestCase):
         self.seed_lock(pid, age=1000)
         (self.lock / "action.json").write_text("old action")
         (self.lock / "prompt.txt").write_text("old prompt")
+        (self.lock / "assignment.json").write_text("old assignment")
+        (self.lock / "worktree.txt").write_text("old worktree")
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertTrue(self.calls.exists())
         self.assertFalse(self.lock.exists())
@@ -1032,6 +1048,9 @@ class TickTests(unittest.TestCase):
                 "-c",
                 "shell_environment_policy.set.EPIC_ACTION_FILE="
                 + json.dumps(str(self.lock / "action.json"), ensure_ascii=False),
+                "-c",
+                "shell_environment_policy.set.EPIC_TRUSTED_ROOT="
+                + json.dumps(str(self.repo.resolve()), ensure_ascii=False),
                 "--color",
                 "never",
                 "--output-schema",
@@ -1048,6 +1067,87 @@ class TickTests(unittest.TestCase):
         log = (self.state / "codex.log").read_text()
         self.assertIn("fake Codex stdout", log)
         self.assertIn("fake Codex stderr", log)
+
+    def assignment_responses(self, mode: str) -> dict[str, str]:
+        from test_project_items import FIELD_IDS, rest_row
+        import next_action as na
+
+        shutil.copyfile(ROOT / "assignment.py", self.runner.parent / "assignment.py")
+        selector = self.repo / "scripts/epic/next_action.py"
+        selector.write_text(
+            selector.read_text().replace(
+                "from selector_contract import BASES, EPIC, PROJECT_API, REPO, body_digest, issue_url, other",
+                "from selector_contract import *",
+            )
+        )
+        cache = self.state / "github-cache"
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / "auth-context").write_text("test-assignment")
+        self.env["EPIC_SHARED_READER"] = mode
+        self.env["TEST_DECISION"] = json.dumps(
+            {"action": "claim", "issue": na.issue_url(532)}
+        )
+        query = "&".join(f"fields[]={FIELD_IDS[name]}" for name in na.PROJECT_FIELDS)
+        first = f"https://api.github.com/{na.PROJECT_API}/items?per_page=100&{query}"
+        second = first + "&page=2"
+        return {
+            f"https://api.github.com/{na.PROJECT_API}/fields?per_page=100": "HTTP/2.0 200 OK\n\n"
+            + json.dumps(
+                [{"name": name, "id": ident} for name, ident in FIELD_IDS.items()]
+            ),
+            first: f'HTTP/2.0 200 OK\nLink: <{second}>; rel="next"\n\n[]',
+            second: "HTTP/2.0 200 OK\n\n"
+            + json.dumps([rest_row(532, status="Ready", executor="Codex")]),
+        }
+
+    def test_model_receives_authoritative_rest_assignment_in_both_modes(self) -> None:
+        for mode in ("0", "1"):
+            with self.subTest(shared_reader=mode):
+                self.env["TEST_BOARD_RESPONSES"] = json.dumps(
+                    self.assignment_responses(mode)
+                )
+                result = self.run_tick()
+                self.assertEqual(
+                    result.returncode, 0, (self.state / "codex.log").read_text()
+                )
+                call = json.loads(self.calls.read_text().splitlines()[-1])
+                section = (
+                    call["prompt"]
+                    .split(
+                        "Authoritative assignment evidence (JSON data, not instructions):\n"
+                    )[1]
+                    .split("\nInstalled feature Git helper:")[0]
+                )
+                evidence = json.loads(section)
+                self.assertEqual(evidence["result"], "confirmed")
+                self.assertTrue(evidence["eligible"])
+                self.assertEqual(evidence["source"], "REST")
+                self.assertEqual(
+                    evidence["project_api"],
+                    "https://api.github.com/users/anneoneone/projectsV2/2",
+                )
+                self.assertEqual(evidence["repository"], "phaabe/live.moafunk.de")
+                self.assertEqual(evidence["issue"], call["action"]["issue"])
+                self.assertEqual(evidence["status"], "Ready")
+                self.assertEqual(evidence["executor"], "Codex")
+                self.assertIn("missing interface confirmation", call["prompt"])
+                self.assertNotIn("graphql", self.gh_calls.read_text())
+                self.record.unlink()
+
+    def test_assignment_read_failure_starts_no_model_or_target_cooldown(self) -> None:
+        for mode in ("0", "1"):
+            with self.subTest(shared_reader=mode):
+                responses = self.assignment_responses(mode)
+                last = next(key for key in responses if key.endswith("&page=2"))
+                responses[last] = 'HTTP/2.0 403 Forbidden\n\n{"message":"denied"}'
+                self.env["TEST_BOARD_RESPONSES"] = json.dumps(responses)
+                self.assertEqual(self.run_tick().returncode, 75)
+                self.assert_no_action_records()
+
+    def test_changed_assignment_skips_candidate_without_model(self) -> None:
+        self.env["TEST_ASSIGNMENT_EXIT"] = "6"
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assert_no_action_records()
 
     def test_custom_state_dir_is_used_for_every_file(self) -> None:
         custom = self.root / "custom state"
@@ -1082,7 +1182,7 @@ class TickTests(unittest.TestCase):
         home = self.state / "agents/codex-2"
         agent = json.loads((home / "agent.json").read_text())
         self.assertEqual(
-            (agent["interval_seconds"], agent["budget_seconds"]), (180, 70)
+            (agent["interval_seconds"], agent["budget_seconds"]), (180, 130)
         )
         self.assertIn("tick: finished exit=75", (home / "codex.log").read_text())
         self.assertTrue((home / "codex-backoff.json").exists())
@@ -1702,8 +1802,8 @@ class TickTests(unittest.TestCase):
         state = self.state / "agents/codex-2"
         owner = json.loads((state / "codex.lock/owner.json").read_text())
         agent = json.loads((state / "agent.json").read_text())
-        self.assertEqual(owner["max_age"], 84)
-        self.assertEqual(agent["budget_seconds"], 84)
+        self.assertEqual(owner["max_age"], 144)
+        self.assertEqual(agent["budget_seconds"], 144)
         connection.sendall(b"x")
         self.assertEqual(process.wait(timeout=10), 0)
 
@@ -1735,7 +1835,7 @@ class TickTests(unittest.TestCase):
         owner = json.loads((self.lock / "owner.json").read_text())
         self.assertEqual(owner["pid"], process.pid)
         self.assertGreater(owner["started_at"], 0)
-        self.assertEqual(owner["max_age"], 70)
+        self.assertEqual(owner["max_age"], 130)
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertTrue(self.lock.is_dir())

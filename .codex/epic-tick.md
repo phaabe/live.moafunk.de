@@ -12,6 +12,18 @@ that one action, then end this session. Do not call the selector again to pick
 more work, resume another session, start a background agent or enable a schedule.
 If the target or required state changed, stop and let a later tick decide.
 
+For issue `claim` and `continue`, the appended authoritative assignment evidence
+comes from a complete REST read of the selector's project board. Use its project,
+repository, issue, Status and Executor result. Do not run an independent GraphQL
+`issue.projectItems` lookup; an empty reverse lookup is not assignment evidence.
+`absent` means a complete read found no matching item; `unknown` means the read
+failed or was incomplete. Neither permits a claim. A confirmed item must also
+be eligible for the selected action. The write hook reads current REST state
+again before a claim comment or board write, in either reader mode. If it refuses,
+stop; do not create another project item, change assignment fields or invent a
+blocker to reconcile the sources. Assignment does not confirm prerequisites:
+missing interface confirmation remains a separate reason to stop.
+
 For `claim`, `continue`, `fix`, `fix-checks` and `resolve-conflict`, the runner
 has already prepared your feature worktree and started this session there.
 Its path is appended below. Edit only that checkout, on its selected branch.
