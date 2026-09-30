@@ -6,12 +6,16 @@ import contextlib
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import close_issue
+import github_quota
+import next_action
 from github_quota import QuotaExhausted
 
 R = "https://github.com/phaabe/live.moafunk.de/issues"
@@ -45,13 +49,15 @@ def ticket(state: str = "open", body: str = "", sub: int = 0, **extra) -> dict:
 
 
 class GitHub:
-    """Fake REST reads and writes. `fail` names calls that raise once each."""
+    """Fake REST reads and writes. `fail` names calls that raise once each;
+    `comment-landed` stores the comment and then times out."""
 
     def __init__(self, pulls: dict[int, dict], issues: dict[int, dict]) -> None:
         self.pulls, self.issues = pulls, issues
         self.comments: list[tuple[int, str]] = []
         self.closed: list[int] = []
         self.fail: list[str] = []
+        self.searches = 0
 
     def _maybe_fail(self, what: str) -> None:
         if what in self.fail:
@@ -70,6 +76,13 @@ class GitHub:
     def comment(self, number: int, text: str) -> None:
         self._maybe_fail("comment")
         self.comments.append((number, text))
+        if "comment-landed" in self.fail:
+            self.fail.remove("comment-landed")
+            raise subprocess.TimeoutExpired(["gh"], 120)
+
+    def has_comment(self, number: int, mark: str) -> bool:
+        self.searches += 1
+        return any(n == number and mark in text for n, text in self.comments)
 
     def close(self, number: int) -> None:
         self._maybe_fail("close")
@@ -87,9 +100,15 @@ class QueueCase(unittest.TestCase):
         close_issue.save(self.dir, data)
         return added
 
-    def run_queue(self, gh: GitHub) -> int:
+    def run_queue(self, gh: GitHub, blocked=lambda: None) -> int:
         return close_issue.run_queue(
-            self.dir, gh.fetch, gh.comment, gh.close, now=lambda: 0.0
+            self.dir,
+            gh.fetch,
+            gh.comment,
+            gh.close,
+            gh.has_comment,
+            now=lambda: 0.0,
+            blocked=blocked,
         )
 
     def queue(self) -> dict:
@@ -263,8 +282,49 @@ class RetryTest(QueueCase):
 
         self.record(530)
         with self.assertRaises(QuotaExhausted):
-            close_issue.run_queue(self.dir, quota, gh.comment, gh.close)
+            close_issue.run_queue(
+                self.dir, quota, gh.comment, gh.close, blocked=lambda: None
+            )
         self.assertEqual([e["pr"] for e in self.queue()["pending"]], [530])
+
+    def test_timed_out_comment_that_landed_is_not_posted_again(self) -> None:
+        cases = {
+            "close": (f"Issue: {R}/453", ticket(), [453]),
+            "note": (
+                f"Issue: {R}/453\nLeaf IDs: B1.1.6",
+                ticket(body="- [ ] **B1.1.7** x"),
+                [],
+            ),
+        }
+        for name, (body, issue, closed) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                gh = GitHub({530: pull(body=body)}, {453: issue})
+                gh.fail = ["comment-landed"]
+                self.record(530)
+                with _quiet():
+                    self.assertEqual(self.run_queue(gh), 1)
+                self.assertEqual(self.run_queue(gh), 0)
+                self.assertEqual((len(gh.comments), gh.closed), (1, closed))
+                self.assertEqual(gh.searches, 1)
+                self.assertIn(
+                    f"<!-- epic-close {name} pr=530 merge={SHA} -->", gh.comments[0][1]
+                )
+
+    def test_timed_out_comment_that_did_not_land_is_posted_once(self) -> None:
+        gh = GitHub({530: pull()}, {453: ticket()})
+        gh.fail = ["comment"]
+        self.record(530)
+        with _quiet():
+            self.assertEqual(self.run_queue(gh), 1)
+        self.assertEqual(self.run_queue(gh), 0)
+        self.assertEqual((len(gh.comments), gh.closed), (1, [453]))
+
+    def test_clean_run_searches_no_comments(self) -> None:
+        gh = GitHub({530: pull()}, {453: ticket()})
+        self.record(530)
+        self.run_queue(gh)
+        self.assertEqual(gh.searches, 0)
 
     def test_bad_queue_file_is_refused(self) -> None:
         for text in ("{", "[]", '{"pending": [{"pr": "1"}], "done": []}'):
@@ -272,6 +332,104 @@ class RetryTest(QueueCase):
                 (self.dir / close_issue.QUEUE_FILE).write_text(text)
                 with self.assertRaises(close_issue.BadQueue):
                     close_issue.load(self.dir)
+
+
+class DeferTest(QueueCase):
+    """Pause or a quota wait that comes up between two calls stops the run."""
+
+    def blocked_after(self, calls: int) -> Any:
+        count = [0]
+
+        def blocked() -> str | None:
+            count[0] += 1
+            return "pause file exists" if count[0] > calls else None
+
+        return blocked
+
+    def test_block_before_any_call_makes_no_call(self) -> None:
+        gh = GitHub({530: pull()}, {453: ticket()})
+        gh.fetch = mock.Mock(side_effect=AssertionError("GitHub read"))
+        self.record(530)
+        with self.assertRaises(close_issue.Deferred):
+            self.run_queue(gh, lambda: "GitHub quota wait until later")
+        gh.fetch.assert_not_called()
+        self.assertEqual(self.queue()["pending"][0]["attempts"], 0)
+
+    def test_block_between_comment_and_close_keeps_progress(self) -> None:
+        gh = GitHub({530: pull()}, {453: ticket()})
+        self.record(530)
+        # Calls: read PR, read ticket, comment; then blocked before the close.
+        with self.assertRaises(close_issue.Deferred):
+            self.run_queue(gh, self.blocked_after(3))
+        self.assertEqual((len(gh.comments), gh.closed), (1, []))
+        entry = self.queue()["pending"][0]
+        self.assertTrue(entry["commented"])
+        self.assertEqual(entry["attempts"], 0)
+        self.assertEqual(self.run_queue(gh), 0)
+        self.assertEqual((len(gh.comments), gh.closed), (1, [453]))
+
+    def test_block_before_second_entry_stops_the_run(self) -> None:
+        gh = GitHub(
+            {530: pull(), 531: pull(531, f"Issue: {R}/454")},
+            {453: ticket(), 454: ticket()},
+        )
+        self.record(530)
+        self.record(531)
+        with self.assertRaises(close_issue.Deferred):
+            self.run_queue(gh, self.blocked_after(4))
+        self.assertEqual((gh.closed, len(gh.comments)), ([453], 1))
+        self.assertEqual([e["pr"] for e in self.queue()["pending"]], [531])
+
+
+class BlockedTest(unittest.TestCase):
+    """github_blocked() reads the pause file and the shared quota wait."""
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        for patch in (
+            mock.patch.object(next_action, "PAUSE_FILE", self.dir / "pause"),
+            mock.patch.object(github_quota, "STATE_DIR", self.dir),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_open(self) -> None:
+        self.assertIsNone(close_issue.github_blocked())
+
+    def test_pause_file(self) -> None:
+        (self.dir / "pause").touch()
+        self.assertIn("pause file", close_issue.github_blocked() or "")
+
+    def test_quota_wait(self) -> None:
+        (self.dir / github_quota.WAIT_FILE).write_text(
+            '{"retry_at": "2099-01-01T00:00:00Z"}'
+        )
+        self.assertIn("quota wait", close_issue.github_blocked() or "")
+
+    def test_bad_quota_file_blocks(self) -> None:
+        (self.dir / github_quota.WAIT_FILE).write_text("{")
+        self.assertIn("unreadable", close_issue.github_blocked() or "")
+
+
+class MainTest(unittest.TestCase):
+    def main(self, *args: str) -> int:
+        self.state = Path(tempfile.mkdtemp())
+        argv = ["close_issue.py", "--state-dir", str(self.state), *args]
+        with mock.patch.object(sys, "argv", argv):
+            return close_issue.main()
+
+    def test_queue_makes_no_github_call(self) -> None:
+        with mock.patch.object(close_issue, "run_queue") as run:
+            self.assertEqual(self.main("queue", "--pr", "530"), 0)
+        run.assert_not_called()
+        queue = json.loads((self.state / close_issue.QUEUE_FILE).read_text())
+        self.assertEqual([e["pr"] for e in queue["pending"]], [530])
+
+    def test_deferred_exits_3(self) -> None:
+        deferred = close_issue.Deferred("pause file exists")
+        with mock.patch.object(close_issue, "run_queue", side_effect=deferred):
+            with _quiet():
+                self.assertEqual(self.main("retry"), close_issue.DEFERRED)
 
 
 class VerifyTest(unittest.TestCase):
