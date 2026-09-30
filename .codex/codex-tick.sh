@@ -100,7 +100,7 @@ cleanup() {
             --action-file "${lock_dir}/action.json" \
             --log "$log_file" --since "$tick_offset" || true
     fi
-    rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" "${lock_dir}/worktree.txt"
+    rm -f "${state_dir}/feature-git-context.json" "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" "${lock_dir}/worktree.txt"
     rmdir "$lock_dir"
 }
 interrupt() {
@@ -123,6 +123,8 @@ trap 'interrupt 129' HUP
 trap 'interrupt 130' INT
 trap 'interrupt 143' TERM
 
+# Revoke context left by a killed tick before selecting another action.
+rm -f "${state_dir}/feature-git-context.json"
 tick_started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 printf '\ntick: started %s repo=%s\n' "$tick_started" "$repo_root"
 # A failed event write never changes the tick: it only skips the finish event.

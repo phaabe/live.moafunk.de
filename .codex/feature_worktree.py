@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from feature_git import BRANCH, Refused, common_dir, git
+import feature_git
 import tick_backoff
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/epic"))
@@ -260,7 +261,46 @@ class Handoff(Refused):
         self.path = path
 
 
-def prepare(runner: Path, action: dict[str, Any]) -> Path:
+def rebase_configuration(runner: Path, state: Path) -> tuple[Path, Path]:
+    """Require the operator-installed policy before creating rebase authority."""
+    installed = Path.home() / ".local/libexec/codex-feature-git.py"
+    config_path = installed.with_suffix(".json")
+    try:
+        if installed.read_bytes() != Path(feature_git.__file__).read_bytes():
+            raise Refused(
+                "installed feature Git helper is outdated; operator update required"
+            )
+        config = feature_git.configuration(config_path)
+        if config.get("runner_checkout") != str(runner):
+            raise Refused("installed runner checkout does not match this runner")
+        context = state.resolve() / "feature-git-context.json"
+        if config.get("context_file") != str(context) or context.resolve() != context:
+            raise Refused(
+                "installed context file must match this runner's state directory"
+            )
+        if common_dir(Path(config["trusted_checkout"])) != common_dir(runner):
+            raise Refused("runner does not belong to the installed trusted repository")
+        for root in (
+            runner,
+            feature_root(runner),
+            common_dir(runner),
+            Path(config["trusted_checkout"]),
+        ):
+            if context.is_relative_to(root):
+                raise Refused(
+                    "installed context file must be outside repository writable roots"
+                )
+        return config_path, context
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise Refused(f"rebase policy unavailable: {error}") from error
+
+
+def prepare(runner: Path, action: dict[str, Any], state: Path | None = None) -> Path:
+    policy = None
+    if action["action"] == "resolve-conflict":
+        if state is None:
+            raise Refused("resolve-conflict requires the runner state directory")
+        policy = rebase_configuration(runner, state)
     branch, base, number, sha = metadata(action)
     known = refs(runner)
     if branch is None:
@@ -293,24 +333,61 @@ def prepare(runner: Path, action: dict[str, Any]) -> Path:
     if destination.resolve() != destination:
         raise Refused("feature worktree path must not contain symlinks")
     registered = worktrees(runner)
+    context = None
+    recorded = False
+    active = False
+    if policy is not None:
+        if base != "dev/312-interim":
+            raise Refused("resolve-conflict requires base dev/312-interim")
+        config_path, context_path = policy
+        context = {
+            "version": 1,
+            "action": "resolve-conflict",
+            "pr": action["pr"],
+            "branch": branch,
+            "base": base,
+            "expected_head": sha,
+            "worktree": str(destination),
+            "runner": str(runner),
+        }
+        record = feature_git.load_rebase(
+            context_path.with_name(f"rebase-{action['pr']}.json"), context
+        )
+        if destination in registered:
+            feature_git.validate(destination, config_path, detached=True)
+            active = feature_git.check_rebase(destination, record)
+            if record is not None:
+                if active:
+                    recorded = True
+                elif git(destination, "rev-parse", "HEAD") != record["original_head"]:
+                    feature_git.completed_rebase(destination, record)
+                    recorded = True
+        elif record is not None:
+            raise Refused(
+                "recorded rebase worktree is missing; operator recovery required"
+            )
     held_elsewhere = any(
         ref == local_ref and path != destination for path, ref in registered.items()
     )
+    if recorded and held_elsewhere:
+        raise Refused("recorded rebase branch is held in another worktree")
     # Let Git report a held branch even when the human has unpublished history.
-    if not held_elsewhere:
+    if not held_elsewhere and not recorded:
         git(runner, "merge-base", start, base_ref)
         if sha is not None:
             git(runner, "merge-base", "--is-ancestor", sha, start)
     if destination in registered:
-        if registered[destination] != local_ref or common_dir(
-            destination
-        ) != common_dir(runner):
+        if (
+            registered[destination] != local_ref and not (recorded and active)
+        ) or common_dir(destination) != common_dir(runner):
             raise Refused("runner worktree has the wrong repository or branch")
         if (
             Path(git(destination, "rev-parse", "--show-toplevel")).resolve()
             != destination
         ):
             raise Refused("runner worktree root does not match its registration")
+        if context is not None:
+            feature_git.write_json(policy[1], context)
         return destination
     if destination.exists():
         raise Refused(
@@ -338,6 +415,9 @@ def prepare(runner: Path, action: dict[str, Any]) -> Path:
     git(runner, "merge-base", local_ref, base_ref)
     if sha is not None:
         git(runner, "merge-base", "--is-ancestor", sha, local_ref)
+    if context is not None:
+        feature_git.validate(destination, policy[0])
+        feature_git.write_json(policy[1], context)
     return destination
 
 
@@ -361,7 +441,7 @@ def main() -> int:
             held = repeated_handoff(runner, action, args.state_dir)
             if held is not None:
                 raise Handoff(*held)
-            destination = prepare(runner, action)
+            destination = prepare(runner, action, args.state_dir)
         except Handoff as error:
             if not handoff_record(action, error.branch, error.path, args.state_dir):
                 return 3

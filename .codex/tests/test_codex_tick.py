@@ -1867,11 +1867,26 @@ class TickTests(unittest.TestCase):
 
     def test_term_stops_child_before_releasing_lock(self) -> None:
         process, connection = self.blocked_tick()
+        context = self.state / "feature-git-context.json"
+        context.write_text("temporary session authority\n")
+        rebase = self.state / "rebase-406.json"
+        rebase.write_text("keep interrupted rebase state\n")
         process.send_signal(signal.SIGTERM)
         self.assertEqual(process.wait(timeout=15), 143)
         self.assertEqual(connection.recv(1), b"")
         self.assertFalse(self.lock.exists())
         self.assertFalse(self.record.exists())
+        self.assertFalse(context.exists())
+        self.assertEqual(rebase.read_text(), "keep interrupted rebase state\n")
+
+    def test_new_tick_revokes_context_left_by_a_killed_tick(self) -> None:
+        self.state.mkdir(parents=True)
+        context = self.state / "feature-git-context.json"
+        context.write_text("stale session authority\n")
+        process, connection = self.blocked_tick()
+        self.assertFalse(context.exists())
+        connection.sendall(b"x")
+        self.assertEqual(process.wait(timeout=10), 0)
 
 
 if __name__ == "__main__":
