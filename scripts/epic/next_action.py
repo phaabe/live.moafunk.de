@@ -390,16 +390,19 @@ def ticket_prerequisites(items: list[dict[str, Any]]) -> set[int]:
 
 
 def read_tickets(
-    items: list[dict[str, Any]], read: Callable[[int], dict[str, Any]]
+    items: list[dict[str, Any]],
+    read: Callable[[int], dict[str, Any]],
+    extra: set[int] = frozenset(),  # type: ignore[assignment]
 ) -> dict[str, dict[str, Any]]:
     """Completion fields of each prerequisite ticket, keyed by number.
 
+    `extra` adds tickets outside "Start after" lines (Waiting comments).
     Board data is reused when it has the issue state; any other ticket (off the
     board, archived, moved) is read with `read`, once per snapshot.
     """
     board = board_issues({"items": items})
     found: dict[str, dict[str, Any]] = {}
-    for n in sorted(ticket_prerequisites(items)):
+    for n in sorted(ticket_prerequisites(items) | set(extra)):
         content = (board.get(n) or {}).get("content") or {}
         if content.get("state") in ("open", "closed"):
             found[str(n)] = {
@@ -472,6 +475,226 @@ def batch_blockers(state: dict[str, Any], agent: str) -> dict[int, set[str]]:
     return blockers
 
 
+WAITING_LABEL = "waiting"
+WAITING_ACTORS = (*AGENTS, "Anton")
+WAITING_LINE = re.compile(r"Waiting:[ \t]*(\S+)")
+REASON_LINE = re.compile(r"Reason:[ \t]*(\S.*)")
+RESUME_AFTER_LINE = re.compile(r"Resume after:[ \t]*(\S.*)")
+RESUME_ANTON = "Resume: Anton"
+
+
+def rows_as_comments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """REST comment rows in the decide() comment shape (no count check)."""
+    return [
+        {
+            "body": r.get("body") or "",
+            "createdAt": r["created_at"],
+            "url": r.get("html_url"),
+            "includesCreatedEdit": r.get("updated_at") != r["created_at"]
+            or bool(r.get("last_edited_at")),
+        }
+        for r in rows
+    ]
+
+
+def newest_waiting(comments: list[dict[str, Any]]) -> dict[str, Any]:
+    """The stored record of the newest comment that starts with `Waiting:`.
+
+    A newer malformed or edited record is kept, never skipped for an older one.
+    """
+    found = [
+        c for c in comments if (c.get("body") or "").lstrip().startswith("Waiting:")
+    ]
+    if not found:
+        return {"found": False}
+    c = sorted(found, key=lambda c: c["createdAt"])[-1]
+    return {
+        "found": True,
+        "body": c.get("body") or "",
+        "url": c.get("url"),
+        "edited": bool(c.get("includesCreatedEdit")),
+    }
+
+
+def parse_waiting(body: str) -> tuple[dict[str, Any] | None, str | None]:
+    """(record, None) or (None, problem) for a `Waiting:` comment.
+
+    Exactly three lines: `Waiting: <actor>`, `Reason: <text>`, and either
+    `Resume after: <issue URL>, ...` or `Resume: Anton`.
+    """
+    lines = [line.strip() for line in body.strip().splitlines() if line.strip()]
+    if len(lines) != 3:
+        return None, "needs exactly three lines"
+    actor = WAITING_LINE.fullmatch(lines[0])
+    if not actor or actor.group(1) not in WAITING_ACTORS:
+        return None, "first line must be Waiting: Claude, Codex or Anton"
+    reason = REASON_LINE.fullmatch(lines[1])
+    if not reason:
+        return None, "second line must be Reason: <text>"
+    record: dict[str, Any] = {"actor": actor.group(1), "reason": reason.group(1)}
+    if lines[2] == RESUME_ANTON:
+        record["resume"] = "Anton"
+        return record, None
+    after = RESUME_AFTER_LINE.fullmatch(lines[2])
+    if not after:
+        return None, "third line must be Resume after: <issue URLs> or Resume: Anton"
+    numbers = []
+    for part in after.group(1).split(","):
+        m = ISSUE_URL.fullmatch(part.strip())
+        if not m:
+            return None, f"not a full issue URL of {REPO}: {part.strip()!r}"
+        numbers.append(int(m.group(1)))
+    record["resume"] = sorted(set(numbers))
+    return record, None
+
+
+def all_issue_labels(state: dict[str, Any]) -> dict[int, set[str]]:
+    """Labels of this repository's issues: board items, then linked off-board ones."""
+    found = {
+        int(n): set(names) for n, names in (state.get("linked_labels") or {}).items()
+    }
+    # Project boards may hold issues from other repositories with the same number.
+    found.update({n: labels(i) for n, i in board_issues(state).items()})
+    return found
+
+
+def pr_wait_sources(
+    pr: dict[str, Any], issue_labels: dict[int, set[str]]
+) -> list[tuple[int, str]]:
+    """(number, URL) of the PR and its `Issue:` tickets that carry the label."""
+    found = []
+    if WAITING_LABEL in labels(pr):
+        found.append((pr["number"], f"https://github.com/{REPO}/pull/{pr['number']}"))
+    for n in sorted(issue_numbers(pr.get("body") or "")):
+        if WAITING_LABEL in issue_labels.get(n, set()):
+            found.append((n, issue_url(n)))
+    return found
+
+
+def waiting_sources(state: dict[str, Any]) -> set[int]:
+    """Issues and PRs whose Waiting comment the selector needs: labeled draft
+    PRs and their labeled `Issue:` tickets, and labeled In progress issues."""
+    issue_labels = all_issue_labels(state)
+    found: set[int] = set()
+    for p in state.get("prs", []):
+        if p.get("baseRefName") in BASES and p.get("isDraft"):
+            found |= {n for n, _ in pr_wait_sources(p, issue_labels)}
+    for n, i in board_issues(state).items():
+        if i.get("status") == "In progress" and WAITING_LABEL in labels(i):
+            found.add(n)
+    return found
+
+
+def read_waiting(
+    state: dict[str, Any],
+    read_comments: Callable[[int], list[dict[str, Any]]],
+    pr_comments: bool,
+) -> dict[str, dict[str, Any]]:
+    """The newest Waiting record of each source, keyed by number.
+
+    `pr_comments`: the PRs in `state` carry their full comment history, so a
+    PR source needs no new read. A failed read raises; no partial result.
+    """
+    prs = {p["number"]: p for p in state.get("prs", [])}
+    found = {}
+    for n in sorted(waiting_sources(state)):
+        pr = prs.get(n)
+        comments = (
+            pr["comments"]
+            if pr_comments and pr is not None and isinstance(pr.get("comments"), list)
+            else read_comments(n)
+        )
+        found[str(n)] = newest_waiting(comments)
+    return found
+
+
+def resume_tickets(state: dict[str, Any]) -> set[int]:
+    """Tickets named in valid `Resume after:` lines of the read records."""
+    found: set[int] = set()
+    for record in (state.get("waiting") or {}).values():
+        if isinstance(record, dict) and record.get("found"):
+            parsed, _ = parse_waiting(record.get("body") or "")
+            if parsed and isinstance(parsed["resume"], list):
+                found |= set(parsed["resume"])
+    return found
+
+
+@dataclass
+class Waiting:
+    """Why a draft PR or In progress issue must not continue."""
+
+    blocking: list[str]
+    satisfied: list[str]
+    # A record was not read: claims stay held, as without waiting support.
+    unread: bool
+
+
+def waiting_of(
+    agent: str,
+    sources: list[tuple[int, str]],
+    state: dict[str, Any],
+    done: set[str],
+    completed_tickets: bool,
+) -> Waiting | None:
+    """None without a waiting label, else the state of every source's record.
+
+    A dependency wait resolves with the active "Start after" completion rule.
+    An operator wait (`Resume: Anton`) holds until Anton removes the label.
+    """
+    if not sources:
+        return None
+    records = state.get("waiting") or {}
+    result = Waiting([], [], False)
+    for n, url in sources:
+        record = records.get(str(n))
+        if not isinstance(record, dict):
+            result.unread = True
+            result.blocking.append(f"{url}: Waiting comment not read")
+            continue
+        if not record.get("found"):
+            result.blocking.append(
+                f"{url}: label {WAITING_LABEL} without a Waiting comment"
+            )
+            continue
+        where = record.get("url") or url
+        if record.get("edited"):
+            result.blocking.append(
+                f"{where}: Waiting comment was edited; post a new one"
+            )
+            continue
+        parsed, problem = parse_waiting(record.get("body") or "")
+        if parsed is None:
+            result.blocking.append(f"{where}: invalid Waiting comment ({problem})")
+            continue
+        if parsed["actor"] not in (agent, "Anton"):
+            result.blocking.append(
+                f"{where}: Waiting comment by {parsed['actor']}, not {agent} or Anton"
+            )
+            continue
+        if parsed["resume"] == "Anton":
+            result.blocking.append(
+                f"{url}: {parsed['reason']}; resumes when Anton removes the label"
+            )
+            continue
+        still = []
+        for dep in parsed["resume"]:
+            if completed_tickets:
+                problem = ticket_problem(state, dep)
+                if problem:
+                    still.append(f"{issue_url(dep)} ({problem})")
+            elif issue_url(dep) not in done:
+                still.append(issue_url(dep))
+        if still:
+            result.blocking.append(
+                f"{url}: {parsed['reason']}; resume after {', '.join(still)}"
+            )
+        else:
+            result.satisfied.append(
+                f"{url}: Waiting comment is satisfied; label {WAITING_LABEL} still present"
+            )
+    return result
+
+
 def read_focus(path: Path) -> frozenset[str]:
     """Labels in the focus file; empty when the file is missing or empty."""
     try:
@@ -542,6 +765,7 @@ def decide(
     enabled: frozenset[str] = frozenset(),
     rules: list[dict[str, Any]] | None = None,
     completed_tickets: bool = False,
+    free_claims: bool = False,
 ) -> list[Action]:
     """All actions for the agent, highest priority first. Never empty.
 
@@ -552,23 +776,19 @@ def decide(
     `rules` are the lane map's file rules (default: .github/epic-lanes.yml).
     `completed_tickets` (EPIC_REQUIRE_COMPLETED_TICKETS): a ticket dependency
     needs its issue closed as completed, and closed issues get no action.
+    A draft PR or In progress issue with an open `waiting` label becomes a
+    status-only `wait`. `free_claims` (only where a fresh recheck runs before
+    the model) lets such waits leave claims free; otherwise they hold claims.
     """
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
     peer = other(agent)
     # Linked tickets that are not on the board; fetch_state() reads their labels.
-    issue_labels = {
-        int(n): set(names) for n, names in (state.get("linked_labels") or {}).items()
-    }
-    # Project boards may hold issues from other repositories with the same number.
-    issue_labels.update(
-        {
-            i["content"]["number"]: labels(i)
-            for i in state.get("items", [])
-            if (i.get("content") or {}).get("type") == "Issue"
-            and ISSUE_URL.fullmatch(i["content"].get("url") or "")
-        }
-    )
+    issue_labels = all_issue_labels(state)
+    done = done_leaves(state, tickets=not completed_tickets)
+    # A wait whose record was not read, or any wait without a fresh recheck.
+    hold_claims = False
+    held = "" if free_claims else "; claims stay held without a fresh recheck"
     all_prs = [p for p in state.get("prs", []) if p.get("baseRefName") in BASES]
     # Escalated PRs get no PR action, but still link their issue and count as open.
     # So do PRs outside the focus: they are frozen, not forgotten.
@@ -589,6 +809,14 @@ def decide(
     def pr_action(p: dict[str, Any], kind: str, reason: str, **kw: Any) -> None:
         rank = priority_rank(pr_labels(p, issue_labels))
         n = p["number"]
+        if not p.get("isDraft"):
+            kw.setdefault(
+                "warnings",
+                [
+                    f"{url} has label {WAITING_LABEL}; a ready PR keeps its actions"
+                    for _, url in pr_wait_sources(p, issue_labels)
+                ],
+            )
         add(
             kind,
             Action(
@@ -600,13 +828,27 @@ def decide(
                 updated_at=p.get("updatedAt"),
                 **kw,
             ),
-            n,
+            # Waits share one list with issue waits: (wave, number).
+            *(("", n) if kind == "wait" else (n,)),
         )
 
     for p in mine:
         head = p["headRefOid"]
         if p.get("isDraft"):
-            pr_action(p, "continue", "my draft PR")
+            wait = waiting_of(
+                agent,
+                pr_wait_sources(p, issue_labels),
+                state,
+                done,
+                completed_tickets,
+            )
+            if wait and wait.blocking:
+                hold_claims |= wait.unread or not free_claims
+                reason = "waiting: " + "; ".join(wait.blocking)
+                pr_action(p, "wait", reason + held)
+            else:
+                satisfied = wait.satisfied if wait else []
+                pr_action(p, "continue", "my draft PR", warnings=satisfied)
             continue
         theirs_v = verdicts(p, peer)
         latest = theirs_v[-1] if theirs_v else None
@@ -682,7 +924,6 @@ def decide(
         # suppress claims through a `continue`.
         and not (completed_tickets and is_closed(i))
     ]
-    done = done_leaves(state, tickets=not completed_tickets)
     batch = batch_blockers(state, agent)
     for i in items:
         number, url = i["content"]["number"], i["content"]["url"]
@@ -691,6 +932,22 @@ def decide(
         rank = priority_rank(labels(i))
         wave = str(i.get("wave") or "9")
         if i.get("status") == "In progress":
+            sources = [(number, url)] if WAITING_LABEL in labels(i) else []
+            wait = waiting_of(agent, sources, state, done, completed_tickets)
+            if wait and wait.blocking:
+                hold_claims |= wait.unread or not free_claims
+                add(
+                    "wait",
+                    Action(
+                        "wait",
+                        "waiting: " + "; ".join(wait.blocking) + held,
+                        issue=url,
+                        priority=rank,
+                    ),
+                    wave,
+                    number,
+                )
+                continue
             # Same queue and key as draft PRs: priority, then number.
             add(
                 "continue",
@@ -700,6 +957,7 @@ def decide(
                     issue=url,
                     priority=rank,
                     updated_at=i["content"].get("updated_at"),
+                    warnings=wait.satisfied if wait else [],
                 ),
                 number,
             )
@@ -764,7 +1022,7 @@ def decide(
         for kind in order
         for _, a in sorted(ranked.get(kind, []), key=lambda entry: entry[0])
     ]
-    if any(a.action == "continue" for a in actions):
+    if hold_claims or any(a.action == "continue" for a in actions):
         actions = [
             a for a in actions if a.action != "claim"
         ]  # one implementation at a time
@@ -1034,9 +1292,17 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
         # Focus issues also off the board, so --status can name them.
         "focus_issues": focus_issues(focus) if focus else [],
     }
+    # Waiting records: PR comments are read above; issues are read here.
+    state["waiting"] = read_waiting(
+        state,
+        lambda n: rows_as_comments(
+            rest_rows(f"repos/{REPO}/issues/{n}/comments?per_page=100")
+        ),
+        pr_comments=True,
+    )
     if mode:
         state["completed_tickets"] = True
-        state["tickets"] = read_tickets(items, rest_ticket)
+        state["tickets"] = read_tickets(items, rest_ticket, resume_tickets(state))
     return state
 
 
@@ -1138,6 +1404,7 @@ def status(
     enabled: frozenset[str] = frozenset(),
     rules: list[dict[str, Any]] | None = None,
     completed_tickets: bool = False,
+    free_claims: bool = False,
 ) -> str:
     lines = [
         f"Paused: {'yes' if paused else 'no'}",
@@ -1157,6 +1424,7 @@ def status(
             enabled=enabled,
             rules=rules,
             completed_tickets=completed_tickets,
+            free_claims=free_claims,
         )
         for a in acted:
             target = f"PR {a.pr}" if a.pr else (a.issue or "")
@@ -1253,7 +1521,16 @@ def main() -> int:
     if args.dump_state:
         args.dump_state.write_text(json.dumps(state, indent=1))
     if args.status:
-        print(status(state, paused, focus, enabled, completed_tickets=mode))
+        print(
+            status(
+                state,
+                paused,
+                focus,
+                enabled,
+                completed_tickets=mode,
+                free_claims=shared_reader(),
+            )
+        )
         return 0
     actions = decide(
         args.agent.capitalize(),
@@ -1262,6 +1539,8 @@ def main() -> int:
         focus=focus,
         enabled=enabled,
         completed_tickets=mode,
+        # Waits free claims only where the runners recheck before the model.
+        free_claims=shared_reader(),
     )
     for a in actions if args.candidates else actions[:1]:
         print(a.to_json())
