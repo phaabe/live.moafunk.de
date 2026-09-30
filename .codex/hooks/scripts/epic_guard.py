@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -151,11 +152,25 @@ def selected_adopt_body_edit(args: list[str]) -> bool:
     )
     body_path = Path(args[4][len("body=@") :])
     action_path = Path(os.environ.get("EPIC_ACTION_FILE", ""))
+    anchor = os.environ.get("EPIC_BODY_DIR_ID", "")
     if (
         target is None
         or not body_path.is_absolute()
         or ".." in body_path.parts
         or not action_path.is_absolute()
+        or not anchor
+    ):
+        return False
+    # Only the runner's per-tick body directory, so no other readable file can
+    # become a PR body. It is identified by the device and inode the runner
+    # recorded, so a replaced directory or a symlink in its place does not
+    # match. The file must be regular with one link: no symlink or hard link.
+    parent = os.stat(body_path.parent)
+    body = os.lstat(body_path)
+    if (
+        f"{parent.st_dev}:{parent.st_ino}" != anchor
+        or not stat.S_ISREG(body.st_mode)
+        or body.st_nlink != 1
     ):
         return False
     action = json.loads(action_path.read_text())

@@ -54,8 +54,12 @@ During an `adopt` tick the runner exports `EPIC_ACTION_FILE`, an absolute path
 to its locked selection. The guard permits exactly
 `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F body=@<absolute-path>`
 for that selected PR. The action must include its head SHA and original body
-digest. Other targets, extra fields, relative paths and other write forms stay
-blocked. Body files still pass the verdict check. This command guard is not a
+digest. The body file must be a regular file with one link directly in
+`EPIC_BODY_DIR`, a fresh temp directory the runner creates for the tick and
+removes afterwards. The hook checks that directory by the device and inode the
+runner recorded (`EPIC_BODY_DIR_ID`), so a replaced directory does not match.
+Other targets, extra fields, relative paths, symlinks, hard links, files
+elsewhere and other write forms stay blocked. Body files still pass the verdict check. This command guard is not a
 replacement for checking the current head, owner and body before the write.
 
 ## Recovery if the guard blocks every tool

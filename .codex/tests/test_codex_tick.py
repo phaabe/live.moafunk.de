@@ -272,6 +272,8 @@ else:
             "    print(os.environ['TEST_PR_METADATA'])\n"
             "    sys.exit(0)\n"
             "assert sys.argv[1] == 'api'\n"
+            "if os.environ.get('TEST_GH_READS_STDIN'):\n"
+            "    sys.stdin.read()\n"
             "if os.environ.get('TEST_PAUSE_AFTER_GATE'):\n"
             "    (pathlib.Path.home() / '.epic-pause').touch()\n"
             "target = sys.argv[2].rsplit('/', 1)[-1]\n"
@@ -302,15 +304,22 @@ else:
             "    assert os.environ['EPIC_TRUSTED_ROOT'] == str(pathlib.Path(os.environ['TEST_REPO']).resolve())\n"
             "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read(), "
             "'action_file': str(action_file), 'action': json.loads(action_file.read_text()), "
+            "'body_dir': os.environ.get('EPIC_BODY_DIR'), "
+            "'body_dir_mode': (os.stat(os.environ['EPIC_BODY_DIR']).st_mode & 0o777 "
+            "if os.environ.get('EPIC_BODY_DIR') else None), "
+            "'body_dir_inode': (lambda s: f'{s.st_dev}:{s.st_ino}')(os.stat(os.environ['EPIC_BODY_DIR'])) "
+            "if os.environ.get('EPIC_BODY_DIR') else None, "
             "'tool_env': tool_env}) + '\\n')\n"
             "if os.environ.get('EPIC_REVIEW_ATTEMPT_DIR'):\n"
             "    (pathlib.Path(os.environ['EPIC_REVIEW_ATTEMPT_DIR']) / 'model.pid').write_text(str(os.getpid()))\n"
             "if os.environ.get('TEST_MODEL_GUARD'):\n"
             "    repo = pathlib.Path(os.environ['TEST_REPO'])\n"
-            "    body = repo / 'adopt body.md'\n"
-            "    body.write_text(os.environ['TEST_ADOPT_BODY'])\n"
+            "    outside = repo / 'adopt body.md'\n"
+            "    body = pathlib.Path(tool_env['EPIC_BODY_DIR']) / 'adopt body.md'\n"
+            "    for path in (body, outside):\n"
+            "        path.write_text(os.environ['TEST_ADOPT_BODY'])\n"
             "    codes = []\n"
-            "    for number in (406, 407):\n"
+            "    for number, body in ((406, body), (407, body), (406, outside)):\n"
             "        command = ('gh api --method PATCH ' "
             "+ f'repos/phaabe/live.moafunk.de/pulls/{number} -F ' "
             "+ shlex.quote(f'body=@{body}'))\n"
@@ -380,10 +389,13 @@ else:
         }
 
     def run_tick(self) -> subprocess.CompletedProcess[str]:
+        # stdin is /dev/null: a fake that reads stdin must never wait on the
+        # test process's own stdin.
         return subprocess.run(
             ["/bin/bash", str(self.runner)],
             env=self.env,
             cwd=self.home,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=20,
@@ -1335,7 +1347,9 @@ else:
         call = json.loads(self.calls.read_text())
         self.assertEqual(call["action"]["action"], "adopt")
         self.assertNotIn("EPIC_REVIEW_DIR", call["tool_env"])
-        self.assertNotIn("--add-dir", call["args"])
+        self.assertEqual(
+            call["args"][call["args"].index("--add-dir") + 1], call["body_dir"]
+        )
         self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"406"})
 
     def test_refused_review_preparation_allows_next_candidate(self) -> None:
@@ -1355,7 +1369,9 @@ else:
         call = json.loads(self.calls.read_text())
         self.assertEqual(call["action"]["action"], "adopt")
         self.assertNotIn("EPIC_REVIEW_DIR", call["tool_env"])
-        self.assertNotIn("--add-dir", call["args"])
+        self.assertEqual(
+            call["args"][call["args"].index("--add-dir") + 1], call["body_dir"]
+        )
         self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"406"})
         self.assertFalse(self.lock.exists())
         for number in (407, 408):
@@ -1809,6 +1825,16 @@ else:
         self.assertEqual([call["action"]["pr"] for call in calls], [408])
         self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"408"})
 
+    def test_loop_command_reading_stdin_does_not_eat_candidates(self) -> None:
+        # Candidates are read from fd 3, not stdin.
+        self.env["TEST_GH_READS_STDIN"] = "1"
+        first = {**self.review_action(406), "updated_at": "2026-09-28T02:00:00Z"}
+        self.candidates(first, self.review_action(407))
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual([call["action"]["pr"] for call in calls], [407])
+
     def test_quota_wait_after_skipped_candidate_stops_the_scan(self) -> None:
         self.quota_clock()
         first = {**self.review_action(406), "updated_at": "2026-09-28T02:00:00Z"}
@@ -1884,7 +1910,39 @@ else:
         self.env["TEST_MODEL_GUARD"] = str(checked)
         result = self.run_tick()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(checked.read_text()), [0, 2])
+        # Selected PR from the body directory; other PR; file outside the directory.
+        self.assertEqual(json.loads(checked.read_text()), [0, 2, 2])
+
+    def test_adopt_gets_a_private_body_dir_removed_after_the_tick(self) -> None:
+        self.adopt_action()
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = json.loads(self.calls.read_text())
+        body_dir = call["body_dir"]
+        self.assertTrue(body_dir.startswith("/tmp/epic-adopt-codex."))
+        self.assertEqual(call["body_dir_mode"], 0o700)
+        self.assertEqual(call["tool_env"]["EPIC_BODY_DIR"], body_dir)
+        # The hook anchors to the directory the runner created.
+        self.assertEqual(call["tool_env"]["EPIC_BODY_DIR_ID"], call["body_dir_inode"])
+        self.assertEqual(call["args"][call["args"].index("--add-dir") + 1], body_dir)
+        self.assertIn(
+            f"PR body directory (write the adopt body file only here): {body_dir}",
+            call["prompt"],
+        )
+        self.assertFalse(Path(body_dir).exists())
+
+    def test_other_actions_get_no_body_dir(self) -> None:
+        # An inherited value never reaches the model or the hook.
+        self.env.update(EPIC_BODY_DIR=str(self.root), EPIC_BODY_DIR_ID="1:2")
+        self.candidates(self.review_action(406))
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = json.loads(self.calls.read_text())
+        self.assertIsNone(call["body_dir"])
+        self.assertNotIn("EPIC_BODY_DIR", call["tool_env"])
+        self.assertNotIn("EPIC_BODY_DIR_ID", call["tool_env"])
+        self.assertTrue(self.root.is_dir())
+        self.assertNotIn("PR body directory (write", call["prompt"])
 
     def tool_child_environment(self) -> dict[str, str]:
         custom = self.root / 'state with "quotes" \\ and 🚀'
