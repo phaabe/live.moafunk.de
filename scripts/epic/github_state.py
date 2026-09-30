@@ -85,6 +85,14 @@ class ReadBlocked(Exception):
     """No complete, current GitHub read. next_action.py exits 5."""
 
 
+class Gone(Exception):
+    """A read allowed to miss (a prerequisite ticket) got 404 or 410."""
+
+    def __init__(self, status: int):
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
 class AuthLost(ReadBlocked):
     """401, or a non-rate-limit 403/404 on a URL that returned 200 before."""
 
@@ -456,8 +464,14 @@ class Client:
             raise ReadBlocked(f"{self.purpose}: GitHub reads took too long")
         return left
 
-    def get(self, url: str) -> tuple[str, str | None]:
-        """(body, Link header) of one URL. Never a partial or unknown result."""
+    def get(
+        self, url: str, missing: frozenset[int] = frozenset()
+    ) -> tuple[str, str | None]:
+        """(body, Link header) of one URL. Never a partial or unknown result.
+
+        A status in `missing` raises Gone instead of ReadBlocked or AuthLost:
+        the caller blocks only what depends on this URL.
+        """
         url = full_url(url)
         left = self.remaining()
         # Keep URL, ETag and body together: the refresher may replace the file
@@ -479,6 +493,8 @@ class Client:
             if entry is None:
                 raise ReadBlocked(f"HTTP 304 without a stored body: {path_of(url)}")
             return entry.body, entry.link
+        if status in missing:
+            raise Gone(status)
         if status in (403, 429) and rate_limited(response):
             raise ReadBlocked(f"REST rate limit (HTTP {status}): {path_of(url)}")
         if status == 401 or (status in (403, 404) and entry is not None):
@@ -487,8 +503,8 @@ class Client:
             raise AuthLost(reason)
         raise ReadBlocked(f"HTTP {status}: {path_of(url)}")
 
-    def json(self, url: str) -> Any:
-        body, _ = self.get(url)
+    def json(self, url: str, missing: frozenset[int] = frozenset()) -> Any:
+        body, _ = self.get(url, missing)
         try:
             return json.loads(body)
         except ValueError as error:
@@ -702,17 +718,31 @@ def search_focus(client: Client, focus: set[str]) -> list[dict[str, Any]]:
     return [found[n] for n in sorted(found)]
 
 
+def read_ticket(client: Client, number: int) -> dict[str, Any]:
+    """One prerequisite ticket. 404 and 410 block only its successors; other
+    failures raise ReadBlocked and stop the tick."""
+    try:
+        issue = client.json(f"repos/{na.REPO}/issues/{number}", na.MISSING_STATUSES)
+    except Gone as gone:
+        return na.missing_ticket(gone.status)
+    if not isinstance(issue, dict):
+        raise ReadBlocked(f"malformed issue {number}")
+    return na.ticket_from_issue(number, issue)
+
+
 def build_state(
     client: Client,
     focus: set[str],
     pr_details: bool = True,
     readiness_for: set[int] | None = None,
+    completed_tickets: bool = False,
 ) -> dict[str, Any]:
     """The fetch_state() dict from REST. Raises ReadBlocked on any gap.
 
     Without `pr_details` open PRs come from the list only (no comments, checks
     or mergeable): enough for claims. `readiness_for` limits the readiness
-    comments to these issues.
+    comments to these issues. `completed_tickets` adds the prerequisite
+    tickets' issue state (`tickets`), read with this client.
     """
     try:
         prs: list[dict[str, Any]] = []
@@ -759,7 +789,7 @@ def build_state(
             for r in comment_rows(client, na.EPIC)
             if "Scope, in order" in (r.get("body") or "")
         ]
-        return {
+        state: dict[str, Any] = {
             "prs": prs,
             "items": items,
             "linked_labels": linked_labels,
@@ -767,6 +797,10 @@ def build_state(
             "batch_order": batch_order,
             "focus_issues": search_focus(client, focus) if focus else [],
         }
+        if completed_tickets:
+            state["completed_tickets"] = True
+            state["tickets"] = na.read_tickets(items, lambda n: read_ticket(client, n))
+        return state
     except (KeyError, TypeError, AttributeError) as error:
         raise ReadBlocked(f"malformed GitHub data: {error!r}") from error
 
@@ -789,6 +823,8 @@ def validate_state(state: Any) -> None:
             pr.get("statusCheckRollup"), list
         ):
             raise ReadBlocked(f"snapshot PR {pr.get('number')} is partial")
+    if state.get("completed_tickets") and not isinstance(state.get("tickets"), dict):
+        raise ReadBlocked("snapshot state lacks tickets")
 
 
 # --- snapshot ---
@@ -806,8 +842,11 @@ def read_focus_file() -> set[str]:
     return set(na.read_focus(na.FOCUS_FILE))
 
 
-def load_snapshot(ns: Namespace) -> dict[str, Any] | None:
-    """The stored record, or None when missing, corrupt or for another key."""
+def load_snapshot(
+    ns: Namespace, completed_tickets: bool = False
+) -> dict[str, Any] | None:
+    """The stored record, or None when missing, corrupt, for another key or
+    read in the other completed-tickets mode."""
     try:
         record = json.loads((ns.dir / "snapshot.json").read_text())
     except (OSError, ValueError):
@@ -827,6 +866,8 @@ def load_snapshot(ns: Namespace) -> dict[str, Any] | None:
     try:
         validate_state(state)
     except ReadBlocked:
+        return None
+    if bool(state.get("completed_tickets")) != completed_tickets:
         return None
     return record
 
@@ -900,20 +941,24 @@ def read_snapshot(
     focus: frozenset[str] | set[str] = frozenset(),
     http: Http = gh_http,
     now: Callable[[], float] = time.time,
-    build: Callable[[Client, set[str]], dict[str, Any]] = build_state,
+    build: Callable[..., dict[str, Any]] = build_state,
+    completed_tickets: bool = False,
 ) -> Snapshot:
-    """A snapshot no older than the max age, refreshed under the lock if needed."""
+    """A snapshot no older than the max age, refreshed under the lock if needed.
+
+    A snapshot read in the other completed-tickets mode is never used.
+    """
     config = settings()
     ns = resolve_namespace(http)
     wanted = set(focus)
     if not ns.auth_blocked():
-        record = load_snapshot(ns)
+        record = load_snapshot(ns, completed_tickets)
         if usable(record, wanted, now(), config.max_age):
             assert record is not None
             return as_snapshot(record, wanted, now(), "cache")
     with refresh_lock(ns, config.lock):
         # Another reader may have refreshed while this one waited.
-        record = load_snapshot(ns)
+        record = load_snapshot(ns, completed_tickets)
         if not ns.auth_blocked() and usable(record, wanted, now(), config.max_age):
             assert record is not None
             return as_snapshot(record, wanted, now(), "cache")
@@ -921,7 +966,10 @@ def read_snapshot(
         # The focus file's labels too, so one snapshot serves every reader.
         labels = wanted | read_focus_file()
         client = Client(ns, "refresh", config.refresh, writable=True, http=http)
-        state = build(client, labels)
+        if completed_tickets:
+            state = build(client, labels, completed_tickets=True)
+        else:
+            state = build(client, labels)
         validate_state(state)
         # Refuse, and keep the old snapshot, when access loss was reported
         # during this refresh or the result is already older than the max age.
@@ -1092,6 +1140,7 @@ def recheck(
     enabled_actions: frozenset[str],
     paused: bool,
     reader: FreshReader,
+    completed_tickets: bool = False,
 ) -> str | None:
     """None when the selector would still pick this action, else why not.
 
@@ -1125,13 +1174,23 @@ def recheck(
             tail = str(action.get("issue") or "").rstrip("/").rsplit("/", 1)[-1]
             if not tail.isdigit():
                 raise ValueError("action has no pr and no issue")
+            # Prerequisite tickets are read fresh too, never from the snapshot.
             state = build_state(
-                reader.client, set(), pr_details=False, readiness_for={int(tail)}
+                reader.client,
+                set(),
+                pr_details=False,
+                readiness_for={int(tail)},
+                completed_tickets=completed_tickets,
             )
     except (KeyError, TypeError, AttributeError) as error:
         raise ReadBlocked(f"malformed GitHub data: {error!r}") from error
     now = na.decide(
-        agent.capitalize(), state, paused, focus=focus, enabled=enabled_actions
+        agent.capitalize(),
+        state,
+        paused,
+        focus=focus,
+        enabled=enabled_actions,
+        completed_tickets=completed_tickets,
     )
     if any(same_action(a, action) for a in now):
         return None

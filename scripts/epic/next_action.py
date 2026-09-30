@@ -42,6 +42,12 @@ Usage:
                                              and check the selector still
                                              picks it (shared reader only)
 
+Completed tickets (EPIC_REQUIRE_COMPLETED_TICKETS, off by default): with 1, a
+ticket named in "Start after" counts as done only while its issue is closed as
+completed. A merged PR or board Status Done is not enough. Closed issues get
+no claim or continue action. Unset or 0 keeps the old rule; other values are
+bad settings (exit 2).
+
 Shared reader (github_state.py): with EPIC_SHARED_READER=1, fetch_state()
 reads the shared REST snapshot instead of calling GitHub itself. Off by default
 until both runners handle exit codes 5 and 6.
@@ -61,6 +67,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -97,6 +104,11 @@ ESCALATION_LABEL = "needs-anton"
 # One is added in both runners after both its Claude and Codex leaves merged.
 NEW_ACTIONS = frozenset({"adopt"})
 ACTIONS_ENV = "EPIC_FOCUS_ACTIONS"
+# Ticket dependencies need a closed-as-completed issue (see completed_tickets()).
+COMPLETED_TICKETS_ENV = "EPIC_REQUIRE_COMPLETED_TICKETS"
+# A prerequisite read with this status blocks only its successors.
+MISSING_STATUSES = frozenset({404, 410})
+HTTP_STATUS = re.compile(r"\(HTTP (\d{3})\)")
 # PR body lines `adopt` adds, at line start.
 OWNER_KEYS = ("Epic", "Executor", "Lane", "Reviewer", "Leaf IDs", "Issue")
 OWNER_KEY_LINE = re.compile(rf"^(?:{'|'.join(OWNER_KEYS)}):")
@@ -165,13 +177,15 @@ class Action:
     body_sha: str | None = None
     # For --status only. Kept out of the JSON so runner fingerprints stay stable.
     priority: int = DEFAULT_PRIORITY
+    # Board/issue mismatches of the tickets a claim waits for. Never a blocker.
+    warnings: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(
             {
                 k: v
                 for k, v in asdict(self).items()
-                if v not in (None, []) and k != "priority"
+                if v not in (None, []) and k not in ("priority", "warnings")
             }
         )
 
@@ -205,6 +219,20 @@ def body_digest(body: str) -> str:
         if line.strip() and not OWNER_KEY_LINE.match(line)
     ]
     return hashlib.sha256("\n".join(kept).encode()).hexdigest()
+
+
+class SettingError(ValueError):
+    """A bad environment setting; the script exits 2 before any GitHub read."""
+
+
+def completed_tickets(env: dict[str, str] | None = None) -> bool:
+    """EPIC_REQUIRE_COMPLETED_TICKETS: unset or 0 off, 1 on, anything else an error."""
+    value = (os.environ if env is None else env).get(COMPLETED_TICKETS_ENV)
+    if value is None or value == "0":
+        return False
+    if value == "1":
+        return True
+    raise SettingError(f"{COMPLETED_TICKETS_ENV} must be 0 or 1, not {value!r}")
 
 
 def read_actions(value: str | None) -> frozenset[str]:
@@ -295,14 +323,16 @@ def issue_url(number: int) -> str:
     return f"https://github.com/{REPO}/issues/{number}"
 
 
-def done_leaves(state: dict[str, Any]) -> set[str]:
+def done_leaves(state: dict[str, Any], tickets: bool = True) -> set[str]:
     """Leaves listed by a merged PR's `Leaf IDs:` line or ticked in an issue body,
-    plus the URLs of tickets a merged PR names in its `Issue:` line."""
+    plus (with `tickets`, the old rule) the URLs of tickets a merged PR names in
+    its `Issue:` line."""
     done: set[str] = set()
     for pr in state.get("merged_prs", []):
         for line in LEAF_IDS_LINE.findall(pr.get("body") or ""):
             done |= set(LEAF.findall(line))
-        done |= {issue_url(n) for n in issue_numbers(pr.get("body") or "")}
+        if tickets:
+            done |= {issue_url(n) for n in issue_numbers(pr.get("body") or "")}
     for item in state.get("items", []):
         done |= set(CHECKED_LEAF.findall((item.get("content") or {}).get("body") or ""))
     return done
@@ -315,6 +345,108 @@ def start_after(item: dict[str, Any]) -> set[str]:
         wanted |= set(LEAF.findall(clause))
         wanted |= {issue_url(int(n)) for n in ISSUE_URL.findall(clause)}
     return wanted
+
+
+def is_closed(item: dict[str, Any]) -> bool:
+    return (item.get("content") or {}).get("state") == "closed"
+
+
+def ticket_from_issue(number: int, issue: dict[str, Any]) -> dict[str, Any]:
+    """Completion fields of a REST issue read for ticket `number` of REPO.
+
+    `gh api` follows a moved issue's redirect and returns 200 from the new
+    repository. That issue is not this ticket: its state never counts.
+    """
+    source = str(issue.get("repository_url") or "").rsplit("/repos/", 1)[-1]
+    if source.lower() != REPO.lower() or issue.get("number") != number:
+        moved = f"{source}#{issue.get('number')}" if source else "unknown"
+        return {"problem": f"moved to {moved}; update the dependency URL"}
+    return {"state": issue.get("state"), "state_reason": issue.get("state_reason")}
+
+
+def missing_ticket(status: int) -> dict[str, Any]:
+    return {"problem": f"not readable (HTTP {status}); fix the dependency"}
+
+
+def board_issues(state: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """This repository's issues on the board, by number."""
+    return {
+        i["content"]["number"]: i
+        for i in state.get("items", [])
+        if (i.get("content") or {}).get("type") == "Issue"
+        and ISSUE_URL.fullmatch(i["content"].get("url") or "")
+    }
+
+
+def ticket_prerequisites(items: list[dict[str, Any]]) -> set[int]:
+    """Tickets named in the "Start after" lines of Ready board issues."""
+    return {
+        int(ISSUE_URL.fullmatch(url).group(1))  # type: ignore[union-attr]
+        for item in items
+        if item.get("status") == "Ready"
+        for url in start_after(item)
+        if ISSUE_URL.fullmatch(url)
+    }
+
+
+def read_tickets(
+    items: list[dict[str, Any]], read: Callable[[int], dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Completion fields of each prerequisite ticket, keyed by number.
+
+    Board data is reused when it has the issue state; any other ticket (off the
+    board, archived, moved) is read with `read`, once per snapshot.
+    """
+    board = board_issues({"items": items})
+    found: dict[str, dict[str, Any]] = {}
+    for n in sorted(ticket_prerequisites(items)):
+        content = (board.get(n) or {}).get("content") or {}
+        if content.get("state") in ("open", "closed"):
+            found[str(n)] = {
+                "state": content["state"],
+                "state_reason": content.get("state_reason"),
+            }
+        else:
+            found[str(n)] = read(n)
+    return found
+
+
+def ticket_problem(state: dict[str, Any], number: int) -> str | None:
+    """None when the ticket's issue is closed as completed, else why not.
+
+    Only the issue state counts: no merged PR, board Status or history.
+    """
+    ticket = (state.get("tickets") or {}).get(str(number))
+    if not isinstance(ticket, dict):
+        return "not read"
+    if ticket.get("problem"):
+        return str(ticket["problem"])
+    if ticket.get("state") == "open":
+        return "open"
+    if ticket.get("state") != "closed":
+        return "state unknown"
+    if ticket.get("state_reason") == "completed":
+        return None
+    return f"closed as {ticket.get('state_reason') or 'unknown reason'}"
+
+
+def ticket_warnings(state: dict[str, Any], numbers: set[int]) -> list[str]:
+    """Board Status that disagrees with the issue state. A warning, not a gate."""
+    board = board_issues(state)
+    found = []
+    for n in sorted(numbers):
+        item = board.get(n)
+        ticket = (state.get("tickets") or {}).get(str(n)) or {}
+        if item is None or ticket.get("problem"):
+            continue
+        status = item.get("status") or "not set"
+        if ticket_problem(state, n) is None and status != "Done":
+            found.append(
+                f"{issue_url(n)} is closed as completed; board Status is {status}"
+            )
+        elif ticket.get("state") == "open" and status == "Done":
+            found.append(f"{issue_url(n)} is open; board Status is Done")
+    return found
 
 
 def batch_blockers(state: dict[str, Any], agent: str) -> dict[int, set[str]]:
@@ -409,6 +541,7 @@ def decide(
     focus: frozenset[str] = frozenset(),
     enabled: frozenset[str] = frozenset(),
     rules: list[dict[str, Any]] | None = None,
+    completed_tickets: bool = False,
 ) -> list[Action]:
     """All actions for the agent, highest priority first. Never empty.
 
@@ -417,6 +550,8 @@ def decide(
     `focus` limits actions to issues and PRs with one of these labels.
     `enabled` lists the new actions (NEW_ACTIONS) that may be emitted.
     `rules` are the lane map's file rules (default: .github/epic-lanes.yml).
+    `completed_tickets` (EPIC_REQUIRE_COMPLETED_TICKETS): a ticket dependency
+    needs its issue closed as completed, and closed issues get no action.
     """
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
@@ -543,8 +678,11 @@ def decide(
         and (i.get("content") or {}).get("type") == "Issue"
         and ESCALATION_LABEL not in labels(i)
         and (not focus or labels(i) & focus)
+        # A closed issue left Ready or In progress is no work and must not
+        # suppress claims through a `continue`.
+        and not (completed_tickets and is_closed(i))
     ]
-    done = done_leaves(state)
+    done = done_leaves(state, tickets=not completed_tickets)
     batch = batch_blockers(state, agent)
     for i in items:
         number, url = i["content"]["number"], i["content"]["url"]
@@ -566,7 +704,20 @@ def decide(
                 number,
             )
         elif i.get("status") == "Ready" and open_mine < MAX_OPEN_PRS:
-            blockers = sorted((start_after(i) | batch.get(number, set())) - done)
+            wanted = start_after(i) | batch.get(number, set())
+            warnings: list[str] = []
+            if completed_tickets:
+                tickets = {int(n) for n in ISSUE_URL.findall(" ".join(wanted))}
+                blockers = sorted(
+                    w for w in wanted - done if not ISSUE_URL.fullmatch(w)
+                )
+                for n in sorted(tickets):
+                    problem = ticket_problem(state, n)
+                    if problem:
+                        blockers.append(f"{issue_url(n)} ({problem})")
+                warnings = ticket_warnings(state, tickets)
+            else:
+                blockers = sorted(wanted - done)
             if blockers:
                 add(
                     "wait",
@@ -575,6 +726,7 @@ def decide(
                         f"starts after {', '.join(blockers)}",
                         issue=url,
                         priority=rank,
+                        warnings=warnings,
                     ),
                     wave,
                     number,
@@ -588,6 +740,7 @@ def decide(
                         issue=url,
                         priority=rank,
                         updated_at=i["content"].get("updated_at"),
+                        warnings=warnings,
                     ),
                     wave,
                     number,
@@ -665,7 +818,8 @@ def item_from_rest(row: dict[str, Any]) -> dict[str, Any]:
 
     source = row.get("content") or {}
     content: dict[str, Any] = {"type": row.get("content_type")}
-    for key in ("number", "title", "body", "updated_at"):
+    # state and state_reason: ticket completion (completed_tickets()).
+    for key in ("number", "title", "body", "updated_at", "state", "state_reason"):
         if key in source:
             content[key] = source[key]
     # REST `url` is the API address; monitor.py matches the web address.
@@ -765,12 +919,28 @@ def shared_reader() -> bool:
     return os.environ.get(SHARED_READER_ENV) == "1"
 
 
+def rest_ticket(number: int) -> dict[str, Any]:
+    """One prerequisite ticket via REST. 404 and 410 block only its successors;
+    every other failure raises and stops the tick."""
+    try:
+        issue = gh_json(["api", f"repos/{REPO}/issues/{number}"])
+    except subprocess.CalledProcessError as error:
+        found = HTTP_STATUS.search(error.stderr or "")
+        if found and int(found.group(1)) in MISSING_STATUSES:
+            return missing_ticket(int(found.group(1)))
+        raise
+    return ticket_from_issue(number, issue)
+
+
 def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
+    """The state decide() reads. EPIC_REQUIRE_COMPLETED_TICKETS=1 adds the
+    prerequisite tickets' issue state; off, no ticket is read."""
+    mode = completed_tickets()
     if shared_reader():
         # Imported here: the Codex runner tests copy this file alone.
         import github_state
 
-        return github_state.read_snapshot(focus).state
+        return github_state.read_snapshot(focus, completed_tickets=mode).state
     fields = (
         "number,title,body,baseRefName,headRefName,headRefOid,isDraft,labels,"
         "mergeable,statusCheckRollup,updatedAt"
@@ -855,7 +1025,7 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
         for row in page
         if "Scope, in order" in (row.get("body") or "")
     ]
-    return {
+    state: dict[str, Any] = {
         "prs": prs,
         "items": items,
         "linked_labels": linked_labels,
@@ -864,6 +1034,10 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
         # Focus issues also off the board, so --status can name them.
         "focus_issues": focus_issues(focus) if focus else [],
     }
+    if mode:
+        state["completed_tickets"] = True
+        state["tickets"] = read_tickets(items, rest_ticket)
+    return state
 
 
 def pr_reason(
@@ -896,11 +1070,17 @@ def pr_reason(
 
 
 def issue_reason(
-    agent: str, number: int, item: dict[str, Any] | None, linked: set[int]
+    agent: str,
+    number: int,
+    item: dict[str, Any] | None,
+    linked: set[int],
+    completed_tickets: bool = False,
 ) -> str:
     """Why a focus issue gets no action from this agent."""
     if item is None:
         return "not on board"
+    if completed_tickets and is_closed(item):
+        return f"closed; board Status is {item.get('status') or 'not set'}"
     if ESCALATION_LABEL in labels(item):
         return ESCALATION_LABEL
     if number in linked:
@@ -919,6 +1099,7 @@ def no_action(
     enabled: frozenset[str],
     rules: list[dict[str, Any]] | None,
     acted: list[Action],
+    completed_tickets: bool = False,
 ) -> list[tuple[str, str]]:
     """(target, reason) for each focus item this agent has no action for."""
     issue_labels = {
@@ -945,7 +1126,8 @@ def no_action(
     issues.update({i["number"]: i["url"] for i in state.get("focus_issues") or []})
     for n in sorted(issues):
         if issues[n] not in acted_issues:
-            found.append((issues[n], issue_reason(agent, n, board.get(n), linked)))
+            reason = issue_reason(agent, n, board.get(n), linked, completed_tickets)
+            found.append((issues[n], reason))
     return found
 
 
@@ -955,11 +1137,14 @@ def status(
     focus: frozenset[str] = frozenset(),
     enabled: frozenset[str] = frozenset(),
     rules: list[dict[str, Any]] | None = None,
+    completed_tickets: bool = False,
 ) -> str:
     lines = [
         f"Paused: {'yes' if paused else 'no'}",
         f"Focus: {', '.join(sorted(focus)) if focus else 'all'}",
         f"New actions: {', '.join(sorted(enabled)) or 'none'}",
+        f"Completed tickets rule ({COMPLETED_TICKETS_ENV}): "
+        + ("on" if completed_tickets else "off"),
     ]
     for agent in AGENTS:
         lines.append(f"\n{agent}:")
@@ -971,13 +1156,18 @@ def status(
             focus=focus,
             enabled=enabled,
             rules=rules,
+            completed_tickets=completed_tickets,
         )
         for a in acted:
             target = f"PR {a.pr}" if a.pr else (a.issue or "")
             level = PRIORITY_NAMES[a.priority] if target else ""
             lines.append(f"  {a.action:<17} {level:<6} {target:<55} {a.reason}")
+            for warning in a.warnings:
+                lines.append(f"  {'warning':<17} {'':<6} {target:<55} {warning}")
         if focus and not paused:
-            for target, reason in no_action(agent, state, focus, enabled, rules, acted):
+            for target, reason in no_action(
+                agent, state, focus, enabled, rules, acted, completed_tickets
+            ):
                 lines.append(f"  {'no action':<17} {'':<6} {target:<55} {reason}")
     unknown = [
         p["number"]
@@ -1020,8 +1210,13 @@ def main() -> int:
     paused = PAUSE_FILE.exists()
     focus = frozenset(args.focus) if args.focus else read_focus(FOCUS_FILE)
     enabled = read_actions(os.environ.get(ACTIONS_ENV))
+    try:
+        mode = completed_tickets()
+    except SettingError as error:
+        print(f"config: {error}", file=sys.stderr)
+        return 2
     if args.recheck:
-        return run_recheck(args.agent, args.recheck, focus, enabled, paused)
+        return run_recheck(args.agent, args.recheck, focus, enabled, paused, mode)
     # The shared reader's own errors; empty (catches nothing) when it is off.
     reader_errors: tuple[type[Exception], ...] = ()
     if shared_reader() and not args.state_file:
@@ -1058,10 +1253,15 @@ def main() -> int:
     if args.dump_state:
         args.dump_state.write_text(json.dumps(state, indent=1))
     if args.status:
-        print(status(state, paused, focus, enabled))
+        print(status(state, paused, focus, enabled, completed_tickets=mode))
         return 0
     actions = decide(
-        args.agent.capitalize(), state, paused, focus=focus, enabled=enabled
+        args.agent.capitalize(),
+        state,
+        paused,
+        focus=focus,
+        enabled=enabled,
+        completed_tickets=mode,
     )
     for a in actions if args.candidates else actions[:1]:
         print(a.to_json())
@@ -1085,6 +1285,7 @@ def run_recheck(
     focus: frozenset[str],
     enabled: frozenset[str],
     paused: bool,
+    completed_tickets: bool = False,
 ) -> int:
     """Fresh check of one selected action: 0 still valid, 6 stale, 5 blocked.
 
@@ -1104,7 +1305,13 @@ def run_recheck(
         seconds = max(1, github_state.settings().recheck - 5)
         reader = github_state.FreshReader("recheck", seconds)
         reason = github_state.recheck(
-            agent.capitalize(), action, focus, enabled, paused, reader
+            agent.capitalize(),
+            action,
+            focus,
+            enabled,
+            paused,
+            reader,
+            completed_tickets=completed_tickets,
         )
     except QuotaExhausted as error:
         return stop_on_quota(error)
