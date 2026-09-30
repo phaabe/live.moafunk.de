@@ -1531,6 +1531,11 @@ def main() -> int:
                 free_claims=shared_reader(),
             )
         )
+        # Local runner state, no GitHub read. Imported here: only --status needs it.
+        from tick_cooldown import status_lines
+
+        print("\nClaude cooldowns (tick_cooldown.py):")
+        print("\n".join(status_lines(STATE_DIR, time.time())))
         return 0
     actions = decide(
         args.agent.capitalize(),

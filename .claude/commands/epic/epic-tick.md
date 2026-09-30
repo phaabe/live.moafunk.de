@@ -52,3 +52,13 @@ It prints one JSON action. If a selected action is already appended below (headl
 - Do a second action in the same tick.
 
 End with one line: `tick: <action> <target> -> <result>`.
+
+## 6. Result (headless runner)
+
+The runner asks for a structured result at the end. Set `status` from what really happened, with a one-line `summary`:
+
+- `completed`: you did the action, or found nothing left to do.
+- `blocked`: the action cannot succeed until something changes that you cannot change in this tick: a command the permission gate refused, a missing permission, a decision only Anton or Codex can make. Name the blocker in `summary`. The runner then skips this action on this target until the PR head (or, for `resolve-conflict`, the base) changes or the cooldown ends. Comments do not end it.
+- `quota`: a GitHub API rate limit stopped you. The runner sets no cooldown.
+
+Do not report `blocked` for a failing test or a conflict you can still fix: fix it.
