@@ -1,0 +1,18 @@
+{
+ "reset_at": "2026-09-28T13:00:00Z",
+ "retry_at": "2026-09-28T13:01:00Z",
+ "source": "caller",
+ "recorded_at": "2026-09-28T12:10:00Z",
+ "provenance": {
+  "origin": "model-result",
+  "writer": {
+   "pid": 4242,
+   "executable": "/usr/bin/python3",
+   "script": "/home/runner/live.moafunk.de-codex-runner/.codex/tick_backoff.py",
+   "cwd": "/home/runner/live.moafunk.de-codex-runner",
+   "written_at": "2026-09-28T12:10:00Z"
+  },
+  "reset_lookup": {"attempted": false},
+  "quota_call": {"gh_path": null}
+ }
+}
