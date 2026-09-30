@@ -133,13 +133,16 @@ class RunnerHarness(unittest.TestCase):
             "sys.exit(0 if only and str(action.get('pr')) != only else code)\n"
         )
         # Close helper: its own call file, so the call indexes above stay.
+        # Exits from TEST_CLOSE_EXIT in call order (the last repeats).
         (self.repo / "scripts/epic/close_issue.py").write_text(
             "import json, os, sys\n"
             "calls = os.environ['TEST_CALLS']\n"
             "n = len(open(calls).read().splitlines()) if os.path.exists(calls) else 0\n"
             "with open(calls + '.close', 'a') as f:\n"
             "    f.write(json.dumps([n, *sys.argv[1:]]) + '\\n')\n"
-            "sys.exit(int(os.environ.get('TEST_CLOSE_EXIT', '0')))\n"
+            "done = len(open(calls + '.close').read().splitlines())\n"
+            "codes = os.environ.get('TEST_CLOSE_EXIT', '0').split(',')\n"
+            "sys.exit(int(codes[min(done, len(codes)) - 1]))\n"
         )
         (self.repo / "scripts/epic/tick_verify.py").write_text(
             "import json, os, sys\n"
@@ -194,6 +197,7 @@ class RunnerHarness(unittest.TestCase):
             '    printf \'{"retry_at": "2099-01-01T00:00:00Z"}\' > "$EPIC_STATE_DIR/github-quota-wait.json"\n'
             "fi\n"
             'if [[ -n "${TEST_MODEL_SLEEP:-}" ]]; then exec sleep "$TEST_MODEL_SLEEP"; fi\n'
+            'exit "${TEST_MODEL_EXIT:-0}"\n'
         )
         (bin_dir / "gh").write_text(
             "#!/bin/bash\n"
@@ -548,19 +552,55 @@ class ClaudeTickTest(RunnerHarness):
         self.assertEqual(self.run_tick(TEST_CLOSE_EXIT="4").wait(timeout=30), 75)
         self.assertNotIn(["select"], self.calls_made())
 
-    def test_merge_records_the_close_before_verify(self) -> None:
+    def test_close_retry_deferred_stops_before_selection(self) -> None:
+        self.assertEqual(self.run_tick(TEST_CLOSE_EXIT="3").wait(timeout=30), 0)
+        self.assertNotIn(["select"], self.calls_made())
+        self.assertEqual(self.model_targets(), [])
+
+    def test_merge_queues_the_close_before_the_model(self) -> None:
         merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}
         result = self.run_tick(TEST_CANDIDATES=json.dumps(merge)).wait(timeout=30)
         self.assertEqual(result, 0)
-        (retry, record) = self.close_calls()
-        verify_at = self.calls_made().index(["verify", "--since"])
-        self.assertEqual(record, [verify_at, "record", "--pr", "7"])
+        (retry, queue, after) = self.close_calls()
+        calls = self.calls_made()
+        model_at = [c[0] for c in calls].index("claude")
+        verify_at = calls.index(["verify", "--since"])
         self.assertEqual(retry[1:], ["retry"])
+        self.assertEqual(queue, [model_at, "queue", "--pr", "7"])
+        self.assertEqual(after, [verify_at, "retry"])
+
+    def test_merge_session_that_ends_early_keeps_the_queued_close(self) -> None:
+        merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}
+        for name, env, code in (
+            ("quota wait during session", {"TEST_MODEL_WAIT": "1"}, 75),
+            ("failed session", {"TEST_MODEL_EXIT": "1"}, 1),
+        ):
+            with self.subTest(name):
+                self.setUp()
+                result = self.run_tick(TEST_CANDIDATES=json.dumps(merge), **env)
+                self.assertEqual(result.wait(timeout=30), code)
+                # Queued before the model; no GitHub call after it.
+                self.assertEqual(
+                    [c[1:] for c in self.close_calls()],
+                    [["retry"], ["queue", "--pr", "7"]],
+                )
+                self.assertNotIn(["verify", "--since"], self.calls_made())
+
+    def test_merge_close_deferred_skips_verify_and_record(self) -> None:
+        merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}
+        result = self.run_tick(
+            TEST_CANDIDATES=json.dumps(merge), TEST_CLOSE_EXIT="0,0,3"
+        ).wait(timeout=30)
+        self.assertEqual(result, 75)
+        calls = self.calls_made()
+        self.assertNotIn(["verify", "--since"], calls)
+        self.assertNotIn(["gate", "record"], calls)
+        self.assertIn("issue close deferred", (self.state / "claude.log").read_text())
 
     def test_failed_close_after_merge_still_verifies(self) -> None:
         merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}
         result = self.run_tick(
-            TEST_CANDIDATES=json.dumps(merge), TEST_CLOSE_EXIT="1"
+            TEST_CANDIDATES=json.dumps(merge), TEST_CLOSE_EXIT="0,0,1"
         ).wait(timeout=30)
         self.assertEqual(result, 0)
         self.assertEqual(

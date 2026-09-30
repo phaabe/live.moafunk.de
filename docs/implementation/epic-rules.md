@@ -145,9 +145,14 @@ the evidence the plan requires. A merged PR is never activation evidence.
   - the epic, a ticket with sub-issues, or a PR without exactly one `Issue:`
     line.
 - It runs once per merge and never re-scans old merges, so a reopened ticket
-  stays open until the next PR for it merges. A failed close stays queued in
-  the state directory (`close-queue.json`) and is retried and logged every
-  tick.
+  stays open until the next PR for it merges. The runner queues the PR in
+  the state directory (`close-queue.json`) before the merge session starts,
+  so a session that merges and then fails still gets its close. A failed
+  close stays queued and is retried and logged every tick. Each comment has a
+  marker for its merge; after a timeout the helper looks for it before it
+  posts again.
+- The helper reads the pause file and the quota wait again before every
+  GitHub call. Either one stops it with no call; the queue stays for later.
 - A ticket dependency ("Start after <ticket URL>") counts as done by the same
   rule: a merged PR that names the ticket without `(partial)` and covers its
   unchecked leaves. The leaves a partial PR lists still count one by one.

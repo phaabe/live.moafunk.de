@@ -2,8 +2,11 @@
 
 Both runners call this after a verified merge; it also works by hand.
 
-  close_issue.py record --pr N   queue PR N (no GitHub read), then run the queue
+  close_issue.py queue --pr N    queue PR N only (no GitHub call); the runner
+                                 calls it before a merge session starts
+  close_issue.py record --pr N   queue PR N, then run the queue (by hand)
   close_issue.py retry           run the queue; the runner calls it every tick
+                                 and after a merge session
 
 For each queued PR it reads the PR and its one `Issue:` ticket and then:
 
@@ -21,10 +24,16 @@ A PR is queued once per state dir; it is never queued again after it left the
 queue. Old merges are never re-scanned, so a reopened ticket stays open until
 the next PR for it merges. A failed GitHub call keeps the entry and its progress
 (comment posted or not) in `<state dir>/close-queue.json`; the next run retries
-it, so the comment is never posted twice.
+it. Each comment carries a marker for its merge. Before a comment is posted
+again after an unclear result (a timeout), the ticket's comments are searched
+for that marker, so the comment is never posted twice.
+
+Before every GitHub call the pause file and the shared quota wait are read
+again. Either one stops the run with no call; the entries stay as they are.
 
 Exit 0 queue empty, 1 an entry is still pending (logged), 2 bad input or queue
-file, 4 GraphQL quota (see github_quota.py; REST calls rarely hit it).
+file, 3 deferred by the pause file or a quota wait, 4 GraphQL quota (see
+github_quota.py; REST calls rarely hit it).
 """
 
 from __future__ import annotations
@@ -40,6 +49,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import github_quota
+import next_action
 from github_quota import QuotaExhausted, run_gh, stop_on_quota
 from next_action import EPIC, REPO, issue_links, issue_url, uncovered_leaves
 
@@ -51,12 +62,30 @@ DONE_KEEP = 500
 TESTS_MAX = 600
 VALIDATION = re.compile(r"^Validation:[ \t]*(.*)$", re.MULTILINE)
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+DEFERRED = 3
 
 Fetch = Callable[[list[str]], Any]
 
 
 class BadQueue(Exception):
     pass
+
+
+class Deferred(Exception):
+    """The pause file or a stored quota wait: no GitHub call now."""
+
+
+def github_blocked() -> str | None:
+    """Why no GitHub call may run now, or None. Read again before each call."""
+    if next_action.PAUSE_FILE.exists():
+        return f"pause file {next_action.PAUSE_FILE} exists"
+    try:
+        result, retry_at = github_quota.check(github_quota.STATE_DIR, time.time())
+    except (OSError, ValueError) as error:
+        return f"quota wait file unreadable: {error}"
+    if result == github_quota.DEFERRED:
+        return f"GitHub quota wait until {retry_at}"
+    return None
 
 
 def gh_json(args: list[str]) -> Any:
@@ -159,6 +188,12 @@ def decide(pr: dict[str, Any], fetch: Fetch) -> tuple[str, int | None, str]:
     return "close", ticket, f"issue {ticket} closed"
 
 
+def marker(kind: str, pr: dict[str, Any]) -> str:
+    """Stable per merge, so a retry can find a comment that already landed."""
+    sha = pr.get("merge_commit_sha") or "unknown"
+    return f"<!-- epic-close {kind} pr={pr['number']} merge={sha} -->"
+
+
 def close_comment(pr: dict[str, Any]) -> str:
     return "\n".join(
         [
@@ -169,6 +204,8 @@ def close_comment(pr: dict[str, Any]) -> str:
             f"- Tests: {tests_text(pr.get('body') or '')}",
             "",
             "A merged PR is not activation evidence. Reopen for follow-up work.",
+            "",
+            marker("close", pr),
         ]
     )
 
@@ -176,7 +213,7 @@ def close_comment(pr: dict[str, Any]) -> str:
 def note_comment(pr: dict[str, Any], leaves: str) -> str:
     return (
         f"Not closed: {pr_url(pr['number'])} merged, but these leaves are "
-        f"unchecked and not in its `Leaf IDs:`: {leaves}."
+        f"unchecked and not in its `Leaf IDs:`: {leaves}.\n\n{marker('note', pr)}"
     )
 
 
@@ -185,6 +222,20 @@ def note_comment(pr: dict[str, Any], leaves: str) -> str:
 
 def comment(ticket: int, text: str) -> None:
     run_gh(["api", f"repos/{REPO}/issues/{ticket}/comments", "-f", f"body={text}"])
+
+
+def has_comment(ticket: int, mark: str) -> bool:
+    """True when a comment on the ticket contains `mark`."""
+    out = run_gh(
+        [
+            "api",
+            "--paginate",
+            f"repos/{REPO}/issues/{ticket}/comments?per_page=100",
+            "--jq",
+            f".[] | select(.body | contains({json.dumps(mark)})) | .id",
+        ]
+    )
+    return bool(out.strip())
 
 
 def close(ticket: int) -> None:
@@ -202,27 +253,75 @@ def close(ticket: int) -> None:
     )
 
 
+def post_once(
+    entry: dict[str, Any],
+    ticket: int,
+    text: str,
+    mark: str,
+    write_comment: Callable[[int, str], None],
+    find_comment: Callable[[int, str], bool],
+    persist: Callable[[], None],
+) -> None:
+    """Post `text` unless this entry posted it before. `posting` is saved before
+    the request: after an unclear result the next run first looks for `mark`."""
+    if entry.get("commented"):
+        return
+    if entry.get("posting") != mark or not find_comment(ticket, mark):
+        entry["posting"] = mark
+        persist()
+        write_comment(ticket, text)
+    entry["commented"] = True
+    entry.pop("posting", None)
+    persist()
+
+
 def handle(
     entry: dict[str, Any],
     fetch: Fetch,
     write_comment: Callable[[int, str], None],
     write_close: Callable[[int], None],
+    find_comment: Callable[[int, str], bool],
     persist: Callable[[], None],
 ) -> tuple[str, int | None, str]:
     """Run one queue entry to its end. GitHub errors propagate; progress is
-    persisted between the comment and the close."""
+    persisted around each comment."""
     pr = fetch(["api", f"repos/{REPO}/pulls/{entry['pr']}"])
     kind, ticket, reason = decide(pr, fetch)
     if kind == "close" and ticket is not None:
-        if not entry.get("commented"):
-            write_comment(ticket, close_comment(pr))
-            entry["commented"] = True
-            persist()
+        post_once(
+            entry,
+            ticket,
+            close_comment(pr),
+            marker("close", pr),
+            write_comment,
+            find_comment,
+            persist,
+        )
         write_close(ticket)
     elif kind == "note" and ticket is not None:
-        write_comment(ticket, note_comment(pr, reason))
+        post_once(
+            entry,
+            ticket,
+            note_comment(pr, reason),
+            marker("note", pr),
+            write_comment,
+            find_comment,
+            persist,
+        )
         reason = f"issue {ticket} kept open: leaves {reason} not covered"
     return kind, ticket, reason
+
+
+def guarded(call: Callable[..., Any], blocked: Callable[[], str | None]) -> Any:
+    """`call`, but first raise Deferred when `blocked()` gives a reason."""
+
+    def run(*args: Any) -> Any:
+        reason = blocked()
+        if reason:
+            raise Deferred(reason)
+        return call(*args)
+
+    return run
 
 
 def run_queue(
@@ -230,14 +329,25 @@ def run_queue(
     fetch: Fetch = gh_json,
     write_comment: Callable[[int, str], None] = comment,
     write_close: Callable[[int], None] = close,
+    find_comment: Callable[[int, str], bool] = has_comment,
     now: Callable[[], float] = time.time,
+    blocked: Callable[[], str | None] = github_blocked,
 ) -> int:
     data = load(state_dir)
+    fetch, write_comment, write_close, find_comment = (
+        guarded(call, blocked)
+        for call in (fetch, write_comment, write_close, find_comment)
+    )
     failed = 0
     for entry in list(data["pending"]):
         try:
             kind, ticket, reason = handle(
-                entry, fetch, write_comment, write_close, lambda: save(state_dir, data)
+                entry,
+                fetch,
+                write_comment,
+                write_close,
+                find_comment,
+                lambda: save(state_dir, data),
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             stderr = getattr(error, "stderr", None)
@@ -252,7 +362,7 @@ def run_queue(
                 file=sys.stderr,
             )
             continue
-        except QuotaExhausted:
+        except (QuotaExhausted, Deferred):
             save(state_dir, data)
             raise
         data["pending"].remove(entry)
@@ -292,21 +402,28 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-dir", type=Path, default=STATE_DIR)
     sub = parser.add_subparsers(dest="command", required=True)
+    que = sub.add_parser("queue", help="queue a PR, no GitHub call")
+    que.add_argument("--pr", type=int, required=True)
     rec = sub.add_parser("record", help="queue a merged PR, then run the queue")
     rec.add_argument("--pr", type=int, required=True)
     sub.add_parser("retry", help="run the queue")
     args = parser.parse_args()
     try:
-        if args.command == "record":
+        if args.command in ("queue", "record"):
             data = load(args.state_dir)
             if enqueue(data, args.pr):
                 save(args.state_dir, data)
             else:
                 print(f"close: PR {args.pr} was queued before; not again")
+        if args.command == "queue":
+            return 0
         return run_queue(args.state_dir)
     except BadQueue as error:
         print(f"close: bad queue file: {error}", file=sys.stderr)
         return 2
+    except Deferred as error:
+        print(f"close: deferred, no GitHub call: {error}", file=sys.stderr)
+        return DEFERRED
     except QuotaExhausted as error:
         return stop_on_quota(error)
 

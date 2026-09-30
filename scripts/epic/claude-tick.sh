@@ -377,13 +377,18 @@ else
         exit 1
     fi
 fi
-# Issue closes that failed in an earlier tick (close_issue.py). A failure is
-# logged and kept for the next tick; it never blocks the tick.
+# Issue closes still queued (close_issue.py): a failed close, or a merge
+# session that ended early. A failure is logged and kept for the next tick; it
+# never blocks the tick. Exit 3: pause or quota wait came up, no GitHub call.
 closed=0
 run_bounded "${select_timeout}s" "$py" "${code_root}/scripts/epic/close_issue.py" retry \
     || closed=$?
 case "$closed" in
     0) ;;
+    3)
+        tick_phase=quota
+        exit 0
+        ;;
     4) quota_stop ;;
     *) printf 'tick: pending issue close not done (exit=%s); retry next tick\n' "$closed" >&2 ;;
 esac
@@ -677,6 +682,14 @@ attempt_finish() {
         printf 'tick: attempt outcome %s not recorded; it counts as failed\n' "$1" >&2
     fi
 }
+# Queue the close before the session (no GitHub call). A session that merges
+# and then fails or meets a quota wait leaves the entry for the next tick's
+# retry; an unmerged PR just leaves the queue there.
+if [[ "$action" == merge ]]; then
+    merged_pr=$("${py_snippet[@]}" -c 'import json, sys; print(json.load(sys.stdin)["pr"])' \
+        < "${lock_dir}/action.json")
+    "$py" "${code_root}/scripts/epic/close_issue.py" queue --pr "$merged_pr"
+fi
 printf 'tick: %s with model=%s effort=%s\n' "$action" "$model" "$effort"
 tick_phase=model
 # `claude -p` cannot show a prompt. The runner settings
@@ -801,17 +814,22 @@ if [[ "$action" == resolve-conflict ]]; then
         quota_stop
     fi
 fi
-# After a merge, close its `Issue:` ticket. The PR is queued before any
-# GitHub read, so a failed close is retried at the next tick start.
+# After a merge, close its `Issue:` ticket (queued before the session). A
+# failed close is retried at the next tick start. Deferred (3): no verify and
+# no gate record, like a quota wait.
 if [[ "$action" == merge ]]; then
     tick_phase=verify
-    merged_pr=$("${py_snippet[@]}" -c 'import json, sys; print(json.load(sys.stdin)["pr"])' \
-        < "${lock_dir}/action.json")
     closed=0
-    run_bounded "${select_timeout}s" "$py" "${code_root}/scripts/epic/close_issue.py" record \
-        --pr "$merged_pr" || closed=$?
+    run_bounded "${select_timeout}s" "$py" "${code_root}/scripts/epic/close_issue.py" retry \
+        || closed=$?
     case "$closed" in
         0) ;;
+        3)
+            printf 'tick: not verified, issue close deferred\n' >&2
+            tick_outcome=blocked
+            tick_phase=quota
+            exit 75
+            ;;
         4) quota_stop ;;
         *) printf 'tick: issue close for PR %s not done (exit=%s); retry next tick\n' \
             "$merged_pr" "$closed" >&2 ;;
