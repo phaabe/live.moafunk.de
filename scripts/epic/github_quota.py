@@ -23,7 +23,13 @@ gh through run_gh(). On a quota error they record the wait and exit QUOTA (4).
 
 Wait file:
   {"reset_at": "2026-09-28T13:00:00Z", "retry_at": "2026-09-28T13:01:00Z",
-   "recorded_at": "2026-09-28T12:10:00Z", "source": "rateLimit"}
+   "recorded_at": "2026-09-28T12:10:00Z", "source": "rateLimit",
+   "provenance": {...}}
+
+source says where the reset came from: "caller" (given to record, not measured),
+"rateLimit" (the lookup) or "fallback" (no usable reset). The optional
+provenance block says who wrote the wait (see provenance()). It is diagnostic
+only: it never changes the wait, and files without it stay valid.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,10 +64,25 @@ PROCEED, BAD_FILE, DEFERRED, QUOTA = 0, 2, 3, 4
 QUOTA_TEXT = re.compile(r"API rate limit (?:already )?exceeded", re.IGNORECASE)
 GRAPHQL_COMMANDS = {"pr", "project", "issue"}
 RESET_QUERY = "query{rateLimit{resetAt}}"
+# origin in the provenance block: a code path, or a retry time a model claimed.
+ORIGINS = ("code", "model-result")
 
 
 class QuotaExhausted(Exception):
-    """A GitHub read hit the GraphQL quota. The tick must stop."""
+    """A GitHub read hit the GraphQL quota. The tick must stop.
+
+    gh_path is the resolved gh executable of the call that hit the quota, or
+    None when the caller did not report it.
+    """
+
+    def __init__(self, message: str = "", gh_path: str | None = None) -> None:
+        super().__init__(message)
+        self.gh_path = gh_path
+
+
+def resolve_gh() -> str | None:
+    """The gh executable on PATH now. Callers run exactly this path."""
+    return shutil.which("gh")
 
 
 def is_graphql(args: list[str]) -> bool:
@@ -97,9 +119,12 @@ def run_gh(args: list[str], timeout: int = 120) -> str:
     Other failures raise CalledProcessError as before, so auth, network and
     unrelated GraphQL errors stay visible.
     """
-    out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=timeout)
+    gh = resolve_gh()
+    out = subprocess.run(
+        [gh or "gh", *args], capture_output=True, text=True, timeout=timeout
+    )
     if is_quota_error(args, out.stdout, out.stderr):
-        raise QuotaExhausted(out.stderr.strip() or "GraphQL RATE_LIMITED")
+        raise QuotaExhausted(out.stderr.strip() or "GraphQL RATE_LIMITED", gh)
     if out.returncode != 0:
         raise subprocess.CalledProcessError(
             out.returncode, ["gh", *args], out.stdout, out.stderr
@@ -118,19 +143,26 @@ def parse_iso(text: str) -> float:
     return at.timestamp()
 
 
-def query_reset_at() -> str | None:
-    """One rateLimit query. None when it fails or has no resetAt."""
+def query_reset_at() -> tuple[str | None, str | None]:
+    """One rateLimit query: (resetAt, gh path).
+
+    resetAt is None when the query fails or has no resetAt. The gh path is None
+    when gh cannot be resolved; then no query runs.
+    """
+    gh = resolve_gh()
+    if gh is None:
+        return None, None
     try:
         out = subprocess.run(
-            ["gh", "api", "graphql", "-f", f"query={RESET_QUERY}"],
+            [gh, "api", "graphql", "-f", f"query={RESET_QUERY}"],
             capture_output=True,
             text=True,
             timeout=30,
         )
         reset = json.loads(out.stdout)["data"]["rateLimit"]["resetAt"]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
-        return None
-    return reset if isinstance(reset, str) else None
+        return None, gh
+    return (reset if isinstance(reset, str) else None), gh
 
 
 def check(state_dir: Path, now: float) -> tuple[int, str | None]:
@@ -147,17 +179,100 @@ def check(state_dir: Path, now: float) -> tuple[int, str | None]:
     return PROCEED, None
 
 
+def writer() -> dict[str, Any]:
+    """The process writing a wait. No arguments or environment values."""
+    # The main module's file, not argv: no arguments reach the wait file.
+    script = getattr(sys.modules.get("__main__"), "__file__", None)
+    try:
+        cwd: str | None = os.getcwd()
+    except OSError:
+        cwd = None
+    return {
+        "pid": os.getpid(),
+        "executable": sys.executable or None,
+        "script": os.path.abspath(script) if script else None,
+        "cwd": cwd,
+        "written_at": iso(time.time()),
+    }
+
+
+def provenance(
+    origin: str,
+    lookup: dict[str, Any],
+    quota_gh: str | None,
+) -> dict[str, Any]:
+    """Who wrote the wait and which gh answered. Diagnostic only.
+
+    reset_lookup: {"attempted": false} or {"attempted": true, "gh_path": ...,
+    "result": "reset" | "failed"}; gh_path None means gh was not resolvable.
+    quota_call: gh_path of the call that hit the quota, None when not reported.
+    The gh path is local attribution, not proof that GitHub answered.
+    """
+    return {
+        "origin": origin,
+        "writer": writer(),
+        "reset_lookup": lookup,
+        "quota_call": {"gh_path": quota_gh},
+    }
+
+
+def describe(wait: dict[str, Any]) -> str:
+    """One line on who wrote a wait, for logs and the check command."""
+    prov = wait.get("provenance")
+    if not isinstance(prov, dict):
+        return "provenance unavailable (older wait file)"
+    w = prov.get("writer")
+    w = w if isinstance(w, dict) else {}
+    lookup = prov.get("reset_lookup")
+    lookup = lookup if isinstance(lookup, dict) else {}
+    call = prov.get("quota_call")
+    call = call if isinstance(call, dict) else {}
+
+    def known(value: Any) -> str:
+        return str(value) if value not in (None, "") else "unavailable"
+
+    if lookup.get("attempted") is True:
+        gh, result = known(lookup.get("gh_path")), known(lookup.get("result"))
+        looked = f"reset lookup gh {gh} ({result})"
+    elif lookup.get("attempted") is False:
+        looked = "no reset lookup"
+    else:
+        looked = "reset lookup unavailable"
+    failing = call.get("gh_path")
+    return (
+        f"origin {known(prov.get('origin'))}; writer pid {known(w.get('pid'))} "
+        f"{known(w.get('script') or w.get('executable'))} in {known(w.get('cwd'))} "
+        f"at {known(w.get('written_at'))}; {looked}; quota call gh "
+        f"{failing if failing else 'not reported'}"
+    )
+
+
 def record(
     state_dir: Path,
     now: float,
     reset_at: str | None = None,
-    lookup: Callable[[], str | None] = query_reset_at,
+    lookup: Callable[[], tuple[str | None, str | None]] | None = None,
+    origin: str = "code",
+    quota_gh: str | None = None,
 ) -> dict[str, Any]:
-    """Store the wait and return it. A later reset replaces the old wait."""
+    """Store the wait and return it. A later reset replaces the old wait.
+
+    origin "model-result" marks a reset_at a model claimed. quota_gh is the gh
+    path of the call that hit the quota (QuotaExhausted.gh_path).
+    """
+    if origin not in ORIGINS:
+        raise ValueError(f"unknown quota wait origin: {origin}")
     source = "caller"
     reset: float | None = None
+    looked: dict[str, Any] = {"attempted": False}
     if reset_at is None:
-        reset_at, source = lookup(), "rateLimit"
+        reset_at, gh = (lookup or query_reset_at)()
+        source = "rateLimit"
+        looked = {
+            "attempted": True,
+            "gh_path": gh,
+            "result": "reset" if reset_at is not None else "failed",
+        }
     if reset_at is not None:
         try:
             reset = parse_iso(reset_at)
@@ -165,7 +280,7 @@ def record(
             reset = None
     if reset is None or reset + MARGIN <= now:
         # Unknown or already past: a bounded backoff, never an immediate retry.
-        wait = {
+        wait: dict[str, Any] = {
             "reset_at": None,
             "retry_at": iso(now + FALLBACK_SECONDS),
             "source": "fallback",
@@ -177,21 +292,28 @@ def record(
             "source": source,
         }
     wait["recorded_at"] = iso(now)
+    wait["provenance"] = provenance(origin, looked, quota_gh)
     state_dir.mkdir(parents=True, exist_ok=True)
+    # mkstemp creates the file 0600; os.replace publishes it whole or not at all.
     with tempfile.NamedTemporaryFile(
         "w", dir=state_dir, prefix=".quota-", delete=False
     ) as f:
-        json.dump(wait, f, indent=1)
-    os.replace(f.name, state_dir / WAIT_FILE)
+        try:
+            json.dump(wait, f, indent=1)
+            f.flush()
+            os.replace(f.name, state_dir / WAIT_FILE)
+        except BaseException:
+            os.unlink(f.name)
+            raise
     return wait
 
 
 def stop_on_quota(error: QuotaExhausted, state_dir: Path = STATE_DIR) -> int:
     """Record the wait for a quota error, log it and return QUOTA."""
-    wait = record(state_dir, time.time())
+    wait = record(state_dir, time.time(), quota_gh=error.gh_path)
     print(
         f"quota: GitHub GraphQL quota exhausted ({error}); "
-        f"retry at {wait['retry_at']} ({wait['source']})",
+        f"retry at {wait['retry_at']} ({wait['source']}; {describe(wait)})",
         file=sys.stderr,
     )
     return QUOTA
@@ -208,7 +330,10 @@ def main() -> int:
     now = time.time()
     if args.command == "record":
         wait = record(args.state_dir, now, args.reset_at)
-        print(f"quota: wait stored, retry at {wait['retry_at']} ({wait['source']})")
+        print(
+            f"quota: wait stored, retry at {wait['retry_at']} "
+            f"({wait['source']}; {describe(wait)})"
+        )
         return PROCEED
     try:
         result, retry_at = check(args.state_dir, now)
@@ -216,7 +341,15 @@ def main() -> int:
         print(f"quota: {error}", file=sys.stderr)
         return BAD_FILE
     if result == DEFERRED:
-        print(f"quota: GitHub GraphQL quota wait, retry at {retry_at}")
+        try:
+            wait = json.loads((args.state_dir / WAIT_FILE).read_text())
+            about = describe(wait) if isinstance(wait, dict) else None
+        except (OSError, ValueError):
+            about = None  # replaced or removed since check(); the wait stands
+        print(
+            f"quota: GitHub GraphQL quota wait, retry at {retry_at} "
+            f"({about or 'provenance unavailable'})"
+        )
     return result
 
 
