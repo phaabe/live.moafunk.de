@@ -329,6 +329,36 @@ print(action)
         printf 'tick: target locked by another runner; next candidate\n'
         continue
     fi
+    # Delivery has its own fresh checks and must not wait on model cooldowns.
+    if [[ "$action" == review ]]; then
+        tick_phase=verify
+        delivery_exit=0
+        run_bounded "${pull_timeout}s" python3 .codex/review_delivery.py resume \
+            --runner "$repo_root" --action-file "${lock_dir}/action.json" \
+            --state-dir "$state_dir" || delivery_exit=$?
+        case "$delivery_exit" in
+            0)
+                discard_seen
+                printf 'tick: saved review delivery confirmed; no model needed\n'
+                exit 0
+                ;;
+            3) ;;
+            4)
+                discard_seen
+                tick_phase=quota
+                tick_outcome=blocked
+                exit 75
+                ;;
+            7)
+                discard_seen
+                target_blocked=1
+                release_target
+                printf 'tick: saved review delivery refused; next candidate\n'
+                continue
+                ;;
+            *) read_blocked ;;
+        esac
+    fi
     check_quota
     tick_phase=backoff
     backoff=0
@@ -580,6 +610,53 @@ if [[ -n "$review_log" ]]; then
     cp "$model_result" "${state_dir}/codex-result.json"
 else
     launch_model || model_exit=$?
+fi
+if [[ "$action" == review ]]; then
+    tick_phase=verify
+    delivery_exit=0
+    run_bounded "${pull_timeout}s" python3 .codex/review_delivery.py publish \
+        --context-file "${lock_dir}/review-context.json" || delivery_exit=$?
+    case "$delivery_exit" in
+        0)
+            # Durable, explicit evidence can survive a failed model process.
+            model_exit=0
+            printf '%s\n' '{"status":"completed","summary":"Saved Codex review delivery confirmed on GitHub","reason_code":null,"retry_at":null}' \
+                > "${state_dir}/codex-result.json"
+            ;;
+        8)
+            tick_phase=model
+            # Preserve blocked, failed and quota results for the normal recorder.
+            # A successful model without explicit evidence is incomplete too.
+            if python3 -c '
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tick_backoff import result_outcome
+path = Path(sys.argv[2])
+if result_outcome(path, int(sys.argv[3]))[0] == 0:
+    path.write_text(json.dumps({"status": "blocked", "summary": "Review model did not save a completed bundle", "reason_code": None, "retry_at": None}))
+' "${repo_root}/.codex" "${state_dir}/codex-result.json" "$model_exit"; then
+                :
+            else
+                exit 1
+            fi
+            ;;
+        4)
+            discard_seen
+            tick_phase=quota
+            tick_outcome=blocked
+            exit 75
+            ;;
+        7)
+            discard_seen
+            if [[ "$model_exit" != 0 ]]; then
+                tick_phase=model
+                exit "$model_exit"
+            fi
+            read_blocked
+            ;;
+        *) read_blocked ;;
+    esac
 fi
 # A completed adoption needs GitHub evidence before clearing its cooldown.
 # Other outcomes still go through record below, including malformed results.

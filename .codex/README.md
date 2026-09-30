@@ -344,18 +344,41 @@ version 1 artifact for review and later delivery. Each attempt has its own
 Review output streams directly into the attempt's log. The runner appends it
 to the normal tick log after the child stops, before cleanup and final metrics.
 
-The bundle contains `repo`, `pr`, `reviewer`, `sha`, `head`, `base`, `inputs`
-(title, body, draft flag and labels),
+The bundle contains `repo`, `pr`, `reviewer`, `sha`, `head`, `base`,
+`review_started_at`, `inputs` (title, body, draft flag and labels),
 `findings`, an explicit `verdict`, `status` and ordered `comments` containing
 exact `body` text and a confirmed `url` or null. The model saves draft findings
 as it works and uses `review_worktree.py save-bundle --context-file <context>
 --bundle-file <candidate>` to persist the completed bundle atomically before
-its first comment write. Finding comments precede the standalone verdict.
-Later saves may add delivery URLs and mark it published, but cannot replace
-completed analysis. A completed or published bundle prevents a second model
-review. Automatic publication retry and input revalidation belong to
-https://github.com/phaabe/live.moafunk.de/issues/535; until then, pending delivery
-requires operator handling. There is no second review database.
+any comment write. The model saves analysis only; the runner publishes it after
+the model exits. Finding comments precede the standalone verdict. The publisher
+reads REST comments before each write and records confirmed URLs in this bundle.
+Only a confirmed current-head verdict completes delivery.
+If the model leaves a draft, its blocked result or failure keeps the normal
+cooldown. A model that reports completion without a completed bundle is recorded
+as blocked too. Raw model results remain in the attempt directory.
+The publisher saves a `pending_comment` index before sending each POST. If a
+request has an uncertain result and GitHub does not show that comment yet,
+delivery waits for confirmation without sending it again, including after a
+restart. An unresolved request needs operator investigation; the runner never
+guesses that it failed.
+
+Later ticks try delivery under the target lock before model cooldown checks.
+Unchanged completed bundles need no model or review checkout. Pause, shared
+quota, ownership, PR state and reviewed inputs are checked before publication.
+Changed head, base or metadata requires fresh analysis; old evidence is retained.
+Fresh analysis reuses identical trusted finding comments only after the previous
+Codex verdict on the PR, across all heads. It selects the newest eligible copy.
+Findings from an older completed round are posted again so the fixer receives
+them with the new verdict. A retry after verdict publication uses the preceding
+round boundary. The verdict must still be confirmed within the new review's
+publication window. Round boundaries include verdicts from any author, matching
+the fixer's selection rule; finding reuse and verdict confirmation still require
+a trusted author.
+A later conflicting Codex verdict or trusted GitHub review blocks pending
+delivery. Network or quota failures retain the bundle without a repeat record.
+Target refusals release the lock and allow later candidates to run. Cleanup
+failure does not repeat delivered analysis. There is no second review database.
 The bundle checks protect against accidental edits through `save-bundle`.
 The model can write this directory directly, so immutability relies on its
 cooperation; these checks are not a security boundary.

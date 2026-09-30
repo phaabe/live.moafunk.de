@@ -51,6 +51,18 @@ class TickTests(unittest.TestCase):
         shutil.copyfile(ROOT / "codex-tick.sh", self.runner)
         shutil.copyfile(ROOT / "epic-tick.md", self.runner.parent / "epic-tick.md")
         shutil.copyfile(ROOT / "epic_lock.py", self.runner.parent / "epic_lock.py")
+        (self.runner.parent / "review_delivery.py").write_text(
+            "import os, pathlib, sys, time\n"
+            "from tick_backoff import result_outcome\n"
+            "command = sys.argv[1]\n"
+            "if os.environ.get('TEST_DELIVERY_SLEEP') == command: time.sleep(60)\n"
+            "override = os.environ.get('TEST_DELIVERY_' + command.upper() + '_EXIT')\n"
+            "if override is not None: raise SystemExit(int(override))\n"
+            "if command == 'resume': raise SystemExit(3)\n"
+            "result = pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex-result.json'\n"
+            "outcome, _ = result_outcome(result, int(os.environ.get('TEST_CODEX_EXIT', '0')))\n"
+            "raise SystemExit(0 if outcome == 0 else 8)\n"
+        )
         (self.runner.parent / "assignment.py").write_text(
             "import argparse, json, os, pathlib\n"
             "parser = argparse.ArgumentParser()\n"
@@ -1125,6 +1137,73 @@ else:
 
     def review_lifecycle(self) -> list[dict[str, object]]:
         return [json.loads(line) for line in self.review_calls.read_text().splitlines()]
+
+    def test_pending_delivery_runs_before_repeat_gate(self) -> None:
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.env["TEST_DELIVERY_RESUME_EXIT"] = "5"
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_pending_delivery_failure_starts_no_model_or_backoff(self) -> None:
+        for code in (4, 5, 7):
+            with self.subTest(code=code):
+                self.env["TEST_DELIVERY_RESUME_EXIT"] = str(code)
+                self.assertEqual(self.run_tick().returncode, 75)
+                self.assertFalse(self.calls.exists())
+                self.assertFalse(self.record.exists())
+                self.assertFalse((self.state / "codex-backoff.json").exists())
+                self.assertFalse(self.lock.exists())
+
+    def test_refused_pending_delivery_does_not_starve_next_candidate(self) -> None:
+        self.env["TEST_DELIVERY_RESUME_EXIT"] = "7"
+        following = {
+            "action": "continue",
+            "issue": "https://github.com/phaabe/live.moafunk.de/issues/381",
+        }
+        self.candidates(self.review_action(406), following)
+        self.assertEqual(self.run_tick().returncode, 0)
+        [call] = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual(call["action"], following)
+        self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"381"})
+        with (self.target_locks / "406.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_delivery_timeout_preserves_pending_state_without_cooldown(self) -> None:
+        self.env["EPIC_PULL_TIMEOUT_SECONDS"] = "1"
+        for command in ("resume", "publish"):
+            with self.subTest(command=command):
+                self.env["TEST_DELIVERY_SLEEP"] = command
+                self.assertEqual(self.run_tick().returncode, 75)
+                self.assertFalse(self.record.exists())
+                self.assertFalse((self.state / "codex-backoff.json").exists())
+                self.assertFalse(self.lock.exists())
+                if command == "resume":
+                    self.assertFalse(self.calls.exists())
+                else:
+                    self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_delivery_failure_after_model_does_not_record_completion(self) -> None:
+        for code in (4, 5, 7):
+            with self.subTest(code=code):
+                self.env["TEST_DELIVERY_PUBLISH_EXIT"] = str(code)
+                self.assertEqual(self.run_tick().returncode, 75)
+                self.assertFalse(self.record.exists())
+                self.assertFalse((self.state / "codex-backoff.json").exists())
+                self.assertFalse(self.lock.exists())
+
+    def test_delivered_bundle_overrides_failed_model_result(self) -> None:
+        self.env.update(
+            TEST_DELIVERY_PUBLISH_EXIT="0",
+            TEST_CODEX_EXIT="17",
+            TEST_RESULT=json.dumps({"status": "blocked", "summary": "Interrupted."}),
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertTrue(self.record.exists())
+        prepared = self.review_lifecycle()[0]
+        result = json.loads((Path(prepared["attempt_dir"]) / "result.json").read_text())
+        self.assertEqual(result["status"], "blocked")
+        confirmed = json.loads((self.state / "codex-result.json").read_text())
+        self.assertEqual(confirmed["status"], "completed")
 
     def test_review_model_uses_prepared_checkout_and_external_artifacts(self) -> None:
         self.assertEqual(self.run_tick().returncode, 0)

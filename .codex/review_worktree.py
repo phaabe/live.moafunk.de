@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -72,6 +73,8 @@ def metadata(action: dict[str, Any]) -> dict[str, Any]:
         or pr.get("draft") is not False
     ):
         raise Refused("review PR must be open, ready and assigned to Claude")
+    if pr.get("mergeable") is False or pr.get("mergeable_state") == "dirty":
+        raise Refused("review PR has merge conflicts")
     for part in ("head", "base"):
         branch = pr.get(part)
         if (
@@ -191,6 +194,27 @@ def prepare(
     path = TEMP_ROOT / f"moafunk-review-{number}-{sha}"
     artifact = artifact_directory(runner, state, number, sha)
     artifact.mkdir(parents=True, exist_ok=True)
+    bundle_path = artifact / "bundle.json"
+    previous = None
+    if bundle_path.exists():
+        previous = json.loads(bundle_path.read_text())
+        if not isinstance(previous, dict):
+            raise Refused(f"malformed review bundle retained at {bundle_path}")
+        if not valid_review_started_at(previous.get("review_started_at")) or any(
+            previous.get(key) != value for key, value in snapshot.items()
+        ):
+            archive_bundle(artifact)
+            previous = None
+        elif previous.get("status") not in {"draft", "complete", "published"}:
+            raise Refused(f"invalid review bundle status retained at {bundle_path}")
+    snapshot["review_started_at"] = (
+        previous["review_started_at"]
+        if previous is not None
+        else datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
     attempt = artifact / "attempts" / uuid.uuid4().hex
     if attempt.resolve() != attempt:
         raise Refused("review attempt path must not contain symlinks")
@@ -205,21 +229,10 @@ def prepare(
         "ref": ref,
     }
     write_json(context_file, context)
-    bundle_path = artifact / "bundle.json"
-    if bundle_path.exists():
-        previous = json.loads(bundle_path.read_text())
-        if not isinstance(previous, dict):
-            raise Refused(f"malformed review bundle retained at {bundle_path}")
-        if previous.get("status") in {"complete", "published"}:
-            raise ExistingBundle(
-                f"{previous['status']} review bundle retained at {bundle_path}; publication retry is separate"
-            )
-        if previous.get("status") != "draft" or any(
-            previous.get(key) != value for key, value in snapshot.items()
-        ):
-            raise ExistingBundle(
-                f"stale draft bundle retained at {bundle_path}; revalidation is separate"
-            )
+    if previous is not None and previous.get("status") in {"complete", "published"}:
+        raise ExistingBundle(
+            f"{previous['status']} review bundle retained at {bundle_path}; publication retry is separate"
+        )
     if path.exists() or path.is_symlink() or path in registrations(runner):
         validate_checkout(runner, path, sha)
     else:
@@ -254,6 +267,36 @@ def prepare(
     return path
 
 
+def valid_review_started_at(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() == timezone.utc.utcoffset(
+        parsed
+    )
+
+
+def archive_bundle(artifact: Path) -> None:
+    """Keep exact stale evidence before replacing the active bundle."""
+    archive = artifact / "archive" / uuid.uuid4().hex
+    if archive.resolve() != archive:
+        raise Refused("review archive path must not contain symlinks")
+    archive.mkdir(parents=True)
+    for name in ("bundle.json", "context.json"):
+        source = artifact / name
+        if source.exists():
+            with (archive / name).open("xb") as output:
+                os.chmod(archive / name, 0o600)
+                output.write(source.read_bytes())
+                output.flush()
+                os.fsync(output.fileno())
+    (artifact / "bundle.json").unlink()
+    logging.info("review: archived stale evidence at %s", archive)
+
+
 def load_context(context_file: Path) -> dict[str, Any]:
     context = json.loads(context_file.read_text())
     if (
@@ -277,10 +320,7 @@ def load_context(context_file: Path) -> dict[str, Any]:
     return context
 
 
-def save_bundle(context_file: Path, bundle_file: Path) -> None:
-    context = load_context(context_file)
-    path = Path(context["artifact_dir"]) / "bundle.json"
-    previous, bundle = json.loads(path.read_text()), json.loads(bundle_file.read_text())
+def validate_bundle(context: dict[str, Any], bundle: dict[str, Any]) -> None:
     if not isinstance(bundle, dict) or any(
         bundle.get(key) != context.get(key)
         for key in (
@@ -292,9 +332,12 @@ def save_bundle(context_file: Path, bundle_file: Path) -> None:
             "head",
             "base",
             "inputs",
+            "review_started_at",
         )
     ):
         raise Refused("bundle must match the reviewed PR, head, base and inputs")
+    if not valid_review_started_at(bundle.get("review_started_at")):
+        raise Refused("bundle requires a UTC review start time")
     if (
         bundle.get("status") not in {"complete", "published"}
         or bundle.get("verdict") not in {"APPROVED", "CHANGES REQUESTED"}
@@ -327,6 +370,8 @@ def save_bundle(context_file: Path, bundle_file: Path) -> None:
             "bundle requires ordered comments with bodies and GitHub URLs or null"
         )
     expected = f"Review: {bundle['verdict']} by Codex at {context['sha']}"
+    if len({comment["body"] for comment in comments}) != len(comments):
+        raise Refused("bundle comment bodies must be distinct")
     if comments[-1]["body"] != expected or any(
         comment["body"].startswith("Review:") for comment in comments[:-1]
     ):
@@ -335,19 +380,27 @@ def save_bundle(context_file: Path, bundle_file: Path) -> None:
         comment["url"] is None for comment in comments
     ):
         raise Refused("published bundle requires every comment URL")
-    if previous.get("status") in {"complete", "published"}:
-        immutable = set(previous) - {"status", "comments"}
-        if (
-            any(bundle.get(key) != previous[key] for key in immutable)
-            or len(previous["comments"]) != len(comments)
-            or any(
-                old["body"] != new["body"]
-                or (old["url"] is not None and old["url"] != new["url"])
-                for old, new in zip(previous["comments"], comments)
-            )
-            or (previous["status"] == "published" and bundle["status"] != "published")
-        ):
-            raise Refused("completed review evidence cannot be overwritten")
+    if "pending_comment" in bundle and (
+        type(bundle["pending_comment"]) is not int
+        or not 0 <= bundle["pending_comment"] < len(comments)
+        or bundle["status"] != "complete"
+    ):
+        raise Refused("invalid pending review comment")
+
+
+def save_bundle(context_file: Path, bundle_file: Path) -> None:
+    context = load_context(context_file)
+    path = Path(context["artifact_dir"]) / "bundle.json"
+    previous, bundle = json.loads(path.read_text()), json.loads(bundle_file.read_text())
+    validate_bundle(context, bundle)
+    if (
+        bundle["status"] != "complete"
+        or "pending_comment" in bundle
+        or any(comment["url"] is not None for comment in bundle["comments"])
+    ):
+        raise Refused("only the delivery helper can confirm publication")
+    if previous.get("status") in {"complete", "published"} and previous != bundle:
+        raise Refused("completed review evidence cannot be overwritten")
     write_json(path, bundle)
 
 
