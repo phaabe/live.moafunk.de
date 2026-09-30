@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import isolated_env  # noqa: F401  (first: hides live runner state)
+
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field

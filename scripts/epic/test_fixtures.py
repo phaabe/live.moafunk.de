@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import isolated_env  # noqa: F401  (first: hides live runner state)
+
 from pathlib import Path
 import re
 import shutil

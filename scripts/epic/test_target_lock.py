@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import isolated_env  # noqa: F401  (first: hides live runner state)
+
 import os
 import signal
 import subprocess
