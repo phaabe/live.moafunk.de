@@ -135,11 +135,47 @@ def comments(number: int) -> list[dict[str, Any]]:
         raise github_state.ReadBlocked(f"malformed GitHub comments: {error}") from error
 
 
+def finding_window(
+    bundle: dict[str, Any], remote: list[dict[str, Any]], trusted: set[str]
+) -> tuple[float | None, float | None]:
+    """Match the fixer's interval between consecutive Codex verdicts."""
+    # The fixer counts every author's verdict as a round boundary. Only a
+    # trusted author's verdict can confirm this bundle's current round.
+    verdicts = [
+        comment
+        for comment in remote
+        if VERDICT.fullmatch(comment["body"].strip())
+        and comment["created_at"] == comment["updated_at"]
+    ]
+    started = github_quota.parse_iso(bundle["review_started_at"])
+    current = max(
+        (
+            comment
+            for comment in verdicts
+            if comment["body"] == bundle["comments"][-1]["body"]
+            and comment["user"]["login"] in trusted
+            and github_quota.parse_iso(comment["created_at"]) >= started
+        ),
+        key=lambda comment: (comment["created_at"], comment["id"]),
+        default=None,
+    )
+    previous = max(
+        (
+            github_quota.parse_iso(comment["created_at"])
+            for comment in verdicts
+            if current is None or comment["id"] != current["id"]
+        ),
+        default=None,
+    )
+    return previous, github_quota.parse_iso(current["created_at"]) if current else None
+
+
 def reconcile(
     bundle: dict[str, Any], remote: list[dict[str, Any]], trusted: set[str]
 ) -> bool:
     """Confirm exact bodies and URLs, refusing newer opposite review results."""
     started = github_quota.parse_iso(bundle["review_started_at"])
+    previous_at, verdict_at = finding_window(bundle, remote, trusted)
     remote = [comment for comment in remote if comment["user"]["login"] in trusted]
     for comment in remote:
         match = VERDICT.fullmatch(comment["body"])
@@ -162,15 +198,28 @@ def reconcile(
                 if comment["created_at"] == comment["updated_at"]
                 and github_quota.parse_iso(comment["created_at"]) >= started
             ]
-        # Fresh analysis may repeat an existing finding after a base change.
-        # Only the verdict must come from this review's publication window.
+        else:
+            matches = [
+                comment
+                for comment in matches
+                if (
+                    previous_at is None
+                    or github_quota.parse_iso(comment["created_at"]) > previous_at
+                )
+                and (
+                    verdict_at is None
+                    or github_quota.parse_iso(comment["created_at"]) <= verdict_at
+                )
+            ]
         if item["url"] is not None:
             if not any(comment["html_url"] == item["url"] for comment in matches):
                 raise Refused(
                     "a previously confirmed review comment is missing or edited"
                 )
         elif matches:
-            item["url"] = min(matches, key=lambda comment: comment["id"])["html_url"]
+            item["url"] = max(
+                matches, key=lambda comment: (comment["created_at"], comment["id"])
+            )["html_url"]
             changed = True
     if bundle["comments"][-1]["url"] and any(
         item["url"] is None for item in bundle["comments"][:-1]

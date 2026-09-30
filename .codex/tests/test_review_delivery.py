@@ -19,6 +19,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import review_delivery as delivery  # noqa: E402
 import test_review_worktree  # noqa: E402
+import next_action as selector  # noqa: E402
 
 
 class DeliveryTests(unittest.TestCase):
@@ -251,21 +252,166 @@ class DeliveryTests(unittest.TestCase):
             self.deliver()
         self.assertEqual(self.posts, [])
 
-    def test_old_findings_are_reused_but_old_verdict_needs_fresh_publication(
+    def test_findings_before_old_verdict_are_reposted_for_new_review(
         self,
     ) -> None:
+        outsider_at = delivery.github_quota.iso(
+            delivery.github_quota.parse_iso(self.started) + 1
+        )
         for item in self.bundle()["comments"]:
-            self.remote.append(self.comment(item["body"], login="outsider"))
+            self.remote.append(
+                self.comment(item["body"], login="outsider", at=outsider_at)
+            )
             self.remote.append(self.comment(item["body"], at="2020-01-01T00:00:00Z"))
         self.deliver()
-        self.assertEqual(self.posts, [self.bundle()["comments"][-1]["body"]])
         self.assertEqual(
+            self.posts, [item["body"] for item in self.bundle()["comments"]]
+        )
+        self.assertNotEqual(
             self.bundle()["comments"][0]["url"], self.remote[1]["html_url"]
         )
 
+    def test_repeated_finding_on_new_head_reaches_fix_action(self) -> None:
+        bundle = self.bundle()
+        bundle["verdict"] = "CHANGES REQUESTED"
+        bundle["comments"][-1]["body"] = (
+            f"Review: CHANGES REQUESTED by Codex at {self.fixture.sha}"
+        )
+        self.bundle_file.write_text(json.dumps(bundle))
+        self.remote.append(
+            self.comment(bundle["comments"][0]["body"], at="2020-01-01T00:00:00Z")
+        )
+        self.remote.append(
+            self.comment(
+                f"Review: CHANGES REQUESTED by Codex at {'a' * 40}",
+                at="2020-01-01T00:00:01Z",
+            )
+        )
+        self.deliver()
+        self.assertEqual(self.posts, [item["body"] for item in bundle["comments"]])
+        self.assert_fix_receives_published_finding()
+
+    def assert_fix_receives_published_finding(self) -> None:
+        pr = {
+            "number": 431,
+            "body": "Executor: Claude\n",
+            "headRefOid": self.fixture.sha,
+            "baseRefName": "dev/312-interim",
+            "isDraft": False,
+            "comments": [
+                {
+                    "body": comment["body"],
+                    "createdAt": comment["created_at"],
+                    "url": comment["html_url"],
+                }
+                for comment in self.remote
+            ],
+        }
+        previous, current = selector.verdicts(pr, "Codex")
+        finding_url = self.bundle()["comments"][0]["url"]
+        self.assertEqual(selector.findings(pr, current, previous["at"]), [finding_url])
+        [action] = selector.decide("Claude", {"prs": [pr]})
+        self.assertEqual((action.action, action.comments), ("fix", [finding_url]))
+
+    def test_untrusted_verdict_starts_new_finding_window_for_selector(self) -> None:
+        bundle = self.bundle()
+        bundle["verdict"] = "CHANGES REQUESTED"
+        bundle["comments"][-1]["body"] = (
+            f"Review: CHANGES REQUESTED by Codex at {self.fixture.sha}"
+        )
+        self.bundle_file.write_text(json.dumps(bundle))
+        started = delivery.github_quota.parse_iso(self.started)
+        self.remote.append(
+            self.comment(
+                bundle["comments"][0]["body"], at=delivery.github_quota.iso(started - 1)
+            )
+        )
+        old_finding = self.remote[-1]["html_url"]
+        self.remote.append(
+            self.comment(
+                bundle["comments"][-1]["body"],
+                login="outsider",
+                at=delivery.github_quota.iso(started + 1),
+            )
+        )
+        self.deliver()
+        self.assertEqual(self.posts, [item["body"] for item in bundle["comments"]])
+        self.assertNotEqual(self.bundle()["comments"][0]["url"], old_finding)
+        self.assert_fix_receives_published_finding()
+        self.deliver()
+        self.assertEqual(len(self.posts), 2)
+
+    def test_current_round_finding_wins_over_older_duplicate(self) -> None:
+        finding = self.bundle()["comments"][0]["body"]
+        self.remote.append(self.comment(finding, at="2020-01-01T00:00:00Z"))
+        self.remote.append(
+            self.comment(
+                f"Review: APPROVED by Codex at {'a' * 40}", at="2020-01-01T00:00:01Z"
+            )
+        )
+        self.remote.append(self.comment(finding, at="2020-01-01T00:00:02Z"))
+        self.remote.append(self.comment(finding, at="2020-01-01T00:00:03Z"))
+        latest_url = self.remote[-1]["html_url"]
+        self.deliver()
+        self.assertEqual(self.posts, [self.bundle()["comments"][-1]["body"]])
+        self.assertEqual(self.bundle()["comments"][0]["url"], latest_url)
+        self.deliver()
+        self.assertEqual(len(self.posts), 1)
+
+    def test_finding_at_previous_verdict_second_is_reposted(self) -> None:
+        finding = self.bundle()["comments"][0]["body"]
+        self.remote.append(
+            self.comment(
+                f"Review: APPROVED by Codex at {'a' * 40}", at="2020-01-01T00:00:00Z"
+            )
+        )
+        self.remote.append(self.comment(finding, at="2020-01-01T00:00:00Z"))
+        self.deliver()
+        self.assertEqual(
+            self.posts, [item["body"] for item in self.bundle()["comments"]]
+        )
+
+    def test_current_verdict_limits_findings_and_is_not_its_own_boundary(self) -> None:
+        bundle = self.bundle()
+        started = delivery.github_quota.parse_iso(self.started)
+        self.remote.append(
+            self.comment(
+                f"Review: APPROVED by Codex at {'a' * 40}",
+                at=delivery.github_quota.iso(started - 1),
+            )
+        )
+        self.remote.append(
+            self.comment(
+                bundle["comments"][0]["body"], at=delivery.github_quota.iso(started + 1)
+            )
+        )
+        expected_url = self.remote[-1]["html_url"]
+        self.remote.append(
+            self.comment(
+                bundle["comments"][-1]["body"],
+                at=delivery.github_quota.iso(started + 2),
+            )
+        )
+        self.remote.append(
+            self.comment(
+                bundle["comments"][0]["body"], at=delivery.github_quota.iso(started + 3)
+            )
+        )
+        self.deliver()
+        self.assertEqual(self.posts, [])
+        self.assertEqual(self.bundle()["comments"][0]["url"], expected_url)
+        self.assertEqual(self.bundle()["status"], "published")
+        self.deliver()
+        self.assertEqual(self.posts, [])
+
     def test_untrusted_matching_findings_and_verdict_are_not_reused(self) -> None:
+        outsider_at = delivery.github_quota.iso(
+            delivery.github_quota.parse_iso(self.started) + 1
+        )
         for item in self.bundle()["comments"]:
-            self.remote.append(self.comment(item["body"], login="outsider"))
+            self.remote.append(
+                self.comment(item["body"], login="outsider", at=outsider_at)
+            )
         self.deliver()
         self.assertEqual(len(self.posts), 2)
 

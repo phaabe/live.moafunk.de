@@ -10,6 +10,7 @@ import subprocess
 import unittest
 
 import test_codex_tick as tick
+import next_action as selector
 
 
 class DeliveryRunnerTests(tick.TickTests):
@@ -290,6 +291,54 @@ if len(sys.argv) > 2 and '/issues/406/comments' in sys.argv[2]:
             ["Finding one", f"Review: CHANGES REQUESTED by Codex at {self.sha}"],
         )
         self.assertEqual(self.bundle()["status"], "published")
+
+    def test_repeated_finding_on_new_head_reaches_selector_fix_action(self) -> None:
+        remote = self.remote_state()
+        for number, body in enumerate(
+            ("Finding one", f"Review: CHANGES REQUESTED by Codex at {'a' * 40}"),
+            start=1,
+        ):
+            at = f"2020-01-01T00:00:0{number}Z"
+            remote["comments"].append(
+                {
+                    "id": number,
+                    "body": body,
+                    "html_url": f"https://github.com/phaabe/live.moafunk.de/pull/406#issuecomment-{number}",
+                    "created_at": at,
+                    "updated_at": at,
+                    "user": {"login": "phaabe"},
+                }
+            )
+        self.remote.write_text(json.dumps(remote))
+        self.assert_tick(0)
+        self.assert_one_model()
+        self.assertEqual(
+            self.remote_state()["posts"],
+            ["Finding one", f"Review: CHANGES REQUESTED by Codex at {self.sha}"],
+        )
+        pr = {
+            "number": 406,
+            "body": "Executor: Claude\n",
+            "baseRefName": "dev/312-interim",
+            "headRefOid": self.sha,
+            "isDraft": False,
+            "comments": [
+                {
+                    "body": comment["body"],
+                    "createdAt": comment["created_at"],
+                    "url": comment["html_url"],
+                }
+                for comment in self.remote_state()["comments"]
+            ],
+        }
+        previous, current = selector.verdicts(pr, "Codex")
+        finding_url = self.bundle()["comments"][0]["url"]
+        self.assertEqual(selector.findings(pr, current, previous["at"]), [finding_url])
+        [action] = selector.decide("Claude", {"prs": [pr]})
+        self.assertEqual((action.action, action.comments), ("fix", [finding_url]))
+        self.assert_tick(0)
+        self.assert_one_model()
+        self.assertEqual(len(self.remote_state()["posts"]), 2)
 
     def assert_draft_review_cooldown(self, exit_code: int) -> dict[str, object]:
         self.env["TEST_MODEL_DRAFT"] = "1"

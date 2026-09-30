@@ -367,9 +367,14 @@ Later ticks try delivery under the target lock before model cooldown checks.
 Unchanged completed bundles need no model or review checkout. Pause, shared
 quota, ownership, PR state and reviewed inputs are checked before publication.
 Changed head, base or metadata requires fresh analysis; old evidence is retained.
-Fresh analysis reuses identical finding comments from trusted reviewers instead
-of posting them again. The verdict must still be confirmed within the new
-review's publication window.
+Fresh analysis reuses identical trusted finding comments only after the previous
+Codex verdict on the PR, across all heads. It selects the newest eligible copy.
+Findings from an older completed round are posted again so the fixer receives
+them with the new verdict. A retry after verdict publication uses the preceding
+round boundary. The verdict must still be confirmed within the new review's
+publication window. Round boundaries include verdicts from any author, matching
+the fixer's selection rule; finding reuse and verdict confirmation still require
+a trusted author.
 A later conflicting Codex verdict or trusted GitHub review blocks pending
 delivery. Network or quota failures retain the bundle without a repeat record.
 Target refusals release the lock and allow later candidates to run. Cleanup
