@@ -32,7 +32,7 @@ the other checkout. Review actions keep their separate detached-checkout flow.
 | `merge` | Recheck the actual head equals `sha`, the latest unedited Claude verdict approves that head, every required check is green, the base is allowed and files are in Codex's lane. Read all comment pages. Run the shared checker when installed; until then perform the checks directly. Use `gh pr merge <pr> --repo phaabe/live.moafunk.de --squash --match-head-commit <sha>`. Record the commit and tests on the linked issue and perform normal local cleanup. |
 | `fix` | Read the verdict and every URL in `comments`. In the PR's worktree, fix each finding with regression coverage. If you disagree, reply with reasons and stop. Test, commit and push. Comment with addressed findings and the new head SHA. |
 | `fix-checks` | Read the failing check logs first. For a failed `epic-guard` status, read its description in `gh pr checks <pr> --repo phaabe/live.moafunk.de` for the reason (lane, PR body lines, base). Fix the cause in the PR's worktree, test, commit and push. |
-| `resolve-conflict` | Fetch and rebase the PR branch onto its actual base. Resolve conflicts, run tests and push with `--force-with-lease`. Never run a local merge. |
+| `resolve-conflict` | Use the installed helper to rebase onto the actual PR base with the selected `sha`. Resume only its recorded rebase, resolve and stage conflicts, then continue. Run tests and publish with the same pinned remote SHA. Follow the exact commands below. A new head needs a new Claude review. |
 | `review` | Review Claude's exact `sha` in a detached checkout. Run tests and probe edge cases. Post findings separately, then one standalone verdict: `Review: APPROVED by Codex at <sha>` or `Review: CHANGES REQUESTED by Codex at <sha>`. Recheck the head immediately before posting; if it changed, stop. |
 | `continue` | Resume the claimed issue or draft PR, in its own worktree. Finish the work and tests, commit, push, and mark the PR ready. Update the issue's project status only from recorded leaf evidence; use Done only when every leaf is done. |
 | `adopt` | Recheck the head equals `sha`, the PR is open and its body has no `Executor:`, `Author:` or `Reviewer:` line, with any value. Otherwise stop. Confirm its routed owner is Codex and determine a valid lane if the board Executor supplied ownership without `lane`. Find the issue it implements and its leaf IDs (or `setup`); if unclear, return blocked. Write a body file with the six metadata lines below at line start, preserving the original body text. Move existing metadata lines instead of duplicating them. Apply only `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<pr> -F body=@<absolute-file-path>`, using a literal path. Comment that Codex adopted the PR. Change nothing else. The runner verifies the body before accepting completion. |
@@ -82,8 +82,36 @@ normal commits and pushes: `python3 -I <helper> --worktree <path> commit
 Use its literal absolute path in the command. This tick authorizes those normal
 feature-branch operations. The installed helper checks the repository, branch
 and origin and preserves Git hooks. If it is unavailable or refuses an action,
-report the blocker. Raw Git approval rules still apply to rebase, force pushes,
-amend, deletion and other operations outside the helper.
+report the blocker. Raw Git approval rules still apply to operations outside
+the helper.
+
+For `resolve-conflict`, the runner validates the open Codex PR, its actual base,
+head and fixed worktree, then supplies protected context to the installed helper.
+Use only these extra forms with the same literal helper prefix:
+
+```text
+python3 -I <helper> --worktree <path> rebase --base <actual-base> --expected-head <selected-sha>
+python3 -I <helper> --worktree <path> rebase-continue
+python3 -I <helper> --worktree <path> rebase-abort
+python3 -I <helper> --worktree <path> push-with-lease --expected-remote-sha <selected-sha>
+```
+
+The helper fetches the base itself and pins the remote head before rebasing.
+Never replace the selected SHA after fetching. When a recorded rebase exists,
+continue it; do not start another one. Git's temporary detached HEAD is valid
+only for that record. Resolve conflicts and `git add` the intended resolutions
+before `rebase-continue`. Do not commit during the active rebase. Abort only to
+return to the original branch; an abort does not complete the conflict task.
+After a completed rebase, tests may be fixed with normal commits followed by
+`push-with-lease` using the original selected SHA. Otherwise return blocked;
+the helper does not restart or undo a completed rebase. If no PR commits remain
+beyond the base, return blocked for operator review. Do not add an empty commit
+to bypass that refusal.
+Never skip a commit automatically. Preserve unfinished work and return blocked
+if resolution or tests fail, the lease is stale, or the helper refuses. A missing
+or outdated helper blocks before model launch and starts the target cooldown.
+Do not fall back to raw rebase or force-push commands, widen permissions, modify
+the runner context or remove its persistent rebase record.
 
 Call `gh` as a single literal command, with no shell wrappers or compound
 commands. Write body files before calling `gh --body-file`; use file editing

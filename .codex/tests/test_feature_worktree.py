@@ -104,6 +104,17 @@ class FeatureWorktreeTests(unittest.TestCase):
             "base": {"ref": BASE, "repo": {"full_name": REPO}},
         }
         self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+        self.installed = self.fixture.home / ".local/libexec/codex-feature-git.py"
+        self.installed.parent.mkdir(parents=True)
+        shutil.copyfile(self.repo / ".codex/feature_git.py", self.installed)
+        self.context = self.state.resolve() / "feature-git-context.json"
+        self.config = {
+            "trusted_checkout": str(self.repo),
+            "runner_checkout": str(self.repo),
+            "context_file": str(self.context),
+            "allowed_origin_urls": ["https://github.com/phaabe/live.moafunk.de.git"],
+        }
+        self.installed.with_suffix(".json").write_text(json.dumps(self.config))
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
         result = subprocess.run(
@@ -220,6 +231,151 @@ class FeatureWorktreeTests(unittest.TestCase):
         result = self.prepare()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), str(self.destination))
+
+    def test_conflict_session_requires_current_installed_helper(self) -> None:
+        self.use_pr("resolve-conflict")
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                if missing:
+                    self.installed.unlink()
+                else:
+                    self.installed.write_text("# old helper\n")
+                result = self.run_tick()
+                self.assertEqual(result.returncode, 75, result.stderr)
+                self.assertFalse(self.fixture.calls.exists())
+                self.assertFalse(self.destination.exists())
+                self.assertFalse(self.context.exists())
+                entries = json.loads((self.state / "codex-backoff.json").read_text())
+                self.assertIn(
+                    "rebase policy unavailable",
+                    entries[f"pr:431:{self.head}"]["reason"],
+                )
+                self.fixture.expire_cooldown()
+
+    def test_conflict_context_is_bound_to_fresh_selected_pr(self) -> None:
+        self.use_pr("resolve-conflict")
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(self.context.read_text()),
+            {
+                "version": 1,
+                "action": "resolve-conflict",
+                "pr": 431,
+                "branch": BRANCH,
+                "base": BASE,
+                "expected_head": self.head,
+                "worktree": str(self.destination),
+                "runner": str(self.repo),
+            },
+        )
+
+    def test_conflict_session_removes_context_after_model(self) -> None:
+        self.use_pr("resolve-conflict")
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.fixture.calls.exists())
+        self.assertFalse(self.context.exists())
+
+    def test_conflict_policy_rejects_wrong_runner_or_context_location(self) -> None:
+        self.use_pr("resolve-conflict")
+        for key, value in (
+            ("runner_checkout", str(self.destination)),
+            ("context_file", str(self.repo / "context.json")),
+        ):
+            with self.subTest(key=key):
+                config = {**self.config, key: value}
+                self.installed.with_suffix(".json").write_text(json.dumps(config))
+                self.assert_refused()
+                self.assertFalse(self.context.exists())
+
+    def start_conflicting_rebase(self, *, recorded: bool) -> Path:
+        self.use_pr()
+        self.assertEqual(self.prepare().returncode, 0)
+        (self.destination / "tracked.txt").write_text("feature change\n")
+        self.git("add", "tracked.txt", cwd=self.destination)
+        self.git("commit", "-m", "test: feature change", cwd=self.destination)
+        self.head = self.git("rev-parse", "HEAD", cwd=self.destination)
+        self.pr["head"]["sha"] = self.head
+        self.use_pr("resolve-conflict")
+        (self.repo / "tracked.txt").write_text("base change\n")
+        self.git("add", "tracked.txt")
+        self.git("commit", "-m", "test: base change")
+        onto = self.git("rev-parse", "HEAD")
+        self.git("update-ref", f"refs/remotes/origin/{BASE}", onto)
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = {
+            **json.loads(self.context.read_text()),
+            "original_head": self.head,
+            "onto": onto,
+        }
+        record = self.state / "rebase-431.json"
+        if recorded:
+            record.write_text(json.dumps(state))
+        result = subprocess.run(
+            ["/usr/bin/git", "-C", str(self.destination), "rebase", "--merge", onto],
+            env=self.env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.git("branch", "--show-current", cwd=self.destination), "")
+        return record
+
+    def test_recorded_detached_rebase_resumes_model_and_preserves_state(self) -> None:
+        record = self.start_conflicting_rebase(recorded=True)
+        before = record.read_bytes()
+        status = self.git("status", "--porcelain", cwd=self.destination)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = json.loads(self.fixture.calls.read_text())
+        self.assertEqual(
+            call["args"][call["args"].index("--cd") + 1], str(self.destination)
+        )
+        self.assertEqual(record.read_bytes(), before)
+        self.assertEqual(
+            self.git("status", "--porcelain", cwd=self.destination), status
+        )
+        self.assertFalse(self.context.exists())
+
+    def test_unrecorded_rebase_is_refused_and_preserved(self) -> None:
+        self.start_conflicting_rebase(recorded=False)
+        status = self.git("status", "--porcelain", cwd=self.destination)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertTrue((self.state / "codex-backoff.json").exists())
+        self.assertEqual(
+            self.git("status", "--porcelain", cwd=self.destination), status
+        )
+
+    def test_recorded_completed_rebase_resumes_before_lease_push(self) -> None:
+        record = self.start_conflicting_rebase(recorded=True)
+        (self.destination / "tracked.txt").write_text("resolved change\n")
+        self.git("add", "tracked.txt", cwd=self.destination)
+        self.git("-c", "core.editor=true", "rebase", "--continue", cwd=self.destination)
+        rewritten = self.git("rev-parse", "HEAD", cwd=self.destination)
+        self.assertNotEqual(rewritten, self.head)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.fixture.calls.exists())
+        self.assertTrue(record.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), rewritten)
+
+    def test_recorded_rebase_rejects_a_changed_selected_head(self) -> None:
+        record = self.start_conflicting_rebase(recorded=True)
+        before = record.read_bytes()
+        newer = self.git("rev-parse", "HEAD")
+        self.action["sha"] = newer
+        self.pr["head"]["sha"] = newer
+        self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+        self.git("update-ref", f"refs/remotes/origin/{BRANCH}", newer)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertEqual(record.read_bytes(), before)
 
     def test_held_pr_branch_behind_remote_still_reports_handoff(self) -> None:
         self.use_pr()

@@ -397,7 +397,7 @@ launchctl print "gui/$(id -u)/de.moafunk.codex-epic-loop"
 These are manual operator commands. Do not clear `~/.epic-pause` as part of
 installation or adoption. Resume the loops separately after checking the setup.
 
-## Unattended feature commits and pushes
+## Unattended feature Git operations
 
 Install a reviewed copy of `.codex/feature_git.py` outside agent-writable
 workspaces as `~/.local/libexec/codex-feature-git.py`. Beside it, place
@@ -416,5 +416,85 @@ Commits and pushes retain Git hooks. The isolated Python interpreter and removed
 target. This is a restriction on routine operations, not a security boundary
 against malicious repository hooks. Raw critical Git commands retain their
 approval requirements.
-The helper does not check the PR's Executor; lane ownership remains enforced
-by the epic workflow and must be checked before editing or publishing a branch.
+Normal commit and push keep their existing contract; lane ownership is checked
+by the epic workflow. A pending recorded rebase requires a lease push.
+An unreadable or malformed record blocks normal pushes until the operator
+repairs it: its worktree cannot be identified safely. The error names a malformed
+record instead of printing a traceback.
+
+For unattended conflict work, extend the installed JSON with `runner_checkout`
+(the absolute dedicated runner path) and `context_file` (the absolute
+`<EPIC_STATE_DIR>/feature-git-context.json` path, including `agents/<id>` when
+using a registered runner). The runner, installed helper and configured context
+must agree. Keep the context directory and its `rebase-<pr>.json` records outside
+all model-writable roots, including additional writable directories. Never put
+them under `/tmp`, a repository or its common Git directory in a live setup.
+No caller environment variable or command option selects this trusted context.
+
+The runner checks installed helper bytes against `.codex/feature_git.py` before
+a conflict session. Missing or old code, invalid configuration and worktree
+refusals block the tick and start the target cooldown. After fresh PR validation,
+it writes the selected action, PR, branch, actual base, original head and fixed
+worktree to the protected context file. The tick removes this transient context
+on exit. Only the installed helper creates or changes the persistent rebase
+record. An interrupted tick can resume the matching Git rebase, including its
+detached HEAD and staged resolutions. An unrelated rebase is refused.
+
+The existing literal prefix also accepts these exact suffixes:
+
+```text
+--worktree <path> rebase --base <actual-PR-base> --expected-head <40-char-SHA>
+--worktree <path> rebase-continue
+--worktree <path> rebase-abort
+--worktree <path> push-with-lease --expected-remote-sha <40-char-SHA>
+```
+
+The allowed base is currently `dev/312-interim`, matching section 0 of the epic
+rules. The helper fetches only that base and records its commit and the original
+PR head before starting the rebase. A new rebase needs the exact selected head,
+a clean tree and no existing Git operation. It disables autostash and updates
+to other branches. Hooks still run. Git environment overrides are removed before
+the helper sets its own noninteractive editors.
+
+Lease publication uses only
+`git push --no-follow-tags --recurse-submodules=no --force-with-lease=refs/heads/<branch>:<original-SHA> origin HEAD:refs/heads/<branch>`.
+Fetching never changes this pin. A changed remote fails and preserves local
+work. A successful push removes the record and requires a new counterpart review
+for the new head. Continue/abort without a matching record, interactive rebase,
+exec/onto/skip, extra refs, remotes, tags, deletion and force flags are refused.
+There is no raw-command fallback.
+If no PR commits remain beyond the fetched base, publication is refused. Keep
+the local result and record for operator review; do not publish the base as the
+PR head or add an empty commit to bypass the check.
+
+If the process stops before Git starts, `rebase-abort` clears the pending record
+only when the branch still has its original head and a clean tree. If Git has
+already completed, `rebase-continue` reports that publication is pending. A
+changed PR head or mismatching Git operation requires manual recovery; keep
+the record and worktree. Do not delete records to refresh a stale lease.
+
+A process killed after a successful push but before record removal also leaves
+an old record. Keep the runner paused. The operator must verify the PR and remote
+head equal the local head, the recorded base is its ancestor, and the worktree
+is clean. Only then archive that PR's record outside the record directory and
+request a new review for the published head. If any check fails, preserve the
+record and investigate; never replace its expected SHA.
+
+### Installation and runtime evidence
+
+After source review, the operator installs the reviewed helper and extends
+its adjacent JSON. Compare SHA-256 digests of source and installed helper. Keep
+the helper, config and literal-prefix rule outside agent-writable roots. Retain
+the existing narrow rule; add no raw Git or general Python permission.
+
+Before marking installation complete, keep schedulers paused and run a fresh
+real `codex exec` with the runner's `--sandbox workspace-write`, network setting,
+approval configuration and effective rules. Use a disposable local bare remote
+and trusted fixture provisioned by the operator; authorize only that fixture
+for the test, then restore and verify the live installed configuration. Run an
+allowed helper rebase and lease push, then a denied request. Record CLI version,
+helper digest, exact executed tool calls, exit outcomes, before/after local and
+remote heads, and absence of permission prompts. Verify that the denied request
+changes neither head and that raw critical Git commands gain no permission.
+Parser tests and a fake Codex binary do not satisfy this check. Do not claim
+activation from the source tests alone or resume schedulers as part of testing.
