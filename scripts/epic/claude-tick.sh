@@ -35,6 +35,8 @@
 # checkout holds it, the log says `handoff needed: <branch> in <path>`, no model
 # starts and that checkout stays untouched; the candidate is skipped like a
 # suppressed repeat. The model gets the path as EPIC_WORKTREE and --add-dir.
+# The worktree step also writes the runner context (context.json in the lock
+# dir): the branch, base and PR the permission gate checks git writes against.
 #
 # Run from a scheduler or a loop, for example:
 #   while true; do /bin/bash scripts/epic/claude-tick.sh; sleep 600; done
@@ -171,7 +173,8 @@ cleanup() {
             --action-file "${lock_dir}/action.json" \
             --log "$log_file" --since "$tick_offset" || true
     fi
-    rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json"
+    rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" \
+        "${lock_dir}/context.json"
     rmdir "$lock_dir"
 }
 # Stop the running child (selector or model) before the lock is released, so a
@@ -374,7 +377,7 @@ while IFS= read -r candidate; do
     prepared=0
     worktree=$(python3 scripts/epic/runner_worktree.py prepare --agent claude \
         --action-file "${lock_dir}/action.json" --dir "$worktree_dir" \
-        --repo "$repo_root") || prepared=$?
+        --repo "$repo_root" --context-file "${lock_dir}/context.json") || prepared=$?
     case "$prepared" in
         0) ;;
         3)
@@ -420,31 +423,40 @@ if ! quota_open; then
 fi
 printf 'tick: %s with model=%s effort=%s\n' "$action" "$model" "$effort"
 tick_phase=model
-# `claude -p` cannot show a prompt, and the project settings ask before every
-# push and merge. permission_gate.py answers those prompts: it approves only
-# feature-branch pushes and head-pinned squash merges, and denies the rest.
-# The gate reads the selected action: `adopt` may edit only that PR's body.
-# With the shared reader the gate also reads GitHub fresh before a push or merge
-# (write_checks.py), so it needs the reader's settings and gh's environment.
+# `claude -p` cannot show a prompt. The project settings ask before every
+# push, rebase and merge; the runner-only settings (claude-runner-settings.json)
+# also ask before every `git -<option>` form, so `git -C <path> push` and
+# `git -c k=v push` cannot skip the gate. permission_gate.py answers those
+# prompts: the git contract of git_gate.py (own branch, own runner worktree,
+# rebase and lease push with a pinned head), head-pinned squash merges and the
+# `adopt` body edit of the selected PR. It denies the rest. It reads the action,
+# the runner context and the PR fresh from GitHub, so it gets gh's environment.
+# With the shared reader it also runs the write checks (write_checks.py).
+# GIT_EDITOR=true: `git rebase --continue` must not wait for an editor.
 gate_config=$(python3 -c '
 import json, os, sys
-env = {"EPIC_STATE_DIR": sys.argv[2], "EPIC_ACTION_FILE": sys.argv[3]}
-if os.environ.get("EPIC_SHARED_READER") == "1":
-    env["EPIC_TRUSTED_ROOT"] = sys.argv[4]
-    for name, value in os.environ.items():
-        if name.startswith(("EPIC_", "GH_")) or name in (
-            "HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "XDG_CONFIG_HOME"
-        ):
-            env.setdefault(name, value)
+env = {
+    "EPIC_STATE_DIR": sys.argv[2],
+    "EPIC_ACTION_FILE": sys.argv[3],
+    "EPIC_TRUSTED_ROOT": sys.argv[4],
+    "EPIC_CONTEXT_FILE": sys.argv[5],
+    "EPIC_WORKTREE_DIR": sys.argv[6],
+}
+for name, value in os.environ.items():
+    if name.startswith(("EPIC_", "GH_")) or name in (
+        "HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "XDG_CONFIG_HOME"
+    ):
+        env.setdefault(name, value)
 print(json.dumps({"mcpServers": {"epic-gate": {
     "command": "python3", "args": [sys.argv[1]], "env": env}}}))
 ' "${repo_root}/scripts/epic/permission_gate.py" "$state_dir" "${lock_dir}/action.json" \
-    "$repo_root")
+    "$repo_root" "${lock_dir}/context.json" "$worktree_dir")
 # The write-check hook (.claude/hooks/scripts/epic_guard.py) reads these two.
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
-    EPIC_WORKTREE="$worktree" \
+    EPIC_WORKTREE="$worktree" GIT_EDITOR=true \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
+    --settings "${repo_root}/scripts/epic/claude-runner-settings.json" \
     --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \
     ${worktree_args[@]+"${worktree_args[@]}"} < "${lock_dir}/prompt.txt"
 # A session can exit 0 while its push or merge was denied. Check GitHub.
@@ -459,7 +471,9 @@ if ! quota_open; then
 fi
 tick_phase=verify
 verify=0
-python3 scripts/epic/tick_verify.py --agent claude \
+# With a worktree, the new PR head must be that worktree's finished work: a
+# refused lease push or an unfinished rebase stays a failed tick.
+python3 scripts/epic/tick_verify.py --agent claude --worktree "$worktree" \
     --action-file "${lock_dir}/action.json" --since "$tick_started" || verify=$?
 if [[ "$verify" == 4 ]]; then
     quota_stop

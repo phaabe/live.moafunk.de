@@ -316,15 +316,66 @@ a failed pull stops the tick. Before the pull, `claude-tick.sh` runs
 `scripts/epic/gitnexus_noise.py`: it restores changes that sit only inside the
 GitNexus block of `AGENTS.md` / `CLAUDE.md`, and stops the tick on any other
 tracked change without touching it. A headless session cannot answer permission
-prompts, and the project settings ask before every push and merge. So
-`claude-tick.sh` hands those prompts to `scripts/epic/permission_gate.py`. It
-approves only `git push [-u] origin <branch>` and `git push origin --delete
-<branch>` for `feat/`, `fix/`, `chore/`, `docs/`, `test/` and `refactor/`
-branches, `gh pr merge <n> --repo phaabe/live.moafunk.de --squash
-[--delete-branch] --match-head-commit <sha>`, and, only in an `adopt` tick for
-PR `<n>`, `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F
-body=@<file>`. It denies everything else and
-logs each decision to `claude-permissions.log` in the state directory.
+prompts. The project settings ask before every push, rebase and merge; the
+runner-only settings `scripts/epic/claude-runner-settings.json` (passed with
+`--settings`; the shared `.claude/settings.json` is unchanged) also ask before
+every `git -<option> ...`, so `git -C <path> push` and `git -c k=v push` cannot
+skip the prompt. `claude-tick.sh` hands those prompts to
+`scripts/epic/permission_gate.py` and sets `GIT_EDITOR=true`. `G` is
+`git -C <W>` or `git -C<W>` (exactly one `-C`, no other global option), `W` the
+action's runner worktree `<dir>/<B>` and `B` its feature branch (`feat/`, `fix/`,
+`chore/`, `docs/`, `test/`, `refactor/`). The runner writes the action's
+context (branch, base, PR, worktree) before the model starts
+(`runner_worktree.py --context-file`); missing or stale context refuses. The
+gate approves only (`scripts/epic/git_gate.py`):
+
+- `G push [-u] [-q] origin B`, also before a PR exists (claimed issue branch).
+- `G rebase [-q] origin/<base>`: a PR action (`fix`, `fix-checks`,
+  `resolve-conflict`, `continue`); the PR is open, its head is `B` in this
+  repository, its base is `<base>` and an epic base, `Executor: Claude`, and its
+  head still equals the action's `sha`. The tree is clean and no other
+  operation (rebase, merge, cherry-pick, revert, bisect) is in progress. The
+  gate pins that head as `S` in `claude-rebases.json` in the state directory.
+- `G rebase --continue` / `--abort`: only the rebase the runner recorded (same
+  worktree, branch, onto commit and original head). An approved abort retires
+  the record: it approves nothing more, not even a second abort, because a
+  rebase started again by hand looks the same. A failed abort needs a human. `--skip` is refused: dropping a commit needs a separate explicit
+  decision.
+- `G push [-q] --force-with-lease=refs/heads/B:S origin HEAD:refs/heads/B`: the
+  recorded `S`, the rebase finished onto the recorded commit, the PR head still
+  `S`. The gate never
+  renews `S`; if the remote moved, the push fails and the tick stops.
+- `G push origin --delete B`: a `merge` tick, after the PR is merged.
+- `G add -- <paths>`, `G commit --file <file>`, `G fetch [-q] origin` in `W`.
+  `add` and `commit` need `B` checked out; during the recorded rebase only
+  `add` works in the detached HEAD.
+- Read-only `G status|log|diff|show|rev-parse|ls-files|merge-base` with
+  `--short`, `--porcelain`, `--oneline`, `-n <N>`, `-<N>`, `--stat`,
+  `--name-only`, `--name-status`, `--no-color`, `--abbrev-ref`,
+  `--show-toplevel`; revisions `HEAD`, a full SHA, `origin/<epic base or
+  feature branch>` and `A..B` / `A...B`; paths after `--` inside the worktree.
+  Also in the runner checkout or another worktree under `<dir>`.
+- `gh pr merge <n> --repo phaabe/live.moafunk.de --squash [--delete-branch]
+  --match-head-commit <sha>`, and, only in an `adopt` tick for PR `<n>`,
+  `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F
+  body=@<file>`.
+
+Every `W` must really be `<dir>/B` (no symlink below `<dir>`; the runner's
+worktree step refuses one too), be a worktree of the runner checkout, and have
+this repository as every origin fetch and push URL: the full GitHub URL
+(`git@github.com:`, `https://github.com/` or `ssh://git@github.com/`, after
+`insteadOf` rewrites), not only a matching path. Plain `git push` and
+`git rebase` are refused: the gate cannot see the shell's directory. It also
+refuses `-c`, repeated `-C`, other global options, force flags, `+` refspecs,
+bare or other leases, extra refspecs, other remotes, tags, `--all`,
+`--mirror`, protected branches, `rebase -i`/`--exec`/`--onto`, shell chains,
+substitutions, inline environment assignments and wrappers. It logs each
+decision to `claude-permissions.log` in the state directory. A refused push or
+an unfinished rebase fails verification: `tick_verify.py --worktree` counts a
+moved PR head only when it is the worktree's HEAD with no rebase left, so
+another writer's push does not count. The repeat gate then suppresses it until
+the PR changes or the repeat TTL ends; the next tick resumes an unfinished
+rebase in the same worktree.
 `python3 scripts/epic/next_action.py --status`
 shows the queue for both agents.
 

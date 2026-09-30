@@ -25,8 +25,14 @@ action (tick_gate.py fingerprint) within the repeat TTL exits 3 with one short
 line, not a new handoff report. Git is asked again on every tick, so a released
 branch is picked up at once; a ready worktree clears the record.
 
+Runner context: with --context-file, a ready worktree also writes the action,
+branch, base (PR only), PR, issue and worktree path there. The permission gate
+(git_gate.py) approves git writes only for that context. Any other result
+removes the file.
+
 Usage:
   runner_worktree.py prepare --agent claude --action-file action.json --dir DIR
+      [--context-file context.json]
 
 Prints the worktree path (empty for actions without one). Exit codes: 0 ready,
 2 bad settings, 3 stop without a model (handoff or blocked), 4 a read hit the
@@ -125,7 +131,9 @@ def slug(title: str) -> str:
     return "-".join(words)[:40].strip("-") or "work"
 
 
-def pr_branch(agent: str, number: int, read: Callable[[str], Any]) -> str:
+def pr_branch(
+    agent: str, number: int, read: Callable[[str], Any], info: dict[str, Any]
+) -> str:
     pr = read(f"repos/{REPO}/pulls/{number}")
     if pr.get("state") != "open":
         raise Stop(f"PR {number} is not open")
@@ -140,6 +148,7 @@ def pr_branch(agent: str, number: int, read: Callable[[str], Any]) -> str:
     branch = str(head.get("ref") or "")
     if not feature_branch(branch):
         raise Stop(f"PR {number} head {branch} is not a feature branch")
+    info["base"] = base
     return branch
 
 
@@ -212,8 +221,12 @@ def prepare(
     repo: Path,
     root: Path,
     read: Callable[[str], Any],
+    info: dict[str, Any] | None = None,
 ) -> Path | None:
-    """The ready worktree for the action, or None when it edits no branch."""
+    """The ready worktree for the action, or None when it edits no branch.
+
+    `info` receives the branch, base, PR and issue of a ready worktree."""
+    info = {} if info is None else info
     if action.get("action") not in EDITING:
         return None
     check_repo(repo)
@@ -221,13 +234,20 @@ def prepare(
     if number is None:
         raise Stop("the action has no PR or issue")
     if action.get("pr"):
-        branch, new = pr_branch(agent, number, read), False
+        branch, new = pr_branch(agent, number, read, info), False
     else:
         branch, new = issue_branch(repo, number, read)
+        info["base"] = None
+    info.update(branch=branch, pr=action.get("pr"), issue=action.get("issue"))
     path = root / branch
+    # The real checkout must sit in the real fixed dir: a symlink at the
+    # branch path (or below the dir) may point at a human's checkout.
+    expected = root.resolve() / branch
+    if path.resolve() != expected:
+        raise Stop(f"{path} resolves outside {root}; handoff needed")
     held = worktrees(repo)
     where = held.get(branch)
-    if where is not None and where.resolve() == path.resolve():
+    if where is not None and where.resolve() == expected:
         if not path.is_dir():
             # Pruning is left to a human: `git worktree prune` acts on all checkouts.
             raise Stop(f"{path} is registered for {branch} but missing")
@@ -295,6 +315,7 @@ def main() -> int:
     parser.add_argument("--action-file", required=True, type=Path)
     parser.add_argument("--dir", required=True, type=Path)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
+    parser.add_argument("--context-file", type=Path)
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -307,8 +328,11 @@ def main() -> int:
         return 2
     action = json.loads(args.action_file.read_text())
     ttl = int(os.environ.get("EPIC_REPEAT_TTL_SECONDS", DEFAULT_TTL))
+    if args.context_file:
+        args.context_file.unlink(missing_ok=True)
+    info: dict[str, Any] = {}
     try:
-        path = prepare(args.agent, action, repo, root, read_rest)
+        path = prepare(args.agent, action, repo, root, read_rest, info)
     except QuotaExhausted as error:
         return stop_on_quota(error)
     except Stop as stop:
@@ -324,6 +348,9 @@ def main() -> int:
         return SKIP
     if path is not None:
         remember(args.agent, action, None, STATE_DIR, time.time(), ttl)
+        if args.context_file:
+            context = {"action": action, **info, "worktree": str(path)}
+            args.context_file.write_text(json.dumps(context, indent=1))
         print(path)
     return 0
 

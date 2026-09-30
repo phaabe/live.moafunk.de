@@ -25,15 +25,20 @@ def allowed(command: str, tool: str = "Bash") -> bool:
 
 
 class DecideTest(unittest.TestCase):
-    def test_feature_branch_pushes_are_approved(self) -> None:
+    def test_plain_git_writes_are_denied(self) -> None:
+        # The gate cannot see the shell directory: only `git -C <worktree>`
+        # forms can pass (test_git_gate.py).
         for command in (
             "git push origin feat/312-x",
             "git push -u origin fix/350-retry",
-            "git push origin chore/a.b_c",
             "git push origin --delete feat/312-x",
+            "git rebase origin/dev/312-interim",
+            "git rebase --continue",
         ):
             with self.subTest(command=command):
-                self.assertTrue(allowed(command))
+                ok, reason = gate.decide("Bash", {"command": command})
+                self.assertFalse(ok)
+                self.assertIn("git -C <runner worktree>", reason)
 
     def test_other_pushes_are_denied(self) -> None:
         for command in (
@@ -132,7 +137,7 @@ class ServerTest(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-            ask("git push origin feat/x", 3),
+            ask(MERGE, 3),
             ask("git push origin main", 4),
         )
         self.assertEqual([reply["id"] for reply in replies], [1, 2, 3, 4])
@@ -141,14 +146,11 @@ class ServerTest(unittest.TestCase):
         deny = json.loads(replies[3]["result"]["content"][0]["text"])
         self.assertEqual(
             allow,
-            {
-                "behavior": "allow",
-                "updatedInput": {"command": "git push origin feat/x"},
-            },
+            {"behavior": "allow", "updatedInput": {"command": MERGE}},
         )
         self.assertEqual(deny["behavior"], "deny")
-        self.assertIn("not a feature branch", deny["message"])
-        self.assertIn("allow 'git push origin feat/x'", self.log)
+        self.assertIn("git -C <runner worktree>", deny["message"])
+        self.assertIn(f"allow {MERGE!r}", self.log)
         self.assertIn("deny 'git push origin main'", self.log)
 
 

@@ -101,6 +101,8 @@ class ClaudeTickTest(unittest.TestCase):
             "import json, os, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(['verify', sys.argv[-2]]) + '\\n')\n"
+            "with open(os.environ['TEST_CALLS'] + '.verify-argv', 'w') as f:\n"
+            "    f.write(json.dumps(sys.argv[1:]))\n"
             "with open(os.environ['TEST_CALLS'] + '.since', 'w') as f:\n"
             "    f.write(sys.argv[-1])\n"
             "sys.exit(int(os.environ.get('TEST_VERIFY_EXIT', '0')))\n"
@@ -119,6 +121,7 @@ class ClaudeTickTest(unittest.TestCase):
             'echo $$ > "$TEST_MODEL_PID"\n'
             'printf \'%s\\n%s\\n\' "${EPIC_ACTION_FILE:-}" "${EPIC_TRUSTED_ROOT:-}" > "$TEST_CALLS.modelenv"\n'
             'printf \'%s\' "${EPIC_WORKTREE:-}" > "$TEST_CALLS.worktree-env"\n'
+            'printf \'%s\' "${GIT_EDITOR:-}" > "$TEST_CALLS.editor"\n'
             'cat > "$TEST_CALLS.prompt"\n'
             # Another runner stores a quota wait while this session runs.
             'if [[ -n "${TEST_MODEL_WAIT:-}" ]]; then\n'
@@ -297,12 +300,54 @@ class ClaudeTickTest(unittest.TestCase):
             server["args"],
             [str(self.repo.resolve() / "scripts/epic/permission_gate.py")],
         )
+        env = server["env"]
+        lock = self.state / "claude.lock"
+        self.assertEqual(env["EPIC_STATE_DIR"], str(self.state))
+        self.assertEqual(env["EPIC_ACTION_FILE"], str(lock / "action.json"))
+        # The git contract needs the runner context and paths in every tick.
+        self.assertEqual(env["EPIC_CONTEXT_FILE"], str(lock / "context.json"))
+        self.assertEqual(env["EPIC_TRUSTED_ROOT"], str(self.repo.resolve()))
         self.assertEqual(
-            server["env"],
+            env["EPIC_WORKTREE_DIR"],
+            str(self.repo.resolve().parent / "live.moafunk.de-claude-wt"),
+        )
+        self.assertIn("HOME", env)
+        self.assertNotIn("EPIC_SHARED_READER", env)
+
+    def test_runner_settings_and_editor_reach_the_model(self) -> None:
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        args = self.model_targets()[0]
+        settings = self.repo.resolve() / "scripts/epic/claude-runner-settings.json"
+        self.assertIn(f"--settings {settings}", args)
+        self.assertEqual(Path(str(self.calls) + ".editor").read_text(), "true")
+        # The checked-in file routes every git global option to the gate and
+        # leaves the shared settings alone.
+        rules = json.loads(
+            (ROOT / "scripts/epic/claude-runner-settings.json").read_text()
+        )
+        self.assertEqual(
+            rules,
             {
-                "EPIC_STATE_DIR": str(self.state),
-                "EPIC_ACTION_FILE": str(self.state / "claude.lock/action.json"),
+                "permissions": {
+                    "ask": ["Bash(git push:*)", "Bash(git rebase:*)", "Bash(git -*)"]
+                }
             },
+        )
+        shared = json.loads((ROOT / ".claude/settings.json").read_text())
+        self.assertNotIn("Bash(git -*)", shared["permissions"]["ask"])
+
+    def test_verify_checks_the_runner_worktree(self) -> None:
+        wt = "/runner-wt/feat/1-x"
+        self.assertEqual(self.run_tick(TEST_WORKTREE_OUT=wt).wait(timeout=30), 0)
+        argv = json.loads(Path(str(self.calls) + ".verify-argv").read_text())
+        self.assertEqual(argv[argv.index("--worktree") + 1], wt)
+
+    def test_worktree_step_writes_the_runner_context(self) -> None:
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        (call,) = self.worktree_calls()
+        self.assertEqual(
+            call[call.index("--context-file") + 1],
+            str(self.state / "claude.lock/context.json"),
         )
 
     def test_action_that_did_not_land_fails_the_tick_after_recording(self) -> None:
@@ -472,12 +517,16 @@ class ClaudeTickTest(unittest.TestCase):
         model = next(c for c in self.calls_made() if c[0] == "claude")
         config = model[1].split("--mcp-config ", 1)[1].split(" --", 1)[0]
         server = json.loads(config)["mcpServers"]["epic-gate"]
+        self.assertEqual(server["env"]["EPIC_STATE_DIR"], str(home))
         self.assertEqual(
-            server["env"],
-            {
-                "EPIC_STATE_DIR": str(home),
-                "EPIC_ACTION_FILE": str(home / "claude.lock/action.json"),
-            },
+            server["env"]["EPIC_ACTION_FILE"], str(home / "claude.lock/action.json")
+        )
+        self.assertEqual(
+            server["env"]["EPIC_CONTEXT_FILE"], str(home / "claude.lock/context.json")
+        )
+        self.assertEqual(
+            server["env"]["EPIC_WORKTREE_DIR"],
+            str(self.repo.resolve().parent / "live.moafunk.de-claude-2-wt"),
         )
 
     def test_registered_agent_obeys_the_shared_quota_wait(self) -> None:
