@@ -416,6 +416,20 @@ def rebase(path: Path, args: list[str]) -> str:
     return f"rebase of {branch} onto origin/{base}, lease pinned at {pinned[:7]}"
 
 
+def this_attempt(record: dict[str, Any], number: int) -> None:
+    """A resolve-conflict tick may only finish or push a rebase onto its own
+    pinned target tip. A rebase left unfinished by an earlier tick onto an
+    older tip must be aborted and started again."""
+    if action().get("action") != "resolve-conflict":
+        return
+    tip = pinned_tip(number, str(record.get("sha")), str(record.get("base")))
+    if record.get("onto") != tip:
+        raise Refused(
+            f"the recorded rebase is onto {str(record.get('onto'))[:7]}, not this "
+            f"attempt's target tip {tip[:7]}; abort it and rebase again"
+        )
+
+
 def pinned_tip(number: int, head: str, base: str) -> str:
     """The target tip the runner pinned for this resolve-conflict attempt."""
     attempt = load_json("EPIC_ATTEMPT_FILE")
@@ -465,6 +479,7 @@ def rebase_step(path: Path, step: str) -> str:
         pr = open_pr(number, branch)
         if (pr.get("base") or {}).get("ref") != record.get("base"):
             raise Refused(f"PR {number} base changed during the rebase")
+        this_attempt(record, number)
     else:
         # Retired: after this approval the record approves no further
         # continue, abort, add or lease push, until a new approved rebase
@@ -524,6 +539,7 @@ def lease_push(path: Path, rest: list[str]) -> str:
         raise Refused(
             f"the lease must pin {record.get('sha')}, the head before the rebase"
         )
+    this_attempt(record, number)
     if rebasing(top) is not None or current_branch(top) != branch:
         raise Refused(f"{top} is not on {branch} with a finished rebase")
     if git(top, "merge-base", "--is-ancestor", record["onto"], "HEAD").returncode:

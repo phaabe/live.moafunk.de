@@ -393,7 +393,9 @@ only behind its base is not rebased. Three values of one attempt stay apart:
   agree on it.
 - **Target tip**: the base tip the runner pins for this attempt before the
   model starts. It is the rebase destination and part of the attempt key. The
-  gate approves the rebase only onto it. It is never the lease value.
+  gate approves the rebase, `--continue` and the lease push only onto it: a
+  rebase left by an earlier tick onto an older tip is aborted and started
+  again. It is never the lease value.
 - **Old series base**: `git merge-base <old head> <target tip>`, the base the
   reviewed patch series was built on.
 
@@ -451,7 +453,8 @@ and the base has not advanced past the target tip since. The focused scope is:
 (1) `git range-diff` of the old and new patch series; (2) the base changes
 from the old series base to the target tip that touch the PR's files or
 symbols the PR calls or is called by; (3) the conflicted files; (4) every
-finding of the reviewer's last review if it requested changes. Anything else,
+finding since the reviewer's last approval, when the last verdict requested
+changes (a later review need not repeat a finding for it to stay open). Anything else,
 or unclear impact, means a full review. The verdict still names the new head
 in the exact format of section 4.
 

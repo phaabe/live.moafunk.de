@@ -161,6 +161,23 @@ class ProofGateTest(ConflictFixture):
             f"git -C {self.wt} rebase origin/{BASE}", "pinned for this attempt"
         )
 
+    def test_unfinished_rebase_onto_an_older_tip_is_not_resumed(self) -> None:
+        # Review finding: a later tick pinned T2 but resumed and pushed the
+        # rebase an earlier tick left unfinished on T1.
+        self.conflict()
+        self.advance_base("one\nbase two\nthree\n")  # the next tick pins T2
+        (self.wt / "f.txt").write_text("one\nresolved\n")
+        self.assertTrue(self.allowed(f"git -C {self.wt} add -- f.txt"))
+        self.refused(f"git -C {self.wt} rebase --continue", "abort it and rebase again")
+        self.assertTrue(self.allowed(f"git -C {self.wt} rebase --abort"))
+
+    def test_finished_rebase_onto_an_older_tip_is_not_pushed(self) -> None:
+        self.conflict()
+        self.resolve()
+        self.prove()
+        self.advance_base("one\nbase two\nthree\n")  # the next tick pins T2
+        self.refused(self.lease(), "abort it and rebase again")
+
     def test_other_rebasing_actions_need_no_pin(self) -> None:
         self.set_action({"action": "fix", "reason": "t", "pr": 7, "sha": self.head})
         self.advance_base("zero\none\ntwo\n")
@@ -389,6 +406,29 @@ class ScopeTest(unittest.TestCase):
         self.assertEqual(found["last_verdict"], "CHANGES REQUESTED")
         self.assertEqual(found["open_findings"], [f"{PULL}#issuecomment-1"])
 
+    def test_findings_stay_open_across_later_reviews(self) -> None:
+        # Review finding: a second changes-requested review that does not
+        # repeat a finding must not drop it.
+        rows = [
+            comment(1, "Finding: allowed() must not treat a dict as True."),
+            comment(2, f"Review: CHANGES REQUESTED by Claude at {self.b0}"),
+            comment(3, f"Review: CHANGES REQUESTED by Claude at {self.h0}"),
+            comment(4, self.record()),
+        ]
+        found = self.scope(rows)
+        self.assertEqual(found["mode"], "focused", found["reason"])
+        self.assertEqual(found["open_findings"], [f"{PULL}#issuecomment-1"])
+
+    def test_an_approval_closes_earlier_findings(self) -> None:
+        rows = [
+            comment(1, "Finding: old, fixed."),
+            comment(2, f"Review: APPROVED by Claude at {self.b0}"),
+            comment(3, "Finding: new."),
+            comment(4, f"Review: CHANGES REQUESTED by Claude at {self.h0}"),
+            comment(5, self.record()),
+        ]
+        self.assertEqual(self.scope(rows)["open_findings"], [f"{PULL}#issuecomment-3"])
+
     def test_approved_last_review_has_no_open_findings(self) -> None:
         rows = [
             comment(1, "Finding: fixed later."),
@@ -447,6 +487,29 @@ class ScopeTest(unittest.TestCase):
             comment(3, body),
         ]
         self.assert_full(self.scope(rows), "missing locally")
+
+
+class ChangedFilesTest(unittest.TestCase):
+    def test_non_ascii_path_selects_its_suite(self) -> None:
+        # Review finding: Git quotes non-ASCII names without -z.
+        env = mock.patch.dict(os.environ, ISOLATED)
+        env.start()
+        self.addCleanup(env.stop)
+        tmp = tempfile.TemporaryDirectory(prefix="rebase-names-")
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name)
+        git(repo, "init", "-q", "-b", BASE)
+        (repo / "README").write_text("x\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "base")
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "frontend/src").mkdir(parents=True)
+        (repo / "frontend/src/über.ts").write_text("export {}\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", "feature")
+        paths = rp.touched(repo, base, "HEAD")
+        self.assertEqual(paths, ["frontend/src/über.ts"])
+        self.assertEqual([s["name"] for s in rp.required(paths, rp.suites())], ["frontend"])
 
 
 class AttemptTest(unittest.TestCase):

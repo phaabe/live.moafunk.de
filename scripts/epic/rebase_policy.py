@@ -209,10 +209,23 @@ def unclean(top: Path) -> str | None:
     return None
 
 
+def changed_files(top: Path, *revisions: str) -> list[str]:
+    """`git diff --name-only` as real paths: NUL-separated, so Git does not
+    quote non-ASCII names (renames count twice)."""
+    out = subprocess.run(
+        ["git", "-C", str(top), "diff", "--name-only", "-z", "--no-renames", *revisions],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if out.returncode != 0:
+        raise Problem(f"git diff --name-only failed: {out.stderr.strip()}")
+    return sorted({name for name in out.stdout.split("\0") if name})
+
+
 def touched(top: Path, onto: str, head: str) -> list[str]:
-    """Files the PR changes on top of the target tip (renames count twice)."""
-    out = git(top, "diff", "--name-only", "--no-renames", f"{onto}...{head}")
-    return sorted({line for line in out.splitlines() if line})
+    """Files the PR changes on top of the target tip."""
+    return changed_files(top, f"{onto}...{head}")
 
 
 # --- suites and proof -------------------------------------------------------
@@ -829,17 +842,19 @@ def verdicts(rows: list[dict[str, Any]], by: str) -> list[dict[str, Any]]:
 
 
 def open_findings(rows: list[dict[str, Any]], mine: list[dict[str, Any]]) -> list[str]:
-    """Finding URLs of the last review when it requested changes: the comments
-    after the reviewer's previous verdict up to the last one."""
+    """Finding URLs of every review since the reviewer's last approval: a later
+    changes-requested review need not repeat a finding for it to stay open.
+    Nothing is open when the last verdict approved."""
     if not mine or mine[-1]["state"] != "CHANGES REQUESTED":
         return []
-    last = mine[-1]
-    previous = mine[-2]["at"] if len(mine) > 1 else ""
+    approved = [v["at"] for v in mine if v["state"] == "APPROVED"]
+    since = approved[-1] if approved else ""
+    verdict_urls = {v["url"] for v in mine}
     return [
         c.get("html_url") or ""
         for c in rows
-        if previous < (c.get("created_at") or "") <= last["at"]
-        and (c.get("html_url") or "") != last["url"]
+        if since < (c.get("created_at") or "") <= mine[-1]["at"]
+        and (c.get("html_url") or "") not in verdict_urls
         and not (c.get("body") or "").startswith("Rebase record by ")
     ]
 
@@ -942,13 +957,7 @@ def scope(
             f"{tip}..{head}",
         )
         pr_files = touched(top, tip, head)
-        changed = [
-            f
-            for f in git(
-                top, "diff", "--name-only", "--no-renames", old_base, tip
-            ).splitlines()
-            if f
-        ]
+        changed = changed_files(top, old_base, tip)
         keep = related(top, changed, pr_files, old_base, tip, head)
         base_diff = git(top, "diff", old_base, tip, "--", *keep) if keep else ""
     except Problem as error:
