@@ -115,8 +115,10 @@ EXECUTOR_LINE = re.compile(
     r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t]*$", re.MULTILINE
 )
 REVIEWER_LINE = re.compile(r"\bReviewer:\s*(Claude|Codex)\b")
+# `Issue: <url> (partial)` links the ticket but does not complete it.
 ISSUE_LINE = re.compile(
-    rf"^Issue:[ \t]*https://github\.com/{re.escape(REPO)}/issues/(\d+)[ \t]*$",
+    rf"^Issue:[ \t]*https://github\.com/{re.escape(REPO)}/issues/(\d+)"
+    r"(?:[ \t]+(\(partial\)))?[ \t]*$",
     re.MULTILINE,
 )
 LEAF = re.compile(r"\b[A-Z][0-9]+\.[0-9]+\.[0-9]+\b")
@@ -126,6 +128,7 @@ LEAF = re.compile(r"\b[A-Z][0-9]+\.[0-9]+\.[0-9]+\b")
 START_AFTER = re.compile(r"Start after (.*?)(?:\.(?=\s|$)|\(|$)", re.MULTILINE)
 LEAF_IDS_LINE = re.compile(r"^Leaf IDs:[ \t]*(.+)$", re.MULTILINE)
 CHECKED_LEAF = re.compile(r"- \[[xX]\] \*\*([A-Z][0-9]+\.[0-9]+\.[0-9]+)\*\*")
+OPEN_LEAF = re.compile(r"- \[ \] \*\*([A-Z][0-9]+\.[0-9]+\.[0-9]+)\*\*")
 # Batch tables on the epic: "| Codex | O1.2.4 (<url>) first; then P1 (<url>) ... |".
 # A row is split into stages at "then" or an arrow; later stages wait for earlier leaves.
 BATCH_ROW = re.compile(r"^\|[ \t]*(Claude|Codex)[ \t]*\|(.*)\|[ \t]*$", re.MULTILINE)
@@ -287,8 +290,39 @@ def findings(
 
 
 def issue_numbers(text: str) -> set[int]:
-    """Issues a PR implements: only line-start `Issue:` lines, not other links."""
-    return {int(n) for n in ISSUE_LINE.findall(text or "")}
+    """Issues a PR implements: only line-start `Issue:` lines, not other links.
+    A `(partial)` line counts too: it links the ticket without completing it."""
+    return {int(n) for n, _ in ISSUE_LINE.findall(text or "")}
+
+
+def issue_links(text: str) -> list[tuple[int, bool]]:
+    """(number, partial) for each line-start `Issue:` line, in body order."""
+    return [(int(n), bool(p)) for n, p in ISSUE_LINE.findall(text or "")]
+
+
+def pr_leaf_ids(text: str) -> set[str]:
+    """Leaf IDs a PR's `Leaf IDs:` lines name."""
+    found: set[str] = set()
+    for line in LEAF_IDS_LINE.findall(text or ""):
+        found |= set(LEAF.findall(line))
+    return found
+
+
+def uncovered_leaves(ticket_body: str, pr_body: str) -> list[str]:
+    """Unchecked leaves of a ticket that the PR's `Leaf IDs:` do not name.
+    One rule for closing a ticket and for whole-ticket dependencies."""
+    covered = pr_leaf_ids(pr_body) | set(CHECKED_LEAF.findall(ticket_body or ""))
+    return sorted(set(OPEN_LEAF.findall(ticket_body or "")) - covered)
+
+
+def completes_ticket(pr_body: str, number: int, ticket_body: str | None) -> bool:
+    """A merged PR completes ticket `number` when its `Issue:` line names it
+    without `(partial)` and it covers every unchecked leaf of the ticket.
+    An unknown ticket body (not on the board) skips the leaf check."""
+    links = dict(issue_links(pr_body))
+    if number not in links or links[number]:
+        return False
+    return ticket_body is None or not uncovered_leaves(ticket_body, pr_body)
 
 
 def issue_url(number: int) -> str:
@@ -297,12 +331,22 @@ def issue_url(number: int) -> str:
 
 def done_leaves(state: dict[str, Any]) -> set[str]:
     """Leaves listed by a merged PR's `Leaf IDs:` line or ticked in an issue body,
-    plus the URLs of tickets a merged PR names in its `Issue:` line."""
+    plus the URLs of tickets a merged PR completes (see completes_ticket)."""
     done: set[str] = set()
+    bodies = {
+        (i.get("content") or {}).get("number"): (i.get("content") or {}).get("body")
+        or ""
+        for i in state.get("items", [])
+        if (i.get("content") or {}).get("type") == "Issue"
+    }
     for pr in state.get("merged_prs", []):
-        for line in LEAF_IDS_LINE.findall(pr.get("body") or ""):
-            done |= set(LEAF.findall(line))
-        done |= {issue_url(n) for n in issue_numbers(pr.get("body") or "")}
+        body = pr.get("body") or ""
+        done |= pr_leaf_ids(body)
+        done |= {
+            issue_url(n)
+            for n in issue_numbers(body)
+            if completes_ticket(body, n, bodies.get(n))
+        }
     for item in state.get("items", []):
         done |= set(CHECKED_LEAF.findall((item.get("content") or {}).get("body") or ""))
     return done
