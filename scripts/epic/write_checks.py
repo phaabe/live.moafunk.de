@@ -542,7 +542,10 @@ def claim_or_owned(ctx: Context) -> str | None:
         return None
     focus = na.read_focus(na.FOCUS_FILE)
     enabled = na.read_actions(os.environ.get(na.ACTIONS_ENV))
-    return gs.recheck(ctx.agent, ctx.action, focus, enabled, False, ctx.reader)
+    mode = na.completed_tickets()
+    return gs.recheck(
+        ctx.agent, ctx.action, focus, enabled, False, ctx.reader, completed_tickets=mode
+    )
 
 
 def issue_write(ctx: Context) -> str | None:

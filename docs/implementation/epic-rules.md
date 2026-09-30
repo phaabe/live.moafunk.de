@@ -231,10 +231,40 @@ model session only for real work: pause, idle, stop and a repeat of the last
 no-op action (`scripts/epic/tick_gate.py`: same action, no change on GitHub,
 younger than 3 hours) start none. Claims follow the "Start after" lines and the
 order in the epic's batch table ("Scope, in order"; "then" or an arrow starts
-the next stage). A "Start after" line names leaf IDs or ticket URLs. A ticket
-counts as done when a merged PR names it in its `Issue:` line. So Anton can set
-a whole queue to Ready at once and let each readiness comment name the ticket
-before it. Each runner checkout only runs ticks and holds no work. Every
+the next stage). A "Start after" line names leaf IDs or ticket URLs. A leaf
+counts as done when a merged PR lists it in `Leaf IDs:` or its box is ticked.
+So Anton can set a whole queue to Ready at once and let each readiness comment
+name the ticket before it.
+
+When a ticket counts as done depends on the switch
+`EPIC_REQUIRE_COMPLETED_TICKETS` (temporary; removing it is later work):
+
+- Unset or `0` (default, old rule): a merged PR names the ticket in its
+  `Issue:` line.
+- `1`: the ticket's issue is closed now with reason `completed`. A merged PR or
+  board Status Done is not enough. Open, reopened, not planned, duplicate
+  (its target is not followed) or an unknown reason blocks. Board membership is
+  not needed: a ticket off the board or archived is read through the REST
+  issue endpoint, once per snapshot. A 404 or 410, or an issue moved to another
+  repository, blocks only the tickets that start after it; fix the "Start
+  after" URL. Auth errors, 5xx and rate limits stop the whole tick (exit 5 or
+  the quota wait). Reopening blocks new claims and their fresh check; work
+  already In progress continues. Closed issues left Ready or In progress get no
+  claim or continue action. A board Status that disagrees with the issue state
+  is a warning in `--status` and the monitor, never a blocker.
+- Any other value: exit 2 before any GitHub read.
+
+Selection, the fresh check before the model and the write checks read the same
+switch from the runner's environment. `--status` prints the mode. The monitor
+uses the switch from its own environment (`monitor.py` passes it to its
+`--fetch-state` child) and exports `epic_completed_tickets_rule` and
+`epic_dependency_warning_info`. Activation, only after Anton records the
+rollout audit on https://github.com/phaabe/live.moafunk.de/issues/520:
+create the pause file, set `EPIC_REQUIRE_COMPLETED_TICKETS=1` in both runner
+environments and the monitor's, check that `--status` in each shows `on`, then
+remove the pause file. Never change the mode inside a tick.
+
+Each runner checkout only runs ticks and holds no work. Every
 tick starts with `git pull --ff-only` there, so merged changes to
 `scripts/epic/`, `.claude/commands/epic/` or `.codex/` apply on the next tick;
 a failed pull stops the tick. Before the pull, `claude-tick.sh` runs

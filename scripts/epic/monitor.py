@@ -1000,6 +1000,9 @@ def github_metrics(state: Json, now: float) -> str:
     filtered = epic_view(state)
     items, prs = filtered["items"], filtered["prs"]
     metrics.add("github_snapshot_timestamp_seconds", now)
+    # The mode the fetch ran in: the monitor's own EPIC_REQUIRE_COMPLETED_TICKETS.
+    mode = bool(state.get("completed_tickets"))
+    metrics.add("completed_tickets_rule", int(mode))
     delivery.area_leaves(metrics, items)
     for agent in epic.AGENTS:
         label = agent.lower()
@@ -1018,7 +1021,9 @@ def github_metrics(state: Json, now: float) -> str:
         metrics.add(
             "checklist_leaves", sum(leaves.values()), agent=label, state="checked"
         )
-        for action in epic.decide(agent, filtered, include_waiting=True):
+        for action in epic.decide(
+            agent, filtered, include_waiting=True, completed_tickets=mode
+        ):
             metrics.add(
                 "queued_action_info",
                 1,
@@ -1026,6 +1031,14 @@ def github_metrics(state: Json, now: float) -> str:
                 **action_labels(action.__dict__),
                 reason=action.reason,
             )
+            for warning in action.warnings:
+                metrics.add(
+                    "dependency_warning_info",
+                    1,
+                    agent=label,
+                    **action_labels(action.__dict__),
+                    reason=warning,
+                )
         owned = [pr for pr in prs if epic.pr_author(pr) == agent]
         for checks in ("green", "failed", "pending", "unknown"):
             metrics.add(
