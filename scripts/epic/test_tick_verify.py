@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
+import json
 import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
+import git_gate
+import rebase_policy as rp
 import tick_verify
+from test_rebase_policy import ConflictFixture, comment as record_row
 
 OLD = "a" * 40
 NEW = "b" * 40
@@ -122,6 +127,101 @@ class WorktreeTest(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class CodexResolutionTest(ConflictFixture):
+    """Codex resolve-conflict: the shared proof and record checks, real Git."""
+
+    since = "2026-09-30T00:00:00Z"
+
+    def pushed(self) -> tuple[str, str]:
+        """(target tip, new head) after a proven conflict push."""
+        tip = self.conflict()
+        self.resolve()
+        self.prove()
+        self.assertEqual(self.run_approved(self.lease()).returncode, 0)
+        new = self.remote_head()
+        self.pr["head"]["sha"] = new
+        return tip, new
+
+    def attempt(self) -> dict[str, Any]:
+        return json.loads((self.tmp / "attempt.json").read_text())
+
+    def publish(self, agent: str = "codex") -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+
+        def post(pr: int, body: str) -> None:
+            rows.append(record_row(len(rows) + 100, body))
+
+        with (
+            mock.patch.object(rp, "read_pr", self.read_pr),
+            mock.patch.object(rp, "comments", lambda n: list(rows)),
+            mock.patch.object(rp, "post_comment", post),
+        ):
+            code, reason = rp.publish(
+                agent, self.attempt(), self.wt,
+                self.state / git_gate.RECORDS, self.state,
+            )  # fmt: skip
+        self.assertEqual(code, rp.RUN, reason)
+        return rows
+
+    def verify(self, new: str, rows: list[dict[str, Any]]) -> tuple[bool, str]:
+        def fetch(args: list[str]) -> Any:
+            if args[:2] == ["pr", "view"]:
+                return {"state": "OPEN", "headRefOid": new}
+            self.assertIn("--paginate", args)
+            return [rows]
+
+        return tick_verify.landed(
+            "codex", self.action, self.since, fetch,
+            worktree=str(self.wt), attempt=self.attempt(),
+        )  # fmt: skip
+
+    def test_proven_and_recorded_resolution_lands(self) -> None:
+        _, new = self.pushed()
+        ok, reason = self.verify(new, self.publish())
+        self.assertTrue(ok, reason)
+
+    def test_missing_record_fails(self) -> None:
+        _, new = self.pushed()
+        ok, reason = self.verify(new, [])
+        self.assertFalse(ok)
+        self.assertIn("no rebase record", reason)
+
+    def test_invalid_record_fails(self) -> None:
+        _, new = self.pushed()
+        body = self.publish()[0]["body"]
+        # Claude's record, another target tip, and a record from before the tick.
+        claude = self.publish("claude")
+        tip = [
+            record_row(1, "\n".join(
+                f"Target tip: {'c' * 40}" if line.startswith("Target tip: ") else line
+                for line in body.split("\n")
+            ))
+        ]  # fmt: skip
+        old = [record_row(2, body, at="2026-09-29T10:00:00Z")]
+        for name, rows in (("claude", claude), ("tip", tip), ("old", old)):
+            with self.subTest(name=name):
+                self.assertFalse(self.verify(new, rows)[0])
+
+    def test_missing_proof_fails(self) -> None:
+        _, new = self.pushed()
+        rows = self.publish()
+        rp.proof_path(self.state, 7, new).unlink()
+        ok, reason = self.verify(new, rows)
+        self.assertFalse(ok)
+        self.assertIn("no test proof", reason)
+
+    def test_stale_proof_fails(self) -> None:
+        _, new = self.pushed()
+        rows = self.publish()
+        path = rp.proof_path(self.state, 7, new)
+        proof = json.loads(path.read_text())
+        proof["onto"] = "c" * 40
+        path.write_text(json.dumps(proof))
+        ok, reason = self.verify(new, rows)
+        self.assertFalse(ok)
+        self.assertIn("the test proof is for target tip", reason)
+
+
 class LandedTest(unittest.TestCase):
     def test_merge_needs_a_merged_pr(self) -> None:
         self.assertTrue(check("merge", github(state="MERGED")))
@@ -153,9 +253,10 @@ class LandedTest(unittest.TestCase):
         self.assertTrue(check("fix-checks", github(head=NEW)))
         # A moved head alone does not resolve a conflict: proof and record too.
         self.assertFalse(check("resolve-conflict", github(head=NEW)))
-        # Codex keeps the moved-head rule until issue 537 adds its side.
         action = {"action": "resolve-conflict", "pr": 410, "sha": OLD}
-        self.assertTrue(tick_verify.landed("codex", action, SINCE, github(head=NEW))[0])
+        self.assertFalse(
+            tick_verify.landed("codex", action, SINCE, github(head=NEW))[0]
+        )
 
     def test_fix_needs_a_push_or_a_reply_only_marker(self) -> None:
         self.assertTrue(check("fix", github(head=NEW)))
