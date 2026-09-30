@@ -521,8 +521,29 @@ class LegacyReader(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
+def runner_github(agent: str, dependency_merged: bool) -> dict[str, list[Any]]:
+    """REST pages: the agent's #500 In progress waits for #522; #521 is Ready."""
+    from test_github_state import FakeGitHub
+
+    fake = FakeGitHub()
+    repo = GitHubRepo(fake)
+    repo.add_item(500, "In progress", agent, labels=("waiting",))
+    fake.set(
+        f"{REPO}/issues/500/comments?per_page=100",
+        [comment(1, dep_record(522, actor=agent), "2026-09-29T09:30:00Z")],
+    )
+    repo.add_item(521, "Ready", agent)
+    if dependency_merged:
+        repo.closed["dev/312-interim"] = [
+            {
+                "id": 1,
+                "number": 1,
+                "body": f"Issue: {R}/522",
+                "merged_at": "2026-09-29T12:00:00Z",
+            }
+        ]
+        repo.publish()
+    return {url: [body, link] for url, (body, link, _) in fake.pages.items()}
 
 
 class ClaudeRunner(unittest.TestCase):
@@ -584,28 +605,7 @@ class ClaudeRunner(unittest.TestCase):
         (cache / "auth-context").write_text("runner-test\n")
 
     def github(self, dependency_merged: bool) -> dict[str, list[Any]]:
-        """#500 In progress waits for #522; #521 is Ready."""
-        from test_github_state import FakeGitHub
-
-        fake = FakeGitHub()
-        repo = GitHubRepo(fake)
-        repo.add_item(500, "In progress", "Claude", labels=("waiting",))
-        fake.set(
-            f"{REPO}/issues/500/comments?per_page=100",
-            [comment(1, dep_record(522), "2026-09-29T09:30:00Z")],
-        )
-        repo.add_item(521, "Ready", "Claude")
-        if dependency_merged:
-            repo.closed["dev/312-interim"] = [
-                {
-                    "id": 1,
-                    "number": 1,
-                    "body": f"Issue: {R}/522",
-                    "merged_at": "2026-09-29T12:00:00Z",
-                }
-            ]
-            repo.publish()
-        return {url: [body, link] for url, (body, link, _) in fake.pages.items()}
+        return runner_github("Claude", dependency_merged)
 
     def tick(self, changes_after_selection: bool) -> int:
         self.map.write_text(self.json.dumps(self.github(False)))
@@ -633,3 +633,122 @@ class ClaudeRunner(unittest.TestCase):
         self.assertNotIn(["gate", "record"], self.calls())
         self.assertFalse((self.helper.state / "claude-gate-seen.json").exists())
         self.assertFalse((self.helper.root / "calls.jsonl.worktree").exists())
+
+
+class CodexRunner(unittest.TestCase):
+    """The real .codex/codex-tick.sh with the real selector and recheck.
+
+    It needs no adapter change: with EPIC_SHARED_READER=1 it rechecks every
+    candidate after the gate and before the model. Only the network (a fake
+    `gh` with recorded REST pages), `git pull`, the worktree step and the
+    model are stubs, from the Codex runner's own test harness.
+    """
+
+    def setUp(self) -> None:
+        import json
+        import shutil
+        import sys
+        from pathlib import Path
+
+        codex_tests = Path(__file__).resolve().parents[2] / ".codex/tests"
+        sys.path.insert(0, str(codex_tests))
+        self.addCleanup(sys.path.remove, str(codex_tests))
+        from test_codex_tick import ROOT, TickTests
+
+        self.json = json
+        helper = TickTests("test_pause_never_calls_selector_or_codex")
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        self.helper = helper
+        epic = helper.repo / "scripts/epic"
+        # The real selector replaces the harness's selector stub.
+        shutil.copyfile(
+            ROOT.parent / "scripts/epic/next_action.py", epic / "next_action.py"
+        )
+        self.map = helper.root / "gh-map.json"
+        self.next_map = helper.root / "gh-map-next.json"
+        gh = helper.bin / "gh"
+        gh.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, shutil, sys\n"
+            "args = sys.argv[1:]\n"
+            "with open(os.environ['TEST_GH_CALLS'], 'a') as f:\n"
+            "    f.write(json.dumps(args) + '\\n')\n"
+            "if args[:1] == ['api'] and '-i' in args:\n"
+            "    pages = json.load(open(os.environ['TEST_GH_MAP']))\n"
+            "    if args[-1] not in pages:\n"
+            "        sys.stdout.write('HTTP/2.0 404 Not Found\\r\\n\\r\\n{}')\n"
+            "        sys.exit(1)\n"
+            "    body, link = pages[args[-1]]\n"
+            "    head = 'HTTP/2.0 200 OK\\r\\nEtag: \"t\"\\r\\n'\n"
+            "    head += f'Link: {link}\\r\\n' if link else ''\n"
+            "    sys.stdout.write(head + '\\r\\n' + body)\n"
+            "    sys.exit(0)\n"
+            # The gate's target read: GitHub changes after selection here.
+            "if args[:1] == ['api'] and '--jq' in args:\n"
+            "    nxt = os.environ.get('TEST_GH_MAP_NEXT')\n"
+            "    if nxt:\n"
+            "        shutil.copyfile(nxt, os.environ['TEST_GH_MAP'])\n"
+            "    print('2026-09-29T09:00:00Z open')\n"
+            "    sys.exit(0)\n"
+            "sys.exit(1)\n"
+        )
+        cache = helper.state / "github-cache"
+        cache.mkdir(parents=True)
+        (cache / "auth-context").write_text("runner-test\n")
+        for name in (
+            "EPIC_QUOTA_DIR",
+            "EPIC_CACHE_DIR",
+            "EPIC_FOCUS_ACTIONS",
+            "EPIC_ACTION_FILE",
+            "EPIC_TRUSTED_ROOT",
+            "EPIC_WORKTREE",
+            "EPIC_REQUIRE_COMPLETED_TICKETS",
+        ):
+            helper.env.pop(name, None)
+        helper.env.update(
+            {
+                "EPIC_SHARED_READER": "1",
+                "TEST_GH_MAP": str(self.map),
+                "EPIC_RECHECK_TIMEOUT_SECONDS": "30",
+                "EPIC_SELECT_TIMEOUT_SECONDS": "30",
+            }
+        )
+
+    def tick(self, changes_after_selection: bool) -> Any:
+        self.map.write_text(self.json.dumps(runner_github("Codex", False)))
+        if changes_after_selection:
+            self.next_map.write_text(self.json.dumps(runner_github("Codex", True)))
+            self.helper.env["TEST_GH_MAP_NEXT"] = str(self.next_map)
+        return self.helper.run_tick()
+
+    def model_actions(self) -> list[dict[str, Any]]:
+        if not self.helper.calls.exists():
+            return []
+        return [
+            self.json.loads(line)["action"]
+            for line in self.helper.calls.read_text().splitlines()
+        ]
+
+    def log(self) -> str:
+        return (self.helper.state / "codex.log").read_text()
+
+    def test_waiting_work_frees_the_claim_and_the_model_starts(self) -> None:
+        self.assertEqual(self.tick(changes_after_selection=False).returncode, 0)
+        actions = self.model_actions()
+        self.assertEqual([a["action"] for a in actions], ["claim"], self.log())
+        self.assertEqual(actions[0]["issue"], f"{R}/521")
+        self.assertTrue((self.helper.state / "codex-gate.json").exists())
+
+    def test_resumed_work_rejects_the_claim_before_the_model(self) -> None:
+        self.assertEqual(self.tick(changes_after_selection=True).returncode, 0)
+        self.assertEqual(self.model_actions(), [], self.log())
+        self.assertIn("claim is stale on GitHub", self.log())
+        # No success, cooldown or repeat record for the rejected claim.
+        self.assertFalse((self.helper.state / "codex-gate.json").exists())
+        self.assertFalse((self.helper.state / "codex-gate-seen.json").exists())
+        self.assertFalse((self.helper.state / "codex-backoff.json").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
