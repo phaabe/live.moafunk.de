@@ -657,6 +657,10 @@ def read_pr(
         pull = client.json(f"repos/{na.REPO}/pulls/{number}")
     if not isinstance(pull, dict):
         raise ReadBlocked(f"malformed PR {number}")
+    # null: GitHub is still computing it (UNKNOWN). Anything else is malformed.
+    merge = pull.get("mergeable", "missing")
+    if merge is not None and not isinstance(merge, bool):
+        raise ReadBlocked(f"PR {number} has no valid mergeable state")
     pr = pr_from_pull(pull)
     rows = comment_rows(client, number)
     if edit_evidence is not None:
@@ -840,6 +844,8 @@ def validate_state(state: Any) -> None:
             pr.get("statusCheckRollup"), list
         ):
             raise ReadBlocked(f"snapshot PR {pr.get('number')} is partial")
+        if pr.get("mergeable") not in na.MERGEABLE_STATES:
+            raise ReadBlocked(f"snapshot PR {pr.get('number')} has no mergeable state")
     if state.get("completed_tickets") and not isinstance(state.get("tickets"), dict):
         raise ReadBlocked("snapshot state lacks tickets")
     if not isinstance(state.get("waiting"), dict):

@@ -5,10 +5,13 @@ from __future__ import annotations
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import tick_gate
 from tick_gate import (
     SKIP,
     check,
@@ -17,6 +20,7 @@ from tick_gate import (
     should_skip,
     stale,
     target_number,
+    target_state,
 )
 
 R = "https://github.com/phaabe/live.moafunk.de/issues"
@@ -152,6 +156,109 @@ class StaleTest(unittest.TestCase):
     def test_without_selection_time_or_target_nothing_is_stale(self) -> None:
         self.assertIsNone(stale(CLAIM, {"updated_at": "t2", "state": None}))
         self.assertIsNone(stale({"updated_at": "t1"}, None))
+
+    def test_changed_head_is_stale(self) -> None:
+        action = {"action": "review", "pr": 5, "sha": "a" * 40}
+        self.assertIsNotNone(stale(action, {"head": "b" * 40}))
+        self.assertIsNone(stale(action, {"head": "a" * 40, "mergeable": "MERGEABLE"}))
+
+
+class ConflictTest(unittest.TestCase):
+    """The pre-model conflict rule is the selector's (next_action.decide)."""
+
+    def verdict(self, kind: str, mergeable: str) -> str | None:
+        action = {"action": kind, "pr": 5, "sha": "a" * 40}
+        return stale(action, {"head": "a" * 40, "mergeable": mergeable})
+
+    def test_conflict_stops_review_fix_fix_checks_and_merge(self) -> None:
+        for kind in ("review", "fix", "fix-checks", "merge"):
+            with self.subTest(kind=kind):
+                self.assertIn("conflicts", self.verdict(kind, "CONFLICTING") or "")
+                self.assertIsNone(self.verdict(kind, "MERGEABLE"))
+                self.assertIsNone(self.verdict(kind, "UNKNOWN"))
+
+    def test_cleared_conflict_stops_resolve_conflict(self) -> None:
+        self.assertIsNotNone(self.verdict("resolve-conflict", "MERGEABLE"))
+        self.assertIsNone(self.verdict("resolve-conflict", "CONFLICTING"))
+        self.assertIsNone(self.verdict("resolve-conflict", "UNKNOWN"))
+
+    def test_other_actions_ignore_mergeability(self) -> None:
+        for kind in ("escalate", "continue", "adopt"):
+            with self.subTest(kind=kind):
+                self.assertIsNone(self.verdict(kind, "CONFLICTING"))
+
+
+class TargetStateTest(unittest.TestCase):
+    """The gate's GitHub reads, with a fake `gh`."""
+
+    REVIEW = {"action": "review", "pr": 5, "sha": "a" * 40}
+
+    def read(self, action: dict, pull: object, issue: str = "t1\nopen") -> dict | None:
+        calls: list[list[str]] = []
+
+        def gh(args: list[str], timeout: int = 120) -> str:
+            calls.append(args)
+            return issue if "/issues/" in args[1] else json.dumps(pull)
+
+        with patch.object(tick_gate, "run_gh", gh):
+            found = target_state(action)
+        self.calls = calls
+        return found
+
+    def test_pr_read_adds_head_and_mergeable(self) -> None:
+        for raw, merge in (
+            (True, "MERGEABLE"),
+            (False, "CONFLICTING"),
+            (None, "UNKNOWN"),
+        ):
+            with self.subTest(mergeable=raw):
+                pull = {"head": {"sha": "a" * 40}, "mergeable": raw}
+                self.assertEqual(
+                    self.read(self.REVIEW, pull),
+                    {
+                        "updated_at": "t1",
+                        "state": "open",
+                        "head": "a" * 40,
+                        "mergeable": merge,
+                    },
+                )
+
+    def test_issue_and_closed_pr_need_no_pr_read(self) -> None:
+        self.read(CLAIM, None)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.read(self.REVIEW, None, "t1\nclosed")["state"], "closed")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_malformed_pr_fails_and_never_becomes_unknown(self) -> None:
+        good = {"head": {"sha": "a" * 40}, "mergeable": True}
+        for pull in (
+            [],
+            {"mergeable": True},
+            {**good, "head": {"sha": "short"}},
+            {"head": good["head"]},  # no mergeable key
+            {**good, "mergeable": "dirty"},
+            {**good, "mergeable": 0},
+        ):
+            with self.subTest(pull=pull), self.assertRaises(ValueError):
+                self.read(self.REVIEW, pull)
+
+    def test_failed_or_timed_out_read_raises(self) -> None:
+        for error in (
+            subprocess.CalledProcessError(1, ["gh"], "", "HTTP 401"),
+            subprocess.TimeoutExpired(["gh"], 60),
+        ):
+
+            def gh(args: list[str], timeout: int = 120, error=error) -> str:
+                if "/pulls/" in args[1]:
+                    raise error
+                return "t1\nopen"
+
+            with (
+                self.subTest(error=type(error).__name__),
+                patch.object(tick_gate, "run_gh", gh),
+                self.assertRaises(type(error)),
+            ):
+                target_state(self.REVIEW)
 
 
 if __name__ == "__main__":

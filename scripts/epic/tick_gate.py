@@ -19,6 +19,13 @@ top-level fields of `<agent>-gate.json` stay the last recorded session
 `check` runs after the runner took the target lock, and also rechecks the start
 state: it exits 3 when the target is closed or its `updated_at` differs from the
 one in the action (the selector read it). Another runner acted in between.
+For a PR action it also reads the PR (REST, both reader modes): it exits 3 when
+the head is no longer the action's `sha`, when a conflict appeared for `fix`,
+`fix-checks`, `merge` or `review`, or when it cleared for `resolve-conflict`.
+The selector gives another action then (next_action.py). A base push can make a
+PR conflict without changing its `updated_at`. GitHub's `mergeable: null`
+(still computing) is UNKNOWN and changes nothing; a malformed PR fails the
+check, like any other failed read.
 
 `check` exits 4 when its GitHub read hits the GraphQL quota. It then stores the
 shared quota wait (github_quota.py) and writes no gate state.
@@ -34,6 +41,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -50,6 +58,11 @@ STATE_DIR = Path(
 DEFAULT_TTL = 3 * 60 * 60
 NEVER_SKIP = {"continue", "idle", "stop"}
 SKIP = 3
+SHA = re.compile(r"[0-9a-f]{40}")
+# Actions the selector no longer gives on a conflicted PR, which gets
+# `resolve-conflict` (owner) or no review (peer) instead.
+NOT_ON_CONFLICT = {"fix", "fix-checks", "merge", "review"}
+MERGEABLE = {True: "MERGEABLE", False: "CONFLICTING", None: "UNKNOWN"}
 
 
 def fingerprint(action: dict[str, Any]) -> str:
@@ -78,6 +91,13 @@ def stale(action: dict[str, Any], seen: dict[str, Any] | None) -> str | None:
     expected = action.get("updated_at")
     if expected and seen.get("updated_at") != expected:
         return "the target changed after selection"
+    kind, head, merge = action.get("action"), seen.get("head"), seen.get("mergeable")
+    if head and action.get("sha") and head != action["sha"]:
+        return "the PR head changed after selection"
+    if merge == "CONFLICTING" and kind in NOT_ON_CONFLICT:
+        return f"the PR conflicts with its base; no {kind} on this head"
+    if merge == "MERGEABLE" and kind == "resolve-conflict":
+        return "the PR no longer conflicts with its base"
     return None
 
 
@@ -114,8 +134,25 @@ def should_skip(
     )
 
 
+def pull_state(number: int) -> dict[str, Any]:
+    """Head SHA and mergeable state of a PR. ValueError when malformed."""
+    pull = json.loads(run_gh(["api", f"repos/{REPO}/pulls/{number}"], timeout=60))
+    if not isinstance(pull, dict):
+        raise ValueError(f"gate: PR {number} is not an object")
+    head = pull.get("head")
+    head = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(head, str) or not SHA.fullmatch(head):
+        raise ValueError(f"gate: PR {number} has no valid head SHA")
+    # Only null means "still computing"; a missing key is malformed.
+    merge = pull.get("mergeable", "missing")
+    if merge is not None and not isinstance(merge, bool):
+        raise ValueError(f"gate: PR {number} has no valid mergeable state")
+    return {"head": head, "mergeable": MERGEABLE[merge]}
+
+
 def target_state(action: dict[str, Any]) -> dict[str, Any] | None:
-    """`updated_at` and `state` (open/closed) of the action's PR or issue."""
+    """`updated_at` and `state` (open/closed) of the action's PR or issue.
+    For an open PR with a selected head, also its `head` and `mergeable`."""
     number = target_number(action)
     if number is None:
         return None
@@ -125,7 +162,10 @@ def target_state(action: dict[str, Any]) -> dict[str, Any] | None:
     ).split()
     if not out:
         return None
-    return {"updated_at": out[0], "state": out[1] if len(out) > 1 else None}
+    found = {"updated_at": out[0], "state": out[1] if len(out) > 1 else None}
+    if action.get("pr") and action.get("sha") and found["state"] == "open":
+        found.update(pull_state(number))
+    return found
 
 
 def check(

@@ -160,9 +160,14 @@ Priority, first match wins:
 5. `fix-checks`, then `resolve-conflict`, for the agent's own PRs. The
    `epic-guard` status reports waiting (draft, missing verdict, running
    checks) as pending, so the loop waits on it; a failed guard is a real
-   break and gets `fix-checks`.
+   break and gets `fix-checks`. On a PR that GitHub reports as conflicting,
+   `resolve-conflict` comes before `fix` and `fix-checks` (only `escalate`
+   comes first): work on a conflicted head is redone after the rebase.
 6. `review`: the other agent's ready (non-draft) PR has no verdict from this
-   agent for its current head.
+   agent for its current head. A conflicting PR gets no review; the status
+   shows it as waiting for the owner to resolve the conflict. Mergeability
+   `UNKNOWN` (GitHub is still computing it) does not block a review; a failed
+   or malformed read is an error, never `UNKNOWN`.
 7. `continue`: the agent's draft PR, or its In progress issue without a PR.
    Not while it is waiting (see Waiting work below).
 8. `adopt`: a focus PR with no owner line (`Executor:`, `Author:` or

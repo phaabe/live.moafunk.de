@@ -92,12 +92,17 @@ class ClaudeCooldownTest(harness.RunnerHarness):
         self.gh_map.write_text(json.dumps(self.github))
 
     def github_for(self, action: dict[str, Any], state: str = "open") -> None:
-        """The gate's issue read and the cooldown's PR reads for one target."""
+        """The gate's issue and PR reads and the cooldown's PR reads for one target."""
         n = action.get("pr") or int(action["issue"].rsplit("/", 1)[1])
         self.github[f"{REPO}/issues/{n} "] = f"{action['updated_at']}\n{state}"
         if action.get("pr"):
             self.github[f"pulls/{n} --jq .base.ref"] = "dev/312-interim"
             self.github[f"pulls/{n} --jq .state"] = f"{state}\n{action['sha']}"
+            # The gate's full PR read; after the --jq keys, which it also matches.
+            merge = action["action"] != "resolve-conflict"
+            self.github[f"{REPO}/pulls/{n}"] = json.dumps(
+                {"head": {"sha": action["sha"]}, "mergeable": merge}
+            )
         self.save_github()
 
     def base(self, sha: str) -> None:
