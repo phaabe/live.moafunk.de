@@ -404,27 +404,6 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
     except Exception as error:  # Import failures must block the proposed write.
         raise ValueError(f"Runner write checks are unavailable: {error}") from error
 
-    # The shared checker currently defaults to Claude. This hook runs in its own
-    # process; select Codex locally without changing the shared implementation.
-    original_agent, original_push = checks.AGENT, checks.check_push
-
-    def owned_pr_push(ctx: Any, write: Any) -> str | None:
-        reason = original_push(ctx, write)
-        if reason or ctx.pr is None or write.delete:
-            return reason
-        issues = ctx.targets() - {ctx.pr}
-        if not issues:
-            return "the PR names no owned issue"
-        for number in sorted(issues):
-            item = ctx.item(number)
-            if (
-                not item
-                or item.get("status") != "In progress"
-                or item.get("executor") != "Codex"
-            ):
-                return f"issue {number} is not In progress for Codex"
-        return None
-
     if tool in ("exec_command", "shell_command"):
         tool = "Bash"
         tool_input = {
@@ -435,12 +414,9 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
         command, cwd = helper_push_command(tool_input.get("command", ""), cwd)
         tool_input = {**tool_input, "command": command}
     try:
-        checks.AGENT, checks.check_push = "Codex", owned_pr_push
-        refused = checks.guard(tool, tool_input, str(cwd))
+        refused = checks.guard(tool, tool_input, str(cwd), agent="Codex")
     except Exception as error:  # Malformed fresh data must also fail closed.
         raise ValueError(f"Runner write check failed: {error}") from error
-    finally:
-        checks.AGENT, checks.check_push = original_agent, original_push
     if refused:
         raise ValueError(
             f"Runner write check: {refused}. Stop this action; the next tick selects again."
