@@ -690,6 +690,40 @@ class FreshWriteCheckTest(unittest.TestCase):
         self.pull_data.update(state="closed", merged_at="today")
         self.run_hook("git push origin feat/21-work", 2)
 
+    def test_pr_push_requires_every_issue_in_progress_for_codex(self) -> None:
+        self.action("fix")
+        self.pull_data["body"] += (
+            "\nIssue: https://github.com/phaabe/live.moafunk.de/issues/22"
+        )
+        command = "git push origin feat/21-work"
+        for tool in ("Bash", "exec_command", "shell_command"):
+            with self.subTest(tool=tool):
+                self.items = [self.item(n, "In progress") for n in (21, 22)]
+                self.run_hook(command, tool=tool)
+                for index in (0, 1):
+                    number = self.items[index]["content"]["number"]
+                    for changes in (
+                        {"status": "Ready"},
+                        {"status": "Done"},
+                        {"executor": "Claude"},
+                        {"executor": "Unassigned"},
+                    ):
+                        with self.subTest(number=number, changes=changes):
+                            with patch.dict(self.items[index], changes):
+                                self.assertIn(
+                                    f"issue {number}", self.run_hook(command, 2, tool)
+                                )
+                    item = self.items.pop(index)
+                    self.assertIn(f"issue {number}", self.run_hook(command, 2, tool))
+                    self.items.insert(index, item)
+
+    def test_pr_push_without_any_issue_is_refused(self) -> None:
+        self.action_file.write_text(json.dumps({"action": "fix", "pr": 5, "sha": SHA}))
+        self.pull_data["body"] = "Executor: Codex"
+        self.assertIn(
+            "names no issue", self.run_hook("git push origin feat/21-work", 2)
+        )
+
     def test_verdict_requires_reviewed_head_and_open_ready_pr(self) -> None:
         self.action("review")
         self.pull_data["body"] = "Executor: Claude"
@@ -772,8 +806,11 @@ class FreshWriteCheckTest(unittest.TestCase):
         (helpers / "write_checks.py").write_text(
             "AGENT = 'Claude'\n"
             "def check_push(ctx, write): return None\n"
-            "def guard(tool, tool_input, cwd):\n"
-            "    assert AGENT == 'Codex'\n"
+            "original_push = check_push\n"
+            "def guard(tool, tool_input, cwd, *, agent):\n"
+            "    assert agent == 'Codex'\n"
+            "    assert AGENT == 'Claude'\n"
+            "    assert check_push is original_push\n"
             "    assert tool == 'Bash'\n"
             "    return 'trusted refusal'\n"
         )
