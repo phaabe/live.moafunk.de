@@ -337,13 +337,17 @@ gate approves only (`scripts/epic/git_gate.py`):
   operation (rebase, merge, cherry-pick, revert, bisect) is in progress. The
   gate pins that head as `S` in `claude-rebases.json` in the state directory.
 - `G rebase --continue` / `--abort`: only the rebase the runner recorded (same
-  worktree, branch and onto commit). `--skip` is refused: dropping a commit
-  needs a separate explicit decision.
+  worktree, branch, onto commit and original head). An approved abort retires
+  the record. `--skip` is refused: dropping a commit needs a separate explicit
+  decision.
 - `G push [-q] --force-with-lease=refs/heads/B:S origin HEAD:refs/heads/B`: the
-  recorded `S`, the rebase finished, the PR head still `S`. The gate never
+  recorded `S`, the rebase finished onto the recorded commit, the PR head still
+  `S`. The gate never
   renews `S`; if the remote moved, the push fails and the tick stops.
 - `G push origin --delete B`: a `merge` tick, after the PR is merged.
 - `G add -- <paths>`, `G commit --file <file>`, `G fetch [-q] origin` in `W`.
+  `add` and `commit` need `B` checked out; during the recorded rebase only
+  `add` works in the detached HEAD.
 - Read-only `G status|log|diff|show|rev-parse|ls-files|merge-base` with
   `--short`, `--porcelain`, `--oneline`, `-n <N>`, `-<N>`, `--stat`,
   `--name-only`, `--name-status`, `--no-color`, `--abbrev-ref`,
@@ -355,17 +359,20 @@ gate approves only (`scripts/epic/git_gate.py`):
   `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F
   body=@<file>`.
 
-Every `W` must resolve to `<dir>/B`, be a worktree of the runner checkout, and
-have this repository as origin fetch and push URL. Plain `git push` and
+Every `W` must really be `<dir>/B` (no symlink below `<dir>`; the runner's
+worktree step refuses one too), be a worktree of the runner checkout, and have
+this repository as every origin fetch and push URL. Plain `git push` and
 `git rebase` are refused: the gate cannot see the shell's directory. It also
 refuses `-c`, repeated `-C`, other global options, force flags, `+` refspecs,
 bare or other leases, extra refspecs, other remotes, tags, `--all`,
 `--mirror`, protected branches, `rebase -i`/`--exec`/`--onto`, shell chains,
 substitutions, inline environment assignments and wrappers. It logs each
 decision to `claude-permissions.log` in the state directory. A refused push or
-an unfinished rebase leaves the PR head unchanged, so the tick fails
-verification and the repeat gate suppresses it until the PR changes or the
-repeat TTL ends; the next tick resumes the unfinished rebase in the same worktree.
+an unfinished rebase fails verification: `tick_verify.py --worktree` counts a
+moved PR head only when it is the worktree's HEAD with no rebase left, so
+another writer's push does not count. The repeat gate then suppresses it until
+the PR changes or the repeat TTL ends; the next tick resumes an unfinished
+rebase in the same worktree.
 `python3 scripts/epic/next_action.py --status`
 shows the queue for both agents.
 

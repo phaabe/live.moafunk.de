@@ -101,6 +101,8 @@ class ClaudeTickTest(unittest.TestCase):
             "import json, os, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(['verify', sys.argv[-2]]) + '\\n')\n"
+            "with open(os.environ['TEST_CALLS'] + '.verify-argv', 'w') as f:\n"
+            "    f.write(json.dumps(sys.argv[1:]))\n"
             "with open(os.environ['TEST_CALLS'] + '.since', 'w') as f:\n"
             "    f.write(sys.argv[-1])\n"
             "sys.exit(int(os.environ.get('TEST_VERIFY_EXIT', '0')))\n"
@@ -333,6 +335,12 @@ class ClaudeTickTest(unittest.TestCase):
         )
         shared = json.loads((ROOT / ".claude/settings.json").read_text())
         self.assertNotIn("Bash(git -*)", shared["permissions"]["ask"])
+
+    def test_verify_checks_the_runner_worktree(self) -> None:
+        wt = "/runner-wt/feat/1-x"
+        self.assertEqual(self.run_tick(TEST_WORKTREE_OUT=wt).wait(timeout=30), 0)
+        argv = json.loads(Path(str(self.calls) + ".verify-argv").read_text())
+        self.assertEqual(argv[argv.index("--worktree") + 1], wt)
 
     def test_worktree_step_writes_the_runner_context(self) -> None:
         self.assertEqual(self.run_tick().wait(timeout=30), 0)

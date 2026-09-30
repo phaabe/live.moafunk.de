@@ -19,11 +19,17 @@ is not checked, 1 when it did not land, 2 on bad input, 4 on a GraphQL quota err
 (wait stored, see github_quota.py). GitHub read errors exit 1:
 an unverified tick is not reported as done.
 
+With --worktree (the runner worktree of the tick), a moved head counts only when
+it is this worktree's HEAD and no rebase is left in it. Another writer's push
+also moves the head; a refused lease push or an unfinished conflict then stays
+a failed tick, and the repeat gate suppresses it.
+
 Any other comment (progress, a blocker, a bot) does not count as a fix. Both
 agents share one GitHub account, so the marker names the agent.
 
 Usage:
   tick_verify.py --agent claude --action-file action.json --since 2026-09-28T12:00:00Z
+      [--worktree DIR]
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Callable
 
 from github_quota import QuotaExhausted, run_gh, stop_on_quota
@@ -49,8 +56,38 @@ def gh_json(args: list[str]) -> Any:
     return json.loads(run_gh(args))
 
 
+def unpublished(worktree: str, head: str) -> str | None:
+    """Why `head` is not this worktree's finished work, or None."""
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", worktree, *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout.strip()
+
+    try:
+        for state in ("rebase-merge", "rebase-apply"):
+            if Path(
+                git("rev-parse", "--path-format=absolute", "--git-path", state)
+            ).exists():
+                return f"a rebase is unfinished in {worktree}"
+        local = git("rev-parse", "HEAD")
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"cannot read {worktree}: {error}"
+    if local != head:
+        return f"the new head {head[:7]} is not the runner's work ({local[:7]})"
+    return None
+
+
 def landed(
-    agent: str, action: dict[str, Any], since: str, fetch: Fetch = gh_json
+    agent: str,
+    action: dict[str, Any],
+    since: str,
+    fetch: Fetch = gh_json,
+    worktree: str | None = None,
 ) -> tuple[bool, str]:
     """(landed, reason) for one selected action."""
     kind = action.get("action")
@@ -69,6 +106,10 @@ def landed(
     if kind == "merge":
         return pr["state"] == "MERGED", f"PR {number} state is {pr['state']}"
     moved = pr["headRefOid"] != sha
+    if moved and worktree:
+        reason = unpublished(worktree, pr["headRefOid"])
+        if reason:
+            return False, f"PR {number} head moved, but {reason}"
     if kind in PUSHES:
         return moved, f"PR {number} head {'moved' if moved else 'did not move'}"
     comments = fetch(
@@ -146,11 +187,14 @@ def main() -> int:
     parser.add_argument("--agent", choices=("claude", "codex"), required=True)
     parser.add_argument("--action-file", required=True)
     parser.add_argument("--since", required=True, help="tick start, UTC ISO 8601")
+    parser.add_argument("--worktree", help="the tick's runner worktree")
     args = parser.parse_args()
     try:
         with open(args.action_file) as f:
             action = json.load(f)
-        ok, reason = landed(args.agent, action, args.since)
+        ok, reason = landed(
+            args.agent, action, args.since, worktree=args.worktree or None
+        )
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"tick: cannot verify: {error}", file=sys.stderr)
         return 2

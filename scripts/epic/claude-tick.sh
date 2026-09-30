@@ -471,7 +471,9 @@ if ! quota_open; then
 fi
 tick_phase=verify
 verify=0
-python3 scripts/epic/tick_verify.py --agent claude \
+# With a worktree, the new PR head must be that worktree's finished work: a
+# refused lease push or an unfinished rebase stays a failed tick.
+python3 scripts/epic/tick_verify.py --agent claude --worktree "$worktree" \
     --action-file "${lock_dir}/action.json" --since "$tick_started" || verify=$?
 if [[ "$verify" == 4 ]]; then
     quota_stop

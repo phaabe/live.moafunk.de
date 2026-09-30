@@ -251,6 +251,63 @@ class RebaseFlowTest(Fixture):
         self.assertNotEqual(out.returncode, 0)
         self.assertEqual(self.remote_head(), moved)
 
+    def test_same_base_rebase_from_another_head_is_not_the_record(self) -> None:
+        # Review finding: an old record approved a later, unrelated rebase.
+        self.conflict()
+        sh(self.wt, "rebase", "--abort")  # outside the gate
+        (self.wt / "g.txt").write_text("another commit\n")
+        sh(self.wt, "commit", "-q", "-am", "another")
+        sh(self.wt, "rebase", f"origin/{BASE}", check=False)  # same base
+        for step in ("--continue", "--abort"):
+            with self.subTest(step=step):
+                ok, reason = self.decide(f"git -C {self.wt} rebase {step}")
+                self.assertFalse(ok)
+                self.assertIn("not the one the runner recorded", reason)
+
+    def test_approved_abort_retires_the_record(self) -> None:
+        self.conflict()
+        self.assertEqual(
+            self.run_approved(f"git -C {self.wt} rebase --abort").returncode, 0
+        )
+        # The same rebase started again by hand is not the runner's any more.
+        sh(self.wt, "rebase", f"origin/{BASE}", check=False)
+        self.assertFalse(self.allowed(f"git -C {self.wt} rebase --continue"))
+        self.assertFalse(self.allowed(f"git -C {self.wt} add -- f.txt"))
+        # Retrying the abort of that same rebase stays possible.
+        self.assertTrue(self.allowed(f"git -C {self.wt} rebase --abort"))
+        sh(self.wt, "rebase", "--abort")
+        ok, reason = self.decide(self.lease())
+        self.assertFalse(ok)
+        self.assertIn("aborted", reason)
+
+    def test_commit_during_the_rebase_is_denied(self) -> None:
+        self.conflict()
+        message = self.tmp / "msg.txt"
+        message.write_text("x\n")
+        self.assertTrue(self.allowed(f"git -C {self.wt} add -- f.txt"))
+        self.assertFalse(self.allowed(f"git -C {self.wt} commit --file {message}"))
+
+    def test_add_in_an_unrecorded_detached_state_is_denied(self) -> None:
+        sh(self.wt, "switch", "-q", "--detach")
+        self.assertFalse(self.allowed(f"git -C {self.wt} add -- f.txt"))
+        self.conflict_by_hand()
+        self.assertFalse(self.allowed(f"git -C {self.wt} add -- f.txt"))
+
+    def conflict_by_hand(self) -> None:
+        sh(self.wt, "switch", "-q", BRANCH)
+        (self.wt / "f.txt").write_text("one\nfeature two\n")
+        sh(self.wt, "commit", "-q", "-am", "touch f")
+        self.advance_base("one\nbase two\n")
+        sh(self.wt, "rebase", f"origin/{BASE}", check=False)
+
+    def test_lease_needs_the_recorded_base_commit(self) -> None:
+        self.advance_base("zero\none\ntwo\n")
+        self.run_approved(f"git -C {self.wt} rebase origin/{BASE}")
+        sh(self.wt, "reset", "-q", "--hard", self.head)  # undo the rebase by hand
+        ok, reason = self.decide(self.lease())
+        self.assertFalse(ok)
+        self.assertIn("not rebased onto the recorded base", reason)
+
 
 class RebaseRefusalTest(Fixture):
     def test_dirty_tree_blocks_the_rebase(self) -> None:
@@ -391,6 +448,47 @@ class WorktreeTest(Fixture):
 
     def test_worktree_not_on_the_branch_is_denied(self) -> None:
         sh(self.wt, "switch", "-q", "--detach")
+        self.assertFalse(self.allowed(f"git -C {self.wt} push origin {BRANCH}"))
+
+    def test_every_push_url_must_be_this_repository(self) -> None:
+        # Review finding: Git pushes to every push URL, not only the first.
+        other = self.tmp / "other/elsewhere.git"
+        other.parent.mkdir()
+        sh(self.tmp, "init", "-q", "--bare", str(other))
+        sh(self.wt, "config", "--add", "remote.origin.pushurl", str(self.remote))
+        self.assertTrue(self.allowed(f"git -C {self.wt} push origin {BRANCH}"))
+        sh(self.wt, "config", "--add", "remote.origin.pushurl", str(other))
+        ok, reason = self.decide(f"git -C {self.wt} push origin {BRANCH}")
+        self.assertFalse(ok)
+        self.assertIn("elsewhere.git", reason)
+        self.assertFalse(self.allowed(f"git -C {self.wt} fetch origin"))
+
+    def test_every_fetch_url_must_be_this_repository(self) -> None:
+        other = self.tmp / "other/elsewhere.git"
+        other.parent.mkdir()
+        sh(self.tmp, "init", "-q", "--bare", str(other))
+        sh(self.wt, "remote", "set-url", "--add", "origin", str(other))
+        self.assertFalse(self.allowed(f"git -C {self.wt} push origin {BRANCH}"))
+
+    def test_symlink_at_the_branch_path_is_denied(self) -> None:
+        # Review finding: the real checkout lies outside the fixed dir.
+        outside = self.tmp / "outside"
+        sh(self.root, "worktree", "move", str(self.wt), str(outside))
+        self.wt.symlink_to(outside)
+        for command in (
+            f"git -C {self.wt} push origin {BRANCH}",
+            f"git -C {outside} push origin {BRANCH}",
+            f"git -C {self.wt} add -- f.txt",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(self.allowed(command))
+
+    def test_symlinked_parent_below_the_fixed_dir_is_denied(self) -> None:
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        sh(self.root, "worktree", "move", str(self.wt), str(outside / "424-x"))
+        (self.wtdir / "feat").rmdir()
+        (self.wtdir / "feat").symlink_to(outside)
         self.assertFalse(self.allowed(f"git -C {self.wt} push origin {BRANCH}"))
 
 
@@ -667,6 +765,23 @@ class LocalCommandTest(Fixture):
         ):
             with self.subTest(command=command):
                 self.assertFalse(self.allowed(command))
+
+    def test_local_writes_need_the_context_branch(self) -> None:
+        # Review finding: add and commit ran after a switch to main.
+        message = self.tmp / "msg.txt"
+        message.write_text("change\n")
+        for other in ("main", "feat/999-other"):
+            with self.subTest(branch=other):
+                sh(self.wt, "switch", "-q", "-c", other, BRANCH)
+                (self.wt / "f.txt").write_text(f"{other}\n")
+                self.assertFalse(self.allowed(f"git -C {self.wt} add -- f.txt"))
+                self.assertFalse(
+                    self.allowed(f"git -C {self.wt} commit --file {message}")
+                )
+                sh(self.wt, "checkout", "-q", "--", "f.txt")
+                sh(self.wt, "switch", "-q", BRANCH)
+        sh(self.wt, "switch", "-q", "--detach")
+        self.assertFalse(self.allowed(f"git -C {self.wt} commit --file {message}"))
 
     def test_fetch_with_changed_refspec_is_denied(self) -> None:
         sh(

@@ -20,16 +20,22 @@ Optional flags occur at most once, in the order shown. Plain `git push` and
 `git rebase` are refused: the gate cannot see the Bash tool's directory.
 
 "Owned worktree": the runner context file (EPIC_CONTEXT_FILE, written by
-runner_worktree.py for this action) names it, it is `<EPIC_WORKTREE_DIR>/<B>`,
-Git lists it as a worktree of the runner checkout (EPIC_TRUSTED_ROOT), and its
-origin fetch and push URLs are this repository. Read-only commands may also
-run in the runner checkout or another worktree under EPIC_WORKTREE_DIR.
+runner_worktree.py for this action) names it, its real path is the real
+`<EPIC_WORKTREE_DIR>/<B>` (no symlink below the fixed dir), Git lists it as a
+worktree of the runner checkout (EPIC_TRUSTED_ROOT), and every origin fetch
+and push URL is this repository. `add` and `commit` also need B checked out;
+during the runner's recorded rebase only `add` works in the detached HEAD.
+Read-only commands may also run in the runner checkout or another worktree
+under EPIC_WORKTREE_DIR.
 
 Rebase and lease push read the PR fresh from GitHub: open, head branch in this
 repository equals B, base is an epic base, `Executor: Claude`. The initial
 rebase also needs the head to equal the action's SHA, which it pins as S in
-`claude-rebases.json` in the state dir. The lease push needs the head still at
-S; the gate never renews S. Missing or stale context refuses the command.
+`claude-rebases.json` in the state dir, with the onto commit and the original
+local head. Continue and abort need Git's rebase state to match all three; an
+approved abort retires the record. The lease push needs a finished rebase onto
+the recorded commit and the PR head still at S; the gate never renews S.
+Missing or stale context refuses the command.
 """
 
 from __future__ import annotations
@@ -206,15 +212,20 @@ def owned(path: Path, branch: str) -> Path:
     """`<fixed dir>/<branch>`, a registered worktree with this repository as origin."""
     root = env_path("EPIC_TRUSTED_ROOT")
     real = Path(os.path.realpath(path))
-    expected = Path(os.path.realpath(env_path("EPIC_WORKTREE_DIR") / branch))
+    # The real fixed dir plus the branch, compared without resolving it again:
+    # a symlink below the fixed dir that points elsewhere does not match.
+    expected = env_path("EPIC_WORKTREE_DIR") / branch
     if real != expected:
         raise Refused(f"{path} is not the runner worktree of {branch} ({expected})")
     if real not in registered(root):
         raise Refused(f"{real} is not a worktree of the runner checkout")
-    for args in (("get-url", "origin"), ("get-url", "--push", "origin")):
-        url = git_out(real, "remote", *args)
-        if not ORIGIN.search(url):
-            raise Refused(f"origin {' '.join(args[:-1])} is {url}, not {REPO}")
+    # Git fetches from and pushes to every configured URL: check them all.
+    for args in (("--all",), ("--push", "--all")):
+        urls = git_out(real, "remote", "get-url", *args, "origin").splitlines()
+        for url in urls or [""]:
+            if not ORIGIN.search(url):
+                kind = "push URL" if "--push" in args else "URL"
+                raise Refused(f"origin {kind} {url or '(none)'} is not {REPO}")
     return real
 
 
@@ -367,30 +378,62 @@ def rebase(path: Path, args: list[str]) -> str:
     onto = git_out(
         top, "rev-parse", "--verify", f"refs/remotes/origin/{base}^{{commit}}"
     )
+    orig = git_out(top, "rev-parse", "--verify", "HEAD")
     save_record(
         branch,
-        {"pr": number, "worktree": str(top), "base": base, "sha": pinned, "onto": onto},
+        {
+            "pr": number,
+            "worktree": str(top),
+            "base": base,
+            "sha": pinned,
+            "onto": onto,
+            "orig": orig,
+        },
     )
     return f"rebase of {branch} onto origin/{base}, lease pinned at {pinned[:7]}"
+
+
+def rebase_state(top: Path, name: str) -> str:
+    """One file of Git's rebase state (onto, orig-head), empty when missing."""
+    for folder in ("rebase-merge", "rebase-apply"):
+        file = git_path(top, f"{folder}/{name}")
+        if file.is_file():
+            return file.read_text().strip()
+    return ""
+
+
+def active_rebase(
+    top: Path, branch: str, number: int, abort: bool = False
+) -> dict[str, Any]:
+    """The runner's record, when the rebase in progress is that rebase.
+
+    Identity: branch, worktree, PR, onto commit and the original head. A later
+    rebase onto the same base from another head does not match, and neither
+    does a record whose abort was approved (except to retry the abort)."""
+    record = recorded(branch, top, number)
+    if rebasing(top) != branch:
+        raise Refused(f"{top} is not rebasing {branch}")
+    if (
+        (record.get("aborted") and not abort)
+        or rebase_state(top, "onto") != record.get("onto")
+        or rebase_state(top, "orig-head") != record.get("orig")
+    ):
+        raise Refused("the rebase in progress is not the one the runner recorded")
+    return record
 
 
 def rebase_step(path: Path, step: str) -> str:
     ctx, top, number = pr_context(path)
     branch = ctx["branch"]
-    record = recorded(branch, top, number)
-    if rebasing(top) != branch:
-        raise Refused(f"{top} is not rebasing {branch}")
-    onto = ""
-    for name in ("rebase-merge/onto", "rebase-apply/onto"):
-        file = git_path(top, name)
-        if file.is_file():
-            onto = file.read_text().strip()
-    if onto != record.get("onto"):
-        raise Refused("the rebase in progress is not the one the runner recorded")
+    record = active_rebase(top, branch, number, abort=step == "--abort")
     if step == "--continue":
         pr = open_pr(number, branch)
         if (pr.get("base") or {}).get("ref") != record.get("base"):
             raise Refused(f"PR {number} base changed during the rebase")
+    else:
+        # Retired: after the abort, continue and the lease push are refused
+        # until a new approved rebase replaces the record.
+        save_record(branch, {**record, "aborted": True})
     return f"rebase {step} of {branch}"
 
 
@@ -439,12 +482,16 @@ def lease_push(path: Path, rest: list[str]) -> str:
     if branch != ctx["branch"]:
         raise Refused(f"{branch} is not this action's branch {ctx['branch']}")
     record = recorded(branch, top, number)
+    if record.get("aborted"):
+        raise Refused(f"the recorded rebase of {branch} was aborted")
     if pinned != record.get("sha"):
         raise Refused(
             f"the lease must pin {record.get('sha')}, the head before the rebase"
         )
     if rebasing(top) is not None or current_branch(top) != branch:
         raise Refused(f"{top} is not on {branch} with a finished rebase")
+    if git(top, "merge-base", "--is-ancestor", record["onto"], "HEAD").returncode:
+        raise Refused(f"{branch} is not rebased onto the recorded base commit")
     pr = open_pr(number, branch)
     if (pr.get("base") or {}).get("ref") != record.get("base"):
         raise Refused(f"PR {number} base changed since the rebase")
@@ -468,8 +515,23 @@ def delete(path: Path, branch: str) -> str:
     return f"delete of merged {branch}"
 
 
+def on_branch(ctx: dict[str, Any], top: Path, verb: str) -> None:
+    """add/commit change only the context branch. During a conflict, `add`
+    also works in the detached HEAD of the runner's recorded rebase."""
+    branch = ctx["branch"]
+    if current_branch(top) == branch and rebasing(top) is None:
+        return
+    number = action().get("pr")
+    if verb == "add" and isinstance(number, int) and ctx.get("pr") == number:
+        active_rebase(top, branch, number)
+        return
+    raise Refused(f"{top} is not on {branch}")
+
+
 def local_write(path: Path, verb: str, args: list[str]) -> str:
-    _, top = context_worktree(path)
+    ctx, top = context_worktree(path)
+    if verb in ("add", "commit"):
+        on_branch(ctx, top, verb)
     if verb == "add":
         if args[:1] != ["--"] or len(args) < 2:
             raise Refused("add must be `add -- <paths...>`")

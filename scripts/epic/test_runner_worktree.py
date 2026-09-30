@@ -248,6 +248,16 @@ class RealGitTest(unittest.TestCase):
             self.prepare(self.fix())
         self.assertEqual((self.root / BRANCH / "keep.txt").read_text(), "x")
 
+    def test_symlink_at_the_branch_path_is_not_resumed(self) -> None:
+        # Review finding: a symlink to a checkout outside the fixed dir.
+        path = self.prepare(self.fix())
+        assert path is not None
+        outside = self.tmp / "outside"
+        run(self.repo, "git", "worktree", "move", str(path), str(outside))
+        path.symlink_to(outside)
+        with self.assertRaisesRegex(rw.Stop, "resolves outside"):
+            self.prepare(self.fix())
+
     def test_prepare_reports_the_runner_context(self) -> None:
         info: dict[str, Any] = {}
         path = rw.prepare("claude", self.fix(), self.repo, self.root, self.read(), info)

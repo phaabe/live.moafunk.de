@@ -240,9 +240,14 @@ def prepare(
         info["base"] = None
     info.update(branch=branch, pr=action.get("pr"), issue=action.get("issue"))
     path = root / branch
+    # The real checkout must sit in the real fixed dir: a symlink at the
+    # branch path (or below the dir) may point at a human's checkout.
+    expected = root.resolve() / branch
+    if path.resolve() != expected:
+        raise Stop(f"{path} resolves outside {root}; handoff needed")
     held = worktrees(repo)
     where = held.get(branch)
-    if where is not None and where.resolve() == path.resolve():
+    if where is not None and where.resolve() == expected:
         if not path.is_dir():
             # Pruning is left to a human: `git worktree prune` acts on all checkouts.
             raise Stop(f"{path} is registered for {branch} but missing")

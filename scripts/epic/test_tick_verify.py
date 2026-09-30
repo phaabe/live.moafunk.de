@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
+import os
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 
 import tick_verify
@@ -45,6 +49,71 @@ def comment(
 def check(kind: str, fetch) -> bool:
     action = {"action": kind, "pr": 410, "sha": OLD}
     return tick_verify.landed("claude", action, SINCE, fetch)[0]
+
+
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_AUTHOR_NAME": "t",
+             "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+             "GIT_COMMITTER_EMAIL": "t@t"},
+    ).stdout.strip()  # fmt: skip
+
+
+class WorktreeTest(unittest.TestCase):
+    """--worktree: the moved head must be the runner's finished work."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="tick-verify-")
+        self.addCleanup(tmp.cleanup)
+        self.wt = Path(tmp.name)
+        git(self.wt, "init", "-q", "-b", "feat/1-x")
+        (self.wt / "f.txt").write_text("one\n")
+        git(self.wt, "add", "f.txt")
+        git(self.wt, "commit", "-q", "-m", "one")
+        self.head = git(self.wt, "rev-parse", "HEAD")
+
+    def verify(self, kind: str, head: str) -> tuple[bool, str]:
+        action = {"action": kind, "pr": 410, "sha": OLD}
+        return tick_verify.landed(
+            "claude", action, SINCE, github(head=head), worktree=str(self.wt)
+        )
+
+    def test_own_pushed_head_lands(self) -> None:
+        for kind in ("resolve-conflict", "fix-checks", "fix"):
+            with self.subTest(kind=kind):
+                self.assertTrue(self.verify(kind, self.head)[0])
+
+    def test_head_moved_by_another_writer_does_not_land(self) -> None:
+        # Review finding: a refused lease push counted as done.
+        for kind in ("resolve-conflict", "fix-checks", "fix"):
+            with self.subTest(kind=kind):
+                ok, reason = self.verify(kind, NEW)
+                self.assertFalse(ok)
+                self.assertIn("not the runner's work", reason)
+
+    def test_unfinished_rebase_does_not_land(self) -> None:
+        git(self.wt, "switch", "-q", "-c", "base", "HEAD")
+        (self.wt / "f.txt").write_text("base\n")
+        git(self.wt, "commit", "-q", "-am", "base")
+        git(self.wt, "switch", "-q", "feat/1-x")
+        (self.wt / "f.txt").write_text("feature\n")
+        git(self.wt, "commit", "-q", "-am", "feature")
+        head = git(self.wt, "rev-parse", "HEAD")
+        subprocess.run(["git", "rebase", "base"], cwd=self.wt, capture_output=True)
+        ok, reason = self.verify("resolve-conflict", head)
+        self.assertFalse(ok)
+        self.assertIn("unfinished", reason)
+
+    def test_unmoved_head_still_fails_without_reading_the_worktree(self) -> None:
+        ok, _ = tick_verify.landed(
+            "claude",
+            {"action": "resolve-conflict", "pr": 410, "sha": OLD},
+            SINCE,
+            github(head=OLD),
+            worktree="/nonexistent",
+        )
+        self.assertFalse(ok)
 
 
 class LandedTest(unittest.TestCase):
