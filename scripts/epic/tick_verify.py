@@ -3,7 +3,8 @@
 A model session can exit 0 without its work reaching GitHub, for example when
 a push or merge was denied. claude-tick.sh runs this after the session:
 
-  merge                         the PR is merged
+  merge                         the PR is merged, and the ticket it completes
+                                is closed (close_issue.py verify)
   review                        an unedited "Review: ... by <Agent> at <selected sha>"
                                 comment was created during the tick
   fix-checks, resolve-conflict  the PR head moved (a push arrived)
@@ -35,6 +36,7 @@ import subprocess
 import sys
 from typing import Any, Callable
 
+import close_issue
 from github_quota import QuotaExhausted, run_gh, stop_on_quota
 from next_action import EPIC, REPO, body_digest, issue_url, other
 
@@ -67,7 +69,9 @@ def landed(
         ["pr", "view", str(number), "--repo", REPO, "--json", "state,headRefOid"]
     )
     if kind == "merge":
-        return pr["state"] == "MERGED", f"PR {number} state is {pr['state']}"
+        if pr["state"] != "MERGED":
+            return False, f"PR {number} state is {pr['state']}"
+        return close_issue.verify(number, fetch)
     moved = pr["headRefOid"] != sha
     if kind in PUSHES:
         return moved, f"PR {number} head {'moved' if moved else 'did not move'}"

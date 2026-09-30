@@ -95,6 +95,15 @@ class ClaudeTickTest(unittest.TestCase):
             "action = json.load(open(sys.argv[sys.argv.index('--action-file') + 1]))\n"
             "sys.exit(0 if only and str(action.get('pr')) != only else code)\n"
         )
+        # Close helper: its own call file, so the call indexes above stay.
+        (self.repo / "scripts/epic/close_issue.py").write_text(
+            "import json, os, sys\n"
+            "calls = os.environ['TEST_CALLS']\n"
+            "n = len(open(calls).read().splitlines()) if os.path.exists(calls) else 0\n"
+            "with open(calls + '.close', 'a') as f:\n"
+            "    f.write(json.dumps([n, *sys.argv[1:]]) + '\\n')\n"
+            "sys.exit(int(os.environ.get('TEST_CLOSE_EXIT', '0')))\n"
+        )
         (self.repo / "scripts/epic/tick_verify.py").write_text(
             "import json, os, sys\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
@@ -311,6 +320,49 @@ class ClaudeTickTest(unittest.TestCase):
         )
         self.assertIn("tick: finished exit=1", (self.state / "claude.log").read_text())
         self.assertFalse((self.state / "claude.lock").exists())
+
+    def close_calls(self) -> list[list]:
+        path = Path(f"{self.calls}.close")
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_pending_closes_retry_after_the_pull_before_selection(self) -> None:
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        # One call (the pull) came before the retry; fix records no close.
+        self.assertEqual(self.close_calls(), [[1, "retry"]])
+        self.assertEqual(self.calls_made()[1], ["select"])
+
+    def test_failed_close_retry_does_not_block_the_tick(self) -> None:
+        self.assertEqual(self.run_tick(TEST_CLOSE_EXIT="1").wait(timeout=30), 0)
+        self.assertIn("retry next tick", (self.state / "claude.log").read_text())
+        self.assertEqual(len(self.model_targets()), 1)
+
+    def test_close_retry_quota_error_stops_the_tick(self) -> None:
+        self.assertEqual(self.run_tick(TEST_CLOSE_EXIT="4").wait(timeout=30), 75)
+        self.assertNotIn(["select"], self.calls_made())
+
+    def test_merge_records_the_close_before_verify(self) -> None:
+        merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}
+        result = self.run_tick(TEST_CANDIDATES=json.dumps(merge)).wait(timeout=30)
+        self.assertEqual(result, 0)
+        (retry, record) = self.close_calls()
+        verify_at = self.calls_made().index(["verify", "--since"])
+        self.assertEqual(record, [verify_at, "record", "--pr", "7"])
+        self.assertEqual(retry[1:], ["retry"])
+
+    def test_failed_close_after_merge_still_verifies(self) -> None:
+        merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}
+        result = self.run_tick(
+            TEST_CANDIDATES=json.dumps(merge), TEST_CLOSE_EXIT="1"
+        ).wait(timeout=30)
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            self.calls_made()[-2:], [["verify", "--since"], ["gate", "record"]]
+        )
+        self.assertIn(
+            "close for PR 7 not done", (self.state / "claude.log").read_text()
+        )
 
     def test_failed_pull_stops_the_tick(self) -> None:
         self.assertEqual(self.run_tick(TEST_GIT_EXIT="1").wait(timeout=30), 1)

@@ -23,7 +23,7 @@ It prints one JSON action. If a selected action is already appended below (headl
 | action | Do |
 | --- | --- |
 | `stop`, `idle` | Nothing. Say so in one line. |
-| `merge` | Confirm the head is still `sha` and the latest Codex verdict is `APPROVED` for it. Confirm the PR only changes files in Claude's lane. Then `gh pr merge <pr> --repo phaabe/live.moafunk.de --squash --match-head-commit <sha>`. Record the merge commit and tests on the linked issue (rules section 6). Clean up the worktree. |
+| `merge` | Confirm the head is still `sha` and the latest Codex verdict is `APPROVED` for it. Confirm the PR only changes files in Claude's lane. Then `gh pr merge <pr> --repo phaabe/live.moafunk.de --squash --match-head-commit <sha>`. Do not close the `Issue:` ticket yourself: the headless runner closes it after the tick with one evidence comment (`scripts/epic/close_issue.py`, rules section 6). By hand (no runner), run `python3 scripts/epic/close_issue.py record --pr <pr>` after the merge. Clean up the worktree. |
 | `fix` | Read every URL in `comments` and the verdict. In the runner worktree, fix each finding with a regression test. If you disagree with a finding, reply to it with reasons instead of changing code. Push. Post one comment: findings addressed, the new head SHA. If you disagree with every finding and push nothing, that comment's first line is exactly `Reply-only fix by Claude at <sha>`; the runner checks for it. |
 | `fix-checks` | Open the failing check logs (`gh pr checks`, `gh run view --log-failed`). A failed `epic-guard` status has its reason in the description `gh pr checks` shows (lane, PR body lines, base). Fix the cause, not the check. Push. |
 | `resolve-conflict` | In the runner worktree, `git fetch` and `git rebase origin/<base>`, resolve, run tests, `git push --force-with-lease`. Never `git merge`. |
@@ -42,7 +42,7 @@ It prints one JSON action. If a selected action is already appended below (headl
 ## 4. Every PR you open
 
 - Base `dev/312-interim` (rules section 0). Draft until ready for review.
-- Body: follow `.github/PULL_REQUEST_TEMPLATE.md`. One line each at line start: `Epic: https://github.com/phaabe/live.moafunk.de/issues/312`, `Executor: Claude`, `Lane: <exactly one lane name from .github/epic-lanes.yml, e.g. setup>`, `Reviewer: Codex`, `Leaf IDs: …`, `Issue: <the issue this PR implements>`. Full URLs only, details in a collapsed block.
+- Body: follow `.github/PULL_REQUEST_TEMPLATE.md`. One line each at line start: `Epic: https://github.com/phaabe/live.moafunk.de/issues/312`, `Executor: Claude`, `Lane: <exactly one lane name from .github/epic-lanes.yml, e.g. setup>`, `Reviewer: Codex`, `Leaf IDs: …`, `Issue: <the issue this PR implements>`. `Issue:` names exactly one work ticket: never the epic, never an umbrella ticket with sub-issues. Add ` (partial)` after the URL when the PR does not finish the ticket. Write `(partial)` only after https://github.com/phaabe/live.moafunk.de/issues/461 has merged (Codex's parser). Full URLs only, details in a collapsed block.
 
 ## 5. Never
 

@@ -78,7 +78,13 @@ recorded on the epic before anyone edits.
   `Epic:` (the epic URL), `Executor:` (Claude or Codex), `Lane:`, `Reviewer:`
   (the other agent), `Leaf IDs:` (or `setup`) and `Issue:` (the issue this PR
   implements). Only the `Issue:` line links a PR to its work item; other issue
-  links, such as dependencies, do not. Both
+  links, such as dependencies, do not. `Issue:` names exactly one work ticket
+  in this repository: never the epic and never an umbrella ticket with
+  sub-issues, even when all its children are closed. A PR that does not finish
+  its ticket writes `Issue: <url> (partial)`.
+  Write `(partial)` only after
+  https://github.com/phaabe/live.moafunk.de/issues/461 has merged: until then
+  the Codex parser does not accept it. Both
   agents use one GitHub account, so `Executor:` is how the loop (section 8) and
   the `epic-guard` check tell whose PR it is.
 - Open the PR as a draft while working. Mark it ready (`gh pr ready`) only when
@@ -120,10 +126,29 @@ the evidence the plan requires. A merged PR is never activation evidence.
 
 ## 6. After merge
 
-- Record commit, tests and result on the issue. Tick a leaf only when its
-  evidence is attached.
-- Close an issue only when all its leaves have evidence. PRs into
-  `dev/streaming-architecture` do not close issues automatically.
+- A ticket is closed when its implementation is merged into the target
+  branch. Follow-up work reopens it. Production activation is tracked
+  separately; it is no reason to keep the ticket open, and a merged PR is
+  still never activation evidence (section 5).
+- After a verified merge the runner closes the `Issue:` ticket with
+  `scripts/epic/close_issue.py`. One comment records PR URL, merge commit,
+  target branch and tests (the PR's `Validation:` line). By hand, run
+  `python3 scripts/epic/close_issue.py record --pr <n>`.
+- The helper does not close:
+  - a `(partial)` ticket;
+  - a ticket with unchecked leaves (`- [ ] **<leaf>**`) that the PR's
+    `Leaf IDs:` do not name. It says so on the ticket;
+  - the epic, a ticket with sub-issues, or a PR without exactly one `Issue:`
+    line.
+- It runs once per merge and never re-scans old merges, so a reopened ticket
+  stays open until the next PR for it merges. A failed close stays queued in
+  the state directory (`close-queue.json`) and is retried and logged every
+  tick.
+- A ticket dependency ("Start after <ticket URL>") counts as done by the same
+  rule: a merged PR that names the ticket without `(partial)` and covers its
+  unchecked leaves. The leaves a partial PR lists still count one by one.
+- Tick a leaf only when its evidence is attached. PRs into
+  `dev/streaming-architecture` do not close issues through GitHub keywords.
 
 ## 7. Enforcement
 
