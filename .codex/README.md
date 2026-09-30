@@ -280,13 +280,22 @@ Missing/invalid owner metadata or unexpected lock contents require manual
 review. Confirm no tick or child session is running before removing such a
 lock. Do not clear another worktree's lock. All checkouts share it.
 
-Run the local tests without GitHub writes or
-model calls:
+Run the local tests without real GitHub or model calls:
 
 ```sh
 python3 -m unittest discover -s .codex/tests -v
+python3 .codex/tests/test_codex_tick.py -v
 /bin/bash -n .codex/codex-tick.sh
 ```
+
+Plain discovery and individual test-file runs are safe inside a tick. Every
+`.codex/tests/test_*.py` imports `scripts/epic/isolated_env.py` before production
+modules or fixtures that import them. Keep this import first in new tests too.
+The helper removes inherited runner settings and credentials, uses a temporary
+home for import-time defaults, and gives each test a fresh temporary home.
+Tests set only the runner switches they exercise and use fake GitHub/model
+commands. The isolation regression checks empty and future-quota-wait stand-ins
+and verifies that their files, contents and modification times stay unchanged.
 
 ## GitHub quota waits
 

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/epic"))
+import isolated_env  # noqa: E402, F401 (before production modules or fixtures)
+
 import importlib.util
 import json
 import os
-from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch

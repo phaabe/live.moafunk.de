@@ -76,6 +76,13 @@ or modify its logs. Keep inherited lock descriptors open for this session.
 
 ## Commands and final result
 
+Run Codex tests with `python3 -m unittest discover -s .codex/tests -v`, or an
+individual file such as `python3 .codex/tests/test_codex_tick.py -v`. Both entry
+points isolate inherited runner settings and home defaults automatically.
+Every new `.codex/tests/test_*.py` must import `isolated_env` from `scripts/epic`
+before production modules or fixtures that import them. Use temporary state
+and fake GitHub/model commands; never test against the tick's live state paths.
+
 Use the installed feature Git helper whose absolute path is appended below for
 normal commits and pushes: `python3 -I <helper> --worktree <path> commit
 --message-file <path>` or `python3 -I <helper> --worktree <path> push`.
