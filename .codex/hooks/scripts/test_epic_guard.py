@@ -35,15 +35,23 @@ class EpicGuardTest(unittest.TestCase):
         field: str = "command",
         action_file: Path | None = None,
         body_dir: Path | None = None,
+        anchor: str | None = None,
     ) -> None:
         payload = {"tool_name": tool, "cwd": str(cwd), "tool_input": {field: command}}
         env = dict(os.environ)
         env.pop("EPIC_ACTION_FILE", None)
         env.pop("EPIC_BODY_DIR", None)
+        env.pop("EPIC_BODY_DIR_ID", None)
         if action_file is not None:
             env["EPIC_ACTION_FILE"] = str(action_file)
         if body_dir is not None:
+            # What the runner records: the created directory's device and inode.
             env["EPIC_BODY_DIR"] = str(body_dir)
+            if body_dir.is_dir():
+                info = os.stat(body_dir)
+                env["EPIC_BODY_DIR_ID"] = f"{info.st_dev}:{info.st_ino}"
+        if anchor is not None:
+            env["EPIC_BODY_DIR_ID"] = anchor
         result = subprocess.run(
             ["/bin/bash", "-c", COMMAND],
             cwd=cwd,
@@ -239,14 +247,51 @@ class EpicGuardTest(unittest.TestCase):
             for path in (outside, nested / "b.md", link, nested, body_dir / "none"):
                 with self.subTest(path=path):
                     self.run_hook(patch + str(path), 2, **selected)
-            for other in (root / "gone", Path("body")):
-                with self.subTest(body_dir=other):
+            other = root / "other"
+            other.mkdir()
+            self.run_hook(
+                patch + str(body_dir / "body.md"),
+                2,
+                action_file=action_file,
+                body_dir=other,
+            )
+            for anchor in ("", "x"):
+                with self.subTest(anchor=anchor):
                     self.run_hook(
-                        patch + str(body_dir / "body.md"),
-                        2,
-                        action_file=action_file,
-                        body_dir=other,
+                        patch + str(body_dir / "body.md"), 2, anchor=anchor, **selected
                     )
+            os.link(outside, body_dir / "hard.md")
+            self.run_hook(patch + str(body_dir / "hard.md"), 2, **selected)
+
+    def test_adopt_rejects_replaced_body_dir(self) -> None:
+        # The session renames the runner's directory away and puts a symlink
+        # to another directory (or a new directory) at the same path.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            body_dir = root / "body"
+            body_dir.mkdir()
+            info = os.stat(body_dir)
+            anchor = f"{info.st_dev}:{info.st_ino}"
+            action_file = root / "action.json"
+            action_file.write_text(
+                json.dumps(
+                    {"action": "adopt", "pr": 5, "sha": SHA, "body_sha": "a" * 64}
+                )
+            )
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "body.md").write_text("secret")
+            command = (
+                "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/5 "
+                f"-F body=@{body_dir / 'body.md'}"
+            )
+            body_dir.rename(root / "saved-body")
+            body_dir.symlink_to(outside)
+            self.run_hook(command, 2, action_file=action_file, anchor=anchor)
+            body_dir.unlink()
+            body_dir.mkdir()
+            (body_dir / "body.md").write_text("new")
+            self.run_hook(command, 2, action_file=action_file, anchor=anchor)
 
     def test_adopt_requires_matching_valid_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

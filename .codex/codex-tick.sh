@@ -117,6 +117,7 @@ print("tick: review cleanup incomplete; retained path: " + context["worktree"], 
 }
 # The adopt body directory of this tick; removed on exit.
 body_dir=""
+unset EPIC_BODY_DIR EPIC_BODY_DIR_ID
 cleanup() {
     local result=$?
     trap '' HUP INT TERM
@@ -525,7 +526,8 @@ fi
 # `adopt` writes its new PR body here. The hook accepts no other file.
 if [[ "$action" == adopt ]]; then
     body_dir=$(mktemp -d /tmp/epic-adopt-codex.XXXXXX)
-    export EPIC_BODY_DIR="$body_dir"
+    EPIC_BODY_DIR_ID=$(python3 -c 'import os, sys; s = os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$body_dir")
+    export EPIC_BODY_DIR="$body_dir" EPIC_BODY_DIR_ID
     model_options+=(--add-dir "$body_dir")
 fi
 
@@ -536,7 +538,7 @@ model_variables=(EPIC_STATE_DIR EPIC_QUOTA_DIR EPIC_ACTION_FILE EPIC_TRUSTED_ROO
 if [[ "$action" == review ]]; then
     model_variables+=(EPIC_REVIEW_DIR EPIC_REVIEW_ATTEMPT_DIR)
 elif [[ "$action" == adopt ]]; then
-    model_variables+=(EPIC_BODY_DIR)
+    model_variables+=(EPIC_BODY_DIR EPIC_BODY_DIR_ID)
 fi
 if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
     model_variables+=(EPIC_SHARED_READER EPIC_CACHE_DIR

@@ -295,6 +295,8 @@ else:
             "'body_dir': os.environ.get('EPIC_BODY_DIR'), "
             "'body_dir_mode': (os.stat(os.environ['EPIC_BODY_DIR']).st_mode & 0o777 "
             "if os.environ.get('EPIC_BODY_DIR') else None), "
+            "'body_dir_inode': (lambda s: f'{s.st_dev}:{s.st_ino}')(os.stat(os.environ['EPIC_BODY_DIR'])) "
+            "if os.environ.get('EPIC_BODY_DIR') else None, "
             "'tool_env': tool_env}) + '\\n')\n"
             "if os.environ.get('EPIC_REVIEW_ATTEMPT_DIR'):\n"
             "    (pathlib.Path(os.environ['EPIC_REVIEW_ATTEMPT_DIR']) / 'model.pid').write_text(str(os.getpid()))\n"
@@ -375,10 +377,13 @@ else:
         }
 
     def run_tick(self) -> subprocess.CompletedProcess[str]:
+        # stdin is /dev/null: a fake that reads stdin must never wait on the
+        # test process's own stdin.
         return subprocess.run(
             ["/bin/bash", str(self.runner)],
             env=self.env,
             cwd=self.home,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=20,
@@ -1838,6 +1843,8 @@ else:
         self.assertTrue(body_dir.startswith("/tmp/epic-adopt-codex."))
         self.assertEqual(call["body_dir_mode"], 0o700)
         self.assertEqual(call["tool_env"]["EPIC_BODY_DIR"], body_dir)
+        # The hook anchors to the directory the runner created.
+        self.assertEqual(call["tool_env"]["EPIC_BODY_DIR_ID"], call["body_dir_inode"])
         self.assertEqual(call["args"][call["args"].index("--add-dir") + 1], body_dir)
         self.assertIn(
             f"PR body directory (write the adopt body file only here): {body_dir}",
@@ -1846,12 +1853,16 @@ else:
         self.assertFalse(Path(body_dir).exists())
 
     def test_other_actions_get_no_body_dir(self) -> None:
+        # An inherited value never reaches the model or the hook.
+        self.env.update(EPIC_BODY_DIR=str(self.root), EPIC_BODY_DIR_ID="1:2")
         self.candidates(self.review_action(406))
         result = self.run_tick()
         self.assertEqual(result.returncode, 0, result.stderr)
         call = json.loads(self.calls.read_text())
         self.assertIsNone(call["body_dir"])
         self.assertNotIn("EPIC_BODY_DIR", call["tool_env"])
+        self.assertNotIn("EPIC_BODY_DIR_ID", call["tool_env"])
+        self.assertTrue(self.root.is_dir())
         self.assertNotIn("PR body directory (write", call["prompt"])
 
     def tool_child_environment(self) -> dict[str, str]:
