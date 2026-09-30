@@ -137,7 +137,11 @@ class ReviewWorktreeTests(unittest.TestCase):
         )
         candidate = self.state / "candidate.json"
         candidate.write_text(json.dumps(bundle))
-        review.save_bundle(self.context_file, candidate)
+        if published:
+            review.validate_bundle(context, bundle)
+            review.write_json(path, bundle)
+        else:
+            review.save_bundle(self.context_file, candidate)
         return bundle
 
     def test_reuses_clean_exact_head_and_keeps_evidence_external(self) -> None:
@@ -146,6 +150,8 @@ class ReviewWorktreeTests(unittest.TestCase):
         self.assertEqual(self.prepare(), self.path)
         second = self.context()
         self.assertNotEqual(first["attempt_dir"], second["attempt_dir"])
+        self.assertEqual(first["review_started_at"], second["review_started_at"])
+        self.assertTrue(review.valid_review_started_at(first["review_started_at"]))
         self.assertEqual(self.git("rev-parse", "HEAD", path=self.path), self.sha)
         self.assertEqual(self.git("branch", "--show-current", path=self.path), "")
         self.assertEqual(self.git("rev-parse", self.ref), self.sha)
@@ -216,14 +222,82 @@ class ReviewWorktreeTests(unittest.TestCase):
                 review.prepare(self.repo, self.action, state, self.context_file)
         self.assertFalse(self.path.exists())
 
-    def test_stale_draft_bundle_is_retained_for_revalidation(self) -> None:
+    def test_stale_bundle_and_context_are_archived_before_fresh_review(self) -> None:
         self.prepare()
-        path = Path(self.context()["artifact_dir"]) / "bundle.json"
+        artifact = Path(self.context()["artifact_dir"])
+        path = artifact / "bundle.json"
+        for status in ("draft", "complete", "published"):
+            with self.subTest(status=status):
+                if status != "draft":
+                    self.complete(published=status == "published")
+                before = path.read_bytes()
+                old_context = (artifact / "context.json").read_bytes()
+                self.pr["title"] += " changed"
+                self.prepare()
+                archived = list((artifact / "archive").glob("*/bundle.json"))
+                match = next(item for item in archived if item.read_bytes() == before)
+                self.assertEqual(
+                    match.with_name("context.json").read_bytes(), old_context
+                )
+                current = json.loads(path.read_text())
+                self.assertEqual(current["status"], "draft")
+                self.assertEqual(current["inputs"]["title"], self.pr["title"])
+                self.assertTrue(
+                    review.valid_review_started_at(current["review_started_at"])
+                )
+
+    def test_legacy_bundle_without_baseline_gets_fresh_review(self) -> None:
+        self.prepare()
+        self.complete()
+        artifact = Path(self.context()["artifact_dir"])
+        path = artifact / "bundle.json"
+        legacy = json.loads(path.read_text())
+        del legacy["review_started_at"]
+        path.write_text(json.dumps(legacy))
+        self.prepare()
+        self.assertEqual(json.loads(path.read_text())["status"], "draft")
+        archived = list((artifact / "archive").glob("*/bundle.json"))
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(json.loads(archived[0].read_text()), legacy)
+
+    def test_changed_base_body_or_labels_archives_completed_evidence(self) -> None:
+        self.prepare()
+        for field, value in (
+            ("base", {**self.pr["base"], "sha": "a" * 40}),
+            ("body", "Executor: Claude\nChanged body\n"),
+            ("labels", [{"name": "project::Stream"}]),
+        ):
+            with self.subTest(field=field):
+                self.complete()
+                self.pr[field] = value
+                self.prepare()
+                path = Path(self.context()["artifact_dir"]) / "bundle.json"
+                self.assertEqual(json.loads(path.read_text())["status"], "draft")
+
+    def test_failed_archive_preserves_active_evidence(self) -> None:
+        self.prepare()
+        artifact = Path(self.context()["artifact_dir"])
+        path = artifact / "bundle.json"
         before = path.read_bytes()
+        (artifact / "archive").symlink_to(self.repo, target_is_directory=True)
         self.pr["title"] = "Changed review inputs"
-        with self.assertRaisesRegex(review.ExistingBundle, "stale draft"):
+        with self.assertRaisesRegex(review.Refused, "archive path"):
             self.prepare()
         self.assertEqual(path.read_bytes(), before)
+
+    def test_archive_write_failure_preserves_active_bundle_and_context(self) -> None:
+        self.prepare()
+        artifact = Path(self.context()["artifact_dir"])
+        before = {
+            name: (artifact / name).read_bytes()
+            for name in ("bundle.json", "context.json")
+        }
+        self.pr["title"] = "Changed review inputs"
+        with patch.object(review.os, "fsync", side_effect=[None, OSError("disk full")]):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.prepare()
+        for name, expected in before.items():
+            self.assertEqual((artifact / name).read_bytes(), expected)
 
     def test_symlinked_attempt_parent_cannot_redirect_evidence(self) -> None:
         artifact = self.state / "reviews" / "431" / self.sha
@@ -298,12 +372,73 @@ class ReviewWorktreeTests(unittest.TestCase):
             review.save_bundle(self.context_file, candidate)
         self.assertEqual(path.read_bytes(), before)
 
-    def test_bundle_allows_only_monotonic_publication_updates(self) -> None:
+    def test_save_bundle_cannot_assert_publication(self) -> None:
         self.prepare()
-        self.complete()
-        self.complete(published=True)
-        with self.assertRaisesRegex(review.Refused, "cannot be overwritten"):
-            self.complete()
+        bundle = self.complete()
+        path = Path(self.context()["artifact_dir"]) / "bundle.json"
+        before = path.read_bytes()
+        bundle["comments"][0]["url"] = (
+            "https://github.com/phaabe/live.moafunk.de/issues/431#issuecomment-123"
+        )
+        candidate = self.state / "candidate.json"
+        for status in ("complete", "published"):
+            bundle["status"] = status
+            candidate.write_text(json.dumps(bundle))
+            with (
+                self.subTest(status=status),
+                self.assertRaisesRegex(review.Refused, "delivery helper"),
+            ):
+                review.save_bundle(self.context_file, candidate)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_draft_or_missing_completion_is_never_inferred_from_verdict(self) -> None:
+        self.prepare()
+        bundle = self.complete()
+        candidate = self.state / "candidate.json"
+        for status in ("draft", None):
+            bundle["status"] = status
+            candidate.write_text(json.dumps(bundle))
+            with (
+                self.subTest(status=status),
+                self.assertRaisesRegex(review.Refused, "completed findings"),
+            ):
+                review.save_bundle(self.context_file, candidate)
+
+    def test_only_publisher_can_record_a_pending_comment(self) -> None:
+        self.prepare()
+        bundle = self.complete()
+        bundle["pending_comment"] = 0
+        review.validate_bundle(self.context(), bundle)
+        candidate = self.state / "candidate.json"
+        candidate.write_text(json.dumps(bundle))
+        with self.assertRaisesRegex(review.Refused, "delivery helper"):
+            review.save_bundle(self.context_file, candidate)
+        for invalid in (None, False, -1, len(bundle["comments"]), "0"):
+            bundle["pending_comment"] = invalid
+            with (
+                self.subTest(invalid=invalid),
+                self.assertRaisesRegex(review.Refused, "invalid pending"),
+            ):
+                review.validate_bundle(self.context(), bundle)
+
+    def test_bundle_cannot_change_review_start_time(self) -> None:
+        self.prepare()
+        bundle = self.complete()
+        bundle["review_started_at"] = "2026-01-01T00:00:00Z"
+        candidate = self.state / "candidate.json"
+        candidate.write_text(json.dumps(bundle))
+        with self.assertRaisesRegex(review.Refused, "must match"):
+            review.save_bundle(self.context_file, candidate)
+
+    def test_duplicate_comment_bodies_cannot_share_publication_evidence(self) -> None:
+        self.prepare()
+        bundle = self.complete()
+        bundle["comments"][:0] = [
+            {"body": "A finding", "url": None},
+            {"body": "A finding", "url": None},
+        ]
+        with self.assertRaisesRegex(review.Refused, "distinct"):
+            review.validate_bundle(self.context(), bundle)
 
     def test_metadata_refuses_owner_base_fork_or_moved_head(self) -> None:
         original = json.dumps(self.pr)
@@ -327,6 +462,18 @@ class ReviewWorktreeTests(unittest.TestCase):
         )
         self.prepare()
         self.assertEqual(self.context()["inputs"]["body"], self.pr["body"])
+
+    def test_conflicted_pr_cannot_start_or_resume_review(self) -> None:
+        for fields in ({"mergeable": False}, {"mergeable_state": "dirty"}):
+            with self.subTest(fields=fields):
+                self.pr.update(fields)
+                with self.assertRaisesRegex(review.Refused, "merge conflicts"):
+                    self.prepare()
+                self.assertFalse(self.path.exists())
+                for key in fields:
+                    del self.pr[key]
+        self.pr["mergeable"] = None
+        self.assertEqual(self.prepare(), self.path)
 
     def test_sweep_lists_then_removes_only_clean_closed_known_reviews(self) -> None:
         self.prepare()
