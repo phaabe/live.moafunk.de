@@ -151,11 +151,21 @@ def selected_adopt_body_edit(args: list[str]) -> bool:
     )
     body_path = Path(args[4][len("body=@") :])
     action_path = Path(os.environ.get("EPIC_ACTION_FILE", ""))
+    body_dir = Path(os.environ.get("EPIC_BODY_DIR", ""))
     if (
         target is None
         or not body_path.is_absolute()
         or ".." in body_path.parts
         or not action_path.is_absolute()
+        or not body_dir.is_absolute()
+    ):
+        return False
+    # Only the runner's per-tick body directory, so no other readable file can
+    # become a PR body. A symlink in it could point anywhere.
+    if (
+        body_path.parent.resolve(strict=True) != body_dir.resolve(strict=True)
+        or body_path.is_symlink()
+        or not body_path.is_file()
     ):
         return False
     action = json.loads(action_path.read_text())

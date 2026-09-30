@@ -34,12 +34,16 @@ class EpicGuardTest(unittest.TestCase):
         tool: str = "Bash",
         field: str = "command",
         action_file: Path | None = None,
+        body_dir: Path | None = None,
     ) -> None:
         payload = {"tool_name": tool, "cwd": str(cwd), "tool_input": {field: command}}
         env = dict(os.environ)
         env.pop("EPIC_ACTION_FILE", None)
+        env.pop("EPIC_BODY_DIR", None)
         if action_file is not None:
             env["EPIC_ACTION_FILE"] = str(action_file)
+        if body_dir is not None:
+            env["EPIC_BODY_DIR"] = str(body_dir)
         result = subprocess.run(
             ["/bin/bash", "-c", COMMAND],
             cwd=cwd,
@@ -182,21 +186,67 @@ class EpicGuardTest(unittest.TestCase):
                 f"-F 'body=@{body}'"
             )
             body.write_text("Original body\nExecutor: Codex\n")
-            self.run_hook(command, 0, action_file=action_file)
-            self.run_hook(command, 0, cwd=ROOT / "backend", action_file=action_file)
+            selected = {"action_file": action_file, "body_dir": path}
+            self.run_hook(command, 0, **selected)
+            self.run_hook(command, 0, cwd=ROOT / "backend", **selected)
+            self.run_hook(command, 0, tool="exec_command", field="cmd", **selected)
+            self.run_hook(command, 2, body_dir=path)
+            self.run_hook(command, 2, action_file=action_file)
             self.run_hook(
-                command, 0, tool="exec_command", field="cmd", action_file=action_file
+                command, 2, action_file=action_file.relative_to(ROOT), body_dir=path
             )
-            self.run_hook(command, 2)
-            self.run_hook(command, 2, action_file=action_file.relative_to(ROOT))
             for verdict in (
                 CLAUDE_VERDICT,
                 CLAUDE_VERDICT.replace("APPROVED", "CHANGES REQUESTED"),
             ):
                 body.write_text(verdict)
-                self.run_hook(command, 2, action_file=action_file)
+                self.run_hook(command, 2, **selected)
             body.unlink()
-            self.run_hook(command, 2, action_file=action_file)
+            self.run_hook(command, 2, **selected)
+
+    def test_adopt_body_file_only_directly_in_body_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            body_dir = root / "body"
+            nested = body_dir / "sub"
+            nested.mkdir(parents=True)
+            action_file = root / "action.json"
+            action_file.write_text(
+                json.dumps(
+                    {"action": "adopt", "pr": 5, "sha": SHA, "body_sha": "a" * 64}
+                )
+            )
+            outside = root / "secret.txt"
+            outside.write_text("token")
+            (nested / "b.md").write_text("x")
+            (body_dir / "body.md").write_text("Original body\n")
+            link = body_dir / "link.md"
+            link.symlink_to(outside)
+            alias = root / "alias"
+            alias.symlink_to(body_dir)
+            patch = (
+                "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/5 -F body=@"
+            )
+            selected = {"action_file": action_file, "body_dir": body_dir}
+            self.run_hook(patch + str(body_dir / "body.md"), 0, **selected)
+            self.run_hook(patch + str(alias / "body.md"), 0, **selected)
+            self.run_hook(
+                patch + str(body_dir / "body.md"),
+                0,
+                action_file=action_file,
+                body_dir=alias,
+            )
+            for path in (outside, nested / "b.md", link, nested, body_dir / "none"):
+                with self.subTest(path=path):
+                    self.run_hook(patch + str(path), 2, **selected)
+            for other in (root / "gone", Path("body")):
+                with self.subTest(body_dir=other):
+                    self.run_hook(
+                        patch + str(body_dir / "body.md"),
+                        2,
+                        action_file=action_file,
+                        body_dir=other,
+                    )
 
     def test_adopt_requires_matching_valid_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -223,11 +273,13 @@ class EpicGuardTest(unittest.TestCase):
             ):
                 with self.subTest(action=action):
                     action_file.write_text(json.dumps(action))
-                    self.run_hook(command, 2, action_file=action_file)
+                    self.run_hook(
+                        command, 2, action_file=action_file, body_dir=Path(directory)
+                    )
             action_file.write_text("{")
-            self.run_hook(command, 2, action_file=action_file)
+            self.run_hook(command, 2, action_file=action_file, body_dir=Path(directory))
             action_file.unlink()
-            self.run_hook(command, 2, action_file=action_file)
+            self.run_hook(command, 2, action_file=action_file, body_dir=Path(directory))
 
     def test_adopt_rejects_other_command_shapes(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
@@ -270,7 +322,7 @@ class EpicGuardTest(unittest.TestCase):
                 f"gh api {endpoint} --method PATCH -F body=@{body}",
             ):
                 with self.subTest(command=changed):
-                    self.run_hook(changed, 2, action_file=action_file)
+                    self.run_hook(changed, 2, action_file=action_file, body_dir=path)
 
     def test_mcp_pr_tools(self) -> None:
         for tool in (

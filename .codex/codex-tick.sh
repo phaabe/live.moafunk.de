@@ -115,6 +115,8 @@ print("tick: review cleanup incomplete; retained path: " + context["worktree"], 
         fi
     fi
 }
+# The adopt body directory of this tick; removed on exit.
+body_dir=""
 cleanup() {
     local result=$?
     trap '' HUP INT TERM
@@ -136,6 +138,9 @@ cleanup() {
             --log "$log_file" --since "$tick_offset" || true
     fi
     rm -f "${state_dir}/feature-git-context.json" "${lock_dir}/action.json" "${lock_dir}/assignment.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" "${lock_dir}/worktree.txt" "${lock_dir}/review-context.json"
+    if [[ -n "$body_dir" ]]; then
+        rm -rf "$body_dir"
+    fi
     rmdir "$lock_dir"
 }
 interrupt() {
@@ -299,10 +304,11 @@ lock_target() {
 }
 
 # Try every candidate, but start at most one model session.
+# Candidates come on fd 3, so a loop command that reads stdin cannot eat them.
 selected=0
 target_blocked=0
 model_root="$repo_root"
-while IFS= read -r candidate; do
+while IFS= read -r -u 3 candidate; do
     if [[ -z "$candidate" ]]; then
         continue
     fi
@@ -493,7 +499,7 @@ print(action)
     fi
     selected=1
     break
-done <<< "$candidates"
+done 3<<< "$candidates"
 if [[ "$selected" != 1 ]]; then
     printf 'tick: no candidate to run\n'
     if [[ "$target_blocked" == 1 ]]; then
@@ -516,6 +522,12 @@ if [[ "$action" == review ]]; then
     model_result="${EPIC_REVIEW_ATTEMPT_DIR}/result.json"
     review_log="${EPIC_REVIEW_ATTEMPT_DIR}/model.log"
 fi
+# `adopt` writes its new PR body here. The hook accepts no other file.
+if [[ "$action" == adopt ]]; then
+    body_dir=$(mktemp -d /tmp/epic-adopt-codex.XXXXXX)
+    export EPIC_BODY_DIR="$body_dir"
+    model_options+=(--add-dir "$body_dir")
+fi
 
 # Codex may inherit only core variables in tool commands. Forward these paths
 # explicitly without changing the configured policy for other variables.
@@ -523,6 +535,8 @@ model_environment=()
 model_variables=(EPIC_STATE_DIR EPIC_QUOTA_DIR EPIC_ACTION_FILE EPIC_TRUSTED_ROOT)
 if [[ "$action" == review ]]; then
     model_variables+=(EPIC_REVIEW_DIR EPIC_REVIEW_ATTEMPT_DIR)
+elif [[ "$action" == adopt ]]; then
+    model_variables+=(EPIC_BODY_DIR)
 fi
 if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
     model_variables+=(EPIC_SHARED_READER EPIC_CACHE_DIR
@@ -554,6 +568,9 @@ if [[ "$action" == review ]]; then
 elif [[ "$model_root" != "$repo_root" ]]; then
     printf '\nPrepared feature worktree: %s\nRunner checkout: %s\n' \
         "$model_root" "$repo_root" >> "${lock_dir}/prompt.txt"
+elif [[ "$action" == adopt ]]; then
+    printf '\nPR body directory (write the adopt body file only here): %s\n' \
+        "$body_dir" >> "${lock_dir}/prompt.txt"
 fi
 printf '\nInstalled feature Git helper: %s\n' \
     "${HOME}/.local/libexec/codex-feature-git.py" >> "${lock_dir}/prompt.txt"
