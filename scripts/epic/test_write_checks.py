@@ -498,8 +498,12 @@ class ClaimComments(Base):
 
 class Callers(Base):
     def test_permission_gate_denies_on_a_failed_fresh_check(self) -> None:
-        self.action(action="fix", pr=5, sha=A)
-        cmd = {"command": "git push origin feat/5-x"}
+        self.action(action="merge", pr=5, sha=A)
+        # A command the shape rule approves without a runner worktree.
+        cmd = {
+            "command": "gh pr merge 5 --repo phaabe/live.moafunk.de --squash "
+            f"--match-head-commit {A}"
+        }
         with patch.object(wc, "guard", return_value="PR 5 is merged"):
             self.assertEqual(
                 permission_gate.decide("Bash", cmd),

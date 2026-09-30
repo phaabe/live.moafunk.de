@@ -1,18 +1,23 @@
 """Answer permission prompts of the headless Claude runner.
 
 `claude -p` cannot show a prompt. The project settings ask before every
-`git push` and `gh pr merge`, so claude-tick.sh passes this MCP server as
-`--permission-prompt-tool`. It approves only:
+`git push`, `git rebase` and `gh pr merge`; the runner settings
+(claude-runner-settings.json) also ask before every `git -<option> ...`, such
+as `git -C <path> push` or `git -c k=v push`. claude-tick.sh passes this MCP
+server as `--permission-prompt-tool`. It approves only:
 
-  git push [-u] origin <feature-branch>
-  git push origin --delete <feature-branch>
+  git commands of the runner contract in git_gate.py: push, lease push and
+      rebase of the action's own branch in its runner worktree, the merged
+      branch's delete, and narrow `git -C` reads and local writes
   gh pr merge <n> --repo phaabe/live.moafunk.de --squash [--delete-branch]
       --match-head-commit <40-hex SHA>
   gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F body=@<file>
       only while the selected action (EPIC_ACTION_FILE) is `adopt` of PR <n>
 
 A feature branch starts with feat/, fix/, chore/, docs/, test/ or refactor/.
-Everything else is denied with a reason. The project hooks (epic-guard and
+Everything else is denied with a reason, including plain `git push` and
+`git rebase`: the gate cannot see the shell's directory, so the runner uses
+`git -C <worktree>`. The project hooks (epic-guard and
 others) still run for every approved command.
 
 With the shared reader (EPIC_SHARED_READER=1), an approved command is also
@@ -66,8 +71,11 @@ def rule(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
         words = shlex.split(command)
     except ValueError:
         return False, "the command cannot be parsed"
-    if words[:2] == ["git", "push"]:
-        return push(words[2:])
+    if words[:1] == ["git"]:
+        # Imported here: it reads Git and the runner context only for git.
+        import git_gate
+
+        return git_gate.decide(words)
     if words[:3] == ["gh", "pr", "merge"]:
         return merge(words[3:])
     if words[:2] == ["gh", "api"]:
@@ -75,25 +83,10 @@ def rule(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
     return (
         False,
         (
-            "only feature-branch pushes, head-pinned squash merges and the adopt "
-            "PR-body edit are approved"
+            "only the runner's git contract, head-pinned squash merges and the "
+            "adopt PR-body edit are approved"
         ),
     )
-
-
-def push(args: list[str]) -> tuple[bool, str]:
-    if args[:1] == ["-u"]:
-        args = args[1:]
-    if args[:2] == ["origin", "--delete"]:
-        args = ["origin", *args[2:]]
-    if len(args) != 2 or args[0] != "origin":
-        return (
-            False,
-            "push must be `git push [-u] origin <branch>` or `--delete <branch>`",
-        )
-    if not BRANCH.match(args[1]) or ".." in args[1]:
-        return False, f"{args[1]} is not a feature branch"
-    return True, f"feature branch {args[1]}"
 
 
 def merge(args: list[str]) -> tuple[bool, str]:

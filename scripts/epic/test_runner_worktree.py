@@ -5,6 +5,7 @@ from __future__ import annotations
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -246,6 +247,71 @@ class RealGitTest(unittest.TestCase):
         with self.assertRaisesRegex(rw.Stop, "does not hold"):
             self.prepare(self.fix())
         self.assertEqual((self.root / BRANCH / "keep.txt").read_text(), "x")
+
+    def test_prepare_reports_the_runner_context(self) -> None:
+        info: dict[str, Any] = {}
+        path = rw.prepare("claude", self.fix(), self.repo, self.root, self.read(), info)
+        self.assertEqual(path, self.root / BRANCH)
+        self.assertEqual(
+            info,
+            {"branch": BRANCH, "base": "dev/312-interim", "pr": 5, "issue": None},
+        )
+        claim = {
+            "action": "claim",
+            "reason": "t",
+            "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+        }
+        info = {}
+        rw.prepare("claude", claim, self.repo, self.root, self.read(), info)
+        self.assertEqual(
+            info,
+            {
+                "branch": BRANCH,
+                "base": None,
+                "pr": None,
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+            },
+        )
+
+    def cli(self, action: dict[str, Any], context: Path) -> int:
+        action_file = self.tmp / "action.json"
+        action_file.write_text(json.dumps(action))
+        script = Path(__file__).with_name("runner_worktree.py")
+        return subprocess.run(
+            ["python3", str(script), "prepare", "--agent", "claude",
+             "--action-file", str(action_file), "--dir", str(self.root),
+             "--repo", str(self.repo), "--context-file", str(context)],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, "EPIC_STATE_DIR": str(self.tmp / "state")},
+        ).returncode  # fmt: skip
+
+    def test_cli_writes_the_context_only_for_a_ready_worktree(self) -> None:
+        context = self.tmp / "context.json"
+        claim = {
+            "action": "claim",
+            "reason": "t",
+            "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+        }
+        self.assertEqual(self.cli(claim, context), 0)
+        self.assertEqual(
+            json.loads(context.read_text()),
+            {
+                "action": claim,
+                "branch": BRANCH,
+                "base": None,
+                "pr": None,
+                "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+                "worktree": str(self.root / BRANCH),
+            },
+        )
+        # A stop, or an action without a worktree, leaves no old context.
+        self.assertEqual(self.cli({"action": "claim", "reason": "t"}, context), 3)
+        self.assertFalse(context.exists())
+        context.write_text("{}")
+        self.assertEqual(
+            self.cli({"action": "review", "pr": 5, "sha": SHA}, context), 0
+        )
+        self.assertFalse(context.exists())
 
     def test_actions_without_edits_need_no_worktree(self) -> None:
         for kind in ("review", "merge", "adopt", "escalate", "idle"):
