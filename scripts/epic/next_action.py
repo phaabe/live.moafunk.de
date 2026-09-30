@@ -15,8 +15,10 @@ one, get actions. Everything else is frozen. No file or an empty file: all.
   merge     my PR is approved for its head, checks green, no conflict
   fix       my PR has a changes-requested verdict for its head
   fix-checks  my PR has failing checks on its head
-  resolve-conflict  my PR conflicts with its base
+  resolve-conflict  my PR conflicts with its base; on that PR it comes
+            before fix and fix-checks (escalate still comes first)
   review    the other agent's ready PR has no verdict from me for its head
+            and no conflict; a conflicted one is a status-only `wait`
   continue  my draft PR, or my In progress leaf without a PR
   adopt     a focus PR with no owner line whose files route to me (routing.py);
             only when EPIC_FOCUS_ACTIONS lists `adopt`
@@ -96,6 +98,9 @@ PROJECT_FIELDS = ("Status", "Wave", "Executor", "Labels", "Area", "Level")
 BASES = ("dev/312-interim", "dev/streaming-architecture")
 AGENTS = ("Claude", "Codex")
 MAX_ROUNDS = 3
+# A PR's `mergeable` as decide() reads it. UNKNOWN only means GitHub is still
+# computing it; a failed or malformed read never becomes UNKNOWN.
+MERGEABLE_STATES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
 MAX_OPEN_PRS = 2
 PAUSE_FILE = Path.home() / ".epic-pause"
 FOCUS_FILE = Path.home() / ".epic-focus"
@@ -853,15 +858,22 @@ def decide(
         theirs_v = verdicts(p, peer)
         latest = theirs_v[-1] if theirs_v else None
         rounds = len({v["sha"] for v in theirs_v if v["state"] == "CHANGES REQUESTED"})
-        if latest and latest["sha"] == head and latest["state"] == "CHANGES REQUESTED":
-            if rounds >= MAX_ROUNDS:
-                pr_action(
-                    p,
-                    "escalate",
-                    f"{rounds} changes-requested rounds; add label {ESCALATION_LABEL} and ask Anton",
-                    comments=[latest["url"]] if latest.get("url") else [],
-                )
-                continue
+        changes = (
+            latest and latest["sha"] == head and latest["state"] == "CHANGES REQUESTED"
+        )
+        if changes and rounds >= MAX_ROUNDS:
+            pr_action(
+                p,
+                "escalate",
+                f"{rounds} changes-requested rounds; add label {ESCALATION_LABEL} and ask Anton",
+                comments=[latest["url"]] if latest.get("url") else [],
+            )
+            continue
+        # Conflict first: a fix on a conflicted head is redone after the rebase.
+        if p.get("mergeable") == "CONFLICTING":
+            pr_action(p, "resolve-conflict", "PR conflicts with its base")
+            continue
+        if changes:
             previous = theirs_v[-2]["at"] if len(theirs_v) > 1 else None
             pr_action(
                 p,
@@ -871,9 +883,6 @@ def decide(
             )
             continue
         checks = checks_state(p)
-        if p.get("mergeable") == "CONFLICTING":
-            pr_action(p, "resolve-conflict", "PR conflicts with its base")
-            continue
         if checks == "failed":
             pr_action(p, "fix-checks", "checks failed on the current head")
             continue
@@ -889,7 +898,12 @@ def decide(
         if p.get("isDraft"):
             continue
         head = p["headRefOid"]
-        if not any(v["sha"] == head for v in verdicts(p, agent)):
+        if any(v["sha"] == head for v in verdicts(p, agent)):
+            continue
+        # A conflicted head changes again when it is resolved: no review yet.
+        if p.get("mergeable") == "CONFLICTING":
+            pr_action(p, "wait", f"waiting: {peer} resolves the conflict first")
+        else:
             pr_action(
                 p, "review", f"{peer}'s PR has no verdict from {agent} for its head"
             )
@@ -1222,6 +1236,8 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
             ]
         )
     for pr in prs:
+        if pr.get("mergeable") not in MERGEABLE_STATES:
+            raise ValueError(f"PR {pr.get('number')} has bad mergeable state")
         # `gh pr list` returns only the first 100 comments; read them all.
         n = pr["number"]
         pages = gh_json(

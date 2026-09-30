@@ -189,6 +189,93 @@ class DecideTest(unittest.TestCase):
             "resolve-conflict",
         )
 
+    def test_conflict_comes_before_fix_and_fix_checks(self) -> None:
+        # PR 526 on 30 September: a fix was pushed onto a conflicted head.
+        asked = [verdict("CHANGES REQUESTED", "Codex", A, "t1")]
+        failed = [{"conclusion": "FAILURE"}]
+        for kw in (
+            {"comments": asked},
+            {"statusCheckRollup": failed},
+            {"comments": asked, "statusCheckRollup": failed},
+        ):
+            for merge, want in (
+                ("CONFLICTING", "resolve-conflict"),
+                ("MERGEABLE", "fix" if "comments" in kw else "fix-checks"),
+                ("UNKNOWN", "fix" if "comments" in kw else "fix-checks"),
+            ):
+                with self.subTest(kw=kw, mergeable=merge):
+                    p = pr(1, "Claude", mergeable=merge, **kw)
+                    self.assertEqual(first("Claude", [p]).action, want)
+
+    def test_escalation_still_comes_before_a_conflict(self) -> None:
+        shas = [c * 40 for c in "abcdef"[:MAX_ROUNDS]]
+        comments = [
+            verdict("CHANGES REQUESTED", "Codex", s, f"t{i}")
+            for i, s in enumerate(shas)
+        ]
+        p = pr(1, "Claude", head=shas[-1], comments=comments, mergeable="CONFLICTING")
+        self.assertEqual(first("Claude", [p]).action, "escalate")
+
+    def test_approved_conflicted_pr_resolves_before_merge(self) -> None:
+        p = pr(
+            1,
+            "Claude",
+            comments=[verdict("APPROVED", "Codex", A, "t1")],
+            mergeable="CONFLICTING",
+        )
+        self.assertEqual(first("Claude", [p]).action, "resolve-conflict")
+
+    def test_conflicted_peer_pr_gets_no_review(self) -> None:
+        for merge, want in (
+            ("CONFLICTING", "idle"),
+            ("MERGEABLE", "review"),
+            ("UNKNOWN", "review"),  # GitHub still computing: not a blocker
+        ):
+            with self.subTest(mergeable=merge):
+                p = pr(2, "Codex", mergeable=merge)
+                self.assertEqual(first("Claude", [p]).action, want)
+
+    def test_conflicted_peer_pr_shows_as_waiting_for_its_owner(self) -> None:
+        state = {"prs": [pr(2, "Codex", mergeable="CONFLICTING")], "items": []}
+        acts = decide("Claude", state, include_waiting=True)
+        self.assertEqual(
+            [(a.action, a.pr, a.reason) for a in acts],
+            [("wait", 2, "waiting: Codex resolves the conflict first")],
+        )
+        # The owner's side of the same PR.
+        self.assertEqual(decide("Codex", state)[0].action, "resolve-conflict")
+        self.assertIn("Codex resolves the conflict first", status(state, False))
+
+    def test_conflict_wait_does_not_hold_claims(self) -> None:
+        state = {
+            "prs": [pr(2, "Codex", mergeable="CONFLICTING")],
+            "items": [item(338, "Claude", "Ready")],
+        }
+        self.assertEqual(decide("Claude", state)[0].action, "claim")
+
+    def test_verdict_for_head_needs_no_conflict_wait(self) -> None:
+        p = pr(
+            2,
+            "Codex",
+            mergeable="CONFLICTING",
+            comments=[verdict("APPROVED", "Claude", A, "t1")],
+        )
+        state = {"prs": [p], "items": []}
+        self.assertEqual(
+            decide("Claude", state, include_waiting=True)[0].action, "idle"
+        )
+
+    def test_mode_0_reader_refuses_a_bad_mergeable_state(self) -> None:
+        # `gh pr list` gives MERGEABLE, CONFLICTING or UNKNOWN; anything else
+        # is malformed and must not pass as UNKNOWN.
+        rows = [pr(1, "Claude", mergeable="dirty")]
+        with (
+            patch.dict("os.environ", {"EPIC_SHARED_READER": "0"}),
+            patch.object(next_action, "gh_json", return_value=rows),
+            self.assertRaises(ValueError),
+        ):
+            next_action.fetch_state()
+
     def test_review_counterpart_head_without_my_verdict(self) -> None:
         p = pr(
             2,

@@ -993,6 +993,18 @@ class GithubMetricsTest(unittest.TestCase):
             text,
         )
 
+    def test_conflicted_pr_queues_resolve_and_no_review(self) -> None:
+        # The selector's rule: the owner resolves first, the peer waits.
+        conflicted = pull_request(77, "Codex", mergeable="CONFLICTING")
+        text = monitor.github_metrics(snapshot(prs=[conflicted]), NOW)
+        self.assertIn('action="resolve-conflict",agent="codex",', text)
+        self.assertIn(
+            'action="wait",agent="claude",'
+            f'reason="waiting: Codex resolves the conflict first",target="{URL}/pull/77"',
+            text,
+        )
+        self.assertNotIn('action="review"', text)
+
     def test_empty_checks_are_unknown(self) -> None:
         text = monitor.github_metrics(
             snapshot(prs=[pull_request(77, "Codex", statusCheckRollup=[])]), NOW

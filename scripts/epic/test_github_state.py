@@ -934,6 +934,18 @@ class BuildState(Env):
                 else:
                     self.assertEqual(got[0], expected)
 
+    def test_malformed_mergeable_blocks_the_snapshot(self) -> None:
+        self.repo.add_pr(pull(5, A, "Executor: Claude", mergeable="dirty"))
+        with self.assertRaises(gs.ReadBlocked):
+            self.build()
+
+    def test_snapshot_pr_without_mergeable_is_refused(self) -> None:
+        self.repo.add_pr(pull(5, A, "Executor: Claude"))
+        state = self.build()
+        del state["prs"][0]["mergeable"]
+        with self.assertRaises(gs.ReadBlocked):
+            gs.validate_state(state)
+
     def test_merged_set_and_edited_merged_bodies(self) -> None:
         base = "dev/312-interim"
         self.repo.closed[base] = [
@@ -1112,6 +1124,40 @@ class Recheck(Env):
         self.gh.fail(f"{REPO}/pulls/5", "502")
         with self.assertRaises(gs.ReadBlocked):
             self.recheck(action)
+
+    def review_pr(self, **kw: Any) -> dict[str, Any]:
+        self.repo.add_pr(pull(6, A, "Executor: Codex", **kw))
+        return {"action": "review", "reason": "r", "pr": 6, "sha": A}
+
+    def test_conflict_after_selection_makes_a_review_stale(self) -> None:
+        action = self.review_pr()
+        self.gh.set(f"{REPO}/pulls/6", pull(6, A, "Executor: Codex", mergeable=False))
+        # Selector: no review on a conflicted head (status shows a wait).
+        self.assertIn("gives idle", self.recheck(action) or "")
+
+    def test_mergeability_still_computing_keeps_a_review(self) -> None:
+        self.assertIsNone(self.recheck(self.review_pr(mergeable=None)))
+
+    def test_cleared_conflict_makes_resolve_conflict_stale(self) -> None:
+        self.repo.add_pr(pull(5, A, "Executor: Claude", mergeable=False))
+        action = {"action": "resolve-conflict", "reason": "r", "pr": 5, "sha": A}
+        self.assertIsNone(self.recheck(action))
+        self.gh.set(f"{REPO}/pulls/5", pull(5, A, "Executor: Claude", mergeable=True))
+        self.assertIsNotNone(self.recheck(action))
+
+    def test_missing_or_malformed_mergeable_blocks(self) -> None:
+        action = self.review_pr()
+        broken = pull(6, A, "Executor: Codex")
+        del broken["mergeable"]
+        for data in (
+            broken,
+            {**broken, "mergeable": "dirty"},
+            {**broken, "mergeable": 0},
+        ):
+            with self.subTest(mergeable=data.get("mergeable", "missing")):
+                self.gh.set(f"{REPO}/pulls/6", data)
+                with self.assertRaises(gs.ReadBlocked):
+                    self.recheck(action)
 
 
 class NextActionCli(Env):
