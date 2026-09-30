@@ -164,6 +164,7 @@ Priority, first match wins:
 6. `review`: the other agent's ready (non-draft) PR has no verdict from this
    agent for its current head.
 7. `continue`: the agent's draft PR, or its In progress issue without a PR.
+   Not while it is waiting (see Waiting work below).
 8. `adopt`: a focus PR with no owner line (`Executor:`, `Author:` or
    `Reviewer:`, with any value) whose files route to this agent (see Routing below). The agent
    adds the `Epic:`, `Executor:`, `Lane:`, `Reviewer:`, `Leaf IDs:` and `Issue:`
@@ -263,6 +264,50 @@ rollout audit on https://github.com/phaabe/live.moafunk.de/issues/520:
 create the pause file, set `EPIC_REQUIRE_COMPLETED_TICKETS=1` in both runner
 environments and the monitor's, check that `--status` in each shows `on`, then
 remove the pause file. Never change the mode inside a tick.
+
+Waiting work: a draft PR or an In progress issue without a PR can wait
+without blocking new claims. Only its owner or Anton marks it, in this order:
+
+1. Post a new comment, exactly three lines:
+
+   ```text
+   Waiting: Claude
+   Reason: <one line>
+   Resume after: <full issue URL>, <full issue URL>
+   ```
+
+   The first line names the writer (`Claude`, `Codex` or `Anton`). For a
+   wait only Anton can end, the last line is `Resume: Anton`.
+2. Add the label `waiting` (color `FBCA04`) to the issue or the PR. A PR also
+   waits through the label on its `Issue:` tickets, each with its own comment.
+
+The selector reads the newest comment that starts with `Waiting:` on each
+labeled source. It never falls back to an older one: to change a wait, post a
+new comment; an edited one counts as invalid. Waiting work gets a status-only
+`wait` entry (`--status`, monitor) and starts no model. All its sources must
+resolve before it continues.
+
+- A `Resume after:` wait ends when every named ticket is done under the active
+  "Start after" rule (both `EPIC_REQUIRE_COMPLETED_TICKETS` modes). The label
+  may stay; `--status` then shows a warning. If a ticket is reopened while the
+  label is still there, the work waits again.
+- A `Resume: Anton` wait ends only when Anton removes the label from its
+  source. A PR label does not clear a label on its issue.
+- A label with a missing, edited or malformed comment, or a comment by someone
+  other than the owner or Anton, parks that work and shows the problem.
+- Removing the label by hand ends any wait. Nothing removes it automatically.
+- A ready (non-draft) PR ignores the label: it keeps review, fix, checks,
+  conflict and merge actions, with a warning.
+- Waiting work keeps its Status, PR slot, worktree and reservations. Capacity,
+  focus, pause, quota, lanes and priority still apply.
+
+Waiting work frees claims only with `EPIC_SHARED_READER=1`, because only then
+does each runner recheck the claim fresh before the model. The recheck reads
+every labeled draft PR and In progress issue, their comments and dependency
+evidence again; a wait that ended after selection makes the claim stale. With
+the switch off, waiting work still starts no model, but claims stay held as
+before. A comment read that fails stops the tick (exit 5); it never counts as
+a missing comment.
 
 Each runner checkout only runs ticks and holds no work. Every
 tick starts with `git pull --ff-only` there, so merged changes to
