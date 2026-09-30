@@ -20,6 +20,7 @@ import feature_worktree
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/epic"))
 import github_quota  # noqa: E402
+import github_state  # noqa: E402
 import target_lock  # noqa: E402
 
 REPO = feature_worktree.REPO
@@ -35,9 +36,12 @@ class ExistingBundle(Refused):
 
 def pull(number: int) -> dict[str, Any]:
     feature_worktree.check_quota()
-    value = json.loads(github_quota.run_gh(["api", f"repos/{REPO}/pulls/{number}"]))
-    if not isinstance(value, dict):
-        raise Refused("malformed GitHub PR metadata")
+    try:
+        value = json.loads(github_quota.run_gh(["api", f"repos/{REPO}/pulls/{number}"]))
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        raise github_state.ReadBlocked(f"GitHub PR read failed: {error}") from error
+    if not isinstance(value, dict) or value.get("state") not in ("open", "closed"):
+        raise github_state.ReadBlocked("malformed GitHub PR metadata")
     return value
 
 
@@ -52,8 +56,12 @@ def metadata(action: dict[str, Any]) -> dict[str, Any]:
     ):
         raise Refused("review requires a positive PR number and full head SHA")
     pr = pull(number)
-    if not isinstance(pr.get("body"), (str, type(None))):
-        raise Refused("malformed PR body")
+    if (
+        "body" not in pr
+        or not isinstance(pr["body"], (str, type(None)))
+        or type(pr.get("draft")) is not bool
+    ):
+        raise github_state.ReadBlocked("malformed PR body or draft state")
     body = pr.get("body") or ""
     owners = re.findall(
         r"^Executor:[ \t]*(.*?)[ \t]*$", "\n".join(body.splitlines()), re.M
@@ -69,11 +77,13 @@ def metadata(action: dict[str, Any]) -> dict[str, Any]:
         if (
             not isinstance(branch, dict)
             or not isinstance(branch.get("repo"), dict)
-            or branch["repo"].get("full_name") != REPO
+            or not isinstance(branch["repo"].get("full_name"), str)
             or not isinstance(branch.get("ref"), str)
             or not isinstance(branch.get("sha"), str)
             or not SHA.fullmatch(branch["sha"])
         ):
+            raise github_state.ReadBlocked("malformed PR branch metadata")
+        if branch["repo"]["full_name"] != REPO:
             raise Refused("review branches must belong to the expected repository")
     if pr["head"]["sha"] != sha or pr["base"]["ref"] not in feature_worktree.BASES:
         raise Refused("review head changed or base is forbidden")
@@ -85,7 +95,7 @@ def metadata(action: dict[str, Any]) -> dict[str, Any]:
             for label in pr["labels"]
         )
     ):
-        raise Refused("malformed PR review inputs")
+        raise github_state.ReadBlocked("malformed PR review inputs")
     return {
         "version": 1,
         "repo": REPO,
@@ -390,6 +400,61 @@ def cleanup(runner: Path, context: dict[str, Any]) -> None:
         logging.info("review: removed %s and retained ref %s", path, ref)
 
 
+def list_orphan_refs(
+    runner: Path, known: dict[Path, dict[str, str]], pulls: dict[int, dict[str, Any]]
+) -> None:
+    """Report retained evidence without treating its ref as deletion authority."""
+    attached = {
+        (int(match[1]), entry.get("HEAD"))
+        for path, entry in known.items()
+        if path.parent == TEMP_ROOT and (match := LEGACY.fullmatch(path.name))
+    }
+    records = git(
+        runner,
+        "for-each-ref",
+        "--format=%(refname) %(objectname) %(objecttype) %(symref)",
+        "refs/remotes/codex-review",
+    )
+    for record in records.splitlines():
+        fields = record.split()
+        ref = fields[0]
+        match = re.fullmatch(
+            r"refs/remotes/codex-review/([1-9][0-9]*)/([0-9a-f]{40})", ref
+        )
+        if (
+            len(fields) != 3
+            or not match
+            or fields[1] != match[2]
+            or fields[2] != "commit"
+        ):
+            logging.warning(
+                "review: retained %s: malformed, mismatched or symbolic ref; manual review required",
+                ref,
+            )
+            continue
+        number = int(match[1])
+        if (number, fields[1]) in attached:
+            continue
+        try:
+            if number not in pulls:
+                pulls[number] = pull(number)
+            if pulls[number].get("state") == "closed":
+                logging.info(
+                    "review: retained %s: closed PR %s, no registered checkout; preserve for pending evidence or manual review",
+                    ref,
+                    number,
+                )
+            else:
+                logging.info(
+                    "review: retained %s: PR is open or its closed state is unknown",
+                    ref,
+                )
+        except feature_worktree.QuotaWait:
+            raise
+        except (Refused, OSError, ValueError, subprocess.SubprocessError) as error:
+            logging.warning("review: retained %s: %s", ref, error)
+
+
 def sweep(runner: Path, state: Path, apply: bool) -> None:
     feature_worktree.validate_repository(runner)
     state.mkdir(parents=True, exist_ok=True)
@@ -398,6 +463,8 @@ def sweep(runner: Path, state: Path, apply: bool) -> None:
         raise Refused("runner is active; sweep refused")
     try:
         known = registrations(runner)
+        pulls: dict[int, dict[str, Any]] = {}
+        list_orphan_refs(runner, known, pulls)
         candidates = set(known) | set(TEMP_ROOT.glob("*review*"))
         for path in sorted(candidates):
             if path.parent != TEMP_ROOT or "review" not in path.name:
@@ -428,6 +495,7 @@ def sweep(runner: Path, state: Path, apply: bool) -> None:
                             "review path head does not match its registered head"
                         )
                     validate_checkout(runner, path, sha)
+                    # A listing read may precede this target lock by many PRs.
                     pr = pull(number)
                     if pr.get("state") != "closed":
                         raise Refused("PR is open or its closed state is unknown")
@@ -448,6 +516,8 @@ def sweep(runner: Path, state: Path, apply: bool) -> None:
                         ),
                     }
                     cleanup(runner, context)
+            except feature_worktree.QuotaWait:
+                raise
             except (Refused, OSError, ValueError, subprocess.SubprocessError) as error:
                 logging.warning("review: retained %s: %s", path, error)
     finally:
@@ -502,6 +572,9 @@ def main() -> int:
     except feature_worktree.QuotaWait as error:
         logging.warning("review: %s", error)
         return 4
+    except github_state.ReadBlocked as error:
+        logging.warning("review: GitHub read blocked: %s", error)
+        return 5
     except github_quota.QuotaExhausted as error:
         return github_quota.stop_on_quota(error)
     except (

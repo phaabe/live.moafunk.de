@@ -1259,6 +1259,55 @@ else:
         self.assertNotIn("--add-dir", call["args"])
         self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"406"})
 
+    def test_refused_review_preparation_allows_next_candidate(self) -> None:
+        self.adopt_action()
+        adopt = json.loads(self.env["TEST_DECISION"])
+        self.candidates(self.review_action(407), self.review_action(408), adopt)
+        self.env["TEST_REVIEW_PREPARE_EXITS"] = json.dumps({"407": 7, "408": 75})
+        self.env["TEST_REVIEW_CLEANUP_EXIT"] = "2"
+        self.assertEqual(self.run_tick().returncode, 0)
+        lifecycle = self.review_lifecycle()
+        self.assertEqual(
+            [entry["command"] for entry in lifecycle],
+            ["prepare", "cleanup", "prepare", "cleanup"],
+        )
+        for prepared in lifecycle[::2]:
+            self.assertTrue(Path(prepared["worktree"]).exists())
+        call = json.loads(self.calls.read_text())
+        self.assertEqual(call["action"]["action"], "adopt")
+        self.assertNotIn("EPIC_REVIEW_DIR", call["tool_env"])
+        self.assertNotIn("--add-dir", call["args"])
+        self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"406"})
+        self.assertFalse(self.lock.exists())
+        for number in (407, 408):
+            with (self.target_locks / f"{number}.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_only_refused_review_preparation_reports_blocked(self) -> None:
+        self.candidates(self.review_action(407), self.review_action(408))
+        self.env["TEST_REVIEW_PREPARE_EXITS"] = json.dumps({"407": 7, "408": 75})
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse((self.state / "codex-gate-seen.json").exists())
+        self.assertFalse(self.lock.exists())
+        self.assertEqual(len(self.review_lifecycle()), 4)
+        self.assertEqual(self.last_finish(), (75, "blocked", "gate"))
+
+    def test_review_prepare_read_failure_stops_candidate_scan(self) -> None:
+        self.adopt_action()
+        adopt = json.loads(self.env["TEST_DECISION"])
+        self.candidates(self.review_action(407), adopt)
+        for code in (5, 124, 137):
+            with self.subTest(code=code):
+                self.env["TEST_REVIEW_PREPARE_EXITS"] = json.dumps({"407": code})
+                self.assertEqual(self.run_tick().returncode, 75)
+                self.assertFalse(self.calls.exists())
+                self.assertFalse(self.record.exists())
+                self.assertFalse((self.state / "codex-gate-seen.json").exists())
+                self.assertFalse(self.lock.exists())
+                self.assertEqual(self.last_finish(), (75, "blocked", "gate"))
+
     def assignment_responses(self, mode: str) -> dict[str, str]:
         from test_project_items import FIELD_IDS, rest_row
         import next_action as na

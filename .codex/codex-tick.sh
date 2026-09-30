@@ -466,12 +466,15 @@ print(action)
             > "${lock_dir}/worktree.txt" || review_exit=$?
         case "$review_exit" in
             0) model_root=$(cat "${lock_dir}/worktree.txt") ;;
-            3)
+            3|7|75)
+                if [[ "$review_exit" != 3 ]]; then
+                    target_blocked=1
+                fi
                 cleanup_review
                 rm -f "${lock_dir}/review-context.json"
                 discard_seen
                 release_target
-                printf 'tick: saved review needs no model; next candidate\n'
+                printf 'tick: review preparation skipped exit=%s; next candidate\n' "$review_exit"
                 continue
                 ;;
             4)
@@ -480,6 +483,7 @@ print(action)
                 tick_outcome=blocked
                 exit 75
                 ;;
+            5|124|137) read_blocked ;;
             *)
                 discard_seen
                 tick_outcome=blocked

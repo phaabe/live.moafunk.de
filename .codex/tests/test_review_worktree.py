@@ -355,6 +355,135 @@ class ReviewWorktreeTests(unittest.TestCase):
             review.sweep(self.repo, self.state, True)
         self.assertTrue(self.path.exists())
 
+    def test_sweep_lists_closed_orphan_ref_without_deleting_pending_evidence(
+        self,
+    ) -> None:
+        self.prepare()
+        review.cleanup(self.repo, self.context())
+        self.pr["state"] = "closed"
+        bundle = Path(self.context()["artifact_dir"]) / "bundle.json"
+        before = bundle.read_bytes()
+        for apply in (False, True):
+            with self.subTest(apply=apply), self.assertLogs(level="INFO") as logs:
+                review.sweep(self.repo, self.state, apply)
+            self.assertIn(self.ref, "\n".join(logs.output))
+            self.assertIn(
+                "closed PR 431, no registered checkout", "\n".join(logs.output)
+            )
+            self.assertIn("pending evidence or manual review", "\n".join(logs.output))
+            self.assertEqual(self.git("rev-parse", self.ref), self.sha)
+            self.assertEqual(bundle.read_bytes(), before)
+
+    def test_sweep_open_orphan_ref_is_not_reported_closed(self) -> None:
+        self.git("update-ref", self.ref, self.sha)
+        self.git("commit", "--allow-empty", "-m", "test: move runner head")
+        with self.assertLogs(level="INFO") as logs:
+            review.sweep(self.repo, self.state, True)
+        output = "\n".join(logs.output)
+        self.assertIn(self.ref, output)
+        self.assertIn("PR is open or its closed state is unknown", output)
+        self.assertNotIn("no registered checkout", output)
+        self.assertEqual(self.git("rev-parse", self.ref), self.sha)
+
+    def test_sweep_attached_ref_has_only_checkout_report(self) -> None:
+        self.prepare()
+        self.pr["state"] = "closed"
+        self.requests.reset_mock()
+        with self.assertLogs(level="INFO") as logs:
+            review.sweep(self.repo, self.state, False)
+        output = "\n".join(logs.output)
+        self.assertIn(str(self.path), output)
+        self.assertNotIn(self.ref, output)
+        self.requests.assert_called_once()
+
+    def test_sweep_rechecks_closed_state_after_orphan_listing(self) -> None:
+        self.prepare()
+        self.git("commit", "--allow-empty", "-m", "test: another review head")
+        orphan_sha = self.git("rev-parse", "HEAD")
+        orphan = review.retained_ref(431, orphan_sha)
+        self.git("update-ref", orphan, orphan_sha)
+        self.requests.reset_mock()
+        self.requests.side_effect = [
+            json.dumps({"state": "closed"}),
+            json.dumps({"state": "open"}),
+        ]
+        with self.assertLogs(level="INFO") as logs:
+            review.sweep(self.repo, self.state, True)
+        self.assertIn(orphan, "\n".join(logs.output))
+        self.assertTrue(self.path.exists())
+        self.assertEqual(self.requests.call_count, 2)
+        self.assertEqual(self.git("rev-parse", orphan), orphan_sha)
+
+    def test_sweep_reports_invalid_refs_without_network_or_deletion(self) -> None:
+        malformed = "refs/remotes/codex-review/not-a-review"
+        mismatch = review.retained_ref(432, "f" * 40)
+        symbolic = review.retained_ref(433, self.sha)
+        self.git("update-ref", malformed, self.sha)
+        self.git("update-ref", mismatch, self.sha)
+        self.git("symbolic-ref", symbolic, "refs/heads/dev/312-interim")
+        self.requests.reset_mock()
+        with self.assertLogs(level="WARNING") as logs:
+            review.sweep(self.repo, self.state, True)
+        output = "\n".join(logs.output)
+        for ref in (malformed, mismatch, symbolic):
+            self.assertIn(ref, output)
+            self.assertEqual(self.git("rev-parse", ref), self.sha)
+        self.requests.assert_not_called()
+
+    def test_prepare_cli_blocks_failed_or_malformed_reads_without_evidence(
+        self,
+    ) -> None:
+        action = self.state / "action.json"
+        action.write_text(json.dumps(self.action))
+        argv = [
+            "review_worktree.py",
+            "prepare",
+            "--runner",
+            str(self.repo),
+            "--state-dir",
+            str(self.state),
+            "--action-file",
+            str(action),
+            "--context-file",
+            str(self.context_file),
+        ]
+        for failure in (
+            OSError("offline"),
+            subprocess.CalledProcessError(1, "gh"),
+            "{",
+            "[]",
+            json.dumps({"state": "open"}),
+            json.dumps({"state": []}),
+            json.dumps({**self.pr, "head": None}),
+        ):
+            with (
+                self.subTest(failure=failure),
+                patch.object(sys, "argv", argv),
+                self.assertLogs(level="WARNING"),
+            ):
+                self.requests.side_effect = (
+                    failure if isinstance(failure, Exception) else None
+                )
+                self.requests.return_value = failure
+                self.assertEqual(review.main(), 5)
+            self.assertFalse(self.path.exists())
+            self.assertFalse(self.context_file.exists())
+            self.assertFalse((self.state / "reviews").exists())
+
+    def test_sweep_stops_on_failed_github_read_and_keeps_all_refs(self) -> None:
+        second = review.retained_ref(432, self.sha)
+        self.git("update-ref", self.ref, self.sha)
+        self.git("update-ref", second, self.sha)
+        self.git("commit", "--allow-empty", "-m", "test: move runner head")
+        self.requests.reset_mock()
+        self.requests.side_effect = subprocess.CalledProcessError(1, "gh")
+        with self.assertRaises(review.github_state.ReadBlocked):
+            review.sweep(self.repo, self.state, True)
+        self.requests.assert_called_once()
+        self.assertFalse((self.state / "codex.lock").exists())
+        for ref in (self.ref, second):
+            self.assertEqual(self.git("rev-parse", ref), self.sha)
+
 
 class RunnerReviewLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:

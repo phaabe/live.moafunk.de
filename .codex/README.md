@@ -330,6 +330,9 @@ fallback. Dirty, locked, mismatched or refused checkouts remain, with their
 paths and reasons in the tick log. The retaining ref stays until removal
 succeeds and no pending review needs it. Cleanup does not alter the review's
 result or repeat-gate record: a posted verdict remains completed.
+Preparation refusals release the target lock and try the next candidate. If
+all candidates are refused, the tick exits 75 as blocked. A read failure or
+preparation timeout stops the tick without a cooldown or repeat record.
 
 Evidence lives in `<EPIC_STATE_DIR>/reviews/<pr>/<full-head-sha>/`, outside the
 repository's checkouts. Use a state path without symlinks (on macOS,
@@ -353,6 +356,9 @@ completed analysis. A completed or published bundle prevents a second model
 review. Automatic publication retry and input revalidation belong to
 https://github.com/phaabe/live.moafunk.de/issues/535; until then, pending delivery
 requires operator handling. There is no second review database.
+The bundle checks protect against accidental edits through `save-bundle`.
+The model can write this directory directly, so immutability relies on its
+cooperation; these checks are not a security boundary.
 
 For a one-time backlog cleanup, pause scheduled ticks and wait for their
 children to stop. List known review paths first:
@@ -365,6 +371,9 @@ Run the same command with `--apply` to remove eligible checkouts. It holds the
 runner lock, checks the PR is closed or merged, and sends each accepted path
 through the same helper. Paths that cannot be identified or validated are
 reported and retained. Feature worktrees and unknown checkouts are not removed.
+Sweep also lists retaining refs for closed PRs with no registered review
+checkout. It preserves these refs in both list and apply mode because pending
+evidence may still need them; their removal needs operator review.
 This command does not resume the scheduler.
 
 ## GitHub quota waits
