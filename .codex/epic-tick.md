@@ -102,6 +102,11 @@ continue it; do not start another one. Git's temporary detached HEAD is valid
 only for that record. Resolve conflicts and `git add` the intended resolutions
 before `rebase-continue`. Do not commit during the active rebase. Abort only to
 return to the original branch; an abort does not complete the conflict task.
+After a completed rebase, tests may be fixed with normal commits followed by
+`push-with-lease` using the original selected SHA. Otherwise return blocked;
+the helper does not restart or undo a completed rebase. If no PR commits remain
+beyond the base, return blocked for operator review. Do not add an empty commit
+to bypass that refusal.
 Never skip a commit automatically. Preserve unfinished work and return blocked
 if resolution or tests fail, the lease is stale, or the helper refuses. A missing
 or outdated helper blocks before model launch and starts the target cooldown.

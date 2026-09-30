@@ -253,6 +253,8 @@ def completed_rebase(worktree: Path, state: dict[str, Any]) -> None:
     if git(worktree, "status", "--porcelain", "--untracked-files=all"):
         raise Refused("completed rebase must have a clean worktree")
     git(worktree, "merge-base", "--is-ancestor", state["onto"], "HEAD")
+    if git(worktree, "rev-list", "--count", f"{state['onto']}..HEAD") == "0":
+        raise Refused("rebase has no commits beyond the base; operator review required")
 
 
 def remote_head(worktree: Path, branch: str) -> str:
@@ -412,7 +414,16 @@ def main() -> int:
             if "context_file" in config:
                 records = Path(config["context_file"]).parent.glob("rebase-*.json")
                 for record in records:
-                    if json.loads(record.read_text()).get("worktree") == str(worktree):
+                    recorded = json.loads(record.read_text())
+                    if (
+                        not isinstance(recorded, dict)
+                        or not isinstance(recorded.get("worktree"), str)
+                        or not Path(recorded["worktree"]).is_absolute()
+                    ):
+                        raise Refused(
+                            f"invalid rebase record {record.name}; operator recovery required"
+                        )
+                    if recorded["worktree"] == str(worktree):
                         raise Refused("recorded rebase requires an explicit lease push")
             output = git(
                 worktree,

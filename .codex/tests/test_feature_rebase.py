@@ -399,6 +399,39 @@ class FeatureRebaseTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.remote_head(), self.before)
 
+    def test_empty_rebase_result_cannot_be_published(self) -> None:
+        self.advance_base()
+        self.git("cherry-pick", self.before)
+        self.git("push", "origin", BASE)
+        onto = self.git("rev-parse", "HEAD")
+        result = self.rebase()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.worktree), onto)
+        recorded = self.state.read_bytes()
+        for args in (
+            ("rebase-continue",),
+            ("push-with-lease", "--expected-remote-sha", self.before),
+        ):
+            with self.subTest(command=args[0]):
+                result = self.run_helper(*args)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("no commits beyond the base", result.stderr)
+                self.assertEqual(self.remote_head(), self.before)
+                self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.worktree), onto)
+                self.assertEqual(self.state.read_bytes(), recorded)
+
+    def test_plain_push_refuses_malformed_records_without_traceback(self) -> None:
+        for value in ([], None, True, {}, {"worktree": 1}):
+            with self.subTest(record=value):
+                self.state.write_text(json.dumps(value))
+                recorded = self.state.read_bytes()
+                result = self.run_helper("push")
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("invalid rebase record", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(self.remote_head(), self.before)
+                self.assertEqual(self.state.read_bytes(), recorded)
+
     def test_pre_push_hook_is_not_bypassed(self) -> None:
         self.advance_base()
         result = self.rebase()

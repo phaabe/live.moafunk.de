@@ -418,6 +418,9 @@ against malicious repository hooks. Raw critical Git commands retain their
 approval requirements.
 Normal commit and push keep their existing contract; lane ownership is checked
 by the epic workflow. A pending recorded rebase requires a lease push.
+An unreadable or malformed record blocks normal pushes until the operator
+repairs it: its worktree cannot be identified safely. The error names a malformed
+record instead of printing a traceback.
 
 For unattended conflict work, extend the installed JSON with `runner_checkout`
 (the absolute dedicated runner path) and `context_file` (the absolute
@@ -460,12 +463,22 @@ work. A successful push removes the record and requires a new counterpart review
 for the new head. Continue/abort without a matching record, interactive rebase,
 exec/onto/skip, extra refs, remotes, tags, deletion and force flags are refused.
 There is no raw-command fallback.
+If no PR commits remain beyond the fetched base, publication is refused. Keep
+the local result and record for operator review; do not publish the base as the
+PR head or add an empty commit to bypass the check.
 
 If the process stops before Git starts, `rebase-abort` clears the pending record
 only when the branch still has its original head and a clean tree. If Git has
 already completed, `rebase-continue` reports that publication is pending. A
 changed PR head or mismatching Git operation requires manual recovery; keep
 the record and worktree. Do not delete records to refresh a stale lease.
+
+A process killed after a successful push but before record removal also leaves
+an old record. Keep the runner paused. The operator must verify the PR and remote
+head equal the local head, the recorded base is its ancestor, and the worktree
+is clean. Only then archive that PR's record outside the record directory and
+request a new review for the published head. If any check fails, preserve the
+record and investigate; never replace its expected SHA.
 
 ### Installation and runtime evidence
 

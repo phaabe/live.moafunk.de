@@ -337,8 +337,8 @@ def prepare(runner: Path, action: dict[str, Any], state: Path | None = None) -> 
     recorded = False
     active = False
     if policy is not None:
-        if base != "dev/312-interim":
-            raise Refused("resolve-conflict requires base dev/312-interim")
+        if base not in feature_git.BASES:
+            raise Refused("resolve-conflict requires an allowed rebase base")
         config_path, context_path = policy
         context = {
             "version": 1,
