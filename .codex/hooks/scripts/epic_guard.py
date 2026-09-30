@@ -387,6 +387,23 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
     if not os.environ.get("EPIC_ACTION_FILE"):
         return
     shared = os.environ.get("EPIC_SHARED_READER") == "1"
+    action: dict[str, Any] = {}
+    action_error: OSError | ValueError | None = None
+    try:
+        action = json.loads(Path(os.environ["EPIC_ACTION_FILE"]).read_text())
+        if not isinstance(action, dict):
+            raise ValueError("The selected runner action must be an object.")
+    except (OSError, ValueError) as error:
+        # Read-only calls need no action file; refuse writes below.
+        action = {}
+        action_error = error
+    issue_action = (
+        action.get("action") in ("claim", "continue")
+        and bool(action.get("issue"))
+        and action.get("pr") is None
+    )
+    if action_error is None and not shared and not issue_action:
+        return
     root = Path(
         os.environ.get("EPIC_TRUSTED_ROOT") or Path(__file__).resolve().parents[3]
     )
@@ -418,16 +435,10 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
         raise ValueError(f"Runner write check failed: {error}") from error
     if not writes:
         return
-    action = json.loads(Path(os.environ["EPIC_ACTION_FILE"]).read_text())
-    if not isinstance(action, dict):
-        raise ValueError("The selected runner action must be an object.")
-    issue_action = (
-        action.get("action") in ("claim", "continue")
-        and bool(action.get("issue"))
-        and action.get("pr") is None
-    )
-    if not shared and not issue_action:
-        return
+    if action_error is not None:
+        raise ValueError(
+            f"Selected runner action is unavailable: {action_error}"
+        ) from action_error
     if issue_action:
         try:
             assignment_path = root / ".codex/assignment.py"

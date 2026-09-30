@@ -812,6 +812,45 @@ class FreshWriteCheckTest(unittest.TestCase):
             self.run_hook("git push origin feat/21-work")
         self.assertEqual(self.reads, [])
 
+    def test_off_mode_pr_actions_skip_write_parser(self) -> None:
+        command = 'gh pr comment 5 --body "$(cat /tmp/findings.md)"'
+        with patch.dict(os.environ, {"EPIC_SHARED_READER": "0"}):
+            for action in ("review", "merge", "fix", "continue"):
+                with self.subTest(action=action):
+                    self.action(action)
+                    self.run_hook(command)
+        self.assertEqual(self.reads, [])
+
+    def test_issue_and_shared_actions_keep_write_parser(self) -> None:
+        command = 'gh pr comment 5 --body "$(cat /tmp/findings.md)"'
+        for shared, action, pr in (
+            ("0", "claim", None),
+            ("0", "continue", None),
+            ("1", "review", 5),
+        ):
+            with (
+                self.subTest(shared=shared, action=action),
+                patch.dict(os.environ, {"EPIC_SHARED_READER": shared}),
+            ):
+                self.action(action, pr)
+                self.assertIn("plain command", self.run_hook(command, 2))
+        self.assertEqual(self.reads, [])
+
+    def test_bad_action_only_blocks_writes(self) -> None:
+        for shared in ("0", "1"):
+            for body in (None, "{", "[]"):
+                with (
+                    self.subTest(shared=shared, body=body),
+                    patch.dict(os.environ, {"EPIC_SHARED_READER": shared}),
+                ):
+                    if body is None:
+                        self.action_file.unlink(missing_ok=True)
+                    else:
+                        self.action_file.write_text(body)
+                    self.run_hook("git status --short")
+                    self.run_hook("gh issue comment 21 --body claim", 2)
+        self.assertEqual(self.reads, [])
+
     def test_unavailable_trusted_checker_fails_closed(self) -> None:
         with patch.dict(os.environ, {"EPIC_TRUSTED_ROOT": str(self.directory)}):
             self.assertIn(
