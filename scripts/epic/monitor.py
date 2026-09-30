@@ -1022,7 +1022,11 @@ def github_metrics(state: Json, now: float) -> str:
             "checklist_leaves", sum(leaves.values()), agent=label, state="checked"
         )
         for action in epic.decide(
-            agent, filtered, include_waiting=True, completed_tickets=mode
+            agent,
+            filtered,
+            include_waiting=True,
+            completed_tickets=mode,
+            free_claims=epic.shared_reader(),
         ):
             metrics.add(
                 "queued_action_info",

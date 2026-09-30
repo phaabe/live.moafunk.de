@@ -730,6 +730,25 @@ def read_ticket(client: Client, number: int) -> dict[str, Any]:
     return na.ticket_from_issue(number, issue)
 
 
+def merged_pulls(client: Client) -> list[dict[str, Any]]:
+    """Merged PRs into the epic bases, as {number, body}."""
+    merged: list[dict[str, Any]] = []
+    for base in na.BASES:
+        rows = client.pages(
+            f"repos/{na.REPO}/pulls?state=closed&base={quote(base, safe='')}&per_page=100"
+        )
+        merged += [
+            {"number": r["number"], "body": r.get("body") or ""}
+            for r in rows
+            if r.get("merged_at")
+        ]
+    return merged
+
+
+def issue_comments(client: Client, number: int) -> list[dict[str, Any]]:
+    return na.rows_as_comments(comment_rows(client, number))
+
+
 def build_state(
     client: Client,
     focus: set[str],
@@ -753,16 +772,7 @@ def build_state(
                 pr = pr_from_pull(row)
                 pr.update({"comments": [], "statusCheckRollup": []})
                 prs.append(pr)
-        merged: list[dict[str, Any]] = []
-        for base in na.BASES:
-            rows = client.pages(
-                f"repos/{na.REPO}/pulls?state=closed&base={quote(base, safe='')}&per_page=100"
-            )
-            merged += [
-                {"number": r["number"], "body": r.get("body") or ""}
-                for r in rows
-                if r.get("merged_at")
-            ]
+        merged = merged_pulls(client)
         items = board_items(client)
         on_board = {
             (i.get("content") or {}).get("number")
@@ -797,9 +807,16 @@ def build_state(
             "batch_order": batch_order,
             "focus_issues": search_focus(client, focus) if focus else [],
         }
+        # Every labeled draft PR and In progress issue, also in a claim
+        # recheck: any of them can hold or free the claim.
+        state["waiting"] = na.read_waiting(
+            state, lambda n: issue_comments(client, n), pr_comments=pr_details
+        )
         if completed_tickets:
             state["completed_tickets"] = True
-            state["tickets"] = na.read_tickets(items, lambda n: read_ticket(client, n))
+            state["tickets"] = na.read_tickets(
+                items, lambda n: read_ticket(client, n), na.resume_tickets(state)
+            )
         return state
     except (KeyError, TypeError, AttributeError) as error:
         raise ReadBlocked(f"malformed GitHub data: {error!r}") from error
@@ -825,6 +842,8 @@ def validate_state(state: Any) -> None:
             raise ReadBlocked(f"snapshot PR {pr.get('number')} is partial")
     if state.get("completed_tickets") and not isinstance(state.get("tickets"), dict):
         raise ReadBlocked("snapshot state lacks tickets")
+    if not isinstance(state.get("waiting"), dict):
+        raise ReadBlocked("snapshot state lacks waiting records")
 
 
 # --- snapshot ---
@@ -1170,6 +1189,18 @@ def recheck(
                 "merged_prs": [],
                 "batch_order": [],
             }
+            # A draft's own and inherited waits, with fresh dependency evidence.
+            state["waiting"] = na.read_waiting(
+                state, lambda n: issue_comments(reader.client, n), pr_comments=True
+            )
+            deps = na.resume_tickets(state)
+            if deps and completed_tickets:
+                state["completed_tickets"] = True
+                state["tickets"] = {
+                    str(n): read_ticket(reader.client, n) for n in sorted(deps)
+                }
+            elif deps:
+                state["merged_prs"] = merged_pulls(reader.client)
         else:
             tail = str(action.get("issue") or "").rstrip("/").rsplit("/", 1)[-1]
             if not tail.isdigit():
@@ -1191,6 +1222,8 @@ def recheck(
         focus=focus,
         enabled=enabled_actions,
         completed_tickets=completed_tickets,
+        # This check is the fresh recheck that makes free claims safe.
+        free_claims=True,
     )
     if any(same_action(a, action) for a in now):
         return None

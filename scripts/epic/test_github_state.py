@@ -469,6 +469,7 @@ def small_state(tag: str = "one") -> dict[str, Any]:
         "merged_prs": [{"number": 1, "body": tag}],
         "batch_order": [],
         "focus_issues": [],
+        "waiting": {},
     }
 
 
