@@ -30,6 +30,10 @@ class FreshReview(Refused):
     """No reusable completed evidence exists for the current reviewed inputs."""
 
 
+class NoCompletedReview(FreshReview):
+    """The model has not saved completed analysis; preserve its retry cooldown."""
+
+
 def local_gate(number: int) -> None:
     """Check local stops and the inherited PR lock immediately before a write."""
     if (Path.home() / ".epic-pause").exists():
@@ -150,18 +154,16 @@ def reconcile(
             )
     changed = False
     for index, item in enumerate(bundle["comments"]):
-        matches = [
-            comment
-            for comment in remote
-            if comment["body"] == item["body"]
-            and github_quota.parse_iso(comment["created_at"]) >= started
-        ]
+        matches = [comment for comment in remote if comment["body"] == item["body"]]
         if index == len(bundle["comments"]) - 1:
             matches = [
                 comment
                 for comment in matches
                 if comment["created_at"] == comment["updated_at"]
+                and github_quota.parse_iso(comment["created_at"]) >= started
             ]
+        # Fresh analysis may repeat an existing finding after a base change.
+        # Only the verdict must come from this review's publication window.
         if item["url"] is not None:
             if not any(comment["html_url"] == item["url"] for comment in matches):
                 raise Refused(
@@ -278,11 +280,13 @@ def deliver(context_file: Path) -> None:
     if path.is_symlink():
         raise Refused("review bundle must not be a symlink")
     bundle = json.loads(path.read_text())
+    if isinstance(bundle, dict) and bundle.get("status") == "draft":
+        raise NoCompletedReview("model did not save a completed review bundle")
     if not isinstance(bundle, dict) or bundle.get("status") not in {
         "complete",
         "published",
     }:
-        raise FreshReview("no explicit completed review bundle")
+        raise Refused("invalid review bundle status")
     if not bundle.get("review_started_at"):
         raise FreshReview("legacy review evidence has no conflict baseline")
     review.validate_bundle(context, bundle)
@@ -395,6 +399,9 @@ def main() -> int:
             context = review.load_context(args.context_file)
             deliver(Path(context["artifact_dir"]) / "context.json")
         return 0
+    except NoCompletedReview as error:
+        logging.info("review: %s", error)
+        return 3 if args.command == "resume" else 8
     except FreshReview as error:
         logging.info("review: %s", error)
         return 3 if args.command == "resume" else 7

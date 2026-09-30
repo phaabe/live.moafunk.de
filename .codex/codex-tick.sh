@@ -623,7 +623,24 @@ if [[ "$action" == review ]]; then
             printf '%s\n' '{"status":"completed","summary":"Saved Codex review delivery confirmed on GitHub","reason_code":null,"retry_at":null}' \
                 > "${state_dir}/codex-result.json"
             ;;
-        3) tick_phase=model ;;
+        8)
+            tick_phase=model
+            # Preserve blocked, failed and quota results for the normal recorder.
+            # A successful model without explicit evidence is incomplete too.
+            if python3 -c '
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tick_backoff import result_outcome
+path = Path(sys.argv[2])
+if result_outcome(path, int(sys.argv[3]))[0] == 0:
+    path.write_text(json.dumps({"status": "blocked", "summary": "Review model did not save a completed bundle", "reason_code": None, "retry_at": None}))
+' "${repo_root}/.codex" "${state_dir}/codex-result.json" "$model_exit"; then
+                :
+            else
+                exit 1
+            fi
+            ;;
         4)
             discard_seen
             tick_phase=quota

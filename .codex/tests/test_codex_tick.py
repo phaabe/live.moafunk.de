@@ -52,10 +52,16 @@ class TickTests(unittest.TestCase):
         shutil.copyfile(ROOT / "epic-tick.md", self.runner.parent / "epic-tick.md")
         shutil.copyfile(ROOT / "epic_lock.py", self.runner.parent / "epic_lock.py")
         (self.runner.parent / "review_delivery.py").write_text(
-            "import os, sys, time\n"
+            "import os, pathlib, sys, time\n"
+            "from tick_backoff import result_outcome\n"
             "command = sys.argv[1]\n"
             "if os.environ.get('TEST_DELIVERY_SLEEP') == command: time.sleep(60)\n"
-            "raise SystemExit(int(os.environ.get('TEST_DELIVERY_' + command.upper() + '_EXIT', '3')))\n"
+            "override = os.environ.get('TEST_DELIVERY_' + command.upper() + '_EXIT')\n"
+            "if override is not None: raise SystemExit(int(override))\n"
+            "if command == 'resume': raise SystemExit(3)\n"
+            "result = pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex-result.json'\n"
+            "outcome, _ = result_outcome(result, int(os.environ.get('TEST_CODEX_EXIT', '0')))\n"
+            "raise SystemExit(0 if outcome == 0 else 8)\n"
         )
         (self.runner.parent / "assignment.py").write_text(
             "import argparse, json, os, pathlib\n"

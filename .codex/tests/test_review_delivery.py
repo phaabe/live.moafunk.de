@@ -251,10 +251,21 @@ class DeliveryTests(unittest.TestCase):
             self.deliver()
         self.assertEqual(self.posts, [])
 
-    def test_untrusted_and_old_matching_comments_do_not_confirm_delivery(self) -> None:
+    def test_old_findings_are_reused_but_old_verdict_needs_fresh_publication(
+        self,
+    ) -> None:
         for item in self.bundle()["comments"]:
             self.remote.append(self.comment(item["body"], login="outsider"))
             self.remote.append(self.comment(item["body"], at="2020-01-01T00:00:00Z"))
+        self.deliver()
+        self.assertEqual(self.posts, [self.bundle()["comments"][-1]["body"]])
+        self.assertEqual(
+            self.bundle()["comments"][0]["url"], self.remote[1]["html_url"]
+        )
+
+    def test_untrusted_matching_findings_and_verdict_are_not_reused(self) -> None:
+        for item in self.bundle()["comments"]:
+            self.remote.append(self.comment(item["body"], login="outsider"))
         self.deliver()
         self.assertEqual(len(self.posts), 2)
 
@@ -382,6 +393,25 @@ class DeliveryTests(unittest.TestCase):
             self.bundle_file.write_text(json.dumps(value))
             with self.assertRaises(delivery.FreshReview):
                 self.deliver()
+        self.assertEqual(self.posts, [])
+
+    def test_publish_distinguishes_unfinished_model_from_stale_completed_review(
+        self,
+    ) -> None:
+        bundle = self.bundle()
+        self.bundle_file.write_text(json.dumps({**bundle, "status": "draft"}))
+        argv = [
+            "review_delivery.py",
+            "publish",
+            "--context-file",
+            str(self.context_file),
+        ]
+        with patch.object(sys, "argv", argv):
+            self.assertEqual(delivery.main(), 8)
+        self.bundle_file.write_text(json.dumps(bundle))
+        self.fixture.pr["base"]["sha"] = "f" * 40
+        with patch.object(sys, "argv", argv):
+            self.assertEqual(delivery.main(), 7)
         self.assertEqual(self.posts, [])
 
 

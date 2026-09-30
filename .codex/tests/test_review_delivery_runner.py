@@ -276,6 +276,8 @@ if len(sys.argv) > 2 and '/issues/406/comments' in sys.argv[2]:
         del self.env["TEST_POST_LOST"]
         remote = self.remote_state()
         remote["pull"]["base"]["sha"] = "b" * 40
+        remote["comments"][0]["created_at"] = "2000-01-01T00:00:00Z"
+        remote["comments"][0]["updated_at"] = "2000-01-01T00:00:00Z"
         self.remote.write_text(json.dumps(remote))
         self.assert_tick(0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 2)
@@ -283,15 +285,62 @@ if len(sys.argv) > 2 and '/issues/406/comments' in sys.argv[2]:
         archive = self.state / "reviews" / "406" / self.sha / "archive"
         [previous] = list(archive.glob("*/bundle.json"))
         self.assertEqual(json.loads(previous.read_text())["status"], "complete")
+        self.assertEqual(
+            self.remote_state()["posts"],
+            ["Finding one", f"Review: CHANGES REQUESTED by Codex at {self.sha}"],
+        )
+        self.assertEqual(self.bundle()["status"], "published")
 
-    def test_successful_model_without_complete_bundle_is_not_completed(self) -> None:
+    def assert_draft_review_cooldown(self, exit_code: int) -> dict[str, object]:
         self.env["TEST_MODEL_DRAFT"] = "1"
-        self.assert_tick(75)
+        self.assert_tick(exit_code)
         self.assert_one_model()
         self.assertEqual(self.remote_state()["posts"], [])
         self.assertEqual(self.bundle()["status"], "draft")
+        backoff = self.state / "codex-backoff.json"
+        before = backoff.read_bytes()
+        entries = json.loads(before)
+        entry = entries[f"pr:406:{self.sha}"]
+        self.assertGreater(entry["until"], 2000000000)
+        self.assert_tick(0)
+        self.assert_one_model()
+        self.assertEqual(backoff.read_bytes(), before)
+        self.assertEqual(self.remote_state()["posts"], [])
+        return entry
+
+    def test_successful_model_without_complete_bundle_records_cooldown(self) -> None:
+        entry = self.assert_draft_review_cooldown(75)
+        self.assertIn("bundle", entry["reason"].lower())
+        result = json.loads((self.state / "codex-result.json").read_text())
+        self.assertEqual(result["status"], "blocked")
+        context = json.loads(
+            (self.state / "reviews" / "406" / self.sha / "context.json").read_text()
+        )
+        original = json.loads(
+            (Path(context["attempt_dir"]) / "result.json").read_text()
+        )
+        self.assertEqual(original["status"], "completed")
+
+    def test_blocked_model_without_complete_bundle_preserves_cooldown(self) -> None:
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Build tool is unavailable."}
+        )
+        entry = self.assert_draft_review_cooldown(75)
+        self.assertEqual(
+            entry["reason"], "model reported blocked: Build tool is unavailable."
+        )
+        self.assertEqual(
+            json.loads((self.state / "codex-result.json").read_text()),
+            json.loads(self.env["TEST_RESULT"]),
+        )
+
+    def test_crashed_model_without_complete_bundle_preserves_exit_and_cooldown(
+        self,
+    ) -> None:
+        self.env.update(TEST_CODEX_EXIT="17", TEST_RESULT_MISSING="1")
+        entry = self.assert_draft_review_cooldown(17)
+        self.assertEqual(entry["reason"], "model exited 17")
         self.assertFalse(self.record.exists())
-        self.assertFalse((self.state / "codex-backoff.json").exists())
 
     def test_target_lock_contention_blocks_publication_and_model(self) -> None:
         self.env["TEST_POST_LOST"] = "1"

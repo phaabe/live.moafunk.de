@@ -354,6 +354,9 @@ any comment write. The model saves analysis only; the runner publishes it after
 the model exits. Finding comments precede the standalone verdict. The publisher
 reads REST comments before each write and records confirmed URLs in this bundle.
 Only a confirmed current-head verdict completes delivery.
+If the model leaves a draft, its blocked result or failure keeps the normal
+cooldown. A model that reports completion without a completed bundle is recorded
+as blocked too. Raw model results remain in the attempt directory.
 The publisher saves a `pending_comment` index before sending each POST. If a
 request has an uncertain result and GitHub does not show that comment yet,
 delivery waits for confirmation without sending it again, including after a
@@ -364,6 +367,9 @@ Later ticks try delivery under the target lock before model cooldown checks.
 Unchanged completed bundles need no model or review checkout. Pause, shared
 quota, ownership, PR state and reviewed inputs are checked before publication.
 Changed head, base or metadata requires fresh analysis; old evidence is retained.
+Fresh analysis reuses identical finding comments from trusted reviewers instead
+of posting them again. The verdict must still be confirmed within the new
+review's publication window.
 A later conflicting Codex verdict or trusted GitHub review blocks pending
 delivery. Network or quota failures retain the bundle without a repeat record.
 Target refusals release the lock and allow later candidates to run. Cleanup
