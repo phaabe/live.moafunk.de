@@ -12,7 +12,9 @@ server as `--permission-prompt-tool`. It approves only:
   gh pr merge <n> --repo phaabe/live.moafunk.de --squash [--delete-branch]
       --match-head-commit <40-hex SHA>
   gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F body=@<file>
-      only while the selected action (EPIC_ACTION_FILE) is `adopt` of PR <n>
+      only while the selected action (EPIC_ACTION_FILE) is `adopt` of PR <n>,
+      with <file> a regular file directly in the tick's body directory
+      (EPIC_BODY_DIR, checked by its device and inode EPIC_BODY_DIR_ID)
 
 A feature branch starts with feat/, fix/, chore/, docs/, test/ or refactor/.
 Everything else is denied with a reason, including plain `git push` and
@@ -34,6 +36,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
 import time
 from pathlib import Path
@@ -124,6 +127,31 @@ def selected_action() -> dict[str, Any]:
     return action if isinstance(action, dict) else {}
 
 
+def in_body_dir(body_file: str) -> bool:
+    """The file sits directly in the runner's per-tick body directory.
+
+    The directory is identified by the device and inode the runner recorded
+    (EPIC_BODY_DIR_ID), not by its path, so replacing it with a symlink or a
+    new directory does not match. The file itself must be a regular file with
+    one link: no symlink, no hard link to a file elsewhere.
+    Otherwise any file the session can read could become a PR body.
+    """
+    anchor = os.environ.get("EPIC_BODY_DIR_ID", "")
+    path = Path(body_file)
+    if not anchor or not path.is_absolute() or ".." in path.parts:
+        return False
+    try:
+        parent = os.stat(path.parent)
+        body = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        f"{parent.st_dev}:{parent.st_ino}" == anchor
+        and stat.S_ISREG(body.st_mode)
+        and body.st_nlink == 1
+    )
+
+
 def body_edit(args: list[str], action: dict[str, Any]) -> tuple[bool, str]:
     """`adopt` writes the PR body through REST: one exact command shape."""
     shape = "`gh api --method PATCH repos/<repo>/pulls/<n> -F body=@<file>`"
@@ -138,9 +166,8 @@ def body_edit(args: list[str], action: dict[str, Any]) -> tuple[bool, str]:
     number = args[2][len(prefix) :] if args[2].startswith(prefix) else ""
     if not number.isdigit():
         return False, f"body edit must target a PR of {REPO}"
-    body_file = args[4][len("body=@") :]
-    if not body_file or ".." in body_file.split("/"):
-        return False, "body file path is not plain"
+    if not in_body_dir(args[4][len("body=@") :]):
+        return False, "body file must be a regular file directly in EPIC_BODY_DIR"
     if action.get("action") != "adopt" or action.get("pr") != int(number):
         return False, f"PR {number} body may change only in an adopt tick for it"
     return True, f"adopt body edit of PR {number}"

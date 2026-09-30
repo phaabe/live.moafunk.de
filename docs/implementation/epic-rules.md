@@ -363,7 +363,11 @@ gate approves only (`scripts/epic/git_gate.py`):
 - `gh pr merge <n> --repo phaabe/live.moafunk.de --squash [--delete-branch]
   --match-head-commit <sha>`, and, only in an `adopt` tick for PR `<n>`,
   `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<n> -F
-  body=@<file>`.
+  body=@<file>`. `<file>` is an absolute path to a regular file directly in
+  the tick's `EPIC_BODY_DIR` (a fresh temp directory the runner creates for
+  `adopt` and removes after the tick), not a symlink or hard link. The gate
+  checks the directory by the device and inode the runner recorded
+  (`EPIC_BODY_DIR_ID`), so a replaced directory does not match.
 
 Every `W` must really be `<dir>/B` (no symlink below `<dir>`; the runner's
 worktree step refuses one too), be a worktree of the runner checkout, and have

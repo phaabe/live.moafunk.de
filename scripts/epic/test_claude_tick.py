@@ -127,6 +127,15 @@ class RunnerHarness(unittest.TestCase):
             'printf \'%s\\n%s\\n\' "${EPIC_ACTION_FILE:-}" "${EPIC_TRUSTED_ROOT:-}" > "$TEST_CALLS.modelenv"\n'
             'printf \'%s\' "${EPIC_WORKTREE:-}" > "$TEST_CALLS.worktree-env"\n'
             'printf \'%s\' "${GIT_EDITOR:-}" > "$TEST_CALLS.editor"\n'
+            'printf \'%s\' "${EPIC_BODY_DIR:-}" > "$TEST_CALLS.body-dir"\n'
+            'printf \'%s\' "${EPIC_BODY_DIR_ID:-}" > "$TEST_CALLS.body-id"\n'
+            'if [[ -n "${EPIC_BODY_DIR:-}" ]]; then\n'
+            "    python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mode & 0o777)' "
+            '"$EPIC_BODY_DIR" > "$TEST_CALLS.body-mode"\n'
+            "    python3 -c 'import os, sys; s = os.stat(sys.argv[1]); "
+            'print(f"{s.st_dev}:{s.st_ino}")\' '
+            '"$EPIC_BODY_DIR" > "$TEST_CALLS.body-inode"\n'
+            "fi\n"
             'cat > "$TEST_CALLS.prompt"\n'
             # Another runner stores a quota wait while this session runs.
             'if [[ -n "${TEST_MODEL_WAIT:-}" ]]; then\n'
@@ -213,6 +222,33 @@ class ClaudeTickTest(RunnerHarness):
         )
         self.assertEqual(len(self.model_targets()), 1)
 
+    def test_gate_reading_stdin_does_not_eat_the_next_candidate(self) -> None:
+        # Candidates are read from fd 3, so a command in the loop that reads
+        # stdin (here the stub gate) cannot consume them.
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        (self.repo / "scripts/epic/tick_gate.py").write_text(
+            "import json, os, sys\n"
+            "sys.stdin.read()\n"
+            "calls = os.environ['TEST_CALLS']\n"
+            "with open(calls, 'a') as f:\n"
+            "    f.write(json.dumps(['gate', sys.argv[1], json.load(open(sys.argv[-1]))['pr']]) + '\\n')\n"
+            "n = sum('\"check\"' in line for line in open(calls))\n"
+            "sys.exit(3 if sys.argv[1] == 'check' and n == 1 else 0)\n"
+        )
+        # stdin is /dev/null so the new loop's gate never waits on an open
+        # pipe; the old loop replaced stdin with the candidates anyway.
+        tick = subprocess.Popen(
+            ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")],
+            env={**self.env, "TEST_CANDIDATES": candidates},
+            stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(tick.wait(timeout=30), 0)
+        gates = [c for c in self.calls_made() if c[0] == "gate"]
+        self.assertEqual(
+            gates, [["gate", "check", 1], ["gate", "check", 2], ["gate", "record", 2]]
+        )
+
     def test_candidate_after_many_suppressed_ones_still_runs(self) -> None:
         # Codex review on https://github.com/phaabe/live.moafunk.de/issues/488:
         # a cap of ten starved candidate eleven while the first ten stayed blocked.
@@ -274,6 +310,45 @@ class ClaudeTickTest(RunnerHarness):
         )
         (session,) = self.model_targets()
         self.assertIn("--model sonnet --effort medium", session)
+
+    def test_adopt_gets_a_private_body_dir_removed_after_the_tick(self) -> None:
+        adopt = {"action": "adopt", "reason": "t", "pr": 1, "sha": "a" * 40}
+        self.assertEqual(
+            self.run_tick(TEST_CANDIDATES=json.dumps(adopt)).wait(timeout=30), 0
+        )
+        body_dir = Path(str(self.calls) + ".body-dir").read_text()
+        self.assertTrue(body_dir.startswith("/tmp/epic-adopt-claude."))
+        self.assertEqual(Path(str(self.calls) + ".body-mode").read_text(), "448\n")
+        (session,) = self.model_targets()
+        self.assertIn(f"--add-dir {body_dir}", session)
+        config = json.loads(session.split("--mcp-config ", 1)[1].split(" --", 1)[0])
+        gate_env = config["mcpServers"]["epic-gate"]["env"]
+        self.assertEqual(gate_env["EPIC_BODY_DIR"], body_dir)
+        # The gate anchors to the directory the runner created.
+        anchor = Path(str(self.calls) + ".body-inode").read_text().strip()
+        self.assertEqual(gate_env["EPIC_BODY_DIR_ID"], anchor)
+        self.assertEqual(Path(str(self.calls) + ".body-id").read_text(), anchor)
+        self.assertIn(
+            f"PR body directory (write the adopt body file only here): {body_dir}",
+            Path(str(self.calls) + ".prompt").read_text(),
+        )
+        self.assertFalse(Path(body_dir).exists())
+
+    def test_other_actions_get_no_body_dir(self) -> None:
+        # An inherited value never reaches the model or the gate.
+        inherited = str(self.root)
+        self.assertEqual(
+            self.run_tick(EPIC_BODY_DIR=inherited, EPIC_BODY_DIR_ID="1:2").wait(
+                timeout=30
+            ),
+            0,
+        )
+        self.assertEqual(Path(str(self.calls) + ".body-dir").read_text(), "")
+        self.assertEqual(Path(str(self.calls) + ".body-id").read_text(), "")
+        self.assertTrue(Path(inherited).is_dir())
+        (session,) = self.model_targets()
+        self.assertNotIn("EPIC_BODY_DIR", session)
+        self.assertNotIn("--add-dir /tmp/epic-adopt", session)
 
     def test_fix_runs_opus_and_records_the_gate(self) -> None:
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
