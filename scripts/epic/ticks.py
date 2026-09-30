@@ -101,21 +101,24 @@ def valid_usage(value: object) -> bool:
     }:
         return False
     counts = [value[name] for name in USAGE_COUNTERS]
-    measured = all(type(n) is int and 0 <= n < 10**15 for n in counts)
-    if not measured and any(n is not None for n in counts):
+    # Partial usage may miss single counters; each is a count or None.
+    if not all(n is None or (type(n) is int and 0 <= n < 10**15) for n in counts):
         return False
     if value["complete"] is True:
-        return measured and value["reason"] is None
+        return None not in counts and value["reason"] is None
     return value["complete"] is False and value["reason"] in USAGE_REASONS
 
 
 def coverage(usage: Json) -> str:
     if usage["complete"]:
         return "complete"
-    return "partial" if usage["input"] is not None else "unavailable"
+    measured = any(usage[name] is not None for name in USAGE_COUNTERS)
+    return "partial" if measured else "unavailable"
 
 
-def compact(n: int) -> str:
+def compact(n: int | None) -> str:
+    if n is None:
+        return "?"
     for size, suffix in ((10**6, "M"), (10**3, "k")):
         if n >= size:
             return f"{n / size:.1f}{suffix}"
@@ -126,7 +129,7 @@ def usage_label(usage: Json | None) -> str:
     """Short text for the tick history; the counters stay apart."""
     if usage is None:
         return ""
-    if usage["input"] is None:
+    if coverage(usage) == "unavailable":
         return f"unavailable: {usage['reason']}"
     text = (
         f"in {compact(usage['input'])} · out {compact(usage['output'])}"

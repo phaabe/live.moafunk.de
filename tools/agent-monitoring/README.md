@@ -83,7 +83,7 @@ collision; it does not prevent it.
 | Cockpit · Tick outcomes | Last outcome per agent over 24 h; retired agents are hidden |
 | Cockpit · Handoff | Per direction (Claude PRs → Codex review and back): the oldest waiting PR, its wait, the number of waiting PRs, and how many agents of the reviewer kind are registered |
 | Cockpit · Epic progress, Open PRs | Checklist leaves per area and kind; open PRs with executor, task, the other kind's verdict, CI, review rounds and age |
-| Agent detail | Ticks today, success rate, median duration, blocked sessions, tokens (Codex count or Claude counters, never one total); tick history; worst outcome per hour for 7 days; backoff; permission gate and denials (Claude); errors and the full runner log from Loki |
+| Agent detail | Ticks today, success rate, median duration, blocked sessions, tokens (Codex); tick history; worst outcome per hour for 7 days; backoff; permission gate and denials (Claude); errors and the full runner log from Loki |
 | Delivery | Burn-up of checklist leaves, merged PRs per day, PR flow with review rounds and waits, medians of review rounds and time to merge |
 
 Panels for data a kind does not report say so in grey. When local data is
@@ -179,16 +179,6 @@ Grafana and Prometheus; no external notifications are sent.
   (`source="events"` for Codex; `events_unverified` for Claude, whose model
   might write that file). Invalid lines are counted in
   `epic_tick_events_rejected_total` and skipped.
-- Token counts are kept per runner kind and never added into one total.
-  Codex: `tokens` in the event, `epic_tokens_today`. Claude: the runner gives
-  each model session an ID and the finish event reads that session's
-  transcript into `usage`: input, output, cache read and cache write tokens,
-  each message counted once. `complete` is false with a `reason` when the
-  transcript cannot prove full coverage (stopped session, missing or unread
-  transcript, subagent transcripts missing); a count it could not read is
-  null, never 0. `epic_usage_tokens_today` (label `counter`) sums each counter
-  on its own; `epic_usage_ticks_today` (label `coverage`: complete, partial,
-  unavailable) counts the model ticks behind it.
 - `epic_backoff_info` lists Codex retry delays that are still active (value =
   when the delay ends), and whether the PR head is still current. The reason
   text is never exported.

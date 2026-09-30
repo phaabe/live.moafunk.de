@@ -776,6 +776,25 @@ class EventLedgerTest(unittest.TestCase):
         self.assertEqual(ticks.USAGE_REASONS, tick_events.USAGE_REASONS)
         self.assertEqual(ticks.USAGE_COUNTERS, tuple(tick_events.USAGE_FIELDS.values()))
 
+    def test_partial_usage_may_miss_single_counters(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        gap = {**USAGE, "cache_write": None, "complete": False, "reason": "malformed"}
+        self.append(event("start", NOON), event("finish", NOON, usage=gap))
+        ledger.update(NOON + 300)
+        self.assertEqual((ledger.rejected, ledger.ticks[0]["usage"]), (0, gap))
+        metrics = Metrics()
+        ticks.export(metrics, ledger, NOON + 300)
+        samples = metrics.samples()
+        self.assertEqual(
+            samples['epic_usage_tokens_today{agent="codex",counter="output"}'], 3000
+        )
+        self.assertEqual(
+            samples['epic_usage_ticks_today{agent="codex",coverage="partial"}'], 1
+        )
+        [label] = [x for x in metrics.lines if x.startswith("epic_tick_info")]
+        self.assertIn("cache write ? · partial: malformed", label)
+
     def test_codex_tokens_total_ignores_claude_usage(self) -> None:
         ledger = self.events()
         ledger.update(NOON)

@@ -29,8 +29,8 @@ and its subagent transcripts. `usage` is null when no model started, else:
 
 All four counters are API tokens, summed over the session's messages. A
 message's repeated records count once, with the largest value of each
-counter. A counter that could not be read is null, never 0; a partial
-session keeps the counts it has. Permission classifier calls are not part of
+counter. A counter that could not be read is null, never 0, and does not
+cost the other counters; a partial session keeps the counts it has. Permission classifier calls are not part of
 the transcript and not counted.
 """
 
@@ -188,7 +188,9 @@ class Scan:
 
     deadline: float
     left: int
-    messages: dict[str, dict[str, int]] = field(default_factory=dict)
+    messages: dict[str, dict[str, int | None]] = field(default_factory=dict)
+    # Model records with at least one readable counter, over all files.
+    records: int = 0
     agent_calls: set[str] = field(default_factory=set)
     malformed: bool = False
     too_large: bool = False
@@ -234,18 +236,27 @@ class Scan:
         if not isinstance(key, str) or not isinstance(usage, dict):
             self.malformed = True
             return
-        counts = {name: usage.get(source) for source, name in USAGE_FIELDS.items()}
-        if not all(type(n) is int and 0 <= n < MAX_COUNT for n in counts.values()):
-            self.malformed = True
+        # Each counter on its own: a missing or bad one stays None and does
+        # not cost the others.
+        counts: dict[str, int | None] = {}
+        for source, name in USAGE_FIELDS.items():
+            value = usage.get(source)
+            valid = type(value) is int and 0 <= value < MAX_COUNT
+            counts[name] = value if valid else None
+            if not valid:
+                self.malformed = True
+        if all(n is None for n in counts.values()):
             return
+        self.records += 1
         # Records of one message repeat per content block, and a streamed
         # record can be cumulative: keep the largest value, never add them.
         known = self.messages.get(key)
-        self.messages[key] = (
-            counts
-            if known is None
-            else {k: max(known[k], n) for k, n in counts.items()}
-        )
+        if known is not None:
+            counts = {
+                k: max((v for v in (known[k], n) if v is not None), default=None)
+                for k, n in counts.items()
+            }
+        self.messages[key] = counts
 
 
 def unavailable(reason: str) -> dict[str, Any]:
@@ -266,11 +277,17 @@ def usage_of(
         return unavailable("unreadable")
     children = sorted((path.parent / session / "subagents").glob("agent-*.jsonl"))
     unread = False
+    # A child without a usable usage record is not collected coverage.
+    empty = 0
     for child in children:
+        before = scan.records
         try:
             scan.read(child)
         except OSError:
             unread = True
+            continue
+        if scan.records == before:
+            empty += 1
     if not scan.messages:
         if scan.too_large:
             return unavailable("too-large")
@@ -284,12 +301,14 @@ def usage_of(
         reason = "unreadable"
     elif scan.malformed:
         reason = "malformed"
-    elif len(children) < len(scan.agent_calls):
+    elif empty or len(children) < len(scan.agent_calls):
         reason = "subagents"
-    totals = {
-        name: sum(m[name] for m in scan.messages.values())
-        for name in USAGE_FIELDS.values()
-    }
+    # A counter no message could read stays None; the rest keep their sums
+    # (then `malformed` marks them partial).
+    totals: dict[str, int | None] = {}
+    for name in USAGE_FIELDS.values():
+        known = [m[name] for m in scan.messages.values() if m[name] is not None]
+        totals[name] = sum(known) if known else None
     return {**totals, "complete": reason is None, "reason": reason}
 
 

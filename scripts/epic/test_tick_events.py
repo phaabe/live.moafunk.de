@@ -253,19 +253,46 @@ class ClaudeUsageTest(unittest.TestCase):
         )
 
     def test_bad_records_make_usage_partial(self) -> None:
-        for bad in (
-            record("m2", 5, cache_read_input_tokens=None),  # counter missing
-            record("m2", 5, output_tokens=-1),
-            record("m2", 5, output_tokens=True),
-            '{"type":"assistant","message":{"id":"m2","usa\n',  # cut off
+        # The bad record's readable counters still count; the bad one does not.
+        for bad, output, cache_read in (
+            (record("m2", 5, cache_read_input_tokens=None), 15, 100),  # missing
+            (record("m2", 5, output_tokens=-1), 10, 200),
+            (record("m2", 5, output_tokens=True), 10, 200),
+            ('{"type":"assistant","message":{"id":"m2","usa\n', 10, 100),  # cut off
         ):
             with self.subTest(bad=bad):
                 self.transcript(record("m1", 10) + bad)
                 usage = self.usage()
                 self.assertEqual(
-                    (usage["output"], usage["complete"], usage["reason"]),
-                    (10, False, "malformed"),
+                    (
+                        usage["output"],
+                        usage["cache_read"],
+                        usage["complete"],
+                        usage["reason"],
+                    ),
+                    (output, cache_read, False, "malformed"),
                 )
+
+    def test_a_missing_counter_keeps_the_others(self) -> None:
+        # Codex review of https://github.com/phaabe/live.moafunk.de/pull/558.
+        self.transcript(record("m1", 10, cache_creation_input_tokens=None))
+        self.assertEqual(
+            self.usage(),
+            {
+                "input": 1,
+                "output": 10,
+                "cache_read": 100,
+                "cache_write": None,
+                "complete": False,
+                "reason": "malformed",
+            },
+        )
+        # A later record of the same message can fill the gap; still partial.
+        self.transcript(
+            record("m1", 10, cache_creation_input_tokens=None) + record("m1", 10)
+        )
+        usage = self.usage()
+        self.assertEqual((usage["cache_write"], usage["complete"]), (10, False))
 
     def test_synthetic_error_note_is_not_a_model_call(self) -> None:
         note = json.loads(record("m2", 0))
@@ -302,6 +329,23 @@ class ClaudeUsageTest(unittest.TestCase):
         self.assertEqual(
             (usage["output"], usage["input"], usage["complete"]), (14, 2, True)
         )
+
+    def test_child_transcript_without_usage_is_not_coverage(self) -> None:
+        # Codex review of https://github.com/phaabe/live.moafunk.de/pull/558.
+        self.transcript(record("m1", 10, tool="Agent"))
+        children = self.folder / SESSION / "subagents"
+        children.mkdir(parents=True)
+        for text in ("", '{"type":"user","message":{"content":"x"}}\n'):
+            with self.subTest(text=text):
+                (children / "agent-a1.jsonl").write_text(text)
+                usage = self.usage()
+                self.assertEqual(
+                    (usage["output"], usage["complete"], usage["reason"]),
+                    (10, False, "subagents"),
+                )
+        # A second child with usage does not cover the empty one.
+        (children / "agent-a2.jsonl").write_text(record("c2", 4))
+        self.assertEqual(self.usage()["reason"], "subagents")
 
     def test_transcript_found_by_session_id_in_a_shortened_folder(self) -> None:
         other = self.config / "projects/-runner-live-moafunk-de-cla-1a2b3c"
