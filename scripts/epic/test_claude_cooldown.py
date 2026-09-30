@@ -65,6 +65,8 @@ class ClaudeCooldownTest(harness.RunnerHarness):
             "args = ' '.join(sys.argv[1:])\n"
             "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(['gh', args]) + '\\n')\n"
+            "if os.environ.get('TEST_GH_HANG', '\\0') in args:\n"
+            "    import time; time.sleep(30)\n"
             "for part, out in json.load(open(os.environ['TEST_GH_MAP'])).items():\n"
             "    if part in args:\n"
             "        print(out)\n"
@@ -250,24 +252,36 @@ class ClaudeCooldownTest(harness.RunnerHarness):
 
     def test_verify_read_error_is_no_cooldown(self) -> None:
         # Codex review on PR 544: the real verifier exits 5 when its GitHub
-        # read fails; a later REST read that succeeds must not block the PR.
-        (self.repo / "scripts/epic/tick_verify.py").write_text(
-            "import runpy, sys\n"
-            f"sys.path.insert(0, {str(ROOT / 'scripts/epic')!r})\n"
-            f"runpy.run_path({str(ROOT / 'scripts/epic/tick_verify.py')!r}, "
-            "run_name='__main__')\n"
-        )
+        # read fails or times out; a later REST read that succeeds must not
+        # block the PR. The wrapper shortens the verifier's gh timeout.
+        epic = ROOT / "scripts/epic"
         self.assertNotIn("pr view", " ".join(self.github))
-        self.assertEqual(self.tick(CONFLICT, TEST_MODEL_RESULT=result("completed")), 5)
-        self.assertIn("cannot verify: GitHub read failed", self.log())
-        # The PR is open at the selected head, but a read error is no evidence:
-        # the cooldown does not even look.
-        self.assertNotIn(
-            ["gh", f"api {REPO}/pulls/526 --jq .state, .head.sha"], self.calls_made()
-        )
-        self.assertEqual(self.cooldowns(), {})
-        # As before: no evidence after a model exit 0 records the gate.
-        self.assertIn("526", self.gate_targets())
+        for name, env in (
+            ("failed read", {}),
+            ("timed-out read", {"TEST_GH_HANG": "pr view"}),
+        ):
+            with self.subTest(name):
+                self.setUp()
+                (self.repo / "scripts/epic/tick_verify.py").write_text(
+                    "import sys\n"
+                    f"sys.path.insert(0, {str(epic)!r})\n"
+                    "import github_quota, tick_verify\n"
+                    "tick_verify.run_gh = lambda args, timeout=1: "
+                    "github_quota.run_gh(args, timeout=1)\n"
+                    "sys.exit(tick_verify.main())\n"
+                )
+                code = self.tick(CONFLICT, TEST_MODEL_RESULT=result("completed"), **env)
+                self.assertEqual(code, 5)
+                self.assertIn("cannot verify: GitHub read failed", self.log())
+                # The PR is open at the selected head, but a read error is no
+                # evidence: the cooldown does not even look.
+                self.assertNotIn(
+                    ["gh", f"api {REPO}/pulls/526 --jq .state, .head.sha"],
+                    self.calls_made(),
+                )
+                self.assertEqual(self.cooldowns(), {})
+                # As before: no evidence after a model exit 0 records the gate.
+                self.assertIn("526", self.gate_targets())
 
     def test_head_moved_elsewhere_is_no_cooldown(self) -> None:
         self.github["pulls/526 --jq .state"] = f"open\n{'e' * 40}"

@@ -16,7 +16,7 @@ a push or merge was denied. claude-tick.sh runs this after the session:
 `continue`, `claim`, `escalate`, `idle` and `stop` are not checked yet. An
 unknown action is bad input: it never passes. Exit 0 when the action landed or
 is not checked, 1 when it did not land, 2 on bad input, 4 on a GraphQL quota error
-(wait stored, see github_quota.py), 5 when a GitHub read failed. A read error
+(wait stored, see github_quota.py), 5 when a GitHub read failed or timed out. A read error
 is no evidence that the action failed, so the runner sets no cooldown for it
 (tick_cooldown.py); the tick still fails.
 
@@ -202,7 +202,7 @@ def main() -> int:
         return 2
     except QuotaExhausted as error:
         return stop_on_quota(error)
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print("tick: cannot verify: GitHub read failed", file=sys.stderr)
         return READ_FAILED
     if not ok:
