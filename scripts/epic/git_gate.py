@@ -23,7 +23,8 @@ Optional flags occur at most once, in the order shown. Plain `git push` and
 runner_worktree.py for this action) names it, its real path is the real
 `<EPIC_WORKTREE_DIR>/<B>` (no symlink below the fixed dir), Git lists it as a
 worktree of the runner checkout (EPIC_TRUSTED_ROOT), and every origin fetch
-and push URL is this repository. `add` and `commit` also need B checked out;
+and push URL (after insteadOf rewrites) is this GitHub repository: the full
+URL with host, not only a matching path. `add` and `commit` also need B checked out;
 during the runner's recorded rebase only `add` works in the detached HEAD.
 Read-only commands may also run in the runner checkout or another worktree
 under EPIC_WORKTREE_DIR.
@@ -49,9 +50,16 @@ from typing import Any
 
 from github_quota import QuotaExhausted, run_gh
 from next_action import BASES, REPO, pr_author
-from runner_worktree import ORIGIN, feature_branch, rebasing
+from runner_worktree import feature_branch, rebasing
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
+# The whole destination: GitHub over https or ssh, this repository. Tests
+# replace this with their local bare repository; production has no override.
+TRUSTED = re.compile(
+    r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    + re.escape(REPO)
+    + r"(?:\.git)?/?"
+)
 # Words the shell would expand before git sees them.
 EXPANDS = re.compile(r"[*?\[\]{}~!#]")
 REBASE_ACTIONS = {"fix", "fix-checks", "resolve-conflict", "continue"}
@@ -223,7 +231,7 @@ def owned(path: Path, branch: str) -> Path:
     for args in (("--all",), ("--push", "--all")):
         urls = git_out(real, "remote", "get-url", *args, "origin").splitlines()
         for url in urls or [""]:
-            if not ORIGIN.search(url):
+            if not TRUSTED.fullmatch(url):
                 kind = "push URL" if "--push" in args else "URL"
                 raise Refused(f"origin {kind} {url or '(none)'} is not {REPO}")
     return real
@@ -402,19 +410,18 @@ def rebase_state(top: Path, name: str) -> str:
     return ""
 
 
-def active_rebase(
-    top: Path, branch: str, number: int, abort: bool = False
-) -> dict[str, Any]:
+def active_rebase(top: Path, branch: str, number: int) -> dict[str, Any]:
     """The runner's record, when the rebase in progress is that rebase.
 
     Identity: branch, worktree, PR, onto commit and the original head. A later
-    rebase onto the same base from another head does not match, and neither
-    does a record whose abort was approved (except to retry the abort)."""
+    rebase onto the same base from another head does not match. A record
+    whose abort was approved approves nothing more: a rebase started again by
+    hand looks the same, so even a retried abort is left to a human."""
     record = recorded(branch, top, number)
     if rebasing(top) != branch:
         raise Refused(f"{top} is not rebasing {branch}")
     if (
-        (record.get("aborted") and not abort)
+        record.get("aborted")
         or rebase_state(top, "onto") != record.get("onto")
         or rebase_state(top, "orig-head") != record.get("orig")
     ):
@@ -425,14 +432,15 @@ def active_rebase(
 def rebase_step(path: Path, step: str) -> str:
     ctx, top, number = pr_context(path)
     branch = ctx["branch"]
-    record = active_rebase(top, branch, number, abort=step == "--abort")
+    record = active_rebase(top, branch, number)
     if step == "--continue":
         pr = open_pr(number, branch)
         if (pr.get("base") or {}).get("ref") != record.get("base"):
             raise Refused(f"PR {number} base changed during the rebase")
     else:
-        # Retired: after the abort, continue and the lease push are refused
-        # until a new approved rebase replaces the record.
+        # Retired: after this approval the record approves no further
+        # continue, abort, add or lease push, until a new approved rebase
+        # replaces it.
         save_record(branch, {**record, "aborted": True})
     return f"rebase {step} of {branch}"
 

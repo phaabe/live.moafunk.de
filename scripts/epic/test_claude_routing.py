@@ -10,10 +10,13 @@ hooks, and the fixed worktree dir. The CLI, the runner settings
 (claude-runner-settings.json), the production gate and the flags are the ones
 claude-tick.sh uses. Evidence (CLI version, settings, tool calls, gate log,
 refs) goes to EPIC_ROUTING_EVIDENCE, default routing-evidence.json in the
-temp dir, which is printed.
+temp dir, which is printed. The gate starts through a small wrapper that
+only sets git_gate.TRUSTED to the local bare repository.
 """
 
 from __future__ import annotations
+
+import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import json
 import os
@@ -22,6 +25,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+# The real CLI needs the real login (HOME, config dirs); runner state stays out.
+REAL = {k: v for k, v in isolated_env.PARENT.items() if not k.startswith("EPIC_")}
 
 ROOT = Path(__file__).resolve().parents[2]
 BRANCH = "feat/424-routing"
@@ -53,7 +59,8 @@ def commit(cwd: Path, name: str) -> None:
 
 
 @unittest.skipUnless(
-    os.environ.get("EPIC_CLAUDE_ROUTING_TEST") == "1", "starts a real claude session"
+    isolated_env.PARENT.get("EPIC_CLAUDE_ROUTING_TEST") == "1",
+    "starts a real claude session",
 )
 class ClaudeRoutingTest(unittest.TestCase):
     def test_four_forms_reach_the_gate(self) -> None:
@@ -106,6 +113,17 @@ class ClaudeRoutingTest(unittest.TestCase):
                 }
             )
         )
+        # The production gate; only the trusted destination is the local bare
+        # repository instead of GitHub (the test boundary).
+        gate_script = tmp / "gate.py"
+        gate_script.write_text(
+            "import re, sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'scripts/epic')!r})\n"
+            "import git_gate\n"
+            f"git_gate.TRUSTED = re.compile(re.escape({str(remote)!r}))\n"
+            "import permission_gate\n"
+            "permission_gate.main()\n"
+        )
         gate_env = {
             "EPIC_STATE_DIR": str(state),
             "EPIC_ACTION_FILE": str(tmp / "action.json"),
@@ -113,7 +131,7 @@ class ClaudeRoutingTest(unittest.TestCase):
             "EPIC_CONTEXT_FILE": str(tmp / "context.json"),
             "EPIC_WORKTREE_DIR": str(wtdir),
         }
-        for name, value in os.environ.items():
+        for name, value in REAL.items():
             if name.startswith("GH_") or name in (
                 "HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "XDG_CONFIG_HOME",
             ):  # fmt: skip
@@ -122,7 +140,7 @@ class ClaudeRoutingTest(unittest.TestCase):
             "mcpServers": {
                 "epic-gate": {
                     "command": "python3",
-                    "args": [str(ROOT / "scripts/epic/permission_gate.py")],
+                    "args": [str(gate_script)],
                     "env": gate_env,
                 }
             }
@@ -169,7 +187,7 @@ class ClaudeRoutingTest(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=600,
-            env={**os.environ, "GIT_EDITOR": "true"},
+            env={**REAL, "GIT_EDITOR": "true"},
         )
         calls, results = [], {}
         for line in session.stdout.splitlines():
@@ -210,7 +228,8 @@ class ClaudeRoutingTest(unittest.TestCase):
             "runner_head_after": git(runner, "rev-parse", "HEAD"),
         }
         out = Path(
-            os.environ.get("EPIC_ROUTING_EVIDENCE") or tmp / "routing-evidence.json"
+            isolated_env.PARENT.get("EPIC_ROUTING_EVIDENCE")
+            or tmp / "routing-evidence.json"
         )
         out.write_text(json.dumps(evidence, indent=1))
         print(f"\nrouting evidence: {out}")

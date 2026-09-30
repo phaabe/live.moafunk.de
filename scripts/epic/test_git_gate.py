@@ -5,8 +5,11 @@ Run: python3 -m unittest discover -s scripts/epic
 
 from __future__ import annotations
 
+import isolated_env  # noqa: F401  (first: hides live runner state)
+
 import json
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -17,6 +20,8 @@ from unittest import mock
 
 import git_gate
 import permission_gate as gate
+
+PRODUCTION = git_gate.TRUSTED
 
 BRANCH = "feat/424-x"
 BASE = "dev/312-interim"
@@ -93,6 +98,12 @@ class Fixture(unittest.TestCase):
         reader = mock.patch.object(git_gate, "read_pr", self.read_pr)
         reader.start()
         self.addCleanup(reader.stop)
+        # Test boundary: trust exactly this local bare repository.
+        trusted = mock.patch.object(
+            git_gate, "TRUSTED", re.compile(re.escape(str(self.remote)))
+        )
+        trusted.start()
+        self.addCleanup(trusted.stop)
         self.set_action({"action": self.action_kind, "reason": "t", "pr": 7,
                          "sha": self.head})  # fmt: skip
         paths = mock.patch.dict(
@@ -269,12 +280,21 @@ class RebaseFlowTest(Fixture):
         self.assertEqual(
             self.run_approved(f"git -C {self.wt} rebase --abort").returncode, 0
         )
-        # The same rebase started again by hand is not the runner's any more.
+        # The same rebase started again by hand, with a human's staged
+        # resolution: the retired record approves nothing on it.
         sh(self.wt, "rebase", f"origin/{BASE}", check=False)
-        self.assertFalse(self.allowed(f"git -C {self.wt} rebase --continue"))
-        self.assertFalse(self.allowed(f"git -C {self.wt} add -- f.txt"))
-        # Retrying the abort of that same rebase stays possible.
-        self.assertTrue(self.allowed(f"git -C {self.wt} rebase --abort"))
+        (self.wt / "f.txt").write_text("one\nhuman resolution\n")
+        sh(self.wt, "add", "f.txt")
+        for command in (
+            f"git -C {self.wt} rebase --continue",
+            f"git -C {self.wt} rebase --abort",
+            f"git -C {self.wt} add -- f.txt",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(self.allowed(command))
+        self.assertEqual(
+            sh(self.wt, "show", ":f.txt").stdout, "one\nhuman resolution\n"
+        )
         sh(self.wt, "rebase", "--abort")
         ok, reason = self.decide(self.lease())
         self.assertFalse(ok)
@@ -463,6 +483,40 @@ class WorktreeTest(Fixture):
         self.assertIn("elsewhere.git", reason)
         self.assertFalse(self.allowed(f"git -C {self.wt} fetch origin"))
 
+    def test_same_path_on_another_repository_or_host_is_denied(self) -> None:
+        # Review finding: only the path suffix was checked.
+        unrelated = self.tmp / "unrelated/phaabe/live.moafunk.de.git"
+        unrelated.parent.mkdir(parents=True)
+        sh(self.tmp, "init", "-q", "--bare", str(unrelated))
+        for url in (
+            str(unrelated),
+            "https://untrusted.invalid/phaabe/live.moafunk.de.git",
+        ):
+            with self.subTest(url=url):
+                sh(self.wt, "config", "--unset-all", "remote.origin.pushurl",
+                   check=False)  # fmt: skip
+                sh(
+                    self.wt,
+                    "config",
+                    "--add",
+                    "remote.origin.pushurl",
+                    str(self.remote),
+                )
+                sh(self.wt, "config", "--add", "remote.origin.pushurl", url)
+                ok, reason = self.decide(f"git -C {self.wt} push origin {BRANCH}")
+                self.assertFalse(ok)
+                self.assertIn(url, reason)
+        self.assertEqual(sh(unrelated, "branch", "--list").stdout, "")
+
+    def test_insteadof_rewrite_counts_as_the_destination(self) -> None:
+        sh(
+            self.wt,
+            "config",
+            f"url.{self.tmp}/evil.git.pushInsteadOf",
+            str(self.remote),
+        )
+        self.assertFalse(self.allowed(f"git -C {self.wt} push origin {BRANCH}"))
+
     def test_every_fetch_url_must_be_this_repository(self) -> None:
         other = self.tmp / "other/elsewhere.git"
         other.parent.mkdir()
@@ -490,6 +544,39 @@ class WorktreeTest(Fixture):
         (self.wtdir / "feat").rmdir()
         (self.wtdir / "feat").symlink_to(outside)
         self.assertFalse(self.allowed(f"git -C {self.wt} push origin {BRANCH}"))
+
+
+class TrustedUrlTest(unittest.TestCase):
+    """The production destination pattern, without the test boundary."""
+
+    def test_github_forms_of_this_repository(self) -> None:
+        for url in (
+            "git@github.com:phaabe/live.moafunk.de.git",
+            "git@github.com:phaabe/live.moafunk.de",
+            "https://github.com/phaabe/live.moafunk.de.git",
+            "https://github.com/phaabe/live.moafunk.de",
+            "ssh://git@github.com/phaabe/live.moafunk.de.git",
+        ):
+            with self.subTest(url=url):
+                self.assertTrue(PRODUCTION.fullmatch(url))
+
+    def test_other_destinations(self) -> None:
+        for url in (
+            "https://untrusted.invalid/phaabe/live.moafunk.de.git",
+            "git@evil.example:phaabe/live.moafunk.de.git",
+            "https://github.com.evil.example/phaabe/live.moafunk.de.git",
+            "https://user@github.com/phaabe/live.moafunk.de.git",
+            "/tmp/x/phaabe/live.moafunk.de.git",
+            "file:///tmp/phaabe/live.moafunk.de.git",
+            "../phaabe/live.moafunk.de.git",
+            "https://github.com/phaabe/live.moafunk.de.git.evil",
+            "https://github.com/phaabe/live.moafunk.de-fork.git",
+            "https://github.com/other/phaabe/live.moafunk.de.git",
+            "git@github.com:phaabe/live.moafunk.de.git\n",
+            "",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(PRODUCTION.fullmatch(url))
 
 
 class PushTest(Fixture):

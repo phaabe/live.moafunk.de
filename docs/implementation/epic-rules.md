@@ -338,7 +338,8 @@ gate approves only (`scripts/epic/git_gate.py`):
   gate pins that head as `S` in `claude-rebases.json` in the state directory.
 - `G rebase --continue` / `--abort`: only the rebase the runner recorded (same
   worktree, branch, onto commit and original head). An approved abort retires
-  the record. `--skip` is refused: dropping a commit needs a separate explicit
+  the record: it approves nothing more, not even a second abort, because a
+  rebase started again by hand looks the same. A failed abort needs a human. `--skip` is refused: dropping a commit needs a separate explicit
   decision.
 - `G push [-q] --force-with-lease=refs/heads/B:S origin HEAD:refs/heads/B`: the
   recorded `S`, the rebase finished onto the recorded commit, the PR head still
@@ -361,7 +362,9 @@ gate approves only (`scripts/epic/git_gate.py`):
 
 Every `W` must really be `<dir>/B` (no symlink below `<dir>`; the runner's
 worktree step refuses one too), be a worktree of the runner checkout, and have
-this repository as every origin fetch and push URL. Plain `git push` and
+this repository as every origin fetch and push URL: the full GitHub URL
+(`git@github.com:`, `https://github.com/` or `ssh://git@github.com/`, after
+`insteadOf` rewrites), not only a matching path. Plain `git push` and
 `git rebase` are refused: the gate cannot see the shell's directory. It also
 refuses `-c`, repeated `-C`, other global options, force flags, `+` refspecs,
 bare or other leases, extra refspecs, other remotes, tags, `--all`,
