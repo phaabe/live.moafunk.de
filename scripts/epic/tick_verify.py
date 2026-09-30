@@ -12,8 +12,6 @@ a push or merge was denied. claude-tick.sh runs this after the session:
                                 rebase record for it was posted during the tick
                                 (rebase_policy.py; needs --worktree and
                                 --attempt-file). A moved head alone is no success.
-                                Claude only for now: the Codex runner keeps the
-                                moved-head rule until issue 537 adds its side
   fix                           the PR head moved, or a comment whose first line
                                 is "Reply-only fix by <Agent> at <selected sha>"
                                 was created during the tick
@@ -55,9 +53,8 @@ from github_quota import QuotaExhausted, run_gh, stop_on_quota
 from next_action import EPIC, REPO, body_digest, issue_url, other
 
 PUSHES = {"fix-checks", "resolve-conflict"}
-# Agents whose runner pins attempts and posts rebase records. Codex joins
-# with https://github.com/phaabe/live.moafunk.de/issues/537.
-PROVEN_REBASES = {"claude"}
+# Agents whose runner pins attempts and posts rebase records.
+PROVEN_REBASES = {"claude", "codex"}
 CHECKED = {"merge", "review", "fix", "adopt", *PUSHES}
 UNCHECKED = {"continue", "claim", "escalate", "idle", "stop"}
 READ_FAILED = 5
