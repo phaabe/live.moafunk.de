@@ -5,6 +5,8 @@ Run: python3 -m unittest discover -s scripts/epic
 
 from __future__ import annotations
 
+import isolated_env  # noqa: F401  (first: hides live runner state)
+
 import json
 import os
 from pathlib import Path
