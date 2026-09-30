@@ -377,6 +377,16 @@ else
         exit 1
     fi
 fi
+# Issue closes that failed in an earlier tick (close_issue.py). A failure is
+# logged and kept for the next tick; it never blocks the tick.
+closed=0
+run_bounded "${select_timeout}s" "$py" "${code_root}/scripts/epic/close_issue.py" retry \
+    || closed=$?
+case "$closed" in
+    0) ;;
+    4) quota_stop ;;
+    *) printf 'tick: pending issue close not done (exit=%s); retry next tick\n' "$closed" >&2 ;;
+esac
 tick_phase=select
 select=0
 run_bounded "${select_timeout}s" \
@@ -790,6 +800,22 @@ if [[ "$action" == resolve-conflict ]]; then
         attempt_finish void
         quota_stop
     fi
+fi
+# After a merge, close its `Issue:` ticket. The PR is queued before any
+# GitHub read, so a failed close is retried at the next tick start.
+if [[ "$action" == merge ]]; then
+    tick_phase=verify
+    merged_pr=$("${py_snippet[@]}" -c 'import json, sys; print(json.load(sys.stdin)["pr"])' \
+        < "${lock_dir}/action.json")
+    closed=0
+    run_bounded "${select_timeout}s" "$py" "${code_root}/scripts/epic/close_issue.py" record \
+        --pr "$merged_pr" || closed=$?
+    case "$closed" in
+        0) ;;
+        4) quota_stop ;;
+        *) printf 'tick: issue close for PR %s not done (exit=%s); retry next tick\n' \
+            "$merged_pr" "$closed" >&2 ;;
+    esac
 fi
 tick_phase=verify
 verify=0

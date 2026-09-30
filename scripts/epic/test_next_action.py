@@ -671,6 +671,61 @@ class StartAfterTest(unittest.TestCase):
         waiting = decide("Claude", state, include_waiting=True)[0]
         self.assertEqual(waiting.reason, "starts after B1.1.6")
 
+    def test_partial_merge_does_not_complete_the_ticket(self) -> None:
+        items = [self.ready(434, f"Start after {R}/432.")]
+        body = f"Issue: {R}/432 (partial)\nLeaf IDs: setup"
+        state = {"items": items, "merged_prs": [{"body": body}]}
+        waiting = decide("Claude", state, include_waiting=True)[0]
+        self.assertEqual(
+            (waiting.action, waiting.reason), ("wait", f"starts after {R}/432")
+        )
+
+    def test_partial_merge_still_completes_its_leaves(self) -> None:
+        items = [self.ready(434, "Start after B1.1.6.")]
+        body = f"Issue: {R}/432 (partial)\nLeaf IDs: B1.1.6"
+        state = {"items": items, "merged_prs": [{"body": body}]}
+        self.assertEqual(decide("Claude", state)[0].action, "claim")
+
+    def test_uncovered_leaves_keep_the_ticket_incomplete(self) -> None:
+        # No `(partial)`, but the ticket still has a leaf the PR does not name.
+        ticket = item(432, "Codex", "In review")
+        ticket["content"]["body"] = "- [ ] **B1.1.6** one\n- [ ] **B1.1.7** two"
+        items = [self.ready(434, f"Start after {R}/432."), ticket]
+        body = f"Issue: {R}/432\nLeaf IDs: B1.1.6"
+        state = {"items": items, "merged_prs": [{"body": body}]}
+        waiting = decide("Claude", state, include_waiting=True)[0]
+        self.assertEqual(
+            (waiting.action, waiting.reason), ("wait", f"starts after {R}/432")
+        )
+        leaf = [self.ready(435, "Start after B1.1.6."), ticket]
+        self.assertEqual(
+            decide("Claude", {"items": leaf, "merged_prs": [{"body": body}]})[0].issue,
+            f"{R}/435",
+        )
+
+    def test_covered_or_ticked_leaves_complete_the_ticket(self) -> None:
+        ticket = item(432, "Codex", "In review")
+        ticket["content"]["body"] = "- [x] **B1.1.6** one\n- [ ] **B1.1.7** two"
+        items = [self.ready(434, f"Start after {R}/432."), ticket]
+        body = f"Issue: {R}/432\nLeaf IDs: B1.1.7"
+        state = {"items": items, "merged_prs": [{"body": body}]}
+        self.assertEqual(decide("Claude", state)[0].issue, f"{R}/434")
+
+    def test_partial_line_still_links_the_ticket(self) -> None:
+        self.assertEqual(
+            next_action.issue_numbers(f"Issue: {R}/432 (partial)\n"), {432}
+        )
+        self.assertEqual(
+            next_action.issue_links(f"Issue: {R}/432 (partial)\nIssue: {R}/9"),
+            [(432, True), (9, False)],
+        )
+        # Anything else after the URL is still no link.
+        for bad in ("(Partial)", "partial", "(partial) x", "(done)"):
+            with self.subTest(bad=bad):
+                self.assertEqual(
+                    next_action.issue_numbers(f"Issue: {R}/432 {bad}"), set()
+                )
+
     def test_clause_stops_at_sentence_end(self) -> None:
         text = "Start after B3.3.5. Other B5.2 leaves wait for P2.2.2 and B1.2."
         items = [self.ready(362, text)]

@@ -23,12 +23,30 @@ NEW = "b" * 40
 SINCE = "2026-09-28T12:00:00Z"
 
 
-def github(state: str = "OPEN", head: str = OLD, comments: list[dict] | None = None):
+ISSUES = "https://github.com/phaabe/live.moafunk.de/issues"
+
+
+def github(
+    state: str = "OPEN",
+    head: str = OLD,
+    comments: list[dict] | None = None,
+    ticket_state: str = "closed",
+    pr_body: str = f"Issue: {ISSUES}/453\nLeaf IDs: setup",
+):
     rows = comments or []
 
     def fetch(args: list[str]) -> Any:
         if args[:2] == ["pr", "view"]:
             return {"state": state, "headRefOid": head}
+        if args[0] == "api" and "/pulls/" in args[1]:
+            merged = "2026-09-28T12:10:00Z" if state == "MERGED" else None
+            return {"number": 410, "body": pr_body, "merged_at": merged}
+        if args[0] == "api" and args[1].endswith("/issues/453"):
+            return {
+                "state": ticket_state,
+                "body": "",
+                "sub_issues_summary": {"total": 0},
+            }
         if args[:2] == ["api", "graphql"]:
             node_id = next(a[3:] for a in args if a.startswith("id="))
             row = next(c for c in rows if c["node_id"] == node_id)
@@ -226,6 +244,14 @@ class LandedTest(unittest.TestCase):
     def test_merge_needs_a_merged_pr(self) -> None:
         self.assertTrue(check("merge", github(state="MERGED")))
         self.assertFalse(check("merge", github(state="OPEN")))
+
+    def test_merge_needs_its_ticket_closed(self) -> None:
+        self.assertFalse(check("merge", github(state="MERGED", ticket_state="open")))
+        # A partial PR leaves the ticket open on purpose.
+        partial = f"Issue: {ISSUES}/453 (partial)"
+        self.assertTrue(
+            check("merge", github("MERGED", ticket_state="open", pr_body=partial))
+        )
 
     def test_review_needs_own_verdict_for_the_selected_head(self) -> None:
         mine = comment(f"Review: APPROVED by Claude at {OLD}")
