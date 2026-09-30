@@ -307,6 +307,66 @@ Tests set only the runner switches they exercise and use fake GitHub/model
 commands. The isolation regression checks empty and future-quota-wait stand-ins
 and verifies that their files, contents and modification times stay unchanged.
 
+## Review worktrees and saved evidence
+
+Review ticks prepare `/private/tmp/moafunk-review-<pr>-<full-head-sha>` before
+starting Codex. Preparation checks the repository, open Claude PR and exact
+head. It reuses an existing path only when it is the registered, clean,
+unlocked detached checkout at that head. A path collision is reported, never
+reset or replaced. The runner and target locks remain held through child exit
+and cleanup.
+
+The commit is retained at `refs/remotes/codex-review/<pr>/<full-head-sha>`.
+An existing ref must match; it is never overwritten. After success, failure,
+timeout or a handled signal, the runner invokes the installed helper:
+
+```text
+python3 -I /Users/anton/.local/libexec/codex-cleanup-git.py --worktree <runner-checkout> remove-worktree <review-path>
+```
+
+Preparation and cleanup each use the `EPIC_PULL_TIMEOUT_SECONDS` deadline.
+It then runs `git worktree prune`. There is no force removal or raw-removal
+fallback. Dirty, locked, mismatched or refused checkouts remain, with their
+paths and reasons in the tick log. The retaining ref stays until removal
+succeeds and no pending review needs it. Cleanup does not alter the review's
+result or repeat-gate record: a posted verdict remains completed.
+
+Evidence lives in `<EPIC_STATE_DIR>/reviews/<pr>/<full-head-sha>/`, outside the
+repository's checkouts. Use a state path without symlinks (on macOS,
+`/private/tmp` instead of `/tmp`). Only this review directory is added to the
+model's writable roots.
+`context.json` records the checked review inputs; `bundle.json` is the shared
+version 1 artifact for review and later delivery. Each attempt has its own
+`attempts/<id>/model.log` and `result.json`, retained on failure and timeout.
+Review output streams directly into the attempt's log. The runner appends it
+to the normal tick log after the child stops, before cleanup and final metrics.
+
+The bundle contains `repo`, `pr`, `reviewer`, `sha`, `head`, `base`, `inputs`
+(title, body, draft flag and labels),
+`findings`, an explicit `verdict`, `status` and ordered `comments` containing
+exact `body` text and a confirmed `url` or null. The model saves draft findings
+as it works and uses `review_worktree.py save-bundle --context-file <context>
+--bundle-file <candidate>` to persist the completed bundle atomically before
+its first comment write. Finding comments precede the standalone verdict.
+Later saves may add delivery URLs and mark it published, but cannot replace
+completed analysis. A completed or published bundle prevents a second model
+review. Automatic publication retry and input revalidation belong to
+https://github.com/phaabe/live.moafunk.de/issues/535; until then, pending delivery
+requires operator handling. There is no second review database.
+
+For a one-time backlog cleanup, pause scheduled ticks and wait for their
+children to stop. List known review paths first:
+
+```sh
+python3 .codex/review_worktree.py sweep --runner /absolute/runner-checkout --state-dir /absolute/runner-state
+```
+
+Run the same command with `--apply` to remove eligible checkouts. It holds the
+runner lock, checks the PR is closed or merged, and sends each accepted path
+through the same helper. Paths that cannot be identified or validated are
+reported and retained. Feature worktrees and unknown checkouts are not removed.
+This command does not resume the scheduler.
+
 ## GitHub quota waits
 
 The runner checks `scripts/epic/github_quota.py` before selection and before

@@ -45,6 +45,7 @@ class TickTests(unittest.TestCase):
         self.selections = self.root / "selector-calls"
         self.rechecks = self.root / "recheck-calls"
         self.pulls = self.root / "pull-calls"
+        self.review_calls = self.root / "review-calls.jsonl"
         self.runner = self.repo / ".codex/codex-tick.sh"
         self.runner.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / "codex-tick.sh", self.runner)
@@ -66,6 +67,65 @@ class TickTests(unittest.TestCase):
             "parser.add_argument('--action-file', required=True)\n"
             "parser.add_argument('--state-dir', required=True)\n"
             "print(parser.parse_args().runner)\n"
+        )
+        (self.runner.parent / "review_worktree.py").write_text(
+            """import argparse, json, os, pathlib, shutil, sys, time
+parser = argparse.ArgumentParser()
+parser.add_argument('command', choices=('prepare', 'cleanup'))
+parser.add_argument('--runner', required=True)
+parser.add_argument('--action-file')
+parser.add_argument('--state-dir')
+parser.add_argument('--context-file', required=True)
+args = parser.parse_args()
+context_file = pathlib.Path(args.context_file)
+calls = pathlib.Path(os.environ['TEST_REVIEW_CALLS'])
+if args.command == 'prepare':
+    if os.environ.get('TEST_REVIEW_REFUSE_EARLY'):
+        sys.exit(2)
+    action = json.loads(pathlib.Path(args.action_file).read_text())
+    count = len(calls.read_text().splitlines()) if calls.exists() else 0
+    artifact = pathlib.Path(args.state_dir) / 'reviews' / str(action['pr']) / action['sha']
+    attempt = artifact / f'attempt-{count}'
+    attempt.mkdir(parents=True)
+    worktree = calls.parent / f'review-{action["pr"]}-{action["sha"]}'
+    worktree.mkdir(exist_ok=True)
+    context = {'worktree': str(worktree), 'artifact_dir': str(artifact), 'attempt_dir': str(attempt)}
+    context_file.write_text(json.dumps(context))
+    entry = {'command': 'prepare', **context}
+else:
+    context = json.loads(context_file.read_text())
+    if os.environ.get('TEST_REVIEW_CLEANUP_SLEEP'):
+        time.sleep(60)
+    attempt = pathlib.Path(context['attempt_dir'])
+    pid_file = attempt / 'model.pid'
+    alive = False
+    if pid_file.exists():
+        try:
+            os.kill(int(pid_file.read_text()), 0)
+            alive = True
+        except ProcessLookupError:
+            pass
+    entry = {'command': 'cleanup', **context, 'model_alive': alive}
+    for name in ('result.json', 'model.log'):
+        path = attempt / name
+        entry[name] = path.read_text() if path.exists() else None
+    state = pathlib.Path(os.environ['EPIC_STATE_DIR'])
+    entry['gate_recorded'] = (state / 'codex-gate.json').exists()
+    entry['runner_log'] = (state / 'codex.log').read_text()
+with calls.open('a') as output:
+    output.write(json.dumps(entry) + '\\n')
+if args.command == 'prepare':
+    exits = json.loads(os.environ.get('TEST_REVIEW_PREPARE_EXITS', '{}'))
+    code = int(exits.get(str(action['pr']), os.environ.get('TEST_REVIEW_PREPARE_EXIT', '0')))
+    if code:
+        sys.exit(code)
+    print(context['worktree'])
+elif os.environ.get('TEST_REVIEW_CLEANUP_EXIT'):
+    print('review: retained ' + context['worktree'], file=sys.stderr)
+    sys.exit(int(os.environ['TEST_REVIEW_CLEANUP_EXIT']))
+else:
+    shutil.rmtree(context['worktree'])
+"""
         )
         for filename in ("tick_backoff.py", "tick-result.schema.json"):
             shutil.copyfile(ROOT / filename, self.runner.parent / filename)
@@ -229,7 +289,10 @@ class TickTests(unittest.TestCase):
             "    assert action_file.is_absolute()\n"
             "    assert os.environ['EPIC_TRUSTED_ROOT'] == str(pathlib.Path(os.environ['TEST_REPO']).resolve())\n"
             "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read(), "
-            "'action_file': str(action_file), 'action': json.loads(action_file.read_text())}) + '\\n')\n"
+            "'action_file': str(action_file), 'action': json.loads(action_file.read_text()), "
+            "'tool_env': tool_env}) + '\\n')\n"
+            "if os.environ.get('EPIC_REVIEW_ATTEMPT_DIR'):\n"
+            "    (pathlib.Path(os.environ['EPIC_REVIEW_ATTEMPT_DIR']) / 'model.pid').write_text(str(os.getpid()))\n"
             "if os.environ.get('TEST_MODEL_GUARD'):\n"
             "    repo = pathlib.Path(os.environ['TEST_REPO'])\n"
             "    body = repo / 'adopt body.md'\n"
@@ -284,6 +347,7 @@ class TickTests(unittest.TestCase):
             "TEST_SELECTIONS": str(self.selections),
             "TEST_RECHECKS": str(self.rechecks),
             "TEST_PULLS": str(self.pulls),
+            "TEST_REVIEW_CALLS": str(self.review_calls),
             "TEST_NOISE_CHECKS": str(self.noise_checks),
             "TEST_REPO": str(self.repo),
             "TEST_UPDATED_AT": str(self.updated_at),
@@ -998,6 +1062,7 @@ class TickTests(unittest.TestCase):
         (self.lock / "prompt.txt").write_text("old prompt")
         (self.lock / "assignment.json").write_text("old assignment")
         (self.lock / "worktree.txt").write_text("old worktree")
+        (self.lock / "review-context.json").write_text("old review context")
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertTrue(self.calls.exists())
         self.assertFalse(self.lock.exists())
@@ -1029,37 +1094,27 @@ class TickTests(unittest.TestCase):
         self.assertEqual(self.run_tick().returncode, 0)
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
         self.assertEqual(len(calls), 1)
-        self.assertEqual(
-            calls[0]["args"],
-            [
-                "exec",
-                "--cd",
-                str(self.repo.resolve()),
-                "--sandbox",
-                "workspace-write",
-                "-c",
-                "sandbox_workspace_write.network_access=true",
-                "-c",
-                "shell_environment_policy.set.EPIC_STATE_DIR="
-                + json.dumps(str(self.state), ensure_ascii=False),
-                "-c",
-                "shell_environment_policy.set.EPIC_QUOTA_DIR="
-                + json.dumps(str(self.state), ensure_ascii=False),
-                "-c",
-                "shell_environment_policy.set.EPIC_ACTION_FILE="
-                + json.dumps(str(self.lock / "action.json"), ensure_ascii=False),
-                "-c",
-                "shell_environment_policy.set.EPIC_TRUSTED_ROOT="
-                + json.dumps(str(self.repo.resolve()), ensure_ascii=False),
-                "--color",
-                "never",
+        args = calls[0]["args"]
+        self.assertEqual((args[0], args[-1]), ("exec", "-"))
+        for option, value in (
+            ("--sandbox", "workspace-write"),
+            ("--color", "never"),
+            (
                 "--output-schema",
                 str(self.repo.resolve() / ".codex/tick-result.schema.json"),
-                "--output-last-message",
-                str(self.state / "codex-result.json"),
-                "-",
-            ],
-        )
+            ),
+        ):
+            self.assertEqual(args[args.index(option) + 1], value)
+        self.assertIn("sandbox_workspace_write.network_access=true", args)
+        for name, value in {
+            "EPIC_STATE_DIR": str(self.state),
+            "EPIC_QUOTA_DIR": str(self.state),
+            "EPIC_ACTION_FILE": str(self.lock / "action.json"),
+            "EPIC_TRUSTED_ROOT": str(self.repo.resolve()),
+        }.items():
+            self.assertIn(
+                f"shell_environment_policy.set.{name}=" + json.dumps(value), args
+            )
         self.assertIn("# Codex epic tick", calls[0]["prompt"])
         self.assertIn(self.env["TEST_DECISION"], calls[0]["prompt"])
         self.assertEqual(self.selections.read_text(), "call\n")
@@ -1067,6 +1122,142 @@ class TickTests(unittest.TestCase):
         log = (self.state / "codex.log").read_text()
         self.assertIn("fake Codex stdout", log)
         self.assertIn("fake Codex stderr", log)
+
+    def review_lifecycle(self) -> list[dict[str, object]]:
+        return [json.loads(line) for line in self.review_calls.read_text().splitlines()]
+
+    def test_review_model_uses_prepared_checkout_and_external_artifacts(self) -> None:
+        self.assertEqual(self.run_tick().returncode, 0)
+        prepared, cleaned = self.review_lifecycle()
+        call = json.loads(self.calls.read_text())
+        args = call["args"]
+        self.assertEqual(args[args.index("--cd") + 1], prepared["worktree"])
+        self.assertEqual(args[args.index("--add-dir") + 1], prepared["artifact_dir"])
+        self.assertEqual(
+            args[args.index("--output-last-message") + 1],
+            str(Path(prepared["attempt_dir"]) / "result.json"),
+        )
+        self.assertEqual(call["tool_env"]["EPIC_REVIEW_DIR"], prepared["artifact_dir"])
+        self.assertEqual(
+            call["tool_env"]["EPIC_REVIEW_ATTEMPT_DIR"], prepared["attempt_dir"]
+        )
+        self.assertFalse(
+            Path(prepared["artifact_dir"]).is_relative_to(prepared["worktree"])
+        )
+        self.assertFalse(Path(prepared["worktree"]).exists())
+        self.assertFalse(cleaned["model_alive"])
+        self.assertTrue(cleaned["gate_recorded"])
+        self.assertEqual(json.loads(cleaned["result.json"])["status"], "completed")
+        for message in ("fake Codex stdout", "fake Codex stderr"):
+            self.assertIn(message, cleaned["model.log"])
+            self.assertIn(message, cleaned["runner_log"])
+        self.assertTrue((Path(prepared["attempt_dir"]) / "result.json").exists())
+
+    def test_review_model_failure_keeps_evidence_and_cleans_after_exit(self) -> None:
+        self.env["TEST_CODEX_EXIT"] = "17"
+        self.assertEqual(self.run_tick().returncode, 17)
+        prepared, cleaned = self.review_lifecycle()
+        self.assertFalse(cleaned["model_alive"])
+        self.assertFalse(cleaned["gate_recorded"])
+        self.assertIn("fake Codex stdout", cleaned["model.log"])
+        self.assertIsNotNone(cleaned["result.json"])
+        self.assertFalse(Path(prepared["worktree"]).exists())
+        self.assertEqual(self.last_finish(), (17, "error", "model"))
+
+    def test_review_output_is_durable_before_model_exits(self) -> None:
+        process, connection = self.blocked_tick()
+        [prepared] = self.review_lifecycle()
+        paths = (Path(prepared["attempt_dir"]) / "model.log",)
+        deadline = time.monotonic() + 5
+        while True:
+            self.assertIsNone(process.poll())
+            if all(
+                path.exists()
+                and all(
+                    message in path.read_text()
+                    for message in ("fake Codex stdout", "fake Codex stderr")
+                )
+                for path in paths
+            ):
+                break
+            if time.monotonic() >= deadline:
+                self.fail("review output was not durable while model was running")
+            time.sleep(0.01)
+        connection.sendall(b"x")
+        self.assertEqual(process.wait(timeout=10), 0)
+        log = (self.state / "codex.log").read_text()
+        self.assertIn("fake Codex stdout", log)
+        self.assertIn("fake Codex stderr", log)
+
+    def test_review_cleanup_timeout_keeps_result_and_releases_lock(self) -> None:
+        self.env.update(TEST_REVIEW_CLEANUP_SLEEP="1", EPIC_PULL_TIMEOUT_SECONDS="1")
+        self.assertEqual(self.run_tick().returncode, 0)
+        [prepared] = self.review_lifecycle()
+        self.assertTrue(self.record.exists())
+        self.assertTrue(Path(prepared["worktree"]).exists())
+        self.assertFalse(self.lock.exists())
+        self.assertIn(str(prepared["worktree"]), (self.state / "codex.log").read_text())
+        self.assertEqual(self.last_finish(), (0, "ok", "record"))
+        with (self.target_locks / "406.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_review_cleanup_refusal_preserves_completed_gate(self) -> None:
+        self.env["TEST_REVIEW_CLEANUP_EXIT"] = "2"
+        self.assertEqual(self.run_tick().returncode, 0)
+        prepared, cleaned = self.review_lifecycle()
+        self.assertTrue(cleaned["gate_recorded"])
+        self.assertTrue(Path(prepared["worktree"]).exists())
+        self.assertIn(str(prepared["worktree"]), (self.state / "codex.log").read_text())
+        self.assertFalse(self.lock.exists())
+        gate = self.record.read_bytes()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(self.record.read_bytes(), gate)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.assertEqual(len(self.review_lifecycle()), 2)
+
+    def test_review_cleanup_refusal_preserves_model_failure(self) -> None:
+        self.env.update(TEST_CODEX_EXIT="17", TEST_REVIEW_CLEANUP_EXIT="2")
+        self.assertEqual(self.run_tick().returncode, 17)
+        self.assertEqual(self.last_finish(), (17, "error", "model"))
+        self.assertFalse(self.lock.exists())
+
+    def test_review_preparation_failure_cleans_partial_attempt_without_model(
+        self,
+    ) -> None:
+        self.env["TEST_REVIEW_PREPARE_EXIT"] = "2"
+        self.assertEqual(self.run_tick().returncode, 2)
+        prepared, cleaned = self.review_lifecycle()
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse(cleaned["model_alive"])
+        self.assertFalse(Path(prepared["worktree"]).exists())
+        self.assertTrue(Path(prepared["attempt_dir"]).is_dir())
+        self.assertFalse(self.lock.exists())
+
+    def test_review_preparation_refusal_before_context_starts_no_model(self) -> None:
+        self.env["TEST_REVIEW_REFUSE_EARLY"] = "1"
+        self.assertEqual(self.run_tick().returncode, 2)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.record.exists())
+        self.assertFalse(self.review_calls.exists())
+        self.assertFalse(self.lock.exists())
+
+    def test_completed_review_bundle_skips_to_next_candidate(self) -> None:
+        self.adopt_action()
+        adopt = json.loads(self.env["TEST_DECISION"])
+        self.candidates(self.review_action(407), adopt)
+        self.env["TEST_REVIEW_PREPARE_EXITS"] = json.dumps({"407": 3})
+        self.assertEqual(self.run_tick().returncode, 0)
+        prepared, cleaned = self.review_lifecycle()
+        self.assertEqual(
+            (prepared["command"], cleaned["command"]), ("prepare", "cleanup")
+        )
+        self.assertFalse(Path(prepared["worktree"]).exists())
+        call = json.loads(self.calls.read_text())
+        self.assertEqual(call["action"]["action"], "adopt")
+        self.assertNotIn("EPIC_REVIEW_DIR", call["tool_env"])
+        self.assertNotIn("--add-dir", call["args"])
+        self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"406"})
 
     def assignment_responses(self, mode: str) -> dict[str, str]:
         from test_project_items import FIELD_IDS, rest_row
@@ -1182,7 +1373,7 @@ class TickTests(unittest.TestCase):
         home = self.state / "agents/codex-2"
         agent = json.loads((home / "agent.json").read_text())
         self.assertEqual(
-            (agent["interval_seconds"], agent["budget_seconds"]), (180, 130)
+            (agent["interval_seconds"], agent["budget_seconds"]), (180, 140)
         )
         self.assertIn("tick: finished exit=75", (home / "codex.log").read_text())
         self.assertTrue((home / "codex-backoff.json").exists())
@@ -1586,10 +1777,13 @@ class TickTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         seen = json.loads(output.read_text())
         agent = custom / "agents/codex-2"
+        prepared = self.review_lifecycle()[0]
         expected = {
             "EPIC_ACTION_FILE": str(agent / "codex.lock/action.json"),
             "EPIC_QUOTA_DIR": str(custom),
             "EPIC_STATE_DIR": str(agent),
+            "EPIC_REVIEW_DIR": prepared["artifact_dir"],
+            "EPIC_REVIEW_ATTEMPT_DIR": prepared["attempt_dir"],
         }
         self.assertEqual({name: seen["env"].get(name) for name in expected}, expected)
         self.assertEqual(seen["quota_root"], str(custom))
@@ -1802,8 +1996,8 @@ class TickTests(unittest.TestCase):
         state = self.state / "agents/codex-2"
         owner = json.loads((state / "codex.lock/owner.json").read_text())
         agent = json.loads((state / "agent.json").read_text())
-        self.assertEqual(owner["max_age"], 144)
-        self.assertEqual(agent["budget_seconds"], 144)
+        self.assertEqual(owner["max_age"], 154)
+        self.assertEqual(agent["budget_seconds"], 154)
         connection.sendall(b"x")
         self.assertEqual(process.wait(timeout=10), 0)
 
@@ -1835,7 +2029,7 @@ class TickTests(unittest.TestCase):
         owner = json.loads((self.lock / "owner.json").read_text())
         self.assertEqual(owner["pid"], process.pid)
         self.assertGreater(owner["started_at"], 0)
-        self.assertEqual(owner["max_age"], 130)
+        self.assertEqual(owner["max_age"], 140)
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertTrue(self.lock.is_dir())
@@ -1911,6 +2105,10 @@ class TickTests(unittest.TestCase):
         self.assertEqual(connection.recv(1), b"")
         self.assertFalse(self.lock.exists())
         self.assertFalse(self.record.exists())
+        prepared, cleaned = self.review_lifecycle()
+        self.assertFalse(cleaned["model_alive"])
+        self.assertIn("fake Codex stdout", cleaned["model.log"])
+        self.assertFalse(Path(prepared["worktree"]).exists())
 
     def tick_events(self, state: Path | None = None) -> list[dict[str, object]]:
         path = (state or self.state) / "codex-ticks.jsonl"
@@ -1982,6 +2180,10 @@ class TickTests(unittest.TestCase):
         self.assertFalse(self.record.exists())
         self.assertFalse(context.exists())
         self.assertEqual(rebase.read_text(), "keep interrupted rebase state\n")
+        prepared, cleaned = self.review_lifecycle()
+        self.assertFalse(cleaned["model_alive"])
+        self.assertIn("fake Codex stdout", cleaned["model.log"])
+        self.assertFalse(Path(prepared["worktree"]).exists())
 
     def test_new_tick_revokes_context_left_by_a_killed_tick(self) -> None:
         self.state.mkdir(parents=True)
