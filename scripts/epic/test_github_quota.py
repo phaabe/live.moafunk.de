@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -552,6 +554,28 @@ class CodexInterfaceTest(unittest.TestCase):
         self.assertEqual(check(self.state, parse_iso(retry) - 1), (DEFERRED, retry))
         self.assertEqual(wait["provenance"]["origin"], "model-result")
         self.assertIn("origin model-result", describe(wait))
+
+    def test_check_reads_one_snapshot(self) -> None:
+        # Another runner replaces the wait right after the first read. The
+        # output must pair the retry time with the writer of that same wait.
+        first = record(self.state, time.time(), iso(time.time() + 3600))
+        first["provenance"]["writer"]["pid"] = 111
+        second = json.loads(json.dumps(first))
+        second["retry_at"] = iso(time.time() + 7200)
+        second["provenance"]["writer"]["pid"] = 222
+        reads = iter([json.dumps(first), json.dumps(second)])
+        out = io.StringIO()
+        with (
+            mock.patch.object(Path, "read_text", lambda _self: next(reads)),
+            mock.patch.object(
+                sys, "argv", ["github_quota.py", "check", "--state-dir", "x"]
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            self.assertEqual(github_quota.main(), DEFERRED)
+        self.assertIn(first["retry_at"], out.getvalue())
+        self.assertIn("writer pid 111 ", out.getvalue())
+        self.assertNotIn("222", out.getvalue())
 
     def test_bad_file_exits_2(self) -> None:
         (self.state / github_quota.WAIT_FILE).write_text("not json")

@@ -165,18 +165,31 @@ def query_reset_at() -> tuple[str | None, str | None]:
     return (reset if isinstance(reset, str) else None), gh
 
 
-def check(state_dir: Path, now: float) -> tuple[int, str | None]:
-    """(PROCEED, None) or (DEFERRED, retry_at). Raises ValueError on a bad file."""
+def read_wait(state_dir: Path) -> dict[str, Any] | None:
+    """The stored wait, None without one. Raises ValueError on a bad file."""
     try:
         wait = json.loads((state_dir / WAIT_FILE).read_text())
     except FileNotFoundError:
-        return PROCEED, None
+        return None
     retry_at = wait.get("retry_at") if isinstance(wait, dict) else None
     if not isinstance(retry_at, str):
         raise ValueError(f"bad quota wait file {state_dir / WAIT_FILE}")
+    return wait
+
+
+def decide(wait: dict[str, Any] | None, now: float) -> tuple[int, str | None]:
+    """(PROCEED, None) or (DEFERRED, retry_at) for one read of the wait."""
+    if wait is None:
+        return PROCEED, None
+    retry_at = wait["retry_at"]
     if now < parse_iso(retry_at):
         return DEFERRED, retry_at
     return PROCEED, None
+
+
+def check(state_dir: Path, now: float) -> tuple[int, str | None]:
+    """(PROCEED, None) or (DEFERRED, retry_at). Raises ValueError on a bad file."""
+    return decide(read_wait(state_dir), now)
 
 
 def writer() -> dict[str, Any]:
@@ -336,19 +349,15 @@ def main() -> int:
         )
         return PROCEED
     try:
-        result, retry_at = check(args.state_dir, now)
+        # One read: the decision and its provenance come from the same wait.
+        wait = read_wait(args.state_dir)
+        result, retry_at = decide(wait, now)
     except (OSError, ValueError) as error:
         print(f"quota: {error}", file=sys.stderr)
         return BAD_FILE
-    if result == DEFERRED:
-        try:
-            wait = json.loads((args.state_dir / WAIT_FILE).read_text())
-            about = describe(wait) if isinstance(wait, dict) else None
-        except (OSError, ValueError):
-            about = None  # replaced or removed since check(); the wait stands
+    if result == DEFERRED and wait is not None:
         print(
-            f"quota: GitHub GraphQL quota wait, retry at {retry_at} "
-            f"({about or 'provenance unavailable'})"
+            f"quota: GitHub GraphQL quota wait, retry at {retry_at} ({describe(wait)})"
         )
     return result
 
