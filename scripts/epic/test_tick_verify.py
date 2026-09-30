@@ -80,9 +80,15 @@ class WorktreeTest(unittest.TestCase):
         )
 
     def test_own_pushed_head_lands(self) -> None:
-        for kind in ("resolve-conflict", "fix-checks", "fix"):
+        for kind in ("fix-checks", "fix"):
             with self.subTest(kind=kind):
                 self.assertTrue(self.verify(kind, self.head)[0])
+
+    def test_moved_head_alone_is_no_resolved_conflict(self) -> None:
+        # Proof and record are checked in test_rebase_policy.py.
+        ok, reason = self.verify("resolve-conflict", self.head)
+        self.assertFalse(ok)
+        self.assertIn("attempt pin is missing", reason)
 
     def test_head_moved_by_another_writer_does_not_land(self) -> None:
         # Review finding: a refused lease push counted as done.
@@ -143,8 +149,13 @@ class LandedTest(unittest.TestCase):
     def test_pushing_actions_need_a_moved_head(self) -> None:
         for kind in ("fix-checks", "resolve-conflict"):
             with self.subTest(kind=kind):
-                self.assertTrue(check(kind, github(head=NEW)))
                 self.assertFalse(check(kind, github(comments=[comment("done")])))
+        self.assertTrue(check("fix-checks", github(head=NEW)))
+        # A moved head alone does not resolve a conflict: proof and record too.
+        self.assertFalse(check("resolve-conflict", github(head=NEW)))
+        # Codex keeps the moved-head rule until issue 537 adds its side.
+        action = {"action": "resolve-conflict", "pr": 410, "sha": OLD}
+        self.assertTrue(tick_verify.landed("codex", action, SINCE, github(head=NEW))[0])
 
     def test_fix_needs_a_push_or_a_reply_only_marker(self) -> None:
         self.assertTrue(check("fix", github(head=NEW)))

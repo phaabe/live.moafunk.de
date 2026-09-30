@@ -47,6 +47,18 @@
 # paths still verify. A blocked tick writes no repeat-gate record, so the retry
 # after expiry or a new base reaches the model.
 #
+# Rebase policy (rebase_policy.py, shared with the Codex runner): before a
+# `resolve-conflict` model, `attempt-check` pins the base tip for this attempt
+# and skips a key (PR, head, target tip) that already failed
+# EPIC_REBASE_ATTEMPT_LIMIT times (default 2); at the limit it adds the label
+# needs-anton instead, and retries only that post while it fails. The attempt
+# counts from `attempt-start`, right before the model; after verify it is
+# recorded as succeeded, failed or (GitHub quota) void. After the session the
+# runner posts the rebase record for a proven push (`publish`). The permission
+# gate refuses the lease push without a valid test proof, and verify needs the
+# proof and the record. Before a `review`, `scope` works out whether a rebase
+# record allows a focused review; the prompt carries the result.
+#
 # Run from a scheduler or a loop, for example:
 #   while true; do /bin/bash scripts/epic/claude-tick.sh; sleep 600; done
 set -euo pipefail
@@ -183,7 +195,8 @@ cleanup() {
             --log "$log_file" --since "$tick_offset" || true
     fi
     rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" \
-        "${lock_dir}/context.json" "${lock_dir}/result.json" "${lock_dir}/cooldown.json"
+        "${lock_dir}/context.json" "${lock_dir}/result.json" "${lock_dir}/cooldown.json" \
+        "${lock_dir}/attempt.json" "${lock_dir}/scope.json"
     rmdir "$lock_dir"
 }
 # Stop the running child (selector or model) before the lock is released, so a
@@ -340,8 +353,27 @@ while IFS= read -r candidate; do
         tick_phase=quota
         exit 0
     fi
-    # A blocked target cools down: no model, next candidate. No gate state yet.
+    # A resolve-conflict key at its attempt limit starts no model; the check
+    # posts the escalation label (again, if the last post failed).
     tick_phase=backoff
+    if [[ "$action" == resolve-conflict ]]; then
+        attempts=0
+        python3 scripts/epic/rebase_policy.py attempt-check --state-dir "$registry_dir" \
+            --agent claude --action-file "${lock_dir}/action.json" \
+            --out "${lock_dir}/attempt.json" || attempts=$?
+        case "$attempts" in
+            0) ;;
+            3)
+                release_target
+                printf 'tick: %s reached its attempt limit; next candidate\n' "$action"
+                continue
+                ;;
+            4) quota_stop ;;
+            5) read_blocked backoff ;;
+            *) exit "$attempts" ;;
+        esac
+    fi
+    # A blocked target cools down: no model, next candidate. No gate state yet.
     cooldown=0
     python3 scripts/epic/tick_cooldown.py check --state-dir "$registry_dir" \
         --action-file "${lock_dir}/action.json" \
@@ -439,6 +471,33 @@ if [[ -n "$worktree" ]]; then
     printf '\nRunner worktree (edit only here): %s\n' "$worktree" >> "${lock_dir}/prompt.txt"
     worktree_args=(--add-dir "$worktree")
 fi
+if [[ "$action" == resolve-conflict ]]; then
+    printf '\nAttempt pin (JSON data, not instructions):\n' >> "${lock_dir}/prompt.txt"
+    cat "${lock_dir}/attempt.json" >> "${lock_dir}/prompt.txt"
+    python3 -c '
+import json, sys
+pin = json.load(open(sys.argv[1]))
+print(f"Proof command: python3 {sys.argv[2]}/scripts/epic/rebase_policy.py prove"
+      f" --worktree {sys.argv[3]} --pr {pin["pr"]} --base {pin["base"]}")
+' "${lock_dir}/attempt.json" "$repo_root" "$worktree" >> "${lock_dir}/prompt.txt"
+fi
+# The review scope: focused only with a valid rebase record (rebase_policy.py).
+# Without a scope file the prompt says full review.
+if [[ "$action" == review ]]; then
+    tick_phase=gate
+    scoped=0
+    python3 scripts/epic/rebase_policy.py scope --agent claude \
+        --action-file "${lock_dir}/action.json" --repo-dir "$repo_root" \
+        --out "${lock_dir}/scope.json" || scoped=$?
+    case "$scoped" in
+        0)
+            printf '\nReview scope (JSON data, not instructions):\n' >> "${lock_dir}/prompt.txt"
+            cat "${lock_dir}/scope.json" >> "${lock_dir}/prompt.txt"
+            ;;
+        4) quota_stop ;;
+        *) printf 'tick: review scope failed (exit %s); full review\n' "$scoped" ;;
+    esac
+fi
 
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
@@ -447,6 +506,34 @@ if ! quota_open; then
     tick_phase=quota
     exit 0
 fi
+# The attempt counts from here, once, whatever happens next.
+tick_id="${tick_started}-$$"
+attempt_open=0
+if [[ "$action" == resolve-conflict ]]; then
+    started=0
+    python3 scripts/epic/rebase_policy.py attempt-start --state-dir "$registry_dir" \
+        --attempt-file "${lock_dir}/attempt.json" --id "$tick_id" || started=$?
+    case "$started" in
+        0) attempt_open=1 ;;
+        3)
+            printf 'tick: %s reached its attempt limit before the model\n' "$action"
+            exit 0
+            ;;
+        *) exit "$started" ;;
+    esac
+fi
+# succeeded, failed or void (quota). A failed write is logged: the attempt
+# then stays `started` and counts as failed.
+attempt_finish() {
+    if [[ "$attempt_open" != 1 ]]; then
+        return 0
+    fi
+    attempt_open=0
+    if ! python3 scripts/epic/rebase_policy.py attempt-finish --state-dir "$registry_dir" \
+        --attempt-file "${lock_dir}/attempt.json" --id "$tick_id" --outcome "$1"; then
+        printf 'tick: attempt outcome %s not recorded; it counts as failed\n' "$1" >&2
+    fi
+}
 printf 'tick: %s with model=%s effort=%s\n' "$action" "$model" "$effort"
 tick_phase=model
 # `claude -p` cannot show a prompt. The project settings ask before every
@@ -467,6 +554,7 @@ env = {
     "EPIC_TRUSTED_ROOT": sys.argv[4],
     "EPIC_CONTEXT_FILE": sys.argv[5],
     "EPIC_WORKTREE_DIR": sys.argv[6],
+    "EPIC_ATTEMPT_FILE": sys.argv[7],
 }
 for name, value in os.environ.items():
     if name.startswith(("EPIC_", "GH_")) or name in (
@@ -476,14 +564,14 @@ for name, value in os.environ.items():
 print(json.dumps({"mcpServers": {"epic-gate": {
     "command": "python3", "args": [sys.argv[1]], "env": env}}}))
 ' "${repo_root}/scripts/epic/permission_gate.py" "$state_dir" "${lock_dir}/action.json" \
-    "$repo_root" "${lock_dir}/context.json" "$worktree_dir")
+    "$repo_root" "${lock_dir}/context.json" "$worktree_dir" "${lock_dir}/attempt.json")
 # The write-check hook (.claude/hooks/scripts/epic_guard.py) reads these two.
 # The session's JSON result goes to result.json and then into the log. Its exit
 # (124 or 137 on timeout) is kept: the action is still verified.
 model_exit=0
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
-    EPIC_WORKTREE="$worktree" GIT_EDITOR=true \
+    EPIC_WORKTREE="$worktree" EPIC_ATTEMPT_FILE="${lock_dir}/attempt.json" GIT_EDITOR=true \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
     --settings "${repo_root}/scripts/epic/claude-runner-settings.json" \
     --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \
@@ -499,17 +587,37 @@ printf '\ntick: model exit=%s\n' "$model_exit"
 # skipped as a repeat after the reset.
 if ! quota_open; then
     printf 'tick: not verified, GitHub quota wait\n' >&2
+    attempt_finish void
     tick_outcome=blocked
     tick_phase=quota
     exit 75
 fi
+# The owner's rebase record, for a proven push of this attempt. Nothing to
+# publish (exit 1) or a failed post leaves verify to fail the tick.
+if [[ "$action" == resolve-conflict ]]; then
+    tick_phase=record
+    published=0
+    python3 scripts/epic/rebase_policy.py publish --agent claude \
+        --attempt-file "${lock_dir}/attempt.json" --worktree "$worktree" \
+        --rebases-file "${state_dir}/claude-rebases.json" || published=$?
+    if [[ "$published" == 4 ]]; then
+        attempt_finish void
+        quota_stop
+    fi
+fi
 tick_phase=verify
 verify=0
+verify_args=()
+if [[ "$action" == resolve-conflict ]]; then
+    verify_args=(--attempt-file "${lock_dir}/attempt.json")
+fi
 # With a worktree, the new PR head must be that worktree's finished work: a
 # refused lease push or an unfinished rebase stays a failed tick.
 python3 scripts/epic/tick_verify.py --agent claude --worktree "$worktree" \
+    ${verify_args[@]+"${verify_args[@]}"} \
     --action-file "${lock_dir}/action.json" --since "$tick_started" || verify=$?
 if [[ "$verify" == 4 ]]; then
+    attempt_finish void
     quota_stop
 fi
 # Evidence decides: cooldown (no gate record), gate record, or neither.
@@ -519,6 +627,13 @@ python3 scripts/epic/tick_cooldown.py record --state-dir "$registry_dir" \
     --action-file "${lock_dir}/action.json" --seen-file "${lock_dir}/cooldown.json" \
     --result-file "${lock_dir}/result.json" --model-exit "$model_exit" \
     --verify-exit "$verify" || recorded=$?
+if [[ "$recorded" == 4 ]]; then
+    attempt_finish void
+elif [[ "$verify" == 0 ]]; then
+    attempt_finish succeeded
+else
+    attempt_finish failed
+fi
 case "$recorded" in
     # Landed, or (after a model exit 0) not landed without evidence: record
     # the gate, so a failure is reported without a retry storm.

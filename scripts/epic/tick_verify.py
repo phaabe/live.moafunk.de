@@ -6,7 +6,14 @@ a push or merge was denied. claude-tick.sh runs this after the session:
   merge                         the PR is merged
   review                        an unedited "Review: ... by <Agent> at <selected sha>"
                                 comment was created during the tick
-  fix-checks, resolve-conflict  the PR head moved (a push arrived)
+  fix-checks                    the PR head moved (a push arrived)
+  resolve-conflict              the PR head moved, a valid test proof exists for
+                                the new head on the pinned target tip, and a valid
+                                rebase record for it was posted during the tick
+                                (rebase_policy.py; needs --worktree and
+                                --attempt-file). A moved head alone is no success.
+                                Claude only for now: the Codex runner keeps the
+                                moved-head rule until issue 537 adds its side
   fix                           the PR head moved, or a comment whose first line
                                 is "Reply-only fix by <Agent> at <selected sha>"
                                 was created during the tick
@@ -30,13 +37,14 @@ agents share one GitHub account, so the marker names the agent.
 
 Usage:
   tick_verify.py --agent claude --action-file action.json --since 2026-09-28T12:00:00Z
-      [--worktree DIR]
+      [--worktree DIR] [--attempt-file attempt.json]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -47,6 +55,9 @@ from github_quota import QuotaExhausted, run_gh, stop_on_quota
 from next_action import EPIC, REPO, body_digest, issue_url, other
 
 PUSHES = {"fix-checks", "resolve-conflict"}
+# Agents whose runner pins attempts and posts rebase records. Codex joins
+# with https://github.com/phaabe/live.moafunk.de/issues/537.
+PROVEN_REBASES = {"claude"}
 CHECKED = {"merge", "review", "fix", "adopt", *PUSHES}
 UNCHECKED = {"continue", "claim", "escalate", "idle", "stop"}
 READ_FAILED = 5
@@ -90,6 +101,7 @@ def landed(
     since: str,
     fetch: Fetch = gh_json,
     worktree: str | None = None,
+    attempt: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     """(landed, reason) for one selected action."""
     kind = action.get("action")
@@ -112,6 +124,8 @@ def landed(
         reason = unpublished(worktree, pr["headRefOid"])
         if reason:
             return False, f"PR {number} head moved, but {reason}"
+    if kind == "resolve-conflict" and moved and agent in PROVEN_REBASES:
+        return resolution(agent, action, pr["headRefOid"], since, fetch, worktree, attempt)
     if kind in PUSHES:
         return moved, f"PR {number} head {'moved' if moved else 'did not move'}"
     comments = fetch(
@@ -137,6 +151,41 @@ def landed(
     if any((c.get("body") or "").strip().splitlines()[:1] == [marker] for c in new):
         return True, "reply-only fix posted"
     return False, f"PR {number} head did not move and no reply-only fix was posted"
+
+
+def resolution(
+    agent: str,
+    action: dict[str, Any],
+    head: str,
+    since: str,
+    fetch: Fetch,
+    worktree: str | None,
+    attempt: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    """A moved head counts only with a valid proof and rebase record."""
+    # Imported here: runners that copy this file without it (the Codex runner
+    # tests) keep working for every other action.
+    import rebase_policy
+
+    number = action["pr"]
+    if not worktree or not attempt:
+        return False, f"PR {number} head moved, but the runner worktree or attempt pin is missing"
+    if attempt.get("pr") != number or attempt.get("head") != action["sha"]:
+        return False, "the attempt pin is for another PR or head"
+    rows = fetch(
+        ["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{number}/comments?per_page=100"]
+    )
+    flat = [c for page in rows for c in (page if isinstance(page, list) else [page])]
+    state = Path(os.environ.get("EPIC_STATE_DIR") or Path.home() / ".local/state/epic-loop")
+    try:
+        problem = rebase_policy.verify_resolution(
+            agent, attempt, head, Path(worktree), state, flat, since
+        )
+    except rebase_policy.Problem as error:
+        problem = str(error)
+    if problem:
+        return False, f"PR {number} head moved, but {problem}"
+    return True, f"PR {number} rebased to {head[:7]} with test proof and rebase record"
 
 
 def owner_lines(agent: str, lane: str | None) -> dict[str, re.Pattern[str]]:
@@ -190,12 +239,21 @@ def main() -> int:
     parser.add_argument("--action-file", required=True)
     parser.add_argument("--since", required=True, help="tick start, UTC ISO 8601")
     parser.add_argument("--worktree", help="the tick's runner worktree")
+    parser.add_argument("--attempt-file", help="the resolve-conflict attempt pin")
     args = parser.parse_args()
     try:
         with open(args.action_file) as f:
             action = json.load(f)
+        attempt = None
+        if args.attempt_file:
+            with open(args.attempt_file) as f:
+                attempt = json.load(f)
         ok, reason = landed(
-            args.agent, action, args.since, worktree=args.worktree or None
+            args.agent,
+            action,
+            args.since,
+            worktree=args.worktree or None,
+            attempt=attempt,
         )
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"tick: cannot verify: {error}", file=sys.stderr)

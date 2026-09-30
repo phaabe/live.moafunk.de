@@ -20,6 +20,7 @@ from unittest import mock
 
 import git_gate
 import permission_gate as gate
+import rebase_policy
 
 PRODUCTION = git_gate.TRUSTED
 
@@ -114,10 +115,40 @@ class Fixture(unittest.TestCase):
                 "EPIC_STATE_DIR": str(self.state),
                 "EPIC_TRUSTED_ROOT": str(self.root),
                 "EPIC_WORKTREE_DIR": str(self.wtdir),
+                "EPIC_ATTEMPT_FILE": str(self.tmp / "attempt.json"),
+                "EPIC_REBASE_SUITES": str(self.tmp / "suites.json"),
             },
         )
         paths.start()
         self.addCleanup(paths.stop)
+        # One cheap suite for the fixture's files (rebase_policy.SUITES shape).
+        self.suite_command = ["python3", "-c", "pass"]
+        self.write_suites()
+        self.pin()
+
+    def write_suites(self) -> None:
+        (self.tmp / "suites.json").write_text(
+            json.dumps([{"name": "files", "paths": ["f.txt", "g.txt", "h.txt"],
+                         "cwd": ".", "command": self.suite_command}])  # fmt: skip
+        )
+
+    def pin(self) -> None:
+        """The runner's attempt pin: the action's head and the base tip now."""
+        (self.tmp / "attempt.json").write_text(
+            json.dumps(
+                {
+                    "key": "k",
+                    "pr": 7,
+                    "head": self.action.get("sha"),
+                    "base": BASE,
+                    "tip": self.remote_head(BASE),
+                }
+            )
+        )
+
+    def prove(self) -> dict[str, Any]:
+        """rebase_policy.py prove, as the model runs it after the rebase."""
+        return rebase_policy.prove(self.wt, 7, BASE, self.state)
 
     def read_pr(self, number: int) -> dict[str, Any]:
         self.assertEqual(number, 7)
@@ -136,6 +167,8 @@ class Fixture(unittest.TestCase):
             **context,
         }
         (self.tmp / "context.json").write_text(json.dumps(ctx))
+        if hasattr(self, "state"):
+            self.pin()
 
     def remote_head(self, branch: str = BRANCH) -> str:
         return sh(self.remote, "rev-parse", f"refs/heads/{branch}").stdout.strip()
@@ -160,6 +193,7 @@ class Fixture(unittest.TestCase):
         sh(self.seed, "commit", "-q", "-am", "base moves")
         sh(self.seed, "push", "-q", "origin", BASE)
         sh(self.wt, "fetch", "-q", "origin")
+        self.pin()
 
     def lease(self, sha: str | None = None) -> str:
         return (
@@ -173,6 +207,7 @@ class RebaseFlowTest(Fixture):
         self.advance_base("zero\none\ntwo\n")
         out = self.run_approved(f"git -C {self.wt} rebase origin/{BASE}")
         self.assertEqual(out.returncode, 0, out.stderr)
+        self.prove()
         out = self.run_approved(self.lease())
         self.assertEqual(out.returncode, 0, out.stderr)
         new = self.remote_head()
@@ -183,6 +218,7 @@ class RebaseFlowTest(Fixture):
         self.advance_base("zero\none\ntwo\n")
         out = self.run_approved(f"git -C {self.wt} rebase -q origin/{BASE}")
         self.assertEqual(out.returncode, 0, out.stderr)
+        self.prove()
         lease = self.lease().replace(" push ", " push -q ")
         self.assertEqual(self.run_approved(lease).returncode, 0)
 
@@ -217,6 +253,7 @@ class RebaseFlowTest(Fixture):
         )
         out = self.run_approved(f"git -C {self.wt} rebase --continue")
         self.assertEqual(out.returncode, 0, out.stderr)
+        self.prove()
         self.assertEqual(self.run_approved(self.lease()).returncode, 0)
         self.assertEqual(
             sh(self.remote, "show", f"{BRANCH}:f.txt").stdout, "one\nresolved\n"
@@ -242,6 +279,7 @@ class RebaseFlowTest(Fixture):
     def test_stale_lease_fails_when_the_remote_moves(self) -> None:
         self.advance_base("zero\none\ntwo\n")
         self.run_approved(f"git -C {self.wt} rebase origin/{BASE}")
+        self.prove()
         # Someone pushes to the PR branch after the pin.
         other = self.tmp / "other"
         sh(self.tmp, "clone", "-q", "-b", BRANCH, str(self.remote), str(other))
