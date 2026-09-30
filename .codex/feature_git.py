@@ -200,18 +200,146 @@ def load_rebase(path: Path, context: dict[str, Any]) -> dict[str, Any] | None:
     state = json.loads(path.read_text())
     if (
         not isinstance(state, dict)
-        or set(state) != set(context) | {"original_head", "onto"}
+        or set(state) != set(context) | {"original_head", "onto", "conflicted"}
         or any(state.get(key) != value for key, value in context.items())
         or any(
             not isinstance(state.get(key), str) or not SHA.fullmatch(state[key])
             for key in ("original_head", "onto")
         )
         or state["original_head"] != context["expected_head"]
+        or not isinstance(state.get("conflicted"), list)
+        or any(not isinstance(path, str) for path in state["conflicted"])
     ):
         raise Refused(
             "rebase record does not match the selected PR; preserve it for manual recovery"
         )
     return state
+
+
+def attempt_tip(state_dir: Path, context: dict[str, Any]) -> str:
+    path = state_dir / "rebase-attempt.json"
+    if path.is_symlink():
+        raise Refused("rebase attempt must not be a symlink")
+    attempt = json.loads(path.read_text())
+    if (
+        not isinstance(attempt, dict)
+        or attempt.get("agent") != "codex"
+        or attempt.get("pr") != context["pr"]
+        or attempt.get("head") != context["expected_head"]
+        or attempt.get("base") != context["base"]
+        or not isinstance(attempt.get("tip"), str)
+        or not SHA.fullmatch(attempt["tip"])
+        or attempt.get("key")
+        != f"pr:{context['pr']}:head:{context['expected_head']}:base:{attempt['tip']}"
+    ):
+        raise Refused("rebase attempt does not match the selected PR")
+    return attempt["tip"]
+
+
+def require_proof(
+    worktree: Path, state_dir: Path, state: dict[str, Any], *, prove: bool = False
+) -> str:
+    """Use the runner's policy, never code or suite overrides from the model."""
+    policy_dir = Path(state["runner"]) / "scripts/epic"
+    if policy_dir.resolve() != policy_dir or any(
+        (policy_dir / name).is_symlink()
+        for name in ("rebase_policy.py", "github_quota.py")
+    ):
+        raise Refused("runner policy path must not contain symlinks")
+    head = git(worktree, "rev-parse", "HEAD")
+    validator = """
+import json
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import rebase_policy as policy
+top, state_dir = Path(sys.argv[2]), Path(sys.argv[3])
+pr, head, onto = int(sys.argv[4]), sys.argv[5], sys.argv[6]
+attempt = json.loads((state_dir / 'rebase-attempt.json').read_text())
+table = attempt.get('proof_suites')
+if not isinstance(table, list) or not all(policy.valid_suite(s) for s in table):
+    sys.exit('the pinned attempt has no valid proof suites')
+policy.suites = lambda: table
+problem = policy.unclean(top) or policy.proof_problem(
+    policy.load_proof(state_dir, pr, head), top, pr, head, onto
+)
+if problem:
+    sys.exit(problem)
+"""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("CODEX_", "GIT_", "EPIC_", "PYTHON"))
+    }
+    env["PATH"] = "/usr/bin:/bin"
+    command = [
+        sys.executable,
+        "-I",
+        "-c",
+        validator,
+        str(policy_dir),
+        str(worktree),
+        str(state_dir),
+        str(state["pr"]),
+        head,
+        state["onto"],
+    ]
+    if prove:
+        wrapper = Path(state["runner"]) / ".codex/rebase_proof.py"
+        if wrapper.resolve(strict=True) != wrapper:
+            raise Refused("runner proof wrapper must not contain symlinks")
+        command = [
+            sys.executable,
+            "-I",
+            str(wrapper),
+            str(state["runner"]),
+            str(worktree),
+            str(state_dir),
+            str(state["pr"]),
+            head,
+            state["onto"],
+        ]
+    result = subprocess.run(
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise Refused(f"no valid test proof: {result.stderr.strip()}")
+    return head
+
+
+def run_rebase(
+    worktree: Path, state_path: Path, state: dict[str, Any], *args: str
+) -> str:
+    try:
+        return git(worktree, "rebase", *args)
+    except Refused:
+        conflicted = git(
+            worktree, "diff", "--name-only", "--diff-filter=U"
+        ).splitlines()
+        if conflicted:
+            state["conflicted"] = sorted(set(state["conflicted"]) | set(conflicted))
+            write_json(state_path, state)
+        raise
+
+
+def record_publication(state_dir: Path, state: dict[str, Any]) -> None:
+    path = state_dir / "codex-rebases.json"
+    if path.is_symlink():
+        raise Refused("publication records must not be a symlink")
+    records = json.loads(path.read_text()) if path.exists() else {}
+    if not isinstance(records, dict):
+        raise Refused("invalid publication records")
+    records[state["branch"]] = {
+        "pr": state["pr"],
+        "sha": state["original_head"],
+        "onto": state["onto"],
+        "conflicted": state["conflicted"],
+    }
+    write_json(path, records)
 
 
 def check_rebase(worktree: Path, state: dict[str, Any] | None) -> bool:
@@ -290,6 +418,7 @@ def rebase_operation(
                 raise Refused("base and expected head must match the selected PR")
             if state is not None:
                 raise Refused("recorded rebase exists; continue, abort or publish it")
+            pinned_tip = attempt_tip(state_path.parent, context)
             if (
                 branch != context["branch"]
                 or git(worktree, "rev-parse", "HEAD") != args.expected_head
@@ -322,14 +451,22 @@ def rebase_operation(
                 "--no-recurse-submodules",
                 "--refmap=",
                 "origin",
-                f"refs/heads/{args.base}",
+                f"refs/heads/{args.base}:refs/remotes/origin/{args.base}",
             )
             onto = git(worktree, "rev-parse", "FETCH_HEAD^{commit}")
-            state = {**context, "original_head": args.expected_head, "onto": onto}
+            if onto != pinned_tip:
+                raise Refused("base changed since the runner pinned the attempt")
+            state = {
+                **context,
+                "original_head": args.expected_head,
+                "onto": onto,
+                "conflicted": [],
+            }
             write_json(state_path, state)
-            return git(
+            return run_rebase(
                 worktree,
-                "rebase",
+                state_path,
+                state,
                 "--merge",
                 "--no-autostash",
                 "--no-autosquash",
@@ -358,15 +495,26 @@ def rebase_operation(
             state_path.unlink()
             return output
         if args.command == "rebase-continue":
+            if attempt_tip(state_path.parent, context) != state["onto"]:
+                raise Refused("base changed; abort the active rebase before restarting")
             if not active:
                 completed_rebase(worktree, state)
                 return "Rebase already completed; publish with the original lease."
-            return git(worktree, "rebase", "--continue")
+            return run_rebase(worktree, state_path, state, "--continue")
+        completed_rebase(worktree, state)
+        if attempt_tip(state_path.parent, context) != state["onto"]:
+            raise Refused("rebase destination does not match the pinned attempt")
+        if args.command == "prove":
+            head = require_proof(worktree, state_path.parent, state, prove=True)
+            return f"Test proof is valid for {head}."
         if args.expected_remote_sha != state["expected_head"]:
             raise Refused("lease must equal the original pinned PR head")
-        completed_rebase(worktree, state)
+        proven_head = require_proof(worktree, state_path.parent, state)
         if remote_head(worktree, state["branch"]) != state["expected_head"]:
             raise Refused("origin PR head changed; the pinned lease is stale")
+        completed_rebase(worktree, state)
+        if git(worktree, "rev-parse", "HEAD") != proven_head:
+            raise Refused("HEAD changed after checking the test proof")
         output = git(
             worktree,
             "push",
@@ -374,8 +522,9 @@ def rebase_operation(
             "--recurse-submodules=no",
             f"--force-with-lease=refs/heads/{state['branch']}:{state['expected_head']}",
             "origin",
-            f"HEAD:refs/heads/{state['branch']}",
+            f"{proven_head}:refs/heads/{state['branch']}",
         )
+        record_publication(state_path.parent, state)
         state_path.unlink()
         return output
 
@@ -392,6 +541,7 @@ def main() -> int:
     rebase.add_argument("--expected-head", required=True)
     commands.add_parser("rebase-continue", allow_abbrev=False)
     commands.add_parser("rebase-abort", allow_abbrev=False)
+    commands.add_parser("prove", allow_abbrev=False)
     lease = commands.add_parser("push-with-lease", allow_abbrev=False)
     lease.add_argument("--expected-remote-sha", required=True)
     args = parser.parse_args()

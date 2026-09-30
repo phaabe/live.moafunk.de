@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/epic"))
 import isolated_env  # noqa: E402, F401 (before production modules or fixtures)
+import rebase_policy  # noqa: E402
 
 import json
 import os
@@ -23,7 +24,9 @@ BRANCH = "feat/431-example"
 
 class FeatureRebaseTests(unittest.TestCase):
     def setUp(self) -> None:
-        temporary = tempfile.TemporaryDirectory(prefix="feature-rebase-")
+        temporary = tempfile.TemporaryDirectory(
+            prefix="feature-rebase-", dir="/private/tmp"
+        )
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.home = self.root / "home"
@@ -51,6 +54,16 @@ class FeatureRebaseTests(unittest.TestCase):
         self.initial = self.git("rev-parse", "HEAD")
         self.runner = self.root / "live-runner"
         self.git("worktree", "add", "-b", "chore/999-runner", str(self.runner))
+        policy = self.runner / "scripts/epic"
+        policy.mkdir(parents=True)
+        for filename in ("rebase_policy.py", "github_quota.py"):
+            shutil.copyfile(
+                SCRIPT.parent.parent / "scripts/epic" / filename, policy / filename
+            )
+        (self.runner / ".codex").mkdir()
+        shutil.copyfile(
+            SCRIPT.with_name("rebase_proof.py"), self.runner / ".codex/rebase_proof.py"
+        )
         self.worktree = self.root / "live-wt" / BRANCH
         self.git("worktree", "add", "-b", BRANCH, str(self.worktree))
         (self.worktree / "tracked.txt").write_text("feature\n")
@@ -58,11 +71,13 @@ class FeatureRebaseTests(unittest.TestCase):
         self.git("commit", "-m", "test: feature change", cwd=self.worktree)
         self.before = self.git("rev-parse", "HEAD", cwd=self.worktree)
         self.git("push", "origin", BASE, BRANCH)
-        self.helper = self.root / "installed-feature-git.py"
+        (self.root / "installed").mkdir()
+        self.helper = self.root / "installed" / "installed-feature-git.py"
         shutil.copyfile(SCRIPT, self.helper)
         self.context = self.root / "runner-state" / "context.json"
         self.context.parent.mkdir()
         self.state = self.context.with_name("rebase-431.json")
+        self.attempt = self.context.with_name("rebase-attempt.json")
         self.context_data: dict[str, str | int] = {
             "version": 1,
             "action": "resolve-conflict",
@@ -74,6 +89,7 @@ class FeatureRebaseTests(unittest.TestCase):
             "runner": str(self.runner),
         }
         self.write_context()
+        self.pin_attempt()
         self.config = self.helper.with_suffix(".json")
         self.config.write_text(
             json.dumps(
@@ -122,7 +138,37 @@ class FeatureRebaseTests(unittest.TestCase):
 
     def rebase(self) -> subprocess.CompletedProcess[str]:
         # Keep the command explicit at call sites that test rejected arguments.
+        self.pin_attempt()
         return self.run_helper("rebase", "--base", BASE, "--expected-head", self.before)
+
+    def pin_attempt(self) -> None:
+        tip = self.git("rev-parse", f"refs/heads/{BASE}", cwd=self.remote)
+        self.attempt.write_text(
+            json.dumps(
+                {
+                    "key": f"pr:431:head:{self.before}:base:{tip}",
+                    "agent": "codex",
+                    "pr": 431,
+                    "head": self.before,
+                    "base": BASE,
+                    "tip": tip,
+                    "proof_suites": rebase_policy.suites(),
+                    "proof_path": os.environ.get("PATH", os.defpath),
+                    "proof_codex": str(Path(shutil.which("codex")).resolve())
+                    if shutil.which("codex")
+                    else None,
+                }
+            )
+        )
+
+    def run_proof(self) -> subprocess.CompletedProcess[str]:
+        return self.run_helper("prove")
+
+    def prove(self) -> Path:
+        result = self.run_proof()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        head = self.git("rev-parse", "HEAD", cwd=self.worktree)
+        return self.context.parent / "rebase-proofs" / f"pr-431-{head}.json"
 
     def advance_base(self, *, conflict: bool = False) -> str:
         filename = "tracked.txt" if conflict else "base.txt"
@@ -155,12 +201,24 @@ class FeatureRebaseTests(unittest.TestCase):
         self.git("tag", "-a", "unwanted-tag", "-m", "unwanted", cwd=self.worktree)
         self.git("config", "push.followTags", "true")
         self.git("config", "remote.origin.push", "HEAD:refs/heads/main")
+        self.prove()
         result = self.run_helper(
             "push-with-lease", "--expected-remote-sha", self.before
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.remote_head(), rebased)
         self.assertFalse(self.state.exists())
+        self.assertEqual(
+            json.loads(self.context.with_name("codex-rebases.json").read_text()),
+            {
+                BRANCH: {
+                    "pr": 431,
+                    "sha": self.before,
+                    "onto": base_head,
+                    "conflicted": [],
+                }
+            },
+        )
         self.assertEqual(
             self.git(
                 "for-each-ref", "--format=%(refname)", cwd=self.remote
@@ -182,6 +240,231 @@ class FeatureRebaseTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD^", cwd=self.worktree), base_head)
         self.assertEqual(self.git("rev-parse", "refs/heads/main"), self.initial)
         self.assertEqual(self.remote_head(), self.before)
+
+    def test_missing_or_stale_attempt_refuses_rebase_before_mutation(self) -> None:
+        self.advance_base()
+        for content in (None, "{}", self.attempt.read_text()):
+            with self.subTest(content=content):
+                if content is None:
+                    self.attempt.unlink(missing_ok=True)
+                else:
+                    self.attempt.write_text(content)
+                self.assert_refused(
+                    self.run_helper(
+                        "rebase", "--base", BASE, "--expected-head", self.before
+                    )
+                )
+                self.assertFalse(self.state.exists())
+
+    def test_proof_refusals_preserve_remote_and_rebase_record(self) -> None:
+        self.advance_base()
+        result = self.rebase()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        recorded = self.state.read_bytes()
+        head = self.git("rev-parse", "HEAD", cwd=self.worktree)
+        path = self.prove()
+        proof = json.loads(path.read_text())
+        cases = [
+            None,
+            [],
+            {},
+            {**proof, "pr": 432},
+            {**proof, "commit": self.before},
+            {**proof, "tree": self.initial},
+            {**proof, "onto": self.initial},
+            {**proof, "suites": [{"name": "test", "result": "failed", "exit": 1}]},
+            {**proof, "suites": [{"name": "test", "result": "skipped", "exit": None}]},
+        ]
+        for invalid in cases:
+            with self.subTest(proof=invalid):
+                if invalid is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(json.dumps(invalid))
+                result = self.run_helper(
+                    "push-with-lease", "--expected-remote-sha", self.before
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("no valid test proof", result.stderr)
+                self.assertEqual(self.remote_head(), self.before)
+                self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.worktree), head)
+                self.assertEqual(self.state.read_bytes(), recorded)
+                self.assertFalse(self.context.with_name("codex-rebases.json").exists())
+
+    def test_required_suite_cannot_be_removed_by_model_environment(self) -> None:
+        self.advance_base()
+        self.assertEqual(self.rebase().returncode, 0)
+        path = self.prove()
+        proof = json.loads(path.read_text())
+        (self.worktree / ".codex").mkdir()
+        (self.worktree / ".codex/probe.txt").write_text("required suite\n")
+        self.git("add", ".codex/probe.txt", cwd=self.worktree)
+        self.git("commit", "-m", "test: require codex suite", cwd=self.worktree)
+        head = self.git("rev-parse", "HEAD", cwd=self.worktree)
+        proof.update(
+            commit=head, tree=self.git("rev-parse", "HEAD^{tree}", cwd=self.worktree)
+        )
+        path.with_name(f"pr-431-{head}.json").write_text(json.dumps(proof))
+        suites = self.root / "empty-suites.json"
+        suites.write_text("[]")
+        fake_policy = self.worktree / "scripts/epic"
+        fake_policy.mkdir(parents=True)
+        (fake_policy / "rebase_policy.py").write_text("raise SystemExit(0)\n")
+        # Ignore model-controlled files so only the missing suite blocks this push.
+        (self.repo / ".git/info/exclude").write_text("scripts/\n")
+        result = self.run_helper(
+            "push-with-lease",
+            "--expected-remote-sha",
+            self.before,
+            env={
+                **self.env,
+                "EPIC_REBASE_SUITES": str(suites),
+                "PYTHONPATH": str(fake_policy),
+                "EPIC_STATE_DIR": str(self.root),
+            },
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("required suite codex did not run", result.stderr)
+        self.assertEqual(self.remote_head(), self.before)
+
+    def test_later_commit_or_dirty_tree_invalidates_proof(self) -> None:
+        self.advance_base()
+        self.assertEqual(self.rebase().returncode, 0)
+        self.prove()
+        (self.worktree / "tracked.txt").write_text("changed after proof\n")
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                if staged:
+                    self.git("add", "tracked.txt", cwd=self.worktree)
+                result = self.run_helper(
+                    "push-with-lease", "--expected-remote-sha", self.before
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("clean worktree", result.stderr)
+                self.assertEqual(self.remote_head(), self.before)
+        self.git("commit", "-m", "test: change after proof", cwd=self.worktree)
+        result = self.run_helper(
+            "push-with-lease", "--expected-remote-sha", self.before
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no test proof", result.stderr)
+        self.assertEqual(self.remote_head(), self.before)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS sandbox-exec integration")
+    @unittest.skipIf(
+        os.environ.get("CODEX_PROOF_SANDBOX") == "1", "macOS forbids nested sandboxes"
+    )
+    def test_pinned_suite_proofs_reject_failed_or_skipped_suites(
+        self,
+    ) -> None:
+        self.advance_base()
+        self.assertEqual(self.rebase().returncode, 0)
+        attempt = json.loads(self.attempt.read_text())
+        for command, passed in (
+            ([sys.executable, "-c", "raise SystemExit(7)"], False),
+            ([str(self.root / "missing-test")], False),
+            ([sys.executable, "-c", "pass"], True),
+        ):
+            with self.subTest(command=command):
+                attempt["proof_suites"] = [
+                    {
+                        "name": "fixture",
+                        "paths": ["tracked.txt"],
+                        "cwd": ".",
+                        "command": command,
+                    }
+                ]
+                self.attempt.write_text(json.dumps(attempt))
+                result = self.run_proof()
+                self.assertEqual(result.returncode == 0, passed, result.stderr)
+                proof = rebase_policy.load_proof(
+                    self.context.parent,
+                    431,
+                    self.git("rev-parse", "HEAD", cwd=self.worktree),
+                )
+                self.assertEqual(proof["suites"][0]["command"], command)
+                if not passed:
+                    result = self.run_helper(
+                        "push-with-lease", "--expected-remote-sha", self.before
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.remote_head(), self.before)
+        result = self.run_helper(
+            "push-with-lease", "--expected-remote-sha", self.before
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS sandbox-exec integration")
+    @unittest.skipIf(
+        os.environ.get("CODEX_PROOF_SANDBOX") == "1", "macOS forbids nested sandboxes"
+    )
+    def test_prove_blocks_suite_writes_to_protected_files(self) -> None:
+        self.advance_base()
+        self.assertEqual(self.rebase().returncode, 0)
+        attempt = json.loads(self.attempt.read_text())
+        for target in (
+            self.context,
+            self.helper,
+            self.config,
+            self.runner / ".codex/rebase_proof.py",
+            self.repo / ".git/config",
+        ):
+            with self.subTest(target=target):
+                original = target.read_bytes()
+                attempt["proof_suites"] = [
+                    {
+                        "name": "protected-write",
+                        "paths": ["tracked.txt"],
+                        "cwd": ".",
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('forged')",
+                            str(target),
+                        ],
+                    }
+                ]
+                self.attempt.write_text(json.dumps(attempt))
+                result = self.run_helper("prove")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(target.read_bytes(), original)
+                result = self.run_helper(
+                    "push-with-lease", "--expected-remote-sha", self.before
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.remote_head(), self.before)
+        self.pin_attempt()
+        self.prove()
+        result = self.run_helper(
+            "push-with-lease", "--expected-remote-sha", self.before
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_conflict_paths_survive_continue_and_publication(self) -> None:
+        onto = self.advance_base(conflict=True)
+        self.assertNotEqual(self.rebase().returncode, 0)
+        self.assertEqual(
+            json.loads(self.state.read_text())["conflicted"], ["tracked.txt"]
+        )
+        (self.worktree / "tracked.txt").write_text("resolved\n")
+        self.git("add", "tracked.txt", cwd=self.worktree)
+        result = self.run_helper("rebase-continue")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.prove()
+        result = self.run_helper(
+            "push-with-lease", "--expected-remote-sha", self.before
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = json.loads(self.context.with_name("codex-rebases.json").read_text())
+        self.assertEqual(
+            records[BRANCH],
+            {
+                "pr": 431,
+                "sha": self.before,
+                "onto": onto,
+                "conflicted": ["tracked.txt"],
+            },
+        )
 
     def test_rebase_does_not_update_sibling_branch_with_update_refs_enabled(
         self,
@@ -258,10 +541,43 @@ class FeatureRebaseTests(unittest.TestCase):
         self.assertEqual(self.remote_head(), self.before)
         self.assertFalse(self.state.exists())
 
+    def test_changed_attempt_tip_refuses_continue_but_allows_abort_and_restart(
+        self,
+    ) -> None:
+        self.advance_base(conflict=True)
+        self.assertNotEqual(self.rebase().returncode, 0)
+        (self.worktree / "tracked.txt").write_text("resolved old target\n")
+        self.git("add", "tracked.txt", cwd=self.worktree)
+        recorded = self.state.read_bytes()
+        active_head = self.git("rev-parse", "HEAD", cwd=self.worktree)
+        new_tip = self.advance_base()
+        self.pin_attempt()
+        result = self.run_helper("rebase-continue")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("abort the active rebase", result.stderr)
+        self.assertEqual(self.state.read_bytes(), recorded)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.worktree), active_head)
+        self.assertEqual(self.git("branch", "--show-current", cwd=self.worktree), "")
+        result = self.run_helper("rebase-abort")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.worktree), self.before)
+        self.assertNotEqual(self.rebase().returncode, 0)
+        self.assertEqual(json.loads(self.state.read_text())["onto"], new_tip)
+        (self.worktree / "tracked.txt").write_text("resolved new target\n")
+        self.git("add", "tracked.txt", cwd=self.worktree)
+        result = self.run_helper("rebase-continue")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.prove()
+        result = self.run_helper(
+            "push-with-lease", "--expected-remote-sha", self.before
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_stale_lease_preserves_new_remote_commit(self) -> None:
         self.advance_base()
         result = self.rebase()
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.prove()
         recorded = self.state.read_bytes()
         self.git("checkout", "-b", "feat/999-concurrent", self.before, cwd=self.runner)
         (self.runner / "concurrent.txt").write_text("someone else's change\n")
@@ -440,6 +756,7 @@ class FeatureRebaseTests(unittest.TestCase):
         self.advance_base()
         result = self.rebase()
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.prove()
         recorded = self.state.read_bytes()
         hook = self.repo / ".git/hooks/pre-push"
         hook.write_text("#!/bin/sh\nexit 17\n")
@@ -632,6 +949,7 @@ class FeatureRebaseTests(unittest.TestCase):
             ("push-with-lease",),
             ("push-with-lease", "--force-with-lease"),
             ("rebase-skip",),
+            ("prove", "--command", "true"),
             ("rebase", "--skip"),
             ("rebase-continue", "--skip"),
             ("-c", "core.hooksPath=/dev/null", *rebase),

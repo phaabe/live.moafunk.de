@@ -27,7 +27,9 @@ REAL_GIT = shutil.which("git")
 
 class TickTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="epic-tick-", dir="/tmp")
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="epic-tick-", dir=Path(os.environ.get("TMPDIR", "/tmp")).resolve()
+        )
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.repo = self.root / "checkout with spaces"

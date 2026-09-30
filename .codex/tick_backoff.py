@@ -51,6 +51,11 @@ def target_key(action: dict[str, object]) -> str:
         sha = action.get("sha")
         if type(pr) is not int or pr <= 0 or not isinstance(sha, str) or not sha:
             raise ValueError("invalid PR target")
+        if action.get("action") == "resolve-conflict":
+            tip = action.get("target_tip")
+            if not isinstance(tip, str) or re.fullmatch(r"[0-9a-f]{40}", tip) is None:
+                raise ValueError("resolve-conflict needs a pinned target tip")
+            return f"pr:{pr}:{sha}:base:{tip}"
         return f"pr:{pr}:{sha}"
     issue = action.get("issue")
     if isinstance(issue, str) and issue:

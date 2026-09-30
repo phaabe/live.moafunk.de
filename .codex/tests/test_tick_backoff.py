@@ -105,6 +105,38 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual(backoff.check(other, self.state, 900, 1001), 0)
         self.assertEqual(backoff.check(self.action, self.state, 900, 1001), 3)
 
+    def test_conflict_cooldown_is_scoped_to_head_and_target_tip(self) -> None:
+        action = {
+            "action": "resolve-conflict",
+            "pr": 410,
+            "sha": "a" * 40,
+            "target_tip": "b" * 40,
+        }
+        self.assertEqual(self.record(action), 3)
+        self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
+        self.assertEqual(backoff.check(action, self.state, 900, 1900), 0)
+        for changed in ({"target_tip": "c" * 40}, {"sha": "d" * 40}):
+            self.assertEqual(
+                backoff.check({**action, **changed}, self.state, 900, 1001), 0
+            )
+        # An older head-only cooldown must not suppress a newly pinned base.
+        self.record({**action, "action": "fix"})
+        self.assertEqual(
+            backoff.check({**action, "target_tip": "c" * 40}, self.state, 900, 1001), 0
+        )
+
+    def test_conflict_without_a_valid_pin_fails_closed(self) -> None:
+        for tip in (None, "", "bad", True):
+            with self.subTest(tip=tip), self.assertRaises(ValueError):
+                backoff.target_key(
+                    {
+                        "action": "resolve-conflict",
+                        "pr": 410,
+                        "sha": "a" * 40,
+                        "target_tip": tip,
+                    }
+                )
+
     def test_issue_cooldown_transfers_once_without_extending_expiry(self) -> None:
         self.record()
         action = {"action": "continue", "pr": 410, "sha": "a" * 40}

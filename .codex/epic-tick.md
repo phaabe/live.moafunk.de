@@ -51,8 +51,8 @@ Use `EPIC_REVIEW_ATTEMPT_DIR` for this attempt's scratch files.
 | `merge` | Recheck the actual head equals `sha`, the latest unedited Claude verdict approves that head, every required check is green, the base is allowed and files are in Codex's lane. Read all comment pages. Run the shared checker when installed; until then perform the checks directly. Use `gh pr merge <pr> --repo phaabe/live.moafunk.de --squash --match-head-commit <sha>`. Record the commit and tests on the linked issue and perform normal local cleanup. |
 | `fix` | Read the verdict and every URL in `comments`. In the PR's worktree, fix each finding with regression coverage. If you disagree, reply with reasons and stop. Test, commit and push. Comment with addressed findings and the new head SHA. |
 | `fix-checks` | Read the failing check logs first. For a failed `epic-guard` status, read its description in `gh pr checks <pr> --repo phaabe/live.moafunk.de` for the reason (lane, PR body lines, base). Fix the cause in the PR's worktree, test, commit and push. |
-| `resolve-conflict` | Use the installed helper to rebase onto the actual PR base with the selected `sha`. Resume only its recorded rebase, resolve and stage conflicts, then continue. Run tests and publish with the same pinned remote SHA. Follow the exact commands below. A new head needs a new Claude review. |
-| `review` | Review Claude's exact `sha` in the prepared detached checkout. Run tests and probe edge cases. Save the complete review bundle below. The runner publishes its findings and standalone Codex verdict after this session ends. Do not post review comments yourself. |
+| `resolve-conflict` | Use the installed helper to rebase onto the pinned target tip with the selected `sha`. Resume only its recorded rebase, resolve and stage conflicts, then continue. Run the appended shared proof command and publish with the same pinned remote SHA. Follow the exact commands below. A new head needs a new Claude review. |
+| `review` | Review Claude's exact `sha` in the prepared detached checkout, using the shared review scope below. Run tests and probe edge cases. Save the complete review bundle below. The runner publishes its findings and standalone Codex verdict after this session ends. Do not post review comments yourself. |
 | `continue` | Resume the claimed issue or draft PR, in its own worktree. Finish the work and tests, commit, push, and mark the PR ready. Update the issue's project status only from recorded leaf evidence; use Done only when every leaf is done. |
 | `adopt` | Recheck the head equals `sha`, the PR is open and its body has no `Executor:`, `Author:` or `Reviewer:` line, with any value. Otherwise stop. Confirm its routed owner is Codex and determine a valid lane if the board Executor supplied ownership without `lane`. Find the issue it implements and its leaf IDs (or `setup`); if unclear, return blocked. Write a body file with the six metadata lines below at line start, preserving the original body text. Put it directly in the PR body directory named below the action (`$EPIC_BODY_DIR`); the hook accepts no other file. Move existing metadata lines instead of duplicating them. Apply only `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<pr> -F body=@<absolute-file-path>`, using a literal path. Comment that Codex adopted the PR. Change nothing else. The runner verifies the body before accepting completion. |
 | `claim` | Read the issue and readiness comment. Pick only Ready leaves assigned to Codex. Check ownership, record leaf IDs/files/the prepared branch and set Status to In progress. Use the prepared worktree. Run GitNexus impact before editing. Open a draft PR early. |
@@ -119,17 +119,29 @@ Use only these extra forms with the same literal helper prefix:
 python3 -I <helper> --worktree <path> rebase --base <actual-base> --expected-head <selected-sha>
 python3 -I <helper> --worktree <path> rebase-continue
 python3 -I <helper> --worktree <path> rebase-abort
+python3 -I <helper> --worktree <path> prove
 python3 -I <helper> --worktree <path> push-with-lease --expected-remote-sha <selected-sha>
 ```
 
-The helper fetches the base itself and pins the remote head before rebasing.
-Never replace the selected SHA after fetching. When a recorded rebase exists,
-continue it; do not start another one. Git's temporary detached HEAD is valid
+The runner pins the target tip before starting this attempt. The helper fetches
+the actual base and refuses if its tip differs from that pin. The lease expects
+the original remote PR head (the selected SHA), never the target tip.
+Never replace the selected SHA after fetching. When a recorded rebase exists
+on the pinned target tip, continue it. If it is still active on an older target
+tip, explicitly abort it with the helper and start again on this attempt's pin.
+A completed rebase on an older tip needs operator recovery; preserve it.
+Git's temporary detached HEAD is valid
 only for that record. Resolve conflicts and `git add` the intended resolutions
-before `rebase-continue`. Do not commit during the active rebase. Abort only to
-return to the original branch; an abort does not complete the conflict task.
+before `rebase-continue`. Do not commit during the active rebase. An abort
+returns to the original branch and does not complete the conflict task.
 After a completed rebase, tests may be fixed with normal commits followed by
-`push-with-lease` using the original selected SHA. Otherwise return blocked;
+the appended proof command and `push-with-lease` using the original selected
+SHA. The installed `prove` command runs the shared required suites in a
+Codex sandbox and saves commit/tree proof in protected runner state.
+Tests cannot write the proof receipts, runner context or installed helper.
+The worktree and index must be clean. Any later edit or commit requires another
+proof. The installed helper refuses publication without a matching valid proof.
+Otherwise return blocked;
 the helper does not restart or undo a completed rebase. If no PR commits remain
 beyond the base, return blocked for operator review. Do not add an empty commit
 to bypass that refusal.
@@ -138,6 +150,20 @@ if resolution or tests fail, the lease is stale, or the helper refuses. A missin
 or outdated helper blocks before model launch and starts the target cooldown.
 Do not fall back to raw rebase or force-push commands, widen permissions, modify
 the runner context or remove its persistent rebase record.
+
+After the session, the runner posts the exact shared rebase record using
+`rebase_policy.py publish`: old/new heads, old series base (merge-base of the
+old head and pinned target tip), target tip, conflicted paths and proof summary.
+Do not post a second record or invent another format. The runner accepts success
+only after `tick_verify.py` confirms the moved head, proof and GitHub record;
+your `completed` result alone cannot clear failure state.
+
+Started conflict attempts share the counter keyed by PR, head and target tip.
+At the configured limit (default 2), no model starts and the runner posts
+`needs-anton`; a failed label post keeps the key suppressed. Cooldown remains
+separate and delays a retry. Its conflict key also includes the target tip, so
+a new base can retry the same head. Quota and verification read waits do not
+count as failed rebases. Do not edit these stores or retry inside this tick.
 
 Call `gh` as a single literal command, with no shell wrappers or compound
 commands. Write body files before calling `gh --body-file`; use file editing
@@ -158,6 +184,15 @@ the runner makes one reset query and uses the shared fallback if it fails.
 Quota results do not create target cooldowns or repeat-gate records.
 
 ## Review evidence and cleanup
+
+Use a focused review only when the appended shared scope says `focused`:
+inspect its range-diff, base changes from the old series base to the pinned
+target tip that affect PR files or related symbols, all conflicted files, and
+every unresolved earlier finding. The record must match your last reviewed
+head, pass local SHA/ancestry checks and have all old objects available; the
+base must not have advanced. Missing or invalid scope, truncation, or unclear
+impact requires a full review. Either scope produces the same exact verdict
+for the new head and the same complete evidence bundle.
 
 The runner supplies `EPIC_REVIEW_DIR/context.json` and `bundle.json`. Preserve
 their repository, PR, reviewer, head, base, `review_started_at` and reviewed
