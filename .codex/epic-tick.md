@@ -34,7 +34,14 @@ Preserve unfinished files and commits. If the checkout no longer matches the
 selected work, stop. A branch held elsewhere needs manual handoff: its human
 operator releases it, and a later tick prepares the runner checkout. Never use
 `--force` or `--ignore-other-worktrees` to acquire it, or reset, stash or remove
-the other checkout. Review actions keep their separate detached-checkout flow.
+the other checkout.
+
+For `review`, the runner has prepared exactly one detached checkout at
+`/private/tmp/moafunk-review-<pr>-<full-sha>` and started this session there.
+Use that checkout; do not create another review worktree or remove it yourself.
+The runner verifies its repository and exact head before reuse. Keep review
+notes, findings and comment drafts in `EPIC_REVIEW_DIR`, outside the checkout.
+Use `EPIC_REVIEW_ATTEMPT_DIR` for this attempt's scratch files.
 
 ## Act
 
@@ -45,7 +52,7 @@ the other checkout. Review actions keep their separate detached-checkout flow.
 | `fix` | Read the verdict and every URL in `comments`. In the PR's worktree, fix each finding with regression coverage. If you disagree, reply with reasons and stop. Test, commit and push. Comment with addressed findings and the new head SHA. |
 | `fix-checks` | Read the failing check logs first. For a failed `epic-guard` status, read its description in `gh pr checks <pr> --repo phaabe/live.moafunk.de` for the reason (lane, PR body lines, base). Fix the cause in the PR's worktree, test, commit and push. |
 | `resolve-conflict` | Use the installed helper to rebase onto the actual PR base with the selected `sha`. Resume only its recorded rebase, resolve and stage conflicts, then continue. Run tests and publish with the same pinned remote SHA. Follow the exact commands below. A new head needs a new Claude review. |
-| `review` | Review Claude's exact `sha` in a detached checkout. Run tests and probe edge cases. Post findings separately, then one standalone verdict: `Review: APPROVED by Codex at <sha>` or `Review: CHANGES REQUESTED by Codex at <sha>`. Recheck the head immediately before posting; if it changed, stop. |
+| `review` | Review Claude's exact `sha` in the prepared detached checkout. Run tests and probe edge cases. Save the complete review bundle below before posting any comment. Post findings separately, then one standalone verdict: `Review: APPROVED by Codex at <sha>` or `Review: CHANGES REQUESTED by Codex at <sha>`. Recheck the head immediately before posting; if it changed, stop. |
 | `continue` | Resume the claimed issue or draft PR, in its own worktree. Finish the work and tests, commit, push, and mark the PR ready. Update the issue's project status only from recorded leaf evidence; use Done only when every leaf is done. |
 | `adopt` | Recheck the head equals `sha`, the PR is open and its body has no `Executor:`, `Author:` or `Reviewer:` line, with any value. Otherwise stop. Confirm its routed owner is Codex and determine a valid lane if the board Executor supplied ownership without `lane`. Find the issue it implements and its leaf IDs (or `setup`); if unclear, return blocked. Write a body file with the six metadata lines below at line start, preserving the original body text. Move existing metadata lines instead of duplicating them. Apply only `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<pr> -F body=@<absolute-file-path>`, using a literal path. Comment that Codex adopted the PR. Change nothing else. The runner verifies the body before accepting completion. |
 | `claim` | Read the issue and readiness comment. Pick only Ready leaves assigned to Codex. Check ownership, record leaf IDs/files/the prepared branch and set Status to In progress. Use the prepared worktree. Run GitNexus impact before editing. Open a draft PR early. |
@@ -149,3 +156,34 @@ failure, use `status: "blocked"`, `reason_code: "github_rate_limit"`, and the UT
 (ISO 8601, for example `2026-09-29T12:01:00Z`). If the time is unknown, use null;
 the runner makes one reset query and uses the shared fallback if it fails.
 Quota results do not create target cooldowns or repeat-gate records.
+
+## Review evidence and cleanup
+
+The runner supplies `EPIC_REVIEW_DIR/context.json` and `bundle.json`. Preserve
+their repository, PR, reviewer, head, base and reviewed metadata. While reviewing,
+save draft findings outside the checkout as you go. Before the first comment
+write, put the completed version 1 bundle in the attempt directory: explicit
+`verdict` (`APPROVED` or `CHANGES REQUESTED`), `status: "complete"`, `findings`,
+and ordered `comments` with each exact `body` and `url: null`. Findings come
+first; the final comment is the exact standalone Codex verdict for the head.
+Never infer approval from empty findings or a successful test run.
+
+Persist it with the runner's helper, using the appended absolute paths:
+
+```text
+python3 <runner>/.codex/review_worktree.py save-bundle --context-file <review-dir>/context.json --bundle-file <attempt-dir>/bundle.json
+```
+
+Post only after this succeeds. Save confirmed comment URLs in the same bundle
+through `save-bundle`; set `status: "published"` only after all comments and the
+current-head verdict are confirmed on GitHub. Preserve the bundle on a failed
+write, quota wait or changed head. Do not restart a completed review to retry
+delivery; pending bundles require the separate delivery workflow or operator
+handling. Never replace a completed bundle with new analysis.
+
+After this child stops, the runner attempts
+`python3 -I <home>/.local/libexec/codex-cleanup-git.py --worktree <runner> remove-worktree <review-path>`,
+then prunes stale worktree metadata. It keeps the retaining ref until removal
+succeeds and no pending review needs it. Dirty, locked, mismatched or refused
+paths stay in place and are reported as retained. A posted review stays completed
+even if cleanup fails; do not repeat it to repair cleanup.

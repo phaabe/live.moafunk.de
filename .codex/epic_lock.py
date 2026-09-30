@@ -56,6 +56,7 @@ def acquire(lock: Path, pid: int, max_age: int) -> bool:
                 "assignment.json",
                 "prompt.txt",
                 "worktree.txt",
+                "review-context.json",
             }
             if any(
                 entry.name not in expected or entry.is_dir() for entry in lock.iterdir()
