@@ -409,42 +409,111 @@ class VerifyAdoptTest(unittest.TestCase):
 
 
 class PermissionBodyEditTest(unittest.TestCase):
-    COMMAND = "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -F body=@/tmp/body.md"
+    PATCH = "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -F body=@"
+    ADOPT = {"action": "adopt", "pr": 484}
 
-    def allowed(self, command: str, action: dict | None) -> bool:
-        with tempfile.TemporaryDirectory() as tmp:
-            env = {}
-            if action is not None:
-                path = Path(tmp) / "action.json"
-                path.write_text(json.dumps(action))
-                env["EPIC_ACTION_FILE"] = str(path)
-            with patch.dict(os.environ, env, clear=False):
-                if action is None:
-                    os.environ.pop("EPIC_ACTION_FILE", None)
-                return permission_gate.decide("Bash", {"command": command})[0]
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.body_dir = self.tmp / "body"
+        self.body_dir.mkdir()
+        self.body = self.body_dir / "body.md"
+        self.body.write_text("Executor: Claude\n")
+        self.command = self.PATCH + str(self.body)
+        # What the runner records when it creates the directory.
+        info = os.stat(self.body_dir)
+        self.anchor = f"{info.st_dev}:{info.st_ino}"
+
+    def allowed(
+        self, command: str, action: dict | None, anchor: str | None = None
+    ) -> bool:
+        env = {"EPIC_BODY_DIR_ID": self.anchor if anchor is None else anchor}
+        if action is not None:
+            path = self.tmp / "action.json"
+            path.write_text(json.dumps(action))
+            env["EPIC_ACTION_FILE"] = str(path)
+        with patch.dict(os.environ, env, clear=False):
+            if action is None:
+                os.environ.pop("EPIC_ACTION_FILE", None)
+            return permission_gate.decide("Bash", {"command": command})[0]
 
     def test_adopt_tick_may_edit_its_pr_body(self) -> None:
-        self.assertTrue(self.allowed(self.COMMAND, {"action": "adopt", "pr": 484}))
+        self.assertTrue(self.allowed(self.command, self.ADOPT))
 
     def test_other_pr_or_action_is_denied(self) -> None:
-        self.assertFalse(self.allowed(self.COMMAND, {"action": "adopt", "pr": 485}))
-        self.assertFalse(self.allowed(self.COMMAND, {"action": "fix", "pr": 484}))
-        self.assertFalse(self.allowed(self.COMMAND, None))
+        self.assertFalse(self.allowed(self.command, {"action": "adopt", "pr": 485}))
+        self.assertFalse(self.allowed(self.command, {"action": "fix", "pr": 484}))
+        self.assertFalse(self.allowed(self.command, None))
+
+    def test_body_file_only_directly_in_body_dir(self) -> None:
+        outside = self.tmp / "secret.txt"
+        outside.write_text("token")
+        nested = self.body_dir / "sub"
+        nested.mkdir()
+        (nested / "b.md").write_text("x")
+        link = self.body_dir / "link.md"
+        link.symlink_to(outside)
+        for path in (
+            outside,
+            nested / "b.md",
+            link,
+            self.body_dir / "missing.md",
+            nested,
+            self.body_dir / "sub" / ".." / "body.md",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(self.allowed(self.PATCH + str(path), self.ADOPT))
+        self.assertFalse(self.allowed(self.PATCH + "body.md", self.ADOPT))
+
+    def test_body_dir_anchor_must_match(self) -> None:
+        other = self.tmp / "other"
+        other.mkdir()
+        info = os.stat(other)
+        for anchor in ("", "x", f"{info.st_dev}:{info.st_ino}"):
+            with self.subTest(anchor=anchor):
+                self.assertFalse(self.allowed(self.command, self.ADOPT, anchor))
+
+    def test_body_dir_given_through_a_symlink_still_matches(self) -> None:
+        alias = self.tmp / "alias"
+        alias.symlink_to(self.body_dir)
+        self.assertTrue(self.allowed(self.PATCH + str(alias / "body.md"), self.ADOPT))
+
+    def test_replaced_body_dir_is_denied(self) -> None:
+        # The session renames the runner's directory away and puts a symlink
+        # to another directory (or a new directory) at the same path.
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "body.md").write_text("secret")
+        self.body_dir.rename(self.tmp / "saved-body")
+        self.body_dir.symlink_to(outside)
+        self.assertFalse(self.allowed(self.command, self.ADOPT))
+        self.body_dir.unlink()
+        self.body_dir.mkdir()
+        (self.body_dir / "body.md").write_text("new")
+        self.assertFalse(self.allowed(self.command, self.ADOPT))
+
+    def test_hard_link_to_another_file_is_denied(self) -> None:
+        outside = self.tmp / "secret.txt"
+        outside.write_text("token")
+        linked = self.body_dir / "linked.md"
+        os.link(outside, linked)
+        self.assertFalse(self.allowed(self.PATCH + str(linked), self.ADOPT))
 
     def test_other_api_shapes_are_denied(self) -> None:
-        adopt = {"action": "adopt", "pr": 484}
+        b = self.body
         for command in (
             "gh api repos/phaabe/live.moafunk.de/pulls/484",
-            "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -f body=@/tmp/b",
-            "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -F title=@/tmp/b",
-            "gh api --method PATCH repos/other/repo/pulls/484 -F body=@/tmp/b",
-            "gh api --method PATCH repos/phaabe/live.moafunk.de/issues/484 -F body=@/tmp/b",
-            "gh api --method PUT repos/phaabe/live.moafunk.de/pulls/484/merge -F body=@/tmp/b",
+            f"gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -f body=@{b}",
+            f"gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -F title=@{b}",
+            f"gh api --method PATCH repos/other/repo/pulls/484 -F body=@{b}",
+            f"gh api --method PATCH repos/phaabe/live.moafunk.de/issues/484 -F body=@{b}",
+            f"gh api --method PUT repos/phaabe/live.moafunk.de/pulls/484/merge -F body=@{b}",
             "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -F body=@../b",
-            "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -F body=@/tmp/b -F state=closed",
+            f"gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/484 -F body=@{b} -F state=closed",
         ):
             with self.subTest(command=command):
-                self.assertFalse(self.allowed(command, adopt))
+                self.assertFalse(self.allowed(command, self.ADOPT))
 
 
 if __name__ == "__main__":

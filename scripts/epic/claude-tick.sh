@@ -182,6 +182,10 @@ else
     fi
     exit "$result"
 fi
+# The adopt body directory of this tick; removed on exit. Only an adopt tick
+# sets these, never an inherited value.
+body_dir=""
+unset EPIC_BODY_DIR EPIC_BODY_DIR_ID
 cleanup() {
     local result=$?
     # Log the finish while the lock is held, so the next tick's start line
@@ -197,6 +201,9 @@ cleanup() {
     rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" \
         "${lock_dir}/context.json" "${lock_dir}/result.json" "${lock_dir}/cooldown.json" \
         "${lock_dir}/attempt.json" "${lock_dir}/scope.json"
+    if [[ -n "$body_dir" ]]; then
+        rm -rf "$body_dir"
+    fi
     rmdir "$lock_dir"
 }
 # Stop the running child (selector or model) before the lock is released, so a
@@ -322,9 +329,10 @@ lock_target() {
 
 # No cap: a cap that restarts at the top every tick starves later candidates
 # while the first ones stay blocked. A skipped candidate costs one REST read.
+# Candidates come on fd 3, so a loop command that reads stdin cannot eat them.
 selected=0
 worktree=""
-while IFS= read -r candidate; do
+while IFS= read -r -u 3 candidate; do
     if [[ -z "$candidate" ]]; then
         continue
     fi
@@ -455,7 +463,7 @@ while IFS= read -r candidate; do
     esac
     selected=1
     break
-done <<< "$candidates"
+done 3<<< "$candidates"
 if [[ "$selected" != 1 ]]; then
     printf 'tick: no candidate to run\n'
     exit 0
@@ -497,6 +505,17 @@ if [[ "$action" == review ]]; then
         4) quota_stop ;;
         *) printf 'tick: review scope failed (exit %s); full review\n' "$scoped" ;;
     esac
+fi
+# `adopt` writes its new PR body here. The permission gate accepts only a file
+# in this directory, identified by device and inode: a replaced directory or
+# a symlink in its place does not match.
+if [[ "$action" == adopt ]]; then
+    body_dir=$(mktemp -d /tmp/epic-adopt-claude.XXXXXX)
+    EPIC_BODY_DIR_ID=$(python3 -c 'import os, sys; s = os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$body_dir")
+    export EPIC_BODY_DIR="$body_dir" EPIC_BODY_DIR_ID
+    printf '\nPR body directory (write the adopt body file only here): %s\n' \
+        "$body_dir" >> "${lock_dir}/prompt.txt"
+    worktree_args+=(--add-dir "$body_dir")
 fi
 
 if [[ -e "${HOME}/.epic-pause" ]]; then
