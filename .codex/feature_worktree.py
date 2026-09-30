@@ -14,11 +14,11 @@ from typing import Any
 
 from feature_git import BRANCH, Refused, common_dir, git
 import feature_git
+import assignment
 import tick_backoff
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/epic"))
 import github_quota  # noqa: E402
-import next_action  # noqa: E402
 import github_state  # noqa: E402
 import tick_gate  # noqa: E402
 
@@ -64,7 +64,7 @@ def metadata(action: dict[str, Any]) -> tuple[str | None, str, int, str | None]:
     """Fresh ownership and branch metadata; never trust selector text as a ref."""
     reader = None
     check_quota()
-    if os.environ.get("EPIC_SHARED_READER") == "1":
+    if action.get("pr") is not None and os.environ.get("EPIC_SHARED_READER") == "1":
         reader = github_state.FreshReader("codex-worktree", 60)
 
     def read(kind: str, number: int) -> dict[str, Any]:
@@ -122,24 +122,20 @@ def metadata(action: dict[str, Any]) -> tuple[str | None, str, int, str | None]:
             "edit action requires a PR or an issue in the expected repository"
         )
     number = int(match[1])
+    reader = assignment.make_reader("codex-worktree", 60)
     issue = read("issues", number)
+    if issue.get("state") not in ("open", "closed"):
+        raise github_state.ReadBlocked("selected issue has no valid state")
     if issue.get("state") != "open" or "pull_request" in issue:
         raise Refused("selected issue is not open")
     check_quota()
-    items = reader.board_items() if reader else next_action.project_items()
-    matches = [
-        item
-        for item in items
-        if item.get("content", {}).get("url") == action["issue"]
-        and item["content"].get("type") == "Issue"
-    ]
-    status = "Ready" if action["action"] == "claim" else "In progress"
-    if (
-        len(matches) != 1
-        or matches[0].get("executor") != "Codex"
-        or matches[0].get("status") != status
-    ):
-        raise Refused(f"selected issue must be {status} and assigned to Codex")
+    evidence = assignment.evidence(action, reader)
+    if evidence.get("reason_code") == "github_rate_limit":
+        raise QuotaWait(evidence["reason"])
+    if evidence["result"] == "unknown":
+        raise github_state.ReadBlocked(evidence["reason"])
+    if not evidence["eligible"]:
+        raise Refused(evidence["reason"])
     return None, "dev/312-interim", number, None
 
 

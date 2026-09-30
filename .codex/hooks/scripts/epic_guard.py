@@ -384,10 +384,9 @@ def helper_push_command(command: str, cwd: Path) -> tuple[str, Path]:
 
 def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None:
     """Use the runner's trusted checker immediately before a GitHub write."""
-    if os.environ.get("EPIC_SHARED_READER") != "1" or not os.environ.get(
-        "EPIC_ACTION_FILE"
-    ):
+    if not os.environ.get("EPIC_ACTION_FILE"):
         return
+    shared = os.environ.get("EPIC_SHARED_READER") == "1"
     root = Path(
         os.environ.get("EPIC_TRUSTED_ROOT") or Path(__file__).resolve().parents[3]
     )
@@ -414,7 +413,48 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
         command, cwd = helper_push_command(tool_input.get("command", ""), cwd)
         tool_input = {**tool_input, "command": command}
     try:
-        refused = checks.guard(tool, tool_input, str(cwd), agent="Codex")
+        writes = checks.tool_writes(tool, tool_input, str(cwd))
+    except Exception as error:  # Unclear commands must block with the hook protocol.
+        raise ValueError(f"Runner write check failed: {error}") from error
+    if not writes:
+        return
+    action = json.loads(Path(os.environ["EPIC_ACTION_FILE"]).read_text())
+    if not isinstance(action, dict):
+        raise ValueError("The selected runner action must be an object.")
+    issue_action = (
+        action.get("action") in ("claim", "continue")
+        and bool(action.get("issue"))
+        and action.get("pr") is None
+    )
+    if not shared and not issue_action:
+        return
+    if issue_action:
+        try:
+            assignment_path = root / ".codex/assignment.py"
+            if not assignment_path.is_file():
+                raise ValueError(
+                    "assignment reader is missing from the trusted checkout"
+                )
+            sys.path.insert(0, str(root / ".codex"))
+            assignment = importlib.import_module("assignment")
+            if Path(assignment.__file__).resolve() != assignment_path.resolve():
+                raise ValueError(
+                    "assignment reader did not load from the trusted checkout"
+                )
+        except Exception as error:
+            raise ValueError(f"Runner write checks are unavailable: {error}") from error
+    try:
+        if shared:
+            kwargs = {"reader": assignment.make_reader} if issue_action else {}
+            refused = checks.guard(tool, tool_input, str(cwd), agent="Codex", **kwargs)
+        else:
+            # The shared-reader switch must stay off for the rest of the runner.
+            ctx = checks.Context(action, assignment.make_reader, agent="Codex")
+            refused = None
+            for write in writes:
+                refused = checks.check_write(ctx, write)
+                if refused:
+                    break
     except Exception as error:  # Malformed fresh data must also fail closed.
         raise ValueError(f"Runner write check failed: {error}") from error
     if refused:

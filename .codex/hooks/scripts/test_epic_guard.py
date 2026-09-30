@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import importlib.util
 import io
 import os
@@ -528,6 +529,10 @@ class FreshWriteCheckTest(unittest.TestCase):
         import next_action
         import write_checks
 
+        sys.path.insert(0, str(ROOT / ".codex"))
+        self.addCleanup(sys.path.remove, str(ROOT / ".codex"))
+        assignment = importlib.import_module("assignment")
+
         self.gs, self.na, self.checks = github_state, next_action, write_checks
         spec = importlib.util.spec_from_file_location(
             "codex_epic_guard", ROOT / ".codex/hooks/scripts/epic_guard.py"
@@ -549,6 +554,7 @@ class FreshWriteCheckTest(unittest.TestCase):
             patch.object(next_action, "PAUSE_FILE", self.directory / "pause"),
             patch.object(next_action, "FOCUS_FILE", self.directory / "focus"),
             patch.object(github_state, "FreshReader", return_value=self),
+            patch.object(assignment, "make_reader", return_value=self),
         ]
         for context in self.patches:
             context.start()
@@ -565,7 +571,7 @@ class FreshWriteCheckTest(unittest.TestCase):
         self.items = [self.item(21, "In progress")]
         self.branch_pulls: list[dict[str, Any]] = []
         self.errors: list[str] = []
-        self.fail: Exception | None = None
+        self.read_error: Exception | None = None
         self.reads: list[str] = []
         self.client = object()
 
@@ -583,8 +589,8 @@ class FreshWriteCheckTest(unittest.TestCase):
 
     def read(self, kind: str) -> None:
         self.reads.append(kind)
-        if self.fail:
-            raise self.fail
+        if self.read_error:
+            raise self.read_error
 
     def pull(self, number: int) -> dict[str, Any]:
         self.read(f"pull:{number}")
@@ -633,6 +639,18 @@ class FreshWriteCheckTest(unittest.TestCase):
         ):
             self.assertEqual(self.hook.main(), expected, stderr.getvalue())
             return stderr.getvalue()
+
+    def test_unclear_write_blocks_without_traceback_in_both_reader_modes(self) -> None:
+        self.action("claim", None)
+        for shared in ("0", "1"):
+            with (
+                self.subTest(shared=shared),
+                patch.dict(os.environ, {"EPIC_SHARED_READER": shared}),
+            ):
+                stderr = self.run_hook("git push --all origin", 2)
+                self.assertIn("BLOCKED by Codex epic guard:", stderr)
+                self.assertNotIn("Traceback", stderr)
+        self.assertEqual(self.reads, [])
 
     def test_claim_rechecks_ready_executor_blockers_and_slot(self) -> None:
         self.action("claim", None)
@@ -768,7 +786,7 @@ class FreshWriteCheckTest(unittest.TestCase):
             ("fix", 5, "gh pr comment 5 --body note"),
             ("merge", 5, f"gh pr merge 5 --match-head-commit {SHA}"),
         ]
-        self.fail = self.gs.ReadBlocked("HTTP 502")
+        self.read_error = self.gs.ReadBlocked("HTTP 502")
         for action, pr, command in cases:
             with self.subTest(action=action, command=command):
                 self.action(action, pr)
@@ -789,6 +807,7 @@ class FreshWriteCheckTest(unittest.TestCase):
 
     def test_read_only_and_disabled_calls_make_no_fresh_reads(self) -> None:
         self.run_hook("git status --short")
+        self.action("fix")
         with patch.dict(os.environ, {"EPIC_SHARED_READER": "0"}):
             self.run_hook("git push origin feat/21-work")
         self.assertEqual(self.reads, [])
@@ -800,6 +819,7 @@ class FreshWriteCheckTest(unittest.TestCase):
             )
 
     def test_feature_worktree_cannot_override_trusted_checker(self) -> None:
+        self.action("fix")
         trusted = self.directory / "trusted"
         helpers = trusted / "scripts/epic"
         helpers.mkdir(parents=True)
@@ -807,6 +827,7 @@ class FreshWriteCheckTest(unittest.TestCase):
             "AGENT = 'Claude'\n"
             "def check_push(ctx, write): return None\n"
             "original_push = check_push\n"
+            "def tool_writes(tool, tool_input, cwd): return [object()]\n"
             "def guard(tool, tool_input, cwd, *, agent):\n"
             "    assert agent == 'Codex'\n"
             "    assert AGENT == 'Claude'\n"
@@ -876,9 +897,9 @@ class FreshWriteCheckTest(unittest.TestCase):
         self.run_hook(command)
         self.assertIn("branch:feat/21-work", self.reads)
         self.action("fix")
-        self.fail = self.gs.ReadBlocked("HTTP 502")
+        self.read_error = self.gs.ReadBlocked("HTTP 502")
         self.assertIn("read failed", self.run_hook(command, 2))
-        self.fail = None
+        self.read_error = None
         self.pull_data["head"]["ref"] = "feat/22-other"
         self.assertIn("not PR 5", self.run_hook(command, 2))
 

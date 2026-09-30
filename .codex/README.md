@@ -237,13 +237,14 @@ existing approval settings; it never bypasses approvals or hook trust.
 Permission failures must return a blocked result and stop the tick. See
 [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
 
-Each tick passes `EPIC_STATE_DIR`, `EPIC_QUOTA_DIR` and `EPIC_ACTION_FILE` through
+Each tick passes `EPIC_STATE_DIR`, `EPIC_QUOTA_DIR`, `EPIC_ACTION_FILE` and
+`EPIC_TRUSTED_ROOT` through
 individual `shell_environment_policy.set` overrides. Exporting them into the
 CLI process alone is insufficient when Codex uses `inherit = "core"` for tool
 commands. These overrides preserve other configured values and inheritance
 settings. If a shell environment include filter is configured, it must also
 allow these names. When the shared reader is enabled, the runner also forwards
-`EPIC_SHARED_READER`, `EPIC_TRUSTED_ROOT` and configured cache, snapshot,
+`EPIC_SHARED_READER` and configured cache, snapshot,
 recheck, selection and focus-action settings. The include filter must allow
 those names too. See [Codex shell environment policy](https://learn.chatgpt.com/docs/config-file/config-advanced#shell-environment-policy).
 
@@ -262,6 +263,15 @@ selection each have a 120-second limit; Codex has a 1,800-second limit, with a
 invocation refreshes, selects again and checks the cooldown.
 Feature-worktree preparation has a separate `EPIC_PULL_TIMEOUT_SECONDS` limit,
 included in the runner's lock budget. A timeout stops before model launch.
+Issue claims and continuations also receive fresh REST assignment evidence from
+the selector's project board, with a separate 60-second limit in that budget.
+The evidence identifies the project, repository, issue, read time, Status and
+Executor. Complete absence, changed assignment and unknown/read failure stop
+before model launch. Failed reads do not record a target cooldown or repeat
+result. The model must use this evidence, not GraphQL `issue.projectItems`.
+The existing claim write checks run again against current REST state in both
+reader modes. This does not enable the shared snapshot reader or satisfy missing
+interface confirmations.
 With the shared reader enabled, fresh backoff lookup and action recheck each
 have a separate `EPIC_RECHECK_TIMEOUT_SECONDS` limit (default 60). Both limits
 are included in lock and agent-registration budgets. Snapshot lock wait plus

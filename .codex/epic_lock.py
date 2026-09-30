@@ -50,7 +50,13 @@ def acquire(lock: Path, pid: int, max_age: int) -> bool:
                     owner["pid"],
                 )
                 return False
-            expected = {"owner.json", "action.json", "prompt.txt"}
+            expected = {
+                "owner.json",
+                "action.json",
+                "assignment.json",
+                "prompt.txt",
+                "worktree.txt",
+            }
             if any(
                 entry.name not in expected or entry.is_dir() for entry in lock.iterdir()
             ):

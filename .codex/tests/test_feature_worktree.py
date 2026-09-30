@@ -42,21 +42,42 @@ class FeatureWorktreeTests(unittest.TestCase):
             self.repo.name.removesuffix("-runner") + "-wt"
         )
         self.destination = self.worktrees / BRANCH
-        for name in ("feature_worktree.py", "feature_git.py"):
+        for name in ("feature_worktree.py", "feature_git.py", "assignment.py"):
             shutil.copyfile(tick_fixture.ROOT / name, self.repo / ".codex" / name)
         selector = self.repo / "scripts/epic/next_action.py"
         selector.write_text(
-            "def project_items():\n"
-            "    import json, os\n"
-            "    with open(os.environ['TEST_WORKTREE_METADATA_CALLS'], 'a') as calls:\n"
-            "        calls.write('board\\n')\n"
-            "    return json.loads(os.environ['TEST_BOARD'])\n" + selector.read_text()
+            selector.read_text().replace(
+                "from selector_contract import BASES, EPIC, PROJECT_API, REPO, body_digest, issue_url, other",
+                "from selector_contract import *",
+            )
         )
         gh = self.fixture.bin / "gh"
         original = gh.read_text().split("\n", 1)[1]
         gh.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, sys\n"
+            "if sys.argv[1:3] == ['api', '-i']:\n"
+            "    url = sys.argv[-1]\n"
+            "    data = None\n"
+            "    if url.endswith('/issues/430'):\n"
+            "        data = json.loads(os.environ['TEST_WORKTREE_ISSUE'])\n"
+            "        boundary = 'issue'\n"
+            "    elif '/projectsV2/2/fields?' in url:\n"
+            "        data = [{'id': i, 'name': name} for i, name in enumerate(('Status', 'Wave', 'Executor', 'Labels', 'Area', 'Level'), 1)]\n"
+            "        boundary = 'fields'\n"
+            "    elif '/projectsV2/2/items?' in url:\n"
+            "        data = []\n"
+            "        for item in json.loads(os.environ['TEST_BOARD']):\n"
+            "            content = item.get('content')\n"
+            "            data.append({'id': 50430, 'node_id': 'PVTI_430', 'content_type': 'Issue',\n"
+            "                'content': {'number': content['number'], 'html_url': content['url']} if isinstance(content, dict) else content,\n"
+            "                'fields': [{'id': ident, 'name': name, 'value': {'name': {'raw': item[key]}}} for ident, name, key in [(1, 'Status', 'status'), (3, 'Executor', 'executor')] if key in item]})\n"
+            "        boundary = 'board'\n"
+            "    if data is not None or url.endswith('/issues/430'):\n"
+            "        with open(os.environ['TEST_WORKTREE_METADATA_CALLS'], 'a') as calls:\n"
+            "            calls.write(boundary + '\\n')\n"
+            "        print('HTTP/2.0 200 Test\\n\\n' + json.dumps(data))\n"
+            "        sys.exit(0)\n"
             "if (sys.argv[1:3] == ['api', '-i']\n"
             "        and sys.argv[-1].endswith('/pulls/431')):\n"
             "    with open(os.environ['TEST_WORKTREE_METADATA_CALLS'], 'a') as calls:\n"
@@ -735,6 +756,37 @@ class FeatureWorktreeTests(unittest.TestCase):
                 board[0][field] = value
                 self.env["TEST_BOARD"] = json.dumps(board)
                 self.assert_refused()
+
+    def test_incomplete_issue_assignment_has_no_target_cooldown(self) -> None:
+        cache = self.state / "github-cache"
+        cache.mkdir(parents=True)
+        (cache / "auth-context").write_text("test")
+        for shared in ("0", "1"):
+            self.env["EPIC_SHARED_READER"] = shared
+            for missing in ("status", "executor", "content"):
+                with self.subTest(shared=shared, missing=missing):
+                    board = json.loads(json.dumps(self.board))
+                    del board[0][missing]
+                    self.env["TEST_BOARD"] = json.dumps(board)
+                    result = self.prepare()
+                    self.assertEqual(result.returncode, 5, result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertIn(
+                        "lacks content"
+                        if missing == "content"
+                        else "lacks assignment fields",
+                        result.stderr,
+                    )
+                    self.assertFalse((self.state / "codex-backoff.json").exists())
+                    self.assertFalse(self.destination.exists())
+                    self.assertFalse(self.fixture.calls.exists())
+
+    def test_absent_issue_is_confirmed_refusal(self) -> None:
+        self.env["TEST_BOARD"] = "[]"
+        result = self.prepare()
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertIn("absent from the project", result.stderr)
+        self.assertTrue((self.state / "codex-backoff.json").exists())
 
     def test_claim_rejects_foreign_issue_url(self) -> None:
         self.action["issue"] = "https://github.com/other/repo/issues/430"
