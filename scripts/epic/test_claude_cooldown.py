@@ -248,6 +248,27 @@ class ClaudeCooldownTest(harness.RunnerHarness):
         self.assertEqual(self.models(), 0)
         self.assertEqual(self.cooldowns(), {})
 
+    def test_verify_read_error_is_no_cooldown(self) -> None:
+        # Codex review on PR 544: the real verifier exits 5 when its GitHub
+        # read fails; a later REST read that succeeds must not block the PR.
+        (self.repo / "scripts/epic/tick_verify.py").write_text(
+            "import runpy, sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'scripts/epic')!r})\n"
+            f"runpy.run_path({str(ROOT / 'scripts/epic/tick_verify.py')!r}, "
+            "run_name='__main__')\n"
+        )
+        self.assertNotIn("pr view", " ".join(self.github))
+        self.assertEqual(self.tick(CONFLICT, TEST_MODEL_RESULT=result("completed")), 5)
+        self.assertIn("cannot verify: GitHub read failed", self.log())
+        # The PR is open at the selected head, but a read error is no evidence:
+        # the cooldown does not even look.
+        self.assertNotIn(
+            ["gh", f"api {REPO}/pulls/526 --jq .state, .head.sha"], self.calls_made()
+        )
+        self.assertEqual(self.cooldowns(), {})
+        # As before: no evidence after a model exit 0 records the gate.
+        self.assertIn("526", self.gate_targets())
+
     def test_head_moved_elsewhere_is_no_cooldown(self) -> None:
         self.github["pulls/526 --jq .state"] = f"open\n{'e' * 40}"
         self.save_github()

@@ -16,8 +16,9 @@ a push or merge was denied. claude-tick.sh runs this after the session:
 `continue`, `claim`, `escalate`, `idle` and `stop` are not checked yet. An
 unknown action is bad input: it never passes. Exit 0 when the action landed or
 is not checked, 1 when it did not land, 2 on bad input, 4 on a GraphQL quota error
-(wait stored, see github_quota.py). GitHub read errors exit 1:
-an unverified tick is not reported as done.
+(wait stored, see github_quota.py), 5 when a GitHub read failed. A read error
+is no evidence that the action failed, so the runner sets no cooldown for it
+(tick_cooldown.py); the tick still fails.
 
 With --worktree (the runner worktree of the tick), a moved head counts only when
 it is this worktree's HEAD and no rebase is left in it. Another writer's push
@@ -48,6 +49,7 @@ from next_action import EPIC, REPO, body_digest, issue_url, other
 PUSHES = {"fix-checks", "resolve-conflict"}
 CHECKED = {"merge", "review", "fix", "adopt", *PUSHES}
 UNCHECKED = {"continue", "claim", "escalate", "idle", "stop"}
+READ_FAILED = 5
 
 Fetch = Callable[[list[str]], Any]
 
@@ -202,7 +204,7 @@ def main() -> int:
         return stop_on_quota(error)
     except subprocess.CalledProcessError:
         print("tick: cannot verify: GitHub read failed", file=sys.stderr)
-        return 1
+        return READ_FAILED
     if not ok:
         print(f"tick: {action.get('action')} did not land: {reason}", file=sys.stderr)
         return 1

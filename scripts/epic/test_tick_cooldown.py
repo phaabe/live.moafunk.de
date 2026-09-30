@@ -186,6 +186,9 @@ class CooldownTest(unittest.TestCase):
             ("verify failed, read failed", FIX, 0, 1, None, "", tc.MISSED),
             ("timeout, head moved", FIX, 124, 1, None, moved, tc.UNKNOWN),
             ("bad verify input", FIX, 0, 2, None, unchanged, tc.MISSED),
+            # tick_verify.py exit 5: a GitHub read failed, no evidence.
+            ("verify read error", FIX, 0, 5, None, unchanged, tc.MISSED),
+            ("timeout, verify read error", FIX, 124, 5, None, unchanged, tc.UNKNOWN),
         ]
         cont = {"action": "continue", "reason": "t", "issue": ISSUE}
         cases += [
@@ -232,8 +235,26 @@ class CooldownTest(unittest.TestCase):
         entries = self.entries()
         self.assertEqual(list(entries), [tc.key(cont)])
         self.assertEqual(entries[tc.key(cont)]["until"], until)
-        self.assertEqual(entries[tc.key(cont)]["from"], tc.key(claim))
+        self.assertEqual(entries[tc.key(cont)]["from"], [tc.key(claim)])
         # A push clears it.
+        self.assertEqual(self.check({**cont, "sha": "c" * 40}, NOW + 6), tc.RUN)
+
+    def test_all_entries_of_the_issue_transfer_together(self) -> None:
+        # Codex review on PR 544: a blocked claim and a blocked continue on one
+        # issue; the second entry blocked the next PR head again.
+        claim = {"action": "claim", "reason": "t", "issue": ISSUE}
+        issue_continue = {"action": "continue", "reason": "t", "issue": ISSUE}
+        self.block(claim)
+        self.block(issue_continue, now=NOW + 1)
+        cont = {"action": "continue", "reason": "t", "pr": 5, "sha": SHA}
+        self.assertEqual(self.check(cont, NOW + 5), tc.SKIP)
+        entries = self.entries()
+        self.assertEqual(list(entries), [tc.key(cont)])
+        self.assertEqual(
+            sorted(entries[tc.key(cont)]["from"]),
+            sorted([tc.key(claim), tc.key(issue_continue)]),
+        )
+        self.assertEqual(entries[tc.key(cont)]["until"], NOW + 1 + tc.DEFAULT_SECONDS)
         self.assertEqual(self.check({**cont, "sha": "c" * 40}, NOW + 6), tc.RUN)
 
     def test_no_transfer_for_another_issue_or_action(self) -> None:

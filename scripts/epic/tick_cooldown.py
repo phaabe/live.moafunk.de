@@ -10,10 +10,12 @@ exit code and timeout, runs tick_verify.py, then calls `record`:
 
   model result `blocked`                        cooldown
   model result `quota`                          no cooldown, no gate record (exit 4)
-  verify failed, PR open with the selected head  cooldown ("target unchanged")
+  verify exit 1, PR open with the selected head  cooldown ("target unchanged")
   verify passed                                 done: gate record, cooldown cleared
   anything else                                 no cooldown; the gate record as before
                                                 (only after a model exit 0)
+
+A verify read error (tick_verify.py exit 5) is no evidence: no cooldown.
 
 This holds for every model exit: 0, nonzero, and timeout (124/137). A nonzero
 exit alone is no evidence: for an action verify does not check (`continue`,
@@ -42,8 +44,9 @@ actions stays. The cooldown applies to `continue` too, although the gate
 never skips it (tick_gate.NEVER_SKIP).
 
 Issue to PR: a `claim` or `continue` cooldown on an issue moves to the
-`continue` of a PR whose single `Issue:` line names that issue. It keeps its
-end time and is keyed to the PR head seen then; a later push clears it.
+`continue` of a PR whose single `Issue:` line names that issue. All entries
+of that issue move at once, as one entry with the latest end time, keyed to
+the PR head seen then; a later push clears it.
 
 Usage:
   tick_cooldown.py check  --action-file A --state-dir D --seen-file S
@@ -221,14 +224,18 @@ def check(action: dict[str, Any], state_dir: Path, seen_file: Path, now: float) 
             prefixes = tuple(f"{AGENT}:{kind}:issue:" for kind in TRANSFER)
             waiting = [k for k in active(entries, now) if k.startswith(prefixes)]
             issue = pr_issue(action["pr"]) if waiting else None
-            source = next(
-                (k for k in waiting if issue and k.endswith(f":issue:{issue}")), None
-            )
-            if source is not None:
-                entry = {**entries.pop(source), "from": source}
+            # Consume every entry of that issue at once: a later head of the
+            # same PR must not pick up a second one.
+            sources = [k for k in waiting if issue and k.endswith(f":issue:{issue}")]
+            if sources:
+                moved = [entries.pop(k) for k in sources]
+                entry = {**max(moved, key=lambda e: e["until"]), "from": sources}
                 entries[found] = entry
                 save(state_dir, entries, now)
-                print(f"cooldown: moved {source} to PR {action['pr']}", file=sys.stderr)
+                print(
+                    f"cooldown: moved {', '.join(sources)} to PR {action['pr']}",
+                    file=sys.stderr,
+                )
         if entry is not None:
             print(
                 f"cooldown: skip {found} until {when(entry['until'])}: "
