@@ -38,6 +38,15 @@
 # The worktree step also writes the runner context (context.json in the lock
 # dir): the branch, base and PR the permission gate checks git writes against.
 #
+# Blocked-target cooldown (tick_cooldown.py): a candidate whose action on this
+# target, head (and base, for resolve-conflict) came back blocked is skipped for
+# EPIC_BLOCKED_COOLDOWN_SECONDS (default 4 hours), even for `continue`; the
+# tick tries the next candidate. Only runner evidence sets it: the model's
+# structured result (claude-result-schema.json) or a failed verify with the PR
+# still open at the selected head. A model exit or timeout is caught, so these
+# paths still verify. A blocked tick writes no repeat-gate record, so the retry
+# after expiry or a new base reaches the model.
+#
 # Run from a scheduler or a loop, for example:
 #   while true; do /bin/bash scripts/epic/claude-tick.sh; sleep 600; done
 set -euo pipefail
@@ -174,7 +183,7 @@ cleanup() {
             --log "$log_file" --since "$tick_offset" || true
     fi
     rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" \
-        "${lock_dir}/context.json"
+        "${lock_dir}/context.json" "${lock_dir}/result.json" "${lock_dir}/cooldown.json"
     rmdir "$lock_dir"
 }
 # Stop the running child (selector or model) before the lock is released, so a
@@ -331,6 +340,23 @@ while IFS= read -r candidate; do
         tick_phase=quota
         exit 0
     fi
+    # A blocked target cools down: no model, next candidate. No gate state yet.
+    tick_phase=backoff
+    cooldown=0
+    python3 scripts/epic/tick_cooldown.py check --state-dir "$registry_dir" \
+        --action-file "${lock_dir}/action.json" \
+        --seen-file "${lock_dir}/cooldown.json" || cooldown=$?
+    case "$cooldown" in
+        0) ;;
+        3)
+            release_target
+            printf 'tick: %s target cools down; next candidate\n' "$action"
+            continue
+            ;;
+        4) quota_stop ;;
+        5) read_blocked backoff ;;
+        *) exit "$cooldown" ;;
+    esac
     # After the lock: skip a repeat, or a target that changed since selection.
     tick_phase=gate
     gate=0
@@ -452,13 +478,21 @@ print(json.dumps({"mcpServers": {"epic-gate": {
 ' "${repo_root}/scripts/epic/permission_gate.py" "$state_dir" "${lock_dir}/action.json" \
     "$repo_root" "${lock_dir}/context.json" "$worktree_dir")
 # The write-check hook (.claude/hooks/scripts/epic_guard.py) reads these two.
+# The session's JSON result goes to result.json and then into the log. Its exit
+# (124 or 137 on timeout) is kept: the action is still verified.
+model_exit=0
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
     EPIC_WORKTREE="$worktree" GIT_EDITOR=true \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
     --settings "${repo_root}/scripts/epic/claude-runner-settings.json" \
     --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \
-    ${worktree_args[@]+"${worktree_args[@]}"} < "${lock_dir}/prompt.txt"
+    --output-format json \
+    --json-schema "$(cat "${repo_root}/scripts/epic/claude-result-schema.json")" \
+    ${worktree_args[@]+"${worktree_args[@]}"} < "${lock_dir}/prompt.txt" \
+    > "${lock_dir}/result.json" || model_exit=$?
+cat "${lock_dir}/result.json" || true
+printf '\ntick: model exit=%s\n' "$model_exit"
 # A session can exit 0 while its push or merge was denied. Check GitHub.
 # A quota wait (stored by the other runner during the session, or by verify)
 # ends the tick before the gate record, so the unverified action is not
@@ -478,11 +512,44 @@ python3 scripts/epic/tick_verify.py --agent claude --worktree "$worktree" \
 if [[ "$verify" == 4 ]]; then
     quota_stop
 fi
-# Any other verify failure still records the gate, so it is reported without
-# a retry storm.
-tick_phase=record
-python3 scripts/epic/tick_gate.py record --agent claude \
-    --action-file "${lock_dir}/action.json"
+# Evidence decides: cooldown (no gate record), gate record, or neither.
+tick_phase=result
+recorded=0
+python3 scripts/epic/tick_cooldown.py record --state-dir "$registry_dir" \
+    --action-file "${lock_dir}/action.json" --seen-file "${lock_dir}/cooldown.json" \
+    --result-file "${lock_dir}/result.json" --model-exit "$model_exit" \
+    --verify-exit "$verify" || recorded=$?
+case "$recorded" in
+    # Landed, or (after a model exit 0) not landed without evidence: record
+    # the gate, so a failure is reported without a retry storm.
+    0|1)
+        tick_phase=record
+        python3 scripts/epic/tick_gate.py record --agent claude \
+            --action-file "${lock_dir}/action.json"
+        ;;
+    3)
+        discard_seen
+        if [[ "$model_exit" == 0 ]]; then
+            tick_outcome=blocked
+        fi
+        ;;
+    4)
+        discard_seen
+        printf 'tick: not verified, model reported the GitHub quota\n' >&2
+        tick_outcome=blocked
+        tick_phase=quota
+        exit 75
+        ;;
+    6) discard_seen ;;
+    *)
+        discard_seen
+        exit "$recorded"
+        ;;
+esac
+if [[ "$model_exit" != 0 ]]; then
+    tick_phase=model
+    exit "$model_exit"
+fi
 if [[ "$verify" != 0 ]]; then
     tick_phase=verify
 fi

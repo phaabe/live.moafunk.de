@@ -23,7 +23,9 @@ WAIT_WRITE = (
 )
 
 
-class ClaudeTickTest(unittest.TestCase):
+class RunnerHarness(unittest.TestCase):
+    """Stubs and helpers; test_claude_cooldown.py reuses them."""
+
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory(prefix="claude-tick-")
         self.addCleanup(tmp.cleanup)
@@ -38,6 +40,8 @@ class ClaudeTickTest(unittest.TestCase):
             "scripts/epic/agents.py",
             "scripts/epic/tick_events.py",
             "scripts/epic/target_lock.py",
+            "scripts/epic/tick_cooldown.py",
+            "scripts/epic/claude-result-schema.json",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",
         ):
@@ -162,6 +166,8 @@ class ClaudeTickTest(unittest.TestCase):
         """The selected action of each model session, from its prompt's last line."""
         return [c[1] for c in self.calls_made() if c[0] == "claude"]
 
+
+class ClaudeTickTest(RunnerHarness):
     def test_locked_target_falls_through_to_the_next_candidate(self) -> None:
         second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
         locks = self.root / "locks"
@@ -352,10 +358,20 @@ class ClaudeTickTest(unittest.TestCase):
 
     def test_action_that_did_not_land_fails_the_tick_after_recording(self) -> None:
         # A denied push or merge exited 0 before; now the tick reports it.
+        # The cooldown reads the PR; a failed read is no evidence: gate record.
         self.assertEqual(self.run_tick(TEST_VERIFY_EXIT="1").wait(timeout=30), 1)
         self.assertEqual(
-            self.calls_made()[-2:], [["verify", "--since"], ["gate", "record"]]
+            self.calls_made()[-3:],
+            [
+                ["verify", "--since"],
+                [
+                    "gh",
+                    "api repos/phaabe/live.moafunk.de/pulls/1 --jq .state, .head.sha",
+                ],
+                ["gate", "record"],
+            ],
         )
+        self.assertFalse((self.state / "claude-cooldown.json").exists())
         self.assertIn("tick: finished exit=1", (self.state / "claude.log").read_text())
         self.assertFalse((self.state / "claude.lock").exists())
 
