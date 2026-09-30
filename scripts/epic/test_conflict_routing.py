@@ -181,6 +181,11 @@ class Routing(unittest.TestCase):
         (self.repo / ".codex/feature_worktree.py").write_text(
             f"print({str(self.repo)!r})\n"
         )
+        # Codex's assignment evidence step runs after the gate: it passes here.
+        (self.repo / ".codex/assignment.py").write_text(
+            "import sys\n"
+            "open(sys.argv[sys.argv.index('--output') + 1], 'w').write('{}')\n"
+        )
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         for name, text in (
