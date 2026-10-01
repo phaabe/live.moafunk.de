@@ -691,21 +691,122 @@ def load_action() -> dict[str, Any]:
     return action
 
 
+# --- promotion barrier ---
+
+# Read-only during a promotion; every other git verb counts as a write.
+PROMOTION_GIT_READS = {
+    "status", "log", "diff", "show", "rev-parse", "ls-files", "merge-base",
+    "blame", "grep", "cat-file", "ls-tree", "rev-list", "describe",
+    "show-ref", "for-each-ref", "--version", "version", "help",
+}  # fmt: skip
+GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+GIT_FLAG_OPTIONS = {
+    "--no-pager", "-P", "--paginate", "-p", "--no-optional-locks",
+    "--literal-pathspecs", "--no-replace-objects", "--bare",
+}  # fmt: skip
+# gh subcommands that only read; every other gh command counts as a write.
+PROMOTION_GH_READS = {"view", "list", "diff", "checks", "status", "item-list"}
+PROMOTION_GH_READ_GROUPS = {"search", "status", "browse", "--version", "help"}
+GIT_OR_GH = re.compile(r"\b(?:git|gh)\b")
+
+
+def git_may_write(words: list[str]) -> bool:
+    i = 1
+    while i < len(words) and words[i].startswith("-"):
+        option = words[i].split("=", 1)[0]
+        if option in GIT_VALUE_OPTIONS:
+            i += 1 if "=" in words[i] else 2
+        elif option in GIT_FLAG_OPTIONS:
+            i += 1
+        elif words[i] in PROMOTION_GIT_READS:
+            return False
+        else:
+            return True  # an option this check does not know
+    return i < len(words) and words[i] not in PROMOTION_GIT_READS
+
+
+def gh_api_may_write(args: list[str]) -> bool:
+    graphql = args[:1] == ["graphql"]
+    i = 0
+    while i < len(args):
+        arg, step = args[i], 1
+        if arg.startswith("-X") and len(arg) > 2:
+            name, value = "-X", arg[2:]
+        elif arg.startswith("--") and "=" in arg:
+            name, value = arg.split("=", 1)
+        else:
+            name, value = arg, args[i + 1] if i + 1 < len(args) else ""
+            step = 2 if arg in GH_VALUE_FLAGS else 1
+        if name in ("-X", "--method") and value.upper() != "GET":
+            return True
+        if name in ("-f", "-F", "--field", "--raw-field") and (
+            # Fields make a REST call a POST; a GraphQL query stays a read.
+            not graphql or "mutation" in value or "=@" in value
+        ):
+            return True
+        if name == "--input":
+            return True
+        i += step
+    return False
+
+
+def gh_may_write(words: list[str]) -> bool:
+    if len(words) < 2 or words[1] in PROMOTION_GH_READ_GROUPS:
+        return False
+    if words[1] == "api":
+        return gh_api_may_write(words[2:])
+    if words[1] == "auth":
+        return words[2:3] != ["status"]
+    return len(words) < 3 or words[2] not in PROMOTION_GH_READS
+
+
+def promotion_writes(tool_name: str, tool_input: dict[str, Any]) -> bool:
+    """Whether the tool call may write to Git or GitHub. Broader than
+    tool_writes: during a promotion every write counts, not only the runner's
+    own kinds. Anything that cannot be read counts as a write."""
+    if tool_name.startswith("mcp__github__"):
+        operation = tool_name.removeprefix("mcp__github__")
+        return not operation.startswith(("get_", "list_", "search_"))
+    command = tool_input.get("command") if tool_name == "Bash" else None
+    if not isinstance(command, str):
+        return False
+    for line, _stdin in segments(command):
+        commands = words_of(line)
+        if commands is None:
+            if GIT_OR_GH.search(line):
+                return True
+            continue
+        for words in commands:
+            words = strip_prefix(words)
+            if not words:
+                continue
+            name = os.path.basename(words[0])
+            if name in SHELLS and GIT_OR_GH.search(" ".join(words[1:])):
+                return True
+            if name == "git" and git_may_write(words):
+                return True
+            if name == "gh" and gh_may_write(words):
+                return True
+    return False
+
+
 def promotion_refusal(
     tool_name: str, tool_input: dict[str, Any], cwd: str
 ) -> str | None:
-    """While a runtime promotion marker exists, refuse every write (and every
-    command that may write but cannot be read) outside an admitted tick.
-    Runs in every session that loads these checks, not only in runner ticks.
-    Without a marker it costs one stat()."""
+    """While a runtime promotion marker exists, refuse every Git or GitHub
+    write (and every command that may write but cannot be read) outside an
+    admitted tick. Runs in every session that loads these checks, not only
+    in runner ticks. Without a marker it costs one stat()."""
     if not (target_lock.lock_dir() / PROMOTION_MARKER).exists():
         return None
     import runtime  # only with a marker: runner fixtures copy this module alone
 
     try:
-        writes = tool_writes(tool_name, tool_input, cwd)
+        writes = promotion_writes(tool_name, tool_input) or bool(
+            tool_writes(tool_name, tool_input, cwd)
+        )
     except Unclear:
-        writes = [Write("unclear")]
+        writes = True
     return runtime.write_barrier() if writes else None
 
 

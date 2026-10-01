@@ -600,6 +600,72 @@ class PromotionBarrier(Base):
         self.assertIsNone(self.refusal("ls -la"))
         self.assertIsNone(self.refusal("gh pr view 5"))
 
+    def test_every_git_and_github_write_is_refused(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "git add .",
+            "git commit -m x",
+            "git -C /tmp/x rebase origin/main",
+            "git --git-dir=/tmp/x/.git stash",
+            "git -c user.name=x tag v1",
+            "git --unknown-option status",
+            "gh issue create --title x --body y",
+            "gh label create x",
+            "gh release create v1",
+            "gh api repos/o/r/issues -f title=x",
+            "gh api -XPOST repos/o/r/issues",
+            "gh api --method=DELETE repos/o/r/labels/x",
+            "gh api repos/o/r/issues --input /tmp/x.json",
+            "gh api graphql -f query='mutation { addStar(input: {}) { clientMutationId } }'",
+            "gh api graphql -F query=@/tmp/q.graphql",
+            "cd /tmp && git push",
+            "python3 -c 'import os; os.system(\"gh issue create\")'",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("runtime promotion", self.refusal(command) or "")
+        for command in (
+            "git status --short",
+            "git -C /tmp/x log --oneline -3",
+            "git --no-pager diff HEAD~1",
+            "git --version",
+            "gh pr view 5",
+            "gh issue list --label bug",
+            "gh pr checks 5",
+            "gh api repos/o/r/pulls/5",
+            "gh api -X GET repos/o/r/issues -q .[0]",
+            "gh api graphql -f query='query { viewer { login } }'",
+            "gh search issues runtime",
+            "gh auth status",
+            "ls -la",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.refusal(command))
+
+    def test_github_mcp_writes_are_refused_reads_pass(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        for tool in ("mcp__github__create_issue", "mcp__github__push_files"):
+            refused = wc.promotion_refusal(tool, {"title": "x"}, str(self.root))
+            self.assertIn("runtime promotion", refused or "")
+        for tool in ("mcp__github__get_issue", "mcp__github__list_commits"):
+            self.assertIsNone(wc.promotion_refusal(tool, {}, str(self.root)))
+
+    def test_hook_refuses_manual_git_and_issue_writes(self) -> None:
+        # The payloads from the review of
+        # https://github.com/phaabe/live.moafunk.de/pull/592: no admitted
+        # process, pinned hook, EPIC_SHARED_READER=0.
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "git add scripts/epic/runtime.py",
+            "git commit -m 'fix: x'",
+            "git rebase origin/dev/312-interim",
+            "gh issue create --title x --body y",
+        ):
+            with self.subTest(command=command):
+                out = self.run_hook(command)
+                self.assertEqual(out.returncode, 2, out.stderr)
+                self.assertIn("Runtime promotion", out.stderr)
+        self.assertEqual(self.run_hook("git status").returncode, 0)
+
     def test_guard_refuses_before_any_github_read(self) -> None:
         self.action(action="fix", pr=5, sha=A)
         runtime.begin_promotion("2" * 40, None)
