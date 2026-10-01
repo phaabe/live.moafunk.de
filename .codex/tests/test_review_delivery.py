@@ -120,7 +120,9 @@ class DeliveryTests(unittest.TestCase):
             self.remote.append(self.comment(body))
         if self.quota_after_post:
             delivery.github_quota.record(
-                delivery.github_quota.STATE_DIR, time.time(), lookup=lambda: None
+                delivery.github_quota.STATE_DIR,
+                time.time(),
+                lookup=lambda: (None, None),
             )
         if self.lose_response:
             self.lose_response = False
@@ -171,7 +173,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_shared_quota_wait_makes_no_github_calls(self) -> None:
         delivery.github_quota.record(
-            delivery.github_quota.STATE_DIR, time.time(), lookup=lambda: None
+            delivery.github_quota.STATE_DIR, time.time(), lookup=lambda: (None, None)
         )
         self.fixture.requests.reset_mock()
         with self.assertRaises(delivery.feature_worktree.QuotaWait):
