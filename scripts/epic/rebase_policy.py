@@ -1093,6 +1093,11 @@ def main() -> int:
         print(f"record: {reason}", file=sys.stderr if code else sys.stdout)
         return code
     except QuotaExhausted as error:
+        # One GitHub quota for all agents: EPIC_QUOTA_DIR wins over the
+        # state dir, which is the agent's own folder for registered agents.
+        shared = os.environ.get("EPIC_QUOTA_DIR")
+        if shared:
+            quota_dir = Path(shared)
         return stop_on_quota(error, quota_dir) if quota_dir else stop_on_quota(error)
     except ReadFailed as error:
         print(f"rebase: GitHub read failed: {error}", file=sys.stderr)
