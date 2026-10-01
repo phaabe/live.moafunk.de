@@ -19,6 +19,7 @@ from typing import Any
 from unittest import mock
 
 import git_gate
+import runtime
 import permission_gate as gate
 import rebase_policy
 
@@ -757,6 +758,41 @@ class PushTest(Fixture):
         ):
             with self.subTest(command=command):
                 self.assertFalse(self.allowed(command))
+
+
+class PromotionBarrierTest(Fixture):
+    """https://github.com/phaabe/live.moafunk.de/issues/584: while a runtime
+    promotion marker exists, git writes need an admitted tick ancestor."""
+
+    action_kind = "fix"
+
+    def setUp(self) -> None:
+        super().setUp()
+        locks = mock.patch.dict(os.environ, {"EPIC_LOCK_DIR": str(self.tmp / "locks")})
+        locks.start()
+        self.addCleanup(locks.stop)
+        (self.wt / "g.txt").write_text("more\n")
+        sh(self.wt, "commit", "-q", "-am", "more")
+        self.push = f"git -C {self.wt} push origin {BRANCH}"
+
+    def test_marker_refuses_writes_outside_an_admitted_tick(self) -> None:
+        self.assertTrue(self.allowed(self.push))
+        marker = runtime.begin_promotion("2" * 40, None)
+        allowed, reason = self.decide(self.push)
+        self.assertFalse(allowed)
+        self.assertIn("runtime promotion", reason)
+        self.assertTrue(self.allowed(f"git -C {self.wt} status --short"))
+        runtime.clear_marker(marker["promotion_id"])
+        self.assertTrue(self.allowed(self.push))
+
+    def test_admitted_tick_keeps_writing(self) -> None:
+        # This test process stands in for the tick shell: its own record.
+        table = runtime.process_table()
+        record = {"tick_id": "t", "agent": "claude", "revision": None,
+                  "processes": [runtime.process_entry(os.getpid(), table)]}  # fmt: skip
+        runtime.write_json(runtime.admitted_dir() / "t.json", record)
+        runtime.begin_promotion("2" * 40, None)
+        self.assertTrue(self.allowed(self.push), self.decide(self.push)[1])
 
 
 class DeleteTest(Fixture):

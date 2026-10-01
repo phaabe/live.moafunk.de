@@ -22,8 +22,14 @@ Rules:
   7. Headless runner with the shared reader (EPIC_SHARED_READER=1 and
      EPIC_ACTION_FILE set by scripts/epic/claude-tick.sh): each GitHub write
      is checked fresh right before it runs (scripts/epic/write_checks.py,
-     loaded from EPIC_TRUSTED_ROOT, the runner checkout). A stale target or a
-     failed read blocks the write. Interactive sessions are not affected.
+     loaded from EPIC_RUNTIME_ROOT, the pinned runtime; without pinned mode
+     from EPIC_TRUSTED_ROOT, the runner checkout). Pinned mode configured
+     without EPIC_RUNTIME_ROOT blocks. A stale target or a failed read blocks
+     the write. Interactive sessions are not affected.
+  8. Runtime promotion (every session): while
+     `<EPIC_LOCK_DIR>/runtime-promotion.json` exists, a write is blocked
+     unless it runs inside a tick admitted before the promotion started
+     (scripts/epic/runtime.py). Without the marker this costs one stat().
 
 A command "creates or merges a pull request" when its text, outside the
 bodies of quoted-delimiter heredocs fed to a data command (gh, git, cat,
@@ -335,20 +341,71 @@ def check_command(cmd: str, cwd: str) -> None:
             )
 
 
+def checkout_root() -> str:
+    return os.environ.get("EPIC_TRUSTED_ROOT") or os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..")
+    )
+
+
+def runtime_home() -> str:
+    return os.environ.get("EPIC_RUNTIME_HOME") or os.path.expanduser(
+        "~/.local/share/epic-runtime"
+    )
+
+
+def code_root() -> str:
+    """Where runner code loads from: EPIC_RUNTIME_ROOT in a pinned tick.
+    Pinned mode configured without it: blocked, never the checkout."""
+    root = os.environ.get("EPIC_RUNTIME_ROOT")
+    if root:
+        return root
+    home = runtime_home()
+    if any(
+        os.path.exists(os.path.join(home, n)) for n in ("configured.json", "pin.json")
+    ):
+        block(
+            "Pinned runtime mode is configured but EPIC_RUNTIME_ROOT is not set.",
+            "Start runner ticks through the epic-tick launcher.",
+        )
+    return checkout_root()
+
+
+def load_write_checks(root: str, what: str):
+    sys.path.insert(0, os.path.join(root, "scripts", "epic"))
+    try:
+        import write_checks
+    except Exception as exc:  # any import failure must block, not allow
+        block(f"{what} are unavailable: {exc!r}")
+    return write_checks
+
+
+def promotion_barrier(tool: str, tool_input: dict, cwd: str) -> None:
+    """Rule 8. Fails closed while a promotion marker exists."""
+    lock_dir = os.environ.get("EPIC_LOCK_DIR") or os.path.expanduser(
+        "~/.local/state/epic-loop/target-locks"
+    )
+    if not os.path.exists(os.path.join(lock_dir, "runtime-promotion.json")):
+        return
+    root = os.environ.get("EPIC_RUNTIME_ROOT") or checkout_root()
+    write_checks = load_write_checks(root, "Promotion write checks")
+    try:
+        refused = write_checks.promotion_refusal(tool, tool_input, cwd)
+    except Exception as exc:  # exit 1 would let the write through
+        block(f"Promotion write check failed: {exc!r}")
+    if refused:
+        block(
+            f"Runtime promotion: {refused}",
+            "Wait until the promotion has finished, then try again.",
+        )
+
+
 def runner_write_check(tool: str, tool_input: dict, cwd: str) -> None:
     """Rule 7. Fails closed: if the check cannot load, the write is blocked."""
     if os.environ.get("EPIC_SHARED_READER") != "1" or not os.environ.get(
         "EPIC_ACTION_FILE"
     ):
         return
-    root = os.environ.get("EPIC_TRUSTED_ROOT") or os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..")
-    )
-    sys.path.insert(0, os.path.join(root, "scripts", "epic"))
-    try:
-        import write_checks
-    except Exception as exc:  # any import failure must block, not allow
-        block(f"Runner write checks are unavailable: {exc!r}")
+    write_checks = load_write_checks(code_root(), "Runner write checks")
     try:
         refused = write_checks.guard(tool, tool_input, cwd, agent="Claude")
     except Exception as exc:  # exit 1 would let the write through
@@ -383,6 +440,7 @@ def main() -> int:
         command = tool_input.get("command")
         if isinstance(command, str) and command:
             check_command(command, cwd)
+        promotion_barrier(tool, tool_input, cwd)
         runner_write_check(tool, tool_input, cwd)
     except Blocked as exc:
         print("BLOCKED by .claude/hooks/scripts/epic-guard.sh", file=sys.stderr)

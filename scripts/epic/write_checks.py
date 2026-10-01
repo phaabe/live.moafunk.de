@@ -32,6 +32,10 @@ caller names the agent (Claude or Codex); "this agent" below means that one.
 Common checks: pause file, focus, assignment (Executor line) and allowed
 target (the action's PR, issue or the PR's `Issue:` tickets).
 
+Promotion barrier (promotion_refusal, also for interactive sessions): while a
+runtime promotion marker exists, a write is refused unless the caller runs
+inside a tick admitted before the promotion started (runtime.py).
+
 Callers: .claude/hooks/scripts/epic_guard.py (every tool call) and
 permission_gate.py (push and merge prompts). guard() returns None to allow or
 the reason to refuse.
@@ -51,9 +55,11 @@ from typing import Any
 
 import github_state as gs
 import next_action as na
+import target_lock
 from github_quota import QuotaExhausted
 
 AGENT = "Claude"  # default for callers that name no agent
+PROMOTION_MARKER = "runtime-promotion.json"  # runtime.MARKER
 AGENTS = ("Claude", "Codex")
 PUSH_ACTIONS = {"fix", "fix-checks", "resolve-conflict", "continue", "claim"}
 CREATE_ACTIONS = {"continue", "claim"}
@@ -685,6 +691,24 @@ def load_action() -> dict[str, Any]:
     return action
 
 
+def promotion_refusal(
+    tool_name: str, tool_input: dict[str, Any], cwd: str
+) -> str | None:
+    """While a runtime promotion marker exists, refuse every write (and every
+    command that may write but cannot be read) outside an admitted tick.
+    Runs in every session that loads these checks, not only in runner ticks.
+    Without a marker it costs one stat()."""
+    if not (target_lock.lock_dir() / PROMOTION_MARKER).exists():
+        return None
+    import runtime  # only with a marker: runner fixtures copy this module alone
+
+    try:
+        writes = tool_writes(tool_name, tool_input, cwd)
+    except Unclear:
+        writes = [Write("unclear")]
+    return runtime.write_barrier() if writes else None
+
+
 def guard(
     tool_name: str,
     tool_input: dict[str, Any],
@@ -696,6 +720,9 @@ def guard(
     runner's agent, Claude or Codex (default AGENT)."""
     if not active():
         return None
+    blocked = promotion_refusal(tool_name, tool_input, cwd)
+    if blocked:
+        return blocked
     try:
         writes = tool_writes(tool_name, tool_input, cwd)
     except Unclear as error:

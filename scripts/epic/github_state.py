@@ -1015,10 +1015,19 @@ def read_snapshot(
 
 
 def trusted_root() -> Path:
-    """The runner checkout, never a feature worktree."""
-    return Path(
+    """Where the merge guard's code and lane policy load from: the pinned
+    runtime root in a pinned tick (runtime.code_root refuses when pinned mode
+    is configured without one), else the runner checkout. Never a feature
+    worktree."""
+    fallback = Path(
         os.environ.get("EPIC_TRUSTED_ROOT") or Path(__file__).resolve().parents[2]
     )
+    import runtime  # here: runner fixtures copy this module without it
+
+    try:
+        return runtime.code_root(fallback)
+    except runtime.RuntimeBlocked as error:
+        raise ConfigError(str(error)) from None
 
 
 def load_guard(root: Path | None = None) -> ModuleType:
