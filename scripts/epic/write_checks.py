@@ -181,6 +181,11 @@ def read_file(path: str, cwd: str, stdin: str) -> str:
         return ""
 
 
+def attached_short(arg: str) -> bool:
+    """A short gh flag with its value attached: -ftitle=x, -XPOST."""
+    return not arg.startswith("--") and len(arg) > 2 and arg[:2] in GH_VALUE_FLAGS
+
+
 def split_flags(args: list[str]) -> tuple[dict[str, list[str]], list[str]]:
     """gh flags (every value kept) and positional arguments."""
     flags: dict[str, list[str]] = {}
@@ -191,6 +196,8 @@ def split_flags(args: list[str]) -> tuple[dict[str, list[str]], list[str]]:
         if arg.startswith("--") and "=" in arg:
             name, _, value = arg.partition("=")
             flags.setdefault(name, []).append(value)
+        elif attached_short(arg):
+            flags.setdefault(arg[:2], []).append(arg[2:])
         elif arg in GH_VALUE_FLAGS and i + 1 < len(args):
             flags.setdefault(arg, []).append(args[i + 1])
             i += 1
@@ -730,8 +737,8 @@ def gh_api_may_write(args: list[str]) -> bool:
     i = 0
     while i < len(args):
         arg, step = args[i], 1
-        if arg.startswith("-X") and len(arg) > 2:
-            name, value = "-X", arg[2:]
+        if attached_short(arg):
+            name, value = arg[:2], arg[2:]
         elif arg.startswith("--") and "=" in arg:
             name, value = arg.split("=", 1)
         else:
@@ -760,6 +767,19 @@ def gh_may_write(words: list[str]) -> bool:
     return len(words) < 3 or words[2] not in PROMOTION_GH_READS
 
 
+def shell_input_may_write(names: set[str], line: str, stdin: str) -> bool:
+    """A line that runs a shell or interpreter: its words (pipes, here
+    strings, -c) and its heredoc body are code. A shell body is read like a
+    command; any other body that names git or gh counts as a write."""
+    if GIT_OR_GH.search(line):
+        return True
+    if not stdin:
+        return False
+    if names & SHELLS <= {"bash", "sh", "zsh"}:
+        return promotion_writes("Bash", {"command": stdin})
+    return bool(GIT_OR_GH.search(stdin))
+
+
 def promotion_writes(tool_name: str, tool_input: dict[str, Any]) -> bool:
     """Whether the tool call may write to Git or GitHub. Broader than
     tool_writes: during a promotion every write counts, not only the runner's
@@ -770,19 +790,20 @@ def promotion_writes(tool_name: str, tool_input: dict[str, Any]) -> bool:
     command = tool_input.get("command") if tool_name == "Bash" else None
     if not isinstance(command, str):
         return False
-    for line, _stdin in segments(command):
+    for line, stdin in segments(command):
         commands = words_of(line)
         if commands is None:
             if GIT_OR_GH.search(line):
                 return True
             continue
+        names = {os.path.basename(w[0]) for w in map(strip_prefix, commands) if w}
+        if names & SHELLS and shell_input_may_write(names, line, stdin):
+            return True
         for words in commands:
             words = strip_prefix(words)
             if not words:
                 continue
             name = os.path.basename(words[0])
-            if name in SHELLS and GIT_OR_GH.search(" ".join(words[1:])):
-                return True
             if name == "git" and git_may_write(words):
                 return True
             if name == "gh" and gh_may_write(words):

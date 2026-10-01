@@ -641,6 +641,69 @@ class PromotionBarrier(Base):
             with self.subTest(command=command):
                 self.assertIsNone(self.refusal(command))
 
+    def test_code_fed_to_a_shell_is_checked(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "bash <<'EOF'\ngit add -- example.txt\nEOF",
+            "sh <<EOF\ncd /tmp\ngh issue create --title x\nEOF",
+            "python3 - <<'EOF'\nimport subprocess\n"
+            "subprocess.run(['git', 'add', '--', 'example.txt'])\nEOF",
+            "cat <<'EOF' | bash\ngit commit -m x\nEOF",
+            "echo 'git add x' | bash",
+            "bash <<< 'git add x'",
+            "printf 'add\\nx\\n' | xargs git",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("runtime promotion", self.refusal(command) or "")
+        for command in (
+            "bash <<'EOF'\ngit status --short\nls\nEOF",
+            "cat > /tmp/notes.txt <<'EOF'\ngit add -- example.txt\nEOF",
+            "python3 - <<'EOF'\nprint(1)\nEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.refusal(command))
+
+    def test_attached_field_and_method_flags_are_writes(self) -> None:
+        for args in (
+            ["repos/o/r/issues", "-ftitle=x"],
+            ["repos/o/r/issues", "-Ftitle=x"],
+            ["repos/o/r/issues", "-f", "title=x"],
+            ["repos/o/r/issues", "--field=title=x"],
+            ["repos/o/r/issues", "--raw-field", "title=x"],
+            ["-XPOST", "repos/o/r/issues"],
+            ["-X", "POST", "repos/o/r/issues"],
+            ["--method=PATCH", "repos/o/r/issues/1"],
+            ["graphql", "-fquery=mutation { x }"],
+        ):
+            with self.subTest(args=args):
+                self.assertTrue(wc.gh_api_may_write(args))
+        for args in (
+            ["repos/o/r/issues"],
+            ["-XGET", "repos/o/r/issues"],
+            ["graphql", "-fquery=query { viewer { login } }"],
+        ):
+            with self.subTest(args=args):
+                self.assertFalse(wc.gh_api_may_write(args))
+        flags, positional = wc.split_flags(["repos/o/r/issues", "-ftitle=x", "-XPOST"])
+        self.assertEqual((flags["-f"], flags["-X"], positional),
+                         (["title=x"], ["POST"], ["repos/o/r/issues"]))  # fmt: skip
+
+    def test_hook_refuses_shell_heredocs_and_attached_fields(self) -> None:
+        # The payloads from the second review of
+        # https://github.com/phaabe/live.moafunk.de/pull/592.
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "bash <<'EOF'\ngit add -- example.txt\nEOF",
+            "python3 - <<'EOF'\nimport subprocess\n"
+            "subprocess.run(['git', 'add', '--', 'example.txt'])\nEOF",
+            "gh api repos/o/r/issues -ftitle=x",
+            "gh api repos/o/r/issues -Ftitle=x",
+        ):
+            with self.subTest(command=command):
+                out = self.run_hook(command)
+                self.assertEqual(out.returncode, 2, out.stderr)
+                self.assertIn("Runtime promotion", out.stderr)
+
     def test_github_mcp_writes_are_refused_reads_pass(self) -> None:
         runtime.begin_promotion("2" * 40, None)
         for tool in ("mcp__github__create_issue", "mcp__github__push_files"):
