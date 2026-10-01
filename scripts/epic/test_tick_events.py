@@ -121,6 +121,19 @@ class TickEventsTest(unittest.TestCase):
         )
         self.assertEqual(self.events()[0]["outcome"], "blocked")
 
+    def test_assignment_phase_is_written(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/549
+        code, _ = self.run_main(
+            *("finish", "--file", str(self.file), "--tick", TICK, "--exit", "75"),
+            *("--phase", "assignment", "--outcome", "blocked"),
+        )
+        self.assertEqual(code, 0)
+        [event] = self.events()
+        self.assertEqual(
+            (event["phase"], event["exit"], event["outcome"]),
+            ("assignment", 75, "blocked"),
+        )
+
     def test_bad_action_values_are_dropped(self) -> None:
         action = self.root / "action.json"
         for data in (
