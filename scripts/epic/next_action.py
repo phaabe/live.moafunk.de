@@ -141,6 +141,8 @@ LEAF = re.compile(r"\b[A-Z][0-9]+\.[0-9]+\.[0-9]+\b")
 # They may also name tickets by URL: "Start after https://github.com/.../issues/432."
 # The clause ends at a sentence end (". " or end of line) or an opening "(".
 START_AFTER = re.compile(r"Start after (.*?)(?:\.(?=\s|$)|\(|$)", re.MULTILINE)
+# A readiness comment starts with "Ready", bold or not ("**Ready, executor ...").
+READINESS_START = re.compile(r"\s*(?:\*\*)?Ready\b")
 LEAF_IDS_LINE = re.compile(r"^Leaf IDs:[ \t]*(.+)$", re.MULTILINE)
 CHECKED_LEAF = re.compile(r"- \[[xX]\] \*\*([A-Z][0-9]+\.[0-9]+\.[0-9]+)\*\*")
 # Batch tables on the epic: "| Codex | O1.2.4 (<url>) first; then P1 (<url>) ... |".
@@ -343,13 +345,44 @@ def done_leaves(state: dict[str, Any], tickets: bool = True) -> set[str]:
     return done
 
 
-def start_after(item: dict[str, Any]) -> set[str]:
-    """Leaves and tickets a Ready issue must wait for, from its readiness comments."""
+def dependencies_in(text: str) -> set[str]:
+    """Leaves and ticket URLs named in the "Start after" clauses of `text`."""
     wanted: set[str] = set()
-    for clause in START_AFTER.findall(item.get("readiness") or ""):
+    for clause in START_AFTER.findall(text):
         wanted |= set(LEAF.findall(clause))
         wanted |= {issue_url(int(n)) for n in ISSUE_URL.findall(clause)}
     return wanted
+
+
+def start_after(item: dict[str, Any]) -> set[str]:
+    """Leaves and tickets a Ready issue must wait for, from its readiness comments."""
+    return dependencies_in(item.get("readiness") or "")
+
+
+def is_readiness(body: str) -> bool:
+    """A readiness comment starts with "**Ready" or "Ready", e.g. "**Ready,
+    executor Claude:**". Only these name dependencies; other comments never do."""
+    return bool(READINESS_START.match(body))
+
+
+def set_readiness(item: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Store the readiness comments of a Ready issue from its REST comment rows."""
+    comments = [
+        {"url": row.get("html_url") or "", "body": row.get("body") or ""}
+        for row in rows
+        if is_readiness(row.get("body") or "")
+    ]
+    item["readiness_comments"] = comments
+    item["readiness"] = "\n".join(c["body"] for c in comments)
+
+
+def dependency_sources(item: dict[str, Any]) -> dict[str, list[str]]:
+    """Each dependency of a Ready issue with the readiness comments that name it."""
+    found: dict[str, list[str]] = {}
+    for comment in item.get("readiness_comments") or []:
+        for dep in dependencies_in(comment.get("body") or ""):
+            found.setdefault(dep, []).append(comment.get("url") or "unknown comment")
+    return found
 
 
 def is_closed(item: dict[str, Any]) -> bool:
@@ -1285,9 +1318,7 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
                 ["api", "--paginate", "--slurp"]
                 + [f"repos/{REPO}/issues/{content['number']}/comments?per_page=100"]
             )
-            item["readiness"] = "\n".join(
-                row.get("body") or "" for page in pages for row in page
-            )
+            set_readiness(item, [row for page in pages for row in page])
     # Batch order tables ("Scope, in order") live in comments on the epic.
     pages = gh_json(
         ["api", "--paginate", "--slurp"]
@@ -1429,6 +1460,7 @@ def status(
         f"Completed tickets rule ({COMPLETED_TICKETS_ENV}): "
         + ("on" if completed_tickets else "off"),
     ]
+    by_url = {(i.get("content") or {}).get("url"): i for i in state.get("items", [])}
     for agent in AGENTS:
         lines.append(f"\n{agent}:")
         acted = decide(
@@ -1448,6 +1480,11 @@ def status(
             lines.append(f"  {a.action:<17} {level:<6} {target:<55} {a.reason}")
             for warning in a.warnings:
                 lines.append(f"  {'warning':<17} {'':<6} {target:<55} {warning}")
+            if a.action in ("claim", "wait") and not a.pr and a.issue in by_url:
+                sources = dependency_sources(by_url[a.issue])
+                for dep, urls in sorted(sources.items()):
+                    named = f"{dep} named in {', '.join(urls)}"
+                    lines.append(f"  {'dependency':<17} {'':<6} {target:<55} {named}")
         if focus and not paused:
             for target, reason in no_action(
                 agent, state, focus, enabled, rules, acted, completed_tickets

@@ -796,8 +796,7 @@ def build_state(
                 continue
             if readiness_for is not None and content.get("number") not in readiness_for:
                 continue
-            rows = comment_rows(client, content["number"])
-            item["readiness"] = "\n".join(r.get("body") or "" for r in rows)
+            na.set_readiness(item, comment_rows(client, content["number"]))
         batch_order = [
             r.get("body") or ""
             for r in comment_rows(client, na.EPIC)

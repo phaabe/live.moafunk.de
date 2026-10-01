@@ -237,8 +237,11 @@ model session only for real work: pause, idle, stop and a repeat of the last
 no-op action (`scripts/epic/tick_gate.py`: same action, no change on GitHub,
 younger than 3 hours) start none. Claims follow the "Start after" lines and the
 order in the epic's batch table ("Scope, in order"; "then" or an arrow starts
-the next stage). A "Start after" line names leaf IDs or ticket URLs. A leaf
-counts as done when a merged PR lists it in `Leaf IDs:` or its box is ticked.
+the next stage). A "Start after" line names leaf IDs or ticket URLs. Write it
+only in a readiness comment: a comment whose body starts with `**Ready` or
+`Ready` (for example `**Ready, executor Claude:** ... Start after B1.1.6.`).
+"Start after" in any other comment (review, discussion) is ignored. `--status`
+shows which readiness comment named each dependency. A leaf counts as done when a merged PR lists it in `Leaf IDs:` or its box is ticked.
 So Anton can set a whole queue to Ready at once and let each readiness comment
 name the ticket before it.
 

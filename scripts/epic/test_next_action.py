@@ -565,6 +565,46 @@ class StartAfterTest(unittest.TestCase):
         i["readiness"] = readiness
         return i
 
+    def from_comments(self, number: int, *bodies: str) -> dict:
+        i = item(number, "Claude", "Ready")
+        rows = [
+            {"body": body, "html_url": f"{R}/{number}#issuecomment-{k}"}
+            for k, body in enumerate(bodies)
+        ]
+        next_action.set_readiness(i, rows)
+        return i
+
+    def test_review_comment_adds_no_dependency(self) -> None:
+        i = self.from_comments(
+            40,
+            "**Ready, executor Claude:** the whole ticket. Leaf IDs: setup.",
+            f"Review: Start after {R}/41 is named in the body, fine.",
+            "  Start after B1.1.6.",
+        )
+        self.assertEqual(next_action.start_after(i), set())
+        self.assertEqual(first("Claude", items=[i]).action, "claim")
+
+    def test_readiness_comments_combine(self) -> None:
+        i = self.from_comments(
+            40,
+            "**Ready:** Start after B1.1.6.",
+            "A question. Start after B1.1.7.",
+            f"Ready, executor Claude: Start after {R}/41.",
+        )
+        self.assertEqual(next_action.start_after(i), {"B1.1.6", f"{R}/41"})
+        self.assertEqual(
+            next_action.dependency_sources(i),
+            {
+                "B1.1.6": [f"{R}/40#issuecomment-0"],
+                f"{R}/41": [f"{R}/40#issuecomment-2"],
+            },
+        )
+
+    def test_status_names_the_readiness_comment(self) -> None:
+        i = self.from_comments(40, "**Ready:** Start after B1.1.6.")
+        text = status({"items": [i]}, False)
+        self.assertIn(f"B1.1.6 named in {R}/40#issuecomment-0", text)
+
     def test_claim_waits_for_start_after_leaf(self) -> None:
         items = [
             self.ready(
