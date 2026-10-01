@@ -76,7 +76,7 @@ def api(args: list[str]) -> str:
             or "secondary rate limit" in message.lower()
         ):
             wait = github_quota.record(
-                github_quota.STATE_DIR, time.time(), lookup=lambda: None
+                github_quota.STATE_DIR, time.time(), lookup=lambda: (None, None)
             )
             raise feature_worktree.QuotaWait(
                 f"REST rate limit; retry at {wait['retry_at']}"

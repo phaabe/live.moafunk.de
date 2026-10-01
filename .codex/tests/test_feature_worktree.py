@@ -44,6 +44,10 @@ class FeatureWorktreeTests(unittest.TestCase):
         self.destination = self.worktrees / BRANCH
         for name in ("feature_worktree.py", "feature_git.py", "assignment.py"):
             shutil.copyfile(tick_fixture.ROOT / name, self.repo / ".codex" / name)
+        shutil.copyfile(
+            tick_fixture.ROOT.parent / "scripts/epic/rebase_policy.py",
+            self.repo / "scripts/epic/rebase_policy.py",
+        )
         selector = self.repo / "scripts/epic/next_action.py"
         selector.write_text(
             selector.read_text().replace(
@@ -55,7 +59,16 @@ class FeatureWorktreeTests(unittest.TestCase):
         original = gh.read_text().split("\n", 1)[1]
         gh.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, os, sys\n"
+            "import json, os, subprocess, sys\n"
+            "if sys.argv[1:] == ['api', 'repos/phaabe/live.moafunk.de/pulls/431', '--jq', '.base.ref']:\n"
+            "    print(json.loads(os.environ['TEST_WORKTREE_PR'])['base']['ref'])\n"
+            "    sys.exit(0)\n"
+            "if sys.argv[1:3] == ['api', 'repos/phaabe/live.moafunk.de/git/ref/heads/dev/312-interim']:\n"
+            "    print(subprocess.check_output(['/usr/bin/git', 'rev-parse', 'refs/remotes/origin/dev/312-interim'], text=True).strip())\n"
+            "    sys.exit(0)\n"
+            "if sys.argv[1:4] == ['pr', 'view', '431'] and sys.argv[-1] == 'state,headRefOid':\n"
+            "    print(json.dumps({'state': 'OPEN', 'headRefOid': json.loads(os.environ['TEST_WORKTREE_PR'])['head']['sha']}))\n"
+            "    sys.exit(0)\n"
             "if sys.argv[1:3] == ['api', '-i']:\n"
             "    url = sys.argv[-1]\n"
             "    data = None\n"
@@ -152,6 +165,8 @@ class FeatureWorktreeTests(unittest.TestCase):
         return result.stdout.strip()
 
     def prepare(self) -> subprocess.CompletedProcess[str]:
+        if self.action["action"] == "resolve-conflict":
+            self.action["target_tip"] = self.git("rev-parse", f"origin/{BASE}")
         self.action_file.write_text(json.dumps(self.action))
         return subprocess.run(
             [
@@ -273,7 +288,7 @@ class FeatureWorktreeTests(unittest.TestCase):
                 entries = json.loads((self.state / "codex-backoff.json").read_text())
                 self.assertIn(
                     "rebase policy unavailable",
-                    entries[f"pr:431:{self.head}"]["reason"],
+                    entries[f"pr:431:{self.head}:base:{self.head}"]["reason"],
                 )
                 self.fixture.expire_cooldown()
 
@@ -298,7 +313,7 @@ class FeatureWorktreeTests(unittest.TestCase):
     def test_conflict_session_removes_context_after_model(self) -> None:
         self.use_pr("resolve-conflict")
         result = self.run_tick()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)  # Stub publishes nothing.
         self.assertTrue(self.fixture.calls.exists())
         self.assertFalse(self.context.exists())
 
@@ -334,6 +349,7 @@ class FeatureWorktreeTests(unittest.TestCase):
             **json.loads(self.context.read_text()),
             "original_head": self.head,
             "onto": onto,
+            "conflicted": [],
         }
         record = self.state / "rebase-431.json"
         if recorded:
@@ -354,7 +370,9 @@ class FeatureWorktreeTests(unittest.TestCase):
         before = record.read_bytes()
         status = self.git("status", "--porcelain", cwd=self.destination)
         result = self.run_tick()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.returncode, 1, result.stderr
+        )  # Stub leaves rebase active.
         call = json.loads(self.fixture.calls.read_text())
         self.assertEqual(
             call["args"][call["args"].index("--cd") + 1], str(self.destination)
@@ -384,7 +402,7 @@ class FeatureWorktreeTests(unittest.TestCase):
         rewritten = self.git("rev-parse", "HEAD", cwd=self.destination)
         self.assertNotEqual(rewritten, self.head)
         result = self.run_tick()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)  # Stub does not push.
         self.assertTrue(self.fixture.calls.exists())
         self.assertTrue(record.exists())
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), rewritten)

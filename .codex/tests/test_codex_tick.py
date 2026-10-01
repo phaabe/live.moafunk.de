@@ -27,7 +27,9 @@ REAL_GIT = shutil.which("git")
 
 class TickTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="epic-tick-", dir="/tmp")
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="epic-tick-", dir=Path(os.environ.get("TMPDIR", "/tmp")).resolve()
+        )
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.repo = self.root / "checkout with spaces"
@@ -1915,11 +1917,15 @@ else:
 
     def test_adopt_gets_a_private_body_dir_removed_after_the_tick(self) -> None:
         self.adopt_action()
+        temporary = self.root / "adopt temp"
+        temporary.mkdir()
+        self.env["TMPDIR"] = str(temporary)
         result = self.run_tick()
         self.assertEqual(result.returncode, 0, result.stderr)
         call = json.loads(self.calls.read_text())
         body_dir = call["body_dir"]
-        self.assertTrue(body_dir.startswith("/tmp/epic-adopt-codex."))
+        self.assertEqual(Path(body_dir).parent, temporary)
+        self.assertTrue(Path(body_dir).name.startswith("epic-adopt-codex."))
         self.assertEqual(call["body_dir_mode"], 0o700)
         self.assertEqual(call["tool_env"]["EPIC_BODY_DIR"], body_dir)
         # The hook anchors to the directory the runner created.

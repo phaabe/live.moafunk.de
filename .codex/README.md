@@ -230,6 +230,28 @@ fails the tick and starts target cooldown. A quota wait during verification
 stops without writing cooldown or repeat records. Other actions retain their
 existing result handling.
 
+For `resolve-conflict`, the runner uses the shared `rebase_policy.py` contract.
+Before cooldown it pins the target tip and checks the shared attempt limit in
+`<shared-state>/rebase-attempts.json`, also for registered agents. Each model
+start counts once under PR/head/target-tip; a crash still counts. A verified
+success or a model quota/verification read wait does not count as a failure.
+At `EPIC_REBASE_ATTEMPT_LIMIT` (default 2), no model starts. The runner posts
+`needs-anton`; a failed post keeps suppression and only the post is retried.
+
+The separate conflict cooldown key is `pr:<number>:<head>:base:<target-tip>`.
+Expiry allows another attempt below the limit. A new target tip permits a retry
+with the same PR head, including when a legacy head-only cooldown exists.
+Conflict results create no repeat-gate record, so its three-hour TTL cannot
+prevent that retry. The gate still checks for changed or closed targets.
+
+After the model, the runner publishes the shared record and calls
+`tick_verify.py` with the prepared worktree and attempt pin. Success requires
+a moved head, matching proof and a valid GitHub record; `completed` alone cannot
+clear cooldown. A verification read or quota failure leaves cooldown untouched
+and voids the attempt. For reviews, `rebase_policy.py scope` computes the shared
+focused/full scope in the prepared detached worktree. The prompt requires a full
+review when evidence or impact is unclear.
+
 Keep `adopt` out of `EPIC_FOCUS_ACTIONS` until both agent implementations are
 reviewed and merged. Then update and trust the changed Codex hook in the runner
 checkouts, verify the exact body-edit command is permitted, and add `adopt` to
@@ -564,6 +586,7 @@ The existing literal prefix also accepts these exact suffixes:
 --worktree <path> rebase --base <actual-PR-base> --expected-head <40-char-SHA>
 --worktree <path> rebase-continue
 --worktree <path> rebase-abort
+--worktree <path> prove
 --worktree <path> push-with-lease --expected-remote-sha <40-char-SHA>
 ```
 
@@ -577,10 +600,26 @@ the helper sets its own noninteractive editors.
 Lease publication uses only
 `git push --no-follow-tags --recurse-submodules=no --force-with-lease=refs/heads/<branch>:<original-SHA> origin HEAD:refs/heads/<branch>`.
 Fetching never changes this pin. A changed remote fails and preserves local
-work. A successful push removes the record and requires a new counterpart review
+work. A successful push saves `codex-rebases.json` for the shared publisher,
+removes the active rebase record and requires a new counterpart review
 for the new head. Continue/abort without a matching record, interactive rebase,
 exec/onto/skip, extra refs, remotes, tags, deletion and force flags are refused.
 There is no raw-command fallback.
+The installed `prove` command delegates to the shared proof policy for the
+bound PR, worktree and base. Its suite commands run through `codex sandbox`
+with explicit worktree and temporary-directory write permissions and no network.
+The trusted parent writes the resulting proof receipts; the child
+cannot write protected state, the runner checkout or the installed helper.
+The protected attempt pin captures the runner's required suite table (including
+`EPIC_REBASE_SUITES`, if configured), executable search path and resolved Codex
+executable. The caller environment cannot replace them. The Codex installation
+must support named permission profiles in `codex sandbox`.
+Proofs live in `<agent-state>/rebase-proofs/`, outside the model's writable
+roots. The lease push requires a valid
+proof for the current commit/tree and pinned tip, and a clean worktree/index.
+Re-run `prove` after any source change. The existing literal helper permission
+prefix stays unchanged. The runner removes its transient `rebase-attempt.json` with
+the session context; persistent counters and publication receipts remain.
 If no PR commits remain beyond the fetched base, publication is refused. Keep
 the local result and record for operator review; do not publish the base as the
 PR head or add an empty commit to bypass the check.
@@ -604,6 +643,18 @@ After source review, the operator installs the reviewed helper and extends
 its adjacent JSON. Compare SHA-256 digests of source and installed helper. Keep
 the helper, config and literal-prefix rule outside agent-writable roots. Retain
 the existing narrow rule; add no raw Git or general Python permission.
+
+For the rebase-policy update, keep the helper JSON and permission rule unchanged.
+With schedulers paused, update the runner to the reviewed revision, including
+`.codex/rebase_proof.py`, then copy the reviewed
+`.codex/feature_git.py` to `~/.local/libexec/codex-feature-git.py`, then run
+`shasum -a 256` on both files and `cmp` to confirm exact parity. The runner's
+preparation check refuses an older installed copy. Run the disposable installed
+helper fixture with a missing proof (refused), then `prove` and the pinned lease
+push (allowed), and preserve that evidence before resuming any scheduler.
+Before updating, finish or abort any active legacy rebase record that lacks
+conflicted-path tracking. The new helper refuses incomplete records rather
+than publish an incomplete history of conflicts.
 
 Before marking installation complete, keep schedulers paused and run a fresh
 real `codex exec` with the runner's `--sandbox workspace-write`, network setting,
