@@ -142,9 +142,10 @@ def pr_issue(action: dict[str, object]) -> str | None:
 
 def legacy_pr_metadata(action: dict[str, object]) -> dict[str, object]:
     """Keep the old read path until both runners enable the shared reader."""
+    gh = github_quota.resolve_gh()
     response = subprocess.run(
         [
-            "gh",
+            gh or "gh",
             "pr",
             "view",
             str(action["pr"]),
@@ -161,7 +162,9 @@ def legacy_pr_metadata(action: dict[str, object]) -> dict[str, object]:
     if github_quota.is_quota_error(
         ["pr", "view"], response.stdout or "", response.stderr or ""
     ):
-        raise github_quota.QuotaExhausted(response.stderr or "GraphQL RATE_LIMITED")
+        raise github_quota.QuotaExhausted(
+            response.stderr or "GraphQL RATE_LIMITED", gh_path=gh
+        )
     response.check_returncode()
     metadata = json.loads(response.stdout)
     if not isinstance(metadata, dict) or not isinstance(metadata.get("body"), str):
@@ -276,7 +279,7 @@ def record(
             if retry_at is not None
             else None
         )
-        wait = github_quota.record(quota_state, now, reset_at)
+        wait = github_quota.record(quota_state, now, reset_at, origin="model-result")
         logging.warning("quota: %s; retry at %s", reason, wait["retry_at"])
         return outcome
     key = target_key(action)
