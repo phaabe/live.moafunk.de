@@ -64,7 +64,7 @@ def item(
 
 
 def successor(**kw: Any) -> dict[str, Any]:
-    return item(503, "Ready", readiness=f"Ready. Start after {PREREQ}.", **kw)
+    return item(503, "Ready", readiness=f"**Ready:** Start after {PREREQ}.", **kw)
 
 
 def state(
@@ -261,7 +261,7 @@ class Completion(unittest.TestCase):
         self.assertNotIn("warnings", json.loads(act.to_json()))
 
     def test_leaf_ids_keep_their_rule(self) -> None:
-        leaf = item(503, "Ready", readiness="Ready. Start after B1.1.6.")
+        leaf = item(503, "Ready", readiness="**Ready:** Start after B1.1.6.")
         for on in (False, True):
             self.assertEqual(first(state(leaf), on).action, "wait")
             merged = state(leaf, merged=("Leaf IDs: B1.1.6",))
@@ -354,11 +354,33 @@ class Readers(unittest.TestCase):
         read.assert_not_called()
         self.assertNotIn("tickets", s)
 
+    def test_legacy_reader_reads_only_readiness_comments(self) -> None:
+        rows = [
+            {
+                "body": "**Ready, executor Claude:** Start after B1.1.6.",
+                "html_url": "c1",
+            },
+            {"body": f"Review: Start after {PREREQ}.", "html_url": "c2"},
+        ]
+
+        def gh_json(args: list[str]) -> Any:
+            if any("issues/503/comments" in a for a in args):
+                return [rows]
+            return []
+
+        with (
+            patch.object(na, "gh_json", side_effect=gh_json),
+            patch.object(na, "project_items", return_value=[successor()]),
+        ):
+            s = na.fetch_state()
+        ready = next(i for i in s["items"] if i["content"]["number"] == 503)
+        self.assertEqual(na.dependency_sources(ready), {"B1.1.6": ["c1"]})
+
     def test_legacy_reader_on_reads_off_board_tickets(self) -> None:
         def gh_json(args: list[str]) -> Any:
             # The readiness comment of 503; every other list is empty.
             if any("issues/503/comments" in a for a in args):
-                return [[{"body": f"Ready. Start after {PREREQ}."}]]
+                return [[{"body": f"**Ready:** Start after {PREREQ}."}]]
             return []
 
         with patch.dict(os.environ, {na.COMPLETED_TICKETS_ENV: "1"}):
@@ -385,7 +407,7 @@ class SharedReader(Env):
         super().setUp()
         self.repo = GitHubRepo(self.gh)
         self.repo.add_item(
-            503, "Ready", "Claude", readiness=f"Ready. Start after {PREREQ}."
+            503, "Ready", "Claude", readiness=f"**Ready:** Start after {PREREQ}."
         )
 
     def set_issue(self, state: str, reason: str | None, repo: str = na.REPO) -> None:
@@ -527,7 +549,7 @@ class StatusAndMonitor(unittest.TestCase):
         done_prereq = item(
             488, "In review", executor="Codex", state="closed", reason="completed"
         )
-        blocked = item(504, "Ready", readiness=f"Ready. Start after {ISSUES}/498.")
+        blocked = item(504, "Ready", readiness=f"**Ready:** Start after {ISSUES}/498.")
         open_done = item(498, "Done", executor="Codex")
         return with_tickets(state(done_prereq, successor(), blocked, open_done))
 

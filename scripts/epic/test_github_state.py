@@ -794,7 +794,7 @@ class GitHubRepo:
         status: str,
         executor: str,
         labels: tuple[str, ...] = (),
-        readiness: str = "Ready",
+        readiness: str | list[str] = "**Ready**",
     ) -> None:
         def single(value: str) -> dict[str, Any]:
             return {"name": {"raw": value}}
@@ -821,7 +821,12 @@ class GitHubRepo:
         )
         self.gh.set(
             f"{REPO}/issues/{n}/comments?per_page=100",
-            [comment(900 + n, readiness, "2026-09-29T08:00:00Z")],
+            [
+                comment(900 + 10 * n + k, body, "2026-09-29T08:00:00Z")
+                for k, body in enumerate(
+                    [readiness] if isinstance(readiness, str) else readiness
+                )
+            ],
         )
         self.gh.set(
             f"{REPO}/issues/{n}",
@@ -965,13 +970,36 @@ class BuildState(Env):
 
     def test_claim_and_readiness(self) -> None:
         self.repo.add_item(
-            21, "Ready", "Claude", readiness="Ready. Start after A9.9.9."
+            21, "Ready", "Claude", readiness="**Ready:** Start after A9.9.9."
         )
         self.repo.add_item(22, "Ready", "Claude")
         actions = na.decide("Claude", self.build(), include_waiting=True)
         self.assertEqual(
             [(a.action, a.issue) for a in actions],
             [("claim", f"{ISSUES}/22"), ("wait", f"{ISSUES}/21")],
+        )
+
+    def test_only_readiness_comments_name_dependencies(self) -> None:
+        review = "Review: the code follows the rule. Start after A8.8.8 is wrong."
+        self.repo.add_item(21, "Ready", "Claude", readiness=["**Ready**", review])
+        self.repo.add_item(
+            22,
+            "Ready",
+            "Claude",
+            readiness=[
+                "**Ready, executor Claude:** Start after A9.9.9.",
+                review,
+                f"**Ready:** Start after {ISSUES}/30.",
+            ],
+        )
+        items = {i["content"]["number"]: i for i in self.build()["items"]}
+        self.assertEqual(na.start_after(items[21]), set())
+        self.assertEqual(
+            na.dependency_sources(items[22]),
+            {
+                "A9.9.9": [f"{ISSUES}/1#issuecomment-1120"],
+                f"{ISSUES}/30": [f"{ISSUES}/1#issuecomment-1122"],
+            },
         )
 
     def test_linked_labels_off_the_board(self) -> None:
@@ -1108,9 +1136,15 @@ class Recheck(Env):
         self.assertIsNotNone(self.recheck(action))
         self.repo.items.clear()
         self.repo.add_item(
-            21, "Ready", "Claude", readiness="Ready. Start after A9.9.9."
+            21, "Ready", "Claude", readiness="**Ready:** Start after A9.9.9."
         )
         self.assertIn("idle", self.recheck(action) or "")  # blocked by Start after
+
+    def test_claim_ignores_a_dependency_outside_readiness(self) -> None:
+        review = "Looks fine. Start after A9.9.9."
+        self.repo.add_item(21, "Ready", "Claude", readiness=["**Ready**", review])
+        action = {"action": "claim", "reason": "r", "issue": f"{ISSUES}/21"}
+        self.assertIsNone(self.recheck(action))
 
     def test_claim_without_free_slot_is_stale(self) -> None:
         self.repo.add_item(21, "Ready", "Claude")
