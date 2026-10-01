@@ -599,7 +599,7 @@ if [[ "$action" == review ]]; then
 fi
 # `adopt` writes its new PR body here. The hook accepts no other file.
 if [[ "$action" == adopt ]]; then
-    body_dir=$(mktemp -d /tmp/epic-adopt-codex.XXXXXX)
+    body_dir=$(mktemp -d "${TMPDIR:-/tmp}/epic-adopt-codex.XXXXXX")
     EPIC_BODY_DIR_ID=$(python3 -c 'import os, sys; s = os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$body_dir")
     export EPIC_BODY_DIR="$body_dir" EPIC_BODY_DIR_ID
     model_options+=(--add-dir "$body_dir")
@@ -752,9 +752,17 @@ PY
     fi
     tick_phase=verify
     published=0
-    run_bounded "${pull_timeout}s" python3 scripts/epic/rebase_policy.py publish --agent codex \
+    run_bounded "${pull_timeout}s" python3 - "${repo_root}/scripts/epic" publish --agent codex \
         --state-dir "$state_dir" --attempt-file "${state_dir}/rebase-attempt.json" \
-        --worktree "$model_root" --rebases-file "${state_dir}/codex-rebases.json" || published=$?
+        --worktree "$model_root" --rebases-file "${state_dir}/codex-rebases.json" <<'PY' || published=$?
+import sys
+sys.path.insert(0, sys.argv.pop(1))
+from github_quota import stop_on_quota as shared_quota_wait
+import rebase_policy
+# Proofs are agent-local; every quota wait belongs to EPIC_QUOTA_DIR.
+rebase_policy.stop_on_quota = lambda error, _state_dir=None: shared_quota_wait(error)
+sys.exit(rebase_policy.main())
+PY
     case "$published" in
         0|1) ;;
         4|5|124|137)

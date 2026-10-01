@@ -84,6 +84,9 @@ if args[:2] == ['api', 'graphql']:
     sys.exit(0)
 if '--method' in args and '/comments' in line:
     mode = os.environ.get('TEST_MODEL_MODE')
+    if mode == 'publish-quota':
+        print(json.dumps({'errors': [{'type': 'RATE_LIMITED'}]}))
+        sys.exit(0)
     if mode == 'missing-record':
         print('{}')
         sys.exit(0)
@@ -251,6 +254,21 @@ class CodexRebasePolicyTests(fixture.RebaseRunnerTest):
         self.assertEqual(self.tick("quota"), 75, self.log())
         self.assertEqual([a["outcome"] for a in self.attempts()], ["void"])
         self.assertFalse((self.agent_state() / "codex-backoff.json").exists())
+
+    def test_registered_agent_publication_quota_stops_all_agents(self) -> None:
+        self.env["EPIC_AGENT_ID"] = "codex-2"
+        self.assertEqual(self.tick("publish-quota"), 75, self.log())
+        self.assertEqual([a["outcome"] for a in self.attempts()], ["void"])
+        self.assertTrue((self.state / "github-quota-wait.json").exists())
+        self.assertFalse((self.agent_state() / "github-quota-wait.json").exists())
+        self.assertFalse((self.agent_state() / "codex-backoff.json").exists())
+        self.assertFalse((self.agent_state() / "codex-gate.json").exists())
+        calls = self.lines("gh-calls.jsonl")
+        self.env["EPIC_AGENT_ID"] = "codex-3"
+        self.assertEqual(self.tick("fail"), 0, self.log())
+        self.assertEqual(self.lines("gh-calls.jsonl"), calls)
+        self.assertEqual(self.models(), 1)
+        self.assertEqual([a["outcome"] for a in self.attempts()], ["void"])
 
     def test_failed_verification_retries_after_cooldown_not_repeat_gate(self) -> None:
         self.assert_failed_attempt("fail")
