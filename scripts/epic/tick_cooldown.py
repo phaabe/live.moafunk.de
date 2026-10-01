@@ -26,8 +26,8 @@ Key (agent kind, action, target): `claude:<action>:pr:<n>:<head sha>`, plus
 `:base:<base sha>` for `resolve-conflict`, or `claude:<action>:issue:<url>`.
 A new PR head or a new base tip gives a new key, so it clears the cooldown.
 Comments, reviews and verdicts change neither, so they never reset or extend
-it. The Codex key (.codex/tick_backoff.py) has no action or base; this is a
-separate contract and a separate file.
+it. The Codex key (.codex/tick_backoff.py) is a separate contract and a
+separate file.
 
 State: `claude-cooldown.json` in the shared state dir (EPIC_QUOTA_DIR, the
 registry dir), locked with `claude-cooldown.lock`. Registered Claude agents

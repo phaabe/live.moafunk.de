@@ -13,6 +13,7 @@ import isolated_env  # noqa: F401  (first: hides live runner state)
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any
 from unittest import mock
 
 import git_gate
+import github_quota
 import next_action as na
 import rebase_policy as rp
 from test_completed_tickets import item, state as board_state, with_tickets
@@ -665,6 +667,51 @@ class SelectorTest(unittest.TestCase):
         self.assertEqual(
             self.kinds(self.pr("CONFLICTING", "DIRTY")), ["resolve-conflict"]
         )
+
+
+class QuotaDirTest(unittest.TestCase):
+    """A quota hit stores the wait where every agent reads it."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="rebase-quota-")
+        self.addCleanup(tmp.cleanup)
+        self.shared = Path(tmp.name)
+        self.agent = self.shared / "agents/claude-2"
+        self.agent.mkdir(parents=True)
+        self.attempt = self.shared / "attempt.json"
+        self.attempt.write_text(json.dumps({"key": "k", "pr": 7}))
+
+    def publish(self, env: dict[str, str], *extra: str) -> int:
+        argv = ["rebase_policy.py", "publish", "--agent", "claude",
+                "--attempt-file", str(self.attempt), "--worktree", ".",
+                "--rebases-file", str(self.shared / "r.json"), *extra]  # fmt: skip
+
+        def hit(*_: Any) -> Any:
+            raise rp.QuotaExhausted("GraphQL: API rate limit exceeded")
+
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(rp, "publish", hit),
+            mock.patch.object(github_quota, "query_reset_at", lambda: (None, None)),
+        ):
+            return rp.main()
+
+    def test_registered_agent_stores_the_wait_in_the_shared_dir(self) -> None:
+        # claude-tick.sh runs publish without --state-dir: EPIC_STATE_DIR is
+        # the agent folder, EPIC_QUOTA_DIR the shared one.
+        env = {"EPIC_STATE_DIR": str(self.agent), "EPIC_QUOTA_DIR": str(self.shared)}
+        for extra in ((), ("--state-dir", str(self.agent))):
+            with self.subTest(extra=extra):
+                (self.shared / github_quota.WAIT_FILE).unlink(missing_ok=True)
+                self.assertEqual(self.publish(env, *extra), github_quota.QUOTA)
+                self.assertTrue((self.shared / github_quota.WAIT_FILE).exists())
+                self.assertFalse((self.agent / github_quota.WAIT_FILE).exists())
+
+    def test_without_a_quota_dir_the_state_dir_keeps_the_wait(self) -> None:
+        env = {"EPIC_STATE_DIR": str(self.agent), "EPIC_QUOTA_DIR": ""}
+        self.assertEqual(self.publish(env), github_quota.QUOTA)
+        self.assertTrue((self.agent / github_quota.WAIT_FILE).exists())
 
 
 class CodexDeliveryTest(unittest.TestCase):
