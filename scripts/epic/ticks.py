@@ -25,6 +25,8 @@ import tempfile
 from typing import Any, BinaryIO, Protocol
 from zoneinfo import ZoneInfo
 
+from tick_events import PHASES
+
 Json = dict[str, Any]
 LOCAL = ZoneInfo("Europe/Berlin")
 LEDGER_SIZE = 2000
@@ -507,19 +509,6 @@ class LogLedger:
 # What a runner may name in an event (see tick_events.py). "interrupted" is
 # never written: the ledger infers it from a start without a finish.
 EVENT_OUTCOMES = ("ok", "blocked", "timeout", "killed", "error")
-PHASES = (
-    "lock",
-    "refresh",
-    "select",
-    "quota",
-    "backoff",
-    "gate",
-    "model",
-    "result",
-    "verify",
-    "record",
-    "unknown",
-)
 MAX_EVENT_LINE = 4096  # the runner writes each event below this size
 # The log ledger looks this far into an events file it has not read yet.
 PEEK_BYTES = 65536

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
+import contextlib
 from datetime import datetime, timezone
 import json
 import os
 from collections.abc import Callable
+import io
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,6 +21,8 @@ import tick_events
 import ticks
 
 URL = "https://github.com/phaabe/live.moafunk.de"
+ROOT = Path(__file__).resolve().parents[2]
+RUNNERS = ("scripts/epic/claude-tick.sh", ".codex/codex-tick.sh")
 # 2026-09-28 12:00:00 UTC (14:00 in Berlin).
 NOON = datetime(2026, 9, 28, 12, tzinfo=timezone.utc).timestamp()
 
@@ -722,6 +727,45 @@ class EventLedgerTest(unittest.TestCase):
         self.assertEqual(ledger.ticks, [])
         self.assertIsNotNone(ledger.state["open"])  # the valid start stays open
 
+    def test_writer_phases_go_through_to_the_monitor(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/549: the reader
+        # dropped finish events with phases the writer accepts.
+        self.poll(NOON - 60)
+        for i, (phase, code, outcome) in enumerate(
+            (("assignment", 75, "blocked"), ("recheck", 124, "timeout"))
+        ):
+            start = iso(NOON + i * 600)
+            with contextlib.redirect_stdout(io.StringIO()):  # the log offset
+                code_start = tick_events.main(
+                    ["start", "--file", str(self.file), "--tick", start]
+                    + ["--log", str(self.log)]
+                )
+            self.assertEqual(code_start, 0)
+            self.assertEqual(
+                tick_events.main(
+                    ["finish", "--file", str(self.file), "--tick", start]
+                    + ["--exit", str(code), "--phase", phase, "--outcome", outcome]
+                ),
+                0,
+            )
+        metrics = Metrics()
+        view = monitor.ledger_metrics(
+            metrics, self.log_ledger(), self.events(), NOON + 1200
+        )
+        self.assertEqual(
+            [(t["phase"], t["exit"], t["outcome"]) for t in view.state["ticks"]],
+            [("assignment", 75, "blocked"), ("recheck", 124, "timeout")],
+        )
+        self.assertTrue(
+            any(
+                key.startswith("epic_tick_last_info{")
+                and 'phase="recheck"' in key
+                and 'exit="124"' in key
+                and 'outcome="timeout"' in key
+                for key in metrics.samples()
+            )
+        )
+
     def test_claude_usage_is_kept_and_exported_apart_from_tokens(self) -> None:
         ledger = self.events()
         ledger.update(NOON)
@@ -1141,6 +1185,47 @@ class EventLedgerTest(unittest.TestCase):
             again.update(NOON + 600)
         self.assertTrue(again.active)
         self.assertEqual(again.state["totals"]["ok"], 1)
+
+
+class PhaseContractTest(unittest.TestCase):
+    # https://github.com/phaabe/live.moafunk.de/issues/549
+    def test_writer_and_reader_share_one_phase_list(self) -> None:
+        self.assertIs(ticks.PHASES, tick_events.PHASES)
+
+    def test_every_runner_phase_is_accepted(self) -> None:
+        for rel in RUNNERS:
+            with self.subTest(runner=rel):
+                text = (ROOT / rel).read_text()
+                values = set(re.findall(r"\btick_phase=([^\s;]+)", text))
+                # Claude's read_blocked sets the phase from its argument.
+                dynamic = {v for v in values if v.startswith("$")}
+                self.assertLessEqual(dynamic, {"$1"})
+                if dynamic:
+                    values |= set(re.findall(r"\bread_blocked ([a-z]+)", text))
+                phases = values - dynamic
+                self.assertIn("recheck", phases)
+                for phase in sorted(phases):
+                    self.assertIn(phase, tick_events.PHASES)
+                    self.assertIn(phase, ticks.PHASES)
+        codex = (ROOT / RUNNERS[1]).read_text()
+        self.assertIn("tick_phase=assignment", codex)
+        claude = (ROOT / RUNNERS[0]).read_text()
+        self.assertIn("read_blocked recheck", claude)
+
+    def test_unknown_phase_is_rejected_by_writer_and_reader(self) -> None:
+        self.assertNotIn("thinking", tick_events.PHASES)
+        start = datetime(2026, 9, 28, tzinfo=timezone.utc).timestamp()
+        ledger = ticks.EventLedger(
+            "codex",
+            Path("unused"),
+            Path("unused.json"),
+            monitor.action_labels,
+            source="events",
+        )
+        good = json.loads(event("finish", start, phase="assignment"))
+        bad = json.loads(event("finish", start, phase="thinking"))
+        self.assertIsNotNone(ledger.finish_values(good, start))
+        self.assertIsNone(ledger.finish_values(bad, start))
 
 
 class DecisionLedgerTest(unittest.TestCase):

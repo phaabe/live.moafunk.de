@@ -50,6 +50,7 @@ import time
 from typing import Any, BinaryIO
 
 OUTCOMES = ("ok", "blocked", "timeout", "killed", "error")
+# Every phase a runner may report. ticks.py reads events with this list too.
 PHASES = (
     "lock",
     "refresh",
@@ -58,6 +59,7 @@ PHASES = (
     "backoff",
     "gate",
     "recheck",
+    "assignment",
     "model",
     "result",
     "verify",
