@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 import monitor
+import tick_events
 import ticks
 
 URL = "https://github.com/phaabe/live.moafunk.de"
@@ -623,7 +624,18 @@ class LedgerTest(unittest.TestCase):
         self.checkpoint.write_text(json.dumps(data))
         again = self.ledger()
         again.update(NOON + 10)
-        self.assertEqual((again.state["v"], again.state["totals"]["ok"]), (5, 1))
+        self.assertEqual((again.state["v"], again.state["totals"]["ok"]), (6, 1))
+
+
+SESSION = "00000000-0000-4000-8000-000000000533"
+USAGE = {
+    "input": 10,
+    "output": 3000,
+    "cache_read": 400000,
+    "cache_write": 30000,
+    "complete": True,
+    "reason": None,
+}
 
 
 def event(kind: str, start: float, **fields: object) -> str:
@@ -709,6 +721,142 @@ class EventLedgerTest(unittest.TestCase):
         self.assertEqual(ledger.rejected, 11)
         self.assertEqual(ledger.ticks, [])
         self.assertIsNotNone(ledger.state["open"])  # the valid start stays open
+
+    def test_claude_usage_is_kept_and_exported_apart_from_tokens(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        partial = {**USAGE, "complete": False, "reason": "interrupted"}
+        missing = {
+            **dict.fromkeys(ticks.USAGE_COUNTERS),
+            "complete": False,
+            "reason": "no-transcript",
+        }
+        self.append(
+            event("start", NOON),
+            event("finish", NOON, usage=USAGE, session_id=SESSION),
+            event("start", NOON + 600),
+            event("finish", NOON + 600, exit=124, outcome="timeout", usage=partial),
+            event("start", NOON + 1200),
+            event("finish", NOON + 1200, usage=missing),
+            event("start", NOON + 1800),
+            event("finish", NOON + 1800, usage=None),  # no model started
+        )
+        ledger.update(NOON + 2400)
+        self.assertEqual(ledger.rejected, 0)
+        self.assertEqual(
+            [t["usage"] for t in ledger.ticks], [USAGE, partial, missing, None]
+        )
+        metrics = Metrics()
+        ticks.export(metrics, ledger, NOON + 2400)
+        samples = metrics.samples()
+        counters = {
+            name: samples[f'epic_usage_tokens_today{{agent="codex",counter="{name}"}}']
+            for name in ticks.USAGE_COUNTERS
+        }
+        # Each counter summed on its own; the unavailable tick adds nothing.
+        self.assertEqual(
+            counters,
+            {"input": 20, "output": 6000, "cache_read": 800000, "cache_write": 60000},
+        )
+        self.assertEqual(
+            [
+                samples[f'epic_usage_ticks_today{{agent="codex",coverage="{kind}"}}']
+                for kind in ticks.COVERAGES
+            ],
+            [1, 1, 1],
+        )
+        self.assertNotIn('epic_tokens_today{agent="codex"}', samples)
+        labels = [line for line in metrics.lines if line.startswith("epic_tick_info")]
+        self.assertIn('usage="in 10 · out 3.0k · cache read 400.0k', labels[0])
+        self.assertIn("partial: interrupted", labels[1])
+        self.assertIn('usage="unavailable: no-transcript"', labels[2])
+        self.assertIn('usage=""', labels[3])
+
+    def test_reader_knows_every_usage_value_the_writer_names(self) -> None:
+        self.assertEqual(ticks.USAGE_REASONS, tick_events.USAGE_REASONS)
+        self.assertEqual(ticks.USAGE_COUNTERS, tuple(tick_events.USAGE_FIELDS.values()))
+
+    def test_partial_usage_may_miss_single_counters(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        gap = {**USAGE, "cache_write": None, "complete": False, "reason": "malformed"}
+        self.append(event("start", NOON), event("finish", NOON, usage=gap))
+        ledger.update(NOON + 300)
+        self.assertEqual((ledger.rejected, ledger.ticks[0]["usage"]), (0, gap))
+        metrics = Metrics()
+        ticks.export(metrics, ledger, NOON + 300)
+        samples = metrics.samples()
+        self.assertEqual(
+            samples['epic_usage_tokens_today{agent="codex",counter="output"}'], 3000
+        )
+        self.assertEqual(
+            samples['epic_usage_ticks_today{agent="codex",coverage="partial"}'], 1
+        )
+        [label] = [x for x in metrics.lines if x.startswith("epic_tick_info")]
+        self.assertIn("cache write ? · partial: malformed", label)
+
+    def test_codex_tokens_total_ignores_claude_usage(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append(
+            event("start", NOON),
+            event("finish", NOON, tokens=1234),
+            event("start", NOON + 600),
+            event("finish", NOON + 600, usage=USAGE),
+        )
+        ledger.update(NOON + 900)
+        metrics = Metrics()
+        ticks.export(metrics, ledger, NOON + 900)
+        self.assertEqual(metrics.samples()['epic_tokens_today{agent="codex"}'], 1234)
+
+    def test_invalid_usage_is_rejected(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        for i, usage in enumerate(
+            (
+                {**USAGE, "output": -1},
+                {**USAGE, "output": True},
+                {**USAGE, "output": None},  # half measured
+                {**USAGE, "total": 5},
+                {**USAGE, "reason": "interrupted"},  # complete with a reason
+                {**USAGE, "complete": False, "reason": None},
+                {**USAGE, "complete": False, "reason": "because"},
+                {**USAGE, "complete": 1},
+                {
+                    **dict.fromkeys(ticks.USAGE_COUNTERS),
+                    "complete": True,
+                    "reason": None,
+                },
+                0,
+            )
+        ):
+            self.append(
+                event("start", NOON + i), event("finish", NOON + i, usage=usage)
+            )
+        ledger.update(NOON + 60)
+        self.assertEqual(ledger.rejected, 10)
+        # Each start is interrupted by the next; no finish was accepted.
+        self.assertTrue(all(t["outcome"] == "interrupted" for t in ledger.ticks))
+
+    def test_v5_checkpoint_gets_empty_usage(self) -> None:
+        ledger = self.events()
+        ledger.update(NOON)
+        self.append(event("start", NOON), event("finish", NOON))
+        ledger.update(NOON + 60)
+        ledger.save()
+        path = self.root / "runtime/events-codex.json"
+        data = json.loads(path.read_text())
+        for t in data["ticks"]:
+            del t["usage"]
+        path.write_text(json.dumps(data | {"v": 5}))
+        again = self.events()
+        again.update(NOON + 120)
+        self.assertEqual(
+            (again.state["v"], again.state["totals"]["ok"], again.ticks[0]["usage"]),
+            (6, 1, None),
+        )
+        broken = data | {"v": 6, "ticks": [data["ticks"][0] | {"usage": {"x": 1}}]}
+        self.assertFalse(ticks.valid_checkpoint(broken))
 
     def test_start_without_finish_is_interrupted(self) -> None:
         ledger = self.events()

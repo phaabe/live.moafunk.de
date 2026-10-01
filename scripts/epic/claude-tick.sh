@@ -59,6 +59,11 @@
 # proof and the record. Before a `review`, `scope` works out whether a rebase
 # record allows a focused review; the prompt carries the result.
 #
+# Token usage (tick_events.py): the runner gives each model session its own ID
+# (--session-id). The finish event records it and reads the session's usage
+# from its transcript, also after a timeout or a stop. A missing count stays
+# null with a reason; reading it never changes the tick's result.
+#
 # Run from a scheduler or a loop, for example:
 #   while true; do /bin/bash scripts/epic/claude-tick.sh; sleep 600; done
 set -euo pipefail
@@ -105,6 +110,10 @@ events_open=0
 tick_offset=0
 tick_phase=lock
 tick_outcome=auto
+# Empty until a model session starts; model_done once its exit is known.
+session_id=""
+model_done=0
+model_exit=0
 
 mkdir -p "$state_dir"
 exec >> "$log_file" 2>&1
@@ -193,10 +202,14 @@ cleanup() {
     # A failed log write must not skip the lock release below (set -e).
     printf 'tick: finished exit=%s\n' "$result" || true
     if [[ "$events_open" == 1 ]]; then
+        local usage_args=(--claude-session "$session_id" --launch-dir "$repo_root")
+        if [[ "$model_done" == 1 ]]; then
+            usage_args+=(--model-exit "$model_exit")
+        fi
         python3 "$events" finish --file "$events_file" --tick "$tick_started" \
             --exit "$result" --phase "$tick_phase" --outcome "$tick_outcome" \
             --action-file "${lock_dir}/action.json" \
-            --log "$log_file" --since "$tick_offset" || true
+            --log "$log_file" --since "$tick_offset" "${usage_args[@]}" || true
     fi
     rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" \
         "${lock_dir}/context.json" "${lock_dir}/result.json" "${lock_dir}/cooldown.json" \
@@ -587,17 +600,20 @@ print(json.dumps({"mcpServers": {"epic-gate": {
 # The write-check hook (.claude/hooks/scripts/epic_guard.py) reads these two.
 # The session's JSON result goes to result.json and then into the log. Its exit
 # (124 or 137 on timeout) is kept: the action is still verified.
-model_exit=0
+# Set before the start, so a stop during the session still finds its usage.
+session_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
     EPIC_WORKTREE="$worktree" EPIC_ATTEMPT_FILE="${lock_dir}/attempt.json" GIT_EDITOR=true \
     claude -p --model "$model" --effort "$effort" --permission-mode auto \
+    --session-id "$session_id" \
     --settings "${repo_root}/scripts/epic/claude-runner-settings.json" \
     --mcp-config "$gate_config" --permission-prompt-tool mcp__epic-gate__approve \
     --output-format json \
     --json-schema "$(cat "${repo_root}/scripts/epic/claude-result-schema.json")" \
     ${worktree_args[@]+"${worktree_args[@]}"} < "${lock_dir}/prompt.txt" \
     > "${lock_dir}/result.json" || model_exit=$?
+model_done=1
 cat "${lock_dir}/result.json" || true
 printf '\ntick: model exit=%s\n' "$model_exit"
 # A session can exit 0 while its push or merge was denied. Check GitHub.

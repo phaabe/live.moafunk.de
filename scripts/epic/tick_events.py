@@ -9,14 +9,35 @@ file opened for appending, so lines of two writers never interleave.
       prints the log size, the offset where this tick's output begins
   tick_events.py finish --file F --tick T --exit N --phase P [--outcome O|auto]
                         [--action-file A] [--log L --since OFFSET]
+                        [--claude-session ID --launch-dir D [--model-exit N]]
 
 Only enums, numbers, timestamps and the selector's action/PR/issue are
 written: no model text, prompts or commands.
+
+`tokens` is Codex's `tokens used` count; it stays null for Claude. The Claude
+runner passes the session ID it gave `claude -p` (empty: no model started).
+The finish event then has `session_id` and `usage`, read from that session's
+transcript `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<launch dir>/<ID>.jsonl`
+and its subagent transcripts. `usage` is null when no model started, else:
+
+  input        uncached input tokens      (API usage input_tokens)
+  output       output tokens, thinking included (output_tokens)
+  cache_read   tokens read from the cache (cache_read_input_tokens)
+  cache_write  tokens written to the cache (cache_creation_input_tokens)
+  complete     true only when the transcript proves full coverage
+  reason       null when complete, else one of USAGE_REASONS
+
+All four counters are API tokens, summed over the session's messages. A
+message's repeated records count once, with the largest value of each
+counter. A counter that could not be read is null, never 0, and does not
+cost the other counters; a partial session keeps the counts it has. Permission classifier calls are not part of
+the transcript and not counted.
 """
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import os
@@ -25,6 +46,7 @@ import re
 import signal
 import stat
 import sys
+import time
 from typing import Any, BinaryIO
 
 OUTCOMES = ("ok", "blocked", "timeout", "killed", "error")
@@ -52,6 +74,31 @@ MAX_ACTION_FILE = 65_536
 MAX_SCAN = 1_048_576
 # The helper runs while the runner holds its lock; it must never hang there.
 DEADLINE = 10
+# Transcript usage key -> event counter.
+USAGE_FIELDS = {
+    "input_tokens": "input",
+    "output_tokens": "output",
+    "cache_read_input_tokens": "cache_read",
+    "cache_creation_input_tokens": "cache_write",
+}
+USAGE_REASONS = (
+    "no-transcript",  # no transcript file for the session
+    "unreadable",  # a transcript file could not be opened or read
+    "too-large",  # the read stopped at MAX_TRANSCRIPT or USAGE_SECONDS
+    "no-usage",  # the transcript has no usage record
+    "interrupted",  # the session timed out or was stopped
+    "malformed",  # a model record could not be read
+    "subagents",  # fewer subagent transcripts than subagent calls
+)
+SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+# All transcript files of one session together; runner sessions use ~1 MiB.
+MAX_TRANSCRIPT = 32 * 1024 * 1024
+# Well inside DEADLINE, so the finish event is still written.
+USAGE_SECONDS = 5
+# timeout (124, 137 after the grace) or a signal stopped the session.
+INTERRUPTED = (124, 129, 130, 137, 143)
+SUBAGENT_TOOLS = ("Agent", "Task")
+MAX_COUNT = 10**15
 
 
 def open_regular(path: Path, flags: int) -> int:
@@ -119,6 +166,168 @@ def tokens_since(log: Path | None, offset: int | None) -> int | None:
     return found
 
 
+def transcript_of(session: str, launch_dir: Path | None) -> Path | None:
+    """The session's transcript: the CLI names the folder after its launch dir.
+
+    That is the runner checkout, not the --add-dir feature worktree.
+    """
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    projects = root / "projects"
+    if launch_dir is not None:
+        exact = projects / re.sub(r"[^A-Za-z0-9]", "-", str(launch_dir))
+        if (exact / f"{session}.jsonl").exists():
+            return exact / f"{session}.jsonl"
+    # The CLI shortens very long folder names; the session ID is unique.
+    found = sorted(projects.glob(f"*/{session}.jsonl"))
+    return found[0] if found else None
+
+
+@dataclass
+class Scan:
+    """Usage of one session's transcript files, per message ID."""
+
+    deadline: float
+    left: int
+    messages: dict[str, dict[str, int | None]] = field(default_factory=dict)
+    # Model records with at least one readable counter, over all files.
+    records: int = 0
+    agent_calls: set[str] = field(default_factory=set)
+    malformed: bool = False
+    too_large: bool = False
+
+    def read(self, path: Path) -> None:
+        """Add one transcript file; OSError when it cannot be read."""
+        with read_regular(path) as stream:
+            while self.left > 0 and time.monotonic() < self.deadline:
+                raw = stream.readline(self.left)
+                if not raw:
+                    return
+                self.left -= len(raw)
+                # Only model records carry usage; skip parsing the rest.
+                if b'"assistant"' in raw:
+                    self.add(raw)
+            if stream.read(1):
+                self.too_large = True
+
+    def add(self, raw: bytes) -> None:
+        try:
+            record = json.loads(raw)
+        except (ValueError, RecursionError):
+            self.malformed = True
+            return
+        if not isinstance(record, dict) or record.get("type") != "assistant":
+            return
+        message = record.get("message")
+        if not isinstance(message, dict):
+            self.malformed = True
+            return
+        content = message.get("content")
+        for part in content if isinstance(content, list) else ():
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "tool_use"
+                and part.get("name") in SUBAGENT_TOOLS
+            ):
+                self.agent_calls.add(str(part.get("id")))
+        # A local error note, not an API call.
+        if message.get("model") == "<synthetic>":
+            return
+        key, usage = message.get("id") or record.get("requestId"), message.get("usage")
+        if not isinstance(key, str) or not isinstance(usage, dict):
+            self.malformed = True
+            return
+        # Each counter on its own: a missing or bad one stays None and does
+        # not cost the others.
+        counts: dict[str, int | None] = {}
+        for source, name in USAGE_FIELDS.items():
+            value = usage.get(source)
+            valid = type(value) is int and 0 <= value < MAX_COUNT
+            counts[name] = value if valid else None
+            if not valid:
+                self.malformed = True
+        if all(n is None for n in counts.values()):
+            return
+        self.records += 1
+        # Records of one message repeat per content block, and a streamed
+        # record can be cumulative: keep the largest value, never add them.
+        known = self.messages.get(key)
+        if known is not None:
+            counts = {
+                k: max((v for v in (known[k], n) if v is not None), default=None)
+                for k, n in counts.items()
+            }
+        self.messages[key] = counts
+
+
+def unavailable(reason: str) -> dict[str, Any]:
+    return {**dict.fromkeys(USAGE_FIELDS.values()), "complete": False, "reason": reason}
+
+
+def usage_of(
+    session: str, launch_dir: Path | None, model_exit: int | None
+) -> dict[str, Any]:
+    """Usage of a started session; model_exit None: the runner was stopped."""
+    path = transcript_of(session, launch_dir)
+    if path is None:
+        return unavailable("no-transcript")
+    scan = Scan(time.monotonic() + USAGE_SECONDS, MAX_TRANSCRIPT)
+    try:
+        scan.read(path)
+    except OSError:
+        return unavailable("unreadable")
+    children = sorted((path.parent / session / "subagents").glob("agent-*.jsonl"))
+    unread = False
+    # A child without a usable usage record is not collected coverage.
+    empty = 0
+    for child in children:
+        before = scan.records
+        try:
+            scan.read(child)
+        except OSError:
+            unread = True
+            continue
+        if scan.records == before:
+            empty += 1
+    if not scan.messages:
+        if scan.too_large:
+            return unavailable("too-large")
+        return unavailable("malformed" if scan.malformed else "no-usage")
+    reason = None
+    if model_exit is None or model_exit in INTERRUPTED:
+        reason = "interrupted"
+    elif scan.too_large:
+        reason = "too-large"
+    elif unread:
+        reason = "unreadable"
+    elif scan.malformed:
+        reason = "malformed"
+    elif empty or len(children) < len(scan.agent_calls):
+        reason = "subagents"
+    # A counter no message could read stays None; the rest keep their sums
+    # (then `malformed` marks them partial).
+    totals: dict[str, int | None] = {}
+    for name in USAGE_FIELDS.values():
+        known = [m[name] for m in scan.messages.values() if m[name] is not None]
+        totals[name] = sum(known) if known else None
+    return {**totals, "complete": reason is None, "reason": reason}
+
+
+def claude_fields(
+    session: str, launch_dir: Path | None, model_exit: int | None
+) -> dict[str, Any]:
+    """`session_id` and `usage` of a Claude tick; empty session: no model."""
+    if not session:
+        return {"session_id": None, "usage": None}
+    if not SESSION.fullmatch(session):
+        return {"session_id": None, "usage": unavailable("no-transcript")}
+    try:
+        usage = usage_of(session, launch_dir, model_exit)
+    # Reporting must never cost the finish event, whatever the transcript holds.
+    except Exception:  # noqa: BLE001
+        usage = unavailable("unreadable")
+    return {"session_id": session, "usage": usage}
+
+
 def append(path: Path, event: dict[str, Any]) -> None:
     line = (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
     if len(line) >= MAX_LINE:
@@ -150,12 +359,26 @@ def main(argv: list[str] | None = None) -> int:
     finish.add_argument("--outcome", choices=(*OUTCOMES, "auto"), default="auto")
     finish.add_argument("--action-file", type=Path)
     finish.add_argument("--since", type=int)
+    finish.add_argument("--claude-session")
+    finish.add_argument("--launch-dir", type=Path)
+    finish.add_argument("--model-exit", type=int)
     args = parser.parse_args(argv)
-    # A hard deadline: whatever blocks, the runner's cleanup goes on.
-    signal.signal(signal.SIGALRM, lambda *_: sys.exit("tick: event helper timed out"))
-    signal.alarm(DEADLINE)
     if not TICK.fullmatch(args.tick):
         parser.error("--tick must look like 2026-09-28T15:39:39Z")
+    # A hard deadline: whatever blocks, the runner's cleanup goes on.
+    previous = signal.signal(
+        signal.SIGALRM, lambda *_: sys.exit("tick: event helper timed out")
+    )
+    signal.alarm(DEADLINE)
+    try:
+        return write(parser, args)
+    finally:
+        # In-process callers (tests) must not get the alarm later.
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous or signal.SIG_DFL)
+
+
+def write(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     try:
         if args.command == "start":
             append(
@@ -190,6 +413,13 @@ def main(argv: list[str] | None = None) -> int:
                 "phase": args.phase,
                 **action_fields(args.action_file),
                 "tokens": tokens_since(args.log, args.since),
+                **(
+                    {}
+                    if args.claude_session is None
+                    else claude_fields(
+                        args.claude_session, args.launch_dir, args.model_exit
+                    )
+                ),
             },
         )
     except (OSError, ValueError) as error:

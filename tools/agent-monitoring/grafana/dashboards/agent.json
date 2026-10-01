@@ -643,13 +643,27 @@
           "expr": "sum(epic_tokens_today{agent=\"$agent\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
           "instant": true,
           "range": false,
-          "legendFormat": ""
+          "legendFormat": "tokens"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (counter) (epic_usage_tokens_today{agent=\"$agent\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{counter}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(epic_usage_ticks_today{agent=\"$agent\",coverage!=\"complete\"}) and on() (time() - epic_local_snapshot_timestamp_seconds < 30)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "ticks without full usage"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "noValue": "Not reported by this runner (Codex only)",
+          "noValue": "Not reported yet",
           "mappings": [],
           "color": {
             "mode": "thresholds"
@@ -674,7 +688,7 @@
           "values": false,
           "fields": ""
         },
-        "textMode": "value",
+        "textMode": "value_and_name",
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center",
@@ -692,7 +706,7 @@
     {
       "type": "table",
       "title": "Tick history",
-      "description": "Newest first. Tokens only for Codex. Source: events (written by the runner) or log (best effort).",
+      "description": "Newest first. Tokens: Codex's `tokens used` count. Usage: Claude's input, output, cache read and cache write tokens, each on its own, or why they are missing. Source: events (written by the runner) or log (best effort).",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -732,6 +746,7 @@
                 "target",
                 "Value",
                 "tokens",
+                "usage",
                 "source"
               ]
             }
@@ -750,7 +765,8 @@
               "target": 5,
               "Value": 6,
               "tokens": 7,
-              "source": 8
+              "usage": 8,
+              "source": 9
             },
             "renameByName": {
               "tick": "Started",
@@ -761,6 +777,7 @@
               "target": "Target",
               "Value": "Duration",
               "tokens": "Tokens",
+              "usage": "Usage",
               "source": "Source"
             }
           }
@@ -876,6 +893,18 @@
             "matcher": {
               "id": "byName",
               "options": "Tokens"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "–"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Usage"
             },
             "properties": [
               {

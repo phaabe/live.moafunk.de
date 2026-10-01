@@ -258,6 +258,7 @@ def build_state(root: Path, specs: list[Spec], now: float) -> None:
                             "pr": spec.pr,
                             "issue": None,
                             "tokens": 12000 + i * 100 if kind == "codex" else None,
+                            **(usage(i, outcome) if kind == "claude" else {}),
                         }
                     )
                     + "\n"
@@ -311,6 +312,27 @@ def build_state(root: Path, specs: list[Spec], now: float) -> None:
             (home / "claude-permissions.log").write_text("")
         if spec.retired:
             agents.retire(root, spec.id, now - 3600)
+
+
+def usage(i: int, outcome: str) -> dict[str, object]:
+    """Claude session usage of a finished fixture tick (see tick_events.py)."""
+    counts = {
+        "input": 20 + i,
+        "output": 3000 + i * 50,
+        "cache_read": 400_000 + i * 1000,
+        "cache_write": 30_000,
+    }
+    if outcome == "ok":
+        return {"usage": {**counts, "complete": True, "reason": None}}
+    if outcome == "error":
+        return {
+            "usage": {
+                **dict.fromkeys(counts),
+                "complete": False,
+                "reason": "no-transcript",
+            }
+        }
+    return {"usage": {**counts, "complete": False, "reason": "interrupted"}}
 
 
 def last_starts(specs: list[Spec], now: float) -> dict[str, float]:

@@ -1378,18 +1378,32 @@ def agent_detail() -> Json:
             "—",
         ),
         (
+            # Codex's one count, or Claude's counters and how many model
+            # ticks lack full usage: never added into one total.
             "Tokens today",
-            f"sum(epic_tokens_today{{{a}}}){LOCAL}",
+            [
+                target(f"sum(epic_tokens_today{{{a}}}){LOCAL}", legend="tokens"),
+                target(
+                    f"sum by (counter) (epic_usage_tokens_today{{{a}}}){LOCAL}",
+                    legend="{{counter}}",
+                    ref="B",
+                ),
+                target(
+                    f'sum(epic_usage_ticks_today{{{a},coverage!="complete"}}){LOCAL}',
+                    legend="ticks without full usage",
+                    ref="C",
+                ),
+            ],
             "short",
             None,
-            not_reported("Codex"),
+            "Not reported yet",
         ),
     )
     for i, (title, expr, unit, thresholds, no_value) in enumerate(tiles):
         board.add(
             stat(
                 title,
-                [target(expr)],
+                expr if isinstance(expr, list) else [target(expr)],
                 unit=unit,
                 thresholds=thresholds,
                 no_value=no_value,
@@ -1450,6 +1464,7 @@ def tick_history(a: str) -> Json:
         "target",
         "Value",
         "tokens",
+        "usage",
         "source",
     ]
     return table_panel(
@@ -1468,6 +1483,7 @@ def tick_history(a: str) -> Json:
                     "target": "Target",
                     "Value": "Duration",
                     "tokens": "Tokens",
+                    "usage": "Usage",
                     "source": "Source",
                 },
                 [],
@@ -1488,6 +1504,7 @@ def tick_history(a: str) -> Json:
                 ("mappings", [value_map({"-1": ("unknown", MUTED)})]),
             ),
             by_name("Tokens", ("noValue", "–")),
+            by_name("Usage", ("noValue", "–")),
             by_name("Started", ("custom.width", 170)),
             by_name("Exit", ("custom.width", 50)),
             by_name(
@@ -1497,8 +1514,10 @@ def tick_history(a: str) -> Json:
                 ("links", [link("Open on GitHub", "${__value.raw}")]),
             ),
         ],
-        description="Newest first. Tokens only for Codex. Source: events "
-        "(written by the runner) or log (best effort).",
+        description="Newest first. Tokens: Codex's `tokens used` count. Usage: "
+        "Claude's input, output, cache read and cache write tokens, each on its "
+        "own, or why they are missing. Source: events (written by the runner) "
+        "or log (best effort).",
         no_value="No ticks yet",
     )
 

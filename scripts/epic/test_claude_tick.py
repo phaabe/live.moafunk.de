@@ -15,6 +15,28 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+TRANSCRIPT = ROOT / "scripts/epic/fixtures/claude-transcript.jsonl"
+# Usage of that sanitized transcript (test_tick_events.py checks the counting).
+TRANSCRIPT_USAGE = {
+    "input": 6,
+    "output": 943,
+    "cache_read": 109053,
+    "cache_write": 38698,
+}
+# Stub model lines: store TEST_MODEL_TRANSCRIPT where the CLI keeps the
+# transcript of its --session-id, named after the launch folder.
+TRANSCRIPT_STUB = (
+    'session=""; previous=""\n'
+    'for arg in "$@"; do\n'
+    '    if [[ "$previous" == --session-id ]]; then session=$arg; fi\n'
+    "    previous=$arg\n"
+    "done\n"
+    'if [[ -n "${TEST_MODEL_TRANSCRIPT:-}" ]]; then\n'
+    "    folder=\"$CLAUDE_CONFIG_DIR/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')\"\n"
+    '    mkdir -p "$folder"\n'
+    '    cp "$TEST_MODEL_TRANSCRIPT" "$folder/$session.jsonl"\n'
+    "fi\n"
+)
 ACTION = {"action": "fix", "reason": "test", "pr": 1, "sha": "a" * 40}
 # Python line for a stub: the other runner stores a quota wait now.
 WAIT_WRITE = (
@@ -137,6 +159,8 @@ class RunnerHarness(unittest.TestCase):
             '"$EPIC_BODY_DIR" > "$TEST_CALLS.body-inode"\n'
             "fi\n"
             'cat > "$TEST_CALLS.prompt"\n'
+            + TRANSCRIPT_STUB
+            + 'if [[ -n "${TEST_MODEL_RESULT:-}" ]]; then printf \'%s\' "$TEST_MODEL_RESULT"; fi\n'
             # Another runner stores a quota wait while this session runs.
             'if [[ -n "${TEST_MODEL_WAIT:-}" ]]; then\n'
             '    printf \'{"retry_at": "2099-01-01T00:00:00Z"}\' > "$EPIC_STATE_DIR/github-quota-wait.json"\n'
@@ -156,6 +180,7 @@ class RunnerHarness(unittest.TestCase):
         self.env = {
             **os.environ,
             "HOME": str(home),
+            "CLAUDE_CONFIG_DIR": str(self.root / "claude-config"),
             "EPIC_STATE_DIR": str(self.state),
             "EPIC_LOCK_DIR": str(self.root / "locks"),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -672,6 +697,91 @@ class ClaudeTickTest(RunnerHarness):
         finish = self.tick_events()[-1]
         self.assertEqual((finish["action"], finish["pr"]), ("fix", 1))
         self.assertIsNone(finish["tokens"])
+
+    def session_arg(self) -> str:
+        [args] = [c[1] for c in self.calls_made() if c[0] == "claude"]
+        words = args.split()
+        return words[words.index("--session-id") + 1]
+
+    def test_finish_event_records_the_session_and_its_usage(self) -> None:
+        output = '{"type":"result","structured_output":{"status":"completed"}}'
+        code = self.run_tick(
+            TEST_MODEL_TRANSCRIPT=str(TRANSCRIPT), TEST_MODEL_RESULT=output
+        ).wait(timeout=30)
+        self.assertEqual(code, 0)
+        finish = self.tick_events()[-1]
+        self.assertRegex(finish["session_id"], r"^[0-9a-f-]{36}$")
+        self.assertEqual(finish["session_id"], self.session_arg())
+        self.assertEqual(
+            finish["usage"], {**TRANSCRIPT_USAGE, "complete": True, "reason": None}
+        )
+        self.assertEqual((finish["tokens"], finish["outcome"]), (None, "ok"))
+        # Stdout, the log lines, the permission route and verify are unchanged.
+        [args] = [c[1] for c in self.calls_made() if c[0] == "claude"]
+        self.assertIn("--output-format json", args)
+        self.assertIn("--permission-prompt-tool mcp__epic-gate__approve", args)
+        log = (self.state / "claude.log").read_text()
+        self.assertIn(f"{output}\ntick: model exit=0\n", log)
+        self.assertIn("tick: fix with model=opus effort=high\n", log)
+        self.assertIn("tick: finished exit=0\n", log)
+        self.assertIn(["verify", "--since"], self.calls_made())
+        self.assertIn(["gate", "record"], self.calls_made())
+
+    def test_usage_is_kept_whatever_the_tick_result(self) -> None:
+        transcript = {"TEST_MODEL_TRANSCRIPT": str(TRANSCRIPT)}
+        for env, result, usage in (
+            (
+                {
+                    **transcript,
+                    "EPIC_TICK_TIMEOUT_SECONDS": "2",
+                    "TEST_MODEL_SLEEP": "30",
+                },
+                (124, "timeout", "model"),
+                (943, False, "interrupted"),
+            ),
+            (
+                {**transcript, "TEST_VERIFY_EXIT": "1"},
+                (1, "error", "verify"),
+                (943, True, None),
+            ),
+            ({}, (0, "ok", "record"), (None, False, "no-transcript")),
+        ):
+            with self.subTest(env=env):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.calls.unlink(missing_ok=True)
+                self.run_tick(**env).wait(timeout=40)
+                self.assertEqual(self.finish(), result)
+                finish = self.tick_events()[-1]
+                self.assertEqual(
+                    tuple(finish["usage"][k] for k in ("output", "complete", "reason")),
+                    usage,
+                )
+                self.assertEqual(finish["session_id"], self.session_arg())
+
+    def test_no_model_session_means_no_usage(self) -> None:
+        for env in ({"TEST_SELECT_EXIT": "3"}, {"TEST_GATE_EXIT": "4"}):
+            with self.subTest(env=env):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.run_tick(**env).wait(timeout=30)
+                finish = self.tick_events()[-1]
+                self.assertEqual((finish["session_id"], finish["usage"]), (None, None))
+
+    def test_stopped_runner_keeps_the_partial_usage(self) -> None:
+        runner = self.run_tick(
+            TEST_MODEL_SLEEP="60", TEST_MODEL_TRANSCRIPT=str(TRANSCRIPT)
+        )
+        deadline = time.time() + 20
+        while not self.model_pid.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        time.sleep(0.3)  # the stub stores the transcript before it sleeps
+        runner.send_signal(signal.SIGTERM)
+        self.assertEqual(runner.wait(timeout=30), 143)
+        self.assertEqual(self.finish(), (143, "killed", "model"))
+        usage = self.tick_events()[-1]["usage"]
+        self.assertEqual(
+            (usage["output"], usage["complete"], usage["reason"]),
+            (943, False, "interrupted"),
+        )
 
     def test_term_writes_a_killed_event_before_the_lock_is_released(self) -> None:
         runner = self.run_tick(TEST_MODEL_SLEEP="60")

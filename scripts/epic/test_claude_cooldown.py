@@ -77,7 +77,8 @@ class ClaudeCooldownTest(harness.RunnerHarness):
             "#!/bin/bash\n"
             'printf \'["claude", "model"]\\n\' >> "$TEST_CALLS"\n'
             'cat > "$TEST_CALLS.prompt"\n'
-            'if [[ -n "${TEST_MODEL_SLEEP:-}" ]]; then exec sleep "$TEST_MODEL_SLEEP"; fi\n'
+            + harness.TRANSCRIPT_STUB
+            + 'if [[ -n "${TEST_MODEL_SLEEP:-}" ]]; then exec sleep "$TEST_MODEL_SLEEP"; fi\n'
             "printf '%s' \"${TEST_MODEL_RESULT:-}\"\n"
             'exit "${TEST_MODEL_EXIT:-0}"\n'
         )
@@ -242,6 +243,23 @@ class ClaudeCooldownTest(harness.RunnerHarness):
         self.assertIn(
             "model timed out;", next(iter(self.cooldowns().values()))["reason"]
         )
+
+    def test_blocked_and_failed_sessions_keep_their_usage(self) -> None:
+        transcript = str(harness.TRANSCRIPT)
+        for env, outcome in (
+            ({"TEST_MODEL_RESULT": result("blocked")}, "blocked"),
+            ({"TEST_MODEL_EXIT": "1"}, "error"),
+        ):
+            with self.subTest(env=env):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.tick(CONFLICT, TEST_MODEL_TRANSCRIPT=transcript, **env)
+                events = self.state / "claude-ticks.jsonl"
+                finish = json.loads(events.read_text().splitlines()[-1])
+                self.assertEqual(finish["outcome"], outcome)
+                self.assertEqual(
+                    finish["usage"],
+                    {**harness.TRANSCRIPT_USAGE, "complete": True, "reason": None},
+                )
 
     def test_model_quota_result_sets_no_cooldown(self) -> None:
         self.assertEqual(self.tick(CONFLICT, TEST_MODEL_RESULT=result("quota")), 75)
