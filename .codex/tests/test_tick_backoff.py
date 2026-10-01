@@ -146,11 +146,17 @@ class BackoffTests(unittest.TestCase):
             "headRefOid": action["sha"],
         }
         response = subprocess.CompletedProcess([], 0, stdout=json.dumps(metadata))
-        with patch.object(backoff.subprocess, "run", return_value=response) as github:
+        with (
+            patch.object(backoff.subprocess, "run", return_value=response) as github,
+            patch.object(
+                backoff.github_quota, "resolve_gh", return_value="/test/bin/gh"
+            ) as resolve,
+        ):
             self.assertEqual(backoff.check(action, self.state, 900, 1200), 3)
+            resolve.assert_called_once_with()
             github.assert_called_once_with(
                 [
-                    "gh",
+                    "/test/bin/gh",
                     "pr",
                     "view",
                     "410",
@@ -401,6 +407,9 @@ class BackoffTests(unittest.TestCase):
         wait = json.loads((self.state / "github-quota-wait.json").read_text())
         self.assertEqual(wait["retry_at"], "1970-01-01T01:00:00Z")
         self.assertEqual(wait["reset_at"], "1970-01-01T00:59:00Z")
+        self.assertEqual(wait["source"], "caller")
+        self.assertEqual(wait["provenance"]["origin"], "model-result")
+        self.assertEqual(wait["provenance"]["reset_lookup"], {"attempted": False})
 
     def test_quota_result_validation_does_not_trust_summary_text(self) -> None:
         for result in (
@@ -502,6 +511,7 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
         wait = json.loads((self.state / "github-quota-wait.json").read_text())
         self.assertEqual(wait["source"], "fallback")
+        self.assertEqual(wait["provenance"]["origin"], "model-result")
         self.assertEqual(backoff.github_quota.parse_iso(wait["retry_at"]), 1900)
         self.assertFalse((self.state / "codex-backoff.json").exists())
 
@@ -531,7 +541,53 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
         wait = json.loads((self.state / "github-quota-wait.json").read_text())
         self.assertEqual(wait["retry_at"], "1970-01-01T00:31:00Z")
+        self.assertEqual(wait["source"], "rateLimit")
+        self.assertEqual(wait["provenance"]["origin"], "model-result")
+        self.assertTrue(wait["provenance"]["reset_lookup"]["attempted"])
         self.assertFalse((self.state / "codex-backoff.json").exists())
+
+    def test_model_quota_preserves_active_wait_with_or_without_provenance(self) -> None:
+        wait = backoff.github_quota.record(self.state, 1000, "1970-01-01T00:30:00Z")
+        path = self.state / backoff.github_quota.WAIT_FILE
+        self.result.write_text(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "Quota exhausted",
+                    "reason_code": "github_rate_limit",
+                    "retry_at": "1970-01-01T01:00:00Z",
+                }
+            )
+        )
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    del wait["provenance"]
+                path.write_text(json.dumps(wait))
+                original = path.read_bytes()
+                with patch.object(backoff.github_quota, "record") as writer:
+                    self.assertEqual(self.record(), 4)
+                writer.assert_not_called()
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_past_model_retry_keeps_origin_in_fallback(self) -> None:
+        self.result.write_text(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "summary": "Quota exhausted",
+                    "reason_code": "github_rate_limit",
+                    "retry_at": "1970-01-01T00:00:00Z",
+                }
+            )
+        )
+        with patch.object(backoff.github_quota.subprocess, "run") as request:
+            self.assertEqual(self.record(), 4)
+        request.assert_not_called()
+        wait = backoff.github_quota.read_wait(self.state)
+        self.assertEqual(wait["source"], "fallback")
+        self.assertEqual(wait["provenance"]["origin"], "model-result")
+        self.assertEqual(backoff.github_quota.parse_iso(wait["retry_at"]), 1900)
 
     def test_model_time_at_upper_bound_needs_no_reset_query(self) -> None:
         self.result.write_text(
@@ -602,6 +658,56 @@ class BackoffTests(unittest.TestCase):
                     1001,
                 )
         self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_cli_quota_propagates_stub_path_to_shared_wait(self) -> None:
+        path, original = self.fresh_cooldown()
+        self.action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        calls = self.root / "gh-calls.jsonl"
+        quota_dir = self.root / "shared-quota"
+        for code, stdout, stderr in (
+            (1, "", "GraphQL: API rate limit already exceeded"),
+            (0, '{"errors":[{"type":"RATE_LIMITED"}]}', ""),
+        ):
+            with self.subTest(code=code):
+                calls.write_text("")
+                gh.write_text(
+                    f"#!{sys.executable}\n"
+                    "import json, sys\n"
+                    f"with open({str(calls)!r}, 'a') as out:\n"
+                    "    out.write(json.dumps(sys.argv) + '\\n')\n"
+                    "if sys.argv[1:3] == ['pr', 'view']:\n"
+                    f"    print({stdout!r})\n"
+                    f"    print({stderr!r}, file=sys.stderr)\n"
+                    f"    sys.exit({code})\n"
+                    "assert sys.argv[1:] == "
+                    "['api', 'graphql', '-f', 'query=query{rateLimit{resetAt}}']\n"
+                    "print(json.dumps({'data': {'rateLimit': "
+                    "{'resetAt': '2100-01-01T00:00:00Z'}}}))\n"
+                )
+                gh.chmod(0o755)
+                with patch.dict(os.environ, {"PATH": str(bin_dir)}):
+                    result = self.cli("check", "--quota-dir", str(quota_dir))
+                self.assertEqual(result.returncode, 4, result.stderr)
+                wait = backoff.github_quota.read_wait(quota_dir)
+                prov = wait["provenance"]
+                self.assertEqual(wait["source"], "rateLimit")
+                self.assertEqual(prov["origin"], "code")
+                self.assertEqual(prov["quota_call"], {"gh_path": str(gh)})
+                self.assertEqual(
+                    prov["reset_lookup"],
+                    {"attempted": True, "gh_path": str(gh), "result": "reset"},
+                )
+                self.assertEqual(
+                    prov["writer"]["script"], str(ROOT / "tick_backoff.py")
+                )
+                invoked = [json.loads(line) for line in calls.read_text().splitlines()]
+                self.assertEqual(len(invoked), 2)
+                self.assertEqual([args[0] for args in invoked], [str(gh), str(gh)])
+                self.assertEqual(path.read_bytes(), original)
+                self.assertFalse((self.state / backoff.github_quota.WAIT_FILE).exists())
 
     def test_nonzero_exit_overrides_blocked_output(self) -> None:
         self.assertEqual(self.record(code=17), 75)
