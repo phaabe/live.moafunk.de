@@ -161,8 +161,9 @@ def selected_adopt_body_edit(args: list[str]) -> bool:
         or not anchor
     ):
         return False
-    # Only the runner's per-tick body directory, so no other readable file can
-    # become a PR body. It is identified by the device and inode the runner
+    # Only the runner's per-tick body directory, so a wrong path cannot become
+    # a PR body by mistake. It does not stop a session that copies another file
+    # into the directory or swaps the file after this check. It is identified by the device and inode the runner
     # recorded, so a replaced directory or a symlink in its place does not
     # match. The file must be regular with one link: no symlink or hard link.
     parent = os.stat(body_path.parent)

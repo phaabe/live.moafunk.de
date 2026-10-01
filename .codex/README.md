@@ -59,7 +59,10 @@ digest. The body file must be a regular file with one link directly in
 removes afterwards. The hook checks that directory by the device and inode the
 runner recorded (`EPIC_BODY_DIR_ID`), so a replaced directory does not match.
 Other targets, extra fields, relative paths, symlinks, hard links, files
-elsewhere and other write forms stay blocked. Body files still pass the verdict check. This command guard is not a
+elsewhere and other write forms stay blocked. Body files still pass the verdict
+check. This stops a wrong path by mistake. It does not stop a session that
+copies another file into the directory, or swaps the file after the hook ran;
+only the verdict check looks at the content. This command guard is not a
 replacement for checking the current head, owner and body before the write.
 
 ## Recovery if the guard blocks every tool
