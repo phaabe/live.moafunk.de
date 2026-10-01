@@ -42,12 +42,11 @@ import secrets
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-import target_lock
 
 SCHEMA = 1
 CONTRACT = 1
@@ -61,6 +60,11 @@ LOCK = "runtime.lock"
 MARKER = "runtime-promotion.json"
 ADMITTED = "admitted"
 PHASES = ("prepared", "switched", "smoked")
+# How long a write check waits for a promoter to publish its snapshot.
+PUBLISH_WAIT = 5.0
+# Records younger than this at the process scan are never pruned, so a
+# tick admitted after the scan keeps its record (mtime may round down).
+PRUNE_GRACE_NS = 2_000_000_000
 REVISION = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 TICK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -94,6 +98,10 @@ def home(env: Mapping[str, str] | None = None) -> Path:
 
 
 def lock_dir() -> Path:
+    # Imported here: `validate` runs with `python3 -I` before the install is
+    # trusted, so it must need nothing but the standard library.
+    import target_lock
+
     return target_lock.lock_dir()
 
 
@@ -475,9 +483,31 @@ def read_marker() -> dict[str, Any] | None:
         return None
     except (OSError, ValueError) as error:
         raise RuntimeBlocked(f"promotion marker unreadable: {error}") from None
-    if not isinstance(data, dict) or not isinstance(data.get("admitted"), list):
+    if not isinstance(data, dict) or not (
+        data.get("admitted") is None or isinstance(data.get("admitted"), list)
+    ):
         raise RuntimeBlocked("promotion marker is invalid")
     return data
+
+
+def published_marker() -> dict[str, Any] | None:
+    """The marker once its snapshot is published (admitted is a list).
+
+    begin_promotion writes the marker with admitted null first, to stop new
+    admissions at once. Waits up to PUBLISH_WAIT for the snapshot; a
+    promoter that died before publishing it raises (fail closed).
+    """
+    deadline = time.monotonic() + PUBLISH_WAIT
+    while True:
+        marker = read_marker()
+        if marker is None or marker["admitted"] is not None:
+            return marker
+        if time.monotonic() >= deadline:
+            raise RuntimeBlocked(
+                f"promotion {marker.get('promotion_id')} has not published "
+                "its admitted ticks"
+            )
+        time.sleep(0.05)
 
 
 def begin_promotion(candidate: str, previous: str | None) -> dict[str, Any]:
@@ -485,7 +515,8 @@ def begin_promotion(candidate: str, previous: str | None) -> dict[str, Any]:
 
     The marker exists before the snapshot is read. A tick writes its record
     before it checks the marker, so every tick that passed the check is in
-    the snapshot. Refuses when a marker exists.
+    the snapshot. Until the snapshot is written, admitted is null: write
+    checks wait for it (published_marker). Refuses when a marker exists.
     """
     path = marker_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -496,7 +527,7 @@ def begin_promotion(candidate: str, previous: str | None) -> dict[str, Any]:
         "previous": previous,
         "phase": "prepared",
         "started_at": now_iso(),
-        "admitted": [],
+        "admitted": None,
     }
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -593,17 +624,21 @@ def admission_records() -> list[dict[str, Any]]:
     return found
 
 
-def prune(table: Mapping[int, tuple[int, str]]) -> None:
+def prune(table: Mapping[int, tuple[int, str]], scanned_ns: int) -> None:
     """Remove records of ticks that died without cleanup (SIGKILL, reboot).
 
     Housekeeping only: a dead tick's pid and start time match no live
-    ancestor, so its record never admits anything.
+    ancestor, so its record never admits anything. `table` was read at
+    `scanned_ns` (time.time_ns()); a record written after that is not in it
+    and is kept.
     """
     folder = admitted_dir()
     if not folder.is_dir():
         return
     for path in folder.glob("*.json"):
         try:
+            if path.stat().st_mtime_ns >= scanned_ns - PRUNE_GRACE_NS:
+                continue
             record = read_json(path)
             processes = record["processes"]
             alive = any(
@@ -640,7 +675,7 @@ def write_barrier(pid: int | None = None) -> str | None:
     before the promotion started. Unreadable marker or process table: refused.
     """
     try:
-        marker = read_marker()
+        marker = published_marker()
     except RuntimeBlocked as error:
         return f"runtime promotion: {error}"
     if marker is None:
@@ -675,8 +710,9 @@ def admit(fd: int, tick_id: str, agent: str, pid: int) -> str | None:
         raise ValueError(f"bad tick id {tick_id!r}")
     if not lock_shared(fd):
         return "runtime promotion holds the admission lock"
+    scanned_ns = time.time_ns()
     table = process_table()
-    prune(table)
+    prune(table, scanned_ns)
     record = {
         "tick_id": tick_id,
         "agent": agent,

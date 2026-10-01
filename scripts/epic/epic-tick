@@ -10,6 +10,10 @@ tick entry with:
   EPIC_RUNTIME_REVISION  its commit
   EPIC_RUNTIME_MANIFEST  its manifest
 
+The validator runs with `python3 -I`: no PYTHON* variables, and its own
+folder is not on sys.path, so it imports nothing from the install before
+the install is checked.
+
 The tick never reads the pin again. There is no legacy path here: a missing
 or invalid pin, or a failed validation, exits 78 before any model or write.
 Standard library only; it runs before any pinned code is trusted.
@@ -29,6 +33,8 @@ BLOCKED = 78
 ENTRIES = {"claude": "scripts/epic/claude-tick.sh", "codex": ".codex/codex-tick.sh"}
 VALIDATOR = "scripts/epic/runtime.py"
 REVISION = re.compile(r"[0-9a-f]{40}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+SCHEMA = 1  # runtime.SCHEMA; the same checks as runtime.read_pin and resolve
 
 
 def sha256(path: Path) -> str:
@@ -60,14 +66,21 @@ def main(argv: list[str]) -> int:
         expected = str(pin["manifest_sha256"])
     except (OSError, ValueError, KeyError, TypeError) as error:
         return fail(f"no valid pin in {home}: {error}")
-    if not REVISION.fullmatch(revision):
-        return fail("the pin names no 40-hex revision")
+    if (
+        pin.get("schema") != SCHEMA
+        or not REVISION.fullmatch(revision)
+        or not SHA256.fullmatch(expected)
+        or not isinstance(pin.get("promotion_id"), str)
+    ):
+        return fail(f"the pin in {home} is invalid")
     install = home / "revisions" / revision
     manifest_path = install / "runtime-manifest.json"
     try:
         if sha256(manifest_path) != expected:
             return fail("the pinned manifest does not match the pin")
         manifest = json.loads(manifest_path.read_text())
+        if manifest.get("revision") != revision:
+            return fail("the pinned manifest names another revision")
         validator = install / VALIDATOR
         if sha256(validator) != manifest["files"][VALIDATOR]:
             return fail("the pinned validator does not match the manifest")
@@ -81,7 +94,8 @@ def main(argv: list[str]) -> int:
     except OSError as error:
         return fail(f"pinned python3 unreadable: {error}")
     check = subprocess.run(
-        [interpreter, str(validator), "validate", "--manifest", str(manifest_path)],
+        [interpreter, "-I", str(validator), "validate"]
+        + ["--manifest", str(manifest_path)],
         capture_output=True,
         text=True,
         timeout=300,

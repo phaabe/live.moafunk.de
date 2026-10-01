@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from collections.abc import Generator
@@ -33,6 +34,9 @@ LOCKHOLD = HERE / "lockhold"
 LAUNCHER = HERE / "epic-tick"
 REV = "1" * 40
 REV2 = "2" * 40
+REV3 = "3" * 40
+# Module code that leaves a trace when it runs.
+TRAP = "import os\nopen(os.environ['EPIC_TEST_TRAP'], 'a').write('ran\\n')\n"
 
 
 def make_writable(root: Path) -> None:
@@ -307,6 +311,49 @@ class LauncherTest(TempCase):
         (install / runtime.MANIFEST).write_text("{}")
         self.assertEqual(self.launch().returncode, runtime.BLOCKED)
 
+    def test_changed_import_or_planted_module_never_runs(self) -> None:
+        # The launcher checks runtime.py, then runs it as the validator. No
+        # other install file may run before the validator refuses it.
+        install = self.pinned()
+        trap = self.tmp / "trap"
+        epic = install / "scripts/epic"
+        os.chmod(epic, 0o755)
+        os.chmod(epic / "target_lock.py", 0o644)
+        (epic / "target_lock.py").write_text(TRAP)
+        for name in ("json", "argparse", "hashlib", "fcntl"):
+            (epic / f"{name}.py").write_text(TRAP)
+        out = self.launch(EPIC_TEST_TRAP=str(trap))
+        self.assertEqual(out.returncode, runtime.BLOCKED, out.stderr)
+        self.assertFalse(trap.exists(), "install code ran before validation")
+        self.assertFalse((self.tmp / "out").exists())
+
+    def test_invalid_pin_blocks(self) -> None:
+        self.pinned()
+        good = json.loads((self.home / runtime.PIN).read_text())
+        for bad in (
+            {**good, "schema": 999},
+            {**good, "manifest_sha256": "x" * 64},
+            {k: v for k, v in good.items() if k != "promotion_id"},
+        ):
+            with self.subTest(pin=bad):
+                runtime.write_json(self.home / runtime.PIN, bad)
+                out = self.launch()
+                self.assertEqual(out.returncode, runtime.BLOCKED, out.stderr)
+                self.assertFalse((self.tmp / "out").exists())
+
+    def test_manifest_naming_another_revision_blocks(self) -> None:
+        install = self.install(
+            REV2, files={"scripts/epic/claude-tick.sh": self.ENV_DUMP}, sealed=False
+        )
+        moved = install.rename(install.with_name(REV3))
+        read_only(moved)
+        digest = runtime.sha256_file(moved / runtime.MANIFEST)
+        runtime.write_pin(self.home, REV3, digest, "p1", None)
+        out = self.launch()
+        self.assertEqual(out.returncode, runtime.BLOCKED, out.stderr)
+        self.assertIn("another revision", out.stderr)
+        self.assertFalse((self.tmp / "out").exists())
+
     def test_legacy_flag_and_bad_usage_block(self) -> None:
         self.pinned()
         self.assertEqual(
@@ -417,6 +464,21 @@ class MarkerTest(TempCase):
 
     def test_no_marker_allows_writes(self) -> None:
         self.assertIsNone(runtime.write_barrier())
+
+    def test_unpublished_snapshot_refuses_after_the_wait(self) -> None:
+        # A promoter that died between the marker and its snapshot.
+        self.locks.mkdir(parents=True)
+        runtime.write_json(
+            runtime.marker_path(),
+            {
+                "schema": 1,
+                "promotion_id": "dead",
+                "phase": "prepared",
+                "admitted": None,
+            },
+        )
+        with patch.object(runtime, "PUBLISH_WAIT", 0.2):
+            self.assertIn("has not published", runtime.write_barrier() or "")
 
 
 class AdmissionTest(TempCase):
@@ -552,12 +614,72 @@ class AdmissionTest(TempCase):
             self.ticks.procs.clear()
             runtime.clear_marker(marker["promotion_id"])
 
+    def test_barrier_during_snapshot_publication_waits_for_it(self) -> None:
+        # Between the marker and its snapshot, new ticks are refused at once,
+        # and an admitted tick's write check waits for the snapshot instead
+        # of being refused.
+        tick = self.ticks.start("p1")
+        self.assertTrue(self.ticks.admitted("p1"))
+        publishing, publish = threading.Event(), threading.Event()
+        real_records = runtime.admission_records
+        results: dict[str, object] = {}
+
+        def slow_records() -> list[dict[str, object]]:
+            publishing.set()
+            publish.wait(10)
+            return real_records()
+
+        with patch.object(runtime, "admission_records", slow_records):
+            promoter = threading.Thread(
+                target=lambda: results.update(marker=runtime.begin_promotion(REV2, REV))
+            )
+            promoter.start()
+            self.assertTrue(publishing.wait(10))
+            self.assertIsNone(runtime.read_marker()["admitted"])  # type: ignore[index]
+            checker = threading.Thread(
+                target=lambda: results.update(barrier=runtime.write_barrier(tick.pid))
+            )
+            checker.start()
+            self.assertEqual(self.ticks.start("p2").wait(timeout=10), runtime.BUSY)
+            self.assertTrue(checker.is_alive(), "the check did not wait")
+            publish.set()
+            promoter.join(10)
+            checker.join(10)
+        self.assertIsNone(results["barrier"])
+
+    def test_prune_keeps_a_tick_admitted_after_the_process_scan(self) -> None:
+        # Tick A scans the process table; tick B is admitted; A prunes. B is
+        # not in A's table, but its record is newer than the scan and stays.
+        real_table = runtime.process_table
+
+        def scan_then_admit_b() -> dict[int, tuple[int, str]]:
+            table = real_table()
+            self.ticks.start("b")
+            self.assertTrue(self.ticks.admitted("b"))
+            return table
+
+        self.locks.mkdir(parents=True, exist_ok=True)
+        with (
+            open(self.lock, "a") as stream,
+            patch.object(runtime, "process_table", scan_then_admit_b),
+        ):
+            self.assertIsNone(
+                runtime.admit(stream.fileno(), "a", "claude", os.getpid())
+            )
+        self.assertTrue((self.locks / "admitted/b.json").exists())
+        marker = runtime.begin_promotion(REV2, REV)
+        self.assertIn("b", {r["tick_id"] for r in marker["admitted"]})
+        self.assertIsNone(runtime.write_barrier(self.ticks.named["b"].pid))
+
     def test_dead_tick_records_are_pruned(self) -> None:
         tick = self.ticks.start("t8")
         self.assertTrue(self.ticks.admitted("t8"))
         os.killpg(tick.pid, signal.SIGKILL)
         tick.wait(timeout=10)
-        self.assertTrue((self.locks / "admitted/t8.json").exists())
+        record = self.locks / "admitted/t8.json"
+        self.assertTrue(record.exists())
+        old = time.time() - 10  # older than the prune grace
+        os.utime(record, (old, old))
         self.ticks.start("t9")
         self.assertTrue(self.ticks.admitted("t9"))
         self.assertFalse((self.locks / "admitted/t8.json").exists())
@@ -645,6 +767,21 @@ class SmokeTest(TempCase):
             REV2, files={"scripts/epic/smoke_claude.py": self.PART.format(result="ok")}
         )
         self.assertEqual(self.smoke(install)[0], smoke.FAIL)
+
+    def test_changed_part_is_never_loaded(self) -> None:
+        install = self.install(
+            files={"scripts/epic/smoke_claude.py": self.PART.format(result=[])}
+        )
+        part = install / "scripts/epic/smoke_claude.py"
+        os.chmod(part.parent, 0o755)
+        os.chmod(part, 0o644)
+        part.write_text(TRAP + self.PART.format(result=[]))
+        trap = self.tmp / "trap"
+        with patch.dict(os.environ, {"EPIC_TEST_TRAP": str(trap)}):
+            code, failures = self.smoke(install)
+        self.assertEqual(code, smoke.FAIL)
+        self.assertIn("scripts/epic/smoke_claude.py", " ".join(failures))
+        self.assertFalse(trap.exists(), "the changed part ran")
 
     def test_invalid_manifest_and_usage(self) -> None:
         install = self.install(

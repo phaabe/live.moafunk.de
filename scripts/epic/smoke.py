@@ -7,9 +7,10 @@ line: {"ok": bool, "agent": A, "failures": [...]}.
 
 Shared part: the manifest validates (runtime.validate) and names the agent's
 tick entry. Agent part: `check(install, manifest) -> list[str]` in the
-install's AGENT_PARTS module. Each adapter provides its own part; a missing
-part fails, it is never skipped. The part only reads, parses and hashes: it
-starts no model, app server, hook or MCP server.
+install's AGENT_PARTS module, loaded only after the manifest validates.
+Each adapter provides its own part; a missing part fails, it is never
+skipped. The part only reads, parses and hashes: it starts no model, app
+server, hook or MCP server.
 """
 
 from __future__ import annotations
@@ -54,9 +55,13 @@ def smoke(agent: str, manifest_path: Path) -> tuple[int, list[str]]:
     code, failures = runtime.validate(manifest_path)
     if code == runtime.UNREADABLE:
         return USAGE, [str(f["actual"]) for f in failures]
-    found = [
-        f"{f['item']}: expected {f['expected']}, got {f['actual']}" for f in failures
-    ]
+    if code != runtime.OK:
+        # Never load an agent part from an install that failed validation.
+        return FAIL, [
+            f"{f['item']}: expected {f['expected']}, got {f['actual']}"
+            for f in failures
+        ]
+    found: list[str] = []
     install = manifest_path.parent
     manifest = runtime.read_json(manifest_path)
     entry = runtime.ENTRIES[agent]

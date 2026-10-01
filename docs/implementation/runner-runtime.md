@@ -96,8 +96,12 @@ different `contract`.
 ### Entry modes
 
 - **Pinned:** launchd runs `<home>/bin/epic-tick claude|codex`. The launcher
-  reads the pin once, checks the manifest hash against the pin, the
-  validator and `python3` against the manifest, runs the validator, then
+  reads the pin once and checks it like `read_pin` (schema, revision, hash
+  format, `promotion_id`). It checks the manifest hash against the pin, the
+  manifest revision against the pin revision, and the validator and
+  `python3` against the manifest. It runs the validator with `python3 -I`:
+  no `PYTHON*` variables and no install folder on `sys.path`, so no other
+  install file runs before validation. Then it
   execs the install's tick entry with `EPIC_RUNTIME_ROOT`,
   `EPIC_RUNTIME_REVISION`, `EPIC_RUNTIME_MANIFEST` and `EPIC_RUNTIME_HOME`.
   It has no legacy path: any failure exits 78 before a model or write.
@@ -128,6 +132,8 @@ Tick admission (`runtime.py admit --fd 17 --tick-id ID --agent A --pid $$`):
 The tick keeps fd 17 open through verification, review delivery and exit
 cleanup, then runs `runtime.py release --tick-id ID`. Records of ticks that
 died without cleanup are removed at the next admission (housekeeping only).
+A record newer than that admission's process scan (minus 2 s for mtime
+rounding) is never removed, so a tick admitted during the scan keeps it.
 
 **Children (shared rule):** every child that can write holds the admission
 lock, inherited or its own `LOCK_SH`. Each adapter picks and proves its
@@ -143,8 +149,10 @@ descriptors escapes any descriptor lock
 ## Promotion marker and write barrier
 
 `runtime.begin_promotion(candidate, previous)` creates the marker
-(`O_EXCL`; an existing marker refuses), phase `prepared`, then snapshots the
-admission records into `marker.admitted`. Because a tick writes its record
+(`O_EXCL`; an existing marker refuses), phase `prepared`, `admitted: null`,
+then snapshots the admission records into `marker.admitted`. New admissions
+stop as soon as the marker exists. While `admitted` is null, write checks
+wait up to 5 s for the snapshot, then refuse. Because a tick writes its record
 before it checks the marker, every tick that passed the check is in the
 snapshot. `set_phase` and `clear_marker` act only on the marker with the
 caller's `promotion_id`. The marker stays after a promoter crash, so admission
@@ -157,8 +165,13 @@ never counts. An unreadable marker or process table refuses. Callers:
 
 - `git_gate.py`: every git command except the read-only ones.
 - `permission_gate.py`: `gh pr` and `gh api` prompts.
-- `write_checks.promotion_refusal()`: every GitHub or git write, and every
+- `write_checks.promotion_refusal()`: every Git or GitHub write, and every
   command that may write but cannot be read; also run first in `guard()`.
+  Its own classifier: `git` is a write unless the verb only reads
+  (`status`, `log`, `diff`, `show`, ...); `gh` is a write unless it is
+  `view`, `list`, `diff`, `checks`, `status`, `search`, or `gh api` as GET
+  (GraphQL: a query, not a mutation); `mcp__github__*` is a write unless
+  `get_`, `list_` or `search_`.
 - `.claude/hooks/scripts/epic_guard.py` rule 8: every session, also
   interactive. Without a marker it costs one `stat()`.
 - `lockhold`: a command outside an admitted tick does not start.
@@ -175,7 +188,8 @@ Prints `{ok, agent, failures}`. Exit 0 pass, 1 fail, 2 usage error or
 unreadable manifest. Shared part: the manifest validates and lists the agent's
 tick entry. Agent part: `check(install, manifest) -> list[str]` in
 `scripts/epic/smoke_claude.py` or `.codex/smoke_codex.py`, provided by each
-adapter. A missing or broken part fails. Parts only read, parse and hash: no
+adapter, loaded only when the manifest validates. A missing or broken part
+fails. Parts only read, parse and hash: no
 model, app server, hook or MCP server.
 
 ## Tick events
