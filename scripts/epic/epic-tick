@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Stable tick launcher: `epic-tick claude|codex`.
+
+Bootstrap copies this file to <EPIC_RUNTIME_HOME>/bin/epic-tick and launchd
+runs it. It reads the pin once, checks that the pinned install's manifest and
+validator are the pinned bytes, runs that validator, then execs the install's
+tick entry with:
+
+  EPIC_RUNTIME_ROOT      the install
+  EPIC_RUNTIME_REVISION  its commit
+  EPIC_RUNTIME_MANIFEST  its manifest
+
+The tick never reads the pin again. There is no legacy path here: a missing
+or invalid pin, or a failed validation, exits 78 before any model or write.
+Standard library only; it runs before any pinned code is trusted.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+BLOCKED = 78
+ENTRIES = {"claude": "scripts/epic/claude-tick.sh", "codex": ".codex/codex-tick.sh"}
+VALIDATOR = "scripts/epic/runtime.py"
+REVISION = re.compile(r"[0-9a-f]{40}")
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def fail(message: str) -> int:
+    print(f"epic-tick: {message}", file=sys.stderr)
+    return BLOCKED
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2 or argv[1] not in ENTRIES:
+        return fail("usage: epic-tick claude|codex")
+    agent = argv[1]
+    if os.environ.get("EPIC_RUNTIME_LEGACY"):
+        return fail("EPIC_RUNTIME_LEGACY is set; the launcher only runs pinned ticks")
+    home = Path(
+        os.environ.get("EPIC_RUNTIME_HOME")
+        or Path.home() / ".local/share/epic-runtime"
+    )
+    try:
+        pin = json.loads((home / "pin.json").read_text())
+        revision = str(pin["revision"])
+        expected = str(pin["manifest_sha256"])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return fail(f"no valid pin in {home}: {error}")
+    if not REVISION.fullmatch(revision):
+        return fail("the pin names no 40-hex revision")
+    install = home / "revisions" / revision
+    manifest_path = install / "runtime-manifest.json"
+    try:
+        if sha256(manifest_path) != expected:
+            return fail("the pinned manifest does not match the pin")
+        manifest = json.loads(manifest_path.read_text())
+        validator = install / VALIDATOR
+        if sha256(validator) != manifest["files"][VALIDATOR]:
+            return fail("the pinned validator does not match the manifest")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return fail(f"pinned install unreadable: {error}")
+    python = (manifest.get("executables") or {}).get("python3") or {}
+    interpreter = python.get("path") or sys.executable
+    try:
+        if python and sha256(Path(interpreter)) != python.get("sha256"):
+            return fail(f"{interpreter} does not match the manifest")
+    except OSError as error:
+        return fail(f"pinned python3 unreadable: {error}")
+    check = subprocess.run(
+        [interpreter, str(validator), "validate", "--manifest", str(manifest_path)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    if check.returncode != 0:
+        return fail(f"pinned install fails validation: {check.stdout.strip()}")
+    entry = install / ENTRIES[agent]
+    os.environ.update(
+        {
+            "EPIC_RUNTIME_ROOT": str(install),
+            "EPIC_RUNTIME_REVISION": revision,
+            "EPIC_RUNTIME_MANIFEST": str(manifest_path),
+            "EPIC_RUNTIME_HOME": str(home),
+        }
+    )
+    os.execv("/bin/bash", ["/bin/bash", str(entry)])
+    return BLOCKED  # not reached
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

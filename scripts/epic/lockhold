@@ -1,0 +1,24 @@
+#!/bin/bash
+# Admission lock for every command of a Claude runner session.
+#
+# Set as CLAUDE_CODE_SHELL_PREFIX. Claude passes each hook, MCP server and
+# Bash tool command to it as one argument. The command then runs with its own
+# LOCK_SH on runtime.lock (fd 29), so a promotion waits for it even after the
+# tick shell and Claude died. While a promotion marker exists, only commands
+# inside an admitted tick run (runtime.py write_barrier).
+#
+# Exit 2 refuses the command; for a hook, exit 2 blocks the tool call.
+# A broken prefix makes Claude hooks fail open, so the tick also validates
+# the prefix against the manifest before the model starts.
+set -u
+
+if [[ $# -ne 1 ]]; then
+    echo "lockhold: expected one command argument, got $#" >&2
+    exit 2
+fi
+here=$(cd "$(dirname "$0")" && pwd -P) || exit 2
+lock_dir="${EPIC_LOCK_DIR:-$HOME/.local/state/epic-loop/target-locks}"
+mkdir -p -m 700 "$lock_dir" || exit 2
+exec 29>>"${lock_dir}/runtime.lock" || exit 2
+python3 "${here}/runtime.py" hold --fd 29 || exit 2
+exec /bin/zsh -c "$1"
