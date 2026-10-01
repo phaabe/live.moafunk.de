@@ -667,6 +667,10 @@ class CodexRunner(unittest.TestCase):
         shutil.copyfile(
             ROOT.parent / "scripts/epic/next_action.py", epic / "next_action.py"
         )
+        # The runner calls it for reviews and conflicts; the harness lacks it.
+        shutil.copyfile(
+            ROOT.parent / "scripts/epic/rebase_policy.py", epic / "rebase_policy.py"
+        )
         self.map = helper.root / "gh-map.json"
         self.next_map = helper.root / "gh-map-next.json"
         gh = helper.bin / "gh"

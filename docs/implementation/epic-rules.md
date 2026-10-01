@@ -84,6 +84,10 @@ recorded on the epic before anyone edits.
 - Open the PR as a draft while working. Mark it ready (`gh pr ready`) only when
   it is ready for review; drafts are not reviewed.
 - Keep a feature and its tests in the same PR. Link evidence on the issue.
+- Before a PR is ready, every suite its files need (the table under "Test
+  proof" in section 8) is green on its head. A red test blocks the PR, also
+  when it fails on the base too: there is no base comparison. Fix it in the
+  PR, or open a ticket and get Anton's approval before you go on.
 - While a release is pending, merge only work that belongs to it. Later-wave
   work waits on its branch. Documentation-only changes may merge.
 
