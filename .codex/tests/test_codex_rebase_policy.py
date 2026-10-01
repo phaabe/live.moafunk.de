@@ -389,8 +389,8 @@ def load_tests(
     """Reuse fixture helpers without running the Claude runner's test cases."""
     return unittest.TestSuite(
         CodexRebasePolicyTests(name)
-        for name in CodexRebasePolicyTests.__dict__
-        if name.startswith("test_")
+        for name in loader.getTestCaseNames(CodexRebasePolicyTests)
+        if name in CodexRebasePolicyTests.__dict__
     )
 
 
