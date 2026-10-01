@@ -149,7 +149,8 @@ descriptors escapes any descriptor lock
 ## Promotion marker and write barrier
 
 `runtime.begin_promotion(candidate, previous)` creates the marker
-(`O_EXCL`; an existing marker refuses), phase `prepared`, `admitted: null`,
+(complete JSON under a temporary name, then `os.link`: it appears whole,
+and an existing marker refuses), phase `prepared`, `admitted: null`,
 then snapshots the admission records into `marker.admitted`. New admissions
 stop as soon as the marker exists. While `admitted` is null, write checks
 wait up to 5 s for the snapshot, then refuse. Because a tick writes its record
@@ -170,8 +171,13 @@ never counts. An unreadable marker or process table refuses. Callers:
   Its own classifier: `git` is a write unless the verb only reads
   (`status`, `log`, `diff`, `show`, ...); `gh` is a write unless it is
   `view`, `list`, `diff`, `checks`, `status`, `search`, or `gh api` as GET
-  (GraphQL: a query, not a mutation); `mcp__github__*` is a write unless
-  `get_`, `list_` or `search_`.
+  (GraphQL: a query, not a mutation; attached flags like `-ftitle=x` count);
+  `mcp__github__*` is a write unless `get_`, `list_` or `search_`. A line
+  that runs a shell or interpreter (`bash`, `python3`, `xargs`, ...) is a
+  write when it names `git` or `gh` (pipes, here strings, `-c`); its
+  heredoc body is read like a command (shells) or counts as a write when it
+  names `git` or `gh` (other interpreters). Not covered: a script file run
+  by name (`bash x.sh`), whose content the check cannot see.
 - `.claude/hooks/scripts/epic_guard.py` rule 8: every session, also
   interactive. Without a marker it costs one `stat()`.
 - `lockhold`: a command outside an admitted tick does not start.

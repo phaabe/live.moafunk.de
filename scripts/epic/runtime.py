@@ -529,14 +529,20 @@ def begin_promotion(candidate: str, previous: str | None) -> dict[str, Any]:
         "started_at": now_iso(),
         "admitted": None,
     }
+    # Complete JSON under a temporary name, then link: the marker appears
+    # whole or not at all, and an existing marker is never replaced.
+    draft = path.with_name(f".{MARKER}.{marker['promotion_id']}")
+    fd = os.open(draft, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps(marker, indent=1) + "\n")
+        os.link(draft, path)
     except FileExistsError:
         raise RuntimeBlocked(
             "a promotion marker exists; run recover <promotion_id>"
         ) from None
-    with os.fdopen(fd, "w") as stream:
-        stream.write(json.dumps(marker, indent=1) + "\n")
+    finally:
+        draft.unlink(missing_ok=True)
     marker["admitted"] = admission_records()
     write_json(path, marker)
     return marker

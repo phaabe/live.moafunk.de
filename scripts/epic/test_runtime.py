@@ -465,6 +465,29 @@ class MarkerTest(TempCase):
     def test_no_marker_allows_writes(self) -> None:
         self.assertIsNone(runtime.write_barrier())
 
+    def test_marker_appears_whole_and_never_replaces_one(self) -> None:
+        # Before the marker is linked in, a write check sees no marker; right
+        # after, the complete JSON with admitted null. Never an empty file.
+        seen: list[object] = []
+        real_link = os.link
+
+        def link(src: object, dst: object) -> None:
+            seen.append(runtime.marker_path().exists())
+            seen.append(runtime.write_barrier())
+            real_link(src, dst)  # type: ignore[arg-type]
+            seen.append(runtime.read_marker()["admitted"])  # type: ignore[index]
+
+        with patch.object(runtime.os, "link", link):
+            marker = runtime.begin_promotion(REV2, REV)
+        self.assertEqual(seen, [False, None, None])
+        self.assertEqual(runtime.read_marker(), marker)
+        with self.assertRaisesRegex(runtime.RuntimeBlocked, "marker exists"):
+            runtime.begin_promotion(REV2, REV)
+        self.assertEqual(runtime.read_marker(), marker)
+        self.assertEqual(
+            [p.name for p in self.locks.iterdir() if p.name.startswith(".")], []
+        )
+
     def test_unpublished_snapshot_refuses_after_the_wait(self) -> None:
         # A promoter that died between the marker and its snapshot.
         self.locks.mkdir(parents=True)
