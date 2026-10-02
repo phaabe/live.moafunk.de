@@ -46,6 +46,8 @@ ISOLATED_ENV = Path(__file__).resolve().parent / "isolated_env.py"
 SPLIT_ABOVE = 20
 PART_SIZE = 15
 PART_TIMEOUT = 1200
+GRACE = 2.0  # seconds between SIGTERM and SIGKILL
+POLL = 0.2
 SLOWEST = 5
 OUTPUT_TAIL = 20000
 
@@ -116,8 +118,19 @@ def plan(listing: dict[str, Any]) -> list[Part]:
     return sorted(parts, key=lambda p: -len(p.ids))
 
 
+def signal_group(proc: subprocess.Popen[str], signum: int) -> None:
+    try:
+        os.killpg(proc.pid, signum)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 class Pool:
-    """Child processes that are still running, to stop them on a signal."""
+    """Child processes that are still running, to stop them on a signal.
+
+    Each child starts in its own process group. A timeout or stop() ends the
+    whole group: SIGTERM, a short grace, then SIGKILL. A grandchild that
+    inherited the output pipe cannot keep the runner waiting."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -134,24 +147,64 @@ class Pool:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
+                start_new_session=True,
             )
             self.live.add(proc)
+        deadline = time.monotonic() + timeout
         try:
-            output, _ = proc.communicate(timeout=timeout)
-            return proc.returncode, output
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            output, _ = proc.communicate()
-            return None, output + f"\npart timed out after {timeout:.0f} s\n"
+            while True:
+                try:
+                    output, _ = proc.communicate(timeout=POLL)
+                except subprocess.TimeoutExpired:
+                    if self.stopped or time.monotonic() >= deadline:
+                        break
+                    continue
+                # The worker ended; end what it left in its group.
+                signal_group(proc, signal.SIGKILL)
+                return proc.returncode, output
+            why = (
+                "the run was stopped"
+                if self.stopped
+                else f"timed out after {timeout:.0f} s"
+            )
+            self.end_group(proc)
+            try:
+                output, _ = proc.communicate(timeout=GRACE)
+            except subprocess.TimeoutExpired:
+                # Only a process that left the group still holds the pipe.
+                output = "(output lost: a process outside the group kept the pipe)"
+                if proc.stdout:
+                    proc.stdout.close()
+                proc.wait(timeout=GRACE)
+            return None, f"{output}\npart {why}\n"
         finally:
             with self.lock:
                 self.live.discard(proc)
 
+    @staticmethod
+    def end_group(proc: subprocess.Popen[str]) -> None:
+        signal_group(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+        signal_group(proc, signal.SIGKILL)
+
     def stop(self) -> None:
+        """Stop every running part and start no new one."""
         with self.lock:
             self.stopped = True
-            for proc in self.live:
-                proc.kill()
+            live = list(self.live)
+        for proc in live:
+            signal_group(proc, signal.SIGTERM)
+        deadline = time.monotonic() + GRACE
+        for proc in live:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass
+        for proc in live:
+            signal_group(proc, signal.SIGKILL)
 
 
 def run_part(
@@ -213,20 +266,13 @@ def check(outcomes: list[Outcome], listed: list[str]) -> list[str]:
     return problems
 
 
-def list_tests(top: str, folder: Path) -> dict[str, Any]:
+def list_tests(pool: Pool, top: str, folder: Path, timeout: float) -> dict[str, Any]:
     out = folder / "listing.json"
-    proc = subprocess.run(
-        [sys.executable, str(ISOLATED_ENV), "--list", str(out), top],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        text=True,
-        timeout=PART_TIMEOUT,
+    code, output = pool.run(
+        [sys.executable, str(ISOLATED_ENV), "--list", str(out), top], timeout
     )
-    if proc.returncode != 0 or not out.exists():
-        raise RuntimeError(
-            f"listing {top} failed (exit {proc.returncode}):\n{proc.stdout}"
-        )
+    if code != 0 or not out.exists():
+        raise RuntimeError(f"listing {top} failed (exit {code}):\n{output}")
     return json.loads(out.read_text())
 
 
@@ -295,8 +341,8 @@ def _run(
     with tempfile.TemporaryDirectory(prefix="epic-run-tests-") as name:
         folder = Path(name)
         try:
-            listing = list_tests(top, folder)
-        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as e:
+            listing = list_tests(pool, top, folder, timeout)
+        except (RuntimeError, OSError, ValueError) as e:
             print(f"run_tests: {e}")
             return 1
         listed = [i for entry in listing["modules"].values() for i in entry["ids"]]

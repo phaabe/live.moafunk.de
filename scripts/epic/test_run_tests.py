@@ -8,10 +8,12 @@ import contextlib
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -252,6 +254,67 @@ class RunTest(FixtureSuite):
         out = self.run_tests("--part-timeout", "3")
         self.assertEqual(out.returncode, 1, out.stdout)
         self.assertIn("part timed out after 3 s", out.stdout)
+
+    def start_leaky_child(self) -> Path:
+        """A test that starts a child which inherits stdout, then hangs."""
+        pid_file = self.root / "child.pid"
+        self.write(
+            "test_leaky.py",
+            plain_module(
+                1,
+                "import subprocess, sys, time, os; "
+                "c = subprocess.Popen([sys.executable, '-c', "
+                "'import time; time.sleep(60)']); "
+                "open(os.environ['RUN_TESTS_PID'], 'w').write(str(c.pid)); "
+                "time.sleep(60)",
+            ),
+        )
+        return pid_file
+
+    def assert_gone(self, pid_file: Path) -> None:
+        pid = int(pid_file.read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        os.kill(pid, signal.SIGKILL)
+        self.fail(f"child {pid} still runs")
+
+    def test_a_timeout_ends_children_that_hold_the_output(self) -> None:
+        pid_file = self.start_leaky_child()
+        start = time.monotonic()
+        out = self.run_tests(
+            "--part-timeout", "1", env=self.env(RUN_TESTS_PID=str(pid_file))
+        )
+        self.assertLess(time.monotonic() - start, 20)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("part timed out after 1 s", out.stdout)
+        self.assert_gone(pid_file)
+
+    def test_sigterm_ends_children_that_hold_the_output(self) -> None:
+        pid_file = self.start_leaky_child()
+        proc = subprocess.Popen(
+            [sys.executable, str(RUNNER), str(self.top), "-j", "2"],
+            env=self.env(RUN_TESTS_PID=str(pid_file)),
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.addCleanup(proc.kill)
+        deadline = time.monotonic() + 20
+        while not pid_file.exists() or not pid_file.read_text():
+            self.assertLess(time.monotonic(), deadline, "the child did not start")
+            time.sleep(0.1)
+        start = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        output, _ = proc.communicate(timeout=20)
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual(proc.returncode, 128 + signal.SIGTERM, output)
+        self.assert_gone(pid_file)
 
     def test_a_listing_that_fails_fails_the_run(self) -> None:
         sub = self.top / "pkg"
