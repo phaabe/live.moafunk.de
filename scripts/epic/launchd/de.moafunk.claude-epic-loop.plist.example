@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Claude runner in pinned mode (docs/implementation/runner-runtime.md).
+launchd starts the stable launcher, which runs the pinned install's
+scripts/epic/claude-tick.sh. EPIC_TRUSTED_ROOT is the runner checkout (git
+only; no code runs from it). Install the launcher and the first pin first
+(promotion, https://github.com/phaabe/live.moafunk.de/issues/587).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>de.moafunk.claude-epic-loop</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/share/epic-runtime/bin/epic-tick</string>
+        <string>claude</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__RUNNER_CHECKOUT__</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>EPIC_TRUSTED_ROOT</key>
+        <string>__RUNNER_CHECKOUT__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>600</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.local/state/epic-loop/claude-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.local/state/epic-loop/claude-launchd-error.log</string>
+</dict>
+</plist>

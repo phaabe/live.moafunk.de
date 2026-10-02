@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "/opt/homebrew/bin/gitnexus",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

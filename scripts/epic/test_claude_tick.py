@@ -67,12 +67,17 @@ class RunnerHarness(unittest.TestCase):
             "scripts/epic/claude-result-schema.json",
             # Passed to the model only; the stub model ignores them.
             "scripts/epic/claude-runner-settings.json",
+            "scripts/epic/claude-mcp-config.json",
             "scripts/epic/permission_gate.py",
+            "scripts/epic/runtime.py",
+            "scripts/epic/lockhold",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",
         ):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / rel, self.repo / rel)
+            if os.access(ROOT / rel, os.X_OK):  # the lockhold prefix runs directly
+                (self.repo / rel).chmod(0o755)
         # --recheck: exits from TEST_RECHECK_EXITS in order (the last repeats).
         (self.repo / "scripts/epic/next_action.py").write_text(
             "import json, os, sys, time\n"
@@ -162,6 +167,17 @@ class RunnerHarness(unittest.TestCase):
             '"$EPIC_BODY_DIR" > "$TEST_CALLS.body-inode"\n'
             "fi\n"
             'cat > "$TEST_CALLS.prompt"\n'
+            # The session's runtime environment: prefix, updater, python3.
+            "printf '%s\\n%s\\n%s\\n' \"${CLAUDE_CODE_SHELL_PREFIX:-}\" "
+            '"${DISABLE_AUTOUPDATER:-}" '
+            # The binary `python3` really runs, resolved while the session runs.
+            "\"$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')\" "
+            '> "$TEST_CALLS.session-env"\n'
+            # A tool child started through the prefix, left running.
+            'if [[ -n "${TEST_PREFIX_CHILD:-}" ]]; then\n'
+            '    "$CLAUDE_CODE_SHELL_PREFIX" "sleep $TEST_PREFIX_CHILD" > /dev/null 2>&1 &\n'
+            '    echo $! > "$TEST_CALLS.child"\n'
+            "fi\n"
             + TRANSCRIPT_STUB
             + 'if [[ -n "${TEST_MODEL_RESULT:-}" ]]; then printf \'%s\' "$TEST_MODEL_RESULT"; fi\n'
             # Another runner stores a quota wait while this session runs.
@@ -186,6 +202,9 @@ class RunnerHarness(unittest.TestCase):
             "CLAUDE_CONFIG_DIR": str(self.root / "claude-config"),
             "EPIC_STATE_DIR": str(self.state),
             "EPIC_LOCK_DIR": str(self.root / "locks"),
+            # Legacy mode, explicit; pinned mode has its own tests.
+            "EPIC_RUNTIME_LEGACY": "1",
+            "EPIC_RUNTIME_HOME": str(self.root / "runtime-home"),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "TEST_CALLS": str(self.calls),
             "TEST_MODEL_PID": str(self.model_pid),
@@ -443,22 +462,26 @@ class ClaudeTickTest(RunnerHarness):
     def test_runner_settings_and_editor_reach_the_model(self) -> None:
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
         args = self.model_targets()[0]
-        settings = self.repo.resolve() / "scripts/epic/claude-runner-settings.json"
-        self.assertIn(f"--settings {settings}", args)
+        # Legacy keeps today's session: project settings plus the runner's
+        # ask rules, inline (the file holds the pinned settings now).
+        runner_ask = ["Bash(git push:*)", "Bash(git rebase:*)", "Bash(git -*)"]
+        self.assertIn(
+            "--settings " + json.dumps({"permissions": {"ask": runner_ask}}), args
+        )
+        self.assertNotIn("--setting-sources", args)
+        # Legacy also locks every child (prefix); its claude may update itself.
+        prefix, updater, _ = (
+            Path(str(self.calls) + ".session-env").read_text().splitlines()
+        )
+        self.assertEqual(prefix, str(self.repo.resolve() / "scripts/epic/lockhold"))
+        self.assertEqual(updater, "")
         self.assertEqual(Path(str(self.calls) + ".editor").read_text(), "true")
-        # The checked-in file routes every git global option to the gate and
-        # leaves the shared settings alone.
-        rules = json.loads(
+        # The pinned file asks the same first, and routes every git global
+        # option to the gate; the shared settings stay as they are.
+        pinned = json.loads(
             (ROOT / "scripts/epic/claude-runner-settings.json").read_text()
         )
-        self.assertEqual(
-            rules,
-            {
-                "permissions": {
-                    "ask": ["Bash(git push:*)", "Bash(git rebase:*)", "Bash(git -*)"]
-                }
-            },
-        )
+        self.assertEqual(pinned["permissions"]["ask"][:3], runner_ask)
         shared = json.loads((ROOT / ".claude/settings.json").read_text())
         self.assertNotIn("Bash(git -*)", shared["permissions"]["ask"])
 
