@@ -81,7 +81,9 @@ SETTINGS = {
     "codex_cleanup_git_rules": ".codex/runtime/rules/codex-cleanup-git.rules",
     "codex_result_schema": ".codex/tick-result.schema.json",
 }
-EXECUTABLES = ("claude", "codex", "codex_launcher", "gitnexus", "python3", "gtimeout")
+EXECUTABLES = (
+    "claude", "codex", "codex_launcher", "git", "gitnexus", "python3", "gtimeout"
+)  # fmt: skip
 
 
 class RuntimeBlocked(Exception):

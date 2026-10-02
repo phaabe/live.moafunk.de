@@ -83,7 +83,7 @@ Line numbers: `dev/312-interim` at `da308d5`.
 `schema` (1), `revision` (40-hex), `contract` (int), `created_at`, and:
 
 - `files`: install-relative path → SHA-256 of every file, except the manifest itself (the pin holds its hash).
-- `executables`: `claude`, `codex`, `codex_launcher`, `gitnexus`, `python3`, `gtimeout` → `{path, version, sha256}`, absolute paths. Model binaries are copied into the install.
+- `executables`: `claude`, `codex`, `codex_launcher`, `git`, `gitnexus`, `python3`, `gtimeout` → `{path, version, sha256}`, absolute paths. Model binaries are copied into the install.
 - `helpers`: installed Git helper path → `{sha256, config: null | {path, sha256, values}}`. `values` binds keys of the helper's JSON config.
 - `settings`: name → SHA-256 of a fixed install path (`runtime.SETTINGS`).
 
