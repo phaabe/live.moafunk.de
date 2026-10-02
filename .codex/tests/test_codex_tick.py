@@ -2286,7 +2286,14 @@ else:
         del self.env["TEST_SOCKET"]
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
-        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
+        self.assertEqual(len(queries), 3)
+        self.assertEqual(
+            queries[0][:2], ["api", "repos/phaabe/live.moafunk.de/issues/406"]
+        )
+        self.assertEqual(
+            [query[-1] for query in queries[1:]], [".base.ref", ".object.sha"]
+        )
         connection.sendall(b"x")
         self.assertEqual(process.wait(timeout=10), 0)
         self.assertEqual(self.run_tick().returncode, 0)
