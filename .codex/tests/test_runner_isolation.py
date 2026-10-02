@@ -96,36 +96,51 @@ class RunnerIsolationTests(unittest.TestCase):
                 "assert not github_quota.STATE_DIR.is_relative_to(home)\n"
             )
             commands = [
-                ["-c", probe, str(path)] for path in sorted(TESTS.glob("test_*.py"))
+                (["-c", probe, str(path)], None)
+                for path in sorted(TESTS.glob("test_*.py"))
             ]
             # These cases failed in a tick before the import-first fix. Keep
             # subprocess discovery focused so this regression never recurses.
-            commands.extend(
-                [
-                    [
-                        "-m",
-                        "unittest",
-                        "discover",
-                        "-s",
-                        ".codex/tests",
-                        "-k",
-                        "test_shared_metadata",
-                        "-k",
-                        "test_fresh_backoff_codes",
-                    ],
-                    [
-                        ".codex/tests/test_feature_worktree.py",
-                        "-k",
-                        "test_shared_metadata",
-                    ],
-                    [
-                        ".codex/tests/test_codex_tick.py",
-                        "-k",
-                        "test_fresh_backoff_codes",
-                    ],
-                ]
+            selected = {
+                "test_feature_worktree": (
+                    "FeatureWorktreeTests.test_shared_metadata_failure_starts_no_model_and_sets_no_cooldown",
+                    "FeatureWorktreeTests.test_shared_metadata_prepares_pr_worktree",
+                ),
+                "test_codex_tick": (
+                    "TickTests.test_fresh_backoff_codes_preserve_records_and_start_no_model",
+                ),
+            }
+            # Some load_tests hooks ignore name filters. Filter the discovered
+            # cases by exact id as well, then check none were lost or repeated.
+            discover = (
+                "import sys, unittest\n"
+                "wanted = sys.argv[1:]\n"
+                "loader = unittest.TestLoader()\n"
+                "loader.testNamePatterns = wanted\n"
+                "suite = loader.discover('.codex/tests')\n"
+                "assert not loader.errors, loader.errors\n"
+                "def cases(suite):\n"
+                "    for test in suite:\n"
+                "        if isinstance(test, unittest.TestSuite):\n"
+                "            yield from cases(test)\n"
+                "        else:\n"
+                "            yield test\n"
+                "tests = [t for t in cases(suite) if t.id() in wanted]\n"
+                "assert sorted(t.id() for t in tests) == sorted(wanted)\n"
+                "result = unittest.TextTestRunner().run(unittest.TestSuite(tests))\n"
+                "sys.exit(not result.wasSuccessful())\n"
             )
-            for args in commands:
+            ids = [
+                f"{module}.{test_id}"
+                for module, test_ids in selected.items()
+                for test_id in test_ids
+            ]
+            commands.append((["-c", discover, *ids], 3))
+            commands.extend(
+                ([f".codex/tests/{module}.py", *ids], len(ids))
+                for module, ids in selected.items()
+            )
+            for args, expected_count in commands:
                 with self.subTest(entry=args[-1], future_wait=future_wait):
                     result = subprocess.run(
                         [sys.executable, *args],
@@ -138,6 +153,11 @@ class RunnerIsolationTests(unittest.TestCase):
                     self.assertEqual(snapshot(home), before)
                     self.assertFalse(calls.exists(), "Unexpected GitHub/model command")
                     self.assertEqual(result.returncode, 0, result.stderr[-6000:])
+                    if expected_count is not None:
+                        self.assertRegex(
+                            result.stderr,
+                            rf"(?m)^Ran {expected_count} tests? in ",
+                        )
 
     def test_empty_runner_state(self) -> None:
         self.check_entry_points(future_wait=False)

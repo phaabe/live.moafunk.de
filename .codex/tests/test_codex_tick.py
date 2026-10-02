@@ -155,6 +155,7 @@ else:
             "routing.py",
             "tick_verify.py",
             "write_checks.py",
+            "rebase_policy.py",
         ):
             shutil.copyfile(
                 ROOT.parent / "scripts/epic" / helper, selector.parent / helper
@@ -228,6 +229,7 @@ else:
         gh.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, pathlib, sys, time\n"
+            "time.sleep(float(os.environ.get('TEST_GH_DELAY', '0')))\n"
             "with open(os.environ['TEST_GH_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
             "if sys.argv[1:3] == ['api', '-i']:\n"
@@ -385,9 +387,9 @@ else:
             "EPIC_REPEAT_TTL_SECONDS": "10800",
             "EPIC_BLOCKED_RETRY_SECONDS": "900",
             "EPIC_SHARED_READER": "0",
-            "EPIC_SNAPSHOT_LOCK_SECONDS": "1",
-            "EPIC_SNAPSHOT_REFRESH_SECONDS": "1",
-            "EPIC_RECHECK_TIMEOUT_SECONDS": "2",
+            "EPIC_SNAPSHOT_LOCK_SECONDS": "2",
+            "EPIC_SNAPSHOT_REFRESH_SECONDS": "6",
+            "EPIC_RECHECK_TIMEOUT_SECONDS": "12",
         }
 
     def run_tick(self) -> subprocess.CompletedProcess[str]:
@@ -400,7 +402,7 @@ else:
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=30,
         )
 
     def expire_cooldown(self) -> None:
@@ -657,9 +659,12 @@ else:
         self.assertEqual(self.run_tick().returncode, 75)
         self.assert_quota_only(model_calls=1)
         queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
-        self.assertEqual(len(queries), 1)
+        self.assertEqual(len(queries), 3)
         self.assertEqual(
             queries[0][:2], ["api", "repos/phaabe/live.moafunk.de/issues/406"]
+        )
+        self.assertEqual(
+            [query[-1] for query in queries[1:]], [".base.ref", ".object.sha"]
         )
         wait = json.loads((self.state / "github-quota-wait.json").read_text())
         self.assertEqual(wait["reset_at"], self.env["TEST_RESET"])
@@ -1764,7 +1769,8 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
         self.assertEqual([call["action"] for call in calls], [actions[-1]])
-        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 11)
+        # Eleven gate reads, then two base reads for the selected review's scope.
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 13)
         self.assertEqual(json.loads(self.record.read_text())["action"], actions[-1])
 
     def test_backoff_candidates_do_not_starve_the_eleventh_target(self) -> None:
@@ -1785,7 +1791,8 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
         self.assertEqual([call["action"] for call in calls], [actions[-1]])
-        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 1)
+        # One gate read, then two base reads for the selected review's scope.
+        self.assertEqual(len(self.gh_calls.read_text().splitlines()), 3)
         self.assertEqual(json.loads(path.read_text()), entries)
 
     def test_busy_target_falls_through_without_a_github_read(self) -> None:
@@ -1798,8 +1805,13 @@ else:
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
         self.assertEqual([call["action"]["pr"] for call in calls], [407])
         queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
-        self.assertEqual(len(queries), 1)
+        self.assertEqual(len(queries), 3)
         self.assertIn("issues/407", queries[0][1])
+        self.assertEqual(
+            queries[1],
+            ["api", "repos/phaabe/live.moafunk.de/pulls/407", "--jq", ".base.ref"],
+        )
+        self.assertEqual(queries[2][-1], ".object.sha")
 
     def test_skipped_candidate_releases_its_partial_issue_and_pr_locks(self) -> None:
         self.target_locks.mkdir()
@@ -2076,6 +2088,45 @@ else:
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.rechecks.read_text().splitlines()), 1)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_slow_shared_reader_refresh_and_recheck_start_expected_action(self) -> None:
+        from test_waiting import runner_github
+
+        shutil.copyfile(
+            ROOT.parent / "scripts/epic/next_action.py",
+            self.repo / "scripts/epic/next_action.py",
+        )
+        pages = runner_github("Codex", dependency_merged=False)
+        self.updated_at.write_text("2026-09-29T09:00:00Z open")
+        self.env.update(
+            EPIC_SHARED_READER="1",
+            TEST_GH_DELAY="0.15",
+            TEST_BOARD_RESPONSES=json.dumps(
+                {
+                    url: "HTTP/2.0 200 OK\n"
+                    + (f"Link: {link}\n" if link else "")
+                    + f"\n{body}"
+                    for url, (body, link) in pages.items()
+                }
+            ),
+        )
+        cache = self.state / "github-cache"
+        cache.mkdir(parents=True)
+        (cache / "auth-context").write_text("slow-reader-test\n")
+
+        result = self.run_tick()
+
+        log = (self.state / "codex.log").read_text()
+        self.assertEqual(result.returncode, 0, log)
+        self.assertEqual(len(list(cache.glob("v1/*/snapshot.json"))), 1, log)
+        self.assertIn("recheck: still valid", log)
+        self.assertNotIn("GitHub reads took too long", log)
+        [call] = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual(call["action"]["action"], "claim")
+        self.assertEqual(
+            call["action"]["issue"],
+            "https://github.com/phaabe/live.moafunk.de/issues/521",
+        )
 
     def test_reader_off_omits_recheck_and_ignores_its_settings(self) -> None:
         self.env["EPIC_RECHECK_TIMEOUT_SECONDS"] = "invalid"
