@@ -31,6 +31,25 @@ RUNNER_PATHS = (
     "EPIC_TRUSTED_ROOT",
 )
 
+# The Codex tests that use the runner settings from the environment. Run
+# without isolation under the stand-in settings, each of them fails. Each
+# "-k" is a full test id, so it matches only that test.
+# Not selected: test_tick_backoff.py passes and writes nothing there even
+# without isolation (its state is in its own temporary directories), and
+# test_review_delivery_runner.py takes about 90 s.
+CODEX_TESTS = {
+    "test_feature_worktree.py": (
+        "test_feature_worktree.FeatureWorktreeTests"
+        ".test_shared_metadata_failure_starts_no_model_and_sets_no_cooldown",
+        "test_feature_worktree.FeatureWorktreeTests"
+        ".test_shared_metadata_prepares_pr_worktree",
+    ),
+    "test_codex_tick.py": (
+        "test_codex_tick.TickTests"
+        ".test_fresh_backoff_codes_preserve_records_and_start_no_model",
+    ),
+}
+
 
 def snapshot(root: Path) -> dict[str, tuple[bytes, int] | None]:
     """Every entry under root, with content and mtime for files."""
@@ -119,52 +138,58 @@ class ContaminatedParentTest(unittest.TestCase):
         now = time.time()
         github_quota.record(self.live, now, github_quota.iso(now + 3600))
 
-    def run_suite(self, *args: str) -> None:
+    def run_suites(self, *suites: tuple[tuple[str, ...], int | None]) -> None:
+        """Run (arguments, expected test count) suites at the same time.
+        Each must pass, and the stand-in must not change."""
         before = snapshot(self.home)
-        out = subprocess.run(
-            [sys.executable, *args],
-            env=self.contaminated(),
-            cwd=REPO,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        self.assertEqual(out.returncode, 0, out.stderr[-4000:])
+        runs = []
+        for args, count in suites:
+            process = subprocess.Popen(
+                [sys.executable, *args],
+                env=self.contaminated(),
+                cwd=REPO,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.addCleanup(process.kill)
+            runs.append((args, count, process))
+        for args, count, process in runs:
+            _, err = process.communicate(timeout=120)
+            with self.subTest(suite=" ".join(args)):
+                self.assertEqual(process.returncode, 0, err[-4000:])
+                if count is not None:
+                    self.assertRegex(err, rf"(?m)^Ran {count} tests? in ")
         self.assertEqual(snapshot(self.home), before)
 
-    def epic_tests(self) -> None:
+    def run_selected(self) -> None:
         # The quota tests wrote the live wait before; they also read it.
-        self.run_suite(
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "scripts/epic",
-            "-p",
-            "test_github_quota.py",
-        )
-
-    def codex_tests(self) -> None:
-        # Unchanged Codex tests through the helper. Run plainly with these
-        # runner settings, the shared_metadata and fresh_backoff tests fail.
-        self.run_suite(
-            "scripts/epic/isolated_env.py",
-            ".codex/tests",
-            *("-k", "test_shared_metadata"),
-            *("-k", "test_fresh_backoff_codes"),
-            *("-k", "test_tick_backoff"),
-        )
+        epic = ("-m", "unittest", "discover", "-s", "scripts/epic")
+        epic += ("-p", "test_github_quota.py")
+        # Unchanged Codex tests through the helper. "-p" picks the module,
+        # so a module whose load_tests() ignores "-k" does not run.
+        codex = [
+            (
+                (
+                    "scripts/epic/isolated_env.py",
+                    ".codex/tests",
+                    *("-p", module),
+                    *(arg for test in tests for arg in ("-k", test)),
+                ),
+                len(tests),
+            )
+            for module, tests in CODEX_TESTS.items()
+        ]
+        self.run_suites((epic, None), *codex)
 
     def test_empty_live_state(self) -> None:
-        self.epic_tests()
-        self.codex_tests()
+        self.run_selected()
 
     def test_live_state_with_a_future_quota_wait(self) -> None:
         self.future_wait()
         wait = json.loads((self.live / github_quota.WAIT_FILE).read_text())
         self.assertGreater(github_quota.parse_iso(wait["retry_at"]), time.time())
-        self.epic_tests()
-        self.codex_tests()
+        self.run_selected()
 
 
 if __name__ == "__main__":
