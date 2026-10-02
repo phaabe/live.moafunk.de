@@ -6,7 +6,6 @@ import isolated_env  # noqa: F401  (first: hides live runner state)
 
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 import time
@@ -15,6 +14,7 @@ from unittest.mock import patch
 
 import fixtures
 import monitor
+from test_dashboards import docker_ready
 
 
 class FixturesTest(unittest.TestCase):
@@ -192,8 +192,9 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(times[-1] - times[0], 24 * 3600)
         self.assertLess(times[-1], now)
 
-    @unittest.skipUnless(shutil.which("docker"), "needs docker for promtool")
     def test_promtool_accepts_the_history(self) -> None:
+        if not docker_ready():
+            self.skipTest("needs a reachable docker daemon for promtool")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "history.om"
             path.write_text(
@@ -208,6 +209,20 @@ class HistoryTest(unittest.TestCase):
                 timeout=120,
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class DockerSkipTest(unittest.TestCase):
+    """The promtool test skips when the daemon is unreachable (sandboxes)."""
+
+    def test_promtool_test_skips_without_a_reachable_daemon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.sock"
+            with patch.dict("os.environ", {"DOCKER_HOST": f"unix://{missing}"}):
+                self.assertFalse(docker_ready())
+                result = unittest.TestResult()
+                HistoryTest("test_promtool_accepts_the_history").run(result)
+        self.assertEqual(result.errors + result.failures, [])
+        self.assertEqual(len(result.skipped), 1)
 
 
 class PreviewRuntimeTest(unittest.TestCase):
