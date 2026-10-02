@@ -133,9 +133,11 @@ class Pool:
     inherited the output pipe cannot keep the runner waiting."""
 
     def __init__(self) -> None:
+        # Never taken in a signal handler: the handler only sets `stopped`.
         self.lock = threading.Lock()
         self.live: set[subprocess.Popen[str]] = set()
         self.stopped = False
+        self.signalled = False  # set by the SIGTERM handler
 
     def run(self, command: list[str], timeout: float) -> tuple[int | None, str]:
         with self.lock:
@@ -191,7 +193,8 @@ class Pool:
         signal_group(proc, signal.SIGKILL)
 
     def stop(self) -> None:
-        """Stop every running part and start no new one."""
+        """Stop every running part and start no new one. Not for a signal
+        handler: it takes the lock."""
         with self.lock:
             self.stopped = True
             live = list(self.live)
@@ -317,14 +320,18 @@ def run(
     start = time.monotonic()
     pool = Pool()
 
-    def stop(signum: int, _frame: Any) -> None:
-        pool.stop()
-        raise SystemExit(128 + signum)
+    def stop(_signum: int, _frame: Any) -> None:
+        # Only set the flag: the handler may run while this thread holds the
+        # pool lock. Each running part sees the flag within POLL seconds and
+        # ends its own process group; no new part starts.
+        pool.signalled = True
+        pool.stopped = True
 
     main_thread = threading.current_thread() is threading.main_thread()
     previous = signal.signal(signal.SIGTERM, stop) if main_thread else None
     try:
-        return _run(top, jobs, timeout, planner, pool, start)
+        code = _run(top, jobs, timeout, planner, pool, start)
+        return 128 + signal.SIGTERM if pool.signalled else code
     finally:
         if main_thread:
             signal.signal(signal.SIGTERM, previous)

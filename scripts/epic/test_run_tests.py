@@ -118,6 +118,15 @@ class SplitRuleTest(unittest.TestCase):
         self.assertEqual(run_tests.parse_args([str(HERE), "-j", "3"]).jobs, 3)
 
 
+def signal_group_kill(proc: subprocess.Popen[str]) -> None:
+    """Clean up a driver and its children, also when a test failed."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
 class FixtureSuite(unittest.TestCase):
     """A small test directory, run through the real runner."""
 
@@ -313,6 +322,47 @@ class RunTest(FixtureSuite):
         proc.send_signal(signal.SIGTERM)
         output, _ = proc.communicate(timeout=20)
         self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual(proc.returncode, 128 + signal.SIGTERM, output)
+        self.assert_gone(pid_file)
+
+    def test_sigterm_right_after_a_spawn_does_not_deadlock(self) -> None:
+        # The signal arrives after Popen returns and before the pool records
+        # the process, while the pool lock is held (the listing, main thread).
+        self.write("test_slow_import.py", "import time\ntime.sleep(60)\n")
+        pid_file = self.root / "listing.pid"
+        driver = self.root / "driver.py"
+        driver.write_text(
+            textwrap.dedent(
+                f"""
+                import os, signal, subprocess, sys
+                sys.path.insert(0, {str(HERE)!r})
+                import run_tests
+
+                class Hooked(subprocess.Popen):
+                    def __init__(self, *args, **kwargs):
+                        super().__init__(*args, **kwargs)
+                        with open({str(pid_file)!r}, "w") as f:
+                            f.write(str(self.pid))
+                        os.kill(os.getpid(), signal.SIGTERM)
+
+                subprocess.Popen = Hooked
+                sys.exit(run_tests.run({str(self.top)!r}, 1, 30))
+                """
+            )
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(driver)],
+            env=self.env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        self.addCleanup(signal_group_kill, proc)
+        try:
+            output, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail("the runner hung after SIGTERM")
         self.assertEqual(proc.returncode, 128 + signal.SIGTERM, output)
         self.assert_gone(pid_file)
 
