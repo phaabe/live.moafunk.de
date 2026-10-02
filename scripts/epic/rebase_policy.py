@@ -91,13 +91,13 @@ SUITES: tuple[dict[str, Any], ...] = (
         "name": "epic",
         "paths": ["scripts/epic/"],
         "cwd": ".",
-        "command": ["python3", "scripts/epic/isolated_env.py", "scripts/epic"],
+        "command": ["python3", "scripts/epic/run_tests.py", "scripts/epic"],
     },
     {
         "name": "codex",
         "paths": [".codex/"],
         "cwd": ".",
-        "command": ["python3", "scripts/epic/isolated_env.py", ".codex/tests"],
+        "command": ["python3", "scripts/epic/run_tests.py", ".codex/tests"],
     },
     {
         "name": "epic-guard",

@@ -16,9 +16,11 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import rebase_policy
 import run_tests
 
 HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[1]
 RUNNER = HERE / "run_tests.py"
 ISOLATED = HERE / "isolated_env.py"
 
@@ -339,6 +341,20 @@ class IsolationTest(FixtureSuite):
                 for s in seen:
                     self.assertEqual(s["epic"], [])
                     self.assertFalse(Path(s["home"]).is_relative_to(home))
+
+
+class SuiteTableTest(unittest.TestCase):
+    def test_epic_and_codex_suites_use_the_parallel_runner(self) -> None:
+        commands = {s["name"]: s["command"] for s in rebase_policy.SUITES}
+        self.assertEqual(
+            commands["epic"], ["python3", "scripts/epic/run_tests.py", "scripts/epic"]
+        )
+        self.assertEqual(
+            commands["codex"], ["python3", "scripts/epic/run_tests.py", ".codex/tests"]
+        )
+        rules = (REPO / "docs/implementation/epic-rules.md").read_text()
+        for name in ("epic", "codex"):
+            self.assertIn(f"`{' '.join(commands[name])}`", rules)
 
 
 if __name__ == "__main__":

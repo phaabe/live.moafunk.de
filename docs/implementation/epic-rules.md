@@ -423,8 +423,8 @@ is still clean. A later commit or an uncommitted edit makes the proof invalid.
 
 | Changed path | Suite | Command (in the worktree) |
 | --- | --- | --- |
-| `scripts/epic/**` | epic | `python3 scripts/epic/isolated_env.py scripts/epic` |
-| `.codex/**` | codex | `python3 scripts/epic/isolated_env.py .codex/tests` |
+| `scripts/epic/**` | epic | `python3 scripts/epic/run_tests.py scripts/epic` |
+| `.codex/**` | codex | `python3 scripts/epic/run_tests.py .codex/tests` |
 | `scripts/epic_guard/**`, `.claude/hooks/**` | epic-guard | `python3 -m unittest discover -s scripts/epic_guard` |
 | `scripts/gh_checks/**` | gh-checks | `python3 -m unittest discover -s scripts/gh_checks` |
 | `backend/**` | backend | `cargo test --locked` in `backend/` |
@@ -432,6 +432,13 @@ is still clean. A later commit or an uncommitted edit makes the proof invalid.
 
 Other paths need no suite. `EPIC_REBASE_SUITES` (runner environment) may name a
 JSON file with another table of the same shape.
+
+`run_tests.py` runs a test directory in parallel parts (`-j`, default: CPU
+count). Each part runs under `isolated_env.py`, like a serial run. A module
+with more than 20 tests is split into parts of at most 15; a module with
+`load_tests`, `setUpClass` or `setUpModule` runs whole. The run fails when a
+test fails, a part fails to load, or a listed test does not run exactly once.
+The serial run is still `python3 scripts/epic/isolated_env.py <dir>`.
 
 Rebase record. After the model's session, the owner's runner posts one
 comment for a proven push (`rebase_policy.py publish`), at most once per new
