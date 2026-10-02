@@ -331,10 +331,12 @@ def run(
     previous = signal.signal(signal.SIGTERM, stop) if main_thread else None
     try:
         code = _run(top, jobs, timeout, planner, pool, start)
-        return 128 + signal.SIGTERM if pool.signalled else code
     finally:
         if main_thread:
             signal.signal(signal.SIGTERM, previous)
+    # Decide after the handler is restored: a SIGTERM that arrives during the
+    # restore still sets the flag and turns a pass into 143.
+    return 128 + signal.SIGTERM if pool.signalled else code
 
 
 def _run(

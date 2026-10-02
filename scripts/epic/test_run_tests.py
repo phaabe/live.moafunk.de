@@ -366,6 +366,44 @@ class RunTest(FixtureSuite):
         self.assertEqual(proc.returncode, 128 + signal.SIGTERM, output)
         self.assert_gone(pid_file)
 
+    def test_sigterm_while_the_handler_is_restored_still_gives_143(self) -> None:
+        # The signal arrives after a passing run, during the handler restore.
+        self.write("test_passes.py", plain_module(1, "pass"))
+        driver = self.root / "driver.py"
+        driver.write_text(
+            textwrap.dedent(
+                f"""
+                import os, signal, sys
+                sys.path.insert(0, {str(HERE)!r})
+                import run_tests
+
+                real = signal.signal
+                calls = []
+
+                def hooked(signum, handler):
+                    calls.append(signum)
+                    if len(calls) == 2:
+                        os.kill(os.getpid(), signal.SIGTERM)
+                    return real(signum, handler)
+
+                signal.signal = hooked
+                sys.exit(run_tests.run({str(self.top)!r}, 1, 30))
+                """
+            )
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(driver)],
+            env=self.env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        self.addCleanup(signal_group_kill, proc)
+        output, _ = proc.communicate(timeout=30)
+        self.assertIn("Ran 1 of 1 tests", output)
+        self.assertEqual(proc.returncode, 128 + signal.SIGTERM, output)
+
     def test_a_listing_that_fails_fails_the_run(self) -> None:
         sub = self.top / "pkg"
         sub.mkdir()
