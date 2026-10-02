@@ -44,6 +44,7 @@ GIT_ENV = {
 COPIED = (
     "scripts/epic/claude-tick.sh",
     "scripts/epic/claude-result-schema.json",
+    "scripts/epic/claude-runner-settings.json",
     "scripts/epic/github_quota.py",
     "scripts/epic/agents.py",
     "scripts/epic/tick_events.py",

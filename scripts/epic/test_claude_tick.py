@@ -65,6 +65,9 @@ class RunnerHarness(unittest.TestCase):
             "scripts/epic/tick_cooldown.py",
             "scripts/epic/rebase_policy.py",
             "scripts/epic/claude-result-schema.json",
+            # Passed to the model only; the stub model ignores them.
+            "scripts/epic/claude-runner-settings.json",
+            "scripts/epic/permission_gate.py",
             ".codex/epic_lock.py",
             ".claude/commands/epic/epic-tick.md",
         ):

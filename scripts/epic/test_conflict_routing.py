@@ -7,6 +7,12 @@ tick_gate.py; it reads the PR again from a fake `gh` (GitHub after selection).
 The model is a stub that only logs its start. The --recheck (mode 1 only) is a
 stub that returns "still valid": the gate must stop the tick on its own,
 because in mode 0 there is no recheck at all.
+
+Unchanged: COMMON and FILES below. Stubs (run as scripts only, no real module
+imports them): next_action.py, gitnexus_noise.py, runner_worktree.py,
+tick_verify.py, and the Codex steps feature_worktree.py, assignment.py,
+review_delivery.py and review_worktree.py. test_fixture_files.py checks that
+the runner finds every file it calls.
 """
 
 from __future__ import annotations
@@ -47,6 +53,9 @@ FILES = {
         "scripts/epic/claude-tick.sh",
         "scripts/epic/tick_cooldown.py",
         "scripts/epic/claude-result-schema.json",
+        # Passed to the model only; the stub model ignores them.
+        "scripts/epic/claude-runner-settings.json",
+        "scripts/epic/permission_gate.py",
         ".claude/commands/epic/epic-tick.md",
     ),
     "codex": (
@@ -114,6 +123,37 @@ out = sys.argv[sys.argv.index('--output-last-message') + 1]
 open(out, 'w').write(json.dumps({'status': 'completed', 'summary': 'x'}))
 """
 EXIT_0 = "import sys\nsys.exit(0)\n"
+# Codex review delivery: no saved review to resume; a new one is "published".
+REVIEW_DELIVERY = """\
+import sys
+sys.exit(3 if sys.argv[1] == 'resume' else 0)
+"""
+# Codex review worktree: `prepare` writes the context the runner reads and
+# names an empty worktree; `cleanup` removes it.
+REVIEW_WORKTREE = """\
+import argparse, json, pathlib, shutil
+parser = argparse.ArgumentParser()
+parser.add_argument('command', choices=('prepare', 'cleanup'))
+parser.add_argument('--runner', required=True)
+parser.add_argument('--action-file')
+parser.add_argument('--state-dir')
+parser.add_argument('--context-file', required=True)
+args = parser.parse_args()
+context_file = pathlib.Path(args.context_file)
+if args.command == 'cleanup':
+    shutil.rmtree(json.loads(context_file.read_text())['worktree'], ignore_errors=True)
+    raise SystemExit(0)
+action = json.loads(pathlib.Path(args.action_file).read_text())
+artifact = pathlib.Path(args.state_dir) / 'reviews' / str(action['pr']) / action['sha']
+attempt = artifact / 'attempt-0'
+attempt.mkdir(parents=True)
+worktree = pathlib.Path(args.state_dir) / 'review-worktree'
+worktree.mkdir()
+context_file.write_text(json.dumps(
+    {'worktree': str(worktree), 'artifact_dir': str(artifact), 'attempt_dir': str(attempt)}
+))
+print(worktree)
+"""
 
 
 def verdict(state: str, by: str, sha: str) -> dict[str, Any]:
@@ -182,6 +222,8 @@ class Routing(unittest.TestCase):
         (self.repo / ".codex/feature_worktree.py").write_text(
             f"print({str(self.repo)!r})\n"
         )
+        (self.repo / ".codex/review_delivery.py").write_text(REVIEW_DELIVERY)
+        (self.repo / ".codex/review_worktree.py").write_text(REVIEW_WORKTREE)
         # Codex's assignment evidence step runs after the gate: it passes here.
         (self.repo / ".codex/assignment.py").write_text(
             "import sys\n"
