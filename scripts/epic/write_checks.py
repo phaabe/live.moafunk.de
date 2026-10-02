@@ -715,6 +715,21 @@ GIT_FLAG_OPTIONS = {
 PROMOTION_GH_READS = {"view", "list", "diff", "checks", "status", "item-list"}
 PROMOTION_GH_READ_GROUPS = {"search", "status", "browse", "--version", "help"}
 GIT_OR_GH = re.compile(r"\b(?:git|gh)\b")
+# Words that start a command inside shell control flow, or run the next word.
+SHELL_KEYWORDS = {
+    "if", "then", "elif", "else", "while", "until", "do", "!", "{", "}",
+    "timeout", "gtimeout", "nice", "sudo", "caffeinate",
+}  # fmt: skip
+
+
+def command_words(words: list[str]) -> list[str]:
+    """The words from the command name on: without assignments, wrappers and
+    control-flow keywords (`then git add` → `git add`)."""
+    while True:
+        words = strip_prefix(words)
+        if not words or words[0] not in SHELL_KEYWORDS:
+            return words
+        words = words[1:]
 
 
 def git_may_write(words: list[str]) -> bool:
@@ -796,18 +811,22 @@ def promotion_writes(tool_name: str, tool_input: dict[str, Any]) -> bool:
             if GIT_OR_GH.search(line):
                 return True
             continue
-        names = {os.path.basename(w[0]) for w in map(strip_prefix, commands) if w}
+        names = {os.path.basename(w[0]) for w in map(command_words, commands) if w}
         if names & SHELLS and shell_input_may_write(names, line, stdin):
             return True
         for words in commands:
-            words = strip_prefix(words)
+            words = command_words(words)
             if not words:
                 continue
             name = os.path.basename(words[0])
-            if name == "git" and git_may_write(words):
-                return True
-            if name == "gh" and gh_may_write(words):
-                return True
+            if name == "git":
+                if git_may_write(words):
+                    return True
+            elif name == "gh":
+                if gh_may_write(words):
+                    return True
+            elif any(os.path.basename(w) in ("git", "gh") for w in words[1:]):
+                return True  # git or gh where this check cannot read it
     return False
 
 

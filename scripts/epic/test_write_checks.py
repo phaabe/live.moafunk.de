@@ -663,6 +663,43 @@ class PromotionBarrier(Base):
             with self.subTest(command=command):
                 self.assertIsNone(self.refusal(command))
 
+    def test_writes_inside_shell_control_flow_are_refused(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "if test -f example.txt; then git add -- example.txt; fi",
+            "if true; then echo x; else gh issue create --title x; fi",
+            'for f in a b; do git add "$f"; done',
+            "while true; do git commit -m x; break; done",
+            "! git commit -m x",
+            "{ git add x; }",
+            "test -f x && git add x",
+            "timeout 60 git push",
+            "sudo git commit -m x",
+            "bash <<'EOF'\nif true; then git add -- example.txt; fi\nEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("runtime promotion", self.refusal(command) or "")
+        for command in (
+            "if git status --short; then echo dirty; fi",
+            "for f in a b; do git log -1 -- $f; done",
+            "bash <<'EOF'\nif true; then git diff; fi\nEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.refusal(command))
+
+    def test_hook_refuses_writes_inside_shell_control_flow(self) -> None:
+        # The payloads from the third review of
+        # https://github.com/phaabe/live.moafunk.de/pull/592.
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "if test -f example.txt; then git add -- example.txt; fi",
+            "bash <<'EOF'\nif test -f example.txt; then git add -- example.txt; fi\nEOF",
+        ):
+            with self.subTest(command=command):
+                out = self.run_hook(command)
+                self.assertEqual(out.returncode, 2, out.stderr)
+                self.assertIn("Runtime promotion", out.stderr)
+
     def test_attached_field_and_method_flags_are_writes(self) -> None:
         for args in (
             ["repos/o/r/issues", "-ftitle=x"],
