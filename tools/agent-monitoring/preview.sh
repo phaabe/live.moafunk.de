@@ -25,7 +25,7 @@ EPIC_STATE_DIR="$state_dir" AGENT_RUNTIME=./runtime-preview docker compose -p ag
     -f tools/agent-monitoring/compose.yaml up -d
 # 24 h of outcome history for the timeline, written into the preview's own
 # Prometheus volume (its data dir is /prometheus/data); loaded on restart.
-history_dir=$(mktemp -d)
+history_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-preview.XXXXXX")
 python3 scripts/epic/fixtures.py "$scenario" --state-dir "$state_dir" --history "$history_dir/history.om"
 docker run --rm -v agent-monitoring-preview_prometheus-data:/prometheus -v "$history_dir:/in:ro" \
     --entrypoint promtool prom/prometheus:v3.15.0 \

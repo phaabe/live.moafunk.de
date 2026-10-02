@@ -13,7 +13,12 @@ import sys
 from typing import Any
 
 
-GIT = "/usr/bin/git"
+# Pin the real binary: Apple's /usr/bin/git shim writes an xcrun cache.
+GIT = (
+    "/Library/Developer/CommandLineTools/usr/bin/git"
+    if sys.platform == "darwin"
+    else "/usr/bin/git"
+)
 BASES = {"dev/312-interim"}
 SHA = re.compile(r"[0-9a-f]{40}")
 BRANCH = re.compile(
@@ -271,7 +276,7 @@ if problem:
         for key, value in os.environ.items()
         if not key.startswith(("CODEX_", "GIT_", "EPIC_", "PYTHON"))
     }
-    env["PATH"] = "/usr/bin:/bin"
+    env["PATH"] = f"{Path(GIT).parent}:/usr/bin:/bin"
     command = [
         sys.executable,
         "-I",

@@ -8,6 +8,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/epic"))
 import isolated_env  # noqa: E402, F401 (before production modules or fixtures)
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from feature_git import GIT  # noqa: E402
+
 import json
 import os
 import shutil
@@ -66,7 +69,7 @@ class FeatureGitTests(unittest.TestCase):
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
         result = subprocess.run(
-            ["/usr/bin/git", "-C", str(cwd or self.repo), *args],
+            [GIT, "-C", str(cwd or self.repo), *args],
             env=self.env,
             text=True,
             capture_output=True,

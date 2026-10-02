@@ -9,6 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/epic"))
 import isolated_env  # noqa: E402, F401 (before production modules or fixtures)
 import rebase_policy  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from feature_git import GIT  # noqa: E402
+
 import json
 import os
 import shutil
@@ -24,9 +27,7 @@ BRANCH = "feat/431-example"
 
 class FeatureRebaseTests(unittest.TestCase):
     def setUp(self) -> None:
-        temporary = tempfile.TemporaryDirectory(
-            prefix="feature-rebase-", dir="/private/tmp"
-        )
+        temporary = tempfile.TemporaryDirectory(prefix="feature-rebase-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.home = self.root / "home"
@@ -104,7 +105,7 @@ class FeatureRebaseTests(unittest.TestCase):
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
         result = subprocess.run(
-            ["/usr/bin/git", "-C", str(cwd or self.repo), *args],
+            [GIT, "-C", str(cwd or self.repo), *args],
             env=self.env,
             text=True,
             capture_output=True,
@@ -352,7 +353,9 @@ class FeatureRebaseTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS sandbox-exec integration")
     @unittest.skipIf(
-        os.environ.get("CODEX_PROOF_SANDBOX") == "1", "macOS forbids nested sandboxes"
+        os.environ.get("CODEX_PROOF_SANDBOX") == "1"
+        or os.environ.get("CODEX_SANDBOX") == "seatbelt",
+        "macOS forbids nested sandboxes",
     )
     def test_pinned_suite_proofs_reject_failed_or_skipped_suites(
         self,
@@ -396,7 +399,9 @@ class FeatureRebaseTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS sandbox-exec integration")
     @unittest.skipIf(
-        os.environ.get("CODEX_PROOF_SANDBOX") == "1", "macOS forbids nested sandboxes"
+        os.environ.get("CODEX_PROOF_SANDBOX") == "1"
+        or os.environ.get("CODEX_SANDBOX") == "seatbelt",
+        "macOS forbids nested sandboxes",
     )
     def test_prove_blocks_suite_writes_to_protected_files(self) -> None:
         self.advance_base()
@@ -660,7 +665,7 @@ class FeatureRebaseTests(unittest.TestCase):
     def test_unrelated_rebase_cannot_be_continued_or_aborted(self) -> None:
         self.advance_base(conflict=True)
         result = subprocess.run(
-            ["/usr/bin/git", "-C", str(self.worktree), "rebase", f"origin/{BASE}"],
+            [GIT, "-C", str(self.worktree), "rebase", f"origin/{BASE}"],
             env=self.env,
             text=True,
             capture_output=True,
