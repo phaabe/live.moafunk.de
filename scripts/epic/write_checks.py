@@ -782,15 +782,48 @@ def gh_may_write(words: list[str]) -> bool:
     return len(words) < 3 or words[2] not in PROMOTION_GH_READS
 
 
-def shell_input_may_write(names: set[str], line: str, stdin: str) -> bool:
-    """A line that runs a shell or interpreter: its words (pipes, here
-    strings, -c) and its heredoc body are code. A shell body is read like a
-    command; any other body that names git or gh counts as a write."""
-    if GIT_OR_GH.search(line):
+# Commands that only read a heredoc as data; any other consumer may run it.
+DATA_READERS = {
+    "cat", "tee", "head", "tail", "wc", "sort", "uniq", "grep", "rg", "jq",
+    "tr", "cut", "base64", "diff", "cmp", "column", "fold", "less", "more",
+}  # fmt: skip
+
+
+def commands_without_redirects(line: str) -> list[list[str]]:
+    """Simple commands of one readable line, like words_of, but a redirect
+    target or heredoc tag (`> file`, `<<EOF`) is dropped, not a command."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    commands: list[list[str]] = [[]]
+    skip = False
+    for token in lexer:
+        if skip:
+            skip = False
+        elif token and set(token) <= OPERATORS:
+            if "<" in token or ">" in token:
+                skip = True  # the target: a file, a heredoc tag or an fd
+            else:
+                commands.append([])
+        else:
+            commands[-1].append(token)
+    return [c for c in commands if c]
+
+
+def code_may_write(line: str, stdin: str) -> bool:
+    """Code the line hands to a shell or interpreter: pipes, here strings,
+    `-c`, and the heredoc body. A shell or interpreter anywhere in the line
+    counts, also after wrapper arguments (`gtimeout 5 bash`). A heredoc body
+    is data only when every command of the line is a DATA_READER."""
+    words = [command_words(c) for c in commands_without_redirects(line)]
+    found = {os.path.basename(w) for c in words for w in c}
+    shells = found & SHELLS
+    if shells and GIT_OR_GH.search(line):
         return True
     if not stdin:
         return False
-    if names & SHELLS <= {"bash", "sh", "zsh"}:
+    if {os.path.basename(c[0]) for c in words if c} <= DATA_READERS and not shells:
+        return False
+    if shells and shells <= {"bash", "sh", "zsh"}:
         return promotion_writes("Bash", {"command": stdin})
     return bool(GIT_OR_GH.search(stdin))
 
@@ -811,8 +844,7 @@ def promotion_writes(tool_name: str, tool_input: dict[str, Any]) -> bool:
             if GIT_OR_GH.search(line):
                 return True
             continue
-        names = {os.path.basename(w[0]) for w in map(command_words, commands) if w}
-        if names & SHELLS and shell_input_may_write(names, line, stdin):
+        if code_may_write(line, stdin):
             return True
         for words in commands:
             words = command_words(words)

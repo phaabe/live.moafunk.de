@@ -700,6 +700,38 @@ class PromotionBarrier(Base):
                 self.assertEqual(out.returncode, 2, out.stderr)
                 self.assertIn("Runtime promotion", out.stderr)
 
+    def test_code_after_wrapper_arguments_is_checked(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "if true; then gtimeout 5 bash <<'EOF'\ngit add -- example.txt\nEOF\nfi",
+            "nice -n 5 bash <<'EOF'\ngit commit -m x\nEOF",
+            "sudo -u anton sh <<'EOF'\ngh issue create --title x\nEOF",
+            "env -i HOME=/tmp timeout 9 zsh -c 'git add x'",
+            "perl <<'EOF'\nsystem('git add x');\nEOF",
+            "node - <<'EOF'\nrequire('child_process').execSync('gh issue create');\nEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("runtime promotion", self.refusal(command) or "")
+        for command in (
+            "gtimeout 5 bash <<'EOF'\ngit status --short\nEOF",
+            "cat > /tmp/body.md <<'EOF'\nRun git add, then gh pr view.\nEOF",
+            "tee /tmp/x.txt <<'EOF' | wc -l\ngit add x\nEOF",
+            "node - <<'EOF'\nconsole.log(1)\nEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.refusal(command))
+
+    def test_hook_refuses_shell_heredoc_after_wrapper_arguments(self) -> None:
+        # The payload from the fourth review of
+        # https://github.com/phaabe/live.moafunk.de/pull/592.
+        runtime.begin_promotion("2" * 40, None)
+        command = (
+            "if true; then gtimeout 5 bash <<'EOF'\ngit add -- example.txt\nEOF\nfi"
+        )
+        out = self.run_hook(command)
+        self.assertEqual(out.returncode, 2, out.stderr)
+        self.assertIn("Runtime promotion", out.stderr)
+
     def test_attached_field_and_method_flags_are_writes(self) -> None:
         for args in (
             ["repos/o/r/issues", "-ftitle=x"],

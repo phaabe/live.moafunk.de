@@ -177,10 +177,13 @@ never counts. An unreadable marker or process table refuses. Callers:
   `view`, `list`, `diff`, `checks`, `status`, `search`, or `gh api` as GET
   (GraphQL: a query, not a mutation; attached flags like `-ftitle=x` count);
   `mcp__github__*` is a write unless `get_`, `list_` or `search_`. A line
-  that runs a shell or interpreter (`bash`, `python3`, `xargs`, ...) is a
-  write when it names `git` or `gh` (pipes, here strings, `-c`); its
-  heredoc body is read like a command (shells) or counts as a write when it
-  names `git` or `gh` (other interpreters). Control-flow keywords and
+  that runs a shell or interpreter (`bash`, `python3`, `xargs`, ...)
+  anywhere, also after wrapper arguments (`gtimeout 5 bash`), is a write
+  when it names `git` or `gh` (pipes, here strings, `-c`). A heredoc body
+  is read like a command when only `bash`/`sh`/`zsh` consume it; for any
+  other consumer it counts as a write when it names `git` or `gh`. It is
+  plain data only when every command of the line only reads it (`cat`,
+  `tee`, `jq`, ...). Control-flow keywords and
   wrappers (`then`, `do`, `!`, `{`, `sudo`, `timeout`, ...) are skipped
   before the command name; a `git` or `gh` word anywhere else in a command
   counts as a write. Not covered: a script file run by name (`bash x.sh`),
