@@ -671,10 +671,6 @@ class CodexRunner(unittest.TestCase):
         shutil.copyfile(
             ROOT.parent / "scripts/epic/next_action.py", epic / "next_action.py"
         )
-        # The runner calls it for reviews and conflicts; the harness lacks it.
-        shutil.copyfile(
-            ROOT.parent / "scripts/epic/rebase_policy.py", epic / "rebase_policy.py"
-        )
         self.map = helper.root / "gh-map.json"
         self.next_map = helper.root / "gh-map-next.json"
         gh = helper.bin / "gh"
@@ -720,12 +716,6 @@ class CodexRunner(unittest.TestCase):
             {
                 "EPIC_SHARED_READER": "1",
                 "TEST_GH_MAP": str(self.map),
-                "EPIC_RECHECK_TIMEOUT_SECONDS": "30",
-                "EPIC_SELECT_TIMEOUT_SECONDS": "30",
-                # The harness allows 1s per snapshot refresh. Here one refresh
-                # starts the fake `gh` about 10 times (0.3-0.6s), so a loaded
-                # machine ran out of time ("GitHub reads took too long").
-                "EPIC_SNAPSHOT_REFRESH_SECONDS": "20",
             }
         )
 
