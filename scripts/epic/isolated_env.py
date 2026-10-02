@@ -21,10 +21,21 @@ the environment the test gave it.
 
 Run another suite the same way (the Codex runner tests):
     python3 scripts/epic/isolated_env.py .codex/tests [unittest options]
+
+Two more modes serve run_tests.py, which runs a suite in parallel parts:
+    isolated_env.py --list FILE <test dir>
+        writes every test id of the directory as JSON, per module, without
+        running a test (see listing()).
+    isolated_env.py --report FILE <test dir> [unittest options]
+        runs the tests and writes the ids that started and the failures as
+        JSON (see Recording).
+Run as a script, this module always isolates, also when the parent has
+MARKER: a suite run is not test code that a test started on purpose.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -90,10 +101,11 @@ def _isolated_run(
             replace_environ(saved)
 
 
-def install() -> None:
-    """Isolate this process and every test it runs. Safe to call twice."""
+def install(force: bool = False) -> None:
+    """Isolate this process and every test it runs. Safe to call twice.
+    Without `force`, a process that inherited MARKER keeps its environment."""
     global _session
-    if _session is not None or PARENT.get(MARKER) == "1":
+    if _session is not None or (PARENT.get(MARKER) == "1" and not force):
         return
     _session = tempfile.TemporaryDirectory(prefix="epic-test-env-")
     home = Path(_session.name) / "home"
@@ -102,13 +114,130 @@ def install() -> None:
     unittest.TestCase.run = _isolated_run  # type: ignore[method-assign]
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit("usage: isolated_env.py <test dir> [unittest options]")
+def cases(suite: unittest.TestSuite | unittest.TestCase) -> list[unittest.TestCase]:
+    """The test cases of a suite, in run order."""
+    if isinstance(suite, unittest.TestCase):
+        return [suite]
+    found: list[unittest.TestCase] = []
+    for item in suite:
+        found.extend(cases(item))
+    return found
+
+
+def _overrides(cls: type, name: str) -> bool:
+    own = getattr(cls, name, None)
+    base = getattr(unittest.TestCase, name)
+    return getattr(own, "__func__", own) is not base.__func__
+
+
+def fixture_reasons(tests: list[unittest.TestCase]) -> list[str]:
+    """Class or module fixtures. A split part would run them once per part."""
+    reasons: set[str] = set()
+    for test in tests:
+        cls = type(test)
+        for name in ("setUpClass", "tearDownClass"):
+            if _overrides(cls, name):
+                reasons.add(f"{cls.__qualname__}.{name}")
+        module = sys.modules.get(cls.__module__)
+        for name in ("setUpModule", "tearDownModule"):
+            if module is not None and hasattr(module, name):
+                reasons.add(f"{cls.__module__}.{name}")
+    return sorted(reasons)
+
+
+def listing(top: Path) -> dict[str, object]:
+    """Every test id under `top`, per module file, as a part would load it.
+
+    A module's entry has its ids, `load_tests` (the module defines it, so it
+    may ignore -k), `fixtures` (class or module fixtures) and `load_errors`
+    (ids of tests that stand for a module that failed to import). The ids of
+    all modules must equal the ids of one plain discovery of `top`."""
+    whole = [t.id() for t in cases(unittest.TestLoader().discover(str(top)))]
+    modules: dict[str, dict[str, object]] = {}
+    for path in sorted(top.glob("test*.py")):
+        tests = cases(unittest.TestLoader().discover(str(top), pattern=path.name))
+        module = sys.modules.get(path.stem)
+        modules[path.name] = {
+            "ids": [t.id() for t in tests],
+            "load_tests": module is not None and hasattr(module, "load_tests"),
+            "fixtures": fixture_reasons(tests),
+            "load_errors": [
+                t.id() for t in tests if type(t).__module__ == "unittest.loader"
+            ],
+        }
+    listed = sorted(i for entry in modules.values() for i in entry["ids"])  # type: ignore[attr-defined]
+    if listed != sorted(whole):
+        raise SystemExit(
+            f"isolated_env: per-module ids ({len(listed)}) differ from one "
+            f"discovery of {top} ({len(whole)}); tests outside top-level "
+            "test*.py files are not supported"
+        )
+    return {"top": str(top), "modules": modules}
+
+
+class Recording(unittest.TextTestResult):
+    """A text result that also keeps the id of every test that started."""
+
+    started: list[str]
+
+    def startTest(self, test: unittest.TestCase) -> None:  # noqa: N802
+        self.started = getattr(self, "started", [])
+        self.started.append(test.id())
+        super().startTest(test)
+
+    def report(self) -> dict[str, object]:
+        return {
+            "started": getattr(self, "started", []),
+            "failures": [[t.id(), tb] for t, tb in self.failures],
+            "errors": [[t.id(), tb] for t, tb in self.errors],
+            "unexpected_successes": [t.id() for t in self.unexpectedSuccesses],
+            "skipped": len(self.skipped),
+            "ok": self.wasSuccessful(),
+        }
+
+
+class RecordingRunner(unittest.TextTestRunner):
+    resultclass = Recording
+
+
+def _main(argv: list[str]) -> int:
+    usage = (
+        "usage: isolated_env.py [--list FILE | --report FILE] "
+        "<test dir> [unittest options]"
+    )
+    mode = argv[0] if argv and argv[0] in ("--list", "--report") else None
+    if mode:
+        if len(argv) < 3:
+            sys.exit(usage)
+        out, argv = Path(argv[1]).resolve(), argv[2:]
+    if not argv:
+        sys.exit(usage)
     # Install through the importable module, so the tests' own
     # `import isolated_env` finds it done and does not install twice.
-    import isolated_env  # noqa: F401
+    import isolated_env
 
-    unittest.main(module=None, argv=[sys.argv[0], "discover", "-s", *sys.argv[1:]])
+    isolated_env.install(force=True)
+    if mode == "--list":
+        if len(argv) != 1:
+            sys.exit(usage)
+        out.write_text(json.dumps(isolated_env.listing(Path(argv[0]))))
+        return 0
+    if mode == "--report":
+        prog = unittest.main(
+            module=None,
+            argv=[sys.argv[0], "discover", "-s", *argv],
+            testRunner=isolated_env.RecordingRunner,
+            exit=False,
+        )
+        result = prog.result
+        assert isinstance(result, isolated_env.Recording)
+        out.write_text(json.dumps(result.report()))
+        return 0 if result.wasSuccessful() else 1
+    unittest.main(module=None, argv=[sys.argv[0], "discover", "-s", *argv])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))
 else:
     install()
