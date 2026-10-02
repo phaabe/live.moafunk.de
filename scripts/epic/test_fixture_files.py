@@ -38,7 +38,9 @@ SCRIPT_PATH = re.compile(
     r"((?:scripts/epic|\.codex|\.claude)/[\w./-]+\.(?:py|sh|json|md))"
 )
 # Imports in Python snippets inside a runner script (`python3 -c`, heredocs).
-SCRIPT_IMPORT = re.compile(r"^\s*(?:from\s+(\w+)\s+import|import\s+(\w+))", re.M)
+SCRIPT_IMPORT = re.compile(
+    r"^\s*(?:from\s+(\w+)\s+import\s+([\w ,]+)|import\s+(\w+))", re.M
+)
 OPTIONAL = {"ImportError", "ModuleNotFoundError"}
 
 
@@ -171,11 +173,29 @@ def problems(checkout: Path, runners: list[str]) -> list[str]:
             elif path.suffix == ".sh":
                 scripts.append(path)
         for match in SCRIPT_IMPORT.finditer(text):
-            name = match.group(1) or match.group(2)
-            if name in local and not any(
-                (checkout / d / f"{name}.py").exists() for d in DIRS
-            ):
-                found.append(f"{script.relative_to(checkout)} imports missing {name}")
+            name = match.group(1) or match.group(3)
+            if name not in local:
+                continue
+            rel = script.relative_to(checkout)
+            target = next(
+                (
+                    checkout / d / f"{name}.py"
+                    for d in DIRS
+                    if (checkout / d / f"{name}.py").exists()
+                ),
+                None,
+            )
+            if target is None:
+                found.append(f"{rel} imports missing {name}")
+                continue
+            # `from m import a as b, c`: the names a and c must exist in m.
+            used = {
+                n.split()[0] for n in (match.group(2) or "").split(",") if n.strip()
+            }
+            defined = names_of(Module(target, checkout), checkout, {})
+            missing = [] if defined is None else sorted(used - defined)
+            if missing:
+                found.append(f"{rel} uses {name}.{', '.join(missing)}: not in the file")
     modules = {
         p: Module(p, checkout)
         for p in sorted(checkout.rglob("*.py"))
@@ -304,6 +324,15 @@ class Guard(unittest.TestCase):
         (self.checkout / ".codex/tick_backoff.py").unlink()
         self.assertTrue(
             any("tick_backoff" in p for p in problems(self.checkout, self.runners))
+        )
+
+    def test_a_module_lacks_a_name_a_runner_snippet_imports(self) -> None:
+        # codex-tick.sh runs `from tick_backoff import result_outcome`.
+        path = self.checkout / ".codex/tick_backoff.py"
+        path.write_text(path.read_text().replace("def result_outcome(", "def renamed("))
+        self.assertIn(
+            ".codex/codex-tick.sh uses tick_backoff.result_outcome: not in the file",
+            problems(self.checkout, self.runners),
         )
 
     def test_a_stub_lacks_a_name_its_real_caller_reads(self) -> None:
