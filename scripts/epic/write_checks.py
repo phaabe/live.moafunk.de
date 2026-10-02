@@ -700,215 +700,33 @@ def load_action() -> dict[str, Any]:
 
 # --- promotion barrier ---
 
-# During a promotion, outside admitted ticks, a Bash command runs only when it
-# is provably read-only: an allowlist, not a list of known writes. Everything
-# else, including any command this check cannot read, counts as a write.
-
-# Read-only git verbs; every other verb counts as a write.
-PROMOTION_GIT_READS = {
-    "status", "log", "diff", "show", "rev-parse", "ls-files", "merge-base",
-    "blame", "cat-file", "ls-tree", "rev-list", "describe", "show-ref",
-    "for-each-ref", "--version", "version",
-}  # fmt: skip
-GIT_VALUE_OPTIONS = {"-C", "--git-dir", "--work-tree", "--namespace"}
-GIT_FLAG_OPTIONS = {
-    "--no-pager", "--no-optional-locks", "--literal-pathspecs",
-    "--no-replace-objects", "--bare",
-}  # fmt: skip
-# git arguments that run another program (pager, external diff, textconv).
-GIT_RUNS_PROGRAM = ("--ext-diff", "--textconv", "-O", "--open-files-in-pager")
-# gh groups and subcommands that only read; anything else (also an alias)
-# counts as a write.
-PROMOTION_GH_GROUPS = {
-    "pr", "issue", "run", "repo", "release", "workflow", "label", "project",
-}  # fmt: skip
-PROMOTION_GH_READS = {"view", "list", "diff", "checks", "status", "item-list"}
-PROMOTION_GH_READ_GROUPS = {"search", "status", "--version"}
-# Commands that only read or print. A heredoc fed to them stays data.
-PROMOTION_READ_COMMANDS = {
-    "ls", "cat", "head", "tail", "wc", "sort", "uniq", "grep", "rg", "jq",
-    "tr", "cut", "base64", "diff", "cmp", "column", "fold", "less", "more",
-    "tee", "echo", "printf", "pwd", "cd", "test", "[", "[[", "]]", "true",
-    "false", "date", "sleep", "stat", "file", "basename", "dirname",
-    "realpath", "readlink", "which", "type", "tree", "du", "df", "uname",
-    "whoami", "id", "hostname", "uptime", "ps", "find", "md5", "shasum",
-    "for", "in", "case", "esac", "done", "fi", "select",
-}  # fmt: skip
-FIND_RUNS = {"-exec", "-execdir", "-ok", "-okdir", "-delete"}
-PLAIN_SHELLS = {"bash", "sh", "zsh"}
-# Shell syntax that runs code the check cannot read.
-HIDDEN_CODE = ("$(", "`", "<(", ">(")
-# Words that start a command inside shell control flow, or run the next word.
-SHELL_KEYWORDS = {
-    "if", "then", "elif", "else", "while", "until", "do", "!", "{", "}",
-    "timeout", "gtimeout", "nice", "sudo", "caffeinate",
-}  # fmt: skip
-ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-
-def command_words(words: list[str]) -> list[str]:
-    """The words from the command name on: without assignments, wrappers and
-    control-flow keywords (`then git add` → `git add`)."""
-    while True:
-        words = strip_prefix(words)
-        if not words or words[0] not in SHELL_KEYWORDS:
-            return words
-        words = words[1:]
-
-
-def git_may_write(words: list[str]) -> bool:
-    if any(w.startswith(GIT_RUNS_PROGRAM) for w in words[1:]):
-        return True
-    i = 1
-    while i < len(words) and words[i].startswith("-"):
-        option = words[i].split("=", 1)[0]
-        if option in GIT_VALUE_OPTIONS:
-            i += 1 if "=" in words[i] else 2
-        elif option in GIT_FLAG_OPTIONS:
-            i += 1
-        elif words[i] in PROMOTION_GIT_READS:
-            return False
-        else:
-            return True  # -c, -p and any option this check does not know
-    return i >= len(words) or words[i] not in PROMOTION_GIT_READS
-
-
-def gh_api_may_write(args: list[str]) -> bool:
-    graphql = args[:1] == ["graphql"]
-    i = 0
-    while i < len(args):
-        arg, step = args[i], 1
-        if attached_short(arg):
-            name, value = arg[:2], arg[2:]
-        elif arg.startswith("--") and "=" in arg:
-            name, value = arg.split("=", 1)
-        else:
-            name, value = arg, args[i + 1] if i + 1 < len(args) else ""
-            step = 2 if arg in GH_VALUE_FLAGS else 1
-        if name in ("-X", "--method") and value.upper() != "GET":
-            return True
-        if name in ("-f", "-F", "--field", "--raw-field") and (
-            # Fields make a REST call a POST; a GraphQL query stays a read.
-            not graphql or "mutation" in value or "=@" in value
-        ):
-            return True
-        if name == "--input":
-            return True
-        i += step
-    return False
-
-
-def gh_may_write(words: list[str]) -> bool:
-    if len(words) < 2:
-        return False
-    if words[1] in PROMOTION_GH_READ_GROUPS:
-        return False
-    if words[1] == "api":
-        return gh_api_may_write(words[2:])
-    if words[1] == "auth":
-        return words[2:3] != ["status"]
-    if words[1] not in PROMOTION_GH_GROUPS:
-        return True  # another group or an alias, which may run a shell
-    return len(words) < 3 or words[2] not in PROMOTION_GH_READS
-
-
-def commands_without_redirects(line: str) -> tuple[list[list[str]], list[str]]:
-    """Simple commands of one line, like words_of, but a redirect target or
-    heredoc tag (`> file`, `<<EOF`) is dropped, not a command. Also returns
-    the here strings (`<<< text`), which are input like a heredoc body.
-    Raises ValueError when the line cannot be read."""
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    commands: list[list[str]] = [[]]
-    here_strings: list[str] = []
-    target = ""
-    for token in lexer:
-        if target:
-            if target == "<<<":
-                here_strings.append(token)
-            target = ""
-        elif token and set(token) <= OPERATORS:
-            if "<" in token or ">" in token:
-                target = token  # next: a file, a heredoc tag, an fd or text
-            else:
-                commands.append([])
-        else:
-            commands[-1].append(token)
-    return [c for c in commands if c], here_strings
-
-
-def read_only_command(raw: list[str], stdin: str, alone: bool) -> bool:
-    """One simple command. `stdin` is the line's heredoc body; `alone` is
-    whether this is the only command of the line (so it reads the body)."""
-    words = command_words(raw)
-    if not words:
-        return True
-    name = words[0]
-    if "$" in name or (any(c in name for c in "*?[]{}") and name not in ("[", "[[")):
-        return False  # the shell decides what runs
-    base = os.path.basename(name)
-    if base in ("git", "gh"):
-        if any(ASSIGNMENT.match(w) for w in raw[: raw.index(name)]):
-            return False  # GIT_PAGER=..., GH_PAGER=... run programs
-        return not (git_may_write(words) if base == "git" else gh_may_write(words))
-    if base in PLAIN_SHELLS:
-        # Only code the check can read: `bash -c CODE`, or `bash`/`bash -s`
-        # alone on its line with a heredoc.
-        if words[1:2] == ["-c"] and len(words) == 3:
-            return read_only_bash(words[2])
-        return words[1:] in ([], ["-s"]) and alone and read_only_bash(stdin)
-    if base == "find":
-        return not FIND_RUNS & set(words)
-    return base in PROMOTION_READ_COMMANDS
-
-
-def read_only_bash(command: str) -> bool:
-    """Every command of `command`, heredoc bodies included, only reads."""
-    if any(code in command for code in HIDDEN_CODE):
-        return False
-    for line, body in segments(command):
-        try:
-            commands, here_strings = commands_without_redirects(line)
-        except ValueError:
-            return False
-        stdin = "\n".join([body, *here_strings])
-        for raw in commands:
-            if not read_only_command(raw, stdin, len(commands) == 1):
-                return False
-    return True
-
 
 def promotion_writes(tool_name: str, tool_input: dict[str, Any]) -> bool:
-    """Whether the tool call may write to Git or GitHub during a promotion.
-    GitHub MCP tools write unless get_/list_/search_. A Bash command writes
-    unless read_only_bash proves it only reads."""
+    """Whether the tool call is refused outside an admitted tick while a
+    promotion runs: every Bash call (no parsing: shell code can hide a write
+    in too many ways) and every GitHub MCP tool except get_/list_/search_."""
+    if tool_name == "Bash":
+        return True
     if tool_name.startswith("mcp__github__"):
         operation = tool_name.removeprefix("mcp__github__")
         return not operation.startswith(("get_", "list_", "search_"))
-    command = tool_input.get("command") if tool_name == "Bash" else None
-    if not isinstance(command, str):
-        return False
-    return not read_only_bash(command)
+    return False
 
 
 def promotion_refusal(
     tool_name: str, tool_input: dict[str, Any], cwd: str
 ) -> str | None:
-    """While a runtime promotion marker exists, refuse every Git or GitHub
-    write (and every command that may write but cannot be read) outside an
-    admitted tick. Runs in every session that loads these checks, not only
-    in runner ticks. Without a marker it costs one stat()."""
+    """While a runtime promotion marker exists, refuse every Bash call and
+    every GitHub MCP write outside an admitted tick (promotion_writes). Runs
+    in every session that loads these checks, not only in runner ticks.
+    Without a marker it costs one stat()."""
     if not (target_lock.lock_dir() / PROMOTION_MARKER).exists():
         return None
     import runtime  # only with a marker: runner fixtures copy this module alone
 
-    try:
-        writes = promotion_writes(tool_name, tool_input) or bool(
-            tool_writes(tool_name, tool_input, cwd)
-        )
-    except Unclear:
-        writes = True
-    return runtime.write_barrier() if writes else None
+    if not promotion_writes(tool_name, tool_input):
+        return None
+    return runtime.write_barrier()
 
 
 def guard(

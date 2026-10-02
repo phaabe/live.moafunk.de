@@ -170,21 +170,13 @@ never counts. An unreadable marker or process table refuses. Callers:
 
 - `git_gate.py`: every git command except the read-only ones.
 - `permission_gate.py`: `gh pr` and `gh api` prompts.
-- `write_checks.promotion_refusal()`: every Git or GitHub write, and every
-  command that may write but cannot be read; also run first in `guard()`.
-  It is an allowlist: a Bash command passes only when it is provably
-  read-only. Every command must be a known reader (`ls`, `cat`, `rg`, `jq`,
-  `find` without `-exec`/`-delete`, ...), a `git` read verb (`status`,
-  `log`, `diff`, `show`, ...; not with `-c`, `-p`, pager or external-diff
-  options, or with an assignment like `GIT_PAGER=` before it), or a `gh`
-  read (`view`, `list`, `diff`, `checks`, `status`, `search`, `auth status`,
-  or `gh api` as GET; GraphQL only as a query). `bash`/`sh`/`zsh` pass only
-  with visible code that passes the same check (`-c CODE`, or alone with a
-  heredoc or here string). Anything else counts as a write: `$( )`,
-  backticks, process substitution, unreadable lines, other interpreters
-  (`python3`, `node`, `eval`, `xargs`, ...), scripts run by name and
-  unknown commands. `mcp__github__*` is a write unless `get_`, `list_` or
-  `search_`.
+- `write_checks.promotion_refusal()`: every Bash call and every GitHub MCP
+  tool except `get_`, `list_` and `search_`; also run first in `guard()`.
+  Bash is not parsed: shell code can hide a write in too many ways
+  (heredocs, pipes, substitutions, programs started by readers). Decided by
+  Anton (2026-10-02): during a promotion, sessions outside admitted ticks
+  run no shell commands; Read, Grep, Glob and Edit still work. The hook's
+  GitHub MCP matcher is `mcp__github__.*`, so it sees every GitHub tool.
 - `.claude/hooks/scripts/epic_guard.py` rule 8: every session, also
   interactive. Without a marker it costs one `stat()`.
 - `lockhold`: a command outside an admitted tick does not start.

@@ -10,6 +10,7 @@ import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -588,272 +589,89 @@ class PromotionBarrier(Base):
         self.assertEqual(wc.PROMOTION_MARKER, runtime.MARKER)
 
     def test_no_marker_costs_nothing(self) -> None:
-        with patch.object(wc, "tool_writes", side_effect=AssertionError("parsed")):
+        with patch.object(wc, "promotion_writes", side_effect=AssertionError("parsed")):
             self.assertIsNone(self.refusal("gh issue comment 5 --body x"))
 
-    def test_writes_and_unclear_commands_are_refused_reads_pass(self) -> None:
-        runtime.begin_promotion("2" * 40, None)
-        self.assertIn(
-            "runtime promotion", self.refusal("gh issue comment 5 --body x") or ""
-        )
-        self.assertIn("runtime promotion", self.refusal("echo $(gh pr merge 5)") or "")
-        self.assertIsNone(self.refusal("ls -la"))
-        self.assertIsNone(self.refusal("gh pr view 5"))
+    # Bypasses Codex found in the reviews of
+    # https://github.com/phaabe/live.moafunk.de/pull/592, plus plain reads.
+    # Every one is a Bash call, so every one is refused.
+    BASH_CALLS = (
+        "git add -- example.txt",
+        "git commit -m 'fix: x'",
+        "git rebase origin/dev/312-interim",
+        "gh issue create --title x --body y",
+        "gh api repos/o/r/issues -ftitle=x",
+        "bash <<'EOF'\ngit add -- example.txt\nEOF",
+        "python3 - <<'EOF'\nimport subprocess\n"
+        "subprocess.run(['git', 'add', '--', 'example.txt'])\nEOF",
+        "if test -f example.txt; then git add -- example.txt; fi",
+        "if true; then gtimeout 5 bash <<'EOF'\ngit add -- example.txt\nEOF\nfi",
+        "cat <<EOF\n$(git add -- example.txt)\nEOF",
+        "bash -s \"$(printf x)\" <<'EOF'\ngit add -- example.txt\nEOF",
+        "printf 'git add -- example.txt\\n' |\nbash",
+        "LESSOPEN='|git add -- %s' less example.txt",
+        "# <<true\ngit config review.probe hit\ntrue",
+        "QUERY='mutation { x }'\ngh api graphql -f query=\"$QUERY\"",
+        "python3 scripts/x.py",
+        "ls -la",
+        "git status --short",
+        "gh pr view 5",
+    )
 
-    def test_every_git_and_github_write_is_refused(self) -> None:
+    def test_every_bash_call_is_refused(self) -> None:
         runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "git add .",
-            "git commit -m x",
-            "git -C /tmp/x rebase origin/main",
-            "git --git-dir=/tmp/x/.git stash",
-            "git -c user.name=x tag v1",
-            "git --unknown-option status",
-            "gh issue create --title x --body y",
-            "gh label create x",
-            "gh release create v1",
-            "gh api repos/o/r/issues -f title=x",
-            "gh api -XPOST repos/o/r/issues",
-            "gh api --method=DELETE repos/o/r/labels/x",
-            "gh api repos/o/r/issues --input /tmp/x.json",
-            "gh api graphql -f query='mutation { addStar(input: {}) { clientMutationId } }'",
-            "gh api graphql -F query=@/tmp/q.graphql",
-            "cd /tmp && git push",
-            "python3 -c 'import os; os.system(\"gh issue create\")'",
-        ):
+        for command in self.BASH_CALLS:
             with self.subTest(command=command):
                 self.assertIn("runtime promotion", self.refusal(command) or "")
-        for command in (
-            "git status --short",
-            "git -C /tmp/x log --oneline -3",
-            "git --no-pager diff HEAD~1",
-            "git --version",
-            "gh pr view 5",
-            "gh issue list --label bug",
-            "gh pr checks 5",
-            "gh api repos/o/r/pulls/5",
-            "gh api -X GET repos/o/r/issues -q .[0]",
-            "gh api graphql -f query='query { viewer { login } }'",
-            "gh search issues runtime",
-            "gh auth status",
-            "ls -la",
-        ):
-            with self.subTest(command=command):
-                self.assertIsNone(self.refusal(command))
 
-    def test_code_fed_to_a_shell_is_checked(self) -> None:
+    def test_only_github_mcp_writes_are_refused_among_other_tools(self) -> None:
         runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "bash <<'EOF'\ngit add -- example.txt\nEOF",
-            "sh <<EOF\ncd /tmp\ngh issue create --title x\nEOF",
-            "python3 - <<'EOF'\nimport subprocess\n"
-            "subprocess.run(['git', 'add', '--', 'example.txt'])\nEOF",
-            "cat <<'EOF' | bash\ngit commit -m x\nEOF",
-            "echo 'git add x' | bash",
-            "bash <<< 'git add x'",
-            "printf 'add\\nx\\n' | xargs git",
+        for tool in (
+            "mcp__github__create_issue",
+            "mcp__github__push_files",
+            "mcp__github__create_or_update_file",
+            "mcp__github__add_issue_comment",
         ):
-            with self.subTest(command=command):
-                self.assertIn("runtime promotion", self.refusal(command) or "")
-        for command in (
-            "bash <<'EOF'\ngit status --short\nls\nEOF",
-            "cat > /tmp/notes.txt <<'EOF'\ngit add -- example.txt\nEOF",
+            with self.subTest(tool=tool):
+                refused = wc.promotion_refusal(tool, {}, str(self.root))
+                self.assertIn("runtime promotion", refused or "")
+        for tool in (
+            "mcp__github__get_issue",
+            "mcp__github__list_commits",
+            "mcp__github__search_code",
+            "Read",
+            "Grep",
+            "Edit",
         ):
-            with self.subTest(command=command):
-                self.assertIsNone(self.refusal(command))
+            with self.subTest(tool=tool):
+                self.assertIsNone(wc.promotion_refusal(tool, {}, str(self.root)))
 
-    def test_writes_inside_shell_control_flow_are_refused(self) -> None:
+    def test_hook_refuses_every_bash_call_during_promotion(self) -> None:
         runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "if test -f example.txt; then git add -- example.txt; fi",
-            "if true; then echo x; else gh issue create --title x; fi",
-            'for f in a b; do git add "$f"; done',
-            "while true; do git commit -m x; break; done",
-            "! git commit -m x",
-            "{ git add x; }",
-            "test -f x && git add x",
-            "timeout 60 git push",
-            "sudo git commit -m x",
-            "bash <<'EOF'\nif true; then git add -- example.txt; fi\nEOF",
-        ):
-            with self.subTest(command=command):
-                self.assertIn("runtime promotion", self.refusal(command) or "")
-        for command in (
-            "if git status --short; then echo dirty; fi",
-            "for f in a b; do git log -1 -- $f; done",
-            "bash <<'EOF'\nif true; then git diff; fi\nEOF",
-        ):
-            with self.subTest(command=command):
-                self.assertIsNone(self.refusal(command))
-
-    def test_hook_refuses_writes_inside_shell_control_flow(self) -> None:
-        # The payloads from the third review of
-        # https://github.com/phaabe/live.moafunk.de/pull/592.
-        runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "if test -f example.txt; then git add -- example.txt; fi",
-            "bash <<'EOF'\nif test -f example.txt; then git add -- example.txt; fi\nEOF",
-        ):
+        for command in self.BASH_CALLS:
             with self.subTest(command=command):
                 out = self.run_hook(command)
                 self.assertEqual(out.returncode, 2, out.stderr)
                 self.assertIn("Runtime promotion", out.stderr)
 
-    def test_code_after_wrapper_arguments_is_checked(self) -> None:
-        runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "if true; then gtimeout 5 bash <<'EOF'\ngit add -- example.txt\nEOF\nfi",
-            "nice -n 5 bash <<'EOF'\ngit commit -m x\nEOF",
-            "sudo -u anton sh <<'EOF'\ngh issue create --title x\nEOF",
-            "env -i HOME=/tmp timeout 9 zsh -c 'git add x'",
-            "perl <<'EOF'\nsystem('git add x');\nEOF",
-            "node - <<'EOF'\nrequire('child_process').execSync('gh issue create');\nEOF",
-        ):
-            with self.subTest(command=command):
-                self.assertIn("runtime promotion", self.refusal(command) or "")
-        for command in (
-            "cat > /tmp/body.md <<'EOF'\nRun git add, then gh pr view.\nEOF",
-            "tee /tmp/x.txt <<'EOF' | wc -l\ngit add x\nEOF",
-        ):
-            with self.subTest(command=command):
-                self.assertIsNone(self.refusal(command))
-
-    def test_only_provably_read_only_commands_pass(self) -> None:
-        # An allowlist: what the check cannot prove read-only counts as a
-        # write, also when no git or gh word is visible.
-        runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "cat <<EOF\n$(git add -- example.txt)\nEOF",
-            "bash -s \"$(printf x)\" <<'EOF'\ngit add -- example.txt\nEOF",
-            "echo `git add x`",
-            "diff <(git add x) /tmp/y",
-            "x=it; g$x add example.txt",
-            "GIT_PAGER='git add x' git log",
-            "env GIT_PAGER=x git log",
-            "git -c core.pager='sh -c x' log",
-            "git -p log",
-            "git log --ext-diff",
-            "git grep -Osh x",
-            "gh myalias",
-            "python3 scripts/x.py",
-            "python3 - <<'EOF'\nprint(1)\nEOF",
-            "node - <<'EOF'\nconsole.log(1)\nEOF",
-            "gtimeout 5 bash <<'EOF'\ngit status --short\nEOF",
-            "./deploy.sh",
-            "npm test",
-            "make",
-            "eval ls",
-            "source ./env.sh",
-            "xargs ls",
-            "find . -name x -exec rm {} +",
-            "cat x | bash",
-            "bash script.sh",
-            "ls 'unclosed",
-        ):
-            with self.subTest(command=command):
-                self.assertIn("runtime promotion", self.refusal(command) or "")
-        for command in (
-            "ls -la && pwd",
-            "cd /tmp && git status --short | head -5",
-            "rg -n pattern scripts/ | wc -l",
-            "jq .x /tmp/a.json > /tmp/b.json",
-            "find . -name '*.py' -newer x",
-            "bash -c 'git log -1 --oneline'",
-            "sleep 1; date",
-            "cat <<EOF\nplain $HOME text\nEOF",
-        ):
-            with self.subTest(command=command):
-                self.assertIsNone(self.refusal(command))
-
-    def test_hook_refuses_substitutions_and_unreadable_headers(self) -> None:
-        # The payloads from the fifth review of
-        # https://github.com/phaabe/live.moafunk.de/pull/592.
-        runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "cat <<EOF\n$(git add -- example.txt)\nEOF",
-            "bash -s \"$(printf x)\" <<'EOF'\ngit add -- example.txt\nEOF",
-        ):
-            with self.subTest(command=command):
-                out = self.run_hook(command)
-                self.assertEqual(out.returncode, 2, out.stderr)
-                self.assertIn("Runtime promotion", out.stderr)
-
-    def test_hook_refuses_shell_heredoc_after_wrapper_arguments(self) -> None:
-        # The payload from the fourth review of
-        # https://github.com/phaabe/live.moafunk.de/pull/592.
-        runtime.begin_promotion("2" * 40, None)
-        command = (
-            "if true; then gtimeout 5 bash <<'EOF'\ngit add -- example.txt\nEOF\nfi"
-        )
-        out = self.run_hook(command)
-        self.assertEqual(out.returncode, 2, out.stderr)
-        self.assertIn("Runtime promotion", out.stderr)
-
-    def test_attached_field_and_method_flags_are_writes(self) -> None:
-        for args in (
-            ["repos/o/r/issues", "-ftitle=x"],
-            ["repos/o/r/issues", "-Ftitle=x"],
-            ["repos/o/r/issues", "-f", "title=x"],
-            ["repos/o/r/issues", "--field=title=x"],
-            ["repos/o/r/issues", "--raw-field", "title=x"],
-            ["-XPOST", "repos/o/r/issues"],
-            ["-X", "POST", "repos/o/r/issues"],
-            ["--method=PATCH", "repos/o/r/issues/1"],
-            ["graphql", "-fquery=mutation { x }"],
-        ):
-            with self.subTest(args=args):
-                self.assertTrue(wc.gh_api_may_write(args))
-        for args in (
-            ["repos/o/r/issues"],
-            ["-XGET", "repos/o/r/issues"],
-            ["graphql", "-fquery=query { viewer { login } }"],
-        ):
-            with self.subTest(args=args):
-                self.assertFalse(wc.gh_api_may_write(args))
-        flags, positional = wc.split_flags(["repos/o/r/issues", "-ftitle=x", "-XPOST"])
-        self.assertEqual((flags["-f"], flags["-X"], positional),
-                         (["title=x"], ["POST"], ["repos/o/r/issues"]))  # fmt: skip
-
-    def test_hook_refuses_shell_heredocs_and_attached_fields(self) -> None:
-        # The payloads from the second review of
-        # https://github.com/phaabe/live.moafunk.de/pull/592.
-        runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "bash <<'EOF'\ngit add -- example.txt\nEOF",
-            "python3 - <<'EOF'\nimport subprocess\n"
-            "subprocess.run(['git', 'add', '--', 'example.txt'])\nEOF",
-            "gh api repos/o/r/issues -ftitle=x",
-            "gh api repos/o/r/issues -Ftitle=x",
-        ):
-            with self.subTest(command=command):
-                out = self.run_hook(command)
-                self.assertEqual(out.returncode, 2, out.stderr)
-                self.assertIn("Runtime promotion", out.stderr)
-
-    def test_github_mcp_writes_are_refused_reads_pass(self) -> None:
-        runtime.begin_promotion("2" * 40, None)
+    def test_hook_matcher_covers_every_github_mcp_tool(self) -> None:
+        settings = json.loads((ROOT / ".claude/settings.json").read_text())
+        matchers = [
+            entry["matcher"]
+            for entry in settings["hooks"]["PreToolUse"]
+            if any("epic-guard.sh" in h["command"] for h in entry["hooks"])
+        ]
         for tool in ("mcp__github__create_issue", "mcp__github__push_files"):
-            refused = wc.promotion_refusal(tool, {"title": "x"}, str(self.root))
-            self.assertIn("runtime promotion", refused or "")
-        for tool in ("mcp__github__get_issue", "mcp__github__list_commits"):
-            self.assertIsNone(wc.promotion_refusal(tool, {}, str(self.root)))
+            with self.subTest(tool=tool):
+                self.assertTrue(any(re.fullmatch(m, tool) for m in matchers))
 
-    def test_hook_refuses_manual_git_and_issue_writes(self) -> None:
-        # The payloads from the review of
-        # https://github.com/phaabe/live.moafunk.de/pull/592: no admitted
-        # process, pinned hook, EPIC_SHARED_READER=0.
-        runtime.begin_promotion("2" * 40, None)
-        for command in (
-            "git add scripts/epic/runtime.py",
-            "git commit -m 'fix: x'",
-            "git rebase origin/dev/312-interim",
-            "gh issue create --title x --body y",
-        ):
-            with self.subTest(command=command):
-                out = self.run_hook(command)
-                self.assertEqual(out.returncode, 2, out.stderr)
-                self.assertIn("Runtime promotion", out.stderr)
-        self.assertEqual(self.run_hook("git status").returncode, 0)
+    def test_split_flags_reads_attached_short_values(self) -> None:
+        # The runner write check (tool_writes) must see -ftitle=x as a field.
+        flags, positional = wc.split_flags(["repos/o/r/issues", "-ftitle=x", "-XPOST"])
+        self.assertEqual(
+            (flags["-f"], flags["-X"], positional),
+            (["title=x"], ["POST"], ["repos/o/r/issues"]),
+        )
 
     def test_guard_refuses_before_any_github_read(self) -> None:
         self.action(action="fix", pr=5, sha=A)
@@ -894,7 +712,6 @@ class PromotionBarrier(Base):
         blocked = self.run_hook(write)
         self.assertEqual(blocked.returncode, 2, blocked.stderr)
         self.assertIn("Runtime promotion", blocked.stderr)
-        self.assertEqual(self.run_hook("ls").returncode, 0)
 
     def test_hook_loads_runner_checks_from_the_runtime_root(self) -> None:
         self.action(action="fix", pr=5, sha=A)
