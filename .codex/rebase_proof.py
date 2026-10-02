@@ -23,13 +23,32 @@ def sandbox_suite(
     if not cwd.is_relative_to(top.resolve()):
         raise ValueError("suite cwd must be inside the selected worktree")
     try:
-        with tempfile.TemporaryDirectory(prefix="rp-", dir="/private/tmp") as folder:
+        with tempfile.TemporaryDirectory(prefix="rp-") as temporary:
+            folder = str(Path(temporary).resolve())
+            # Apply these after Codex filters the environment and rewrites PATH.
+            # Apple's /usr/bin/git shim needs a cache in the read-only tmpdir.
+            suite_path = command_path
+            if sys.platform == "darwin":
+                # Only replace Git; the developer tools also ship an older Python.
+                tools = Path(folder) / "bin"
+                tools.mkdir()
+                git = Path("/Library/Developer/CommandLineTools/usr/bin/git")
+                (tools / "git").symlink_to(git if git.is_file() else "/usr/bin/git")
+                suite_path = f"{tools}:{suite_path}"
             name = f"proof_{uuid4().hex}"
             permission = (
                 f'permissions.{name}={{extends=":workspace",'
                 'filesystem={":slash_tmp"="read",":tmpdir"="read",'
                 f'{json.dumps(folder)}="write"}},network={{enabled=false}}}}'
             )
+            env = {
+                key: value
+                for key, value in policy.suite_env().items()
+                if not key.startswith(("CODEX_", "GIT_", "PYTHON", "EPIC_"))
+            }
+            env.update(TMPDIR=folder, PATH=command_path)
+            # Keep HOME for toolchain discovery; Python suites isolate it themselves.
+            home = env.get("HOME", str(Path.home()))
             command = [
                 str(codex),
                 "sandbox",
@@ -41,14 +60,16 @@ def sandbox_suite(
                 str(cwd),
                 "--allow-unix-socket",
                 folder,
+                "--",
+                "/usr/bin/env",
+                "-i",
+                f"HOME={home}",
+                f"TMPDIR={folder}",
+                f"PATH={suite_path}",
+                "CODEX_PROOF_SANDBOX=1",
+                "PYTHONDONTWRITEBYTECODE=1",
                 *suite["command"],
             ]
-            env = {
-                key: value
-                for key, value in policy.suite_env().items()
-                if not key.startswith(("CODEX_", "GIT_", "PYTHON", "EPIC_"))
-            }
-            env.update(TMPDIR=folder, PATH=command_path, CODEX_PROOF_SANDBOX="1")
             out = subprocess.run(
                 command,
                 cwd=cwd,
@@ -59,14 +80,25 @@ def sandbox_suite(
             )
     except FileNotFoundError as error:
         return {**entry, "exit": None, "result": "skipped", "tail": str(error)}
-    except subprocess.TimeoutExpired:
-        return {**entry, "exit": None, "result": "failed", "tail": "timed out"}
+    except subprocess.TimeoutExpired as error:
+        # TimeoutExpired can contain bytes even with text=True.
+        output = "".join(
+            part.decode(errors="replace") if isinstance(part, bytes) else part or ""
+            for part in (error.stdout, error.stderr)
+        )
+        return {
+            **entry,
+            "exit": None,
+            "result": "failed",
+            "tail": output + "\ntimed out",
+        }
     result = {0: "passed", 127: "skipped"}.get(out.returncode, "failed")
     return {
         **entry,
         "exit": out.returncode,
         "result": result,
-        "tail": (out.stdout + out.stderr)[-2000:],
+        # Keep the shared proof schema, but retain complete suite-command output.
+        "tail": out.stdout + out.stderr,
     }
 
 
