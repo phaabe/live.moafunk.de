@@ -222,9 +222,7 @@ def names_of(
 
 
 @contextmanager
-def built(
-    cls: type[unittest.TestCase], repo: Callable[[Any], Path]
-) -> Generator[Path]:
+def built(cls: type[unittest.TestCase], repo: Callable[[Any], Path]) -> Generator[Path]:
     """The checkout of one fixture, set up the way its own tests do."""
     case = cls(unittest.TestLoader().getTestCaseNames(cls)[0])
     case.setUp()

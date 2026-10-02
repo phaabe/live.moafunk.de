@@ -620,8 +620,12 @@ class ClaudeRunner(unittest.TestCase):
     def calls(self) -> list[list[str]]:
         return self.helper.calls_made()
 
+    def log(self) -> str:
+        path = self.helper.state / "claude.log"
+        return path.read_text() if path.exists() else "(no runner log)"
+
     def test_waiting_work_frees_the_claim_and_the_model_starts(self) -> None:
-        self.assertEqual(self.tick(changes_after_selection=False), 0)
+        self.assertEqual(self.tick(changes_after_selection=False), 0, self.log())
         self.assertEqual(len(self.helper.model_targets()), 1)
         prompt = (self.helper.root / "calls.jsonl.prompt").read_text()
         self.assertIn('"action": "claim"', prompt)
@@ -629,8 +633,8 @@ class ClaudeRunner(unittest.TestCase):
         self.assertIn(["gate", "record"], self.calls())
 
     def test_resumed_work_rejects_the_claim_before_the_model(self) -> None:
-        self.assertEqual(self.tick(changes_after_selection=True), 0)
-        self.assertEqual(self.helper.model_targets(), [])
+        self.assertEqual(self.tick(changes_after_selection=True), 0, self.log())
+        self.assertEqual(self.helper.model_targets(), [], self.log())
         # No success, cooldown or repeat record for the rejected claim.
         self.assertNotIn(["gate", "record"], self.calls())
         self.assertFalse((self.helper.state / "claude-gate-seen.json").exists())
@@ -718,6 +722,10 @@ class CodexRunner(unittest.TestCase):
                 "TEST_GH_MAP": str(self.map),
                 "EPIC_RECHECK_TIMEOUT_SECONDS": "30",
                 "EPIC_SELECT_TIMEOUT_SECONDS": "30",
+                # The harness allows 1s per snapshot refresh. Here one refresh
+                # starts the fake `gh` about 10 times (0.3-0.6s), so a loaded
+                # machine ran out of time ("GitHub reads took too long").
+                "EPIC_SNAPSHOT_REFRESH_SECONDS": "20",
             }
         )
 
@@ -740,20 +748,43 @@ class CodexRunner(unittest.TestCase):
         return (self.helper.state / "codex.log").read_text()
 
     def test_waiting_work_frees_the_claim_and_the_model_starts(self) -> None:
-        self.assertEqual(self.tick(changes_after_selection=False).returncode, 0)
+        self.assertEqual(
+            self.tick(changes_after_selection=False).returncode, 0, self.log()
+        )
         actions = self.model_actions()
         self.assertEqual([a["action"] for a in actions], ["claim"], self.log())
         self.assertEqual(actions[0]["issue"], f"{R}/521")
         self.assertTrue((self.helper.state / "codex-gate.json").exists())
 
     def test_resumed_work_rejects_the_claim_before_the_model(self) -> None:
-        self.assertEqual(self.tick(changes_after_selection=True).returncode, 0)
+        self.assertEqual(
+            self.tick(changes_after_selection=True).returncode, 0, self.log()
+        )
         self.assertEqual(self.model_actions(), [], self.log())
         self.assertIn("claim is stale on GitHub", self.log())
         # No success, cooldown or repeat record for the rejected claim.
         self.assertFalse((self.helper.state / "codex-gate.json").exists())
         self.assertFalse((self.helper.state / "codex-gate-seen.json").exists())
         self.assertFalse((self.helper.state / "codex-backoff.json").exists())
+
+    def test_slow_github_reads_still_finish_in_time(self) -> None:
+        # A loaded machine, made repeatable: each fake `gh` call takes 0.15s
+        # more. With the old 1s refresh budget this tick stopped in the
+        # selector with exit 75.
+        gh = self.helper.bin / "gh"
+        gh.write_text(
+            gh.read_text().replace(
+                "import json, os, shutil, sys\n",
+                "import json, os, shutil, sys, time\ntime.sleep(0.15)\n",
+                1,
+            )
+        )
+        self.assertIn("time.sleep(0.15)", gh.read_text())
+        self.assertEqual(
+            self.tick(changes_after_selection=False).returncode, 0, self.log()
+        )
+        self.assertNotIn("GitHub reads took too long", self.log())
+        self.assertEqual([a["action"] for a in self.model_actions()], ["claim"])
 
 
 if __name__ == "__main__":
