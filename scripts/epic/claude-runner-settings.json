@@ -3,7 +3,161 @@
     "ask": [
       "Bash(git push:*)",
       "Bash(git rebase:*)",
-      "Bash(git -*)"
+      "Bash(git -*)",
+      "Bash(git push:*)",
+      "Bash(git rebase:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(npm install:*)",
+      "Bash(npm i:*)",
+      "Bash(cargo install:*)",
+      "Bash(cargo add:*)",
+      "Bash(docker system prune:*)",
+      "mcp__gitnexus__rename",
+      "Bash(brew install:*)",
+      "Bash(brew uninstall:*)",
+      "Bash(docker volume rm:*)",
+      "Bash(kubectl delete:*)",
+      "Bash(npm publish:*)",
+      "Bash(pip install:*)",
+      "Bash(pnpm publish:*)",
+      "Bash(terraform apply:*)",
+      "Bash(terraform destroy:*)",
+      "Bash(yarn publish:*)"
+    ],
+    "deny": [
+      "Bash(curl * | bash)",
+      "Bash(curl * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(wget * | sh)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf $HOME)",
+      "Bash(git push --force origin main)",
+      "Bash(git push --force-with-lease origin main)",
+      "Bash(git push -f origin main)",
+      "Bash(mkfs.*)",
+      "Bash(dd if=* of=/dev/*)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.prod*)",
+      "Read(backend/.env)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Edit(**/.env)",
+      "Edit(backend/.env)",
+      "Edit(**/*.pem)",
+      "Edit(**/*.key)",
+      "Bash(dd if=/dev/zero of=/dev/sda*)",
+      "Bash(git push --force origin master)",
+      "Bash(git push -f origin master)",
+      "Bash(rm -rf /Users/*)",
+      "Edit(~/.aws/credentials)",
+      "Edit(~/.gnupg/**)",
+      "Edit(~/.ssh/**)",
+      "Edit(/etc/**)",
+      "Read(~/.aws/config)",
+      "Read(~/.aws/credentials)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.netrc)",
+      "Read(~/.secrets)",
+      "Read(~/.ssh/**)",
+      "Read(/etc/shadow)",
+      "Read(/etc/sudoers)"
+    ]
+  },
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "120000",
+    "BASH_MAX_TIMEOUT_MS": "600000",
+    "MCP_TIMEOUT": "30000",
+    "DISABLE_TELEMETRY": "1"
+  },
+  "includeCoAuthoredBy": false,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/block-dangerous.sh\"",
+            "timeout": 5,
+            "statusMessage": "Safety: scanning bash command..."
+          },
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/branch-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Branch-guard: checking protected branches..."
+          },
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/merge-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Merge-guard: PR-only merging..."
+          },
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/epic-guard.sh\"",
+            "timeout": 90,
+            "statusMessage": "Epic-guard: checking epic PR rules..."
+          },
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/gh-watch-guard.py\"",
+            "timeout": 5,
+            "statusMessage": "gh-watch-guard: checking for GraphQL CI watchers..."
+          },
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/nonascii-bash-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Non-ASCII guard: checking authored text..."
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__github__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/epic-guard.sh\"",
+            "timeout": 90,
+            "statusMessage": "Epic-guard: checking epic PR rules..."
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/nonascii-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Non-ASCII guard: checking the new text..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/auto-format.sh\"",
+            "timeout": 30,
+            "statusMessage": "Auto-formatting edited file..."
+          },
+          {
+            "type": "command",
+            "command": "\"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/auto-lint.sh\"",
+            "timeout": 60,
+            "statusMessage": "Linting edited file..."
+          }
+        ]
+      }
     ]
   }
 }

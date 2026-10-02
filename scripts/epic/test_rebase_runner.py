@@ -45,6 +45,7 @@ COPIED = (
     "scripts/epic/claude-tick.sh",
     "scripts/epic/claude-result-schema.json",
     "scripts/epic/claude-runner-settings.json",
+    "scripts/epic/claude-mcp-config.json",
     "scripts/epic/github_quota.py",
     "scripts/epic/agents.py",
     "scripts/epic/tick_events.py",
@@ -54,6 +55,7 @@ COPIED = (
     "scripts/epic/rebase_policy.py",
     "scripts/epic/git_gate.py",
     "scripts/epic/runtime.py",
+    "scripts/epic/lockhold",
     "scripts/epic/permission_gate.py",
     "scripts/epic/routing.py",
     ".codex/epic_lock.py",
@@ -258,6 +260,9 @@ class RebaseRunnerTest(unittest.TestCase):
             "PATH": f"{self.root / 'bin'}:{os.environ['PATH']}",
             "EPIC_STATE_DIR": str(self.state),
             "EPIC_LOCK_DIR": str(self.root / "locks"),
+            # Legacy runtime mode, explicit (runtime.py mode).
+            "EPIC_RUNTIME_LEGACY": "1",
+            "EPIC_RUNTIME_HOME": str(self.root / "runtime-home"),
             "EPIC_WORKTREE_DIR": str(self.wtdir),
             "EPIC_SHARED_READER": "0",
             "EPIC_TICK_TIMEOUT_SECONDS": "60",
@@ -273,7 +278,7 @@ class RebaseRunnerTest(unittest.TestCase):
         epic = self.repo / "scripts/epic"
         for rel in COPIED:
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / rel, self.repo / rel)
+            shutil.copy2(ROOT / rel, self.repo / rel)  # keeps the x bit (lockhold)
         for name, main in (
             ("next_action", SELECTOR_MAIN),
             ("runner_worktree", WORKTREE_MAIN),

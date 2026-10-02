@@ -55,7 +55,10 @@ FILES = {
         "scripts/epic/claude-result-schema.json",
         # Passed to the model only; the stub model ignores them.
         "scripts/epic/claude-runner-settings.json",
+        "scripts/epic/claude-mcp-config.json",
         "scripts/epic/permission_gate.py",
+        "scripts/epic/runtime.py",
+        "scripts/epic/lockhold",
         ".claude/commands/epic/epic-tick.md",
     ),
     "codex": (
@@ -212,7 +215,7 @@ class Routing(unittest.TestCase):
         epic = self.repo / "scripts/epic"
         for rel in (*COMMON, *FILES[self.agent]):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / rel, self.repo / rel)
+            shutil.copy2(ROOT / rel, self.repo / rel)  # keeps the x bit (lockhold)
         shutil.copyfile(
             ROOT / "scripts/epic/next_action.py", epic / "real_next_action.py"
         )
@@ -248,6 +251,9 @@ class Routing(unittest.TestCase):
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "EPIC_STATE_DIR": str(self.state),
             "EPIC_LOCK_DIR": str(self.root / "locks"),
+            # Legacy runtime mode, explicit (runtime.py mode).
+            "EPIC_RUNTIME_LEGACY": "1",
+            "EPIC_RUNTIME_HOME": str(self.root / "runtime-home"),
             "EPIC_WORKTREE_DIR": str(self.root / "worktrees"),
             "EPIC_SHARED_READER": self.reader,
             "EPIC_TICK_TIMEOUT_SECONDS": "30",

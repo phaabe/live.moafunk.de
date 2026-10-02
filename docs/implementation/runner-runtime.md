@@ -197,6 +197,49 @@ adapter, loaded only when the manifest validates. A missing or broken part
 fails. Parts only read, parse and hash: no
 model, app server, hook or MCP server.
 
+## Claude adapter
+
+https://github.com/phaabe/live.moafunk.de/issues/585. `scripts/epic/claude-tick.sh`:
+
+- **Mode first:** `runtime.py mode`; pinned (started by `epic-tick`) or
+  legacy (`EPIC_RUNTIME_LEGACY=1`), else exit 78. The exit trap is set before
+  the pause check, so every exit after admission releases it.
+- **Roots:** code from `EPIC_RUNTIME_ROOT` (pinned) or the script's checkout
+  (legacy); the repo root is `EPIC_TRUSTED_ROOT` (pinned, required) or the
+  checkout (legacy).
+- **Executables (pinned):** `python3`, `gtimeout` and `claude` from the
+  manifest, never `PATH`. A per-tick directory with `python3` and `gtimeout`
+  links comes first in `PATH`, so hooks, the gate and `lockhold` (which call
+  `python3` by name) get the manifest's binaries. Inline Python (`-c`) runs
+  with `-I`, so no module from the repo root (its working directory) loads.
+- **Refresh:** pinned runs `git fetch origin` in the repo root (worktrees
+  start from the current heads); legacy keeps the noise check and pull.
+- **Admission (both modes):** fd 17 on `runtime.lock`, tick ID
+  `claude-<seconds>-<pid>`; any non-zero `admit` exit ends the tick before
+  selection. `CLAUDE_CODE_SHELL_PREFIX=<code root>/scripts/epic/lockhold` in
+  both modes.
+- **Session, pinned:** the manifest `claude` with `DISABLE_AUTOUPDATER=1`,
+  `--setting-sources ''`, `--settings <runtime>/scripts/epic/claude-runner-settings.json`,
+  `--strict-mcp-config` and `scripts/epic/claude-mcp-config.json` plus the
+  gate. Right before the model, `runtime.py validate` runs again and the gate
+  config must name the manifest `python3` and the install's
+  `permission_gate.py`; else exit 78. In both modes the `lockhold` prefix
+  must be executable (a mode change keeps its hash valid, and a broken prefix
+  makes hooks fail open); else exit 78.
+- **Session, legacy:** today's session (project and user settings) plus the
+  three runner `ask` rules inline.
+- **Pinned settings** (`claude-runner-settings.json`): hook commands as
+  `"$EPIC_RUNTIME_ROOT/.claude/hooks/scripts/…"`; the kept hooks, rules and
+  env are listed in https://github.com/phaabe/live.moafunk.de/issues/585 and
+  checked by `scripts/epic/smoke_claude.py`.
+
+Install notes: launchd runs `<home>/bin/epic-tick claude`
+(`scripts/epic/launchd/de.moafunk.claude-epic-loop.plist.example`) with
+`EPIC_TRUSTED_ROOT` set to the runner checkout. **Before this adapter merges,
+add `EPIC_RUNTIME_LEGACY=1` to the live Claude launchd job;** without it every
+tick exits 78. The switch to the launcher comes with promotion
+(https://github.com/phaabe/live.moafunk.de/issues/587).
+
 ## Tick events
 
 Raw `start` and `finish` events carry `runtime`: `EPIC_RUNTIME_REVISION`
