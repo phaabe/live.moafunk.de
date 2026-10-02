@@ -10,6 +10,7 @@ import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from unittest.mock import patch
 import github_state as gs
 import next_action as na
 import permission_gate
+import runtime
 import write_checks as wc
 
 HERE = Path(__file__).resolve().parent
@@ -561,6 +563,182 @@ class Callers(Base):
         broken = self.hook(self.root / "missing")
         self.assertEqual(broken.returncode, 2)
         self.assertIn("unavailable", broken.stderr)
+
+
+class PromotionBarrier(Base):
+    """https://github.com/phaabe/live.moafunk.de/issues/584: the write barrier
+    during a runtime promotion, in the checks and in the hook (every session)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.locks = self.root / "locks"
+        env = patch.dict(
+            os.environ,
+            {
+                "EPIC_LOCK_DIR": str(self.locks),
+                "EPIC_RUNTIME_HOME": str(self.root / "rt"),
+            },
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
+    def refusal(self, command: str) -> str | None:
+        return wc.promotion_refusal("Bash", {"command": command}, str(self.root))
+
+    def test_marker_name_matches_runtime(self) -> None:
+        self.assertEqual(wc.PROMOTION_MARKER, runtime.MARKER)
+
+    def test_no_marker_costs_nothing(self) -> None:
+        with patch.object(wc, "promotion_writes", side_effect=AssertionError("parsed")):
+            self.assertIsNone(self.refusal("gh issue comment 5 --body x"))
+
+    # Bypasses Codex found in the reviews of
+    # https://github.com/phaabe/live.moafunk.de/pull/592, plus plain reads.
+    # Every one is a Bash call, so every one is refused.
+    BASH_CALLS = (
+        "git add -- example.txt",
+        "git commit -m 'fix: x'",
+        "git rebase origin/dev/312-interim",
+        "gh issue create --title x --body y",
+        "gh api repos/o/r/issues -ftitle=x",
+        "bash <<'EOF'\ngit add -- example.txt\nEOF",
+        "python3 - <<'EOF'\nimport subprocess\n"
+        "subprocess.run(['git', 'add', '--', 'example.txt'])\nEOF",
+        "if test -f example.txt; then git add -- example.txt; fi",
+        "if true; then gtimeout 5 bash <<'EOF'\ngit add -- example.txt\nEOF\nfi",
+        "cat <<EOF\n$(git add -- example.txt)\nEOF",
+        "bash -s \"$(printf x)\" <<'EOF'\ngit add -- example.txt\nEOF",
+        "printf 'git add -- example.txt\\n' |\nbash",
+        "LESSOPEN='|git add -- %s' less example.txt",
+        "# <<true\ngit config review.probe hit\ntrue",
+        "QUERY='mutation { x }'\ngh api graphql -f query=\"$QUERY\"",
+        "python3 scripts/x.py",
+        "ls -la",
+        "git status --short",
+        "gh pr view 5",
+    )
+
+    def test_every_bash_call_is_refused(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        for command in self.BASH_CALLS:
+            with self.subTest(command=command):
+                self.assertIn("runtime promotion", self.refusal(command) or "")
+
+    def test_only_github_mcp_writes_are_refused_among_other_tools(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        for tool in (
+            "mcp__github__create_issue",
+            "mcp__github__push_files",
+            "mcp__github__create_or_update_file",
+            "mcp__github__add_issue_comment",
+        ):
+            with self.subTest(tool=tool):
+                refused = wc.promotion_refusal(tool, {}, str(self.root))
+                self.assertIn("runtime promotion", refused or "")
+        for tool in (
+            "mcp__github__get_issue",
+            "mcp__github__list_commits",
+            "mcp__github__search_code",
+            "Read",
+            "Grep",
+            "Edit",
+        ):
+            with self.subTest(tool=tool):
+                self.assertIsNone(wc.promotion_refusal(tool, {}, str(self.root)))
+
+    def test_hook_refuses_every_bash_call_during_promotion(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        for command in self.BASH_CALLS:
+            with self.subTest(command=command):
+                out = self.run_hook(command)
+                self.assertEqual(out.returncode, 2, out.stderr)
+                self.assertIn("Runtime promotion", out.stderr)
+
+    def test_hook_matcher_covers_every_github_mcp_tool(self) -> None:
+        settings = json.loads((ROOT / ".claude/settings.json").read_text())
+        matchers = [
+            entry["matcher"]
+            for entry in settings["hooks"]["PreToolUse"]
+            if any("epic-guard.sh" in h["command"] for h in entry["hooks"])
+        ]
+        for tool in ("mcp__github__create_issue", "mcp__github__push_files"):
+            with self.subTest(tool=tool):
+                self.assertTrue(any(re.fullmatch(m, tool) for m in matchers))
+
+    def test_split_flags_reads_attached_short_values(self) -> None:
+        # The runner write check (tool_writes) must see -ftitle=x as a field.
+        flags, positional = wc.split_flags(["repos/o/r/issues", "-ftitle=x", "-XPOST"])
+        self.assertEqual(
+            (flags["-f"], flags["-X"], positional),
+            (["title=x"], ["POST"], ["repos/o/r/issues"]),
+        )
+
+    def test_guard_refuses_before_any_github_read(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        runtime.begin_promotion("2" * 40, None)
+        with patch.object(self.reader, "pull", side_effect=AssertionError("read")):
+            self.assertIn(
+                "runtime promotion", self.bash("gh pr comment 5 --body x") or ""
+            )
+
+    def test_permission_gate_refuses_merge_and_body_edit(self) -> None:
+        runtime.begin_promotion("2" * 40, None)
+        with patch.dict(os.environ, {"EPIC_SHARED_READER": "0"}):
+            for command in (
+                f"gh pr merge 5 --repo phaabe/live.moafunk.de --squash --match-head-commit {A}",
+                "gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/5 -F body=@/x",
+            ):
+                allowed, reason = permission_gate.decide("Bash", {"command": command})
+                self.assertEqual(
+                    (allowed, "runtime promotion" in reason), (False, True)
+                )
+
+    def run_hook(self, command: str, **env: str) -> subprocess.CompletedProcess[str]:
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "cwd": str(self.root),
+        }
+        return subprocess.run(
+            [sys.executable, str(ROOT / ".claude/hooks/scripts/epic_guard.py")],
+            input=json.dumps(payload), capture_output=True, text=True, timeout=30,
+            env={**os.environ, "EPIC_SHARED_READER": "0", "EPIC_TRUSTED_ROOT": str(ROOT), **env},
+        )  # fmt: skip
+
+    def test_hook_blocks_writes_in_every_session_during_promotion(self) -> None:
+        write = "gh issue comment 5 --body x"
+        self.assertEqual(self.run_hook(write).returncode, 0)
+        runtime.begin_promotion("2" * 40, None)
+        blocked = self.run_hook(write)
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        self.assertIn("Runtime promotion", blocked.stderr)
+
+    def test_hook_loads_runner_checks_from_the_runtime_root(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        pinned = self.root / "pinned"
+        (pinned / "scripts/epic").mkdir(parents=True)
+        (pinned / "scripts/epic/write_checks.py").write_text(
+            "def promotion_refusal(tool, tool_input, cwd):\n    return None\n"
+            "def guard(tool, tool_input, cwd, agent=None):\n    return 'pinned check ran'\n"
+        )
+        out = self.run_hook("git push origin feat/5-x", EPIC_SHARED_READER="1",
+                            EPIC_RUNTIME_ROOT=str(pinned))  # fmt: skip
+        self.assertEqual(out.returncode, 2, out.stderr)
+        self.assertIn("pinned check ran", out.stderr)
+
+    def test_hook_refuses_pinned_mode_without_runtime_root(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        runtime.write_configured(self.root / "rt")
+        out = self.run_hook("git push origin feat/5-x", EPIC_SHARED_READER="1")
+        self.assertEqual(out.returncode, 2, out.stderr)
+        self.assertIn("EPIC_RUNTIME_ROOT is not set", out.stderr)
+
+    def test_merge_guard_loads_from_the_runtime_root(self) -> None:
+        with patch.dict(os.environ, {"EPIC_RUNTIME_ROOT": "/pinned"}):
+            self.assertEqual(gs.trusted_root(), Path("/pinned"))
+        runtime.write_configured(self.root / "rt")
+        with self.assertRaises(gs.ConfigError):
+            gs.trusted_root()
 
 
 if __name__ == "__main__":

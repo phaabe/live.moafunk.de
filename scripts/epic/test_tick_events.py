@@ -5,6 +5,7 @@ from __future__ import annotations
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import contextlib
+from datetime import datetime
 import io
 import json
 from pathlib import Path
@@ -433,6 +434,63 @@ class ClaudeUsageTest(unittest.TestCase):
             self.assertEqual(run.wait(timeout=15), 0)
             outputs.append(json.loads(events.read_text())["usage"]["output"])
         self.assertEqual(outputs, [943, 10])
+
+
+class RuntimeRevisionTest(unittest.TestCase):
+    """https://github.com/phaabe/live.moafunk.de/issues/584: raw events name
+    the runtime; readers ignore it and checkpoints do not store it."""
+
+    REV = "a" * 40
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.file = self.root / "claude-ticks.jsonl"
+
+    def write(self, revision: str | None) -> list[dict[str, object]]:
+        env = {"EPIC_RUNTIME_REVISION": revision} if revision is not None else {}
+        with patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
+            tick_events.main(["start", "--file", str(self.file), "--tick", TICK])
+            tick_events.main(
+                ["finish", "--file", str(self.file), "--tick", TICK]
+                + ["--exit", "0", "--phase", "record"]
+            )
+        return [json.loads(x) for x in self.file.read_text().splitlines()]
+
+    def test_both_events_record_the_pinned_revision(self) -> None:
+        start, finish = self.write(self.REV)
+        self.assertEqual((start["runtime"], finish["runtime"]), (self.REV, self.REV))
+
+    def test_legacy_or_bad_revision_is_null(self) -> None:
+        for value in (None, "", "main", "A" * 40, "a" * 41):
+            self.file.unlink(missing_ok=True)
+            start, finish = self.write(value)
+            self.assertEqual((start["runtime"], finish["runtime"]), (None, None))
+
+    def test_event_reader_ignores_it_and_checkpoint_keys_stay_exact(self) -> None:
+        import monitor
+        import ticks
+
+        ledger = ticks.EventLedger(
+            "claude",
+            self.file,
+            self.root / "events-claude.json",
+            monitor.action_labels,
+            source="events",
+        )
+        self.file.write_text("")
+        ledger.update(0.0)  # baseline: only later lines count
+        self.write(self.REV)
+        ledger.update(
+            datetime.fromisoformat(TICK.replace("Z", "+00:00")).timestamp() + 3600
+        )
+        ledger.save()
+        self.assertEqual((ledger.rejected, len(ledger.ticks)), (0, 1))
+        saved = json.loads((self.root / "events-claude.json").read_text())
+        self.assertTrue(ticks.valid_checkpoint(saved))
+        self.assertEqual(set(saved["ticks"][0]), set(ticks.TICK_KEYS))
+        self.assertNotIn("runtime", json.dumps(saved))
 
 
 if __name__ == "__main__":

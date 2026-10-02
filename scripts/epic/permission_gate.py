@@ -27,6 +27,10 @@ checked fresh against GitHub right before it runs (write_checks.py): a push
 needs its PR open or its issue In progress for Claude, a merge the full merge
 guard. A failed read denies it.
 
+While a runtime promotion marker exists (runtime.py), merges, body edits and
+git writes are denied unless the caller runs inside a tick admitted before the
+promotion started.
+
 Speaks MCP over stdio: one JSON-RPC message per line, standard library only.
 """
 
@@ -79,6 +83,13 @@ def rule(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
         import git_gate
 
         return git_gate.decide(words)
+    if words[:2] in (["gh", "pr"], ["gh", "api"]):
+        # Imported here: standard library only (git_gate checks git itself).
+        import runtime
+
+        blocked = runtime.write_barrier()
+        if blocked:
+            return False, blocked
     if words[:3] == ["gh", "pr", "merge"]:
         return merge(words[3:])
     if words[:2] == ["gh", "api"]:

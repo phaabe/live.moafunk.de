@@ -32,6 +32,10 @@ caller names the agent (Claude or Codex); "this agent" below means that one.
 Common checks: pause file, focus, assignment (Executor line) and allowed
 target (the action's PR, issue or the PR's `Issue:` tickets).
 
+Promotion barrier (promotion_refusal, also for interactive sessions): while a
+runtime promotion marker exists, a write is refused unless the caller runs
+inside a tick admitted before the promotion started (runtime.py).
+
 Callers: .claude/hooks/scripts/epic_guard.py (every tool call) and
 permission_gate.py (push and merge prompts). guard() returns None to allow or
 the reason to refuse.
@@ -51,9 +55,11 @@ from typing import Any
 
 import github_state as gs
 import next_action as na
+import target_lock
 from github_quota import QuotaExhausted
 
 AGENT = "Claude"  # default for callers that name no agent
+PROMOTION_MARKER = "runtime-promotion.json"  # runtime.MARKER
 AGENTS = ("Claude", "Codex")
 PUSH_ACTIONS = {"fix", "fix-checks", "resolve-conflict", "continue", "claim"}
 CREATE_ACTIONS = {"continue", "claim"}
@@ -175,6 +181,11 @@ def read_file(path: str, cwd: str, stdin: str) -> str:
         return ""
 
 
+def attached_short(arg: str) -> bool:
+    """A short gh flag with its value attached: -ftitle=x, -XPOST."""
+    return not arg.startswith("--") and len(arg) > 2 and arg[:2] in GH_VALUE_FLAGS
+
+
 def split_flags(args: list[str]) -> tuple[dict[str, list[str]], list[str]]:
     """gh flags (every value kept) and positional arguments."""
     flags: dict[str, list[str]] = {}
@@ -185,6 +196,8 @@ def split_flags(args: list[str]) -> tuple[dict[str, list[str]], list[str]]:
         if arg.startswith("--") and "=" in arg:
             name, _, value = arg.partition("=")
             flags.setdefault(name, []).append(value)
+        elif attached_short(arg):
+            flags.setdefault(arg[:2], []).append(arg[2:])
         elif arg in GH_VALUE_FLAGS and i + 1 < len(args):
             flags.setdefault(arg, []).append(args[i + 1])
             i += 1
@@ -685,6 +698,37 @@ def load_action() -> dict[str, Any]:
     return action
 
 
+# --- promotion barrier ---
+
+
+def promotion_writes(tool_name: str, tool_input: dict[str, Any]) -> bool:
+    """Whether the tool call is refused outside an admitted tick while a
+    promotion runs: every Bash call (no parsing: shell code can hide a write
+    in too many ways) and every GitHub MCP tool except get_/list_/search_."""
+    if tool_name == "Bash":
+        return True
+    if tool_name.startswith("mcp__github__"):
+        operation = tool_name.removeprefix("mcp__github__")
+        return not operation.startswith(("get_", "list_", "search_"))
+    return False
+
+
+def promotion_refusal(
+    tool_name: str, tool_input: dict[str, Any], cwd: str
+) -> str | None:
+    """While a runtime promotion marker exists, refuse every Bash call and
+    every GitHub MCP write outside an admitted tick (promotion_writes). Runs
+    in every session that loads these checks, not only in runner ticks.
+    Without a marker it costs one stat()."""
+    if not (target_lock.lock_dir() / PROMOTION_MARKER).exists():
+        return None
+    import runtime  # only with a marker: runner fixtures copy this module alone
+
+    if not promotion_writes(tool_name, tool_input):
+        return None
+    return runtime.write_barrier()
+
+
 def guard(
     tool_name: str,
     tool_input: dict[str, Any],
@@ -696,6 +740,9 @@ def guard(
     runner's agent, Claude or Codex (default AGENT)."""
     if not active():
         return None
+    blocked = promotion_refusal(tool_name, tool_input, cwd)
+    if blocked:
+        return blocked
     try:
         writes = tool_writes(tool_name, tool_input, cwd)
     except Unclear as error:

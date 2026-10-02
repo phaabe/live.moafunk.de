@@ -12,7 +12,9 @@ file opened for appending, so lines of two writers never interleave.
                         [--claude-session ID --launch-dir D [--model-exit N]]
 
 Only enums, numbers, timestamps and the selector's action/PR/issue are
-written: no model text, prompts or commands.
+written: no model text, prompts or commands. Both events carry `runtime`: the
+pinned runtime revision (EPIC_RUNTIME_REVISION, 40-hex) or null in legacy
+mode. Event readers ignore unknown keys; tick checkpoints do not store it.
 
 `tokens` is Codex's `tokens used` count; it stays null for Claude. The Claude
 runner passes the session ID it gave `claude -p` (empty: no model started).
@@ -67,6 +69,7 @@ PHASES = (
     "unknown",
 )
 TICK = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+REVISION = re.compile(r"[0-9a-f]{40}")
 ACTION = re.compile(r"[a-z][a-z-]{0,31}")
 ISSUE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d{1,9}")
 TOKENS = re.compile(r"[0-9]{1,3}(?:,[0-9]{3}){0,4}|[0-9]{1,15}")
@@ -114,6 +117,12 @@ def open_regular(path: Path, flags: int) -> int:
 
 def read_regular(path: Path) -> BinaryIO:
     return os.fdopen(open_regular(path, os.O_RDONLY), "rb")
+
+
+def runtime_revision() -> str | None:
+    """The pinned runtime revision the launcher exported; None in legacy mode."""
+    value = os.environ.get("EPIC_RUNTIME_REVISION") or ""
+    return value if REVISION.fullmatch(value) else None
 
 
 def outcome_of(exit_code: int) -> str:
@@ -385,7 +394,13 @@ def write(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         if args.command == "start":
             append(
                 args.file,
-                {"v": 1, "event": "start", "tick": args.tick, "pid": os.getppid()},
+                {
+                    "v": 1,
+                    "event": "start",
+                    "tick": args.tick,
+                    "pid": os.getppid(),
+                    "runtime": runtime_revision(),
+                },
             )
             # The runner passes this back to finish, to find its token count.
             size = 0
@@ -413,6 +428,7 @@ def write(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                     else args.outcome
                 ),
                 "phase": args.phase,
+                "runtime": runtime_revision(),
                 **action_fields(args.action_file),
                 "tokens": tokens_since(args.log, args.since),
                 **(

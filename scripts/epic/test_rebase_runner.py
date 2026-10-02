@@ -53,6 +53,7 @@ COPIED = (
     "scripts/epic/tick_verify.py",
     "scripts/epic/rebase_policy.py",
     "scripts/epic/git_gate.py",
+    "scripts/epic/runtime.py",
     "scripts/epic/permission_gate.py",
     "scripts/epic/routing.py",
     ".codex/epic_lock.py",

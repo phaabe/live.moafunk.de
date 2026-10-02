@@ -38,6 +38,10 @@ approved abort retires the record. The lease push needs a finished rebase onto
 the recorded commit and the PR head still at S; the gate never renews S.
 Missing or stale context refuses the command.
 
+Promotion barrier (runtime.py): while a runtime promotion marker exists,
+every command except the read-only ones is refused unless the caller runs
+inside a tick admitted before the promotion started.
+
 Rebase policy (rebase_policy.py): a `resolve-conflict` rebase must go onto the
 target tip the runner pinned for this attempt (EPIC_ATTEMPT_FILE). Paths added
 during the recorded rebase are its conflicted files; the runner puts them into
@@ -55,6 +59,7 @@ from pathlib import Path
 from typing import Any
 
 import rebase_policy
+import runtime
 from github_quota import QuotaExhausted, run_gh
 from next_action import BASES, REPO, pr_author
 from runner_worktree import feature_branch, rebasing
@@ -113,6 +118,9 @@ def check(words: list[str]) -> str:
         top = readable(path)
         read_only(args, top)
         return f"read-only git {verb} in {top}"
+    blocked = runtime.write_barrier()
+    if blocked:
+        raise Refused(blocked)
     if verb == "push":
         return push(path, args)
     if verb == "rebase":
