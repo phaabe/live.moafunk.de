@@ -210,7 +210,8 @@ https://github.com/phaabe/live.moafunk.de/issues/585. `scripts/epic/claude-tick.
 - **Executables (pinned):** `python3`, `gtimeout` and `claude` from the
   manifest, never `PATH`. A per-tick directory with `python3` and `gtimeout`
   links comes first in `PATH`, so hooks, the gate and `lockhold` (which call
-  `python3` by name) get the manifest's binaries.
+  `python3` by name) get the manifest's binaries. Inline Python (`-c`) runs
+  with `-I`, so no module from the repo root (its working directory) loads.
 - **Refresh:** pinned runs `git fetch origin` in the repo root (worktrees
   start from the current heads); legacy keeps the noise check and pull.
 - **Admission (both modes):** fd 17 on `runtime.lock`, tick ID
@@ -222,7 +223,9 @@ https://github.com/phaabe/live.moafunk.de/issues/585. `scripts/epic/claude-tick.
   `--strict-mcp-config` and `scripts/epic/claude-mcp-config.json` plus the
   gate. Right before the model, `runtime.py validate` runs again and the gate
   config must name the manifest `python3` and the install's
-  `permission_gate.py`; else exit 78.
+  `permission_gate.py`; else exit 78. In both modes the `lockhold` prefix
+  must be executable (a mode change keeps its hash valid, and a broken prefix
+  makes hooks fail open); else exit 78.
 - **Session, legacy:** today's session (project and user settings) plus the
   three runner `ask` rules inline.
 - **Pinned settings** (`claude-runner-settings.json`): hook commands as

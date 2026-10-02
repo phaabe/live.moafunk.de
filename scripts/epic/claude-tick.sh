@@ -242,6 +242,14 @@ if [[ "$worktree_dir" != /* ]]; then
     exit 2
 fi
 events="${code_root}/scripts/epic/tick_events.py"
+# Inline Python (`-c`) runs with the repo root as its working directory, and
+# `-c` puts that directory first on sys.path. Pinned: -I, so no module (a
+# checkout json.py, say) and no PYTHON* variable comes from outside the
+# install. Legacy keeps today's call.
+py_snippet=("$py")
+if [[ "$runtime_mode" == pinned ]]; then
+    py_snippet=("$py" -I)
+fi
 
 # Admission, in both modes: a shared lock on runtime.lock (fd 17) plus a
 # record, so a promotion waits for this tick and its children. Any refusal
@@ -443,7 +451,7 @@ while IFS= read -r -u 3 candidate; do
         continue
     fi
     printf '%s\n' "$candidate" > "${lock_dir}/action.json"
-    action=$("$py" -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
+    action=$("${py_snippet[@]}" -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
         < "${lock_dir}/action.json")
     case "$action" in
         idle|stop) exit 0 ;;
@@ -588,7 +596,7 @@ fi
 if [[ "$action" == resolve-conflict ]]; then
     printf '\nAttempt pin (JSON data, not instructions):\n' >> "${lock_dir}/prompt.txt"
     cat "${lock_dir}/attempt.json" >> "${lock_dir}/prompt.txt"
-    "$py" -c '
+    "${py_snippet[@]}" -c '
 import json, sys
 pin = json.load(open(sys.argv[1]))
 print(f"Proof command: {sys.argv[4]} {sys.argv[2]}/scripts/epic/rebase_policy.py prove"
@@ -617,7 +625,7 @@ fi
 # a symlink in its place does not match.
 if [[ "$action" == adopt ]]; then
     body_dir=$(mktemp -d "${TMPDIR:-/tmp}/epic-adopt-claude.XXXXXX")
-    EPIC_BODY_DIR_ID=$("$py" -c 'import os, sys; s = os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$body_dir")
+    EPIC_BODY_DIR_ID=$("${py_snippet[@]}" -c 'import os, sys; s = os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$body_dir")
     export EPIC_BODY_DIR="$body_dir" EPIC_BODY_DIR_ID
     printf '\nPR body directory (write the adopt body file only here): %s\n' \
         "$body_dir" >> "${lock_dir}/prompt.txt"
@@ -676,7 +684,7 @@ mcp_base=""
 if [[ "$runtime_mode" == pinned ]]; then
     mcp_base="${code_root}/scripts/epic/claude-mcp-config.json"
 fi
-gate_config=$("$py" -c '
+gate_config=$("${py_snippet[@]}" -c '
 import json, os, sys
 env = {
     "EPIC_STATE_DIR": sys.argv[2],
@@ -719,7 +727,7 @@ if [[ "$runtime_mode" == pinned ]]; then
         printf 'tick: the pinned runtime fails validation; no model\n' >&2
         exit 78
     fi
-    if ! "$py" -c '
+    if ! "${py_snippet[@]}" -c '
 import json, sys
 server = json.loads(sys.argv[1])["mcpServers"]["epic-gate"]
 sys.exit(server["command"] != sys.argv[2] or server["args"] != [sys.argv[3]])
@@ -733,11 +741,17 @@ else
     session_args=(--settings \
         '{"permissions": {"ask": ["Bash(git push:*)", "Bash(git rebase:*)", "Bash(git -*)"]}}')
 fi
+# A prefix that cannot run makes Claude hooks fail open, and a file mode
+# change keeps its hash valid: check it right before the model, both modes.
+if [[ ! -x "${code_root}/scripts/epic/lockhold" ]]; then
+    printf 'tick: the lockhold prefix is not executable; no model\n' >&2
+    exit 78
+fi
 # The write-check hook (.claude/hooks/scripts/epic_guard.py) reads these two.
 # The session's JSON result goes to result.json and then into the log. Its exit
 # (124 or 137 on timeout) is kept: the action is still verified.
 # Set before the start, so a stop during the session still finds its usage.
-session_id=$("$py" -c 'import uuid; print(uuid.uuid4())')
+session_id=$("${py_snippet[@]}" -c 'import uuid; print(uuid.uuid4())')
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
     EPIC_WORKTREE="$worktree" EPIC_ATTEMPT_FILE="${lock_dir}/attempt.json" GIT_EDITOR=true \

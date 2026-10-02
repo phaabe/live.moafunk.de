@@ -190,6 +190,26 @@ class PinnedTick(RunnerHarness):
         self.assertFalse(Path(str(self.calls) + ".checkout-code").exists())
         self.assertEqual(len(self.made("claude")), 2)
 
+    def test_checkout_python_modules_never_load(self) -> None:
+        # Inline Python runs with the checkout as its working directory; a
+        # module there must not shadow the standard library.
+        for name in ("json", "uuid", "os"):
+            (self.checkout / f"{name}.py").write_text(
+                "import sys\nopen(sys.argv[0] if False else "
+                f"{str(self.calls)!r} + '.checkout-module', 'a').write('{name}\\n')\n"
+                "raise SystemExit(3)\n"
+            )
+        self.assertEqual(self.launch().wait(timeout=60), 0, self.log())
+        self.assertFalse(Path(str(self.calls) + ".checkout-module").exists())
+        self.assertEqual(len(self.made("claude")), 1)
+
+    def test_a_prefix_that_cannot_run_blocks_the_model(self) -> None:
+        # Only the file mode changes, so the manifest hash stays valid.
+        (self.install / "scripts/epic/lockhold").chmod(0o444)
+        self.assertEqual(self.launch().wait(timeout=60), 78, self.log())
+        self.assertIn("lockhold prefix is not executable", self.log())
+        self.assertEqual(self.made("claude"), [])
+
     def test_path_never_shadows_the_manifest_binaries(self) -> None:
         bin_dir = self.root / "bin"
         for name in ("python3", "gtimeout", "timeout"):

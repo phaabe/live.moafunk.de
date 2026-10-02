@@ -278,7 +278,7 @@ class RebaseRunnerTest(unittest.TestCase):
         epic = self.repo / "scripts/epic"
         for rel in COPIED:
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / rel, self.repo / rel)
+            shutil.copy2(ROOT / rel, self.repo / rel)  # keeps the x bit (lockhold)
         for name, main in (
             ("next_action", SELECTOR_MAIN),
             ("runner_worktree", WORKTREE_MAIN),

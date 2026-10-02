@@ -152,7 +152,7 @@ class RunnerHarness(unittest.TestCase):
         (bin_dir / "claude").write_text(
             "#!/bin/bash\n"
             # JSON-encode: the arguments include the gate's JSON config.
-            'python3 -c \'import json, sys; print(json.dumps(["claude", " ".join(sys.argv[1:])]))\' "$@" >> "$TEST_CALLS"\n'
+            'python3 -I -c \'import json, sys; print(json.dumps(["claude", " ".join(sys.argv[1:])]))\' "$@" >> "$TEST_CALLS"\n'
             'echo $$ > "$TEST_MODEL_PID"\n'
             'printf \'%s\\n%s\\n\' "${EPIC_ACTION_FILE:-}" "${EPIC_TRUSTED_ROOT:-}" > "$TEST_CALLS.modelenv"\n'
             'printf \'%s\' "${EPIC_WORKTREE:-}" > "$TEST_CALLS.worktree-env"\n'
@@ -160,9 +160,9 @@ class RunnerHarness(unittest.TestCase):
             'printf \'%s\' "${EPIC_BODY_DIR:-}" > "$TEST_CALLS.body-dir"\n'
             'printf \'%s\' "${EPIC_BODY_DIR_ID:-}" > "$TEST_CALLS.body-id"\n'
             'if [[ -n "${EPIC_BODY_DIR:-}" ]]; then\n'
-            "    python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mode & 0o777)' "
+            "    python3 -I -c 'import os, sys; print(os.stat(sys.argv[1]).st_mode & 0o777)' "
             '"$EPIC_BODY_DIR" > "$TEST_CALLS.body-mode"\n'
-            "    python3 -c 'import os, sys; s = os.stat(sys.argv[1]); "
+            "    python3 -I -c 'import os, sys; s = os.stat(sys.argv[1]); "
             'print(f"{s.st_dev}:{s.st_ino}")\' '
             '"$EPIC_BODY_DIR" > "$TEST_CALLS.body-inode"\n'
             "fi\n"
@@ -171,7 +171,7 @@ class RunnerHarness(unittest.TestCase):
             "printf '%s\\n%s\\n%s\\n' \"${CLAUDE_CODE_SHELL_PREFIX:-}\" "
             '"${DISABLE_AUTOUPDATER:-}" '
             # The binary `python3` really runs, resolved while the session runs.
-            "\"$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')\" "
+            "\"$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.executable))')\" "
             '> "$TEST_CALLS.session-env"\n'
             # A tool child started through the prefix, left running.
             'if [[ -n "${TEST_PREFIX_CHILD:-}" ]]; then\n'

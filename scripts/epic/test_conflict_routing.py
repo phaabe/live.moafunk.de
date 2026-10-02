@@ -215,7 +215,7 @@ class Routing(unittest.TestCase):
         epic = self.repo / "scripts/epic"
         for rel in (*COMMON, *FILES[self.agent]):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / rel, self.repo / rel)
+            shutil.copy2(ROOT / rel, self.repo / rel)  # keeps the x bit (lockhold)
         shutil.copyfile(
             ROOT / "scripts/epic/next_action.py", epic / "real_next_action.py"
         )
