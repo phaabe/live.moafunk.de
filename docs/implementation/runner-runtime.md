@@ -172,22 +172,19 @@ never counts. An unreadable marker or process table refuses. Callers:
 - `permission_gate.py`: `gh pr` and `gh api` prompts.
 - `write_checks.promotion_refusal()`: every Git or GitHub write, and every
   command that may write but cannot be read; also run first in `guard()`.
-  Its own classifier: `git` is a write unless the verb only reads
-  (`status`, `log`, `diff`, `show`, ...); `gh` is a write unless it is
-  `view`, `list`, `diff`, `checks`, `status`, `search`, or `gh api` as GET
-  (GraphQL: a query, not a mutation; attached flags like `-ftitle=x` count);
-  `mcp__github__*` is a write unless `get_`, `list_` or `search_`. A line
-  that runs a shell or interpreter (`bash`, `python3`, `xargs`, ...)
-  anywhere, also after wrapper arguments (`gtimeout 5 bash`), is a write
-  when it names `git` or `gh` (pipes, here strings, `-c`). A heredoc body
-  is read like a command when only `bash`/`sh`/`zsh` consume it; for any
-  other consumer it counts as a write when it names `git` or `gh`. It is
-  plain data only when every command of the line only reads it (`cat`,
-  `tee`, `jq`, ...). Control-flow keywords and
-  wrappers (`then`, `do`, `!`, `{`, `sudo`, `timeout`, ...) are skipped
-  before the command name; a `git` or `gh` word anywhere else in a command
-  counts as a write. Not covered: a script file run by name (`bash x.sh`),
-  whose content the check cannot see.
+  It is an allowlist: a Bash command passes only when it is provably
+  read-only. Every command must be a known reader (`ls`, `cat`, `rg`, `jq`,
+  `find` without `-exec`/`-delete`, ...), a `git` read verb (`status`,
+  `log`, `diff`, `show`, ...; not with `-c`, `-p`, pager or external-diff
+  options, or with an assignment like `GIT_PAGER=` before it), or a `gh`
+  read (`view`, `list`, `diff`, `checks`, `status`, `search`, `auth status`,
+  or `gh api` as GET; GraphQL only as a query). `bash`/`sh`/`zsh` pass only
+  with visible code that passes the same check (`-c CODE`, or alone with a
+  heredoc or here string). Anything else counts as a write: `$( )`,
+  backticks, process substitution, unreadable lines, other interpreters
+  (`python3`, `node`, `eval`, `xargs`, ...), scripts run by name and
+  unknown commands. `mcp__github__*` is a write unless `get_`, `list_` or
+  `search_`.
 - `.claude/hooks/scripts/epic_guard.py` rule 8: every session, also
   interactive. Without a marker it costs one `stat()`.
 - `lockhold`: a command outside an admitted tick does not start.

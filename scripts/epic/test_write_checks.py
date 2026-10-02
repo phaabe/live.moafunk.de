@@ -658,7 +658,6 @@ class PromotionBarrier(Base):
         for command in (
             "bash <<'EOF'\ngit status --short\nls\nEOF",
             "cat > /tmp/notes.txt <<'EOF'\ngit add -- example.txt\nEOF",
-            "python3 - <<'EOF'\nprint(1)\nEOF",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.refusal(command))
@@ -713,13 +712,71 @@ class PromotionBarrier(Base):
             with self.subTest(command=command):
                 self.assertIn("runtime promotion", self.refusal(command) or "")
         for command in (
-            "gtimeout 5 bash <<'EOF'\ngit status --short\nEOF",
             "cat > /tmp/body.md <<'EOF'\nRun git add, then gh pr view.\nEOF",
             "tee /tmp/x.txt <<'EOF' | wc -l\ngit add x\nEOF",
-            "node - <<'EOF'\nconsole.log(1)\nEOF",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.refusal(command))
+
+    def test_only_provably_read_only_commands_pass(self) -> None:
+        # An allowlist: what the check cannot prove read-only counts as a
+        # write, also when no git or gh word is visible.
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "cat <<EOF\n$(git add -- example.txt)\nEOF",
+            "bash -s \"$(printf x)\" <<'EOF'\ngit add -- example.txt\nEOF",
+            "echo `git add x`",
+            "diff <(git add x) /tmp/y",
+            "x=it; g$x add example.txt",
+            "GIT_PAGER='git add x' git log",
+            "env GIT_PAGER=x git log",
+            "git -c core.pager='sh -c x' log",
+            "git -p log",
+            "git log --ext-diff",
+            "git grep -Osh x",
+            "gh myalias",
+            "python3 scripts/x.py",
+            "python3 - <<'EOF'\nprint(1)\nEOF",
+            "node - <<'EOF'\nconsole.log(1)\nEOF",
+            "gtimeout 5 bash <<'EOF'\ngit status --short\nEOF",
+            "./deploy.sh",
+            "npm test",
+            "make",
+            "eval ls",
+            "source ./env.sh",
+            "xargs ls",
+            "find . -name x -exec rm {} +",
+            "cat x | bash",
+            "bash script.sh",
+            "ls 'unclosed",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("runtime promotion", self.refusal(command) or "")
+        for command in (
+            "ls -la && pwd",
+            "cd /tmp && git status --short | head -5",
+            "rg -n pattern scripts/ | wc -l",
+            "jq .x /tmp/a.json > /tmp/b.json",
+            "find . -name '*.py' -newer x",
+            "bash -c 'git log -1 --oneline'",
+            "sleep 1; date",
+            "cat <<EOF\nplain $HOME text\nEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.refusal(command))
+
+    def test_hook_refuses_substitutions_and_unreadable_headers(self) -> None:
+        # The payloads from the fifth review of
+        # https://github.com/phaabe/live.moafunk.de/pull/592.
+        runtime.begin_promotion("2" * 40, None)
+        for command in (
+            "cat <<EOF\n$(git add -- example.txt)\nEOF",
+            "bash -s \"$(printf x)\" <<'EOF'\ngit add -- example.txt\nEOF",
+        ):
+            with self.subTest(command=command):
+                out = self.run_hook(command)
+                self.assertEqual(out.returncode, 2, out.stderr)
+                self.assertIn("Runtime promotion", out.stderr)
 
     def test_hook_refuses_shell_heredoc_after_wrapper_arguments(self) -> None:
         # The payload from the fourth review of
