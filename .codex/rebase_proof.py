@@ -32,9 +32,8 @@ def sandbox_suite(
                 # Only replace Git; the developer tools also ship an older Python.
                 tools = Path(folder) / "bin"
                 tools.mkdir()
-                (tools / "git").symlink_to(
-                    "/Library/Developer/CommandLineTools/usr/bin/git"
-                )
+                git = Path("/Library/Developer/CommandLineTools/usr/bin/git")
+                (tools / "git").symlink_to(git if git.is_file() else "/usr/bin/git")
                 suite_path = f"{tools}:{suite_path}"
             name = f"proof_{uuid4().hex}"
             permission = (

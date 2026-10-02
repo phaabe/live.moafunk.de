@@ -13,10 +13,11 @@ import sys
 from typing import Any
 
 
-# Pin the real binary: Apple's /usr/bin/git shim writes an xcrun cache.
+# Prefer the real binary: Apple's /usr/bin/git shim writes an xcrun cache.
 GIT = (
     "/Library/Developer/CommandLineTools/usr/bin/git"
     if sys.platform == "darwin"
+    and Path("/Library/Developer/CommandLineTools/usr/bin/git").is_file()
     else "/usr/bin/git"
 )
 BASES = {"dev/312-interim"}

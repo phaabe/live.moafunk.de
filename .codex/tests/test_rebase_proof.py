@@ -116,9 +116,26 @@ print(json.dumps({'env': before, 'git': shutil.which('git'),
         self.assertEqual(seen["python"], shutil.which("python3"))
         if sys.platform == "darwin":
             self.assertEqual(seen["git_resolved"], str(Path(seen["pinned"]).resolve()))
+            clt_git = Path("/Library/Developer/CommandLineTools/usr/bin/git")
             self.assertEqual(
-                seen["pinned"], "/Library/Developer/CommandLineTools/usr/bin/git"
+                seen["pinned"], str(clt_git) if clt_git.is_file() else "/usr/bin/git"
             )
+
+    def test_git_symlink_falls_back_when_command_line_tools_are_missing(self) -> None:
+        with (
+            patch.object(sys, "platform", "darwin"),
+            patch.object(Path, "is_file", return_value=False),
+        ):
+            result = self.run_suite(
+                [
+                    sys.executable,
+                    "-c",
+                    "import pathlib, shutil; "
+                    "print(pathlib.Path(shutil.which('git')).resolve(strict=True))",
+                ]
+            )
+        self.assertEqual(result["result"], "passed", result["tail"])
+        self.assertEqual(result["tail"].strip(), str(Path("/usr/bin/git").resolve()))
 
     def test_success_and_failure_keep_complete_stdout_and_stderr(self) -> None:
         for code, expected in ((0, "passed"), (7, "failed")):
@@ -180,7 +197,8 @@ class ProofSandboxTests(unittest.TestCase):
                 protected[0], target_is_directory=True
             )
             codex = Path(shutil.which("codex")).resolve()
-            user_temp = Path(os.confstr("CS_DARWIN_USER_TEMP_DIR")).resolve()
+            # Python may omit the name for macOS's _CS_DARWIN_USER_TEMP_DIR.
+            user_temp = Path(os.confstr(65537)).resolve()
             denied_temp = user_temp / f"{root.name}-denied"
             socket_path = root / "blocked.sock"
             listener = socket.socket(socket.AF_UNIX)

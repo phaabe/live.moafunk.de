@@ -13,13 +13,31 @@ from feature_git import GIT  # noqa: E402
 
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "feature_git.py"
+
+
+class GitBinaryTests(unittest.TestCase):
+    def test_git_selection_with_and_without_command_line_tools(self) -> None:
+        clt_git = "/Library/Developer/CommandLineTools/usr/bin/git"
+        for platform, installed, expected in (
+            ("darwin", True, clt_git),
+            ("darwin", False, "/usr/bin/git"),
+            ("linux", True, "/usr/bin/git"),
+        ):
+            with (
+                self.subTest(platform=platform, installed=installed),
+                patch.object(sys, "platform", platform),
+                patch.object(Path, "is_file", return_value=installed),
+            ):
+                self.assertEqual(runpy.run_path(str(SCRIPT))["GIT"], expected)
 
 
 class FeatureGitTests(unittest.TestCase):
