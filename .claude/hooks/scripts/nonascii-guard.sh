@@ -17,6 +17,8 @@ set -uo pipefail
 # Any byte above 0x7F. A byte range, not `grep -P`: the macOS grep has no -P,
 # and its error (exit 2) would let every write through.
 NONASCII=$'[\x80-\xff]'
+# Checks read their text from a here string, not `printf | grep -q`: with
+# pipefail an early match makes printf fail (SIGPIPE) and the check pass.
 
 # Optional global override
 if [ "${CLAUDE_ALLOW_NONASCII:-0}" = "1" ]; then
@@ -39,7 +41,7 @@ CONTENT=$(printf '%s' "$INPUT" | jq -r '
 [ -z "$CONTENT" ] && exit 0
 
 # Any byte outside the 7-bit ASCII range? (tab/newline are ASCII, so allowed.)
-if ! printf '%s' "$CONTENT" | LC_ALL=C grep -q "$NONASCII"; then
+if ! LC_ALL=C grep -q "$NONASCII" <<< "$CONTENT"; then
   exit 0
 fi
 

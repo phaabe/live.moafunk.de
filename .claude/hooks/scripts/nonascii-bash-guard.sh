@@ -22,6 +22,8 @@ set -uo pipefail
 # Any byte above 0x7F. A byte range, not `grep -P`: the macOS grep has no -P,
 # and its error (exit 2) would let every write through.
 NONASCII=$'[\x80-\xff]'
+# Checks read their text from a here string, not `printf | grep -q`: with
+# pipefail an early match makes printf fail (SIGPIPE) and the check pass.
 
 # Optional global override (shared with nonascii-guard.sh)
 if [ "${CLAUDE_ALLOW_NONASCII:-0}" = "1" ]; then
@@ -36,22 +38,22 @@ CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // .toolInput.command //
 # Tolerate leading env vars and `git -c key=val` / global flags before the verb.
 is_authoring=0
 # git commit (with or without --amend); same shape as branch-guard.sh
-if printf '%s' "$CMD" | grep -E -q -- '(^|[[:space:];|&(])git([[:space:]]+(-[A-Za-z]|--[A-Za-z][A-Za-z=._/-]*|-c[[:space:]][^[:space:]]+))*[[:space:]]+commit($|[[:space:]])'; then
+if grep -E -q -- '(^|[[:space:];|&(])git([[:space:]]+(-[A-Za-z]|--[A-Za-z][A-Za-z=._/-]*|-c[[:space:]][^[:space:]]+))*[[:space:]]+commit($|[[:space:]])' <<< "$CMD"; then
   is_authoring=1
 fi
 # glab mr|issue create|update|note
-if printf '%s' "$CMD" | grep -E -q -- '(^|[[:space:];|&(])glab[[:space:]]+(mr|issue)[[:space:]]+(create|update|note)($|[[:space:]])'; then
+if grep -E -q -- '(^|[[:space:];|&(])glab[[:space:]]+(mr|issue)[[:space:]]+(create|update|note)($|[[:space:]])' <<< "$CMD"; then
   is_authoring=1
 fi
 # gh pr|issue create|edit|comment
-if printf '%s' "$CMD" | grep -E -q -- '(^|[[:space:];|&(])gh[[:space:]]+(pr|issue)[[:space:]]+(create|edit|comment)($|[[:space:]])'; then
+if grep -E -q -- '(^|[[:space:];|&(])gh[[:space:]]+(pr|issue)[[:space:]]+(create|edit|comment)($|[[:space:]])' <<< "$CMD"; then
   is_authoring=1
 fi
 
 [ "$is_authoring" -eq 0 ] && exit 0
 
 # Any byte outside the 7-bit ASCII range? (tab/newline are ASCII, so allowed.)
-if ! printf '%s' "$CMD" | LC_ALL=C grep -q "$NONASCII"; then
+if ! LC_ALL=C grep -q "$NONASCII" <<< "$CMD"; then
   exit 0
 fi
 
