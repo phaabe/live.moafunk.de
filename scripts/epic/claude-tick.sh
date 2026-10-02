@@ -523,7 +523,7 @@ fi
 # in this directory, identified by device and inode: a replaced directory or
 # a symlink in its place does not match.
 if [[ "$action" == adopt ]]; then
-    body_dir=$(mktemp -d /tmp/epic-adopt-claude.XXXXXX)
+    body_dir=$(mktemp -d "${TMPDIR:-/tmp}/epic-adopt-claude.XXXXXX")
     EPIC_BODY_DIR_ID=$(python3 -c 'import os, sys; s = os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$body_dir")
     export EPIC_BODY_DIR="$body_dir" EPIC_BODY_DIR_ID
     printf '\nPR body directory (write the adopt body file only here): %s\n' \

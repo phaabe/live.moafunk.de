@@ -345,7 +345,7 @@ class ClaudeTickTest(RunnerHarness):
             self.run_tick(TEST_CANDIDATES=json.dumps(adopt)).wait(timeout=30), 0
         )
         body_dir = Path(str(self.calls) + ".body-dir").read_text()
-        self.assertTrue(body_dir.startswith("/tmp/epic-adopt-claude."))
+        self.assertTrue(Path(body_dir).name.startswith("epic-adopt-claude."))
         self.assertEqual(Path(str(self.calls) + ".body-mode").read_text(), "448\n")
         (session,) = self.model_targets()
         self.assertIn(f"--add-dir {body_dir}", session)
@@ -362,6 +362,22 @@ class ClaudeTickTest(RunnerHarness):
         )
         self.assertFalse(Path(body_dir).exists())
 
+    def test_adopt_body_dir_is_under_tmpdir(self) -> None:
+        # The rebase proof sandbox allows writes only under its TMPDIR.
+        temporary = self.root / "adopt temp"
+        temporary.mkdir()
+        adopt = {"action": "adopt", "reason": "t", "pr": 1, "sha": "a" * 40}
+        self.assertEqual(
+            self.run_tick(
+                TEST_CANDIDATES=json.dumps(adopt), TMPDIR=str(temporary)
+            ).wait(timeout=30),
+            0,
+        )
+        body_dir = Path(Path(str(self.calls) + ".body-dir").read_text())
+        self.assertEqual(body_dir.parent, temporary)
+        self.assertTrue(body_dir.name.startswith("epic-adopt-claude."))
+        self.assertFalse(body_dir.exists())
+
     def test_other_actions_get_no_body_dir(self) -> None:
         # An inherited value never reaches the model or the gate.
         inherited = str(self.root)
@@ -376,7 +392,7 @@ class ClaudeTickTest(RunnerHarness):
         self.assertTrue(Path(inherited).is_dir())
         (session,) = self.model_targets()
         self.assertNotIn("EPIC_BODY_DIR", session)
-        self.assertNotIn("--add-dir /tmp/epic-adopt", session)
+        self.assertNotIn("epic-adopt-claude.", session)
 
     def test_fix_runs_opus_and_records_the_gate(self) -> None:
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
