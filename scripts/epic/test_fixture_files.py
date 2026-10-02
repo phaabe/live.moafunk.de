@@ -32,9 +32,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DIRS = ("scripts/epic", ".codex")
-# Repository files a runner script names: `scripts/epic/x.py`, `${repo_root}/.codex/x.md`.
+# Repository files a runner script names: `scripts/epic/x.py`, `${repo_root}/.codex/x.md`,
+# `${code_root}/scripts/epic/x.py` (the pinned runtime or the checkout).
 SCRIPT_PATH = re.compile(
-    r"(?<![\w.$}/-])(?:\$\{repo_root\}/|\$repo_root/)?"
+    r"(?<![\w.$}/-])(?:\$\{(?:repo|code)_root\}/|\$(?:repo|code)_root/)?"
     r"((?:scripts/epic|\.codex|\.claude)/[\w./-]+\.(?:py|sh|json|md))"
 )
 # Imports in Python snippets inside a runner script (`python3 -c`, heredocs).
