@@ -13,6 +13,7 @@ import isolated_env  # noqa: F401  (first: hides live runner state)
 import fcntl
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -353,6 +354,51 @@ class LauncherTest(TempCase):
         self.assertEqual(out.returncode, runtime.BLOCKED, out.stderr)
         self.assertIn("another revision", out.stderr)
         self.assertFalse((self.tmp / "out").exists())
+
+    def test_promotion_between_validation_and_admission_refuses_the_tick(self) -> None:
+        # The launcher validates revision A and starts its entry. Before the
+        # entry is admitted, a promotion switches the pin to B and ends. The
+        # entry must not be admitted: it would run the old runtime.
+        go, ready = self.tmp / "go", self.tmp / "ready"
+        entry = (
+            "#!/bin/bash\n"
+            f'touch "{ready}"\n'
+            f'while [[ ! -e "{go}" ]]; do sleep 0.02; done\n'
+            'exec 17>>"$EPIC_LOCK_DIR/runtime.lock"\n'
+            'python3 "$EPIC_RUNTIME_ROOT/scripts/epic/runtime.py" admit --fd 17 '
+            "--tick-id late --agent claude --pid $$\n"
+        )
+        for switch in (False, True):
+            with self.subTest(switch=switch):
+                make_writable(self.tmp)
+                for path in (self.home, self.locks, go, ready):
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink(missing_ok=True)
+                install = self.install(files={"scripts/epic/claude-tick.sh": entry})
+                digest = runtime.sha256_file(install / runtime.MANIFEST)
+                runtime.write_pin(self.home, REV, digest, "p1", None)
+                self.locks.mkdir(parents=True)
+                launcher = subprocess.Popen(
+                    [sys.executable, str(LAUNCHER), "claude"], env=dict(os.environ),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )  # fmt: skip
+                self.assertTrue(wait_until(ready.exists), launcher.stderr)
+                if switch:
+                    other = self.install(REV2)
+                    digest = runtime.sha256_file(other / runtime.MANIFEST)
+                    runtime.write_pin(self.home, REV2, digest, "p2", None)
+                go.write_text("")
+                _, err = launcher.communicate(timeout=60)
+                record = self.locks / "admitted/late.json"
+                if switch:
+                    self.assertEqual(launcher.returncode, runtime.BUSY, err)
+                    self.assertIn("the pin names", err)
+                    self.assertFalse(record.exists())
+                else:
+                    self.assertEqual(launcher.returncode, 0, err)
+                    self.assertTrue(record.exists())
 
     def test_legacy_flag_and_bad_usage_block(self) -> None:
         self.pinned()

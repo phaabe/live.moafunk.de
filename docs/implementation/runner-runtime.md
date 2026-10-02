@@ -128,6 +128,10 @@ Tick admission (`runtime.py admit --fd 17 --tick-id ID --agent A --pid $$`):
 1. `LOCK_SH` on fd 17 without waiting; busy → exit 75.
 2. Write the admission record with the tick shell's pid and start time.
 3. Check the marker; present or unreadable → remove the record, exit 75.
+4. Pinned ticks only: check that `EPIC_RUNTIME_REVISION` and the hash of
+   `EPIC_RUNTIME_MANIFEST` still match the pin; otherwise remove the record,
+   exit 75. The launcher reads the pin before any lock, so a promotion can
+   finish in between; under `LOCK_SH` the pin cannot change.
 
 The tick keeps fd 17 open through verification, review delivery and exit
 cleanup, then runs `runtime.py release --tick-id ID`. Records of ticks that
@@ -176,8 +180,11 @@ never counts. An unreadable marker or process table refuses. Callers:
   that runs a shell or interpreter (`bash`, `python3`, `xargs`, ...) is a
   write when it names `git` or `gh` (pipes, here strings, `-c`); its
   heredoc body is read like a command (shells) or counts as a write when it
-  names `git` or `gh` (other interpreters). Not covered: a script file run
-  by name (`bash x.sh`), whose content the check cannot see.
+  names `git` or `gh` (other interpreters). Control-flow keywords and
+  wrappers (`then`, `do`, `!`, `{`, `sudo`, `timeout`, ...) are skipped
+  before the command name; a `git` or `gh` word anywhere else in a command
+  counts as a write. Not covered: a script file run by name (`bash x.sh`),
+  whose content the check cannot see.
 - `.claude/hooks/scripts/epic_guard.py` rule 8: every session, also
   interactive. Without a marker it costs one `stat()`.
 - `lockhold`: a command outside an admitted tick does not start.

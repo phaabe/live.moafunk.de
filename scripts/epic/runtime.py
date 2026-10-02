@@ -709,8 +709,9 @@ def lock_shared(fd: int) -> bool:
 def admit(fd: int, tick_id: str, agent: str, pid: int) -> str | None:
     """None when admitted, else why not. The caller opened `fd` on runtime.lock.
 
-    Order: LOCK_SH, admission record, then the marker check. On refusal the
-    record is removed; the caller closes `fd`, which frees the lock.
+    Order: LOCK_SH, admission record, the marker check, then the pin check.
+    On refusal the record is removed; the caller closes `fd`, which frees the
+    lock.
     """
     if not TICK_ID.fullmatch(tick_id):
         raise ValueError(f"bad tick id {tick_id!r}")
@@ -735,6 +736,36 @@ def admit(fd: int, tick_id: str, agent: str, pid: int) -> str | None:
     if marker is not None:
         path.unlink(missing_ok=True)
         return f"runtime promotion {marker.get('promotion_id')} in progress"
+    stale = stale_runtime()
+    if stale:
+        path.unlink(missing_ok=True)
+    return stale
+
+
+def stale_runtime(env: Mapping[str, str] | None = None) -> str | None:
+    """Why a pinned tick runs another revision than the pin, else None.
+
+    The launcher reads the pin before it takes any lock. A promotion can
+    finish in between, so admission checks again under LOCK_SH, while no
+    promotion can switch the pin. Legacy ticks (no EPIC_RUNTIME_ROOT) have
+    no pin to match.
+    """
+    values = os.environ if env is None else env
+    if not values.get("EPIC_RUNTIME_ROOT"):
+        return None
+    try:
+        pin = read_pin(home(values))
+    except RuntimeBlocked as error:
+        return str(error)
+    revision = values.get("EPIC_RUNTIME_REVISION")
+    if revision != pin["revision"]:
+        return f"the tick runs revision {revision}, the pin names {pin['revision']}"
+    try:
+        digest = sha256_file(Path(values.get("EPIC_RUNTIME_MANIFEST") or ""))
+    except OSError as error:
+        return f"the tick's manifest is unreadable: {error}"
+    if digest != pin["manifest_sha256"]:
+        return "the tick's manifest does not match the pin"
     return None
 
 
