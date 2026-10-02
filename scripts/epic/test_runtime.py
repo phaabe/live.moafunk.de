@@ -160,6 +160,35 @@ class ManifestTest(TempCase):
         code, failures = runtime.validate(install / runtime.MANIFEST, contract=2)
         self.assertIn("contract", [f["item"] for f in failures])
 
+    def test_git_executable_is_bound(self) -> None:
+        git = self.tmp / "git"
+        git.write_text("v1")
+        install = self.home / "revisions" / REV
+        install.mkdir(parents=True)
+        runtime.build_manifest(
+            install, REV, {"git": {"path": str(git), "version": "2.50.1"}}
+        )  # fmt: skip
+        read_only(install)
+        self.assertEqual(self.validate(install), (runtime.OK, []))
+        git.write_text("v2")
+        self.assertEqual(
+            self.validate(install), (runtime.MISMATCH, ["executables[git]"])
+        )
+        git.unlink()
+        self.assertEqual(
+            self.validate(install), (runtime.MISMATCH, ["executables[git]"])
+        )
+
+    def test_unknown_executable_is_refused(self) -> None:
+        install = self.install(sealed=False)
+        path = install / runtime.MANIFEST
+        data = json.loads(path.read_text())
+        spec = dict(data["executables"]["python3"])
+        path.write_text(json.dumps({**data, "executables": {"git2": spec}}))
+        code, failures = runtime.validate(path)
+        self.assertEqual(code, runtime.UNREADABLE)
+        self.assertIn("unknown executable git2", failures[0]["actual"])
+
     def test_helper_config_values_are_bound(self) -> None:
         helper, config = self.tmp / "helper.py", self.tmp / "helper.json"
         helper.write_text("print()")
