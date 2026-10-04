@@ -10,7 +10,7 @@ because in mode 0 there is no recheck at all.
 
 Unchanged: COMMON and FILES below. Stubs (run as scripts only, no real module
 imports them): next_action.py, gitnexus_noise.py, runner_worktree.py,
-tick_verify.py, and the Codex steps feature_worktree.py, assignment.py,
+tick_verify.py, close_issue.py, and the Codex steps feature_worktree.py, assignment.py,
 review_delivery.py and review_worktree.py. test_fixture_files.py checks that
 the runner finds every file it calls.
 """
@@ -220,7 +220,12 @@ class Routing(unittest.TestCase):
             ROOT / "scripts/epic/next_action.py", epic / "real_next_action.py"
         )
         (epic / "next_action.py").write_text(SELECTOR)
-        for stub in ("gitnexus_noise.py", "runner_worktree.py", "tick_verify.py"):
+        for stub in (
+            "gitnexus_noise.py",
+            "runner_worktree.py",
+            "tick_verify.py",
+            "close_issue.py",
+        ):
             (epic / stub).write_text(EXIT_0)
         (self.repo / ".codex/feature_worktree.py").write_text(
             f"print({str(self.repo)!r})\n"

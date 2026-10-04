@@ -569,22 +569,30 @@ class ClaudeTickTest(RunnerHarness):
         self.assertEqual(queue, [model_at, "queue", "--pr", "7"])
         self.assertEqual(after, [verify_at, "retry"])
 
-    def test_merge_session_that_ends_early_keeps_the_queued_close(self) -> None:
+    def test_merge_session_quota_wait_keeps_the_queued_close(self) -> None:
         merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}
-        for name, env, code in (
-            ("quota wait during session", {"TEST_MODEL_WAIT": "1"}, 75),
-            ("failed session", {"TEST_MODEL_EXIT": "1"}, 1),
-        ):
-            with self.subTest(name):
-                self.setUp()
-                result = self.run_tick(TEST_CANDIDATES=json.dumps(merge), **env)
-                self.assertEqual(result.wait(timeout=30), code)
-                # Queued before the model; no GitHub call after it.
-                self.assertEqual(
-                    [c[1:] for c in self.close_calls()],
-                    [["retry"], ["queue", "--pr", "7"]],
-                )
-                self.assertNotIn(["verify", "--since"], self.calls_made())
+        result = self.run_tick(TEST_CANDIDATES=json.dumps(merge), TEST_MODEL_WAIT="1")
+        self.assertEqual(result.wait(timeout=30), 75)
+        # Queued before the model; no GitHub call after it.
+        self.assertEqual(
+            [c[1:] for c in self.close_calls()],
+            [["retry"], ["queue", "--pr", "7"]],
+        )
+        self.assertNotIn(["verify", "--since"], self.calls_made())
+
+    def test_failed_merge_session_still_runs_its_close(self) -> None:
+        # The session may have merged before it failed: a failed session is
+        # still verified, so its queued close runs in the same tick.
+        merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}
+        result = self.run_tick(TEST_CANDIDATES=json.dumps(merge), TEST_MODEL_EXIT="1")
+        self.assertEqual(result.wait(timeout=30), 1)
+        (retry, queue, after) = self.close_calls()
+        calls = self.calls_made()
+        model_at = [c[0] for c in calls].index("claude")
+        verify_at = calls.index(["verify", "--since"])
+        self.assertEqual(retry[1:], ["retry"])
+        self.assertEqual(queue, [model_at, "queue", "--pr", "7"])
+        self.assertEqual(after, [verify_at, "retry"])
 
     def test_merge_close_deferred_skips_verify_and_record(self) -> None:
         merge = {"action": "merge", "reason": "t", "pr": 7, "sha": "a" * 40}

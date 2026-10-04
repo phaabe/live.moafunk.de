@@ -50,7 +50,6 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-import close_issue
 from github_quota import QuotaExhausted, run_gh, stop_on_quota
 from next_action import EPIC, REPO, body_digest, issue_url, other
 
@@ -119,6 +118,10 @@ def landed(
     if kind == "merge":
         if pr["state"] != "MERGED":
             return False, f"PR {number} state is {pr['state']}"
+        # Imported here: only a merge needs it, and runner fixtures that never
+        # verify a merge do not copy it.
+        import close_issue
+
         return close_issue.verify(number, fetch)
     moved = pr["headRefOid"] != sha
     if moved and worktree:

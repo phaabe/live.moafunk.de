@@ -52,6 +52,7 @@ COPIED = (
     "scripts/epic/target_lock.py",
     "scripts/epic/tick_cooldown.py",
     "scripts/epic/tick_verify.py",
+    "scripts/epic/close_issue.py",
     "scripts/epic/rebase_policy.py",
     "scripts/epic/git_gate.py",
     "scripts/epic/runtime.py",
