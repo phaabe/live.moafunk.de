@@ -17,6 +17,14 @@
         <string>__HOME__</string>
         <key>PATH</key>
         <string>__CODEX_BIN_DIR__:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>EPIC_RUNTIME_LEGACY</key>
+        <string>1</string>
+        <key>EPIC_RUNTIME_HOME</key>
+        <string>__PROTECTED_RUNTIME_HOME__</string>
+        <key>CODEX_HOME</key>
+        <string>__PROTECTED_CODEX_HOME__</string>
+        <key>EPIC_CODEX_PROTECTED_CONFIG</key>
+        <string>__PROTECTED_CODEX_BINDING__</string>
     </dict>
     <key>StartInterval</key>
     <integer>180</integer>

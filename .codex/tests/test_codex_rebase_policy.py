@@ -134,6 +134,10 @@ class CodexRebasePolicyTests(fixture.RebaseRunnerTest):
             shutil.copyfile(ROOT / relative, self.repo / relative)
         (self.repo / "scripts/epic/tick_gate.py").write_text(GATE)
         codex = self.repo / ".codex"
+        (codex / "protected_home.py").write_text(
+            "import json, os\n"
+            "print(json.dumps({'temporary_parent': os.environ['TEST_ROOT']}))\n"
+        )
         (codex / "assignment.py").write_text(
             "import json, pathlib, sys\n"
             "pathlib.Path(sys.argv[sys.argv.index('--output') + 1]).write_text('{}')\n"
@@ -214,14 +218,22 @@ class CodexRebasePolicyTests(fixture.RebaseRunnerTest):
         args = json.loads((self.root / "model-args.json").read_text())
         return [args[index + 1] for index, arg in enumerate(args) if arg == "--add-dir"]
 
-    def test_resolution_model_has_no_extra_writable_directories(self) -> None:
+    def test_resolution_model_has_only_its_temporary_directory(self) -> None:
         self.env["EPIC_AGENT_ID"] = "codex-2"
         self.assert_failed_attempt("fail")
-        self.assertEqual(self.model_extra_directories(), [])
+        self.assertEqual(len(self.model_extra_directories()), 1)
+        self.assertEqual(Path(self.model_extra_directories()[0]).parent, self.root)
+        self.assertTrue(
+            Path(self.model_extra_directories()[0]).name.startswith("codex-tick-")
+        )
 
-    def test_other_feature_action_has_no_extra_model_directories(self) -> None:
+    def test_other_feature_action_has_only_its_temporary_directory(self) -> None:
         self.assertEqual(self.tick("fail", self.action("continue")), 0, self.log())
-        self.assertEqual(self.model_extra_directories(), [])
+        self.assertEqual(len(self.model_extra_directories()), 1)
+        self.assertEqual(Path(self.model_extra_directories()[0]).parent, self.root)
+        self.assertTrue(
+            Path(self.model_extra_directories()[0]).name.startswith("codex-tick-")
+        )
 
     def test_proven_resolution_overrides_blocked_model_result(self) -> None:
         old, tip = self.remote_head(), self.remote_head(fixture.BASE)
@@ -343,9 +355,12 @@ class CodexRebasePolicyTests(fixture.RebaseRunnerTest):
         self.assertEqual(scope["mode"], "full")
         self.assertIn("no earlier verdict", scope["reason"])
         self.assertEqual(self.attempts(), [])
-        self.assertEqual(
-            self.model_extra_directories(), [str(self.agent_state() / "review")]
-        )
+        directories = self.model_extra_directories()
+        self.assertEqual(len(directories), 2)
+        self.assertIn(str(self.agent_state() / "review"), directories)
+        temporary = Path(directories[0])
+        self.assertEqual(temporary.parent, self.root)
+        self.assertTrue(temporary.name.startswith("codex-tick-"))
 
     def prepare_peer_record(self) -> None:
         old = self.remote_head()

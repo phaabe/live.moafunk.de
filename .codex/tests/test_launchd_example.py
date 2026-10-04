@@ -33,6 +33,9 @@ class LaunchdExampleTests(unittest.TestCase):
             "__HOME__": "/Users/test operator",
             "__RUNNER_CHECKOUT__": "/Users/test operator/git/codex runner",
             "__CODEX_BIN_DIR__": "/Users/test operator/tools/bin",
+            "__PROTECTED_RUNTIME_HOME__": "/Users/test operator/runtime",
+            "__PROTECTED_CODEX_HOME__": "/Users/test operator/runtime/codex-homes/legacy",
+            "__PROTECTED_CODEX_BINDING__": "/Users/test operator/runtime/codex-binding.json",
         }
         rendered = TEMPLATE.read_text()
         for placeholder, value in substitutions.items():
@@ -51,6 +54,15 @@ class LaunchdExampleTests(unittest.TestCase):
             data["EnvironmentVariables"]["HOME"], substitutions["__HOME__"]
         )
         search_paths = data["EnvironmentVariables"]["PATH"].split(":")
+        self.assertEqual(data["EnvironmentVariables"]["EPIC_RUNTIME_LEGACY"], "1")
+        for name, placeholder in (
+            ("EPIC_RUNTIME_HOME", "__PROTECTED_RUNTIME_HOME__"),
+            ("CODEX_HOME", "__PROTECTED_CODEX_HOME__"),
+            ("EPIC_CODEX_PROTECTED_CONFIG", "__PROTECTED_CODEX_BINDING__"),
+        ):
+            self.assertEqual(
+                data["EnvironmentVariables"][name], substitutions[placeholder]
+            )
         for directory in (
             substitutions["__CODEX_BIN_DIR__"],
             "/opt/homebrew/bin",

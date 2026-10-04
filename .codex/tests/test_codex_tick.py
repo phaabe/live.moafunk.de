@@ -156,6 +156,7 @@ else:
             "tick_verify.py",
             "write_checks.py",
             "rebase_policy.py",
+            "runtime.py",
         ):
             shutil.copyfile(
                 ROOT.parent / "scripts/epic" / helper, selector.parent / helper
@@ -362,9 +363,18 @@ else:
             "sys.exit(int(os.environ.get('TEST_CODEX_EXIT', '0')))\n"
         )
         codex.chmod(0o755)
+        # These existing tick tests isolate the protected-home boundary. The
+        # foundation/native suites exercise the real validator and config.
+        (self.runner.parent / "protected_home.py").write_text(
+            "import json, os\n"
+            "print(json.dumps({'temporary_parent': os.environ['TEST_TEMP_PARENT']}))\n"
+        )
         self.env = {
             **os.environ,
             "HOME": str(self.home),
+            "EPIC_RUNTIME_LEGACY": "1",
+            "EPIC_RUNTIME_HOME": str(self.root / "runtime-home"),
+            "TEST_TEMP_PARENT": str(self.root),
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "TEST_CALLS": str(self.calls),
             "TEST_PR_QUERIES": str(self.pr_queries),
@@ -428,6 +438,7 @@ else:
             "import os, pathlib, runpy, sys, time\n"
             "time.time = lambda: float(pathlib.Path(os.environ['TEST_CLOCK']).read_text())\n"
             "sys.argv = sys.argv[1:]\n"
+            "if sys.argv[0] == '-I': sys.argv.pop(0)\n"
             "if sys.argv[0] == '-c':\n"
             "    code = sys.argv[1]\n"
             "    sys.argv = ['-c', *sys.argv[2:]]\n"
@@ -919,7 +930,7 @@ else:
             "-qm",
             "fixture",
         )
-        config = self.repo / ".codex/config.toml"
+        config = self.repo / "operator-note.txt"
         config.write_text("# local configuration\n")
         for case in ("clean", "noise", "outside", "staged", "broken", "other"):
             with self.subTest(case=case):
@@ -1136,7 +1147,7 @@ else:
             ),
         ):
             self.assertEqual(args[args.index(option) + 1], value)
-        self.assertIn("sandbox_workspace_write.network_access=true", args)
+        self.assertNotIn("sandbox_workspace_write.network_access=true", args)
         for name, value in {
             "EPIC_STATE_DIR": str(self.state),
             "EPIC_QUOTA_DIR": str(self.state),
@@ -1230,7 +1241,10 @@ else:
         call = json.loads(self.calls.read_text())
         args = call["args"]
         self.assertEqual(args[args.index("--cd") + 1], prepared["worktree"])
-        self.assertEqual(args[args.index("--add-dir") + 1], prepared["artifact_dir"])
+        self.assertIn(
+            prepared["artifact_dir"],
+            [args[i + 1] for i, arg in enumerate(args) if arg == "--add-dir"],
+        )
         self.assertEqual(
             args[args.index("--output-last-message") + 1],
             str(Path(prepared["attempt_dir"]) / "result.json"),
@@ -1354,8 +1368,13 @@ else:
         call = json.loads(self.calls.read_text())
         self.assertEqual(call["action"]["action"], "adopt")
         self.assertNotIn("EPIC_REVIEW_DIR", call["tool_env"])
-        self.assertEqual(
-            call["args"][call["args"].index("--add-dir") + 1], call["body_dir"]
+        self.assertIn(
+            call["body_dir"],
+            [
+                call["args"][i + 1]
+                for i, arg in enumerate(call["args"])
+                if arg == "--add-dir"
+            ],
         )
         self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"406"})
 
@@ -1376,8 +1395,13 @@ else:
         call = json.loads(self.calls.read_text())
         self.assertEqual(call["action"]["action"], "adopt")
         self.assertNotIn("EPIC_REVIEW_DIR", call["tool_env"])
-        self.assertEqual(
-            call["args"][call["args"].index("--add-dir") + 1], call["body_dir"]
+        self.assertIn(
+            call["body_dir"],
+            [
+                call["args"][i + 1]
+                for i, arg in enumerate(call["args"])
+                if arg == "--add-dir"
+            ],
         )
         self.assertEqual(set(json.loads(self.record.read_text())["targets"]), {"406"})
         self.assertFalse(self.lock.exists())
@@ -1936,13 +1960,21 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         call = json.loads(self.calls.read_text())
         body_dir = call["body_dir"]
-        self.assertEqual(Path(body_dir).parent, temporary)
+        self.assertEqual(Path(body_dir).parent.parent, self.root)
+        self.assertTrue(Path(body_dir).parent.name.startswith("codex-tick-"))
         self.assertTrue(Path(body_dir).name.startswith("epic-adopt-codex."))
         self.assertEqual(call["body_dir_mode"], 0o700)
         self.assertEqual(call["tool_env"]["EPIC_BODY_DIR"], body_dir)
         # The hook anchors to the directory the runner created.
         self.assertEqual(call["tool_env"]["EPIC_BODY_DIR_ID"], call["body_dir_inode"])
-        self.assertEqual(call["args"][call["args"].index("--add-dir") + 1], body_dir)
+        self.assertIn(
+            body_dir,
+            [
+                call["args"][i + 1]
+                for i, arg in enumerate(call["args"])
+                if arg == "--add-dir"
+            ],
+        )
         self.assertIn(
             f"PR body directory (write the adopt body file only here): {body_dir}",
             call["prompt"],

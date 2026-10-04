@@ -63,8 +63,9 @@ transient read-only GitHub errors up to three times, except quota errors. Before
 check whether it succeeded so comments, PRs and merges are not duplicated.
 
 Before each GitHub read or write, check the shared wait with
-`python3 scripts/epic/github_quota.py check --state-dir <EPIC_QUOTA_DIR>` from
-the runner checkout. Exit 3 means stop; other nonzero exits are errors.
+`python3 <code-root>/scripts/epic/github_quota.py check --state-dir <EPIC_QUOTA_DIR>`.
+The runner appends the validated absolute code root. Exit 3 means stop;
+other nonzero exits are errors.
 On a GraphQL rate-limit error, including `RATE_LIMITED` in an HTTP 200 response,
 stop the action without retries or more GitHub calls. Preserve unfinished work
 and return a blocked quota result as described below. Do not write the wait file
@@ -207,7 +208,7 @@ Never infer approval from empty findings or a successful test run.
 Persist it with the runner's helper, using the appended absolute paths:
 
 ```text
-python3 <runner>/.codex/review_worktree.py save-bundle --context-file <review-dir>/context.json --bundle-file <attempt-dir>/bundle.json
+python3 <code-root>/.codex/review_worktree.py save-bundle --context-file <review-dir>/context.json --bundle-file <attempt-dir>/bundle.json
 ```
 
 After this succeeds, return a completed result for the saved analysis. The
