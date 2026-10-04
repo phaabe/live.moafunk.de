@@ -1,0 +1,23 @@
+# Operator template. Replace every /REPLACE path in the protected copy.
+# This checkout template is not a runnable CODEX_HOME.
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+[features]
+hooks = true
+
+[sandbox_workspace_write]
+writable_roots = ["/REPLACE/runner/.git", "/REPLACE/gitnexus-state"]
+network_access = true
+exclude_tmpdir_env_var = true
+exclude_slash_tmp = true
+
+[projects."/REPLACE/runner"]
+trust_level = "untrusted"
+
+[hooks.state."/REPLACE/protected-codex-home/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "REPLACE_WITH_NATIVE_HOOKS_LIST_CURRENT_HASH"
+
+[mcp_servers.gitnexus]
+command = "/REPLACE/gitnexus"
+args = ["mcp"]

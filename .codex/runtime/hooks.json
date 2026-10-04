@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash /REPLACE/protected-runtime/.codex/hooks/scripts/epic-guard.sh",
+            "timeout": 90
+          }
+        ]
+      }
+    ]
+  }
+}
