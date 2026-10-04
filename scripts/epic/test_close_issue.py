@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,7 @@ def ticket(state: str = "open", body: str = "", sub: int = 0, **extra) -> dict:
 
 class GitHub:
     """Fake REST reads and writes. `fail` names calls that raise once each;
-    `comment-landed` stores the comment and then times out."""
+    `comment-landed` and `close-landed` do the write and then time out."""
 
     def __init__(self, pulls: dict[int, dict], issues: dict[int, dict]) -> None:
         self.pulls, self.issues = pulls, issues
@@ -58,6 +59,10 @@ class GitHub:
         self.closed: list[int] = []
         self.fail: list[str] = []
         self.searches = 0
+        self.event_reads = 0
+        self.clock = 0.0
+        self.events: list[tuple[int, float]] = []
+        self.on_read: Any = None
 
     def _maybe_fail(self, what: str) -> None:
         if what in self.fail:
@@ -66,6 +71,9 @@ class GitHub:
 
     def fetch(self, args: list[str]) -> Any:
         path = args[1]
+        if self.on_read:
+            hook, self.on_read = self.on_read, None
+            hook()
         self._maybe_fail("read")
         if "/pulls/" in path:
             return self.pulls[int(path.rsplit("/", 1)[1])]
@@ -88,6 +96,15 @@ class GitHub:
         self._maybe_fail("close")
         self.closed.append(number)
         self.issues[number]["state"] = "closed"
+        self.events.append((number, self.clock))
+        if "close-landed" in self.fail:
+            self.fail.remove("close-landed")
+            raise subprocess.TimeoutExpired(["gh"], 120)
+
+    def closed_since(self, number: int, since: str) -> bool:
+        self.event_reads += 1
+        floor = github_quota.parse_iso(since) - close_issue.CLOCK_SLACK
+        return any(n == number and at >= floor for n, at in self.events)
 
 
 class QueueCase(unittest.TestCase):
@@ -107,8 +124,9 @@ class QueueCase(unittest.TestCase):
             gh.comment,
             gh.close,
             gh.has_comment,
-            now=lambda: 0.0,
+            now=lambda: gh.clock,
             blocked=blocked,
+            find_close=gh.closed_since,
         )
 
     def queue(self) -> dict:
@@ -260,6 +278,35 @@ class RetryTest(QueueCase):
         self.assertTrue(self.queue()["pending"][0]["commented"])
         self.assertEqual(self.run_queue(gh), 0)
         self.assertEqual((len(gh.comments), gh.closed), (1, [453]))
+        # The failed close never reached GitHub: one event read, one more close.
+        self.assertEqual(gh.event_reads, 1)
+
+    def test_landed_close_then_reopen_is_not_closed_again(self) -> None:
+        gh = GitHub({530: pull()}, {453: ticket()})
+        gh.fail = ["close-landed"]
+        self.record(530)
+        with _quiet():
+            self.assertEqual(self.run_queue(gh), 1)
+        self.assertEqual(gh.closed, [453])
+        gh.issues[453]["state"] = "open"  # the operator reopens it
+        gh.clock = 3600.0
+        self.assertEqual(self.run_queue(gh), 0)
+        self.assertEqual(gh.closed, [453])
+        self.assertEqual(gh.issues[453]["state"], "open")
+        self.assertEqual(len(gh.comments), 1)
+        self.assertEqual(self.queue()["pending"], [])
+        self.assertEqual(self.queue()["done"][0]["result"], "reopened")
+
+    def test_close_before_the_attempt_does_not_count(self) -> None:
+        # Closed and reopened long before this merge: the close still runs.
+        gh = GitHub({530: pull()}, {453: ticket()})
+        gh.events.append((453, -3600.0))
+        gh.fail = ["close"]
+        self.record(530)
+        with _quiet():
+            self.assertEqual(self.run_queue(gh), 1)
+        self.assertEqual(self.run_queue(gh), 0)
+        self.assertEqual(gh.closed, [453])
 
     def test_one_failure_does_not_stop_other_entries(self) -> None:
         gh = GitHub(
@@ -324,7 +371,7 @@ class RetryTest(QueueCase):
         gh = GitHub({530: pull()}, {453: ticket()})
         self.record(530)
         self.run_queue(gh)
-        self.assertEqual(gh.searches, 0)
+        self.assertEqual((gh.searches, gh.event_reads), (0, 0))
 
     def test_bad_queue_file_is_refused(self) -> None:
         for text in ("{", "[]", '{"pending": [{"pr": "1"}], "done": []}'):
@@ -332,6 +379,73 @@ class RetryTest(QueueCase):
                 (self.dir / close_issue.QUEUE_FILE).write_text(text)
                 with self.assertRaises(close_issue.BadQueue):
                     close_issue.load(self.dir)
+
+
+class ClosedSinceTest(unittest.TestCase):
+    def test_reads_closed_events_with_clock_slack(self) -> None:
+        out = "2026-10-04T09:56:00Z\n"
+        with mock.patch.object(close_issue, "run_gh", return_value=out) as gh:
+            self.assertTrue(close_issue.closed_since(453, "2026-10-04T10:00:00Z"))
+            self.assertFalse(close_issue.closed_since(453, "2026-10-04T10:06:00Z"))
+        args = gh.call_args.args[0]
+        self.assertIn("--paginate", args)
+        self.assertIn(
+            "repos/phaabe/live.moafunk.de/issues/453/events?per_page=100", args
+        )
+
+    def test_no_closed_event(self) -> None:
+        with mock.patch.object(close_issue, "run_gh", return_value=""):
+            self.assertFalse(close_issue.closed_since(453, "2026-10-04T10:00:00Z"))
+
+
+class LockTest(QueueCase):
+    """Every command holds the queue lock while it reads and writes the queue."""
+
+    def start_during_read(self, gh: GitHub, work: Any) -> threading.Thread:
+        """Run `work` in a thread while the retry reads its first PR; it must
+        still wait for the lock when that read ends."""
+        thread = threading.Thread(target=work)
+
+        def hook() -> None:
+            thread.start()
+            thread.join(0.5)
+            self.assertTrue(thread.is_alive(), "ran without the queue lock")
+
+        gh.on_read = hook
+        return thread
+
+    def test_queue_during_retry_is_kept(self) -> None:
+        gh = GitHub({530: pull(), 531: pull(531)}, {453: ticket()})
+        self.record(530)
+        thread = self.start_during_read(gh, lambda: close_issue.add(self.dir, 531))
+        self.assertEqual(self.run_queue(gh), 0)
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual([e["pr"] for e in self.queue()["pending"]], [531])
+        self.assertEqual([e["pr"] for e in self.queue()["done"]], [530])
+
+    def test_two_retries_post_and_close_once(self) -> None:
+        gh = GitHub({530: pull()}, {453: ticket()})
+        self.record(530)
+        codes: list[int] = []
+        thread = self.start_during_read(gh, lambda: codes.append(self.run_queue(gh)))
+        self.assertEqual(self.run_queue(gh), 0)
+        thread.join(5)
+        self.assertEqual(codes, [0])
+        self.assertEqual((len(gh.comments), gh.closed), (1, [453]))
+
+    def test_busy_lock_changes_nothing(self) -> None:
+        gh = GitHub({530: pull()}, {453: ticket()})
+        gh.fetch = mock.Mock(side_effect=AssertionError("GitHub read"))
+        self.record(530)
+        before = self.queue()
+        with close_issue.queue_lock(self.dir):
+            with self.assertRaises(close_issue.Locked):
+                close_issue.add(self.dir, 531, wait=0.2)
+            with self.assertRaises(close_issue.Locked):
+                close_issue.run_queue(self.dir, gh.fetch, wait=0.2)
+        gh.fetch.assert_not_called()
+        self.assertEqual(self.queue(), before)
 
 
 class DeferTest(QueueCase):
@@ -424,6 +538,12 @@ class MainTest(unittest.TestCase):
         run.assert_not_called()
         queue = json.loads((self.state / close_issue.QUEUE_FILE).read_text())
         self.assertEqual([e["pr"] for e in queue["pending"]], [530])
+
+    def test_busy_queue_exits_5(self) -> None:
+        busy = close_issue.Locked("held")
+        with mock.patch.object(close_issue, "add", side_effect=busy):
+            with _quiet():
+                self.assertEqual(self.main("queue", "--pr", "530"), close_issue.LOCKED)
 
     def test_deferred_exits_3(self) -> None:
         deferred = close_issue.Deferred("pause file exists")

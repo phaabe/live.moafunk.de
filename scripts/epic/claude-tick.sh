@@ -685,7 +685,8 @@ attempt_finish() {
 # Queue the close before the session (no GitHub call). A failed session is
 # still verified, so its close runs below; a quota wait or a killed tick
 # leaves the entry for the next tick's retry. An unmerged PR just leaves
-# the queue there.
+# the queue there. A queue locked too long (exit 5) stops the tick before
+# the session, so no merge runs without its queued close.
 if [[ "$action" == merge ]]; then
     merged_pr=$("${py_snippet[@]}" -c 'import json, sys; print(json.load(sys.stdin)["pr"])' \
         < "${lock_dir}/action.json")

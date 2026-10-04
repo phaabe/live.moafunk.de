@@ -150,7 +150,10 @@ the evidence the plan requires. A merged PR is never activation evidence.
   so a session that merges and then fails still gets its close. A failed
   close stays queued and is retried and logged every tick. Each comment has a
   marker for its merge; after a timeout the helper looks for it before it
-  posts again.
+  posts again. It saves the time of each close request; before a second
+  request it reads the ticket's events, and a reopen after a landed close
+  wins. Every helper command holds a lock on the queue, so a manual run and
+  the runner never lose or repeat an entry.
 - The helper reads the pause file and the quota wait again before every
   GitHub call. Either one stops it with no call; the queue stays for later.
 - A ticket dependency ("Start after <ticket URL>") counts as done by the same

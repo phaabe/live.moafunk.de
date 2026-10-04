@@ -26,19 +26,29 @@ the next PR for it merges. A failed GitHub call keeps the entry and its progress
 (comment posted or not) in `<state dir>/close-queue.json`; the next run retries
 it. Each comment carries a marker for its merge. Before a comment is posted
 again after an unclear result (a timeout), the ticket's comments are searched
-for that marker, so the comment is never posted twice.
+for that marker, so the comment is never posted twice. The time of each close
+request is saved before it is sent. Before a second request, the ticket's
+events are read: a `closed` event since then means the close landed and
+someone reopened the ticket; the reopen wins and the ticket stays open.
+
+Every command holds `<state dir>/close-queue.lock` while it reads, works on
+and writes the queue, so a `queue` during a `retry` waits and two retries
+never handle the same entry. A command that cannot get the lock within
+LOCK_WAIT seconds stops with exit 5 and changes nothing.
 
 Before every GitHub call the pause file and the shared quota wait are read
 again. Either one stops the run with no call; the entries stay as they are.
 
 Exit 0 queue empty, 1 an entry is still pending (logged), 2 bad input or queue
 file, 3 deferred by the pause file or a quota wait, 4 GraphQL quota (see
-github_quota.py; REST calls rarely hit it).
+github_quota.py; REST calls rarely hit it), 5 queue locked by another run.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -47,22 +57,28 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import github_quota
 import next_action
-from github_quota import QuotaExhausted, run_gh, stop_on_quota
+from github_quota import QuotaExhausted, iso, parse_iso, run_gh, stop_on_quota
 from next_action import EPIC, REPO, issue_links, issue_url, uncovered_leaves
 
 STATE_DIR = Path(
     os.environ.get("EPIC_STATE_DIR", Path.home() / ".local" / "state" / "epic-loop")
 )
 QUEUE_FILE = "close-queue.json"
+LOCK_FILE = "close-queue.lock"
+# Longer than the runner's bounded retry (EPIC_SELECT_TIMEOUT_SECONDS, 120 s).
+LOCK_WAIT = 180.0
+# Clock difference allowed between this host and GitHub event times.
+CLOCK_SLACK = 300.0
 DONE_KEEP = 500
 TESTS_MAX = 600
 VALIDATION = re.compile(r"^Validation:[ \t]*(.*)$", re.MULTILINE)
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 DEFERRED = 3
+LOCKED = 5
 
 Fetch = Callable[[list[str]], Any]
 
@@ -73,6 +89,10 @@ class BadQueue(Exception):
 
 class Deferred(Exception):
     """The pause file or a stored quota wait: no GitHub call now."""
+
+
+class Locked(Exception):
+    """Another run holds the queue lock."""
 
 
 def github_blocked() -> str | None:
@@ -123,6 +143,26 @@ def load(state_dir: Path) -> dict[str, Any]:
     return data
 
 
+@contextlib.contextmanager
+def queue_lock(state_dir: Path, wait: float = LOCK_WAIT) -> Iterator[None]:
+    """Hold the queue lock. The OS drops it when the process dies."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with open(state_dir / LOCK_FILE, "a") as f:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Locked(f"{state_dir / LOCK_FILE} held for {wait:.0f} s")
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def save(state_dir: Path, data: dict[str, Any]) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     data["done"] = data["done"][-DONE_KEEP:]
@@ -139,6 +179,16 @@ def enqueue(data: dict[str, Any], pr: int) -> bool:
         return False
     data["pending"].append({"pr": pr, "commented": False, "attempts": 0})
     return True
+
+
+def add(state_dir: Path, pr: int, wait: float = LOCK_WAIT) -> bool:
+    """Queue PR `pr` under the queue lock."""
+    with queue_lock(state_dir, wait):
+        data = load(state_dir)
+        if not enqueue(data, pr):
+            return False
+        save(state_dir, data)
+        return True
 
 
 # --- decision -----------------------------------------------------------------
@@ -253,6 +303,21 @@ def close(ticket: int) -> None:
     )
 
 
+def closed_since(ticket: int, since: str) -> bool:
+    """True when the ticket has a `closed` event at or after `since`."""
+    out = run_gh(
+        [
+            "api",
+            "--paginate",
+            f"repos/{REPO}/issues/{ticket}/events?per_page=100",
+            "--jq",
+            '.[] | select(.event == "closed") | .created_at',
+        ]
+    )
+    floor = parse_iso(since) - CLOCK_SLACK
+    return any(parse_iso(at) >= floor for at in out.split())
+
+
 def post_once(
     entry: dict[str, Any],
     ticket: int,
@@ -281,10 +346,12 @@ def handle(
     write_comment: Callable[[int, str], None],
     write_close: Callable[[int], None],
     find_comment: Callable[[int, str], bool],
+    find_close: Callable[[int, str], bool],
     persist: Callable[[], None],
+    now: Callable[[], float],
 ) -> tuple[str, int | None, str]:
     """Run one queue entry to its end. GitHub errors propagate; progress is
-    persisted around each comment."""
+    persisted around each comment and before the close."""
     pr = fetch(["api", f"repos/{REPO}/pulls/{entry['pr']}"])
     kind, ticket, reason = decide(pr, fetch)
     if kind == "close" and ticket is not None:
@@ -297,6 +364,12 @@ def handle(
             find_comment,
             persist,
         )
+        # The ticket is open now. If an earlier close request landed, someone
+        # reopened the ticket since then, and the reopen wins.
+        if entry.get("closing") and find_close(ticket, entry["closing"]):
+            return "reopened", ticket, f"issue {ticket} reopened after its close"
+        entry["closing"] = iso(now())
+        persist()
         write_close(ticket)
     elif kind == "note" and ticket is not None:
         post_once(
@@ -332,12 +405,37 @@ def run_queue(
     find_comment: Callable[[int, str], bool] = has_comment,
     now: Callable[[], float] = time.time,
     blocked: Callable[[], str | None] = github_blocked,
+    find_close: Callable[[int, str], bool] = closed_since,
+    wait: float = LOCK_WAIT,
 ) -> int:
+    with queue_lock(state_dir, wait):
+        return _run_queue(
+            state_dir,
+            *(
+                guarded(call, blocked)
+                for call in (
+                    fetch,
+                    write_comment,
+                    write_close,
+                    find_comment,
+                    find_close,
+                )
+            ),
+            now,
+        )
+
+
+def _run_queue(
+    state_dir: Path,
+    fetch: Fetch,
+    write_comment: Callable[[int, str], None],
+    write_close: Callable[[int], None],
+    find_comment: Callable[[int, str], bool],
+    find_close: Callable[[int, str], bool],
+    now: Callable[[], float],
+) -> int:
+    """run_queue with the lock held and the calls guarded."""
     data = load(state_dir)
-    fetch, write_comment, write_close, find_comment = (
-        guarded(call, blocked)
-        for call in (fetch, write_comment, write_close, find_comment)
-    )
     failed = 0
     for entry in list(data["pending"]):
         try:
@@ -347,7 +445,9 @@ def run_queue(
                 write_comment,
                 write_close,
                 find_comment,
+                find_close,
                 lambda: save(state_dir, data),
+                now,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             stderr = getattr(error, "stderr", None)
@@ -409,18 +509,17 @@ def main() -> int:
     sub.add_parser("retry", help="run the queue")
     args = parser.parse_args()
     try:
-        if args.command in ("queue", "record"):
-            data = load(args.state_dir)
-            if enqueue(data, args.pr):
-                save(args.state_dir, data)
-            else:
-                print(f"close: PR {args.pr} was queued before; not again")
+        if args.command in ("queue", "record") and not add(args.state_dir, args.pr):
+            print(f"close: PR {args.pr} was queued before; not again")
         if args.command == "queue":
             return 0
         return run_queue(args.state_dir)
     except BadQueue as error:
         print(f"close: bad queue file: {error}", file=sys.stderr)
         return 2
+    except Locked as error:
+        print(f"close: queue busy, nothing changed: {error}", file=sys.stderr)
+        return LOCKED
     except Deferred as error:
         print(f"close: deferred, no GitHub call: {error}", file=sys.stderr)
         return DEFERRED
