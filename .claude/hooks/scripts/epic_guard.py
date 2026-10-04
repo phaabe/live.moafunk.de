@@ -20,7 +20,9 @@ Rules:
   5. Pull request writes through `gh api` are refused; use `gh pr create/merge`.
   6. MCP pull request creation follows rule 3; MCP merges are refused.
   7. Headless runner with the shared reader (EPIC_SHARED_READER=1 and
-     EPIC_ACTION_FILE set by scripts/epic/claude-tick.sh): each GitHub write
+     EPIC_ACTION_FILE set by scripts/epic/claude-tick.sh; with an action file,
+     a missing, empty or invalid EPIC_SHARED_READER blocks every write, and an
+     explicit 0 keeps only the other rules): each GitHub write
      is checked fresh right before it runs (scripts/epic/write_checks.py,
      loaded from EPIC_RUNTIME_ROOT, the pinned runtime; without pinned mode
      from EPIC_TRUSTED_ROOT, the runner checkout). Pinned mode configured
@@ -401,9 +403,12 @@ def promotion_barrier(tool: str, tool_input: dict, cwd: str) -> None:
 
 def runner_write_check(tool: str, tool_input: dict, cwd: str) -> None:
     """Rule 7. Fails closed: if the check cannot load, the write is blocked."""
-    if os.environ.get("EPIC_SHARED_READER") != "1" or not os.environ.get(
-        "EPIC_ACTION_FILE"
-    ):
+    # No action context: interactive, unchanged. Explicit 0: the runner turned
+    # the reader off. Anything else (1, missing, empty, invalid) goes to
+    # write_checks.guard(), which refuses writes on a bad setting.
+    if not os.environ.get("EPIC_ACTION_FILE"):
+        return
+    if os.environ.get("EPIC_SHARED_READER") == "0":
         return
     write_checks = load_write_checks(code_root(), "Runner write checks")
     try:

@@ -1,6 +1,9 @@
 """Shared GitHub REST snapshot for the epic runners, status and monitoring.
 
-Off by default: next_action.fetch_state() uses it only with EPIC_SHARED_READER=1.
+Switch: EPIC_SHARED_READER, resolved by enabled() (unset or empty means
+DEFAULT_ENABLED, off today; `0` off, `1` on, else exit 2). Each runner resolves
+it once with `github_state.py resolve` and exports an explicit 0 or 1 to its
+children, which read it with child_enabled() and never apply the default.
 The contract is in https://github.com/phaabe/live.moafunk.de/issues/486
 ("Agreed reader contract").
 
@@ -43,6 +46,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Generator, Mapping
@@ -57,6 +61,9 @@ import next_action as na
 from github_quota import run_gh
 
 SWITCH_ENV = "EPIC_SHARED_READER"
+# The default when EPIC_SHARED_READER is unset or empty. Only enabled() applies
+# it; runner children get an explicit 0 or 1.
+DEFAULT_ENABLED = False
 API = "https://api.github.com/"
 API_HOST = "api.github.com"
 API_VERSION = "2022-11-28"
@@ -98,7 +105,28 @@ class AuthLost(ReadBlocked):
 
 
 def enabled(env: Mapping[str, str] | None = None) -> bool:
-    return (os.environ if env is None else env).get(SWITCH_ENV) == "1"
+    """Unset or empty: DEFAULT_ENABLED; `0` off; `1` on; else ConfigError."""
+    raw = (os.environ if env is None else env).get(SWITCH_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_ENABLED
+    return explicit(raw)
+
+
+def child_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """The value a runner exported to its children. A child never applies the
+    default: unset, empty or invalid raises ConfigError."""
+    raw = (os.environ if env is None else env).get(SWITCH_ENV)
+    if raw is None or raw == "":
+        raise ConfigError(
+            f"{SWITCH_ENV} is not set in a runner child; the runner must export 0 or 1"
+        )
+    return explicit(raw)
+
+
+def explicit(raw: str) -> bool:
+    if raw not in ("0", "1"):
+        raise ConfigError(f"{SWITCH_ENV} must be 0, 1 or empty, got {raw!r}")
+    return raw == "1"
 
 
 @dataclass(frozen=True)
@@ -1244,3 +1272,29 @@ def recheck(
     first = now[0]
     target = f"PR {first.pr}" if first.pr else (first.issue or "")
     return f"GitHub changed: the selector now gives {first.action} {target} ({first.reason})"
+
+
+def resolve(env: Mapping[str, str] | None = None) -> tuple[int, int]:
+    """(switch, recheck budget) a runner exports once per tick. The budget is
+    settings().recheck when on, 0 when off (the timing settings are not read)."""
+    if enabled(env):
+        return 1, settings(env).recheck
+    return 0, 0
+
+
+def main(argv: list[str]) -> int:
+    """`resolve`: print "<0|1> <recheck seconds>"; exit 2 on a bad setting."""
+    if argv != ["resolve"]:
+        print("usage: github_state.py resolve", file=sys.stderr)
+        return 2
+    try:
+        switch, recheck = resolve()
+    except ConfigError as error:
+        print(f"config: {error}", file=sys.stderr)
+        return 2
+    print(f"{switch} {recheck}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

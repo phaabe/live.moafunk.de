@@ -50,9 +50,10 @@ completed. A merged PR or board Status Done is not enough. Closed issues get
 no claim or continue action. Unset or 0 keeps the old rule; other values are
 bad settings (exit 2).
 
-Shared reader (github_state.py): with EPIC_SHARED_READER=1, fetch_state()
-reads the shared REST snapshot instead of calling GitHub itself. Off by default
-until both runners handle exit codes 5 and 6.
+Shared reader (github_state.py): when on, fetch_state() reads the shared REST
+snapshot instead of calling GitHub itself. github_state.enabled() resolves
+EPIC_SHARED_READER (unset or empty: its default, off today; 0 off; 1 on; other
+values exit 2), so selection and `monitor.py --fetch-state` share one default.
 
 Exit codes: 0 action printed (or --recheck: still valid), 2 bad settings,
 3 a GraphQL quota wait is stored (no GitHub call), 4 a read hit the GraphQL
@@ -1215,13 +1216,17 @@ def changed_paths(rows: list[dict[str, Any]]) -> list[str]:
     return sorted(found)
 
 
-SHARED_READER_ENV = "EPIC_SHARED_READER"
 READ_BLOCKED = 5
 STALE = 6
 
 
 def shared_reader() -> bool:
-    return os.environ.get(SHARED_READER_ENV) == "1"
+    """github_state.enabled(): one default for the runners, standalone
+    selection and the monitor. A bad value raises github_state.ConfigError."""
+    # Imported here: the Codex runner tests copy this file with its helpers.
+    import github_state
+
+    return github_state.enabled()
 
 
 def rest_ticket(number: int) -> dict[str, Any]:
@@ -1538,11 +1543,15 @@ def main() -> int:
         return 2
     if args.recheck:
         return run_recheck(args.agent, args.recheck, focus, enabled, paused, mode)
+    import github_state
+
+    try:
+        reader = shared_reader()
+    except github_state.ConfigError as error:
+        return reader_exit(error)
     # The shared reader's own errors; empty (catches nothing) when it is off.
     reader_errors: tuple[type[Exception], ...] = ()
-    if shared_reader() and not args.state_file:
-        import github_state
-
+    if reader and not args.state_file:
         reader_errors = (github_state.ConfigError, github_state.ReadBlocked)
         try:
             github_state.settings()
@@ -1581,7 +1590,7 @@ def main() -> int:
                 focus,
                 enabled,
                 completed_tickets=mode,
-                free_claims=shared_reader(),
+                free_claims=reader,
             )
         )
         # Local runner state, no GitHub read. Imported here: only --status needs it.
@@ -1602,7 +1611,7 @@ def main() -> int:
         enabled=enabled,
         completed_tickets=mode,
         # Waits free claims only where the runners recheck before the model.
-        free_claims=shared_reader(),
+        free_claims=reader,
     )
     for a in actions if args.candidates else actions[:1]:
         print(a.to_json())
