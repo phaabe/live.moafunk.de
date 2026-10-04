@@ -139,16 +139,106 @@ died without cleanup are removed at the next admission (housekeeping only).
 A record newer than that admission's process scan (minus 2 s for mtime
 rounding) is never removed, so a tick admitted during the scan keeps it.
 
-**Children (shared rule):** every child that can write holds the admission
-lock, inherited or its own `LOCK_SH`. Each adapter picks and proves its
-mechanism. Claude: `CLAUDE_CODE_SHELL_PREFIX=<runtime>/scripts/epic/lockhold`
-gives every hook, MCP server and tool command its own `LOCK_SH` on fd 29.
-A broken prefix makes Claude hooks fail open, so the tick validates the
-prefix against the manifest before the model starts.
+### Children (shared rule)
+
+No child that can write may outlive the tick's locks. Each adapter picks
+one mechanism and proves it in its own ticket.
+
+**Mechanism A, child-held lock (preferred):** every child that can write
+holds the admission lock, inherited or its own `LOCK_SH`. Claude:
+`CLAUDE_CODE_SHELL_PREFIX=<runtime>/scripts/epic/lockhold` gives every hook,
+MCP server and tool command its own `LOCK_SH` on fd 29. A broken prefix
+makes Claude hooks fail open, so the tick validates the prefix against the
+manifest before the model starts.
 
 Known limit: a child that calls `setsid` and closes its inherited
 descriptors escapes any descriptor lock
 (https://github.com/phaabe/live.moafunk.de/issues/589).
+
+**Mechanism B, host-side retention:** allowed only where A is shown to be
+impossible, with that evidence linked in the adapter's ticket. Codex uses
+it: native Codex 0.159.3 cannot pass lock descriptors to tool processes
+(https://github.com/phaabe/live.moafunk.de/issues/588#issuecomment-5954468293).
+Decided by Anton (2026-10-04,
+https://github.com/phaabe/live.moafunk.de/issues/588#issuecomment-5978589989).
+The permission-bypass gate and the pinned-start/promotion gate of Codex
+leaf B (R588.1.2) stay separate from this rule.
+
+1. **Holder.** The tick wrapper starts a holder before the model: a
+   separate process with its own copies of target fds 8/9 and admission
+   fd 17. The holder outlives the wrapper. The wrapper's exit trap closes
+   only the wrapper's copies, never the holder's.
+2. **Recorded evidence.** Before the model exits, the wrapper writes to the
+   runtime state: wrapper, holder and native PID plus start time, the native
+   process group and session IDs, the worktree and lock paths. The
+   next-tick check reads the holder identity from there.
+3. **Release.** After the model exits, the holder releases only when one
+   fresh scan shows all of this:
+   - no live process has a recorded identity (PID plus start time) as an
+     ancestor (`/bin/ps -A -o pid=,ppid=,lstart=`);
+   - the recorded process group and session are empty;
+   - no process of the runner user has its cwd (`lsof -d cwd`) or an open
+     file (`lsof +D`) under the tick's worktree or lock paths.
+
+   The exact identities of the holder, the wrapper and the scan helpers are
+   left out of this evidence; their other descendants are not. Otherwise the
+   holder's own lock files would block every release.
+4. **Unknown evidence.** A `ps` or `lsof` run that fails, times out, returns
+   unparseable output or returns partial output (incomplete coverage, access
+   or traversal errors) is unknown, not empty, even when the returned rows
+   parse. A valid empty result needs exit status 0, complete coverage and no
+   errors. Unknown keeps the locks and starts no signal.
+5. **Stopping leftovers.** Only a positively identified leftover may be
+   stopped: one found by ancestry, process group or session against the
+   recorded identities. A cwd or open-file hit alone does not identify the
+   tick (another admitted tick or a manual session can use the same paths):
+   it keeps the locks and the tick ends with 75, no signal. Before each
+   signal the holder rechecks PID plus start time, so a reused PID is never
+   signalled. It never signals itself, the scan helpers or the wrapper.
+   Order: TERM, at most 10 s grace, KILL, exit confirmed within 2 s. Then one
+   more fresh scan must be empty before release.
+6. **Deadlines.** Each `ps` or `lsof` run has a timeout (default 30 s). The
+   whole drain, rescans included, has a deadline (default 120 s). Each
+   command, grace period and rescan must fit into the time left. Both
+   defaults are provisional: leaf B validates them for the combined scan.
+7. **Failure.** Past the deadline, on unknown evidence or on an unconfirmed
+   exit, the holder stays alive with its descriptors and the tick ends
+   with 75. Never force-unlock.
+8. **Next-tick check.** Every tick of that adapter, while it holds the
+   adapter's singleton guard and before admission, reads the recorded
+   evidence of earlier ticks and runs the same scan for their worktree and
+   lock paths. It stops positively identified leftovers as in point 5, then
+   tells a live holder from a failed drain to release. Ambiguous hits refuse
+   with 75 and leave the holder alone. This check recovers nothing that left
+   no evidence; it only bounds how long a known leftover lives.
+
+Accepted limits (Anton, 2026-10-04): (a) a child that detaches (`setsid`),
+leaves the worktree and keeps nothing open there can write after release;
+how often real tools do this is not known. (b) If the holder itself is
+killed, its locks are released while children live; the next-tick check
+limits how long that lasts. Codex's controls reproduced both.
+
+Evidence status: the combined rule (ancestry, process group, session, cwd,
+open files) is a required control for leaf B, not a proven complete
+mechanism. Codex's prototype controls
+(https://github.com/phaabe/live.moafunk.de/issues/588#issuecomment-5978549556)
+showed:
+
+- Caught: a `setsid` child with its cwd in the worktree, a hook child and a
+  child that ignores TERM (TERM, then KILL). Unreadable `ps` or `lsof`
+  output kept the locks.
+- Missed by the cwd scan: a `setsid` child that left the worktree but kept a
+  file open there. Only a separate `lsof +D` check found it.
+- Not shown: the plain and `nohup` children had exited before the scan, so
+  they show release after exit, not detection. The MCP control's next cwd
+  scan timed out and kept the locks, so no release after MCP cleanup was
+  shown. Complete tick-path coverage and the deadlines are not shown.
+  Prototype drains took 1.3 s to 11.2 s; that supports trying the defaults,
+  not more.
+
+Leaf B's own controls must show clean release with the holder present,
+recovery of a retained holder, refusal on partial evidence and deadline
+enforcement across cleanup and rescans.
 
 ## Promotion marker and write barrier
 
@@ -183,7 +273,8 @@ never counts. An unreadable marker or process table refuses. Callers:
 
 After the admitted tick shell dies, its children no longer match, so their
 writes are refused while the marker exists; their lock still keeps the
-promotion waiting.
+promotion waiting. Under mechanism B the holder's fd 17 does the same: a
+live holder keeps the promotion waiting until it releases.
 
 ## Smoke check
 
