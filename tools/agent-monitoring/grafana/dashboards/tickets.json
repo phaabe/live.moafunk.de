@@ -401,7 +401,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"Backlog\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"Backlog\"} @ end())",
+          "expr": "epic_tickets_by_status{status=\"Backlog\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() (last_over_time((time() - epic_ticket_snapshot_timestamp_seconds)[1m:] @ end()) < 300) and on() ((epic_ticket_source_ok{source=\"board\"} @ end()) == 1) and on() (epic_tickets_by_status{status=\"Backlog\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -472,7 +472,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"Refinement\"} @ end())",
+          "expr": "epic_tickets_by_status{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() (last_over_time((time() - epic_ticket_snapshot_timestamp_seconds)[1m:] @ end()) < 300) and on() ((epic_ticket_source_ok{source=\"board\"} @ end()) == 1) and on() (epic_tickets_by_status{status=\"Refinement\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -543,7 +543,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"Ready\"} @ end())",
+          "expr": "epic_tickets_by_status{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() (last_over_time((time() - epic_ticket_snapshot_timestamp_seconds)[1m:] @ end()) < 300) and on() ((epic_ticket_source_ok{source=\"board\"} @ end()) == 1) and on() (epic_tickets_by_status{status=\"Ready\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -614,7 +614,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"In progress\"} @ end())",
+          "expr": "epic_tickets_by_status{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() (last_over_time((time() - epic_ticket_snapshot_timestamp_seconds)[1m:] @ end()) < 300) and on() ((epic_ticket_source_ok{source=\"board\"} @ end()) == 1) and on() (epic_tickets_by_status{status=\"In progress\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -685,7 +685,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"In review\"} @ end())",
+          "expr": "epic_tickets_by_status{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() (last_over_time((time() - epic_ticket_snapshot_timestamp_seconds)[1m:] @ end()) < 300) and on() ((epic_ticket_source_ok{source=\"board\"} @ end()) == 1) and on() (epic_tickets_by_status{status=\"In review\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -756,7 +756,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"Done\"} @ end())",
+          "expr": "epic_tickets_by_status{status=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() (last_over_time((time() - epic_ticket_snapshot_timestamp_seconds)[1m:] @ end()) < 300) and on() ((epic_ticket_source_ok{source=\"board\"} @ end()) == 1) and on() (epic_tickets_by_status{status=\"Done\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""

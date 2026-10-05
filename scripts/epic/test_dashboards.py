@@ -374,11 +374,16 @@ class QuerySemanticsTest(unittest.TestCase):
     """Codex review of https://github.com/phaabe/live.moafunk.de/pull/479:
     the generated queries, evaluated by Prometheus's own test tool."""
 
-    def run_promtool(self, tests: list[dashboards.Json]) -> None:
+    def run_promtool(
+        self, tests: list[dashboards.Json], evaluation_interval: str = "1m"
+    ) -> None:
+        """`evaluation_interval` is also the default subquery step."""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "queries.test.yml"
             # JSON is valid YAML.
-            path.write_text(json.dumps({"evaluation_interval": "1m", "tests": tests}))
+            path.write_text(
+                json.dumps({"evaluation_interval": evaluation_interval, "tests": tests})
+            )
             result = subprocess.run(
                 ["docker", "run", "--rm", "-v", f"{directory}:/w:ro", "-w", "/w"]
                 + ["--entrypoint", "promtool", "prom/prometheus:v3.15.0"]
@@ -640,6 +645,80 @@ class QuerySemanticsTest(unittest.TestCase):
                     ],
                 },
             ]
+        )
+
+    def test_status_stats_drop_cached_counts_at_the_deployed_interval(self) -> None:
+        """Codex review round 2 of https://github.com/phaabe/live.moafunk.de/pull/637:
+        with Prometheus's 5 s evaluation interval (the default subquery
+        step), no older good sample may keep a status count on screen."""
+        [ready] = [
+            p["targets"][0]["expr"]
+            for p in panels(pages()["tickets.json"])
+            if p["title"] == "Ready" and p["type"] == "stat"
+        ]
+        count = {
+            "labels": 'epic_tickets_by_status{status="Ready"}',
+            "value": 2,
+        }
+        status = {"series": 'epic_tickets_by_status{status="Ready"}', "values": "2x400"}
+        self.run_promtool(
+            [
+                {
+                    # The board read fails at 10 min; the snapshot stays fresh.
+                    "interval": "5s",
+                    "input_series": [
+                        {
+                            "series": "epic_ticket_snapshot_timestamp_seconds",
+                            "values": "0+5x400",
+                        },
+                        {
+                            "series": 'epic_ticket_source_ok{source="board"}',
+                            "values": "1x119 0x280",
+                        },
+                        status,
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "9m55s",
+                            "exp_samples": [count],
+                        },
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "10m5s",
+                            "exp_samples": [],
+                        },
+                    ],
+                },
+                {
+                    # The collector stops at 10 min: 5 min later the data expires.
+                    "interval": "5s",
+                    "input_series": [
+                        {
+                            "series": "epic_ticket_snapshot_timestamp_seconds",
+                            "values": "0+5x120 600x280",
+                        },
+                        {
+                            "series": 'epic_ticket_source_ok{source="board"}',
+                            "values": "1x400",
+                        },
+                        status,
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "14m55s",
+                            "exp_samples": [count],
+                        },
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "15m5s",
+                            "exp_samples": [],
+                        },
+                    ],
+                },
+            ],
+            evaluation_interval="5s",
         )
 
     def test_medians_show_nothing_once_delivery_data_is_stale(self) -> None:

@@ -29,16 +29,18 @@ GITHUB = " and on() (time() - epic_github_snapshot_timestamp_seconds < 300)"
 DELIVERY = " and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)"
 # Ticket data: a fresh snapshot, and the last board read worked. A failed
 # read keeps the old tickets.prom, so its age alone is not enough.
-TICKETS_OK = 'epic_ticket_source_ok{source="board"} == 1'
+BOARD_HEALTH = 'epic_ticket_source_ok{source="board"}'
 TICKETS = (
     " and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)"
-    f" and on() ({TICKETS_OK})"
+    f" and on() ({BOARD_HEALTH} == 1)"
 )
 # For ticket sparklines: the whole series only while ticket data is good now.
+# Take the latest value first, then compare: a filter inside last_over_time
+# would keep an older good sample for up to a minute.
 TICKETS_AT_END = (
-    " and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds"
-    " < 300)[1m:] @ end())"
-    f" and on() last_over_time(({TICKETS_OK})[1m:] @ end())"
+    " and on() (last_over_time((time() - epic_ticket_snapshot_timestamp_seconds)"
+    "[1m:] @ end()) < 300)"
+    f" and on() (({BOARD_HEALTH} @ end()) == 1)"
 )
 # Waits grow from cached GitHub data: only while the handoff was seen lately.
 HANDOFF = " and on() (time() - epic_handoff_observed_timestamp_seconds < 300)"
