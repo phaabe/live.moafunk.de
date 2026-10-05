@@ -290,6 +290,7 @@ class RebaseRunnerTest(unittest.TestCase):
                 IMPORTABLE_STUB.format(name=name, main=main)
             )
         (epic / "gitnexus_noise.py").write_text("import sys\nsys.exit(0)\n")
+        (epic / "close_merged.py").write_text("import sys\nsys.exit(0)\n")
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         for name, text in (("git", GIT), ("gh", GH), ("claude", MODEL)):
