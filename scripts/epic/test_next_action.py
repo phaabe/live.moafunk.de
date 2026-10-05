@@ -393,6 +393,33 @@ class GuardCheckTest(unittest.TestCase):
                 self.assertEqual(checks_state(p), "failed")
                 self.assertEqual(first("Claude", [p]).action, "fix-checks")
 
+    def test_peer_pr_with_failed_checks_gets_no_review(self) -> None:
+        cases = (
+            ([self.FAILED_GUARD], "wait"),
+            ([{"conclusion": "FAILURE"}, self.PENDING_GUARD], "wait"),
+            ([{"conclusion": "SUCCESS"}, self.PENDING_GUARD], "review"),
+            ([{"status": "IN_PROGRESS"}], "review"),
+            ([{"conclusion": "SUCCESS"}, {"context": "epic-guard", "state": "SUCCESS"}], "review"),
+        )  # fmt: skip
+        for rollup, want in cases:
+            with self.subTest(rollup=rollup):
+                state = {"prs": [pr(2, "Codex", statusCheckRollup=rollup)], "items": []}
+                acts = decide("Claude", state, include_waiting=True)
+                self.assertEqual(acts[0].action, want)
+                if want == "wait":
+                    self.assertEqual(
+                        acts[0].reason, "waiting: Codex fixes the failed checks first"
+                    )
+                    # The owner's side of the same PR.
+                    self.assertEqual(decide("Codex", state)[0].action, "fix-checks")
+
+    def test_failed_checks_wait_does_not_hold_claims(self) -> None:
+        state = {
+            "prs": [pr(2, "Codex", statusCheckRollup=[self.FAILED_GUARD])],
+            "items": [item(338, "Claude", "Ready")],
+        }
+        self.assertEqual(decide("Claude", state)[0].action, "claim")
+
     def test_failed_guard_blocks_merge(self) -> None:
         p = pr(
             1,

@@ -169,7 +169,9 @@ Priority, first match wins:
    comes first): work on a conflicted head is redone after the rebase.
 6. `review`: the other agent's ready (non-draft) PR has no verdict from this
    agent for its current head. A conflicting PR gets no review; the status
-   shows it as waiting for the owner to resolve the conflict. Mergeability
+   shows it as waiting for the owner to resolve the conflict. A PR whose head
+   has failed checks (a failed `epic-guard` included) gets no review either:
+   the owner's `fix-checks` changes the head first. Mergeability
    `UNKNOWN` (GitHub is still computing it) does not block a review; a failed
    or malformed read is an error, never `UNKNOWN`.
 7. `continue`: the agent's draft PR, or its In progress issue without a PR.
