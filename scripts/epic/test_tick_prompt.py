@@ -39,6 +39,15 @@ class TestsSectionTest(unittest.TestCase):
         self.assertIn("Do not run a full suite again on the same commit", section)
         self.assertIn("after a fix commit", section)
 
+    def test_flaky_test_needs_a_green_full_run(self) -> None:
+        # Rules section 3: a single test passing alone does not make the
+        # failed suite green; one full rerun on the same commit must pass.
+        section = tests_section()
+        self.assertNotIn("name it as flaky in your PR comment and go on", section)
+        self.assertIn("run the full suite once more on the same commit", section)
+        self.assertIn("Only a green full run counts", section)
+        self.assertIn("also when the base fails too or the test is flaky", section)
+
 
 if __name__ == "__main__":
     unittest.main()
