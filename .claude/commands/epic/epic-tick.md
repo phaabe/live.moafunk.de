@@ -67,7 +67,7 @@ Do not report `blocked` for a failing test or a conflict you can still fix: fix 
 
 The runner stops the session after `EPIC_TICK_TIMEOUT_SECONDS` (default 30 minutes). Work that is not pushed is lost, and the next tick starts again from zero.
 
-- Run the tests for the files you changed first. Run each full suite (`python3 scripts/epic/run_tests.py <suite> -j 10`) at most once per session, in the foreground, when your change is done.
+- Run the tests for the files you changed first. Run each full suite (`python3 scripts/epic/run_tests.py <suite> -j 10`) in the foreground, when your change is done. Do not run a full suite again on the same commit; after a fix commit (or anything that makes a rebase proof invalid), run it again.
 - Never `sleep` to wait for a background test run.
-- A test fails that your change does not touch: rerun only that test, at most twice. Passes now: name it as flaky in your PR comment and go on. Fails every time: run it on `origin/<base>`; fails there too: name it as a base failure in your PR comment and go on. Do not debug it in this session.
+- A test fails that your change does not touch: rerun only that test, at most twice. Passes now: name it as flaky in your PR comment and go on. Fails every time: run it on `origin/<base>` once to know whether the base has it too, then stop debugging it in this session. A red required suite still blocks, also when the base fails too (rules section 3): do not mark the PR ready, do not approve it, and comment the failure. It goes on only after a fix, or a ticket that Anton approved.
 - Commit and push as soon as a step works, and well before the timeout.
