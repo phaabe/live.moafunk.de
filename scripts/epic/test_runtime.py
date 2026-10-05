@@ -783,6 +783,39 @@ class AdmissionTest(TempCase):
         self.assertFalse((self.locks / "admitted/t8.json").exists())
 
 
+@unittest.skipUnless(sys.platform == "darwin", "libproc is macOS only")
+class ProcessTableTest(TempCase):
+    def test_macos_reads_libproc_without_starting_ps(self) -> None:
+        with patch.object(runtime.subprocess, "run", side_effect=AssertionError):
+            table = runtime.process_table()
+        self.assertEqual(table[os.getpid()][0], os.getppid())
+        self.assertIn(os.getppid(), table)
+
+    def test_entries_equal_ps(self) -> None:
+        pids = f"{os.getpid()},{os.getppid()}"
+        try:
+            out = subprocess.run(
+                ["/bin/ps", "-o", "pid=,ppid=,lstart=", "-p", pids],
+                capture_output=True, text=True, check=True,
+            ).stdout  # fmt: skip
+        except PermissionError:
+            self.skipTest("this sandbox may not run /bin/ps")
+        expected = {}
+        for line in out.splitlines():
+            pid, ppid, *start = line.split()
+            expected[int(pid)] = (int(ppid), " ".join(start))
+        table = runtime.process_table()
+        self.assertEqual({pid: table[pid] for pid in expected}, expected)
+
+    def test_failed_listing_refuses_writes_during_promotion(self) -> None:
+        runtime.begin_promotion(REV2, REV)
+        with patch("ctypes.CDLL") as cdll:
+            cdll.return_value.proc_listallpids.return_value = 0
+            with self.assertRaises(OSError):
+                runtime.process_table()
+            self.assertIn("unreadable", runtime.write_barrier() or "")
+
+
 def exclusive_free(lock: Path) -> bool:
     with exclusive(lock) as got:
         return got
