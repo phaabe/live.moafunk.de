@@ -578,7 +578,11 @@ class History:
         for stored in self.segments.values():
             if stored.segment.end is None:
                 open_by_issue.setdefault(stored.segment.issue, []).append(stored)
-        for issue in sorted(set(shown)):
+        # Hidden tickets with an exported open segment are reconciled too
+        # (closed or retired), but get no new segments and no refresh.
+        visible = set(shown)
+        for issue in sorted(visible | set(open_by_issue)):
+            hidden = issue not in visible
             pr = prs.get(issue)
             issue_url = f"{REPO_URL}/issues/{issue}"
             pr_url = f"{REPO_URL}/pull/{pr}" if pr else None
@@ -598,6 +602,8 @@ class History:
                 # Old intervals are skipped, unless one was exported open and
                 # still needs its close revision.
                 was_open = stored is not None and stored.segment.end is None
+                if hidden and not was_open:
+                    continue
                 if (
                     segment.end is not None
                     and segment.end < now - WINDOW
@@ -638,7 +644,11 @@ class History:
                         segment.verified,
                         segment.tick,
                     )
-                    refresh = segment.end is None and now - stored.emitted_at >= REFRESH
+                    refresh = (
+                        not hidden
+                        and segment.end is None
+                        and now - stored.emitted_at >= REFRESH
+                    )
                     if same and not refresh:
                         continue
                     rev = stored.rev + 1

@@ -620,6 +620,37 @@ class SegmentTest(Base):
         self.assertEqual(after["agent"], "codex")
         self.assertEqual(after["rev"], before["rev"] + 1)
 
+    def test_a_hidden_ticket_that_changes_status_closes_its_segment(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640:
+        hidden status change, compaction, restart, rotated ticks, return."""
+        self.see(NOW, {1: "In progress", 2: "Ready"})
+        self.update(
+            {"codex": [tick(NOW, NOW + 60, "claim", f"{ISSUE}/1")]},
+            NOW + 120,
+            shown=(1, 2),
+        )
+        self.update({}, NOW + 120 + H, shown=(1, 2))
+        self.assertEqual(self.latest()[f"1-{NOW}"]["rev"], 2)
+        # Ticket 1 is hidden, then moves to In review.
+        for t in range(NOW + 240, NOW + 3840, 120):
+            self.see(t, {1: "In progress", 2: "Ready"})
+        self.see(NOW + 3840, {1: "In review", 2: "Ready"})
+        self.update({}, NOW + 3850, shown=(2,))
+        closed = self.latest()[f"1-{NOW}"]
+        self.assertEqual(
+            (closed["end"], closed["agent"], closed["rev"]), (NOW + 3840, "codex", 3)
+        )
+        # Hidden: no new segment for In review, no hourly refresh.
+        self.assertNotIn(f"1-{NOW + 3840}", self.latest())
+        self.history.compact_segments(NOW + 3900)
+        self.history = self.fresh(NOW + 3960)
+        self.update({"codex": []}, NOW + 3960, shown=(1, 2))
+        rows = self.latest()
+        self.assertEqual(
+            (rows[f"1-{NOW}"]["agent"], rows[f"1-{NOW}"]["rev"]), ("codex", 3)
+        )
+        self.assertEqual(rows[f"1-{NOW + 3840}"]["status"], "In review")
+
     def test_compaction_drops_an_open_segment_the_ledger_no_longer_has(
         self,
     ) -> None:
