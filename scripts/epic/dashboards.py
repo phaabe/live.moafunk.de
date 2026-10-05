@@ -27,11 +27,18 @@ LEGACY_PAGES = {"claude": "Claude", "codex": "Codex"}
 LOCAL = " and on() (time() - epic_local_snapshot_timestamp_seconds < 30)"
 GITHUB = " and on() (time() - epic_github_snapshot_timestamp_seconds < 300)"
 DELIVERY = " and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)"
-TICKETS = " and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)"
-# For ticket sparklines: the whole series only while ticket data is fresh now.
+# Ticket data: a fresh snapshot, and the last board read worked. A failed
+# read keeps the old tickets.prom, so its age alone is not enough.
+TICKETS_OK = 'epic_ticket_source_ok{source="board"} == 1'
+TICKETS = (
+    " and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)"
+    f" and on() ({TICKETS_OK})"
+)
+# For ticket sparklines: the whole series only while ticket data is good now.
 TICKETS_AT_END = (
     " and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds"
     " < 300)[1m:] @ end())"
+    f" and on() last_over_time(({TICKETS_OK})[1m:] @ end())"
 )
 # Waits grow from cached GitHub data: only while the handoff was seen lately.
 HANDOFF = " and on() (time() - epic_handoff_observed_timestamp_seconds < 300)"
@@ -2002,20 +2009,20 @@ def check_tile(check: str, title: str, color: str, rule: str) -> Json:
 
 
 def status_stat(status: str) -> Json:
+    """Count now, with a 7-day sparkline. Nothing when the count is missing
+    now: the range reducer must not show an older value."""
+    series = f'epic_tickets_by_status{{status="{status}"}}'
     panel = stat(
         status,
-        [
-            ranged(
-                f'epic_tickets_by_status{{status="{status}"}}{TICKETS}{TICKETS_AT_END}'
-            )
-        ],
-        thresholds=steps((None, STATUS[status])),
+        [ranged(f"{series}{TICKETS}{TICKETS_AT_END} and on() ({series} @ end())")],
+        # Grey when there is no number; every count is >= 0.
+        thresholds=steps((None, STALE), (0, STATUS[status])),
         graph="area",
         time_from="7d",
         decimals=0,
         no_value="unknown",
         description=f"Tickets in {status} now; the change is against 7 days ago. "
-        "Unknown while the collector has not seen the board for 5 min.",
+        "Unknown while the board was not read in the last 5 min.",
     )
     panel["options"]["showPercentChange"] = True
     # More tickets in a status is neither good nor bad: no red or green.

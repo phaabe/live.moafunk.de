@@ -71,7 +71,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((epic_ticket_check_count{check=\"ready_undeclared\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)) or on() vector(-1))",
+          "expr": "((epic_ticket_check_count{check=\"ready_undeclared\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -153,7 +153,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((epic_ticket_check_count{check=\"ready_claimable\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)) or on() vector(-1))",
+          "expr": "((epic_ticket_check_count{check=\"ready_claimable\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -235,7 +235,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((epic_ticket_check_count{check=\"refinement_unreviewed\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)) or on() vector(-1))",
+          "expr": "((epic_ticket_check_count{check=\"refinement_unreviewed\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -317,7 +317,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((epic_ticket_check_count{check=\"done_open\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)) or on() vector(-1))",
+          "expr": "((epic_ticket_check_count{check=\"done_open\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -393,7 +393,7 @@
       "interval": "5m",
       "type": "stat",
       "title": "Backlog",
-      "description": "Tickets in Backlog now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "description": "Tickets in Backlog now; the change is against 7 days ago. Unknown while the board was not read in the last 5 min.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -401,7 +401,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"Backlog\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "expr": "epic_tickets_by_status{status=\"Backlog\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"Backlog\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -420,6 +420,10 @@
             "steps": [
               {
                 "value": null,
+                "color": "#9A9BA6"
+              },
+              {
+                "value": 0,
                 "color": "#A57BE0"
               }
             ]
@@ -460,7 +464,7 @@
       "interval": "5m",
       "type": "stat",
       "title": "Refinement",
-      "description": "Tickets in Refinement now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "description": "Tickets in Refinement now; the change is against 7 days ago. Unknown while the board was not read in the last 5 min.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -468,7 +472,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "expr": "epic_tickets_by_status{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"Refinement\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -487,6 +491,10 @@
             "steps": [
               {
                 "value": null,
+                "color": "#9A9BA6"
+              },
+              {
+                "value": 0,
                 "color": "#5B8DEF"
               }
             ]
@@ -527,7 +535,7 @@
       "interval": "5m",
       "type": "stat",
       "title": "Ready",
-      "description": "Tickets in Ready now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "description": "Tickets in Ready now; the change is against 7 days ago. Unknown while the board was not read in the last 5 min.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -535,7 +543,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "expr": "epic_tickets_by_status{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"Ready\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -554,6 +562,10 @@
             "steps": [
               {
                 "value": null,
+                "color": "#9A9BA6"
+              },
+              {
+                "value": 0,
                 "color": "#E8B530"
               }
             ]
@@ -594,7 +606,7 @@
       "interval": "5m",
       "type": "stat",
       "title": "In progress",
-      "description": "Tickets in In progress now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "description": "Tickets in In progress now; the change is against 7 days ago. Unknown while the board was not read in the last 5 min.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -602,7 +614,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "expr": "epic_tickets_by_status{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"In progress\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -621,6 +633,10 @@
             "steps": [
               {
                 "value": null,
+                "color": "#9A9BA6"
+              },
+              {
+                "value": 0,
                 "color": "#D96BB0"
               }
             ]
@@ -661,7 +677,7 @@
       "interval": "5m",
       "type": "stat",
       "title": "In review",
-      "description": "Tickets in In review now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "description": "Tickets in In review now; the change is against 7 days ago. Unknown while the board was not read in the last 5 min.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -669,7 +685,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "expr": "epic_tickets_by_status{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"In review\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -688,6 +704,10 @@
             "steps": [
               {
                 "value": null,
+                "color": "#9A9BA6"
+              },
+              {
+                "value": 0,
                 "color": "#4FC3E8"
               }
             ]
@@ -728,7 +748,7 @@
       "interval": "5m",
       "type": "stat",
       "title": "Done",
-      "description": "Tickets in Done now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "description": "Tickets in Done now; the change is against 7 days ago. Unknown while the board was not read in the last 5 min.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -736,7 +756,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "epic_tickets_by_status{status=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "expr": "epic_tickets_by_status{status=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end()) and on() last_over_time((epic_ticket_source_ok{source=\"board\"} == 1)[1m:] @ end()) and on() (epic_tickets_by_status{status=\"Done\"} @ end())",
           "instant": false,
           "range": true,
           "legendFormat": ""
@@ -755,6 +775,10 @@
             "steps": [
               {
                 "value": null,
+                "color": "#9A9BA6"
+              },
+              {
+                "value": 0,
                 "color": "#5AB45F"
               }
             ]
@@ -801,7 +825,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (status) (epic_tickets_by_status) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+          "expr": "sum by (status) (epic_tickets_by_status) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
           "instant": false,
           "range": true,
           "legendFormat": "{{status}}"
@@ -944,7 +968,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\")",
+          "expr": "label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\")",
           "instant": true,
           "range": false,
           "legendFormat": "",
@@ -1273,7 +1297,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"Backlog\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "expr": "epic_ticket_info{status=\"Backlog\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -1496,7 +1520,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "expr": "epic_ticket_info{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -1719,7 +1743,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "expr": "epic_ticket_info{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -1942,7 +1966,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "expr": "epic_ticket_info{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -2165,7 +2189,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "expr": "epic_ticket_info{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -2388,7 +2412,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "expr": "epic_ticket_info{status=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",

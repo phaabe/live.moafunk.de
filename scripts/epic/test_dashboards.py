@@ -478,6 +478,7 @@ class QuerySemanticsTest(unittest.TestCase):
                 "values": "1x25",
             },
             {"series": 'epic_tickets_by_status{status="Ready"}', "values": "2x25"},
+            {"series": 'epic_ticket_source_ok{source="board"}', "values": "1x25"},
         ]
         # The stat, not the Board column of the same name.
         [ready] = [
@@ -543,6 +544,102 @@ class QuerySemanticsTest(unittest.TestCase):
         ]
         self.run_promtool(
             [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]
+        )
+
+    def test_tickets_hide_cached_data_after_a_failed_read(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/637:
+        a failed board read keeps the old, still young tickets.prom; a status
+        series that vanishes must not leave its old count in the stat."""
+        table = panel_expr("tickets.json", "Tickets · $check").replace("$check", "all")
+        tile = panel_expr("tickets.json", "Board Done · issue open")
+        flow = panel_expr("tickets.json", "Tickets per status")
+        [ready] = [
+            p["targets"][0]["expr"]
+            for p in panels(pages()["tickets.json"])
+            if p["title"] == "Ready" and p["type"] == "stat"
+        ]
+        fresh = {
+            "series": "epic_ticket_snapshot_timestamp_seconds",
+            "values": "0+60x25",
+        }
+        info = {"series": 'epic_ticket_info{issue="1"}', "values": "1x25"}
+        count = {
+            "series": 'epic_ticket_check_count{check="done_open"}',
+            "values": "0x25",
+        }
+        self.run_promtool(
+            [
+                {
+                    # The board read fails at 6 min; the old file stays young.
+                    "interval": "1m",
+                    "input_series": [
+                        fresh,
+                        info,
+                        count,
+                        {
+                            "series": 'epic_ticket_source_ok{source="board"}',
+                            "values": "1x5 0x20",
+                        },
+                        {
+                            "series": 'epic_tickets_by_status{status="Ready"}',
+                            "values": "2x25",
+                        },
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": table,
+                            "eval_time": "4m",
+                            "exp_samples": [
+                                {"labels": 'epic_ticket_info{issue="1"}', "value": 1}
+                            ],
+                        },
+                        {"expr": table, "eval_time": "10m", "exp_samples": []},
+                        {
+                            "expr": tile,
+                            "eval_time": "10m",
+                            "exp_samples": [{"labels": "{}", "value": -1}],
+                        },
+                        {"expr": flow, "eval_time": "10m", "exp_samples": []},
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "10m",
+                            "exp_samples": [],
+                        },
+                    ],
+                },
+                {
+                    # The Ready series vanishes at 6 min; all else stays good.
+                    "interval": "1m",
+                    "input_series": [
+                        fresh,
+                        {
+                            "series": 'epic_ticket_source_ok{source="board"}',
+                            "values": "1x25",
+                        },
+                        {
+                            "series": 'epic_tickets_by_status{status="Ready"}',
+                            "values": "2x5",
+                        },
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "4m",
+                            "exp_samples": [
+                                {
+                                    "labels": 'epic_tickets_by_status{status="Ready"}',
+                                    "value": 2,
+                                }
+                            ],
+                        },
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "20m",
+                            "exp_samples": [],
+                        },
+                    ],
+                },
+            ]
         )
 
     def test_medians_show_nothing_once_delivery_data_is_stale(self) -> None:
