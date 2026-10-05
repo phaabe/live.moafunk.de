@@ -63,6 +63,7 @@ FILES = {
     ),
     "codex": (
         ".codex/codex-tick.sh",
+        "scripts/epic/runtime.py",
         ".codex/epic-tick.md",
         ".codex/tick_backoff.py",
         ".codex/tick-result.schema.json",
@@ -227,6 +228,12 @@ class Routing(unittest.TestCase):
         )
         (self.repo / ".codex/review_delivery.py").write_text(REVIEW_DELIVERY)
         (self.repo / ".codex/review_worktree.py").write_text(REVIEW_WORKTREE)
+        # The protected-home check is out of scope here (.codex/tests covers it):
+        # the stub passes and names the tick's temporary parent.
+        (self.repo / ".codex/protected_home.py").write_text(
+            "import json, os\n"
+            "print(json.dumps({'temporary_parent': os.environ['TEST_TEMP_PARENT']}))\n"
+        )
         # Codex's assignment evidence step runs after the gate: it passes here.
         (self.repo / ".codex/assignment.py").write_text(
             "import sys\n"
@@ -265,6 +272,7 @@ class Routing(unittest.TestCase):
             "TEST_CALLS": str(self.calls),
             "TEST_GH_MAP": str(self.gh_map),
             "TEST_STATE_FILE": str(self.state_file),
+            "TEST_TEMP_PARENT": str(self.root),
         }
 
     # GitHub: at selection time (state file) and after it (fake gh)
