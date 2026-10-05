@@ -525,6 +525,43 @@ class CollectTest(unittest.TestCase):
                 f'epic_ticket_source_ok{{source="{source}"}} 1', self.health()
             )
 
+    def test_incomplete_board_fields_make_the_board_unknown(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/633:
+        a missing field never becomes a definite answer."""
+        no_body = ticket(5, "Refinement")
+        del no_body["content"]["body"]
+        no_state = ticket(6, "Done")
+        del no_state["content"]["state"]
+        no_closure = ticket(7, "Done", closed_at=NOW - DAY)
+        del no_closure["content"]["closed_at"]
+        bad_closure = ticket(8, "Done", closed_at=NOW - DAY)
+        bad_closure["content"]["closed_at"] = "yesterday"
+
+        def fetch(cache: Path, request: monitor.Json, timeout: float) -> monitor.Json:
+            approved = {"state": "APPROVED", "digest": digest("")}
+            return {
+                "deps": {str(n): [] for n in request["ready"]},
+                "reviews": {str(n): approved for n in request["refinement"]},
+            }
+
+        for item in (no_body, no_state, no_closure, bad_closure):
+            with self.subTest(issue=item["content"]["number"]):
+                (self.root / "tickets.prom").write_text("old\n")
+                state = snapshot(items=[ticket(1, "Ready"), item])
+                self.assertFalse(self.collect(state, fetch))
+                self.assertEqual((self.root / "tickets.prom").read_text(), "old\n")
+                self.assertIn('epic_ticket_source_ok{source="board"} 0', self.health())
+
+    def test_null_body_is_a_confirmed_empty_body(self) -> None:
+        """GitHub REST returns body null for an issue with an empty body."""
+        empty = ticket(5, "Refinement")
+        empty["content"]["body"] = None
+        reviews: dict[int, monitor.Json | None] = {
+            5: {"state": "APPROVED", "digest": digest("")}
+        }
+        sink = render(snapshot(items=[empty]), tickets.Extra({}, reviews))
+        self.assertEqual(info(sink, 5)["note"], "Body reviewed")
+
     def test_malformed_newer_review_makes_the_review_source_unknown(self) -> None:
         """Codex review of https://github.com/phaabe/live.moafunk.de/pull/633:
         an older approval and a newer comment without updated_at."""

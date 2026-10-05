@@ -147,6 +147,11 @@ def board_tickets(state: Json, now: float) -> Population:
     most MAX_OPEN; so a long Backlog never pushes out active work. Done: issue still
     open or closed in the last DONE_DAYS, open ones first, then the newest
     closed, at most MAX_DONE.
+
+    A ticket without the fields its checks need raises Malformed, so the
+    board source is unknown and nothing is published from a guess: the issue
+    state, the closure time of a closed Done ticket, and the body of a
+    Refinement ticket (REST null is a confirmed empty body; no key is not).
     """
     counts: dict[str, int] = dict.fromkeys((*STATUSES, "Unknown"), 0)
     active: list[Ticket] = []
@@ -159,13 +164,17 @@ def board_tickets(state: Json, now: float) -> Population:
         status = raw if isinstance(raw, str) and raw in STATUSES else "Unknown"
         counts[status] += 1
         content = item.get("content") or {}
-        ticket = Ticket(
-            number,
-            item,
-            status,
-            content.get("state") != "closed",
-            parse_time(content.get("closed_at")),
-        )
+        if content.get("state") not in ("open", "closed"):
+            raise Malformed(f"issue {number} has no state")
+        is_open = content["state"] == "open"
+        closed_at = parse_time(content.get("closed_at"))
+        if status == "Done" and not is_open and closed_at is None:
+            raise Malformed(f"closed Done issue {number} has no closed_at")
+        if status == "Refinement" and not (
+            "body" in content and isinstance(content["body"], str | None)
+        ):
+            raise Malformed(f"Refinement issue {number} has no body field")
+        ticket = Ticket(number, item, status, is_open, closed_at)
         if status != "Done":
             active.append(ticket)
         elif ticket.open or (

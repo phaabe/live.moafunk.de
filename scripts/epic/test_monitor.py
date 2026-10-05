@@ -940,6 +940,7 @@ class ScrapeSizeTest(unittest.TestCase):
         for item in [*ready, *done]:
             item["level"] = "Task"
             item["content"]["title"] = "t" * 300
+            item["content"]["state"] = "open"
         hidden = {
             5000 + i: [f"{URL}/issues/{7000 + j}" for j in range(3)] for i in range(150)
         }
