@@ -2404,8 +2404,22 @@ else:
         )
 
     def test_timeout_writes_a_timeout_event(self) -> None:
-        self.env["EPIC_TICK_TIMEOUT_SECONDS"] = "1"
+        self.env["EPIC_TICK_TIMEOUT_SECONDS"] = "60"
+        real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+        self.assertIsNotNone(real_timeout)
+        timeout_pid = self.root / "timeout.pid"
+        timeout = self.bin / "timeout"
+        timeout.write_text(
+            f"#!{sys.executable}\n"
+            "import os, pathlib, sys\n"
+            "if sys.argv[3] == 'codex':\n"
+            f"    pathlib.Path({str(timeout_pid)!r}).write_text(str(os.getpid()))\n"
+            f"os.execv({real_timeout!r}, [{real_timeout!r}, *sys.argv[1:]])\n"
+        )
+        timeout.chmod(0o755)
         process, _ = self.blocked_tick()
+        # The model is ready: expire GNU timeout without a startup-time race.
+        os.kill(int(timeout_pid.read_text()), signal.SIGALRM)
         self.assertEqual(process.wait(timeout=15), 124)
         self.assertEqual(self.last_finish(), (124, "timeout", "model"))
 

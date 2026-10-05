@@ -93,6 +93,27 @@ approval controls or hook trust. If required permissions are unavailable, log
 the blocker and stop. Do not remove the runner's locks, edit `EPIC_ACTION_FILE`
 or modify its logs. Keep inherited lock descriptors open for this session.
 
+## Tests and time
+
+The runner stops the Codex session after `EPIC_TICK_TIMEOUT_SECONDS` (default
+30 minutes). Push completed work before the timeout so the next tick can resume.
+
+- Run tests for the files you changed first. Run each full suite
+  (`python3 scripts/epic/run_tests.py <suite> -j 10`) in the foreground when
+  your change is done. Do not repeat a full suite on the same commit, except
+  the one rerun after a flaky test below. After a fix commit or anything that
+  invalidates a rebase proof, run it again.
+- Never `sleep` to wait for a background test run.
+- If a test outside your change fails, rerun only that test, at most twice.
+  If it fails every time, run it on `origin/<base>` once to check whether the
+  base fails too, then stop debugging it in this session. If it passes, it is
+  flaky: run the full suite once more on the same commit. Only a green full
+  run counts; name the flaky test in your PR comment.
+- A failed required suite still blocks, even if the base fails too or the
+  test is flaky (epic rules section 3). Do not mark the PR ready or approve it;
+  comment the failure. Continue only after a fix or a ticket Anton approved.
+- Commit and push as soon as a step works, well before the timeout.
+
 ## Commands and final result
 
 Run Codex tests with `python3 -m unittest discover -s .codex/tests -v`, or an
