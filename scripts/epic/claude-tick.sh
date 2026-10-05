@@ -18,7 +18,10 @@
 # blocked target never starves the others. The target lock is held on file
 # descriptors 8 and 9 until the tick and all its children exited.
 #
-# Shared reader (EPIC_SHARED_READER=1, off by default; github_state.py): the
+# Shared reader (EPIC_SHARED_READER; github_state.py): the runner resolves it
+# once (`github_state.py resolve`: unset or empty means the default, off today;
+# 0 off; 1 on; other values exit 2) and exports the explicit 0 or 1, and when
+# on the recheck budget, to every child. When on, the
 # selector reads the shared REST snapshot. Its exit 5 (read blocked) ends the
 # tick as blocked with exit 75. After the gate check, `next_action.py
 # --recheck` reads the target fresh within EPIC_RECHECK_TIMEOUT_SECONDS: 6
@@ -263,22 +266,26 @@ exec 17>> "${runtime_lock_dir}/runtime.lock"
     --tick-id "$admission_id" --agent claude --pid $$ || exit $?
 admitted=1
 
-shared_reader=0
-recheck_timeout=0
-if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
-    shared_reader=1
-    recheck_timeout=${EPIC_RECHECK_TIMEOUT_SECONDS:-60}
-fi
 for duration in "$tick_timeout" "$select_timeout"; do
     if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
         printf 'tick: timeout must be a positive integer in seconds\n' >&2
         exit 2
     fi
 done
-if [[ "$shared_reader" == 1 && ! "$recheck_timeout" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'tick: timeout must be a positive integer in seconds\n' >&2
+# The shared reader, resolved once per tick (github_state.enabled() and, when
+# on, settings().recheck) before the checkout refresh. Every child gets the
+# explicit 0 or 1 and the recheck budget, and never applies a default.
+if ! resolved=$("$py" "${code_root}/scripts/epic/github_state.py" resolve); then
+    printf 'tick: bad shared-reader setting; no selection\n' >&2
     exit 2
 fi
+read -r shared_reader recheck_timeout <<< "$resolved"
+export EPIC_SHARED_READER=$shared_reader
+if [[ "$shared_reader" == 1 ]]; then
+    export EPIC_RECHECK_TIMEOUT_SECONDS=$recheck_timeout
+fi
+# Evidence: the effective setting of this tick.
+printf 'tick: shared reader=%s recheck=%ss\n' "$shared_reader" "$recheck_timeout"
 # Lock and registration budget: selection, recheck, model and cleanup.
 budget=$((select_timeout + recheck_timeout + tick_timeout + 10))
 if [[ -n "$agent_id" ]]; then
@@ -530,7 +537,7 @@ while IFS= read -r -u 3 candidate; do
         run_bounded "${recheck_timeout}s" "$py" "${code_root}/scripts/epic/next_action.py" \
             --agent claude --recheck "${lock_dir}/action.json" || recheck=$?
         case "$recheck" in
-            0) ;;
+            0) printf 'tick: %s fresh check passed\n' "$action" ;;
             6)
                 discard_seen
                 release_target

@@ -1294,7 +1294,14 @@ def main() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     if args.fetch_state:
-        print(json.dumps(epic.fetch_state()))
+        import github_state
+
+        try:
+            state = epic.fetch_state()
+        except github_state.ConfigError as error:
+            print(f"config: {error}", file=sys.stderr)
+            sys.exit(2)
+        print(json.dumps(state))
         return
     if args.fetch_delivery is not None:
         print(json.dumps(delivery.main_fetch(args.fetch_delivery, time.time())))

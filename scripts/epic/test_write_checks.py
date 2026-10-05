@@ -256,6 +256,40 @@ class Switch(Base):
                 self.assertIsNone(self.bash("git push origin feat/1-x"))
         self.assertEqual(self.reader.reads, 0)
 
+    def test_child_without_an_explicit_setting_refuses_writes(self) -> None:
+        self.action(action="review", pr=5, sha=A)
+        self.reader.fail = gs.ReadBlocked("must not read")
+        for default in (False, True):
+            for value in (None, "", "yes", "true"):
+                with self.subTest(default=default, value=value):
+                    with (
+                        patch.object(gs, "DEFAULT_ENABLED", default),
+                        patch.dict(os.environ, {"EPIC_SHARED_READER": value or ""}),
+                    ):
+                        if value is None:
+                            del os.environ["EPIC_SHARED_READER"]
+                        refused = self.bash("git push origin feat/1-x")
+                        self.assertIn("bad shared-reader setting", refused or "")
+                        # Reads still pass; only writes need the setting.
+                        self.assertIsNone(self.bash("gh pr view 5"))
+        self.assertEqual(self.reader.reads, 0)
+
+    def test_interactive_session_ignores_the_default(self) -> None:
+        self.action(action="review", pr=5, sha=A)
+        self.reader.fail = gs.ReadBlocked("must not read")
+        with (
+            patch.object(gs, "DEFAULT_ENABLED", True),
+            patch.dict(os.environ, {"EPIC_ACTION_FILE": ""}),
+        ):
+            del os.environ["EPIC_SHARED_READER"]
+            self.assertIsNone(self.bash("git push origin feat/1-x"))
+        with (
+            patch.object(gs, "DEFAULT_ENABLED", True),
+            patch.dict(os.environ, {"EPIC_SHARED_READER": "0"}),
+        ):
+            self.assertIsNone(self.bash("git push origin feat/1-x"))
+        self.assertEqual(self.reader.reads, 0)
+
     def test_reads_are_allowed_without_fresh_reads(self) -> None:
         self.action(action="review", pr=5, sha=A)
         self.assertIsNone(self.bash("gh pr view 5"))
@@ -514,6 +548,68 @@ class Callers(Base):
         with patch.dict(os.environ, {"EPIC_SHARED_READER": "0"}):
             with patch.object(wc, "guard", side_effect=AssertionError("called")):
                 self.assertTrue(permission_gate.decide("Bash", cmd)[0])
+
+    def merge_prompt(self) -> dict[str, str]:
+        self.action(action="merge", pr=5, sha=A)
+        return {
+            "command": "gh pr merge 5 --repo phaabe/live.moafunk.de --squash "
+            f"--match-head-commit {A}"
+        }
+
+    def test_permission_gate_refuses_writes_without_an_explicit_setting(self) -> None:
+        cmd = self.merge_prompt()
+        for value in (None, "", "yes"):
+            with self.subTest(value=value):
+                with patch.dict(os.environ, {"EPIC_SHARED_READER": value or ""}):
+                    if value is None:
+                        del os.environ["EPIC_SHARED_READER"]
+                    allowed, reason = permission_gate.decide("Bash", cmd)
+                self.assertFalse(allowed)
+                self.assertIn("bad shared-reader setting", reason)
+
+    def test_permission_gate_refuses_when_the_check_raises(self) -> None:
+        cmd = self.merge_prompt()
+        with patch.object(wc, "guard", side_effect=KeyError("head")):
+            self.assertEqual(
+                permission_gate.decide("Bash", cmd),
+                (False, "fresh check failed: KeyError('head')"),
+            )
+
+    def test_hook_with_the_real_checks_refuses_a_bad_child_setting(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        clean = {k: v for k, v in os.environ.items() if k != "EPIC_SHARED_READER"}
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push origin feat/5-x"},
+            "cwd": str(self.root),
+        }
+        for value in (None, "", "yes"):
+            with self.subTest(value=value):
+                env = {**clean, "EPIC_TRUSTED_ROOT": str(ROOT)}
+                if value is not None:
+                    env["EPIC_SHARED_READER"] = value
+                done = subprocess.run(
+                    [sys.executable, str(ROOT / ".claude/hooks/scripts/epic_guard.py")],
+                    input=json.dumps(payload),
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=30,
+                )
+                self.assertEqual(done.returncode, 2, done.stderr)
+                self.assertIn("bad shared-reader setting", done.stderr)
+
+    def test_hook_keeps_interactive_sessions_unchanged(self) -> None:
+        # No action context: no write check, also with a bad or missing value.
+        trusted = self.root / "trusted"
+        (trusted / "scripts/epic").mkdir(parents=True)
+        (trusted / "scripts/epic/write_checks.py").write_text(
+            "def guard(tool, tool_input, cwd, agent=None):\n    return 'must not run'\n"
+        )
+        for value in ("", "yes", "1"):
+            with self.subTest(value=value):
+                done = self.hook(trusted, EPIC_ACTION_FILE="", EPIC_SHARED_READER=value)
+                self.assertEqual(done.returncode, 0, done.stderr)
 
     def hook(self, root: Path, **env: str) -> subprocess.CompletedProcess[str]:
         payload = {

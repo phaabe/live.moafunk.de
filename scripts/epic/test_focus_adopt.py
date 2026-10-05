@@ -428,7 +428,11 @@ class PermissionBodyEditTest(unittest.TestCase):
     def allowed(
         self, command: str, action: dict | None, anchor: str | None = None
     ) -> bool:
-        env = {"EPIC_BODY_DIR_ID": self.anchor if anchor is None else anchor}
+        # The runner exports an explicit switch; the gate has no default.
+        env = {
+            "EPIC_BODY_DIR_ID": self.anchor if anchor is None else anchor,
+            "EPIC_SHARED_READER": "0",
+        }
         if action is not None:
             path = self.tmp / "action.json"
             path.write_text(json.dumps(action))

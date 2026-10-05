@@ -47,6 +47,7 @@ COPIED = (
     "scripts/epic/claude-runner-settings.json",
     "scripts/epic/claude-mcp-config.json",
     "scripts/epic/github_quota.py",
+    "scripts/epic/github_state.py",
     "scripts/epic/agents.py",
     "scripts/epic/tick_events.py",
     "scripts/epic/target_lock.py",

@@ -321,6 +321,20 @@ the switch off, waiting work still starts no model, but claims stay held as
 before. A comment read that fails stops the tick (exit 5); it never counts as
 a missing comment.
 
+`EPIC_SHARED_READER` has one resolver, `github_state.enabled()`. Unset or
+empty means the default in `github_state.DEFAULT_ENABLED` (off today), `0` is
+off and `1` is on. Any other value is a configuration error (exit 2). The
+runner, standalone selection and `monitor.py --fetch-state` all use it. Each
+runner resolves the switch once per tick (`github_state.py resolve`) and exports
+an explicit `0` or `1` to every child. When on, it also exports the recheck
+budget. A runner child (an action file is set) never applies the default: a
+missing, empty or invalid value refuses every write in the hook and in the
+permission gate. Without an action file, hooks behave as before. To check a
+fresh runner process, read its log: each tick prints
+`tick: shared reader=<0|1> recheck=<N>s`, and `tick: <action> fresh check
+passed` before the model when on. Run `python3 scripts/epic/github_state.py
+resolve` in the runner's environment to see the value the next tick uses.
+
 Each runner checkout only runs ticks and holds no work. Every
 tick starts with `git pull --ff-only` there, so merged changes to
 `scripts/epic/`, `.claude/commands/epic/` or `.codex/` apply on the next tick;

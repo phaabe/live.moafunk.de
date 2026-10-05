@@ -25,7 +25,8 @@ others) still run for every approved command.
 With the shared reader (EPIC_SHARED_READER=1), an approved command is also
 checked fresh against GitHub right before it runs (write_checks.py): a push
 needs its PR open or its issue In progress for Claude, a merge the full merge
-guard. A failed read denies it.
+guard. A failed read denies it. The runner exports 0 or 1; a missing, empty or
+invalid value denies every write (no default in the gate).
 
 While a runtime promotion marker exists (runtime.py), merges, body edits and
 git writes are denied unless the caller runs inside a tick admitted before the
@@ -57,11 +58,18 @@ SHELL_META = re.compile(r"[;&|<>`$\n\\]|\(|\)")
 def decide(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
     """(allowed, reason) for one permission prompt."""
     allowed, reason = rule(tool_name, tool_input)
-    if allowed and os.environ.get("EPIC_SHARED_READER") == "1":
-        # Imported here: standard library only while the switch is off.
-        import write_checks
+    # The runner exports 0 or 1. Any other value (missing, empty, invalid) goes
+    # to write_checks.guard(), which refuses the write instead of a default.
+    if allowed and os.environ.get("EPIC_SHARED_READER") != "0":
+        try:
+            # Imported here: standard library only while the switch is off.
+            import write_checks
 
-        refused = write_checks.guard(tool_name, tool_input, os.getcwd(), agent="Claude")
+            refused = write_checks.guard(
+                tool_name, tool_input, os.getcwd(), agent="Claude"
+            )
+        except Exception as error:  # an uncaught error would hang the prompt
+            return False, f"fresh check failed: {error!r}"
         if refused:
             return False, f"fresh check: {refused}"
     return allowed, reason

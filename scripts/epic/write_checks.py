@@ -5,8 +5,10 @@ module reads what that write needs fresh from GitHub and refuses the write when
 it no longer holds, or when the read fails. The ownership check of
 https://github.com/phaabe/live.moafunk.de/issues/456 runs after this one.
 
-Active only with EPIC_SHARED_READER=1 and EPIC_ACTION_FILE set (the runner
-sets it for the model session). Interactive sessions are not checked. The
+Active only in a runner child (EPIC_ACTION_FILE set for the model session)
+with the runner's explicit EPIC_SHARED_READER=1. There a missing, empty or
+invalid EPIC_SHARED_READER refuses every write: a child never applies the
+default. Interactive sessions (no EPIC_ACTION_FILE) are not checked. The
 caller names the agent (Claude or Codex); "this agent" below means that one.
 
   Write                          Fresh check
@@ -115,8 +117,13 @@ class Write:
 
 
 def active(env: Mapping[str, str] | None = None) -> bool:
+    """False without action context (interactive). In a runner child the
+    runner's explicit 0 or 1 decides; missing, empty or invalid raises
+    gs.ConfigError, so the caller refuses the write."""
     values = os.environ if env is None else env
-    return gs.enabled(values) and bool(values.get("EPIC_ACTION_FILE"))
+    if not values.get("EPIC_ACTION_FILE"):
+        return False
+    return gs.child_enabled(values)
 
 
 # --- reading commands ---
@@ -738,7 +745,12 @@ def guard(
 ) -> str | None:
     """None to allow the tool call, else why it is refused. `agent` is the
     runner's agent, Claude or Codex (default AGENT)."""
-    if not active():
+    try:
+        on = active()
+        setting_error = None
+    except gs.ConfigError as error:
+        on, setting_error = True, error
+    if not on:
         return None
     blocked = promotion_refusal(tool_name, tool_input, cwd)
     if blocked:
@@ -749,6 +761,8 @@ def guard(
         return str(error)
     if not writes:
         return None
+    if setting_error:
+        return f"bad shared-reader setting, so the write is refused: {setting_error}"
 
     def make_reader() -> gs.FreshReader:
         return gs.FreshReader("write-check", gs.settings().recheck)

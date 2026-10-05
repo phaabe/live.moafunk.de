@@ -1194,6 +1194,80 @@ class Recheck(Env):
                     self.recheck(action)
 
 
+class SharedReaderSwitch(Env):
+    """One resolver (enabled), explicit child values (child_enabled), and the
+    runner's `github_state.py resolve`. Both defaults, no runner touched."""
+
+    def default(self, value: bool) -> Any:
+        return patch.object(gs, "DEFAULT_ENABLED", value)
+
+    def test_unset_and_empty_mean_the_default(self) -> None:
+        self.assertIs(gs.DEFAULT_ENABLED, False)
+        for default in (False, True):
+            with self.default(default):
+                self.assertIs(gs.enabled({}), default)
+                self.assertIs(gs.enabled({"EPIC_SHARED_READER": ""}), default)
+                self.assertIs(gs.enabled({"EPIC_SHARED_READER": "0"}), False)
+                self.assertIs(gs.enabled({"EPIC_SHARED_READER": "1"}), True)
+
+    def test_other_values_are_config_errors(self) -> None:
+        for value in ("2", "true", "yes", " 1", "1 ", "00", "on"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(gs.ConfigError, "EPIC_SHARED_READER"):
+                    gs.enabled({"EPIC_SHARED_READER": value})
+                with self.assertRaisesRegex(gs.ConfigError, "EPIC_SHARED_READER"):
+                    gs.child_enabled({"EPIC_SHARED_READER": value})
+
+    def test_children_never_apply_the_default(self) -> None:
+        for default in (False, True):
+            with self.default(default):
+                for env in ({}, {"EPIC_SHARED_READER": ""}):
+                    with self.assertRaisesRegex(gs.ConfigError, "runner child"):
+                        gs.child_enabled(env)
+                self.assertIs(gs.child_enabled({"EPIC_SHARED_READER": "0"}), False)
+                self.assertIs(gs.child_enabled({"EPIC_SHARED_READER": "1"}), True)
+
+    def test_resolve_gives_the_switch_and_the_recheck_budget(self) -> None:
+        self.assertEqual(gs.resolve({}), (0, 0))
+        # Off reads no timing setting, as before.
+        self.assertEqual(gs.resolve({"EPIC_RECHECK_TIMEOUT_SECONDS": "x"}), (0, 0))
+        self.assertEqual(gs.resolve({"EPIC_SHARED_READER": "1"}), (1, 60))
+        on = {"EPIC_SHARED_READER": "1", "EPIC_RECHECK_TIMEOUT_SECONDS": "25"}
+        self.assertEqual(gs.resolve(on), (1, 25))
+        with self.default(True):
+            self.assertEqual(gs.resolve({}), (1, 60))
+            self.assertEqual(gs.resolve({"EPIC_SHARED_READER": "0"}), (0, 0))
+            with self.assertRaises(gs.ConfigError):
+                gs.resolve({"EPIC_RECHECK_TIMEOUT_SECONDS": "0"})
+
+    def run_resolve(self, **env: str) -> subprocess.CompletedProcess[str]:
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("EPIC_")}
+        return subprocess.run(
+            [sys.executable, str(HERE / "github_state.py"), "resolve"],
+            env={**clean, **env},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_resolve_command(self) -> None:
+        self.assertEqual(self.run_resolve().stdout, "0 0\n")
+        self.assertEqual(self.run_resolve(EPIC_SHARED_READER="").stdout, "0 0\n")
+        self.assertEqual(self.run_resolve(EPIC_SHARED_READER="1").stdout, "1 60\n")
+        done = self.run_resolve(
+            EPIC_SHARED_READER="1", EPIC_RECHECK_TIMEOUT_SECONDS="25"
+        )
+        self.assertEqual(done.stdout, "1 25\n")
+        for env in (
+            {"EPIC_SHARED_READER": "yes"},
+            {"EPIC_SHARED_READER": "1", "EPIC_RECHECK_TIMEOUT_SECONDS": "0"},
+        ):
+            with self.subTest(env=env):
+                done = self.run_resolve(**env)
+                self.assertEqual((done.returncode, done.stdout), (2, ""))
+                self.assertIn("config:", done.stderr)
+
+
 class NextActionCli(Env):
     """next_action.py exit codes with the shared reader."""
 
@@ -1236,6 +1310,73 @@ class NextActionCli(Env):
             code, out, _ = self.main("--agent", "claude")
         self.assertEqual((code, json.loads(out)["action"]), (0, "idle"))
 
+    def reads(self, env: dict[str, str], default: bool, call: Any) -> str:
+        """Which read `call` used: "shared", "old" or "config"."""
+        snap = gs.Snapshot(small_state(), "2026-09-29T10:00:00Z", 3, "cache")
+        with (
+            patch.dict(os.environ, env),
+            patch.object(gs, "DEFAULT_ENABLED", default),
+            patch.object(gs, "read_snapshot", return_value=snap),
+            patch.object(na, "gh_json", side_effect=RuntimeError("old path")),
+        ):
+            try:
+                call()
+            except RuntimeError:
+                return "old"
+            except gs.ConfigError:
+                return "config"
+        return "shared"
+
+    def test_selection_and_monitor_share_the_default(self) -> None:
+        import contextlib
+        import io
+
+        import monitor
+
+        def selector() -> None:
+            code, _, _ = self.main("--agent", "claude")
+            if code == 2:
+                raise gs.ConfigError("exit 2")
+
+        def fetch_state() -> None:
+            with patch.object(sys, "argv", ["monitor.py", "--fetch-state"]):
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    try:
+                        monitor.main()
+                    except SystemExit as error:
+                        if error.code == 2:
+                            raise gs.ConfigError("exit 2") from error
+                        raise
+
+        cases = (
+            ({"EPIC_SHARED_READER": ""}, False, "old"),
+            ({"EPIC_SHARED_READER": ""}, True, "shared"),
+            ({"EPIC_SHARED_READER": "0"}, True, "old"),
+            ({"EPIC_SHARED_READER": "1"}, False, "shared"),
+            ({"EPIC_SHARED_READER": "maybe"}, False, "config"),
+        )
+        for name, call in (("selector", selector), ("monitor", fetch_state)):
+            for env, default, expected in cases:
+                with self.subTest(path=name, env=env, default=default):
+                    self.assertEqual(self.reads(env, default, call), expected)
+        with patch.object(gs, "DEFAULT_ENABLED", True):
+            os.environ.pop("EPIC_SHARED_READER")
+            self.assertEqual(self.reads({}, True, selector), "shared")
+
+    def test_invalid_switch_exits_2_before_any_read(self) -> None:
+        with (
+            patch.dict(os.environ, {"EPIC_SHARED_READER": "yes"}),
+            patch.object(gs, "read_snapshot", side_effect=AssertionError("read")),
+            patch.object(na, "gh_json", side_effect=AssertionError("read")),
+        ):
+            for args in (("--agent", "claude"), ("--status",)):
+                code, out, err = self.main(*args)
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("EPIC_SHARED_READER", err)
+
     def test_switch_off_keeps_the_old_reads(self) -> None:
         with patch.dict(os.environ, {"EPIC_SHARED_READER": ""}):
             with patch.object(
@@ -1261,6 +1402,44 @@ class NextActionCli(Env):
         with patch.object(na, "stop_on_quota", return_value=4):
             quota = na.QuotaExhausted("GraphQL")
             self.assertEqual(self.recheck(side_effect=quota)[0], 4)
+
+    def test_recheck_needs_an_explicit_child_setting(self) -> None:
+        # The recheck runs only in a runner child: no default, no read.
+        for env in ({}, {"EPIC_SHARED_READER": ""}, {"EPIC_SHARED_READER": "yes"}):
+            with self.subTest(env=env), patch.dict(os.environ, env):
+                if not env:
+                    os.environ.pop("EPIC_SHARED_READER")
+                with patch.object(gs, "DEFAULT_ENABLED", True):
+                    code, out, err = self.recheck(side_effect=AssertionError("read"))
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("config: EPIC_SHARED_READER", err)
+        with patch.object(gs, "FreshReader", side_effect=AssertionError("read")):
+            with patch.dict(os.environ, {"EPIC_SHARED_READER": "no"}):
+                self.assertEqual(self.main("--agent", "claude", "--recheck", "x")[0], 2)
+        for value in ("0", "1"):
+            with patch.dict(os.environ, {"EPIC_SHARED_READER": value}):
+                self.assertEqual(self.recheck(return_value=None)[0], 0)
+
+    def run_monitor(self, **env: str) -> subprocess.CompletedProcess[str]:
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("EPIC_")}
+        return subprocess.run(
+            [sys.executable, str(HERE / "monitor.py"), "--fetch-state"],
+            env={**clean, "EPIC_CACHE_DIR": str(self.cache), **env},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_monitor_fetch_state_exits_2_on_bad_settings(self) -> None:
+        for env in (
+            {"EPIC_SHARED_READER": "yes"},
+            {"EPIC_SHARED_READER": "1", "EPIC_SNAPSHOT_LOCK_SECONDS": "zero"},
+        ):
+            with self.subTest(env=env):
+                done = self.run_monitor(**env)
+                self.assertEqual((done.returncode, done.stdout), (2, ""))
+                self.assertIn("config: EPIC_", done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
 
     def test_recheck_needs_an_agent(self) -> None:
         with self.assertRaises(SystemExit):

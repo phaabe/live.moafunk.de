@@ -44,6 +44,22 @@ WAIT_WRITE = (
     '.write(\'{"retry_at": "2099-01-01T00:00:00Z"}\')'
 )
 
+# The runner resolves the shared reader with `github_state.py resolve`. The
+# fixture runs the real module from this repository (its next_action.py is a
+# stub); TEST_READER_DEFAULT=1 stands for the planned default-on.
+STATE_PROXY = (
+    "import importlib.util, os, sys\n"
+    f"real = {str(ROOT / 'scripts/epic')!r}\n"
+    "sys.path.insert(0, real)\n"
+    "spec = importlib.util.spec_from_file_location('github_state', real + '/github_state.py')\n"
+    "state = importlib.util.module_from_spec(spec)\n"
+    "sys.modules['github_state'] = state\n"
+    "spec.loader.exec_module(state)\n"
+    "if os.environ.get('TEST_READER_DEFAULT') == '1':\n"
+    "    state.DEFAULT_ENABLED = True\n"
+    "sys.exit(state.main(sys.argv[1:]))\n"
+)
+
 
 class RunnerHarness(unittest.TestCase):
     """Stubs and helpers; test_claude_cooldown.py reuses them."""
@@ -78,6 +94,7 @@ class RunnerHarness(unittest.TestCase):
             shutil.copyfile(ROOT / rel, self.repo / rel)
             if os.access(ROOT / rel, os.X_OK):  # the lockhold prefix runs directly
                 (self.repo / rel).chmod(0o755)
+        (self.repo / "scripts/epic/github_state.py").write_text(STATE_PROXY)
         # --recheck: exits from TEST_RECHECK_EXITS in order (the last repeats).
         (self.repo / "scripts/epic/next_action.py").write_text(
             "import json, os, sys, time\n"
@@ -86,17 +103,23 @@ class RunnerHarness(unittest.TestCase):
             "    pr = json.load(open(sys.argv[-1])).get('pr')\n"
             "    with open(calls, 'a') as f:\n"
             "        f.write(json.dumps(['recheck', pr]) + '\\n')\n"
+            "    with open(calls + '.recheck-env', 'a') as f:\n"
+            "        f.write(json.dumps([os.environ.get(k, '<unset>') for k in "
+            "('EPIC_SHARED_READER', 'EPIC_RECHECK_TIMEOUT_SECONDS')]) + '\\n')\n"
             "    time.sleep(float(os.environ.get('TEST_RECHECK_SLEEP', '0')))\n"
             "    codes = os.environ.get('TEST_RECHECK_EXITS', '0').split(',')\n"
             "    n = sum(1 for line in open(calls) if line.startswith('[\"recheck\"'))\n"
             "    sys.exit(int(codes[min(n, len(codes)) - 1]))\n"
-            "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
-            "    f.write(json.dumps(['select']) + '\\n')\n"
-            "if os.environ.get('TEST_SELECT_WAIT'):\n"
-            f"    {WAIT_WRITE}\n"
-            "code = int(os.environ.get('TEST_SELECT_EXIT', '0'))\n"
-            f"out = os.environ.get('TEST_CANDIDATES') or {json.dumps(json.dumps(ACTION))}\n"
-            "print(out) if code == 0 else sys.exit(code)\n"
+            "else:\n"
+            "    with open(os.environ['TEST_CALLS'], 'a') as f:\n"
+            "        f.write(json.dumps(['select']) + '\\n')\n"
+            "    with open(os.environ['TEST_CALLS'] + '.select-env', 'a') as f:\n"
+            "        f.write(os.environ.get('EPIC_SHARED_READER', '<unset>') + '\\n')\n"
+            "    if os.environ.get('TEST_SELECT_WAIT'):\n"
+            f"        {WAIT_WRITE}\n"
+            "    code = int(os.environ.get('TEST_SELECT_EXIT', '0'))\n"
+            f"    out = os.environ.get('TEST_CANDIDATES') or {json.dumps(json.dumps(ACTION))}\n"
+            "    print(out) if code == 0 else sys.exit(code)\n"
         )
         (self.repo / "scripts/epic/tick_gate.py").write_text(
             "import json, os, sys\n"
@@ -156,6 +179,7 @@ class RunnerHarness(unittest.TestCase):
             'echo $$ > "$TEST_MODEL_PID"\n'
             'printf \'%s\\n%s\\n\' "${EPIC_ACTION_FILE:-}" "${EPIC_TRUSTED_ROOT:-}" > "$TEST_CALLS.modelenv"\n'
             'printf \'%s\' "${EPIC_WORKTREE:-}" > "$TEST_CALLS.worktree-env"\n'
+            'printf \'%s\' "${EPIC_SHARED_READER-<unset>}" > "$TEST_CALLS.reader-env"\n'
             'printf \'%s\' "${GIT_EDITOR:-}" > "$TEST_CALLS.editor"\n'
             'printf \'%s\' "${EPIC_BODY_DIR:-}" > "$TEST_CALLS.body-dir"\n'
             'printf \'%s\' "${EPIC_BODY_DIR_ID:-}" > "$TEST_CALLS.body-id"\n'
@@ -333,8 +357,10 @@ class ClaudeTickTest(RunnerHarness):
         self.assertEqual(self.model_targets(), [])
 
     def test_two_runners_on_one_target_start_one_model(self) -> None:
-        first = self.run_tick(TEST_MODEL_SLEEP="3")
-        for _ in range(100):
+        # The model holds the target long enough for a slow second runner.
+        first = self.run_tick(TEST_MODEL_SLEEP="10")
+        # Up to 30 s: under a parallel suite the first model can start late.
+        for _ in range(600):
             if self.model_pid.exists():
                 break
             time.sleep(0.05)
@@ -457,7 +483,8 @@ class ClaudeTickTest(RunnerHarness):
             str(self.repo.resolve().parent / "live.moafunk.de-claude-wt"),
         )
         self.assertIn("HOME", env)
-        self.assertNotIn("EPIC_SHARED_READER", env)
+        # Off by default, and the gate still gets the explicit value.
+        self.assertEqual(env["EPIC_SHARED_READER"], "0")
 
     def test_runner_settings_and_editor_reach_the_model(self) -> None:
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
@@ -936,6 +963,113 @@ class ClaudeTickTest(RunnerHarness):
         self.assertEqual(self.shared(**env).wait(timeout=30), 0)
         agent = json.loads((self.state / "agents/claude-2/agent.json").read_text())
         self.assertEqual(agent["budget_seconds"], 120 + 30 + 1800 + 10)
+
+    # One resolver (github_state.enabled()), resolved once, explicit to children.
+
+    def default_on(self) -> None:
+        """The planned default, only in this fixture (STATE_PROXY)."""
+        self.env["TEST_READER_DEFAULT"] = "1"
+
+    def child_settings(self) -> dict[str, object]:
+        """The setting each child saw: selector, recheck, model and gate."""
+        args = self.model_targets()[0] if self.model_targets() else ""
+        gate = None
+        if args:
+            config = json.loads(args.split("--mcp-config ", 1)[1].split(" --", 1)[0])
+            gate = config["mcpServers"]["epic-gate"]["env"].get("EPIC_SHARED_READER")
+        model = Path(str(self.calls) + ".reader-env")
+        recheck = Path(str(self.calls) + ".recheck-env")
+        return {
+            "select": Path(str(self.calls) + ".select-env").read_text().split(),
+            "recheck": [json.loads(line) for line in recheck.read_text().splitlines()]
+            if recheck.exists()
+            else [],
+            "model": model.read_text() if model.exists() else None,
+            "gate": gate,
+        }
+
+    def test_unset_empty_and_zero_export_an_explicit_zero(self) -> None:
+        for value in (None, "", "0"):
+            with self.subTest(value=value):
+                for path in self.root.glob("calls.jsonl*"):
+                    path.unlink()
+                env = {} if value is None else {"EPIC_SHARED_READER": value}
+                self.assertEqual(self.run_tick(**env).wait(timeout=30), 0)
+                self.assertEqual(
+                    self.child_settings(),
+                    {"select": ["0"], "recheck": [], "model": "0", "gate": "0"},
+                )
+        log = (self.state / "claude.log").read_text()
+        self.assertEqual(log.count("tick: shared reader=0 recheck=0s\n"), 3)
+        self.assertNotIn("fresh check passed", log)
+
+    def test_explicit_one_reaches_every_child_with_the_budget(self) -> None:
+        self.assertEqual(self.shared().wait(timeout=30), 0)
+        self.assertEqual(
+            self.child_settings(),
+            {"select": ["1"], "recheck": [["1", "60"]], "model": "1", "gate": "1"},
+        )
+        # Evidence: the effective setting and the fresh check in the log.
+        log = (self.state / "claude.log").read_text()
+        self.assertIn("tick: shared reader=1 recheck=60s\n", log)
+        self.assertIn("tick: fix fresh check passed\n", log)
+
+    def test_non_default_recheck_budget_reaches_the_recheck(self) -> None:
+        self.assertEqual(
+            self.shared(EPIC_RECHECK_TIMEOUT_SECONDS="25").wait(timeout=30), 0
+        )
+        self.assertEqual(self.child_settings()["recheck"], [["1", "25"]])
+
+    def test_invalid_setting_stops_before_selection(self) -> None:
+        for value in ("yes", "2", " 1"):
+            with self.subTest(value=value):
+                runner = self.run_tick(EPIC_SHARED_READER=value)
+                self.assertEqual(runner.wait(timeout=30), 2)
+                self.assertFalse(self.calls.exists())
+                self.assertIn(
+                    "bad shared-reader setting", (self.state / "claude.log").read_text()
+                )
+
+    def test_default_on_rechecks_before_the_model(self) -> None:
+        self.default_on()
+        for value in (None, ""):
+            with self.subTest(value=value):
+                for path in self.root.glob("calls.jsonl*"):
+                    path.unlink()
+                env = {} if value is None else {"EPIC_SHARED_READER": value}
+                self.assertEqual(self.run_tick(**env).wait(timeout=30), 0)
+                kinds = [c[0] for c in self.calls_made()]
+                self.assertEqual(kinds[kinds.index("recheck") + 1], "claude")
+                self.assertEqual(
+                    self.child_settings(),
+                    {
+                        "select": ["1"],
+                        "recheck": [["1", "60"]],
+                        "model": "1",
+                        "gate": "1",
+                    },
+                )
+
+    def test_default_on_stale_or_blocked_check_starts_no_model(self) -> None:
+        self.default_on()
+        for exits, code in (("6", 0), ("5", 75)):
+            with self.subTest(exits=exits):
+                for path in self.root.glob("calls.jsonl*"):
+                    path.unlink()
+                runner = self.run_tick(TEST_RECHECK_EXITS=exits)
+                self.assertEqual(runner.wait(timeout=30), code)
+                self.assertEqual(self.model_targets(), [])
+                self.assertNotIn(["gate", "record"], self.calls_made())
+                self.assertFalse((self.state / "claude-gate-seen.json").exists())
+                self.assertFalse((self.state / "claude-cooldown.json").exists())
+
+    def test_default_on_explicit_zero_runs_no_recheck(self) -> None:
+        self.default_on()
+        self.assertEqual(self.run_tick(EPIC_SHARED_READER="0").wait(timeout=30), 0)
+        self.assertEqual(
+            self.child_settings(),
+            {"select": ["0"], "recheck": [], "model": "0", "gate": "0"},
+        )
 
     def test_model_and_gate_get_the_write_check_inputs(self) -> None:
         self.assertEqual(self.shared().wait(timeout=30), 0)
