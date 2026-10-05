@@ -579,8 +579,17 @@ def owned_marker(promotion_id: str) -> dict[str, Any]:
 # --- processes --------------------------------------------------------------
 
 
+LSTART = "%a %b %e %H:%M:%S %Y"  # `ps -o lstart=`
+PROC_PIDTBSDINFO = 3
+
+
 def process_table() -> dict[int, tuple[int, str]]:
-    """pid -> (ppid, normalised start time). `ps` pads lstart with spaces."""
+    """pid -> (ppid, normalised start time). `ps` pads lstart with spaces.
+
+    macOS reads libproc: the Codex sandbox may not run /bin/ps.
+    """
+    if sys.platform == "darwin":
+        return libproc_table()
     out = subprocess.run(
         ["/bin/ps", "-A", "-o", "pid=,ppid=,lstart="],
         capture_output=True,
@@ -593,6 +602,63 @@ def process_table() -> dict[int, tuple[int, str]]:
         parts = line.split()
         if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
             table[int(parts[0])] = (int(parts[1]), " ".join(parts[2:]))
+    return table
+
+
+def libproc_table() -> dict[int, tuple[int, str]]:
+    """The `ps` table from libproc, for the user's own processes.
+
+    Other users' processes are left out (proc_pidinfo refuses them). Admission
+    only matches the user's own ticks, so no decision changes. A failed pid
+    listing raises OSError, which the write barrier treats as unreadable.
+    """
+    import ctypes
+
+    class BsdInfo(ctypes.Structure):
+        """struct proc_bsdinfo, <sys/proc_info.h>."""
+
+        _fields_ = [
+            *((name, ctypes.c_uint32) for name in (
+                "flags", "status", "xstatus", "pid", "ppid", "uid", "gid",
+                "ruid", "rgid", "svuid", "svgid", "rfu_1",
+            )),
+            ("comm", ctypes.c_char * 16),
+            ("name", ctypes.c_char * 32),
+            *((name, ctypes.c_uint32) for name in (
+                "nfiles", "pgid", "pjobc", "e_tdev", "e_tpgid",
+            )),
+            ("nice", ctypes.c_int32),
+            ("start_tvsec", ctypes.c_uint64),
+            ("start_tvusec", ctypes.c_uint64),
+        ]  # fmt: skip
+
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.proc_pidinfo.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
+    ]  # fmt: skip
+    size = max(lib.proc_listallpids(None, 0), 0) + 256
+    while True:
+        pids = (ctypes.c_int * size)()
+        count = lib.proc_listallpids(pids, ctypes.sizeof(pids))
+        if count <= 0:
+            errno = ctypes.get_errno()
+            raise OSError(errno, f"proc_listallpids failed: {os.strerror(errno)}")
+        if count < size:
+            break
+        size *= 2
+    table: dict[int, tuple[int, str]] = {}
+    info = BsdInfo()
+    for pid in pids[:count]:
+        if pid <= 0:
+            continue
+        got = lib.proc_pidinfo(
+            pid, PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        if got != ctypes.sizeof(info):
+            continue  # another user's process, or it exited
+        start = time.strftime(LSTART, time.localtime(info.start_tvsec))
+        table[pid] = (info.ppid, " ".join(start.split()))
     return table
 
 
