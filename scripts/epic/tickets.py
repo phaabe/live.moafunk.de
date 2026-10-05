@@ -55,10 +55,18 @@ class Check:
 
 CHECKS = (
     Check("ready_undeclared", "Ready · dependency not declared", 3, "deps"),
-    Check("ready_claimable", "Ready · may be claimed", 1, "board"),
+    Check("ready_claimable", "Ready · may be claimed", 1, "claims"),
     Check("refinement_unreviewed", "Refinement · body not reviewed", 2, "review"),
     Check("done_open", "Board Done · issue open", 2, "board"),
 )
+
+# A blocked-by issue, in this repository or another one.
+DEPENDENCY_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9][0-9]*")
+
+
+class Malformed(ValueError):
+    """A REST row without the fields a check needs."""
+
 
 # The whole comment body, exactly one line (no trailing newline).
 BODY_REVIEW = re.compile(r"Body review: (APPROVED|CHANGES REQUESTED) ([0-9a-f]{12})")
@@ -163,14 +171,24 @@ def board_tickets(state: Json, now: float) -> Population:
     )
 
 
-def claimable(state: Json) -> set[int]:
-    """Issues the selector would offer as a claim to either runner kind."""
+def claimable(state: Json, focus_file: Path = epic.FOCUS_FILE) -> set[int] | None:
+    """Issues the selector would offer as a claim to either runner kind.
+
+    Uses the runners' focus file, as they do. A pause is ignored: the check
+    shows what a running loop would claim. None when the focus file cannot
+    be read.
+    """
+    try:
+        focus = epic.read_focus(focus_file)
+    except (OSError, UnicodeError):
+        return None
     found: set[int] = set()
     for agent in epic.AGENTS:
         for action in epic.decide(
             agent,
             state,
             include_waiting=True,
+            focus=focus,
             completed_tickets=bool(state.get("completed_tickets")),
             free_claims=epic.shared_reader(),
         ):
@@ -231,7 +249,7 @@ def ticket_metrics(
     metrics: Sink,
     state: Json,
     extra: Extra,
-    claims: set[int],
+    claims: set[int] | None,
     now: float,
 ) -> None:
     """One info row per ticket, check members and counts, status counts."""
@@ -270,6 +288,7 @@ def ticket_metrics(
         )
     healthy = {
         "board": True,
+        "claims": claims is not None,
         "deps": extra.deps is not None,
         "review": extra.reviews is not None,
     }
@@ -288,7 +307,7 @@ def ticket_metrics(
 def ticket_note(
     ticket: Ticket,
     extra: Extra,
-    claims: set[int],
+    claims: set[int] | None,
     pr: tuple[int, str, Json] | None,
 ) -> tuple[str, list[str]]:
     """The note column and the checks this ticket is in.
@@ -306,7 +325,7 @@ def ticket_note(
             checks.append("ready_undeclared")
             more = f" (+{len(hidden) - 1} more)" if len(hidden) > 1 else ""
             note = f"Needs {hidden[0]} (open) · not declared{more}"
-        if number in claims:
+        if claims is not None and number in claims:
             checks.append("ready_claimable")
             note = note or "May be claimed"
         if not note and declared:
@@ -369,6 +388,21 @@ def wanted(state: Json, now: float) -> Json:
     }
 
 
+def open_dependencies(rows: list[Json]) -> list[str]:
+    """URLs of the open blocked-by issues. A row without a known state or a
+    valid issue URL raises Malformed: the source is unknown, never empty."""
+    found = []
+    for row in rows:
+        state, url = row.get("state"), row.get("html_url")
+        if state not in ("open", "closed") or not (
+            isinstance(url, str) and DEPENDENCY_URL.fullmatch(url)
+        ):
+            raise Malformed("blocked-by row without state or issue URL")
+        if state == "open":
+            found.append(url)
+    return sorted(found)
+
+
 def fetch_extra(
     request: Json,
     pages: Callable[[str], list[Json]],
@@ -381,17 +415,15 @@ def fetch_extra(
     deps: dict[str, list[str]] | None
     try:
         deps = {
-            str(number): sorted(
-                str(row.get("html_url") or "")
-                for row in pages(
+            str(number): open_dependencies(
+                pages(
                     f"repos/{epic.REPO}/issues/{number}"
                     "/dependencies/blocked_by?per_page=100"
                 )
-                if row.get("state") == "open"
             )
             for number in request["ready"]
         }
-    except blocked:
+    except (*blocked, Malformed):
         deps = None
     reviews: dict[str, Json | None] | None
     try:
@@ -414,7 +446,8 @@ def valid_extra(data: object, request: Json) -> Extra:
     good_deps: dict[int, list[str]] | None = None
     if isinstance(deps, dict) and set(deps) == {str(n) for n in request["ready"]}:
         if all(
-            isinstance(urls, list) and all(isinstance(u, str) and u for u in urls)
+            isinstance(urls, list)
+            and all(isinstance(u, str) and DEPENDENCY_URL.fullmatch(u) for u in urls)
             for urls in deps.values()
         ):
             good_deps = {int(n): urls for n, urls in deps.items()}

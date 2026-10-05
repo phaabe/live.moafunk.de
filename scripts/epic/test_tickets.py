@@ -343,12 +343,83 @@ class InfoTest(unittest.TestCase):
             waiting={},
         )
         with patch.object(tickets.epic, "shared_reader", return_value=False):
-            self.assertEqual(tickets.claimable(state), {1, 2})
+            self.assertEqual(tickets.claimable(state, Path("/nonexistent")), {1, 2})
+
+    def focused(self, *items: monitor.Json) -> set[int] | None:
+        """claimable() with the runners' focus set to AgentMonitoring."""
+        with tempfile.TemporaryDirectory() as directory:
+            focus = Path(directory) / "focus"
+            focus.write_text("project::AgentMonitoring\n")
+            state = snapshot(
+                items=list(items), batch_order=[], linked_labels={}, waiting={}
+            )
+            with patch.object(tickets.epic, "shared_reader", return_value=False):
+                return tickets.claimable(state, focus)
+
+    def test_claims_follow_the_runner_focus(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/633."""
+        stream = ticket(1, "Ready")
+        stream["labels"] = ["project::Stream"]
+        monitoring = ticket(2, "Ready")
+        monitoring["labels"] = ["project::AgentMonitoring"]
+        # Out of focus: the runner offers no claim.
+        self.assertEqual(self.focused(stream), set())
+        self.assertEqual(self.focused(stream, monitoring), {2})
+        # An In progress ticket out of focus does not hold the claim back.
+        busy = ticket(3, "In progress")
+        busy["labels"] = ["project::Stream"]
+        self.assertEqual(self.focused(busy, monitoring), {2})
+
+    def test_unreadable_focus_makes_claims_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            focus = Path(directory) / "focus"
+            focus.mkdir()  # reading a directory fails
+            state = snapshot(items=[ticket(1, "Ready")])
+            self.assertIsNone(tickets.claimable(state, focus))
+        sink = Sink()
+        tickets.ticket_metrics(sink, state, tickets.Extra({1: []}, {}), None, NOW)
+        self.assertIsNone(sink.value("ticket_check_count", check="ready_claimable"))
+        self.assertIsNone(sink.value("ticket_check_severity", check="ready_claimable"))
+        self.assertEqual(sink.value("ticket_check_count", check="ready_undeclared"), 0)
 
 
 class FetchTest(unittest.TestCase):
     class Blocked(Exception):
         pass
+
+    def test_malformed_dependency_rows_make_deps_unknown(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/633:
+        a row the check cannot read never becomes "no dependency"."""
+        good = {"id": 1, "state": "closed", "html_url": f"{URL}/issues/9"}
+        for row in (
+            {"id": 2, "html_url": f"{URL}/issues/8"},  # no state
+            {"id": 2, "state": "unknown", "html_url": f"{URL}/issues/8"},
+            {"id": 2, "state": "open", "html_url": 8},
+            {"id": 2, "state": "open", "html_url": "issue 8"},
+            {"id": 2, "state": "open"},
+        ):
+            with self.subTest(row=row):
+                data = tickets.fetch_extra(
+                    {"ready": [1], "refinement": []},
+                    lambda url, row=row: [good, row],
+                    (self.Blocked,),
+                )
+                self.assertIsNone(data["deps"])
+                self.assertEqual(data["reviews"], {})
+        other_repo = {
+            "id": 3,
+            "state": "open",
+            "html_url": "https://github.com/a/b/issues/4",
+        }
+        data = tickets.fetch_extra(
+            {"ready": [1], "refinement": []},
+            lambda url: [good, other_repo],
+            (self.Blocked,),
+        )
+        self.assertEqual(data["deps"], {"1": ["https://github.com/a/b/issues/4"]})
+        request = {"ready": [1], "refinement": []}
+        bad = {"deps": {"1": ["not a url"]}, "reviews": {}}
+        self.assertIsNone(tickets.valid_extra(bad, request).deps)
 
     def test_each_source_fails_alone(self) -> None:
         def pages(url: str) -> list[monitor.Json]:
