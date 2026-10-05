@@ -594,17 +594,40 @@ class SegmentTest(Base):
         self.assertEqual(still_open, [f"1-{later}"])
         history.compact_segments(later + 60)
         # The closed old segment is gone; the gap ends in the window.
-        self.assertEqual(
-            sorted(history.segments), [f"1-{NOW + 120}-gap", f"1-{later}"]
-        )
+        self.assertEqual(sorted(history.segments), [f"1-{NOW + 120}-gap", f"1-{later}"])
 
-    def test_compaction_drops_open_segments_no_longer_refreshed(self) -> None:
-        self.see(NOW, {1: "Ready", 2: "Ready"})
-        self.update({}, NOW + 30, shown=(1, 2))
-        # Ticket 2 leaves the list; ticket 1 is refreshed for 9 days.
+    def test_a_hidden_open_ticket_keeps_its_agent_and_revisions(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640:
+        the ticket leaves the shown list, compaction, restart, rotated ticks,
+        and it comes back with the same status."""
+        self.see(NOW, {1: "In progress", 2: "Ready"})
+        self.update(
+            {"codex": [tick(NOW, NOW + 60, "claim", f"{ISSUE}/1")]},
+            NOW + 120,
+            shown=(1, 2),
+        )
+        before = self.latest()[f"1-{NOW}"]
+        self.assertEqual(before["agent"], "codex")
+        # Ticket 1 leaves the list; ticket 2 is refreshed for 9 days.
         for i in range(1, 10):
-            self.update({}, NOW + 30 + i * DAY, shown=(1,))
-        self.history.compact_segments(NOW + 9 * DAY + 60)
+            self.see(NOW + i * 120, {1: "In progress", 2: "Ready"})
+            self.update({}, NOW + 120 + i * DAY, shown=(2,))
+        self.history.compact_segments(NOW + 9 * DAY + 600)
+        self.assertIn(f"1-{NOW}", self.history.segments)
+        self.history = self.fresh(NOW + 9 * DAY + 700)
+        self.update({"codex": []}, NOW + 9 * DAY + 700, shown=(1, 2))
+        after = self.latest()[f"1-{NOW}"]
+        self.assertEqual(after["agent"], "codex")
+        self.assertEqual(after["rev"], before["rev"] + 1)
+
+    def test_compaction_drops_an_open_segment_the_ledger_no_longer_has(
+        self,
+    ) -> None:
+        self.see(NOW, {1: "Ready"})
+        self.update({}, NOW + 30)
+        stale = th.Segment("1-5", 1, "Ready", 5, None)
+        self.history.segments["1-5"] = th.Stored(stale, 1, NOW)
+        self.history.compact_segments(NOW + 60)
         self.assertEqual(sorted(self.history.segments), [f"1-{NOW}"])
 
     def test_compaction_keeps_the_newest_revisions(self) -> None:

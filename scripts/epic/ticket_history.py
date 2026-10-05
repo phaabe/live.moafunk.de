@@ -657,13 +657,21 @@ class History:
         """Keep each segment's newest revision; drop closed segments older than
         the panel window. Alloy reads the new file again; Loki drops exact
         duplicates and Alloy drops lines older than its limit."""
-        # An open segment that was not refreshed (its ticket left the list)
-        # goes too, so nothing stays open for ever.
+        # The ledger's current open interval of every ticket keeps its
+        # agent and revision count, also when the ticket is not shown now.
+        # An open segment the ledger no longer has is dropped, so nothing
+        # stays open for ever.
+        current = {
+            segment.segment_id
+            for rows in self.entries.values()
+            for segment in intervals(rows, self.gaps)[-1:]
+            if segment.end is None
+        }
         recent = now - WINDOW - DAY
         keep = {
             key: stored
             for key, stored in self.segments.items()
-            if (stored.segment.end is None and stored.emitted_at >= recent)
+            if (stored.segment.end is None and key in current)
             or (stored.segment.end is not None and stored.segment.end >= recent)
         }
         rewrite_lines(
