@@ -31,6 +31,10 @@ class GuardRefusal(ValueError):
     """A PR cannot pass the guard, but the refresh can continue."""
 
 
+class RetryCollection(ValueError):
+    """Collection raced with an update; the next run must collect again."""
+
+
 def api(endpoint: str) -> Any:
     command = ["gh", "api", "--method", "GET", endpoint]
     if endpoint.startswith("graphql?"):
@@ -88,7 +92,7 @@ def open_pulls(gh: Api) -> list[Json]:
         if len(batch) < 100:
             numbers = [p.get("number") for p in pulls]
             if None in numbers or len(numbers) != len(set(numbers)):
-                raise ValueError("duplicate or missing PR numbers; retry")
+                raise RetryCollection("duplicate or missing PR numbers; retry")
             return pulls
     raise ValueError("open PR pagination limit reached")
 
@@ -126,6 +130,9 @@ def verify(
         raise ValueError("invalid PR head SHA")
     if writer:
         writer(head, "pending", "Checking counterpart verdict, lanes and checks")
+    errors: list[str] = []
+    retries: list[str] = []
+    waiting_type = retry_type = ()
     try:
         base = pull.get("base", {})
         if (
@@ -154,6 +161,9 @@ def verify(
                 raise ValueError("cannot load trusted checker")
             checker = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(checker)
+            # Older trusted bases lack these types; plain errors still fail closed.
+            waiting_type = getattr(checker, "WaitingReason", ())
+            retry_type = getattr(checker, "RetryCollection", ())
             policy = checker.load_policy(policy_path)
             snapshot = checker.collect(REPO, number, gh=gh)
             errors = checker.evaluate(policy, snapshot, expected_head=head)
@@ -163,18 +173,15 @@ def verify(
                 snapshot = checker.collect(REPO, number, gh=gh)
                 errors = checker.evaluate(policy, snapshot, expected_head=head)
             if snapshot["pr"]["base"] != base:
-                errors.append("PR base changed during verification; retry")
+                retries.append("PR base changed during verification; retry")
         current = gh(f"repos/{REPO}/pulls/{number}")
         for key in ("head", "base", "body", "state", "draft", "updated_at"):
             if current.get(key) != snapshot["pr"].get(key):
-                errors.append("PR changed before status publication; retry")
+                retries.append("PR changed before status publication; retry")
                 break
         same_head = [p for p in open_pulls(gh) if p.get("head", {}).get("sha") == head]
         if len(same_head) != 1 or same_head[0].get("number") != number:
-            errors.append("open PRs sharing this head changed; retry")
-        # Older trusted bases return only plain errors; keep them failing closed.
-        waiting_type = getattr(checker, "WaitingReason", ())
-        failures = [error for error in errors if not isinstance(error, waiting_type)]
+            retries.append("open PRs sharing this head changed; retry")
     except (
         ValueError,
         TypeError,
@@ -182,11 +189,16 @@ def verify(
         OSError,
         subprocess.SubprocessError,
     ) as exc:
-        errors = [str(exc)]
-        failures = errors
+        if isinstance(exc, (RetryCollection, retry_type)):
+            retries.append(str(exc))
+        else:
+            errors = [str(exc)]
+    failures = [error for error in errors if not isinstance(error, waiting_type)]
     if writer:
         if failures:
             state, description = "failure", failures[0]
+        elif retries:
+            state, description = "pending", "retrying: " + "; ".join(retries)
         elif errors:
             state, description = (
                 "pending",
@@ -199,7 +211,7 @@ def verify(
             state,
             description,
         )
-    return errors
+    return errors + retries
 
 
 def previously_checked(gh: Api, head: str) -> bool:

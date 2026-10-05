@@ -27,6 +27,10 @@ class WaitingReason(str):
     """A blocking result waiting for PR readiness, review or checks."""
 
 
+class RetryCollection(ValueError):
+    """Collection raced with an update; the next run must collect again."""
+
+
 def load_policy(path: str | Path) -> Json:
     """Read JSON-subset YAML without installing a YAML interpreter in CI."""
     policy = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -101,7 +105,7 @@ def pages(api: Api, endpoint: str, key: str | None = None) -> list[Json]:
                 raise ValueError(f"{endpoint}: missing total_count")
             total = response["total_count"]
             if expected is not None and expected != total:
-                raise ValueError(f"{endpoint}: changed during pagination; retry")
+                raise RetryCollection(f"{endpoint}: changed during pagination; retry")
             expected = total
             batch = response.get(key)
         else:
@@ -152,8 +156,10 @@ def comment_edit_markers(api: Api, repo: str, pr: int, comments: list[Json]) -> 
             )
         except (KeyError, TypeError) as exc:
             raise ValueError("comment edit evidence missing") from exc
-        if count != len(comments) or not isinstance(nodes, list):
-            raise ValueError("comment edit evidence count differs from REST")
+        if not isinstance(nodes, list):
+            raise ValueError("comment edit evidence nodes must be a list")
+        if count != len(comments):
+            raise RetryCollection("comment edit evidence count differs from REST")
         for node in nodes:
             if not isinstance(node, dict) or "lastEditedAt" not in node:
                 raise ValueError("comment has no explicit lastEditedAt marker")
@@ -184,7 +190,9 @@ def comment_edit_markers(api: Api, repo: str, pr: int, comments: list[Json]) -> 
             ("updated_at", "updatedAt"),
         )
         if any(comment.get(rest) != node.get(graphql) for rest, graphql in pairs):
-            raise ValueError("comment changed between REST and GraphQL reads; retry")
+            raise RetryCollection(
+                "comment changed between REST and GraphQL reads; retry"
+            )
         comment["last_edited_at"] = node["lastEditedAt"]
 
 
@@ -233,7 +241,7 @@ def collect(repo: str, pr: int, gh: Api = gh_api) -> Json:
         "comments",
     ):
         if current.get(key) != pull.get(key):
-            raise ValueError("PR changed during collection; retry")
+            raise RetryCollection("PR changed during collection; retry")
     return {
         "repository": repo,
         "pr": pull,
