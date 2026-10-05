@@ -1,0 +1,2607 @@
+{
+  "uid": "epic-tickets",
+  "title": "Tickets",
+  "tags": [
+    "agents",
+    "epic"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "timezone": "browser",
+  "time": {
+    "from": "now-14d",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "Cockpit",
+      "url": "/d/epic-agents",
+      "targetBlank": false
+    },
+    {
+      "title": "Agent detail",
+      "url": "/d/epic-agent",
+      "targetBlank": false
+    },
+    {
+      "title": "Delivery",
+      "url": "/d/epic-delivery",
+      "targetBlank": false
+    },
+    {
+      "title": "Tickets",
+      "url": "/d/epic-tickets",
+      "targetBlank": false
+    },
+    {
+      "title": "Epic #312 on GitHub ↗",
+      "url": "https://github.com/phaabe/live.moafunk.de/issues/312",
+      "targetBlank": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "check",
+        "label": "Check",
+        "type": "custom",
+        "query": "All : all, Ready · dep. not declared : ready_undeclared, Ready · may be claimed : ready_claimable, Refinement · not reviewed : refinement_unreviewed, Board Done · issue open : done_open",
+        "current": {
+          "text": "All",
+          "value": "all"
+        },
+        "options": [],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Ready · dep. not declared",
+      "description": "Ready, and an open blocked-by issue is not named in a Start after line of a readiness comment. The runner could claim it too early. Click to show these tickets in the table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((epic_ticket_check_count{check=\"ready_undeclared\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "index": 0,
+                  "color": "#9A9BA6",
+                  "text": "unknown"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              },
+              {
+                "value": 1,
+                "color": "#C8342E"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show these tickets",
+              "url": "/d/epic-tickets?var-check=ready_undeclared&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Ready · may be claimed",
+      "description": "Ready, and the runner selector would offer it as a claim now. Click to show these tickets in the table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((epic_ticket_check_count{check=\"ready_claimable\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "index": 0,
+                  "color": "#9A9BA6",
+                  "text": "unknown"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              },
+              {
+                "value": 1,
+                "color": "text"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show these tickets",
+              "url": "/d/epic-tickets?var-check=ready_claimable&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Refinement · not reviewed",
+      "description": "Refinement, and no approved body review matches the current body. Click to show these tickets in the table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((epic_ticket_check_count{check=\"refinement_unreviewed\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "index": 0,
+                  "color": "#9A9BA6",
+                  "text": "unknown"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              },
+              {
+                "value": 1,
+                "color": "#E0A526"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show these tickets",
+              "url": "/d/epic-tickets?var-check=refinement_unreviewed&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Board Done · issue open",
+      "description": "Board Status is Done but the issue is still open. Click to show these tickets in the table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((epic_ticket_check_count{check=\"done_open\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "index": 0,
+                  "color": "#9A9BA6",
+                  "text": "unknown"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              },
+              {
+                "value": 1,
+                "color": "#E0A526"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show these tickets",
+              "url": "/d/epic-tickets?var-check=done_open&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      }
+    },
+    {
+      "timeFrom": "7d",
+      "interval": "5m",
+      "type": "stat",
+      "title": "Backlog",
+      "description": "Tickets in Backlog now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tickets_by_status{status=\"Backlog\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "unknown",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#A57BE0"
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true,
+        "showPercentChange": true,
+        "percentChangeColorMode": "same_as_value"
+      },
+      "hideTimeOverride": true,
+      "maxDataPoints": 2016,
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      }
+    },
+    {
+      "timeFrom": "7d",
+      "interval": "5m",
+      "type": "stat",
+      "title": "Refinement",
+      "description": "Tickets in Refinement now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tickets_by_status{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "unknown",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#5B8DEF"
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true,
+        "showPercentChange": true,
+        "percentChangeColorMode": "same_as_value"
+      },
+      "hideTimeOverride": true,
+      "maxDataPoints": 2016,
+      "id": 6,
+      "gridPos": {
+        "x": 4,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      }
+    },
+    {
+      "timeFrom": "7d",
+      "interval": "5m",
+      "type": "stat",
+      "title": "Ready",
+      "description": "Tickets in Ready now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tickets_by_status{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "unknown",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#E8B530"
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true,
+        "showPercentChange": true,
+        "percentChangeColorMode": "same_as_value"
+      },
+      "hideTimeOverride": true,
+      "maxDataPoints": 2016,
+      "id": 7,
+      "gridPos": {
+        "x": 8,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      }
+    },
+    {
+      "timeFrom": "7d",
+      "interval": "5m",
+      "type": "stat",
+      "title": "In progress",
+      "description": "Tickets in In progress now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tickets_by_status{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "unknown",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#D96BB0"
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true,
+        "showPercentChange": true,
+        "percentChangeColorMode": "same_as_value"
+      },
+      "hideTimeOverride": true,
+      "maxDataPoints": 2016,
+      "id": 8,
+      "gridPos": {
+        "x": 12,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      }
+    },
+    {
+      "timeFrom": "7d",
+      "interval": "5m",
+      "type": "stat",
+      "title": "In review",
+      "description": "Tickets in In review now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tickets_by_status{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "unknown",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#4FC3E8"
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true,
+        "showPercentChange": true,
+        "percentChangeColorMode": "same_as_value"
+      },
+      "hideTimeOverride": true,
+      "maxDataPoints": 2016,
+      "id": 9,
+      "gridPos": {
+        "x": 16,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      }
+    },
+    {
+      "timeFrom": "7d",
+      "interval": "5m",
+      "type": "stat",
+      "title": "Done",
+      "description": "Tickets in Done now; the change is against 7 days ago. Unknown while the collector has not seen the board for 5 min.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "epic_tickets_by_status{status=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds < 300)[1m:] @ end())",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "unknown",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#5AB45F"
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true,
+        "showPercentChange": true,
+        "percentChangeColorMode": "same_as_value"
+      },
+      "hideTimeOverride": true,
+      "maxDataPoints": 2016,
+      "id": 10,
+      "gridPos": {
+        "x": 20,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tickets per status",
+      "description": "Task and Subtask tickets per board status. Gaps: the collector did not see the board then.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (epic_tickets_by_status) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#9A9BA6"
+          },
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineInterpolation": "stepAfter",
+            "spanNulls": false
+          },
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Backlog"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#A57BE0"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Refinement"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5B8DEF"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ready"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#E8B530"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In progress"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#D96BB0"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In review"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#4FC3E8"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Done"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5AB45F"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "id": 11,
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Tickets · $check",
+      "description": "Choose a check with a tile or the Check picker; All shows every ticket: not Done, plus Done in the last 7 days or still open.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\")",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "issue",
+                "destinationType": "number"
+              },
+              {
+                "targetField": "done_sort",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "issue",
+                "title",
+                "status",
+                "executor",
+                "pr_url",
+                "note",
+                "url"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "issue": 0,
+              "title": 1,
+              "status": 2,
+              "executor": 3,
+              "pr_url": 4,
+              "note": 5,
+              "url": 6
+            },
+            "renameByName": {
+              "issue": "Ticket",
+              "title": "Title",
+              "status": "Status",
+              "executor": "Executor",
+              "pr_url": "PR",
+              "note": "Note"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Ticket"
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "–",
+          "custom": {
+            "filterable": false,
+            "align": "auto",
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ticket"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__data.fields.url}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "url"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Backlog": {
+                        "index": 0,
+                        "color": "#A57BE0"
+                      },
+                      "Refinement": {
+                        "index": 1,
+                        "color": "#5B8DEF"
+                      },
+                      "Ready": {
+                        "index": 2,
+                        "color": "#E8B530"
+                      },
+                      "In progress": {
+                        "index": 3,
+                        "color": "#D96BB0"
+                      },
+                      "In review": {
+                        "index": 4,
+                        "color": "#4FC3E8"
+                      },
+                      "Done": {
+                        "index": 5,
+                        "color": "#5AB45F"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Executor"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Claude": {
+                        "index": 0,
+                        "color": "#E0875A"
+                      },
+                      "Codex": {
+                        "index": 1,
+                        "color": "#35C2C2"
+                      },
+                      "Anton": {
+                        "index": 2,
+                        "color": "#9A9BA6"
+                      },
+                      "Unassigned": {
+                        "index": 3,
+                        "color": "#9A9BA6"
+                      },
+                      "Unknown": {
+                        "index": 4,
+                        "color": "#9A9BA6"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*/pull/(\\d+)$",
+                      "result": {
+                        "index": 0,
+                        "text": "PR $1"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*/issues/(\\d+)$",
+                      "result": {
+                        "index": 1,
+                        "text": "issue $1"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "filterable",
+                "value": false
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 12,
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 24,
+        "h": 9
+      }
+    },
+    {
+      "type": "row",
+      "title": "Board",
+      "collapsed": true,
+      "id": 13,
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "type": "table",
+          "title": "Backlog",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_info{status=\"Backlog\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "executor",
+                    "url",
+                    "done_sort"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "executor": 2,
+                  "url": 3,
+                  "done_sort": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "executor": "Executor"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Ticket"
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "done_sort"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 14,
+          "gridPos": {
+            "x": 0,
+            "y": 25,
+            "w": 4,
+            "h": 15
+          }
+        },
+        {
+          "type": "table",
+          "title": "Refinement",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_info{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "executor",
+                    "url",
+                    "done_sort"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "executor": 2,
+                  "url": 3,
+                  "done_sort": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "executor": "Executor"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Ticket"
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "done_sort"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 15,
+          "gridPos": {
+            "x": 4,
+            "y": 25,
+            "w": 4,
+            "h": 15
+          }
+        },
+        {
+          "type": "table",
+          "title": "Ready",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_info{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "executor",
+                    "url",
+                    "done_sort"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "executor": 2,
+                  "url": 3,
+                  "done_sort": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "executor": "Executor"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Ticket"
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "done_sort"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 16,
+          "gridPos": {
+            "x": 8,
+            "y": 25,
+            "w": 4,
+            "h": 15
+          }
+        },
+        {
+          "type": "table",
+          "title": "In progress",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_info{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "executor",
+                    "url",
+                    "done_sort"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "executor": 2,
+                  "url": 3,
+                  "done_sort": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "executor": "Executor"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Ticket"
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "done_sort"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 17,
+          "gridPos": {
+            "x": 12,
+            "y": 25,
+            "w": 4,
+            "h": 15
+          }
+        },
+        {
+          "type": "table",
+          "title": "In review",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_info{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "executor",
+                    "url",
+                    "done_sort"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "executor": 2,
+                  "url": 3,
+                  "done_sort": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "executor": "Executor"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Ticket"
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "done_sort"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 18,
+          "gridPos": {
+            "x": 16,
+            "y": 25,
+            "w": 4,
+            "h": 15
+          }
+        },
+        {
+          "type": "table",
+          "title": "Done",
+          "description": "Done: still-open issues first, then the newest closed.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_info{status=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "executor",
+                    "url",
+                    "done_sort"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "executor": 2,
+                  "url": 3,
+                  "done_sort": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "executor": "Executor"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "done_sort",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "done_sort"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 19,
+          "gridPos": {
+            "x": 20,
+            "y": 25,
+            "w": 4,
+            "h": 15
+          }
+        }
+      ]
+    }
+  ]
+}

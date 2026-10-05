@@ -1,4 +1,4 @@
-"""Build the agent Grafana dashboards: Cockpit, Agent detail and Delivery.
+"""Build the agent Grafana dashboards: Cockpit, Agent detail, Delivery, Tickets.
 
 Layout, colors and thresholds follow design v2 (plan appendix). No page
 lists agent ids: rows and the agent picker come from `epic_agent_info`, so
@@ -27,6 +27,12 @@ LEGACY_PAGES = {"claude": "Claude", "codex": "Codex"}
 LOCAL = " and on() (time() - epic_local_snapshot_timestamp_seconds < 30)"
 GITHUB = " and on() (time() - epic_github_snapshot_timestamp_seconds < 300)"
 DELIVERY = " and on() (time() - epic_delivery_snapshot_timestamp_seconds < 600)"
+TICKETS = " and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300)"
+# For ticket sparklines: the whole series only while ticket data is fresh now.
+TICKETS_AT_END = (
+    " and on() last_over_time((time() - epic_ticket_snapshot_timestamp_seconds"
+    " < 300)[1m:] @ end())"
+)
 # Waits grow from cached GitHub data: only while the handoff was seen lately.
 HANDOFF = " and on() (time() - epic_handoff_observed_timestamp_seconds < 300)"
 # Failure counts only while the tick history is read and exported, as in
@@ -108,6 +114,7 @@ PAGE_LINKS = [
     link("Cockpit", "/d/epic-agents"),
     link("Agent detail", "/d/epic-agent"),
     link("Delivery", "/d/epic-delivery"),
+    link("Tickets", "/d/epic-tickets"),
     link("Epic #312 on GitHub ↗", f"{REPO}/issues/312"),
 ]
 
@@ -160,16 +167,36 @@ SEVERITY_COLORS = value_map(
 
 class Board:
     def __init__(
-        self, uid: str, title: str, links: list[Json], time_from: str = "now-24h"
+        self,
+        uid: str,
+        title: str,
+        links: list[Json],
+        time_from: str = "now-24h",
+        refresh: str = "5s",
     ) -> None:
         self.uid, self.title, self.links, self.time_from = uid, title, links, time_from
+        self.refresh = refresh
         self.panels: list[Json] = []
         self.variables: list[Json] = []
+        self.ids = 0
+
+    def place(self, panel: Json, x: int, y: int, w: int, h: int) -> Json:
+        self.ids += 1
+        panel["id"] = self.ids
+        panel["gridPos"] = {"x": x, "y": y, "w": w, "h": h}
+        return panel
 
     def add(self, panel: Json, x: int, y: int, w: int, h: int) -> None:
-        panel["id"] = len(self.panels) + 1
-        panel["gridPos"] = {"x": x, "y": y, "w": w, "h": h}
-        self.panels.append(panel)
+        self.panels.append(self.place(panel, x, y, w, h))
+
+    def add_row(
+        self, title: str, y: int, children: list[tuple[Json, int, int, int, int]]
+    ) -> None:
+        """A collapsed row; its panels open with it."""
+        row = {"type": "row", "title": title, "collapsed": True}
+        row = self.place(row, 0, y, 24, 1)
+        row["panels"] = [self.place(child, *pos) for child, *pos in children]
+        self.panels.append(row)
 
     def render(self) -> Json:
         return {
@@ -180,7 +207,7 @@ class Board:
             "version": 1,
             "editable": False,
             "graphTooltip": 1,
-            "refresh": "5s",
+            "refresh": self.refresh,
             "timezone": "browser",
             "time": {"from": self.time_from, "to": "now"},
             "links": self.links,
@@ -1881,6 +1908,291 @@ def pr_flow() -> Json:
     )
 
 
+# ---------------------------------------------------------------- Tickets
+
+STATUS = {
+    "Backlog": "#A57BE0",
+    "Refinement": "#5B8DEF",
+    "Ready": "#E8B530",
+    "In progress": "#D96BB0",
+    "In review": "#4FC3E8",
+    "Done": "#5AB45F",
+}
+EXECUTOR = {
+    "Claude": KIND["claude"],
+    "Codex": KIND["codex"],
+    "Anton": MUTED,
+    "Unassigned": MUTED,
+    "Unknown": STALE,
+}
+# (id, title, color when not empty, rule) in the collector's order.
+CHECKS = (
+    (
+        "ready_undeclared",
+        # Short titles: the panel title is cut at 1280 px; the rule is in
+        # the description.
+        "Ready · dep. not declared",
+        ACT_NOW,
+        "Ready, and an open blocked-by issue is not named in a Start after line "
+        "of a readiness comment. The runner could claim it too early.",
+    ),
+    (
+        "ready_claimable",
+        "Ready · may be claimed",
+        NEUTRAL,
+        "Ready, and the runner selector would offer it as a claim now.",
+    ),
+    (
+        "refinement_unreviewed",
+        "Refinement · not reviewed",
+        LOOK_SOON,
+        "Refinement, and no approved body review matches the current body.",
+    ),
+    (
+        "done_open",
+        "Board Done · issue open",
+        LOOK_SOON,
+        "Board Status is Done but the issue is still open.",
+    ),
+)
+TICKETS_URL = "/d/epic-tickets"
+
+
+def check_selection() -> str:
+    """A vector with label check="$check"; selects one check or "all"."""
+    return 'label_replace(vector(1), "check", "$check", "", "")'
+
+
+def selected_tickets() -> str:
+    """Info rows of the tickets in the chosen check, or of all tickets."""
+    chosen = check_selection()
+    members = f"(epic_ticket_check_member and on(check) {chosen})"
+    everything = (
+        f'({chosen} and on(check) label_replace(vector(1), "check", "all", "", ""))'
+    )
+    rows = (
+        f"((epic_ticket_info and on(issue) {members})"
+        f" or (epic_ticket_info and on() {everything})){TICKETS}"
+    )
+    # pr_url only for tickets with a PR, so an empty PR cell gets no link.
+    return f'label_replace({rows}, "pr_url", "{REPO}/pull/$1", "pr", "(.+)")'
+
+
+def check_tile(check: str, title: str, color: str, rule: str) -> Json:
+    """Count of one check. -1 when its source is unknown: grey, never 0."""
+    panel = stat(
+        title,
+        [
+            target(
+                f'((epic_ticket_check_count{{check="{check}"}}{TICKETS})'
+                " or on() vector(-1))"
+            )
+        ],
+        mappings=[value_map({"-1": ("unknown", STALE)})],
+        thresholds=steps((None, NEUTRAL), (1, color)),
+        description=rule + " Click to show these tickets in the table.",
+    )
+    panel["fieldConfig"]["defaults"]["links"] = [
+        link(
+            "Show these tickets",
+            f"{TICKETS_URL}?var-check={check}&${{__url_time_range}}",
+        )
+    ]
+    return panel
+
+
+def status_stat(status: str) -> Json:
+    panel = stat(
+        status,
+        [
+            ranged(
+                f'epic_tickets_by_status{{status="{status}"}}{TICKETS}{TICKETS_AT_END}'
+            )
+        ],
+        thresholds=steps((None, STATUS[status])),
+        graph="area",
+        time_from="7d",
+        decimals=0,
+        no_value="unknown",
+        description=f"Tickets in {status} now; the change is against 7 days ago. "
+        "Unknown while the collector has not seen the board for 5 min.",
+    )
+    panel["options"]["showPercentChange"] = True
+    # More tickets in a status is neither good nor bad: no red or green.
+    panel["options"]["percentChangeColorMode"] = "same_as_value"
+    # The fixed 7-day window is in the description; the badge cuts the title.
+    panel["hideTimeOverride"] = True
+    # 5-min steps over 7 days: the last step is at most 5 min old, so a fresh
+    # collector shows a number at once (Grafana's default step is ~30 min).
+    panel["maxDataPoints"] = 7 * 24 * 12
+    return panel
+
+
+def cumulative_flow() -> Json:
+    return {
+        "type": "timeseries",
+        "title": "Tickets per status",
+        "description": "Task and Subtask tickets per board status. Gaps: the "
+        "collector did not see the board then.",
+        "datasource": PROM,
+        "targets": [
+            ranged(
+                f"sum by (status) (epic_tickets_by_status){TICKETS}",
+                legend="{{status}}",
+            )
+        ],
+        "fieldConfig": {
+            "defaults": {
+                "color": {"mode": "fixed", "fixedColor": STALE},
+                "custom": {
+                    "fillOpacity": 70,
+                    "lineWidth": 1,
+                    "stacking": {"mode": "normal", "group": "A"},
+                    "lineInterpolation": "stepAfter",
+                    "spanNulls": False,
+                },
+                "min": 0,
+                "decimals": 0,
+            },
+            "overrides": [
+                by_name(status, ("color", {"mode": "fixed", "fixedColor": color}))
+                for status, color in STATUS.items()
+            ],
+        },
+        "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
+    }
+
+
+def ticket_columns(names: list[str], rename: dict[str, str]) -> list[Json]:
+    """Issue numbers sort as numbers; Done sorts by done_sort."""
+    return [
+        {
+            "id": "convertFieldType",
+            "options": {
+                "conversions": [
+                    {"targetField": "issue", "destinationType": "number"},
+                    {"targetField": "done_sort", "destinationType": "number"},
+                ],
+                "fields": {},
+            },
+        },
+        *keep_fields(names, rename, []),
+    ]
+
+
+def ticket_overrides(shown: list[str]) -> list[Json]:
+    """Column settings, only for the columns a table shows (or hides)."""
+    overrides = [
+        by_name(
+            "Ticket",
+            ("custom.width", 80),
+            ("links", [link("Open on GitHub", "${__data.fields.url}")]),
+        ),
+        hidden("url"),
+        hidden("done_sort"),
+        by_name(
+            "Status",
+            ("custom.width", 110),
+            cell("color-text"),
+            ("mappings", [value_map({k: ("", c) for k, c in STATUS.items()})]),
+        ),
+        by_name(
+            "Executor",
+            ("custom.width", 100),
+            cell("color-text"),
+            ("mappings", [value_map({k: ("", c) for k, c in EXECUTOR.items()})]),
+        ),
+        by_name(
+            "PR",
+            ("custom.width", 80),
+            ("mappings", SHORT_LINKS),
+            ("links", [link("Open on GitHub", "${__value.raw}")]),
+        ),
+    ]
+    return [o for o in overrides if o["matcher"]["options"] in shown]
+
+
+def ticket_table() -> Json:
+    names = ["issue", "title", "status", "executor", "pr_url", "note", "url"]
+    rename = {
+        "issue": "Ticket",
+        "title": "Title",
+        "status": "Status",
+        "executor": "Executor",
+        "pr_url": "PR",
+        "note": "Note",
+    }
+    return table_panel(
+        "Tickets · $check",
+        [target(selected_tickets(), table=True)],
+        [
+            *ticket_columns(names, rename),
+            {"id": "sortBy", "options": {"sort": [{"field": "Ticket"}]}},
+        ],
+        ticket_overrides([*rename.values(), "url"]),
+        description="Choose a check with a tile or the Check picker; All shows "
+        "every ticket: not Done, plus Done in the last 7 days or still open.",
+    )
+
+
+def board_column(status: str) -> Json:
+    names = ["issue", "title", "executor", "url", "done_sort"]
+    rename = {"issue": "Ticket", "title": "Title", "executor": "Executor"}
+    order = (
+        [{"field": "done_sort", "desc": True}]
+        if status == "Done"
+        else [{"field": "Ticket"}]
+    )
+    return table_panel(
+        status,
+        [target(f'epic_ticket_info{{status="{status}"}}{TICKETS}', table=True)],
+        [
+            *ticket_columns(names, rename),
+            {"id": "sortBy", "options": {"sort": order}},
+        ],
+        ticket_overrides([*rename.values(), "url", "done_sort"]),
+        description="Done: still-open issues first, then the newest closed."
+        if status == "Done"
+        else "",
+    )
+
+
+def tickets_page() -> Json:
+    board = Board(
+        "epic-tickets",
+        "Tickets",
+        PAGE_LINKS,
+        time_from="now-14d",
+        refresh="1m",
+    )
+    board.variables = [
+        {
+            "name": "check",
+            "label": "Check",
+            "type": "custom",
+            "query": ", ".join(
+                ["All : all"] + [f"{title} : {check}" for check, title, *_ in CHECKS]
+            ),
+            "current": {"text": "All", "value": "all"},
+            "options": [],
+            "includeAll": False,
+            "multi": False,
+        }
+    ]
+    for i, check in enumerate(CHECKS):
+        board.add(check_tile(*check), 6 * i, 0, 6, 3)
+    for i, status in enumerate(STATUS):
+        board.add(status_stat(status), 4 * i, 3, 4, 4)
+    board.add(cumulative_flow(), 0, 7, 24, 8)
+    board.add(ticket_table(), 0, 15, 24, 9)
+    board.add_row(
+        "Board",
+        24,
+        [(board_column(status), 4 * i, 25, 4, 15) for i, status in enumerate(STATUS)],
+    )
+    return board.render()
+
+
 # ------------------------------------------------------ Redirect pages
 
 
@@ -1904,6 +2216,7 @@ def build() -> dict[str, Json]:
         "overview.json": cockpit(),
         "agent.json": agent_detail(),
         "delivery.json": delivery_page(),
+        "tickets.json": tickets_page(),
     }
     for agent, name in LEGACY_PAGES.items():
         pages[f"{agent}.json"] = redirect(agent, name)
