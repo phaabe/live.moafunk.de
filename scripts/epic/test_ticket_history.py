@@ -307,6 +307,47 @@ class EpisodeTest(Base):
         self.assertEqual(sink.value("tickets_done_day", day=day, executor="Anton"), 0)
         self.assertEqual(len(sink.rows("tickets_done_day")), 14 * len(th.EXECUTORS))
 
+    def test_done_days_are_berlin_calendar_days_across_dst(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640."""
+        berlin = th.LOCAL
+        for now, done_at in (
+            # Spring: 2026-03-29 has 23 hours.
+            (
+                datetime(2026, 3, 30, 0, 30, tzinfo=berlin),
+                datetime(2026, 3, 29, 12, tzinfo=berlin),
+            ),
+            # Autumn: 2026-10-25 has 25 hours.
+            (
+                datetime(2026, 10, 25, 23, 30, tzinfo=berlin),
+                datetime(2026, 10, 25, 1, tzinfo=berlin),
+            ),
+        ):
+            with self.subTest(now=now):
+                at = int(done_at.timestamp())
+                episode = th.Episode(
+                    1,
+                    th.Entry(1, "Done", at, "Codex", "In review", at - 120),
+                    None,
+                    None,
+                    {},
+                )
+                sink = Sink()
+                th.history_metrics(
+                    sink, th.Summary(episodes=[episode]), [], now.timestamp()
+                )
+                rows = sink.rows("tickets_done_day")
+                days = {labels["day"] for _, labels, _ in rows}
+                self.assertEqual(len(days), 14)
+                self.assertEqual(len(rows), 14 * len(th.EXECUTORS))
+                self.assertEqual(
+                    sink.value(
+                        "tickets_done_day",
+                        day=done_at.date().isoformat(),
+                        executor="Codex",
+                    ),
+                    1,
+                )
+
     def test_seeded_done_is_not_counted(self) -> None:
         self.see(NOW - H, {4: "Done"})
         self.assertEqual(self.history.summary(NOW).episodes, [])
@@ -465,6 +506,42 @@ class SegmentTest(Base):
         # The Ready segment ended 9 days ago: outside the panel window.
         self.assertEqual(sorted(self.latest()), [f"1-{NOW - 9 * DAY + 120}"])
 
+    def test_a_gap_from_the_segment_start_retires_the_old_segment(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640:
+        replay must never hold two open segments of one ticket."""
+        self.see(NOW - 120, {1: "Ready"})
+        self.see(NOW, {1: "In progress"})
+        self.update({}, NOW + 30)
+        # No snapshot between NOW and NOW + 1200: the gap starts at NOW.
+        self.see(NOW + 1200, {1: "In progress"})
+        self.update({}, NOW + 1230)
+        rows = self.latest()
+        self.assertEqual(rows[f"1-{NOW}"]["status"], th.RETIRED)
+        self.assertEqual(rows[f"1-{NOW}"]["end"], NOW)
+        self.assertEqual(rows[f"1-{NOW}-gap"]["end"], NOW + 1200)
+        history = self.fresh(NOW + 1300)
+        still_open = [
+            key for key, s in history.segments.items() if s.segment.end is None
+        ]
+        self.assertEqual(still_open, [f"1-{NOW + 1200}"])
+        # Nothing new on the next cycle.
+        history.update_segments([1], {}, {}, NOW + 1300)
+        self.assertEqual(len(self.lines(th.SEGMENTS)), 5)
+
+    def test_a_newer_tick_of_the_same_agent_is_kept(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640."""
+        self.see(NOW, {1: "In progress"})
+        first = tick(NOW, NOW + 10, "continue", f"{ISSUE}/1", ident="a")
+        self.update({"codex": [first]}, NOW + 20)
+        newer = tick(NOW + 60, NOW + 100, "continue", f"{ISSUE}/1", ident="b")
+        self.update({"codex": [first, newer]}, NOW + 120)
+        self.assertEqual(self.latest()[f"1-{NOW}"]["tick"], [NOW + 100.0, "b"])
+        # Rotation and a restart; another agent's tick ends between the two.
+        self.history = self.fresh(NOW + 200)
+        other = tick(NOW + 20, NOW + 50, "continue", f"{ISSUE}/1", "events", "c")
+        self.update({"codex-2": [other]}, NOW + 200)
+        self.assertEqual(self.latest()[f"1-{NOW}"]["agent"], "codex")
+
     def test_compaction_keeps_the_newest_revisions(self) -> None:
         self.see(NOW, {1: "Ready"})
         for i in range(5):
@@ -591,6 +668,21 @@ class ChecksTest(Base):
         [(_, labels, _)] = sink.rows("ticket_info")
         self.assertEqual(labels["last_agent"], "codex")
         self.assertEqual(labels["ready_entered"], str(NOW - 2 * H))
+
+    def test_a_gap_beats_a_lower_bound(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640:
+        a seeded or uncertain age that overlaps a gap shows "?"."""
+        self.see(NOW, {1: "In progress", 2: "Ready"})
+        self.see(NOW + 1200, {1: "In progress", 2: "In progress"})
+        summary = self.history.summary(NOW + 1300)
+        self.assertTrue(self.history.entries[2][-1].uncertain)
+        self.assertEqual(summary.tickets[1].exact, "gap")  # seed
+        # The uncertain entry is at the gap end: its own age has no gap.
+        self.assertEqual(summary.tickets[2].exact, "0")
+        self.see(NOW + 1320, {1: "In progress", 2: "In progress"})
+        self.see(NOW + 3000, {1: "In progress", 2: "In progress"})
+        summary = self.history.summary(NOW + 3100)
+        self.assertEqual(summary.tickets[2].exact, "gap")
 
     def test_seeded_age_is_a_lower_bound(self) -> None:
         self.see(NOW - 2 * DAY, {1: "In progress"})

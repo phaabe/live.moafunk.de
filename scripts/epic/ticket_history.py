@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import logging
 import os
@@ -56,6 +56,8 @@ COVERAGE = "ticket-coverage.jsonl"
 STATE = "ticket-history.json"
 SEGMENTS = "alloy/ticket-segments.jsonl"
 TICK_SOURCES = {"events": 1, "events_unverified": 0}  # name -> verified
+# A segment a later gap replaced; the history panel skips it.
+RETIRED = "retired"
 
 
 def berlin_day(at: float) -> str:
@@ -383,7 +385,7 @@ def parse_segment(row: Json) -> Stored:
     if (
         not isinstance(segment.segment_id, str)
         or type(segment.issue) is not int
-        or segment.status not in (*CODES, "gap")
+        or segment.status not in (*CODES, "gap", RETIRED)
         or not isinstance(segment.agent, str)
         or segment.verified not in (0, 1)
     ):
@@ -566,11 +568,26 @@ class History:
         """
         ticks = agent_ticks(views) if views is not None else []
         out: list[Json] = []
+        open_by_issue: dict[int, list[Stored]] = {}
+        for stored in self.segments.values():
+            if stored.segment.end is None:
+                open_by_issue.setdefault(stored.segment.issue, []).append(stored)
         for issue in sorted(set(shown)):
             pr = prs.get(issue)
             issue_url = f"{REPO_URL}/issues/{issue}"
             pr_url = f"{REPO_URL}/pull/{pr}" if pr else None
-            for segment in intervals(self.entries.get(issue, []), self.gaps):
+            wanted = intervals(self.entries.get(issue, []), self.gaps)
+            ids = {segment.segment_id for segment in wanted}
+            for stored in open_by_issue.get(issue, []):
+                if stored.segment.segment_id in ids:
+                    continue
+                # A gap that starts at the segment's start replaced it: close
+                # it with no length, so replay never has two open segments.
+                old = stored.segment
+                retired = Segment(old.segment_id, issue, RETIRED, old.start, old.start)
+                out.append(segment_row(retired, stored.rev + 1, now))
+                self.segments[old.segment_id] = Stored(retired, stored.rev + 1, now)
+            for segment in wanted:
                 if segment.end is not None and segment.end < now - WINDOW:
                     continue
                 stored = self.segments.get(segment.segment_id)
@@ -593,11 +610,14 @@ class History:
                     rev = 1
                 else:
                     old = stored.segment
-                    same = (old.status, old.end, old.agent, old.verified) == (
+                    # The tick too: a newer tick of the same agent must be
+                    # kept, or an older one of another agent could win later.
+                    same = (old.status, old.end, old.agent, old.verified, old.tick) == (
                         segment.status,
                         segment.end,
                         segment.agent,
                         segment.verified,
+                        segment.tick,
                     )
                     refresh = segment.end is None and now - stored.emitted_at >= REFRESH
                     if same and not refresh:
@@ -637,10 +657,11 @@ class History:
         recent = now - KEEP_DONE_DAYS * DAY
         for issue, rows in self.entries.items():
             last = rows[-1]
-            if not last.clean:
-                exact = "0"
-            elif overlaps(self.gaps, last.seen_at, now):
+            # A gap first: the status may have changed and come back in it.
+            if overlaps(self.gaps, last.seen_at, now):
                 exact = "gap"
+            elif not last.clean:
+                exact = "0"
             else:
                 exact = "1"
             readies = [e.seen_at for e in rows if e.to == "Ready"]
@@ -731,7 +752,9 @@ def history_metrics(
     leads = [e.lead for e in eligible if e.lead is not None]
     if leads:
         metrics.add("ticket_lead_median_seconds", nearest_rank(leads, 0.5))
-    days = [berlin_day(now - i * DAY) for i in range(KEEP_DONE_DAYS)]
+    # Calendar days: a DST change makes a day 23 or 25 hours long.
+    today = datetime.fromtimestamp(now, LOCAL).date()
+    days = [(today - timedelta(days=i)).isoformat() for i in range(KEEP_DONE_DAYS)]
     counts = {(day, executor): 0 for day in days for executor in EXECUTORS}
     for episode in eligible:
         key = (berlin_day(episode.done.seen_at), episode.done.executor)
