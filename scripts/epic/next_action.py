@@ -1128,7 +1128,9 @@ def item_from_rest(row: dict[str, Any]) -> dict[str, Any]:
     source = row.get("content") or {}
     content: dict[str, Any] = {"type": row.get("content_type")}
     # state and state_reason: ticket completion (completed_tickets()).
-    for key in ("number", "title", "body", "updated_at", "state", "state_reason"):
+    # closed_at: the monitor's Tickets dashboard (recent Done tickets).
+    keys = ("number", "title", "body", "updated_at", "state", "state_reason")
+    for key in (*keys, "closed_at"):
         if key in source:
             content[key] = source[key]
     # REST `url` is the API address; monitor.py matches the web address.

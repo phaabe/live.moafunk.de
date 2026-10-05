@@ -29,6 +29,7 @@ from typing import Any, BinaryIO
 import agents
 import delivery
 import next_action as epic
+import tickets
 import ticks
 
 # GitHub and the existing selector use heterogeneous JSON objects.
@@ -38,7 +39,15 @@ Json = dict[str, Any]
 PRESENCE = {"retired": 0, "running": 1, "idle": 2, "new": 3, "late": 4, "unknown": 5}
 PRESENCE_ORDER = ("running", "idle", "new", "late", "unknown", "retired")
 MAX_STATE_FILE = 65_536
-STATUSES = ("Backlog", "Ready", "In progress", "In review", "Done", "Unknown")
+STATUSES = (
+    "Backlog",
+    "Refinement",
+    "Ready",
+    "In progress",
+    "In review",
+    "Done",
+    "Unknown",
+)
 ACTIONS = (
     "stop",
     "idle",
@@ -582,6 +591,8 @@ class Heads:
         self.heads: dict[str, str] | None = None
         self.prs: list[Json] | None = None
         self.handoff: delivery.Handoff | None = None
+        # The selector snapshot of this cycle's poll; None after a failed one.
+        self.state: Json | None = None
 
 
 LATEST = Heads()
@@ -1105,6 +1116,7 @@ def collect_github(
             clock.save(handoff)
             LATEST.handoff = handoff
         LATEST.prs = epic_view(state)["prs"]
+        LATEST.state = state
         # Read by the runner loop to tell whether a backoff head is current.
         LATEST.heads = {
             f"{REPO_URL}/pull/{pr['number']}": pr.get("headRefOid", "")
@@ -1122,6 +1134,7 @@ def collect_github(
     ) as error:
         # Keep the previous snapshot and its timestamp. Never replace failure with zero work.
         logging.error("GitHub collection failed: %s", type(error).__name__)
+        LATEST.state = None
     health = Metrics()
     health.add("github_collection_success", int(ok))
     health.add("github_collection_duration_seconds", time.monotonic() - began)
@@ -1190,11 +1203,94 @@ def collect_delivery(
     return ok
 
 
+def fetch_tickets(cache: Path, request: Json, timeout: float) -> Json:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--fetch-tickets",
+        str(cache),
+        "--fetch-seconds",
+        str(max(timeout - 5, 1)),
+    ]
+    with subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as process:
+        try:
+            output, _ = process.communicate(json.dumps(request), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            raise
+        if process.returncode:
+            raise RuntimeError(f"ticket collection exited {process.returncode}")
+    return json.loads(output)
+
+
+def collect_tickets(
+    output: Path,
+    cache: Path,
+    timeout: float,
+    state: Json | None,
+    fetch: Callable[[Path, Json, float], Json] = fetch_tickets,
+) -> bool:
+    """Ticket rows from this cycle's snapshot plus blocked-by and body reviews.
+
+    Without a snapshot the last tickets.prom stays (its timestamp ages);
+    only the health file is written. A failed child makes deps and review
+    unknown, not empty.
+    """
+    began = time.monotonic()
+    ok = {source: False for source in tickets.SOURCES}
+    try:
+        if state is None:
+            raise ValueError("no GitHub snapshot this cycle")
+        view = epic_view(state)
+        now = time.time()
+        request = tickets.wanted(view, now)
+        try:
+            extra = tickets.valid_extra(fetch(cache, request, timeout), request)
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            subprocess.SubprocessError,
+        ) as error:
+            logging.error("Ticket reads failed: %s", type(error).__name__)
+            extra = tickets.Extra(None, None)
+        metrics = Metrics()
+        tickets.ticket_metrics(metrics, view, extra, tickets.claimable(view), now)
+        atomic_write(output / "tickets.prom", metrics.render())
+        ok.update(
+            board=True,
+            github=True,
+            deps=extra.deps is not None,
+            review=extra.reviews is not None,
+        )
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        logging.error("Ticket collection failed: %s", type(error).__name__)
+    health = Metrics()
+    tickets.source_metrics(health, ok, time.time())
+    health.add("ticket_collection_duration_seconds", time.monotonic() - began)
+    atomic_write(output / "tickets-health.prom", health.render())
+    return all(ok.values())
+
+
 def collect_remote(args: argparse.Namespace, clock: delivery.HandoffClock) -> bool:
-    """One GitHub cycle: the selector snapshot and handoff, then delivery."""
+    """One GitHub cycle: the selector snapshot and handoff, delivery, tickets."""
     ok = collect_github(args.output, args.github_timeout, clock=clock)
     cache = args.output.parent / "delivery.json"
-    return collect_delivery(args.output, cache, args.github_timeout) and ok
+    ok = collect_delivery(args.output, cache, args.github_timeout) and ok
+    # LATEST.state is None when this cycle's GitHub poll failed.
+    ticket_cache = args.output.parent / "ticket-cache"
+    return (
+        collect_tickets(args.output, ticket_cache, args.github_timeout, LATEST.state)
+        and ok
+    )
 
 
 def run_once(args: argparse.Namespace) -> None:
@@ -1253,6 +1349,8 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--fetch-state", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--fetch-delivery", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--fetch-tickets", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--fetch-seconds", type=float, help=argparse.SUPPRESS)
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
@@ -1269,6 +1367,11 @@ def main() -> None:
         return
     if args.fetch_delivery is not None:
         print(json.dumps(delivery.main_fetch(args.fetch_delivery, time.time())))
+        return
+    if args.fetch_tickets is not None:
+        request = tickets.read_request(sys.stdin.read())
+        seconds = args.fetch_seconds or args.github_timeout
+        print(json.dumps(tickets.main_fetch(args.fetch_tickets, request, seconds)))
         return
     if any(
         not math.isfinite(value) or value <= 0
