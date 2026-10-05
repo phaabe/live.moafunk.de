@@ -1340,8 +1340,16 @@ class NextActionCli(Env):
 
         def fetch_state() -> None:
             with patch.object(sys, "argv", ["monitor.py", "--fetch-state"]):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    monitor.main()
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    try:
+                        monitor.main()
+                    except SystemExit as error:
+                        if error.code == 2:
+                            raise gs.ConfigError("exit 2") from error
+                        raise
 
         cases = (
             ({"EPIC_SHARED_READER": ""}, False, "old"),
@@ -1394,6 +1402,44 @@ class NextActionCli(Env):
         with patch.object(na, "stop_on_quota", return_value=4):
             quota = na.QuotaExhausted("GraphQL")
             self.assertEqual(self.recheck(side_effect=quota)[0], 4)
+
+    def test_recheck_needs_an_explicit_child_setting(self) -> None:
+        # The recheck runs only in a runner child: no default, no read.
+        for env in ({}, {"EPIC_SHARED_READER": ""}, {"EPIC_SHARED_READER": "yes"}):
+            with self.subTest(env=env), patch.dict(os.environ, env):
+                if not env:
+                    os.environ.pop("EPIC_SHARED_READER")
+                with patch.object(gs, "DEFAULT_ENABLED", True):
+                    code, out, err = self.recheck(side_effect=AssertionError("read"))
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("config: EPIC_SHARED_READER", err)
+        with patch.object(gs, "FreshReader", side_effect=AssertionError("read")):
+            with patch.dict(os.environ, {"EPIC_SHARED_READER": "no"}):
+                self.assertEqual(self.main("--agent", "claude", "--recheck", "x")[0], 2)
+        for value in ("0", "1"):
+            with patch.dict(os.environ, {"EPIC_SHARED_READER": value}):
+                self.assertEqual(self.recheck(return_value=None)[0], 0)
+
+    def run_monitor(self, **env: str) -> subprocess.CompletedProcess[str]:
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("EPIC_")}
+        return subprocess.run(
+            [sys.executable, str(HERE / "monitor.py"), "--fetch-state"],
+            env={**clean, "EPIC_CACHE_DIR": str(self.cache), **env},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_monitor_fetch_state_exits_2_on_bad_settings(self) -> None:
+        for env in (
+            {"EPIC_SHARED_READER": "yes"},
+            {"EPIC_SHARED_READER": "1", "EPIC_SNAPSHOT_LOCK_SECONDS": "zero"},
+        ):
+            with self.subTest(env=env):
+                done = self.run_monitor(**env)
+                self.assertEqual((done.returncode, done.stdout), (2, ""))
+                self.assertIn("config: EPIC_", done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
 
     def test_recheck_needs_an_agent(self) -> None:
         with self.assertRaises(SystemExit):

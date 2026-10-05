@@ -1640,10 +1640,16 @@ def run_recheck(
     """Fresh check of one selected action: 0 still valid, 6 stale, 5 blocked.
 
     Bounded by EPIC_RECHECK_TIMEOUT_SECONDS; the runner's own timeout around
-    this command is a little longer, so a slow read ends as 5 here.
+    this command is a little longer, so a slow read ends as 5 here. Only a
+    runner child rechecks: a missing, empty or invalid EPIC_SHARED_READER
+    exits 2 before any read.
     """
     import github_state
 
+    try:
+        github_state.child_enabled()
+    except github_state.ConfigError as error:
+        return reader_exit(error)
     try:
         action = json.loads(action_file.read_text())
         if not isinstance(action, dict):
