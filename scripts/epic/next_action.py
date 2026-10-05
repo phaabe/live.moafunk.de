@@ -937,6 +937,9 @@ def decide(
         # A conflicted head changes again when it is resolved: no review yet.
         if p.get("mergeable") == "CONFLICTING":
             pr_action(p, "wait", f"waiting: {peer} resolves the conflict first")
+        # So does a head with failed checks: its owner gets fix-checks.
+        elif checks_state(p) == "failed":
+            pr_action(p, "wait", f"waiting: {peer} fixes the failed checks first")
         else:
             pr_action(
                 p, "review", f"{peer}'s PR has no verdict from {agent} for its head"
