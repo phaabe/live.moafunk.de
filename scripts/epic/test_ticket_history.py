@@ -651,6 +651,26 @@ class SegmentTest(Base):
         )
         self.assertEqual(rows[f"1-{NOW + 3840}"]["status"], "In review")
 
+    def test_a_hidden_closed_segment_takes_a_late_correction(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640:
+        hidden close, late finish within 24 h, replay, rotation, return."""
+        self.see(NOW, {1: "In progress", 2: "Ready"})
+        first = {"codex": [tick(NOW, NOW + 60, "continue", f"{ISSUE}/1", ident="a")]}
+        self.update(first, NOW + 100, shown=(1, 2))
+        self.see(NOW + 120, {1: "In review", 2: "Ready"})
+        self.update(first, NOW + 150, shown=(2,))
+        self.assertEqual(self.latest()[f"1-{NOW}"]["end"], NOW + 120)
+        late = {
+            "codex": first["codex"],
+            "codex-2": [tick(NOW + 10, NOW + 180, "continue", f"{ISSUE}/1", ident="b")],
+        }
+        self.update(late, NOW + 240, shown=(2,))
+        row = self.latest()[f"1-{NOW}"]
+        self.assertEqual((row["agent"], row["rev"]), ("codex-2", 3))
+        self.history = self.fresh(NOW + 90000)
+        self.update({"codex": []}, NOW + 90000, shown=(1, 2))
+        self.assertEqual(self.latest()[f"1-{NOW}"]["agent"], "codex-2")
+
     def test_compaction_drops_an_open_segment_the_ledger_no_longer_has(
         self,
     ) -> None:

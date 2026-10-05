@@ -399,6 +399,12 @@ def parse_segment(row: Json) -> Stored:
     return stored
 
 
+def correctable(stored: Stored, now: float) -> bool:
+    """Open, or closed less than CORRECTION seconds ago."""
+    end = stored.segment.end
+    return end is None or now - end <= CORRECTION
+
+
 def agent_ticks(views: dict[str, list[Json]]) -> list[tuple[str, int, Json]]:
     """(agent, verified, tick) of finished ticks from runner events; the
     legacy log is never used."""
@@ -575,13 +581,17 @@ class History:
         ticks = agent_ticks(views) if views is not None else []
         out: list[Json] = []
         open_by_issue: dict[int, list[Stored]] = {}
+        live: set[int] = set()
         for stored in self.segments.values():
             if stored.segment.end is None:
                 open_by_issue.setdefault(stored.segment.issue, []).append(stored)
-        # Hidden tickets with an exported open segment are reconciled too
-        # (closed or retired), but get no new segments and no refresh.
+            if correctable(stored, now):
+                live.add(stored.segment.issue)
+        # Hidden tickets with an exported segment that is open or still in
+        # its correction window are reconciled too (closed, retired or
+        # corrected), but get no new segments and no refresh.
         visible = set(shown)
-        for issue in sorted(visible | set(open_by_issue)):
+        for issue in sorted(visible | live):
             hidden = issue not in visible
             pr = prs.get(issue)
             issue_url = f"{REPO_URL}/issues/{issue}"
@@ -602,7 +612,7 @@ class History:
                 # Old intervals are skipped, unless one was exported open and
                 # still needs its close revision.
                 was_open = stored is not None and stored.segment.end is None
-                if hidden and not was_open:
+                if hidden and not (stored is not None and correctable(stored, now)):
                     continue
                 if (
                     segment.end is not None
