@@ -19,6 +19,11 @@ are searched for it first, so a rerun never posts twice; a run that posted
 the comment but failed to close simply closes on the next tick. A reopened
 ticket stays open until a newer PR for it merges.
 
+The reopen check, marker read and writes for a ticket run under its target
+lock (target_lock.py), shared by all runners on this machine. Two runs at once
+therefore never both read "no marker" and post twice. A busy lock skips the
+ticket; the next tick tries again.
+
 The pause file and a stored quota wait are read before every GitHub call;
 either one ends the run with no call.
 
@@ -34,11 +39,13 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from typing import Any
 
 import github_quota
 import next_action
+import target_lock
 from github_quota import QuotaExhausted, parse_iso, run_gh
 from next_action import BASES, EPIC, LEAF, REPO, issue_url
 
@@ -51,10 +58,11 @@ VALIDATION = re.compile(r"^Validation:[ \t]*(.+)$", re.MULTILINE)
 MARKER = "<!-- epic-close-merged {kind} pr={pr} -->"
 MARKERS = re.compile(r"<!-- epic-close-merged (close|note) pr=(\d+) -->")
 TESTS_MAX = 600
+PER_PAGE = 100
 # gh --jq filters. Each prints one JSON value per line (strings via tojson).
-MERGED_JQ = (
-    ".[] | select(.merged_at != null) | {number, body, merged_at,"
-    " merge_commit_sha, base: .base.ref}"
+# Every closed PR, merged or not, so a short page shows the list ended.
+CLOSED_JQ = (
+    ".[] | {number, body, merged_at, updated_at, merge_commit_sha, base: .base.ref}"
 )
 LEAVES_JQ = (
     '.[] | select(.merged_at != null) | .body // ""'
@@ -124,22 +132,29 @@ def ticket_of(body: str) -> int | None:
 def merged_prs(gh: Gh, now: float) -> list[dict[str, Any]]:
     """PRs merged into an epic base within the window, newest merge first.
 
-    The first page per base is enough: it is sorted by update time, and a
-    merge updates the PR.
+    Pages are sorted by update time, newest first, and a merge updates the
+    PR. Paging stops at a short page or at a page that reaches an update
+    before the window: every later PR was last updated, so merged, before it.
     """
     since = now - WINDOW_DAYS * 86400
     prs = []
     for base in BASES:
-        prs += lines(
-            gh,
-            [
-                "api",
-                f"repos/{REPO}/pulls?state=closed&base={base}"
-                "&sort=updated&direction=desc&per_page=100",
-                "--jq",
-                MERGED_JQ,
-            ],
-        )
+        page = 1
+        while True:
+            found = lines(
+                gh,
+                [
+                    "api",
+                    f"repos/{REPO}/pulls?state=closed&base={base}"
+                    f"&sort=updated&direction=desc&per_page={PER_PAGE}&page={page}",
+                    "--jq",
+                    CLOSED_JQ,
+                ],
+            )
+            prs += [p for p in found if p["merged_at"]]
+            if len(found) < PER_PAGE or parse_iso(found[-1]["updated_at"]) < since:
+                break
+            page += 1
     recent = [p for p in prs if parse_iso(p["merged_at"]) >= since]
     return sorted(recent, key=lambda p: p["merged_at"], reverse=True)
 
@@ -223,6 +238,18 @@ def markers(gh: Gh, number: int) -> set[tuple[str, int]]:
     return {(m.group(1), int(m.group(2))) for t in found if (m := MARKERS.search(t))}
 
 
+@contextmanager
+def ticket_lock(number: int) -> Generator[bool]:
+    """Hold the ticket's target lock (target_lock.py) without waiting.
+
+    Yields False when another runner holds it. Closing the file frees it.
+    """
+    root = target_lock.lock_dir()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with open(root / f"{number}.lock", "a") as handle:
+        yield target_lock.acquire([handle.fileno()])
+
+
 def uncovered(ticket_body: str, listed: set[str]) -> list[str]:
     """Unchecked leaves of the ticket that no merged PR lists in `Leaf IDs:`."""
     return sorted(set(UNCHECKED_LEAF.findall(ticket_body or "")) - listed)
@@ -282,6 +309,39 @@ def close(gh: Gh, number: int) -> None:
     )
 
 
+def settle(
+    gh: Gh,
+    ticket: dict[str, Any],
+    newest: dict[str, Any],
+    listed: set[str],
+    dry_run: bool,
+    log: Callable[[str], None],
+) -> None:
+    """Note or close one ticket. The caller holds the ticket's lock."""
+    number = ticket["number"]
+    url = issue_url(number)
+    if reopened_since(gh, number, newest["merged_at"]):
+        log(
+            f"close: {url} was reopened after {pr_url(newest['number'])} merged; left open"
+        )
+        return
+    leaves = uncovered(ticket.get("body") or "", listed)
+    done = markers(gh, number)
+    if leaves:
+        if ("note", newest["number"]) in done:
+            return
+        log(f"close: {url} keeps open leaves {', '.join(leaves)}; noting it")
+        if not dry_run:
+            comment(gh, number, note_comment(newest, leaves))
+        return
+    log(f"close: {url} done by {pr_url(newest['number'])}; closing")
+    if dry_run:
+        return
+    if ("close", newest["number"]) not in done:
+        comment(gh, number, close_comment(newest))
+    close(gh, number)
+
+
 def run(
     gh: Gh, now: float, dry_run: bool = False, log: Callable[[str], None] = print
 ) -> int:
@@ -312,30 +372,13 @@ def run(
                 continue
             if number in in_review:
                 continue  # an open PR still works on it
-            if reopened_since(gh, number, newest["merged_at"]):
-                log(
-                    f"close: {url} was reopened after {pr_url(newest['number'])} merged; left open"
-                )
-                continue
-            leaves: list[str] = []
-            if UNCHECKED_LEAF.search(ticket.get("body") or ""):
-                if listed is None:
-                    listed = listed_leaves(gh)
-                leaves = uncovered(ticket.get("body") or "", listed)
-            done = markers(gh, number)
-            if leaves:
-                if ("note", newest["number"]) in done:
+            if UNCHECKED_LEAF.search(ticket.get("body") or "") and listed is None:
+                listed = listed_leaves(gh)
+            with ticket_lock(number) as locked:
+                if not locked:
+                    log(f"close: {url} is locked by another runner; next tick")
                     continue
-                log(f"close: {url} keeps open leaves {', '.join(leaves)}; noting it")
-                if not dry_run:
-                    comment(gh, number, note_comment(newest, leaves))
-                continue
-            log(f"close: {url} done by {pr_url(newest['number'])}; closing")
-            if dry_run:
-                continue
-            if ("close", newest["number"]) not in done:
-                comment(gh, number, close_comment(newest))
-            close(gh, number)
+                settle(gh, ticket, newest, listed or set(), dry_run, log)
         except subprocess.SubprocessError as error:
             failed = True
             detail = getattr(error, "stderr", "") or error

@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ def pr(
         "number": number,
         "body": body + "Validation: 10 tests OK.\n" + extra,
         "merged_at": merged_at,
+        "updated_at": merged_at,
         "merge_commit_sha": SHA,
         "base": base,
     }
@@ -54,6 +56,7 @@ class FakeGh:
         self.reopened: dict[int, list[str]] = {}
         self.comments: dict[int, list[str]] = {}
         self.writes: list[tuple[str, int]] = []
+        self.pages: list[int] = []  # page numbers of the recent-merge reads
         self.fail_writes = False
 
     def ticket(self, n: int, body: str = "Do it.", sub_issues: int = 0) -> None:
@@ -73,7 +76,11 @@ class FakeGh:
                     for m in re.findall(r"(?m)^Leaf IDs:.*$", p["body"])
                 ]  # fmt: skip
                 return out(found)
-            return out(prs)
+            page = int(re.search(r"&page=(\d+)", path).group(1))
+            self.pages.append(page)
+            size = close_merged.PER_PAGE
+            prs.sort(key=lambda p: p["updated_at"], reverse=True)
+            return out(prs[(page - 1) * size : page * size])
         if path.startswith("pulls?state=open"):
             return out(
                 [m for b in self.open_prs for m in re.findall(r"(?m)^Issue:.*$", b)]
@@ -173,6 +180,68 @@ class CloseMergedTest(unittest.TestCase):
         self.gh.ticket(11)
         self.assertEqual(self.run_once(), 0)
         self.assertEqual(self.gh.writes, [])
+
+    def test_merge_on_page_two_closes(self) -> None:
+        # 100 newer updates fill page one: 60 merges without a ticket and 40
+        # closed unmerged PRs. The eligible merge is on page two.
+        newer = [pr(n, None, merged_at="2026-10-05T09:00:00Z") for n in range(60)]
+        for n in range(60, 100):
+            newer.append({**pr(n, None), "merged_at": None})
+            newer[-1]["updated_at"] = "2026-10-05T09:00:00Z"
+        self.gh.merged = [*newer, pr(612, 521, merged_at="2026-10-04T10:00:00Z")]
+        self.gh.ticket(521)
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [("comment", 521), ("close", 521)])
+        self.assertEqual(self.gh.pages, [1, 2, 1])  # two bases
+
+    def test_paging_stops_at_an_update_before_the_window(self) -> None:
+        self.gh.merged = [
+            pr(n, None, merged_at="2026-09-01T00:00:00Z") for n in range(250)
+        ]
+        self.gh.merged[0] = pr(612, 521, merged_at="2026-10-04T10:00:00Z")
+        self.gh.ticket(521)
+        self.run_once()
+        self.assertEqual(self.gh.writes, [("comment", 521), ("close", 521)])
+        self.assertEqual(self.gh.pages, [1, 1])
+
+    def test_overlapping_runs_post_one_comment(self) -> None:
+        # Run A holds the ticket while it reads the markers; run B starts then.
+        self.gh.merged = [pr(612, 521)]
+        self.gh.ticket(521)
+        inside, release = threading.Event(), threading.Event()
+        plain = self.gh.__call__
+
+        def gh(args: list[str]) -> str:
+            result = plain(args)
+            if any("/comments?" in a for a in args) and not inside.is_set():
+                inside.set()
+                release.wait(10)
+            return result
+
+        first = threading.Thread(
+            target=close_merged.run, args=(gh, NOW), kwargs={"log": lambda _: None}
+        )
+        first.start()
+        try:
+            self.assertTrue(inside.wait(10))
+            self.assertEqual(close_merged.run(gh, NOW, log=self.log.append), 0)
+            self.assertEqual(self.gh.writes, [])
+            self.assertIn("locked by another runner", self.log[-1])
+        finally:
+            release.set()
+            first.join(10)
+        self.assertFalse(first.is_alive())
+        self.assertEqual(self.gh.writes, [("comment", 521), ("close", 521)])
+
+    def test_ticket_locked_by_a_running_tick_is_skipped(self) -> None:
+        self.gh.merged = [pr(612, 521)]
+        self.gh.ticket(521)
+        with close_merged.ticket_lock(521) as locked:
+            self.assertTrue(locked)
+            self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [])
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [("comment", 521), ("close", 521)])
 
     def test_umbrella_and_open_pr_keep_the_ticket_open(self) -> None:
         self.gh.merged = [pr(1, 20), pr(2, 21)]
@@ -289,14 +358,20 @@ class JqFilterTest(unittest.TestCase):
         body = f"Text\nIssue: {issue(5)} (partial)\nLeaf IDs: B1.1.1, B1.1.2\nmore"
         pulls = [
             {"number": 1, "body": body, "merged_at": "2026-10-04T10:00:00Z",
+             "updated_at": "2026-10-04T10:00:01Z",
              "merge_commit_sha": SHA, "base": {"ref": "dev/312-interim"}},
             {"number": 2, "body": None, "merged_at": None, "merge_commit_sha": None,
+             "updated_at": "2026-10-03T00:00:00Z",
              "base": {"ref": "dev/312-interim"}},
         ]  # fmt: skip
         self.assertEqual(
-            self.jq(close_merged.MERGED_JQ, pulls),
+            self.jq(close_merged.CLOSED_JQ, pulls),
             [{"number": 1, "body": body, "merged_at": "2026-10-04T10:00:00Z",
-              "merge_commit_sha": SHA, "base": "dev/312-interim"}],
+              "updated_at": "2026-10-04T10:00:01Z",
+              "merge_commit_sha": SHA, "base": "dev/312-interim"},
+             {"number": 2, "body": None, "merged_at": None,
+              "updated_at": "2026-10-03T00:00:00Z",
+              "merge_commit_sha": None, "base": "dev/312-interim"}],
         )  # fmt: skip
         self.assertEqual(
             self.jq(close_merged.LEAVES_JQ, pulls), ["Leaf IDs: B1.1.1, B1.1.2"]
