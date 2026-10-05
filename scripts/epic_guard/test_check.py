@@ -232,6 +232,57 @@ class EvaluationTests(unittest.TestCase):
         )
         self.assertTrue(self.errors())
 
+    def test_setup_accepts_setup_or_concrete_leaf_ids(self) -> None:
+        for leaves in ("setup", "R586.1.1", "R588.1.1, R588.1.2"):
+            with self.subTest(leaves=leaves):
+                self.data = snapshot()
+                self.data["pr"]["body"] = self.data["pr"]["body"].replace(
+                    "Leaf IDs: setup", f"Leaf IDs: {leaves}"
+                )
+                self.assertEqual(self.errors(), [])
+
+    def test_all_lanes_reject_invalid_leaf_ids(self) -> None:
+        for lane in sorted(check.LANES):
+            for leaves in (
+                "",
+                "free text",
+                "R586.1",
+                "R586x1x1",
+                "r586.1.1",
+                "R586.1.1; R586.1.2",
+                "R586.1.1,",
+                "setup, R586.1.1",
+            ):
+                with self.subTest(lane=lane, leaves=leaves):
+                    self.data = snapshot()
+                    self.data["pr"]["body"] = (
+                        self.data["pr"]["body"]
+                        .replace("Lane: setup", f"Lane: {lane}")
+                        .replace("Leaf IDs: setup", f"Leaf IDs: {leaves}")
+                    )
+                    self.assertIn(
+                        "Leaf IDs must list concrete leaves separated by commas",
+                        self.errors(),
+                    )
+
+    def test_other_lanes_require_concrete_leaf_ids(self) -> None:
+        for lane in sorted(check.LANES - {"setup"}):
+            for leaves in ("setup", "O1.2.4", "O1.2.4, O1.2.2"):
+                with self.subTest(lane=lane, leaves=leaves):
+                    self.data = snapshot()
+                    self.policy["file_rules"][0]["lanes"] = [lane]
+                    self.data["pr"]["body"] = (
+                        self.data["pr"]["body"]
+                        .replace("Lane: setup", f"Lane: {lane}")
+                        .replace("Leaf IDs: setup", f"Leaf IDs: {leaves}")
+                    )
+                    expected = (
+                        ["Leaf IDs must list concrete leaves separated by commas"]
+                        if leaves == "setup"
+                        else []
+                    )
+                    self.assertEqual(self.errors(), expected)
+
     def test_unknown_files_and_rename_crossing_lane(self) -> None:
         self.data["files"][0]["filename"] = "unassigned.txt"
         self.assertTrue(self.errors())
