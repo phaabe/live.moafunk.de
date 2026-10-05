@@ -85,14 +85,24 @@ def body_review(rows: list[Json]) -> Json | None:
     """The newest valid body review in REST comment rows, or None.
 
     Valid: unedited (updated_at == created_at) and the whole body matches.
+    A row without an id, a body or both timestamps raises Malformed: a
+    newer comment that cannot be read must never let an older approval count.
     """
-    found = [
-        (row["created_at"], int(row["id"]), match)
-        for row in rows
-        if row.get("updated_at") == row.get("created_at")
-        and isinstance(row.get("body"), str)
-        and (match := BODY_REVIEW.fullmatch(row["body"]))
-    ]
+    found = []
+    for row in rows:
+        body, created, updated = (
+            row.get(k) for k in ("body", "created_at", "updated_at")
+        )
+        if (
+            type(row.get("id")) is not int
+            or not isinstance(body, str)
+            or parse_time(created) is None
+            or parse_time(updated) is None
+        ):
+            raise Malformed("comment without id, body or timestamps")
+        match = BODY_REVIEW.fullmatch(body)
+        if match and updated == created:
+            found.append((parse_time(created), row["id"], match))
     if not found:
         return None
     *_, match = max(found, key=lambda entry: entry[:2])
@@ -433,7 +443,7 @@ def fetch_extra(
             )
             for number in request["refinement"]
         }
-    except blocked:
+    except (*blocked, Malformed):
         reviews = None
     return {"deps": deps, "reviews": reviews}
 

@@ -133,6 +133,23 @@ class BodyReviewTest(unittest.TestCase):
         )
         self.assertIsNone(tickets.body_review(rows[3:]))
 
+    def test_unreadable_newer_comment_never_keeps_an_older_approval(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/633."""
+        approved = comment("Body review: APPROVED aaaaaaaaaaaa", ident=1)
+        newer = comment("Body review: CHANGES REQUESTED aaaaaaaaaaaa", ident=2)
+        for key, value in (
+            ("updated_at", None),
+            ("created_at", "yesterday"),
+            ("body", None),
+            ("id", "2"),
+        ):
+            with self.subTest(key=key):
+                bad = {**newer, key: value}
+                if value is None:
+                    del bad[key]
+                with self.assertRaises(tickets.Malformed):
+                    tickets.body_review([approved, bad])
+
 
 class PopulationTest(unittest.TestCase):
     def test_caps_order_and_done_window(self) -> None:
@@ -507,6 +524,33 @@ class CollectTest(unittest.TestCase):
             self.assertIn(
                 f'epic_ticket_source_ok{{source="{source}"}} 1', self.health()
             )
+
+    def test_malformed_newer_review_makes_the_review_source_unknown(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/633:
+        an older approval and a newer comment without updated_at."""
+        body = (self.state["items"][1]["content"] or {}).get("body") or ""
+        rows = [
+            comment(f"Body review: APPROVED {digest(body)}", ident=1),
+            {
+                "id": 2,
+                "body": f"Body review: CHANGES REQUESTED {digest(body)}",
+                "created_at": "2026-10-05T12:00:00Z",
+            },
+        ]
+
+        def pages(url: str) -> list[monitor.Json]:
+            return rows if url.endswith("/comments?per_page=100") else []
+
+        def fetch(cache: Path, request: monitor.Json, timeout: float) -> monitor.Json:
+            return tickets.fetch_extra(request, pages, (FetchTest.Blocked,))
+
+        self.assertFalse(self.collect(self.state, fetch))
+        text = (self.root / "tickets.prom").read_text()
+        self.assertNotIn('check="refinement_unreviewed"', text)
+        self.assertIn('note="Body review unknown"', text)
+        self.assertNotIn('note="Body reviewed"', text)
+        self.assertIn('epic_ticket_source_ok{source="review"} 0', self.health())
+        self.assertIn('epic_ticket_source_ok{source="deps"} 1', self.health())
 
     def test_failed_child_keeps_board_rows_and_marks_sources(self) -> None:
         def fetch(cache: Path, request: monitor.Json, timeout: float) -> monitor.Json:
