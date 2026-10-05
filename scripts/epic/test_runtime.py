@@ -466,8 +466,12 @@ class Ticks:
         self.named[tick_id] = proc
         return proc
 
-    def admitted(self, tick_id: str, timeout: float = 10) -> bool:
-        """The tick wrote its marker file; False as soon as it exited without."""
+    def admitted(self, tick_id: str, timeout: float = 60) -> bool:
+        """The tick wrote its marker file; False as soon as it exited without.
+
+        It returns as soon as either happens, so the long limit only matters
+        on a loaded machine, where starting bash and Python can take seconds.
+        """
         ok = self.case.tmp / f"{tick_id}.ok"
         proc = self.named.get(tick_id)
         deadline = time.monotonic() + timeout
@@ -629,12 +633,16 @@ class AdmissionTest(TempCase):
     def test_wrapper_death_with_live_child_keeps_promotion_waiting(self) -> None:
         # The child runs through the prefix without the tick's fd 17, like a
         # Claude tool: only its own LOCK_SH (fd 29) can keep the lock.
-        body = f'"{LOCKHOLD}" "sleep 30" 17>&- &\necho $! > "{self.tmp}/child"\nwait'
+        # The command writes `ready` only after the prefix took its lock, so a
+        # busy machine cannot kill the tick first. `exec` keeps the child's PID.
+        ready = self.tmp / "ready"
+        command = f'touch "{ready}" && exec sleep 30'
+        body = f'"{LOCKHOLD}" \'{command}\' 17>&- &\necho $! > "{self.tmp}/child"\nwait'
         tick = self.ticks.start("t4", body)
         self.assertTrue(self.ticks.admitted("t4"))
         self.assertTrue(wait_until(lambda: (self.tmp / "child").exists()))
         child = int((self.tmp / "child").read_text())
-        time.sleep(0.5)  # the prefix took its lock and exec'd the command
+        self.assertTrue(wait_until(ready.exists))
         os.kill(tick.pid, signal.SIGKILL)
         tick.wait(timeout=10)
         os.kill(child, 0)  # the child is alive
