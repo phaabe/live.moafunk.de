@@ -689,13 +689,6 @@ class PlumbingTest(unittest.TestCase):
                 },
             )
 
-    def test_alloy_and_loki_config(self) -> None:
-        base = Path(__file__).resolve().parents[2] / "tools/agent-monitoring"
-        alloy = (base / "alloy.alloy").read_text()
-        self.assertIn('selector = "{stream=\\"ticket_segments\\"}"', alloy)
-        self.assertIn('source = "emitted_at"', alloy)
-        self.assertIn("max_query_series: 5000", (base / "loki.yaml").read_text())
-
     def test_fetched_at_comes_from_the_shared_snapshot(self) -> None:
         import github_state
 

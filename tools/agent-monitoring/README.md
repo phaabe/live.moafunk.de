@@ -226,15 +226,6 @@ model transcripts, prompts and command output. They stay on this Mac: Loki and
 Alloy have no published ports, and Grafana binds to `127.0.0.1`. No container gets host
 credentials or source code.
 
-The Tickets page needs a board status history, which GitHub does not keep.
-The collector records the changes it sees in `runtime/ticket-status.jsonl`,
-and outages longer than 10 min in `runtime/ticket-coverage.jsonl`. History
-from before the first collector start does not exist. A change seen across an
-outage is marked uncertain and left out of the flow times. The history panel
-reads `runtime/alloy/ticket-segments.jsonl` from Loki (`stream="ticket_segments"`).
-That file holds statuses, times and agent names, never runner text. Do not
-delete these files: the history cannot be read again from GitHub.
-
 Runtime files and the collector log are in the ignored `runtime/` directory.
 Only one collector may use an output directory. The launchd script controls
 one service named `de.moafunk.agent-monitoring` on this Mac. Stop the foreground

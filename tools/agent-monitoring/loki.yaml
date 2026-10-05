@@ -30,9 +30,6 @@ limits_config:
   # Some transcript lines are whole JSON blobs; keep the start, not the batch.
   max_line_size: 16KB
   max_line_size_truncate: true
-  # The ticket history reads one series per status segment: up to 150
-  # tickets with several segments each in 7 days.
-  max_query_series: 5000
 compactor:
   working_directory: /loki/compactor
   retention_enabled: true
