@@ -42,6 +42,27 @@ loki.process "permissions" {
       drop_counter_reason = "older_than_loki_limit"
     }
   }
+
+  // Ticket status segments (the collector's own file): each line keeps its
+  // emitted_at time. The collector rewrites open segments every hour, so a
+  // 7-day query always finds them.
+  stage.match {
+    selector = "{stream=\"ticket_segments\"}"
+
+    stage.json {
+      expressions = { emitted_at = "" }
+    }
+
+    stage.timestamp {
+      source = "emitted_at"
+      format = "Unix"
+    }
+
+    stage.drop {
+      older_than          = "167h"
+      drop_counter_reason = "older_than_loki_limit"
+    }
+  }
 }
 
 loki.write "local" {

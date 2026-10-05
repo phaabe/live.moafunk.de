@@ -17,6 +17,7 @@ from unittest.mock import patch
 import agents
 import delivery
 import monitor
+import ticket_history
 import tickets
 
 
@@ -944,13 +945,39 @@ class ScrapeSizeTest(unittest.TestCase):
         hidden = {
             5000 + i: [f"{URL}/issues/{7000 + j}" for j in range(3)] for i in range(150)
         }
+        # History worst case: every shown ticket has an entry time, an agent
+        # and a Ready entry; more than MAX_EPISODES clean episodes with cycle
+        # and lead times and every timed status.
+        summary = ticket_history.Summary()
+        for item in [*ready, *done]:
+            number = item["content"]["number"]
+            summary.tickets[number] = ticket_history.TicketTime(
+                item["status"], int(NOW) - 30 * 86400, "gap", int(NOW), "a" * 40
+            )
+        for i in range(2 * ticket_history.MAX_EPISODES):
+            done_at = int(NOW) - i * 3600
+            summary.episodes.append(
+                ticket_history.Episode(
+                    8000 + i,
+                    ticket_history.Entry(8000 + i, "Done", done_at, "Codex"),
+                    600.0,
+                    900.0,
+                    dict.fromkeys(ticket_history.TIMED, 60.0),
+                )
+            )
         tickets.ticket_metrics(
             metrics,
             snapshot(items=[*ready, *done]),
             tickets.Extra(hidden, {}),
             set(hidden),
             NOW,
+            summary,
         )
+        shown = [
+            t.number
+            for t in tickets.board_tickets(snapshot(items=[*ready, *done]), NOW).tickets
+        ]
+        ticket_history.history_metrics(metrics, summary, shown, NOW)
         tickets.source_metrics(metrics, {}, NOW)
         metrics.add("ticket_collection_duration_seconds", 1)
         self.assertEqual(
@@ -963,6 +990,15 @@ class ScrapeSizeTest(unittest.TestCase):
             if not line.startswith("#")
         ]
         self.assertTrue(any("handoff_wait_seconds" in line for line in samples))
+        for name, rows in (
+            ("epic_ticket_status_code{", 150),
+            ("epic_ticket_status_entered_seconds{", 150),
+            ("epic_ticket_done_seconds{", ticket_history.MAX_EPISODES),
+            ("epic_ticket_cycle_seconds{", ticket_history.MAX_EPISODES),
+            ("epic_ticket_lead_seconds{", ticket_history.MAX_EPISODES),
+            ("epic_tickets_done_day{", 70),
+        ):
+            self.assertEqual(sum(line.startswith(name) for line in samples), rows)
         self.assertLess(len(samples), SCRAPE_BUDGET)
 
 

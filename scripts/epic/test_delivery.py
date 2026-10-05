@@ -639,13 +639,18 @@ class ReviewRoundOneTest(unittest.TestCase):
             def local(*_: object) -> None:
                 seen.append("local")
 
+            def ticks(*_: object) -> None:
+                seen.append("ticks")
+
             with (
+                patch("monitor.read_ticks", ticks),
                 patch("monitor.collect_remote", remote),
                 patch("monitor.publish_local", local),
             ):
                 with self.assertRaises(SystemExit):
                     monitor.run_once(args)
-        self.assertEqual(seen, [("remote", saved), "local"])
+        # Ticks first: the ticket history names agents in the remote cycle.
+        self.assertEqual(seen, ["ticks", ("remote", saved), "local"])
 
 
 if __name__ == "__main__":
