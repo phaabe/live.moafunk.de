@@ -313,8 +313,14 @@ class Segment:
     end: int | None
     agent: str = ""
     verified: int = 1
-    # (finished_at, tick id) of the tick that named the agent.
-    tick: tuple[float, str] | None = None
+    # (finished_at, tick id, started_at) of the tick that named the agent;
+    # the first two order ticks, the start rechecks the overlap.
+    tick: tuple[float, str, float] | None = None
+
+
+def overlapping(tick: tuple[float, str, float], segment: Segment, now: float) -> bool:
+    end = now if segment.end is None else segment.end
+    return tick[2] <= end and tick[0] >= segment.start
 
 
 def intervals(entries: list[Entry], gaps: list[Gap]) -> list[Segment]:
@@ -377,7 +383,7 @@ def parse_segment(row: Json) -> Stored:
             None if end == "" else whole(end),
             row["agent"],
             row["verified"],
-            None if tick is None else (float(tick[0]), str(tick[1])),
+            None if tick is None else (float(tick[0]), str(tick[1]), float(tick[2])),
         )
         stored = Stored(segment, whole(row["rev"]), whole(row["emitted_at"]))
     except (KeyError, TypeError, IndexError) as error:
@@ -412,7 +418,7 @@ def best_tick(
     actions: tuple[str, ...],
     ticks: list[tuple[str, int, Json]],
     now: float,
-) -> tuple[str, int, tuple[float, str]] | None:
+) -> tuple[str, int, tuple[float, str, float]] | None:
     """The newest matching tick whose run overlaps the segment."""
     end = now if segment.end is None else segment.end
     best = None
@@ -421,8 +427,8 @@ def best_tick(
             continue
         if tick["start"] > end or tick["end"] < segment.start:
             continue
-        key = (float(tick["end"]), str(tick["id"]))
-        if best is None or key > best[2]:
+        key = (float(tick["end"]), str(tick["id"]), float(tick["start"]))
+        if best is None or key[:2] > best[2][:2]:
             best = (agent, verified, key)
     return best
 
@@ -588,13 +594,24 @@ class History:
                 out.append(segment_row(retired, stored.rev + 1, now))
                 self.segments[old.segment_id] = Stored(retired, stored.rev + 1, now)
             for segment in wanted:
-                if segment.end is not None and segment.end < now - WINDOW:
-                    continue
                 stored = self.segments.get(segment.segment_id)
+                # Old intervals are skipped, unless one was exported open and
+                # still needs its close revision.
+                was_open = stored is not None and stored.segment.end is None
+                if (
+                    segment.end is not None
+                    and segment.end < now - WINDOW
+                    and not was_open
+                ):
+                    continue
                 if stored is not None:
                     old = stored.segment
                     segment.agent, segment.verified = old.agent, old.verified
                     segment.tick = old.tick
+                    # A gap can shorten the segment: drop a tick that no
+                    # longer overlaps it, even when the segment is frozen.
+                    if segment.tick and not overlapping(segment.tick, segment, now):
+                        segment.agent, segment.verified, segment.tick = "", 1, None
                 frozen = segment.end is not None and now - segment.end > CORRECTION
                 if segment.status in AGENT_STATUSES and ticks and not frozen:
                     if segment.status == "In progress":
@@ -604,7 +621,9 @@ class History:
                         targets = {pr_url} if pr_url else set()
                         actions = ("review",)
                     best = best_tick(segment, targets, actions, ticks, now)
-                    if best and (segment.tick is None or best[2] > segment.tick):
+                    if best and (
+                        segment.tick is None or best[2][:2] > segment.tick[:2]
+                    ):
                         segment.agent, segment.verified, segment.tick = best
                 if stored is None:
                     rev = 1
@@ -638,10 +657,14 @@ class History:
         """Keep each segment's newest revision; drop closed segments older than
         the panel window. Alloy reads the new file again; Loki drops exact
         duplicates and Alloy drops lines older than its limit."""
+        # An open segment that was not refreshed (its ticket left the list)
+        # goes too, so nothing stays open for ever.
+        recent = now - WINDOW - DAY
         keep = {
             key: stored
             for key, stored in self.segments.items()
-            if stored.segment.end is None or stored.segment.end >= now - WINDOW - DAY
+            if (stored.segment.end is None and stored.emitted_at >= recent)
+            or (stored.segment.end is not None and stored.segment.end >= recent)
         }
         rewrite_lines(
             self.path(SEGMENTS),

@@ -535,12 +535,77 @@ class SegmentTest(Base):
         self.update({"codex": [first]}, NOW + 20)
         newer = tick(NOW + 60, NOW + 100, "continue", f"{ISSUE}/1", ident="b")
         self.update({"codex": [first, newer]}, NOW + 120)
-        self.assertEqual(self.latest()[f"1-{NOW}"]["tick"], [NOW + 100.0, "b"])
+        self.assertEqual(
+            self.latest()[f"1-{NOW}"]["tick"], [NOW + 100.0, "b", NOW + 60.0]
+        )
         # Rotation and a restart; another agent's tick ends between the two.
         self.history = self.fresh(NOW + 200)
         other = tick(NOW + 20, NOW + 50, "continue", f"{ISSUE}/1", "events", "c")
         self.update({"codex-2": [other]}, NOW + 200)
         self.assertEqual(self.latest()[f"1-{NOW}"]["agent"], "codex")
+
+    def test_a_gap_that_shortens_the_segment_drops_a_tick_outside_it(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640:
+        attribution from a cached-snapshot cycle, then a gap."""
+        self.see(NOW, {1: "In progress"})
+        self.see(NOW + 120, {1: "In progress"})
+        views = {
+            "codex": [tick(NOW + 10, NOW + 60, "continue", f"{ISSUE}/1", ident="a")],
+            "claude": [
+                tick(
+                    NOW + 180,
+                    NOW + 210,
+                    "continue",
+                    f"{ISSUE}/1",
+                    "events_unverified",
+                    "b",
+                )
+            ],
+        }
+        # A cached snapshot: the segment is still open at NOW + 230.
+        self.update(views, NOW + 230)
+        self.assertEqual(self.latest()[f"1-{NOW}"]["agent"], "claude")
+        # The next fresh snapshot leaves a gap from NOW + 120.
+        self.see(NOW + 1200, {1: "In progress"})
+        self.update(views, NOW + 1230)
+        row = self.latest()[f"1-{NOW}"]
+        self.assertEqual(
+            (row["end"], row["agent"], row["verified"]), (NOW + 120, "codex", 1)
+        )
+        # Without any ticks the wrong agent is dropped, never kept.
+        self.history = self.fresh(NOW + 1300)
+        self.history.segments[f"1-{NOW}"].segment.agent = "claude"
+        self.history.segments[f"1-{NOW}"].segment.tick = (NOW + 210.0, "b", NOW + 180.0)
+        self.update(None, NOW + 1300)
+        self.assertEqual(self.latest()[f"1-{NOW}"]["agent"], "")
+
+    def test_a_long_outage_closes_the_exported_open_segment(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/640."""
+        self.see(NOW, {1: "In progress"})
+        self.update({}, NOW + 30)
+        self.see(NOW + 120, {1: "In progress"})
+        later = NOW + 9 * DAY
+        self.history = self.fresh(later)
+        self.see(later, {1: "In progress"})
+        self.update({}, later + 30)
+        self.assertEqual(self.latest()[f"1-{NOW}"]["end"], NOW + 120)
+        history = self.fresh(later + 60)
+        still_open = [k for k, s in history.segments.items() if s.segment.end is None]
+        self.assertEqual(still_open, [f"1-{later}"])
+        history.compact_segments(later + 60)
+        # The closed old segment is gone; the gap ends in the window.
+        self.assertEqual(
+            sorted(history.segments), [f"1-{NOW + 120}-gap", f"1-{later}"]
+        )
+
+    def test_compaction_drops_open_segments_no_longer_refreshed(self) -> None:
+        self.see(NOW, {1: "Ready", 2: "Ready"})
+        self.update({}, NOW + 30, shown=(1, 2))
+        # Ticket 2 leaves the list; ticket 1 is refreshed for 9 days.
+        for i in range(1, 10):
+            self.update({}, NOW + 30 + i * DAY, shown=(1,))
+        self.history.compact_segments(NOW + 9 * DAY + 60)
+        self.assertEqual(sorted(self.history.segments), [f"1-{NOW}"])
 
     def test_compaction_keeps_the_newest_revisions(self) -> None:
         self.see(NOW, {1: "Ready"})
