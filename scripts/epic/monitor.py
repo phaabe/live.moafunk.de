@@ -324,33 +324,6 @@ def task_contexts(state: Json) -> list[dict[str, str]]:
     return rows
 
 
-def task_levels(row: dict[str, str]) -> list[dict[str, str]]:
-    """One row per level of a target's path, indented so panels read as a tree."""
-    levels = (
-        ("Epic", row["epic"], row["epic_url"]),
-        ("Area", row["area"], ""),
-        ("Task", row["task"], row["task_url"]),
-        ("Subtask", row["subtask"], row["subtask_url"]),
-        # A leaf lives in its issue body; link that issue.
-        ("Leaf", row["leaf"], row["subtask_url"] or row["task_url"]),
-        ("PR", row["pr"], row["target"] if "/pull/" in row["target"] else ""),
-    )
-    rows = []
-    for level, text, url in levels:
-        if text:
-            indent = "\u2003" * len(rows) + ("└ " if rows else "")
-            rows.append(
-                {
-                    "target": row["target"],
-                    "depth": str(len(rows) + 1),
-                    "level": level,
-                    "text": indent + text,
-                    "url": url,
-                }
-            )
-    return rows
-
-
 @dataclass
 class Runner:
     """What the lock and gate files say about one agent's runner."""
@@ -726,13 +699,6 @@ def agent_metrics(
             )
     row = Row(agent, presence, runner.action if presence == "running" else None)
     recent = view.state.get("ticks", [])[-ticks.RECENT :] if view else []
-    for age, tick in enumerate(reversed(recent)):
-        metrics.add(
-            "agent_recent",
-            ticks.SEVERITY[tick["outcome"]],
-            agent=name,
-            slot=f"{ticks.RECENT - age:02d}",
-        )
     # Grafana 13 table columns are at least 50 px wide, too wide for 20
     # cells: one Markdown cell draws the strip.
     row.recent_strip = recent_strip([tick["outcome"] for tick in recent])
@@ -1093,8 +1059,6 @@ def github_metrics(state: Json, now: float) -> str:
     metrics.add("unattributed_prs", sum(epic.pr_author(pr) is None for pr in prs))
     for row in task_contexts(filtered):
         metrics.add("task_context_info", 1, **row)
-        for level in task_levels(row):
-            metrics.add("task_level_info", 1, **level)
     return metrics.render()
 
 

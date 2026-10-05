@@ -439,10 +439,7 @@ class AgentRowsTest(unittest.TestCase):
     def test_recent_strip_is_right_aligned(self) -> None:
         self.agent("codex", *[(100 + i, (0, 1, 124)[i % 3], "{}") for i in range(3)])
         text = self.run_at(NOW)
-        self.assertIn('epic_agent_recent{agent="codex",slot="20"} 3', text)
-        self.assertIn('epic_agent_recent{agent="codex",slot="19"} 6', text)
-        self.assertIn('epic_agent_recent{agent="codex",slot="18"} 1', text)
-        self.assertNotIn('slot="17"', text)
+        self.assertNotIn("epic_agent_recent", text)
         # One bar per tick, oldest left, in one cell.
         self.assertIn(
             'outcome_text="timeout 124 · unknown",'
@@ -1146,22 +1143,10 @@ class TaskContextTest(unittest.TestCase):
         self.assertEqual(row["task"], "")
         self.assertEqual(row["leaf"], "setup (loop and rule files)")
 
-    def test_levels_form_an_indented_linked_tree(self) -> None:
-        levels = monitor.task_levels(self.rows()[f"{URL}/pull/417"])
-        self.assertEqual(
-            [level["level"] for level in levels],
-            ["Epic", "Area", "Task", "Subtask", "Leaf", "PR"],
-        )
-        self.assertEqual([level["depth"] for level in levels], list("123456"))
-        self.assertTrue(levels[2]["text"].endswith("└ O1 · Establish the baseline"))
-        # The leaf links to the issue holding its checkbox.
-        self.assertEqual(levels[4]["url"], f"{URL}/issues/381")
-        self.assertEqual(levels[5]["url"], f"{URL}/pull/417")
-
     def test_github_metrics_publish_context_rows(self) -> None:
         text = monitor.github_metrics(self.state, NOW)
-        self.assertIn(f'level="Subtask",target="{URL}/pull/417"', text)
-        self.assertIn("epic_task_context_info{", text)
+        self.assertIn(f'subtask_url="{URL}/issues/381",target="{URL}/pull/417"', text)
+        self.assertNotIn("epic_task_level_info", text)
 
 
 class HeadsTest(unittest.TestCase):
