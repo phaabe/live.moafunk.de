@@ -143,6 +143,16 @@ class RunnerHarness(unittest.TestCase):
             "    f.write(f'{n}\\n')\n"
             "sys.exit(int(os.environ.get('TEST_NOISE_EXIT', '0')))\n"
         )
+        # Close step: its own call file, so the call indexes stay. It records
+        # whether the selector already ran.
+        (self.repo / "scripts/epic/close_merged.py").write_text(
+            "import os, sys\n"
+            "calls = os.environ['TEST_CALLS']\n"
+            "ran = os.path.exists(calls) and '[\"select\"]' in open(calls).read()\n"
+            "with open(calls + '.close', 'a') as f:\n"
+            "    f.write(f'after-select={ran}\\n')\n"
+            "sys.exit(int(os.environ.get('TEST_CLOSE_EXIT', '0')))\n"
+        )
         # Worktree step: its own call file, so the call indexes above stay.
         (self.repo / "scripts/epic/runner_worktree.py").write_text(
             "import json, os, sys\n"
@@ -249,6 +259,26 @@ class RunnerHarness(unittest.TestCase):
 
 
 class ClaudeTickTest(RunnerHarness):
+    def test_close_step_runs_before_the_selector(self) -> None:
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        close = Path(str(self.calls) + ".close").read_text()
+        self.assertEqual(close, "after-select=False\n")
+        self.assertEqual(len(self.model_targets()), 1)
+        self.assertNotIn("close step failed", (self.state / "claude.log").read_text())
+
+    def test_failed_close_step_never_stops_the_tick(self) -> None:
+        for code, logged in (("1", True), ("3", False)):
+            with self.subTest(code=code):
+                self.calls.unlink(missing_ok=True)
+                log = self.state / "claude.log"
+                log.unlink(missing_ok=True)
+                tick = self.run_tick(TEST_CLOSE_EXIT=code)
+                self.assertEqual(tick.wait(timeout=30), 0)
+                self.assertEqual(len(self.model_targets()), 1)
+                self.assertEqual(
+                    f"close step failed with exit {code}" in log.read_text(), logged
+                )
+
     def test_locked_target_falls_through_to_the_next_candidate(self) -> None:
         second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
         locks = self.root / "locks"
@@ -696,7 +726,7 @@ class ClaudeTickTest(RunnerHarness):
             (agent["kind"], agent["label"], agent["interval_seconds"]),
             ("claude", "docs", 600),
         )
-        self.assertEqual(agent["budget_seconds"], 1930)
+        self.assertEqual(agent["budget_seconds"], 1990)
         self.assertIn("tick: finished exit=0", (home / "claude.log").read_text())
         self.assertFalse((self.state / "claude.log").exists())
         self.assertFalse((home / "claude.lock").exists())
@@ -962,7 +992,7 @@ class ClaudeTickTest(RunnerHarness):
         env = {"EPIC_AGENT_ID": "claude-2", "EPIC_RECHECK_TIMEOUT_SECONDS": "30"}
         self.assertEqual(self.shared(**env).wait(timeout=30), 0)
         agent = json.loads((self.state / "agents/claude-2/agent.json").read_text())
-        self.assertEqual(agent["budget_seconds"], 120 + 30 + 1800 + 10)
+        self.assertEqual(agent["budget_seconds"], 60 + 120 + 30 + 1800 + 10)
 
     # One resolver (github_state.enabled()), resolved once, explicit to children.
 

@@ -139,7 +139,15 @@ the evidence the plan requires. A merged PR is never activation evidence.
 - Record commit, tests and result on the issue. Tick a leaf only when its
   evidence is attached.
 - Close an issue only when all its leaves have evidence. PRs into
-  `dev/streaming-architecture` do not close issues automatically.
+  `dev/312-interim` and `dev/streaming-architecture` do not close issues
+  automatically.
+- The Claude runner closes them (`scripts/epic/close_merged.py`, every tick
+  before the selector): an open ticket named by the one `Issue:` line of a PR
+  merged in the last 14 days gets one evidence comment and is closed. It stays
+  open for `(partial)`, the epic, a ticket with sub-issues, a ticket an open PR
+  names, a ticket reopened after the merge (until a newer PR merges), and
+  unchecked leaves that no merged PR lists in `Leaf IDs:` (one note instead).
+  Do not close these tickets by hand in the merge session.
 
 ## 7. Enforcement
 

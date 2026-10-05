@@ -40,7 +40,7 @@ MAX_FILE = 4096
 INTERVAL = (30, 86_400, 600)
 BUDGET = (10, 86_400, 3_600)
 # Launchd intervals and the runners' default lock budget (120 + 1800 + 10 s).
-LEGACY = {"claude": (600, 1_930), "codex": (180, 1_930)}
+LEGACY = {"claude": (600, 1_990), "codex": (180, 1_930)}
 REASONS = ("invalid", "limit", "conflict")
 
 

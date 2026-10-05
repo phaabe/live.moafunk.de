@@ -128,7 +128,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual([a.id for a in registry.agents], ["claude", "codex"])
         claude = registry.agents[0]
         self.assertEqual(
-            (claude.layout, claude.interval, claude.budget), ("legacy", 600, 1930)
+            (claude.layout, claude.interval, claude.budget), ("legacy", 600, 1990)
         )
         self.assertEqual(claude.log, self.root / "claude.log")
         self.assertEqual(claude.checkpoint_name, "ticks-claude.json")

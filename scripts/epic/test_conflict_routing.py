@@ -221,7 +221,9 @@ class Routing(unittest.TestCase):
             ROOT / "scripts/epic/next_action.py", epic / "real_next_action.py"
         )
         (epic / "next_action.py").write_text(SELECTOR)
-        for stub in ("gitnexus_noise.py", "runner_worktree.py", "tick_verify.py"):
+        for stub in (
+            "gitnexus_noise.py", "runner_worktree.py", "tick_verify.py", "close_merged.py",
+        ):  # fmt: skip
             (epic / stub).write_text(EXIT_0)
         (self.repo / ".codex/feature_worktree.py").write_text(
             f"print({str(self.repo)!r})\n"

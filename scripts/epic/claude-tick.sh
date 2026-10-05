@@ -62,6 +62,10 @@
 # proof and the record. Before a `review`, `scope` works out whether a rebase
 # record allows a focused review; the prompt carries the result.
 #
+# Closing finished tickets (close_merged.py): before the selector, each tick
+# closes open tickets whose implementation merged, with one evidence comment.
+# It keeps no state; its failure is logged and the tick goes on.
+#
 # Token usage (tick_events.py): the runner gives each model session its own ID
 # (--session-id). The finish event records it and reads the session's usage
 # from its transcript, also after a timeout or a stop. A missing count stays
@@ -78,6 +82,7 @@ script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 state_dir="${EPIC_STATE_DIR:-${HOME}/.local/state/epic-loop}"
 tick_timeout=${EPIC_TICK_TIMEOUT_SECONDS:-1800}
 select_timeout=${EPIC_SELECT_TIMEOUT_SECONDS:-120}
+close_timeout=${EPIC_CLOSE_TIMEOUT_SECONDS:-60}
 # Optional agent id (claude, claude-2, ...). A registered agent keeps the same
 # files as the legacy state dir in its own folder, agents/<id>/.
 agent_id=${EPIC_AGENT_ID:-}
@@ -266,7 +271,7 @@ exec 17>> "${runtime_lock_dir}/runtime.lock"
     --tick-id "$admission_id" --agent claude --pid $$ || exit $?
 admitted=1
 
-for duration in "$tick_timeout" "$select_timeout"; do
+for duration in "$tick_timeout" "$select_timeout" "$close_timeout"; do
     if [[ ! "$duration" =~ ^[1-9][0-9]*$ ]]; then
         printf 'tick: timeout must be a positive integer in seconds\n' >&2
         exit 2
@@ -286,8 +291,8 @@ if [[ "$shared_reader" == 1 ]]; then
 fi
 # Evidence: the effective setting of this tick.
 printf 'tick: shared reader=%s recheck=%ss\n' "$shared_reader" "$recheck_timeout"
-# Lock and registration budget: selection, recheck, model and cleanup.
-budget=$((select_timeout + recheck_timeout + tick_timeout + 10))
+# Lock and registration budget: close step, selection, recheck, model and cleanup.
+budget=$((close_timeout + select_timeout + recheck_timeout + tick_timeout + 10))
 if [[ -n "$agent_id" ]]; then
     "$py" "${code_root}/scripts/epic/agents.py" --state-dir "$registry_dir" \
         register --id "$agent_id" --kind claude --label "${EPIC_AGENT_LABEL:-}" \
@@ -384,6 +389,15 @@ else
         exit 1
     fi
 fi
+# Close tickets whose implementation merged (close_merged.py). It keeps no
+# state, so a failed or deferred run simply repeats next tick; it never stops
+# this one.
+close=0
+run_bounded "${close_timeout}s" "$py" "${code_root}/scripts/epic/close_merged.py" || close=$?
+case "$close" in
+    0 | 3) ;;
+    *) printf 'tick: close step failed with exit %s; continuing\n' "$close" >&2 ;;
+esac
 tick_phase=select
 select=0
 run_bounded "${select_timeout}s" \
