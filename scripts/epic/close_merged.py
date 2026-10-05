@@ -19,10 +19,12 @@ are searched for it first, so a rerun never posts twice; a run that posted
 the comment but failed to close simply closes on the next tick. A reopened
 ticket stays open until a newer PR for it merges.
 
-The reopen check, marker read and writes for a ticket run under its target
-lock (target_lock.py), shared by all runners on this machine. Two runs at once
-therefore never both read "no marker" and post twice. A busy lock skips the
-ticket; the next tick tries again.
+The checks, marker read and writes for a ticket run under its target lock
+(target_lock.py), shared by all runners on this machine, so two runs at once
+never both read "no marker" and post twice. Under the lock the ticket and the
+open PRs are read again: another runner may have added a leaf, a sub-issue or
+a PR, or closed the ticket, before it let go. A busy lock skips the ticket;
+the next tick tries again.
 
 The pause file and a stored quota wait are read before every GitHub call;
 either one ends the run with no call.
@@ -73,6 +75,7 @@ OPEN_ISSUES_JQ = (
     ".[] | select(.pull_request == null) | {number, body,"
     " sub_issues: (.sub_issues_summary.total // 0)}"
 )
+TICKET_JQ = "{number, body, state, sub_issues: (.sub_issues_summary.total // 0)}"
 REOPENED_JQ = '.[] | select(.event == "reopened") | .created_at | tojson'
 MARKERS_JQ = (
     '.[] | .body // "" | [scan("<!-- epic-close-merged (?:close|note) pr=[0-9]+ -->")]'
@@ -207,6 +210,24 @@ def open_tickets(gh: Gh) -> dict[int, dict[str, Any]]:
         ],
     )
     return {t["number"]: t for t in found}
+
+
+def ticket_now(gh: Gh, number: int) -> dict[str, Any] | None:
+    """The ticket as GitHub has it now, or None when it is closed."""
+    found = lines(gh, ["api", f"repos/{REPO}/issues/{number}", "--jq", TICKET_JQ])
+    if not found or found[0]["state"] != "open":
+        return None
+    return found[0]
+
+
+def held(
+    ticket: dict[str, Any], in_review: set[int], log: Callable[[str], None]
+) -> bool:
+    """True when sub-issues or an open PR keep the ticket open."""
+    if ticket["sub_issues"]:
+        log(f"close: {issue_url(ticket['number'])} has sub-issues; left open")
+        return True
+    return ticket["number"] in in_review  # an open PR still works on it
 
 
 def reopened_since(gh: Gh, number: int, merged_at: str) -> bool:
@@ -367,17 +388,18 @@ def run(
         newest = its_prs[0]
         url = issue_url(number)
         try:
-            if ticket["sub_issues"]:
-                log(f"close: {url} has sub-issues; left open")
+            if held(ticket, in_review, log):
                 continue
-            if number in in_review:
-                continue  # an open PR still works on it
-            if UNCHECKED_LEAF.search(ticket.get("body") or "") and listed is None:
-                listed = listed_leaves(gh)
             with ticket_lock(number) as locked:
                 if not locked:
                     log(f"close: {url} is locked by another runner; next tick")
                     continue
+                # The lists above may predate another runner's last write.
+                ticket = ticket_now(gh, number)
+                if ticket is None or held(ticket, open_pr_tickets(gh), log):
+                    continue
+                if UNCHECKED_LEAF.search(ticket.get("body") or "") and listed is None:
+                    listed = listed_leaves(gh)
                 settle(gh, ticket, newest, listed or set(), dry_run, log)
         except subprocess.SubprocessError as error:
             failed = True

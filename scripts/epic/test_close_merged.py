@@ -88,6 +88,10 @@ class FakeGh:
         if path.startswith("issues?state=open"):
             return out(list(self.tickets.values()))
         n = int(re.match(r"issues/(\d+)", path).group(1))
+        if path == f"issues/{n}":
+            if n not in self.tickets:
+                return out([{"number": n, "body": "", "state": "closed"}])
+            return out([{**self.tickets[n], "state": "open"}])
         if path.endswith("events?per_page=100"):
             return out(self.reopened.get(n, []))
         if "/comments" in path:
@@ -243,6 +247,50 @@ class CloseMergedTest(unittest.TestCase):
         self.assertEqual(self.run_once(), 0)
         self.assertEqual(self.gh.writes, [("comment", 521), ("close", 521)])
 
+    def test_change_made_before_the_lock_is_seen_under_it(self) -> None:
+        # Another runner holds the ticket's lock right after the open lists
+        # are read, changes the ticket, then lets go. Closure must not use
+        # the old lists.
+        def leaf(gh: FakeGh) -> None:
+            gh.tickets[521]["body"] = "- [ ] **B1.1.9** new\n"
+
+        def partial_pr(gh: FakeGh) -> None:
+            gh.open_prs.append(f"Next.\n\nIssue: {issue(521)} (partial)\n")
+
+        def sub_issue(gh: FakeGh) -> None:
+            gh.tickets[521]["sub_issues"] = 1
+
+        def closed(gh: FakeGh) -> None:
+            gh.tickets.pop(521)
+
+        cases = {
+            "leaf": (leaf, [("comment", 521)]),
+            "partial PR": (partial_pr, []),
+            "sub-issue": (sub_issue, []),
+            "closed": (closed, []),
+        }
+        for name, (change, writes) in cases.items():
+            with self.subTest(name):
+                self.gh = FakeGh()
+                self.gh.merged = [pr(612, 521)]
+                self.gh.ticket(521)
+                fake, pending = self.gh, [change]
+
+                def gh(args: list[str], fake=fake, pending=pending) -> str:
+                    result = fake(args)
+                    reads_open_prs = f"repos/{REPO}/pulls?state=open" in " ".join(args)
+                    if reads_open_prs and pending:
+                        with close_merged.ticket_lock(521) as locked:
+                            self.assertTrue(locked)
+                            pending.pop()(fake)
+                    return result
+
+                self.assertEqual(close_merged.run(gh, NOW, log=self.log.append), 0)
+                self.assertEqual(self.gh.writes, writes)
+                if writes:
+                    self.assertIn("pr=612", self.gh.comments[521][0])
+                    self.assertIn("note", self.gh.comments[521][0])
+
     def test_umbrella_and_open_pr_keep_the_ticket_open(self) -> None:
         self.gh.merged = [pr(1, 20), pr(2, 21)]
         self.gh.ticket(20, sub_issues=3)
@@ -389,6 +437,10 @@ class JqFilterTest(unittest.TestCase):
             [{"number": 7, "body": "b", "sub_issues": 2},
              {"number": 8, "body": "c", "sub_issues": 0}],
         )  # fmt: skip
+        self.assertEqual(
+            self.jq(close_merged.TICKET_JQ, issues[0] | {"state": "open"}),
+            [{"number": 7, "body": "b", "state": "open", "sub_issues": 2}],
+        )
         events = [
             {"event": "closed", "created_at": "2026-10-01T00:00:00Z"},
             {"event": "reopened", "created_at": "2026-10-02T00:00:00Z"},
