@@ -430,10 +430,7 @@ def evaluate(
     if lane not in LANES:
         errors.append("unknown lane")
     leaves = meta.get("Leaf IDs", "")
-    if lane == "setup":
-        if leaves != "setup":
-            errors.append("setup lane must use Leaf IDs: setup")
-    elif not re.fullmatch(
+    if not (lane == "setup" and leaves == "setup") and not re.fullmatch(
         r"[A-Z][0-9]+\.[0-9]+\.[0-9]+(?:,\s*[A-Z][0-9]+\.[0-9]+\.[0-9]+)*", leaves
     ):
         errors.append("Leaf IDs must list concrete leaves separated by commas")
