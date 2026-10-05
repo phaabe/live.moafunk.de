@@ -17,6 +17,7 @@ from unittest.mock import patch
 import agents
 import delivery
 import monitor
+import tickets
 
 
 NOW = 2_000.0
@@ -845,7 +846,7 @@ class ScrapeSizeTest(unittest.TestCase):
     def test_max_size_snapshot_and_full_ledgers_stay_under_budget(self) -> None:
         """Fetch limits: 500 project items; 100 open and 300 merged PRs per base
         (two bases). Full ledgers: 2 000 ticks for each of the 12 agents over the
-        7-day window, one of them running."""
+        7-day window, one of them running. Tickets at both caps."""
         body = "\n".join(f"- [ ] **B1.{i}.1** Leaf {i}." for i in range(5))
         items = [
             plan_issue(
@@ -932,6 +933,29 @@ class ScrapeSizeTest(unittest.TestCase):
         }
         metrics = monitor.Metrics()
         delivery.delivery_metrics(metrics, data, prs, NOW)
+        # Tickets worst case: every not-Done ticket is Ready and in both Ready
+        # checks, every Done one is open (done_open), both caps are full.
+        ready = [issue(5000 + i, "Claude", "Ready") for i in range(150)]
+        done = [issue(6000 + i, "Claude", "Done") for i in range(60)]
+        for item in [*ready, *done]:
+            item["level"] = "Task"
+            item["content"]["title"] = "t" * 300
+        hidden = {
+            5000 + i: [f"{URL}/issues/{7000 + j}" for j in range(3)] for i in range(150)
+        }
+        tickets.ticket_metrics(
+            metrics,
+            snapshot(items=[*ready, *done]),
+            tickets.Extra(hidden, {}),
+            set(hidden),
+            NOW,
+        )
+        tickets.source_metrics(metrics, {}, NOW)
+        metrics.add("ticket_collection_duration_seconds", 1)
+        self.assertEqual(
+            metrics.render().count("epic_ticket_check_member{"),
+            2 * tickets.MAX_OPEN + tickets.MAX_DONE,
+        )
         samples = [
             line
             for line in (github + runners + metrics.render()).splitlines()

@@ -106,6 +106,18 @@ recorded on the epic before anyone edits.
 - Do not edit or delete a verdict. A changed verdict counts as no verdict.
 - Every new push needs a new verdict for the new head SHA.
 
+Body review of a Refinement ticket (read by the Tickets dashboard; who
+writes it is decided in a later ticket):
+
+- A standalone issue comment whose whole body is exactly one line, with no
+  trailing newline:
+  - `Body review: APPROVED <digest>`
+  - `Body review: CHANGES REQUESTED <digest>`
+- `<digest>` is the first 12 hex characters of the SHA-256 of the raw issue
+  body (no normalization). Any body edit needs a new review.
+- Edited comments do not count. The newest valid one wins. The body counts as
+  reviewed when it is `APPROVED` and its digest matches the current body.
+
 ## 5. Merge
 
 A feature PR into `dev/streaming-architecture` may be merged by its author when
