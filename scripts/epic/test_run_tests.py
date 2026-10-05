@@ -5,6 +5,7 @@ from __future__ import annotations
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -13,10 +14,12 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import rebase_policy
 import run_tests
@@ -143,7 +146,13 @@ class FixtureSuite(unittest.TestCase):
         (self.top / name).write_text(text)
 
     def env(self, **extra: str) -> dict[str, str]:
-        return {**os.environ, "TMPDIR": str(self.tmpdir), **extra}
+        # Own slot folder: a fixture run never takes a real machine slot.
+        return {
+            **os.environ,
+            "TMPDIR": str(self.tmpdir),
+            run_tests.SLOTS_DIR_ENV: str(self.root / "slots"),
+            **extra,
+        }
 
     def run_tests(
         self, *args: str, env: dict[str, str] | None = None
@@ -447,6 +456,132 @@ PROBE = textwrap.dedent(
         setattr(Probe, f"test_{n:02}", lambda self: record("test"))
     """
 )
+
+
+class SlotsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="run-tests-slots-")
+        self.addCleanup(tmp.cleanup)
+        self.folder = Path(tmp.name) / "slots"
+
+    def slots(self, count: int = 1) -> run_tests.Slots:
+        return run_tests.Slots.from_env(
+            {run_tests.SLOTS_ENV: str(count), run_tests.SLOTS_DIR_ENV: str(self.folder)}
+        )
+
+    def test_a_held_slot_makes_the_next_part_wait(self) -> None:
+        first, second = self.slots(1), self.slots(1)  # two runs, one folder
+        order: list[str] = []
+        with first.slot(lambda: False) as got:
+            self.assertTrue(got)
+            waiter = threading.Thread(
+                target=lambda: second.slot(lambda: False).__enter__()
+                and order.append("second")
+            )
+            waiter.start()
+            time.sleep(0.5)
+            order.append("first ends")
+        waiter.join(10)
+        self.assertEqual(order, ["first ends", "second"])
+
+    def test_count_slots_run_together(self) -> None:
+        slots = self.slots(2)
+        with slots.slot(lambda: False) as a, slots.slot(lambda: False) as b:
+            self.assertTrue(a and b)
+
+    def test_a_stopped_run_stops_waiting(self) -> None:
+        slots = self.slots(1)
+        stop = threading.Event()
+        with slots.slot(lambda: False):
+            threading.Timer(0.3, stop.set).start()
+            with slots.slot(stop.is_set) as got:
+                self.assertFalse(got)
+
+    def test_a_run_inside_a_test_takes_no_slot(self) -> None:
+        self.assertEqual(run_tests.NESTED_ENV, isolated_env.MARKER)
+        env = {run_tests.NESTED_ENV: "1", run_tests.SLOTS_DIR_ENV: str(self.folder)}
+        self.assertIsNone(run_tests.Slots.from_env(env).folder)
+        self.assertFalse(self.folder.exists())
+
+    def test_an_unusable_folder_turns_slots_off_loudly(self) -> None:
+        self.folder.parent.mkdir(exist_ok=True)
+        self.folder.write_text("a file, not a folder")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            slots = self.slots(1)
+        self.assertIsNone(slots.folder)
+        self.assertIn("machine-wide slots off", out.getvalue())
+
+    def test_the_user_temp_dir_prefers_the_os_answer_over_tmpdir(self) -> None:
+        with patch.dict(os.environ, {"TMPDIR": "/elsewhere"}):
+            with patch.object(run_tests.os, "confstr", return_value="/per-user/T/"):
+                self.assertEqual(run_tests.user_temp_dir(), "/per-user/T/")
+            # The Codex sandbox refuses the lookup (EIO) but sets TMPDIR.
+            with patch.object(run_tests.os, "confstr", side_effect=OSError(5, "EIO")):
+                self.assertEqual(run_tests.user_temp_dir(), "/elsewhere")
+
+
+class SlotRunTest(FixtureSuite):
+    # Each test appends "start <t>" / "end <t>" to a shared file.
+    RECORD = (
+        "import os, time; f = os.environ['RUN_TESTS_LOG']; "
+        "open(f, 'a').write(f'start {time.monotonic()}\\n'); time.sleep(0.3); "
+        "open(f, 'a').write(f'end {time.monotonic()}\\n')"
+    )
+
+    def slot_env(self, **extra: str) -> dict[str, str]:
+        env = self.env(**{run_tests.SLOTS_ENV: "1", **extra})
+        env.pop(run_tests.NESTED_ENV, None)  # this test runs under isolated_env
+        return env
+
+    def test_two_runs_share_the_slots(self) -> None:
+        log = self.root / "log"
+        for n in range(3):
+            self.write(f"test_m{n}.py", plain_module(1, self.RECORD))
+        env = self.slot_env(RUN_TESTS_LOG=str(log))
+        command = [sys.executable, str(RUNNER), str(self.top), "-j", "4"]
+        runs = [
+            subprocess.Popen(command, env=env, cwd=self.root, text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            for _ in range(2)
+        ]  # fmt: skip
+        outputs = [run.communicate(timeout=120)[0] for run in runs]
+        for run, output in zip(runs, outputs):
+            self.assertEqual(run.returncode, 0, output)
+            self.assertIn("at most 1 parts machine-wide", output)
+        events = sorted(
+            (float(t), kind) for kind, t in (line.split() for line in log.read_text().splitlines())
+        )  # fmt: skip
+        self.assertEqual(len(events), 12)
+        running = peak = 0
+        for _, kind in events:
+            running += 1 if kind == "start" else -1
+            peak = max(peak, running)
+        self.assertEqual(peak, 1)
+
+    def test_tests_in_a_part_see_the_nested_marker(self) -> None:
+        seen = self.root / "seen"
+        self.write(
+            "test_flag.py",
+            plain_module(
+                1,
+                f"import os; open({str(seen)!r}, 'w').write(os.environ.get("
+                f"{run_tests.NESTED_ENV!r}, 'unset'))",
+            ),
+        )
+        out = self.run_tests(env=self.slot_env())
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(seen.read_text(), "1")
+
+    def test_the_timeout_starts_after_the_slot(self) -> None:
+        self.write("test_fast.py", plain_module(1, "pass"))
+        (self.root / "slots").mkdir()
+        held = open(self.root / "slots" / "slot-0.lock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        threading.Timer(3, held.close).start()  # frees the slot after 3 s
+        out = self.run_tests("--part-timeout", "2", env=self.slot_env())
+        self.assertEqual(out.returncode, 0, out.stdout)
 
 
 class IsolationTest(FixtureSuite):

@@ -452,6 +452,9 @@ count). Each part runs under `isolated_env.py`, like a serial run. A module
 with more than 20 tests is split into parts of at most 15; a module with
 `load_tests`, `setUpClass` or `setUpModule` runs whole. The run fails when a
 test fails, a part fails to load, or a listed test does not run exactly once.
+All runs on the machine share `EPIC_TEST_SLOTS` slots (default: CPU count), so
+parallel suites of both runners and manual sessions wait instead of
+overloading the machine; a part's timeout starts once it has its slot.
 The serial run is still `python3 scripts/epic/isolated_env.py <dir>`.
 
 Rebase record. After the model's session, the owner's runner posts one

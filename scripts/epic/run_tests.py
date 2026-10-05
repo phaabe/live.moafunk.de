@@ -20,12 +20,23 @@ part reports with the listed ids, and a missing, repeated or unknown id fails
 the run. The exit code is 0 only when every part passed and every id ran once;
 a part that fails to start, load or report also fails the run.
 
+Machine-wide slots: every part takes a free slot before it starts and frees
+it when it ends, so all runs on this machine together (both runners, manual
+sessions, the Codex sandbox) run at most EPIC_TEST_SLOTS parts (default: CPU
+count). A slot is a `flock` on `slot-<i>.lock` in EPIC_TEST_SLOTS_DIR, default
+`<user temp dir>/epic-test-slots`; the OS frees it when a runner dies. A
+part's timeout starts once it holds its slot. A run started by a test (the
+tests of this runner) takes no slot, so it never waits for its own parent: it
+sees ISOLATED_EPIC_TESTS, which isolated_env.py sets for every test process.
+A slot folder that cannot be used turns slots off with one printed line.
+
 Standard library only. Temporary files stay under TMPDIR.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -36,7 +47,8 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +62,12 @@ GRACE = 2.0  # seconds between SIGTERM and SIGKILL
 POLL = 0.2
 SLOWEST = 5
 OUTPUT_TAIL = 20000
+SLOTS_ENV = "EPIC_TEST_SLOTS"
+SLOTS_DIR_ENV = "EPIC_TEST_SLOTS_DIR"
+# isolated_env.MARKER: set in every test process (EPIC_* names are removed there).
+NESTED_ENV = "ISOLATED_EPIC_TESTS"
+SLOT_POLL = 0.1
+DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR
 
 
 @dataclass
@@ -210,8 +228,71 @@ class Pool:
             signal_group(proc, signal.SIGKILL)
 
 
+def user_temp_dir() -> str:
+    """The per-user temp folder. On macOS it does not depend on TMPDIR, which
+    launchd jobs may lack; the Codex sandbox refuses the lookup but sets
+    TMPDIR to the same folder."""
+    try:
+        found = os.confstr(DARWIN_USER_TEMP_DIR)
+    except (ValueError, OSError):
+        found = None
+    return found or os.environ.get("TMPDIR") or tempfile.gettempdir()
+
+
+class Slots:
+    """Machine-wide part slots, shared by every run (see the module doc)."""
+
+    def __init__(self, folder: Path | None, count: int) -> None:
+        self.folder = folder  # None: no slots (nested run, or turned off)
+        self.count = count
+
+    @classmethod
+    def from_env(cls, env: dict[str, str] | None = None) -> Slots:
+        values = os.environ if env is None else env
+        if values.get(NESTED_ENV):
+            return cls(None, 0)
+        count = int(values.get(SLOTS_ENV) or os.cpu_count() or 1)
+        folder = Path(
+            values.get(SLOTS_DIR_ENV) or Path(user_temp_dir()) / "epic-test-slots"
+        )
+        try:
+            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as error:
+            print(f"run_tests: machine-wide slots off: {error}", flush=True)
+            return cls(None, 0)
+        return cls(folder, max(count, 1))
+
+    @contextmanager
+    def slot(self, stopped: Callable[[], bool]) -> Iterator[bool]:
+        """Hold one slot; False when the run stopped while this part waited."""
+        if self.folder is None:
+            yield True
+            return
+        while not stopped():
+            for i in range(self.count):
+                held = open(self.folder / f"slot-{i}.lock", "a")
+                try:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    held.close()
+                    continue
+                try:
+                    yield True
+                finally:
+                    held.close()  # frees the lock
+                return
+            time.sleep(SLOT_POLL)
+        yield False
+
+
 def run_part(
-    pool: Pool, top: str, part: Part, folder: Path, number: int, timeout: float
+    pool: Pool,
+    top: str,
+    part: Part,
+    folder: Path,
+    number: int,
+    timeout: float,
+    slots: Slots | None = None,
 ) -> Outcome:
     report_file = folder / f"report-{number}.json"
     command = [
@@ -224,7 +305,12 @@ def run_part(
     ]
     start = time.monotonic()
     try:
-        code, output = pool.run(command, timeout)
+        with (slots or Slots(None, 0)).slot(lambda: pool.stopped) as got:
+            start = time.monotonic()
+            if got:
+                code, output = pool.run(command, timeout)
+            else:
+                code, output = None, "not started: the run was stopped\n"
     except OSError as error:
         code, output = None, f"part failed to start: {error}\n"
     seconds = time.monotonic() - start
@@ -356,11 +442,18 @@ def _run(
             return 1
         listed = [i for entry in listing["modules"].values() for i in entry["ids"]]
         parts = planner(listing)
+        slots = Slots.from_env()
+        if slots.folder is not None:
+            print(
+                f"run_tests: at most {slots.count} parts machine-wide ({slots.folder})"
+            )
         outcomes: list[Outcome] = []
         try:
             with ThreadPoolExecutor(max_workers=jobs) as executor:
                 futures = [
-                    executor.submit(run_part, pool, top, part, folder, n, timeout)
+                    executor.submit(
+                        run_part, pool, top, part, folder, n, timeout, slots
+                    )
                     for n, part in enumerate(parts)
                 ]
                 for future in as_completed(futures):
