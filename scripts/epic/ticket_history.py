@@ -118,6 +118,8 @@ def rewrite_lines(path: Path, rows: Iterable[Json]) -> None:
                 out.write(json.dumps(row, sort_keys=True) + "\n")
             out.flush()
             os.fsync(out.fileno())
+            # Alloy reads the segment file as another user (no capabilities).
+            temporary.chmod(0o644)
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)

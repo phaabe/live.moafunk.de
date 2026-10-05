@@ -689,6 +689,9 @@ class SegmentTest(Base):
             self.update({}, NOW + 60 + 5 * H)
         rows = self.lines(th.SEGMENTS)
         self.assertEqual([r["rev"] for r in rows], [6])
+        # Codex review of https://github.com/phaabe/live.moafunk.de/pull/640:
+        # Alloy (another user) must still read the compacted file.
+        self.assertEqual((self.root / th.SEGMENTS).stat().st_mode & 0o777, 0o644)
         self.assertEqual(self.fresh(NOW + 6 * H).segments[f"1-{NOW}"].rev, 6)
 
 
