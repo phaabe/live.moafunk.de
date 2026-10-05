@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from datetime import datetime, timedelta
 import json
 import logging
@@ -15,15 +16,19 @@ import sys
 import tempfile
 import time
 from typing import TypedDict
+from uuid import uuid4
 
 # Reuse the shared quota contract without changing Claude-owned scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "epic"))
 import github_quota  # noqa: E402
 import github_state  # noqa: E402
+import target_lock  # noqa: E402
 
 SKIP = 3
 BLOCKED = 3
 FAILED = 75
+BLOCK_LIMIT = 3
+ESCALATION_LABEL = "needs-anton"
 REPO = "phaabe/live.moafunk.de"
 ISSUE_LINE = re.compile(
     rf"Issue:[ \t]*(https://github\.com/{re.escape(REPO)}/issues/[1-9][0-9]*)[ \t]*"
@@ -34,11 +39,25 @@ class StaleAction(ValueError):
     """The selected PR head changed before its cooldown could transfer."""
 
 
+class QuotaWait(Exception):
+    """Another runner stored a quota wait before notification delivery."""
+
+
+class Escalation(TypedDict):
+    action: dict[str, object]
+    id: str
+    label_added: bool
+    owns_label: bool
+    comment_posted: bool
+
+
 class Entry(TypedDict, total=False):
     at: float
     # When the retry delay ends. Older entries have none; they use at + ttl.
     until: float
     reason: str
+    blocked_count: int
+    escalation: Escalation
 
 
 def expires(entry: Entry, ttl: int) -> float:
@@ -71,7 +90,7 @@ def load_entries(state_dir: Path) -> dict[str, Entry]:
         return {}
     if not isinstance(entries, dict):
         raise ValueError("invalid backoff state")
-    for entry in entries.values():
+    for key, entry in entries.items():
         if (
             not isinstance(entry, dict)
             or type(entry.get("at")) not in (int, float)
@@ -86,6 +105,26 @@ def load_entries(state_dir: Path) -> dict[str, Entry]:
             )
         ):
             raise ValueError("invalid backoff entry")
+        count = entry.get("blocked_count", 0)
+        if type(count) is not int or not 0 <= count <= BLOCK_LIMIT:
+            raise ValueError("invalid blocked count")
+        escalation = entry.get("escalation")
+        if escalation is not None:
+            if (
+                count != BLOCK_LIMIT
+                or not isinstance(escalation, dict)
+                or not isinstance(escalation.get("action"), dict)
+                or target_key(escalation["action"]) != key
+                or not isinstance(escalation.get("id"), str)
+                or re.fullmatch(r"[0-9a-f]{32}", escalation["id"]) is None
+                or any(
+                    type(escalation.get(field)) is not bool
+                    for field in ("label_added", "owns_label", "comment_posted")
+                )
+            ):
+                raise ValueError("invalid blocked escalation")
+        elif count == BLOCK_LIMIT:
+            raise ValueError("missing blocked escalation")
     return entries
 
 
@@ -176,6 +215,9 @@ def check(action: dict[str, object], state_dir: Path, ttl: int, now: float) -> i
     entries = load_entries(state_dir)
     key = target_key(action)
     entry = entries.get(key)
+    if entry is not None and entry.get("blocked_count", 0) >= BLOCK_LIMIT:
+        logging.info("backoff: waiting for Anton after three blocked results")
+        return SKIP
     if entry is not None and now < expires(entry, ttl):
         logging.info("backoff: skip blocked target until its retry delay expires")
         return SKIP
@@ -183,19 +225,157 @@ def check(action: dict[str, object], state_dir: Path, ttl: int, now: float) -> i
         active_issues = {
             name: entry
             for name, entry in entries.items()
-            if name.startswith("issue:") and now < expires(entry, ttl)
+            if name.startswith("issue:")
+            and now < expires(entry, ttl)
+            and "escalation" not in entry
         }
         if active_issues:
             issue = pr_issue(action)
             source = f"issue:{issue}" if issue is not None else None
             if source is not None and source in active_issues:
+                count = entry.get("blocked_count", 0) if entry is not None else 0
                 entries[key] = entries.pop(source)
+                # Transfer only the wait. The PR/head is a different count key.
+                if "blocked_count" in entries[key] or count:
+                    entries[key]["blocked_count"] = count
                 save_entries(state_dir, entries)
                 logging.info(
                     "backoff: transferred issue retry delay to selected PR head"
                 )
                 return SKIP
     return 0
+
+
+def escalation_api(quota_dir: Path, endpoint: str, *options: str) -> object:
+    waiting, _ = github_quota.check(quota_dir, time.time())
+    if waiting == github_quota.DEFERRED:
+        raise QuotaWait
+    output = github_quota.run_gh(["api", endpoint, *options], timeout=30)
+    return json.loads(output) if output.strip() else None
+
+
+def reconcile_entry(
+    state_dir: Path, entries: dict[str, Entry], key: str, quota_dir: Path
+) -> None:
+    """Deliver or reset one escalation while its target lock is held."""
+    entry = entries[key]
+    escalation = entry["escalation"]
+    action = escalation["action"]
+    if action.get("pr"):
+        number = action["pr"]
+        target = f"repos/{REPO}/pulls/{number}"
+    else:
+        match = ISSUE_LINE.fullmatch(f"Issue: {action.get('issue', '').rstrip('/')}")
+        if match is None:
+            raise ValueError("invalid escalation issue URL")
+        number = match.group(1).rsplit("/", 1)[1]
+        target = f"repos/{REPO}/issues/{number}"
+    metadata = escalation_api(quota_dir, target)
+    if not isinstance(metadata, dict) or metadata.get("state") not in (
+        "open",
+        "closed",
+    ):
+        raise ValueError("invalid escalation target")
+    labels = metadata.get("labels")
+    if not isinstance(labels, list) or any(
+        not isinstance(label, dict) or not isinstance(label.get("name"), str)
+        for label in labels
+    ):
+        raise ValueError("invalid escalation labels")
+    labeled = any(label["name"] == ESCALATION_LABEL for label in labels)
+    changed_head = False
+    if action.get("pr"):
+        head = metadata.get("head")
+        if (
+            not isinstance(head, dict)
+            or not isinstance(head.get("sha"), str)
+            or re.fullmatch(r"[0-9a-f]{40}", head["sha"]) is None
+        ):
+            raise ValueError("invalid escalation PR head")
+        changed_head = head["sha"] != action["sha"]
+    endpoint = f"repos/{REPO}/issues/{number}"
+    if (
+        metadata["state"] == "closed"
+        or changed_head
+        or (escalation["label_added"] and not labeled)
+    ):
+        # The selector excludes labeled targets. Release only our own label
+        # when a new head arrives; labels on closed targets remain as history.
+        if (
+            changed_head
+            and labeled
+            and escalation["owns_label"]
+            and metadata["state"] == "open"
+        ):
+            escalation_api(
+                quota_dir, f"{endpoint}/labels/{ESCALATION_LABEL}", "--method", "DELETE"
+            )
+        del entries[key]
+        save_entries(state_dir, entries)
+        return
+    if not escalation["label_added"]:
+        if not labeled:
+            # Save intent before the write so a lost response can be retried.
+            escalation["owns_label"] = True
+            save_entries(state_dir, entries)
+            escalation_api(
+                quota_dir,
+                f"{endpoint}/labels",
+                "--method",
+                "POST",
+                "-f",
+                f"labels[]={ESCALATION_LABEL}",
+            )
+        escalation["label_added"] = True
+        save_entries(state_dir, entries)
+    if not escalation["comment_posted"]:
+        marker = f"<!-- codex-blocked:{escalation['id']} -->"
+        pages = escalation_api(
+            quota_dir, f"{endpoint}/comments?per_page=100", "--paginate", "--slurp"
+        )
+        if not isinstance(pages, list) or any(
+            not isinstance(page, list)
+            or any(
+                not isinstance(row, dict) or not isinstance(row.get("body"), str)
+                for row in page
+            )
+            for page in pages
+        ):
+            raise ValueError("invalid escalation comments")
+        if not any(marker in row["body"] for page in pages for row in page):
+            body = (
+                "Codex stopped after 3 blocked results for this target.\n\n"
+                f"Last blocked reason: {entry['reason']}\n\n"
+                "Anton: remove needs-anton to retry. A new PR head also resets the count.\n\n"
+                f"{marker}"
+            )
+            escalation_api(
+                quota_dir,
+                f"{endpoint}/comments",
+                "--method",
+                "POST",
+                "-f",
+                f"body={body}",
+            )
+        escalation["comment_posted"] = True
+        save_entries(state_dir, entries)
+
+
+def reconcile(state_dir: Path, quota_dir: Path) -> None:
+    """Run before selection: labeled targets are absent from its candidates."""
+    entries = load_entries(state_dir)
+    for key, entry in list(entries.items()):
+        if "escalation" not in entry:
+            continue
+        with ExitStack() as stack:
+            locks = [
+                stack.enter_context(path.open("a"))
+                for path in target_lock.paths(
+                    entry["escalation"]["action"], target_lock.lock_dir()
+                )
+            ]
+            if target_lock.acquire([lock.fileno() for lock in locks]):
+                reconcile_entry(state_dir, entries, key, quota_dir)
 
 
 def result_outcome(result_file: Path, exit_code: int) -> tuple[int, str | None]:
@@ -287,8 +467,27 @@ def record(
     if reason is None:
         entries.pop(key, None)
     else:
-        entries[key] = {"at": now, "until": now + ttl, "reason": reason}
+        previous = entries.get(key, {})
+        if "escalation" in previous:
+            return BLOCKED
+        count = previous.get("blocked_count", 0) + (outcome == BLOCKED)
+        entries[key] = {
+            "at": now,
+            "until": now + ttl,
+            "reason": reason,
+            "blocked_count": count,
+        }
+        if count == BLOCK_LIMIT:
+            entries[key]["escalation"] = {
+                "action": action,
+                "id": uuid4().hex,
+                "label_added": False,
+                "owns_label": False,
+                "comment_posted": False,
+            }
     save_entries(state_dir, entries)
+    if "escalation" in entries.get(key, {}):
+        reconcile_entry(state_dir, entries, key, quota_dir or state_dir)
     if reason is not None:
         logging.warning("backoff: %s", reason)
     return outcome
@@ -303,14 +502,16 @@ def positive_int(value: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "record"))
-    parser.add_argument("--action-file", required=True, type=Path)
+    parser.add_argument("command", choices=("check", "record", "reconcile"))
+    parser.add_argument("--action-file", type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--quota-dir", type=Path)
     parser.add_argument("--ttl", required=True, type=positive_int)
     parser.add_argument("--result-file", type=Path)
     parser.add_argument("--exit-code", type=int)
     args = parser.parse_args()
+    if args.command != "reconcile" and args.action_file is None:
+        parser.error("check and record require --action-file")
     quota_dir = args.quota_dir or Path(
         os.environ.get("EPIC_QUOTA_DIR") or args.state_dir
     )
@@ -319,6 +520,9 @@ def main() -> int:
     ):
         parser.error("record requires --result-file and --exit-code")
     try:
+        if args.command == "reconcile":
+            reconcile(args.state_dir, quota_dir)
+            return 0
         action = json.loads(args.action_file.read_text())
         if not isinstance(action, dict):
             raise ValueError("invalid action")
@@ -333,6 +537,8 @@ def main() -> int:
             args.ttl,
             quota_dir,
         )
+    except QuotaWait:
+        return github_quota.QUOTA
     except github_quota.QuotaExhausted as error:
         return github_quota.stop_on_quota(error, quota_dir)
     except github_state.ConfigError as error:

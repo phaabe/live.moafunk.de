@@ -247,6 +247,20 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 check_quota
+tick_phase=backoff
+reconcile_exit=0
+run_bounded "${pull_timeout}s" python3 .codex/tick_backoff.py reconcile \
+    --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || reconcile_exit=$?
+case "$reconcile_exit" in
+    0) ;;
+    4)
+        tick_phase=quota
+        tick_outcome=blocked
+        exit 75
+        ;;
+    *) read_blocked ;;
+esac
+check_quota
 tick_phase=select
 select_exit=0
 run_bounded "${select_timeout}s" python3 scripts/epic/next_action.py --agent codex --candidates \
