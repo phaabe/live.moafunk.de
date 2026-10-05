@@ -1,12 +1,15 @@
 """Ticket data for the Tickets dashboard (epic-tickets); the runners never read it.
 
-Only the current board Status is used: no status history.
+The current board Status, plus the status history the collector records
+(ticket_history.py) for time in status, agents and flow times.
 
 Sources, each with its own health (`epic_ticket_source_ok`):
   board   the selector snapshot's board items (status, fields, readiness)
   github  the selector snapshot's open and merged PRs (linked PR, review)
   deps    REST `issues/{n}/dependencies/blocked_by`, Ready tickets only
   review  REST issue comments of Refinement tickets (body reviews)
+  ledger  the status history files (time in status, flow times)
+  local   runner ticks from the local loop (agent names)
 
 deps and review are read in a child process with conditional REST requests
 (ETags under `runtime/ticket-cache`). A failed source makes its check and
@@ -25,6 +28,7 @@ import re
 from typing import Any
 
 import next_action as epic
+from ticket_history import CODES, Summary
 from ticks import Sink
 
 Json = dict[str, Any]
@@ -39,9 +43,12 @@ DONE_DAYS = 7
 # done_sort of a Done ticket whose issue is still open: sorts before every
 # closed one when the table sorts descending.
 OPEN_DONE_SORT = 9_999_999_999
-SOURCES = ("board", "github", "deps", "review")
+SOURCES = ("board", "github", "deps", "review", "ledger", "local")
 # Which not-Done tickets fill MAX_OPEN first.
 CAP_ORDER = ("In review", "In progress", "Ready", "Refinement", "Unknown", "Backlog")
+
+
+HOUR = 3600
 
 
 @dataclass(frozen=True)
@@ -51,12 +58,36 @@ class Check:
     # Severity when the check has members: 1 neutral, 2 amber, 3 red.
     severity: int
     source: str
+    # (seconds, severity): a member longer than that in its status (strictly
+    # more) raises the severity. Needs the ledger; without it, no raise.
+    steps: tuple[tuple[int, int], ...] = ()
+    # Time-based membership: status and minimum time in it (strictly more).
+    status: str = ""
+    longer: int = 0
 
 
 CHECKS = (
     Check("ready_undeclared", "Ready · dependency not declared", 3, "deps"),
-    Check("ready_claimable", "Ready · may be claimed", 1, "claims"),
-    Check("refinement_unreviewed", "Refinement · body not reviewed", 2, "review"),
+    Check("ready_claimable", "Ready · may be claimed", 1, "claims", ((24 * HOUR, 2),)),
+    Check(
+        "in_progress_long",
+        "In progress > 1 day",
+        2,
+        "ledger",
+        ((48 * HOUR, 3),),
+        "In progress",
+        24 * HOUR,
+    ),
+    Check(
+        "in_review_long", "In review > 1 day", 3, "ledger", (), "In review", 24 * HOUR
+    ),
+    Check(
+        "refinement_unreviewed",
+        "Refinement · body not reviewed",
+        1,
+        "review",
+        ((72 * HOUR, 2),),
+    ),
     Check("done_open", "Board Done · issue open", 2, "board"),
 )
 
@@ -270,8 +301,13 @@ def ticket_metrics(
     extra: Extra,
     claims: set[int] | None,
     now: float,
+    history: Summary | None = None,
 ) -> None:
-    """One info row per ticket, check members and counts, status counts."""
+    """One info row per ticket, check members and counts, status counts.
+
+    `history` is None when the ledger cannot be read: the time-based checks
+    are unknown then and no severity is raised by time.
+    """
     population = board_tickets(state, now)
     metrics.add("ticket_snapshot_timestamp_seconds", now)
     for status, count in population.counts.items():
@@ -279,10 +315,24 @@ def ticket_metrics(
     metrics.add("tickets_dropped", population.dropped)
     prs = linked_prs(state)
     members: dict[str, list[int]] = {check.id: [] for check in CHECKS}
+    ages: dict[int, float] = {}
     for ticket in population.tickets:
         note, checks = ticket_note(ticket, extra, claims, prs.get(ticket.number))
+        timed = history.tickets.get(ticket.number) if history else None
+        if timed is not None and timed.status == ticket.status:
+            # Since the entry into the status; a lower bound when seeded.
+            ages[ticket.number] = max(0.0, now - timed.entered)
+        for check in CHECKS:
+            if (
+                check.status == ticket.status
+                and ages.get(ticket.number, 0) > check.longer
+            ):
+                checks.append(check.id)
         for check in checks:
             members[check].append(ticket.number)
+        metrics.add(
+            "ticket_status_code", CODES[ticket.status], issue=str(ticket.number)
+        )
         item = ticket.item
         executor = item.get("executor") or "Unassigned"
         pr = prs.get(ticket.number)
@@ -304,12 +354,15 @@ def ticket_metrics(
             note=note,
             pr=str(pr[0]) if pr else "",
             done_sort=done_sort,
+            last_agent=timed.agent if timed else "",
+            ready_entered=str(timed.ready_entered or "") if timed else "",
         )
     healthy = {
         "board": True,
         "claims": claims is not None,
         "deps": extra.deps is not None,
         "review": extra.reviews is not None,
+        "ledger": history is not None,
     }
     for check in CHECKS:
         if not healthy[check.source]:
@@ -317,10 +370,13 @@ def ticket_metrics(
         for number in members[check.id]:
             metrics.add("ticket_check_member", 1, issue=str(number), check=check.id)
         count = len(members[check.id])
+        severity = check.severity if count else 0
+        worst = max((ages.get(n, 0) for n in members[check.id]), default=0)
+        for seconds, raised in check.steps:
+            if count and worst > seconds:
+                severity = max(severity, raised)
         metrics.add("ticket_check_count", count, check=check.id)
-        metrics.add(
-            "ticket_check_severity", check.severity if count else 0, check=check.id
-        )
+        metrics.add("ticket_check_severity", severity, check=check.id)
 
 
 def declared_dependencies(item: Json) -> set[str]:

@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -309,8 +310,9 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(
             sink.value("ticket_check_count", check="refinement_unreviewed"), 3
         )
+        # Neutral: amber only when one is in Refinement > 72 h (needs history).
         self.assertEqual(
-            sink.value("ticket_check_severity", check="refinement_unreviewed"), 2
+            sink.value("ticket_check_severity", check="refinement_unreviewed"), 1
         )
 
     def test_done_open_check_and_done_sort(self) -> None:
@@ -525,16 +527,25 @@ class CollectTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
+        (self.root / "metrics").mkdir()
         self.state = snapshot(items=[ticket(1, "Ready"), ticket(2, "Refinement")])
+        self.state["fetched_at"] = int(time.time())
         patcher = patch.object(tickets.epic, "shared_reader", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Current runner ticks from the local loop.
+        ticks = patch.object(monitor.LATEST, "ticks", (time.time(), {}))
+        ticks.start()
+        self.addCleanup(ticks.stop)
 
     def health(self) -> str:
-        return (self.root / "tickets-health.prom").read_text()
+        return (self.root / "metrics/tickets-health.prom").read_text()
 
     def collect(self, state: monitor.Json | None, fetch) -> bool:  # type: ignore[no-untyped-def]
-        return monitor.collect_tickets(self.root, self.root / "cache", 5, state, fetch)
+        # Metrics in root/metrics: the history files go to its parent.
+        return monitor.collect_tickets(
+            self.root / "metrics", self.root / "cache", 5, state, fetch
+        )
 
     def test_success_writes_rows_and_health(self) -> None:
         def fetch(cache: Path, request: monitor.Json, timeout: float) -> monitor.Json:
@@ -542,7 +553,7 @@ class CollectTest(unittest.TestCase):
             return {"deps": {"1": []}, "reviews": {"2": None}}
 
         self.assertTrue(self.collect(self.state, fetch))
-        text = (self.root / "tickets.prom").read_text()
+        text = (self.root / "metrics/tickets.prom").read_text()
         self.assertIn('epic_ticket_check_count{check="refinement_unreviewed"} 1', text)
         for source in tickets.SOURCES:
             self.assertIn(
@@ -570,10 +581,12 @@ class CollectTest(unittest.TestCase):
 
         for item in (no_body, no_state, no_closure, bad_closure):
             with self.subTest(issue=item["content"]["number"]):
-                (self.root / "tickets.prom").write_text("old\n")
+                (self.root / "metrics/tickets.prom").write_text("old\n")
                 state = snapshot(items=[ticket(1, "Ready"), item])
                 self.assertFalse(self.collect(state, fetch))
-                self.assertEqual((self.root / "tickets.prom").read_text(), "old\n")
+                self.assertEqual(
+                    (self.root / "metrics/tickets.prom").read_text(), "old\n"
+                )
                 self.assertIn('epic_ticket_source_ok{source="board"} 0', self.health())
 
     def test_null_body_is_a_confirmed_empty_body(self) -> None:
@@ -606,7 +619,7 @@ class CollectTest(unittest.TestCase):
             return tickets.fetch_extra(request, pages, (FetchTest.Blocked,))
 
         self.assertFalse(self.collect(self.state, fetch))
-        text = (self.root / "tickets.prom").read_text()
+        text = (self.root / "metrics/tickets.prom").read_text()
         self.assertNotIn('check="refinement_unreviewed"', text)
         self.assertIn('note="Body review unknown"', text)
         self.assertNotIn('note="Body reviewed"', text)
@@ -618,7 +631,7 @@ class CollectTest(unittest.TestCase):
             raise RuntimeError("child failed")
 
         self.assertFalse(self.collect(self.state, fetch))
-        text = (self.root / "tickets.prom").read_text()
+        text = (self.root / "metrics/tickets.prom").read_text()
         self.assertIn("epic_ticket_info{", text)
         self.assertNotIn('check="ready_undeclared"', text)
         self.assertIn('epic_ticket_source_ok{source="board"} 1', self.health())
@@ -626,9 +639,9 @@ class CollectTest(unittest.TestCase):
         self.assertIn('epic_ticket_source_ok{source="review"} 0', self.health())
 
     def test_no_snapshot_keeps_last_rows(self) -> None:
-        (self.root / "tickets.prom").write_text("old\n")
+        (self.root / "metrics/tickets.prom").write_text("old\n")
         self.assertFalse(self.collect(None, lambda *_: {}))
-        self.assertEqual((self.root / "tickets.prom").read_text(), "old\n")
+        self.assertEqual((self.root / "metrics/tickets.prom").read_text(), "old\n")
         for source in tickets.SOURCES:
             self.assertIn(
                 f'epic_ticket_source_ok{{source="{source}"}} 0', self.health()

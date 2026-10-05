@@ -10,6 +10,7 @@ import argparse
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import fcntl
 import json
 import logging
@@ -29,6 +30,7 @@ from typing import Any, BinaryIO
 import agents
 import delivery
 import next_action as epic
+import ticket_history
 import tickets
 import ticks
 
@@ -389,6 +391,7 @@ class Ledgers:
     def __init__(self, runtime: Path) -> None:
         self.runtime = runtime
         self.ledgers: dict[tuple[str, Path], ticks.LogLedger] = {}
+        self.views: dict[str, ticks.TickView] = {}
 
     def opener(self, agent: agents.Agent, name: str) -> Callable[[], BinaryIO]:
         def opener() -> BinaryIO:
@@ -446,6 +449,12 @@ class Ledgers:
         assert isinstance(ledger, ticks.DecisionLedger)
         return ledger
 
+    def tick_rows(self) -> dict[str, list[Json]]:
+        """The last exported ticks per agent; read by the GitHub thread."""
+        return {
+            name: list(view.state.get("ticks", [])) for name, view in self.views.items()
+        }
+
     def prune(self, active: list[agents.Agent]) -> None:
         """Drop ledgers and checkpoints of agents that are gone.
 
@@ -460,6 +469,8 @@ class Ledgers:
         }
         for key in [key for key in self.ledgers if key not in keep]:
             del self.ledgers[key]
+        ids = {a.id for a in active}
+        self.views = {k: v for k, v in self.views.items() if k in ids}
         names = {
             name
             for a in active
@@ -593,9 +604,13 @@ class Heads:
         self.handoff: delivery.Handoff | None = None
         # The selector snapshot of this cycle's poll; None after a failed one.
         self.state: Json | None = None
+        # (time, agent -> ticks) from the local loop, for ticket agent names.
+        self.ticks: tuple[float, dict[str, list[Json]]] | None = None
 
 
 LATEST = Heads()
+# Runner ticks older than this give no agent names (local source unknown).
+TICKS_MAX_AGE = 300
 
 
 def backoff_metrics(
@@ -683,6 +698,7 @@ def agent_metrics(
     view = None
     if ledgers is not None:
         view = ledger_metrics(metrics, ledgers.get(agent), ledgers.events(agent), now)
+        ledgers.views[name] = view
     budget = runner.budget or agent.budget
     metrics.add("agent_budget_seconds", budget, agent=name)
     started = max(
@@ -816,7 +832,7 @@ def runner_metrics(
     return metrics.render()
 
 
-def alloy_targets(registry: agents.Registry) -> str:
+def alloy_targets(registry: agents.Registry, segments: Path | None = None) -> str:
     """The logs Alloy may ship: regular files of known agents, never links.
 
     Alloy follows links when it opens a file, so it must not glob folders the
@@ -856,6 +872,22 @@ def alloy_targets(registry: agents.Registry) -> str:
                 },
             }
         )
+    # The collector's own ticket status segments (ticket_history.py).
+    if segments is not None:
+        try:
+            entry = segments.lstat()
+        except OSError:
+            entry = None
+        if entry is not None and stat.S_ISREG(entry.st_mode):
+            rows.append(
+                {
+                    "targets": ["localhost"],
+                    "labels": {
+                        "__path__": "/targets/" + segments.name,
+                        "stream": "ticket_segments",
+                    },
+                }
+            )
     return json.dumps(rows, indent=2) + "\n"
 
 
@@ -864,7 +896,7 @@ def publish_local(args: argparse.Namespace, ledgers: Ledgers) -> None:
     now = time.time()
     registry = agents.discover(args.state_dir, now)
     targets = args.output.parent / "alloy" / "targets.json"
-    text = alloy_targets(registry)
+    text = alloy_targets(registry, args.output.parent / ticket_history.SEGMENTS)
     try:
         current = targets.read_text()
     except FileNotFoundError:
@@ -884,6 +916,7 @@ def publish_local(args: argparse.Namespace, ledgers: Ledgers) -> None:
             handoff=LATEST.handoff,
         ),
     )
+    LATEST.ticks = (now, ledgers.tick_rows())
 
 
 def read_events(events: ticks.EventLedger, now: float) -> bool:
@@ -1073,6 +1106,24 @@ def github_metrics(state: Json, now: float) -> str:
     return metrics.render()
 
 
+def fetch_state_with_time() -> Json:
+    """fetch_state() plus `fetched_at`, the whole second GitHub was read.
+
+    The shared reader may hand out its cached snapshot; its own time then
+    tells the ticket history that nothing new was seen.
+    """
+    if epic.shared_reader():
+        import github_state
+
+        snapshot = github_state.read_snapshot(
+            completed_tickets=epic.completed_tickets()
+        )
+        at = datetime.strptime(snapshot.fetched_at, "%Y-%m-%dT%H:%M:%SZ")
+        fetched_at = int(at.replace(tzinfo=timezone.utc).timestamp())
+        return {**snapshot.state, "fetched_at": fetched_at}
+    return {**epic.fetch_state(), "fetched_at": int(time.time())}
+
+
 def fetch_snapshot(timeout: float) -> Json:
     command = [sys.executable, str(Path(__file__).resolve()), "--fetch-state"]
     with subprocess.Popen(
@@ -1231,6 +1282,41 @@ def fetch_tickets(cache: Path, request: Json, timeout: float) -> Json:
     return json.loads(output)
 
 
+def record_history(
+    history: ticket_history.History,
+    view: Json,
+    now: float,
+    tick_rows: tuple[float, dict[str, list[Json]]] | None,
+) -> tuple[ticket_history.Summary | None, bool]:
+    """Record this snapshot in the status history and write segments.
+
+    Returns the summary (None when the history files fail) and whether
+    runner ticks were current. The board was validated before.
+    """
+    fresh = tick_rows is not None and now - tick_rows[0] <= TICKS_MAX_AGE
+    try:
+        if not history.loaded:
+            history.load(now)
+        fetched_at = view.get("fetched_at")
+        if type(fetched_at) is not int or fetched_at <= 0:
+            raise ValueError("snapshot without fetched_at")
+        history.observe(ticket_history.board_statuses(view), fetched_at)
+        shown = [t.number for t in tickets.board_tickets(view, now).tickets]
+        prs = {issue: pr[0] for issue, pr in tickets.linked_prs(view).items()}
+        history.update_segments(
+            shown, prs, tick_rows[1] if fresh and tick_rows else None, int(now)
+        )
+        return history.summary(now), fresh
+    except (OSError, ValueError) as error:
+        logging.error("Ticket history failed: %s", type(error).__name__)
+        # Read the files again next cycle; never continue from a partial state.
+        history.loaded = False
+        return None, fresh
+
+
+HISTORY: dict[Path, ticket_history.History] = {}
+
+
 def collect_tickets(
     output: Path,
     cache: Path,
@@ -1251,6 +1337,11 @@ def collect_tickets(
             raise ValueError("no GitHub snapshot this cycle")
         view = epic_view(state)
         now = time.time()
+        # Raises Malformed before anything is recorded.
+        tickets.board_tickets(view, now)
+        runtime = output.parent
+        history = HISTORY.setdefault(runtime, ticket_history.History(runtime))
+        summary, local = record_history(history, view, now, LATEST.ticks)
         request = tickets.wanted(view, now)
         try:
             extra = tickets.valid_extra(fetch(cache, request, timeout), request)
@@ -1263,13 +1354,20 @@ def collect_tickets(
             logging.error("Ticket reads failed: %s", type(error).__name__)
             extra = tickets.Extra(None, None)
         metrics = Metrics()
-        tickets.ticket_metrics(metrics, view, extra, tickets.claimable(view), now)
+        tickets.ticket_metrics(
+            metrics, view, extra, tickets.claimable(view), now, summary
+        )
+        if summary is not None:
+            shown = [t.number for t in tickets.board_tickets(view, now).tickets]
+            ticket_history.history_metrics(metrics, summary, shown, now)
         atomic_write(output / "tickets.prom", metrics.render())
         ok.update(
             board=True,
             github=True,
             deps=extra.deps is not None,
             review=extra.reviews is not None,
+            ledger=summary is not None,
+            local=local,
         )
     except (OSError, ValueError, KeyError, TypeError) as error:
         logging.error("Ticket collection failed: %s", type(error).__name__)
@@ -1293,12 +1391,23 @@ def collect_remote(args: argparse.Namespace, clock: delivery.HandoffClock) -> bo
     )
 
 
+def read_ticks(args: argparse.Namespace, ledgers: Ledgers) -> None:
+    """Read the tick ledgers for the ticket history's agent names, before a
+    remote cycle that runs ahead of the local loop. The metrics are dropped;
+    publish_local writes them."""
+    now = time.time()
+    runner_metrics(args.state_dir, args.pause_file.exists(), now, ledgers=ledgers)
+    LATEST.ticks = (now, ledgers.tick_rows())
+
+
 def run_once(args: argparse.Namespace) -> None:
     """One remote cycle, then local metrics that include its handoff."""
     clock = delivery.HandoffClock(args.output.parent / "handoff.json")
     LATEST.handoff = clock.load()
+    ledgers = Ledgers(args.output.parent)
+    read_ticks(args, ledgers)
     ok = collect_remote(args, clock)
-    publish_local(args, Ledgers(args.output.parent))
+    publish_local(args, ledgers)
     if not ok:
         raise SystemExit(1)
 
@@ -1359,7 +1468,7 @@ def main() -> None:
         import github_state
 
         try:
-            state = epic.fetch_state()
+            state = fetch_state_with_time()
         except github_state.ConfigError as error:
             print(f"config: {error}", file=sys.stderr)
             sys.exit(2)

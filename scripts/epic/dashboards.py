@@ -1952,6 +1952,20 @@ CHECKS = (
         "Ready, and the runner selector would offer it as a claim now.",
     ),
     (
+        "in_progress_long",
+        "In progress > 1 day",
+        LOOK_SOON,
+        "In progress for more than 24 h (since the collector saw it enter; at "
+        "least that long for tickets it found there).",
+    ),
+    (
+        "in_review_long",
+        "In review > 1 day",
+        ACT_NOW,
+        "In review for more than 24 h (since the collector saw it enter; at "
+        "least that long for tickets it found there).",
+    ),
+    (
         "refinement_unreviewed",
         "Refinement · not reviewed",
         LOOK_SOON,
@@ -2189,7 +2203,7 @@ def tickets_page() -> Json:
         }
     ]
     for i, check in enumerate(CHECKS):
-        board.add(check_tile(*check), 6 * i, 0, 6, 3)
+        board.add(check_tile(*check), 4 * i, 0, 4, 3)
     for i, status in enumerate(STATUS):
         board.add(status_stat(status), 4 * i, 3, 4, 4)
     board.add(cumulative_flow(), 0, 7, 24, 8)
