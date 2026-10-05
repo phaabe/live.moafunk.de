@@ -348,7 +348,9 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(self.main("--event", "event.json", "--publish"), 1)
         publish.assert_not_called()
 
-    def test_main_publish_returns_one_when_failure_status_cannot_be_published(self) -> None:
+    def test_main_publish_returns_one_when_failure_status_cannot_be_published(
+        self,
+    ) -> None:
         api = self.api
 
         def gh(endpoint: str) -> dict | list:
@@ -460,7 +462,8 @@ class RunnerTests(unittest.TestCase):
             return self.api(endpoint)
 
         self.assertIn("before status", " ".join(self.verify(gh)))
-        self.assertEqual(self.statuses[-1][:2], (HEAD, "failure"))
+        self.assertEqual(self.statuses[-1][:2], (HEAD, "pending"))
+        self.assertTrue(self.statuses[-1][2].startswith("retrying: "))
 
     def test_base_advance_rejects_old_policy(self) -> None:
         reads = 0
@@ -474,6 +477,8 @@ class RunnerTests(unittest.TestCase):
             return self.api(endpoint)
 
         self.assertIn("base changed", " ".join(self.verify(gh)))
+        self.assertEqual(self.statuses[-1][:2], (HEAD, "pending"))
+        self.assertTrue(self.statuses[-1][2].startswith("retrying: "))
 
     def test_api_failure_after_pending_publishes_failure(self) -> None:
         def gh(endpoint: str) -> dict | list:
@@ -524,7 +529,124 @@ class RunnerTests(unittest.TestCase):
             return self.api(endpoint)
 
         self.assertIn("sharing this head changed", " ".join(self.verify(gh)))
-        self.assertEqual(self.statuses[-1][1], "failure")
+        self.assertEqual(self.statuses[-1][1], "pending")
+        self.assertTrue(self.statuses[-1][2].startswith("retrying: "))
+
+    def test_collection_races_publish_pending(self) -> None:
+        for reason in ("PR changed", "comment changed", "count differs", "pagination"):
+            with self.subTest(reason=reason):
+                self.api = BaseAPI()
+                api = self.api
+                reads = 0
+
+                def gh(endpoint: str) -> dict | list:
+                    nonlocal reads
+                    response = api(endpoint)
+                    if reason == "PR changed" and endpoint.endswith("/pulls/406"):
+                        reads += 1
+                        if reads == 3:
+                            response["body"] += " changed"
+                    if endpoint.startswith("graphql?"):
+                        comments = response["data"]["repository"]["pullRequest"][
+                            "comments"
+                        ]
+                        if reason == "comment changed":
+                            comments["nodes"][0]["body"] += " changed"
+                        elif reason == "count differs":
+                            comments["totalCount"] += 1
+                    if reason == "pagination" and "/check-runs?" in endpoint:
+                        reads += 1
+                        response["total_count"] = 101 if reads == 1 else 102
+                        response["check_runs"] = [{"id": i} for i in range(100)]
+                    return response
+
+                errors = self.verify(gh)
+                self.assertEqual(len(errors), 1)
+                self.assertIn(reason, errors[0])
+                self.assertEqual(
+                    self.statuses[-1], (HEAD, "pending", "retrying: " + errors[0])
+                )
+                reads = 0
+                with patch.object(self, "api", gh):
+                    self.assertEqual(self.main("--pr", "406"), 1)
+
+    def test_duplicate_pr_listing_retries_before_and_after_loading_checker(
+        self,
+    ) -> None:
+        for failed_read in (1, 2):
+            with self.subTest(failed_read=failed_read):
+                reads = 0
+
+                def gh(endpoint: str) -> dict | list:
+                    nonlocal reads
+                    response = self.api(endpoint)
+                    if "/pulls?" in endpoint:
+                        reads += 1
+                        if reads == failed_read:
+                            response.append(copy.deepcopy(response[0]))
+                    return response
+
+                self.assertEqual(
+                    self.verify(gh), ["duplicate or missing PR numbers; retry"]
+                )
+                self.assertEqual(self.statuses[-1][:2], (HEAD, "pending"))
+                self.assertTrue(self.statuses[-1][2].startswith("retrying: "))
+
+    def test_real_failure_with_retry_still_publishes_failure(self) -> None:
+        for retry in ("publication", "listing"):
+            with self.subTest(retry=retry):
+                self.api = BaseAPI()
+                self.api.data["check_runs"][0]["conclusion"] = "failure"
+                reads = 0
+
+                def gh(endpoint: str) -> dict | list:
+                    nonlocal reads
+                    response = self.api(endpoint)
+                    if retry == "publication" and endpoint.endswith("/pulls/406"):
+                        reads += 1
+                        if reads == 4:
+                            response["body"] += " changed"
+                    elif retry == "listing" and "/pulls?" in endpoint:
+                        reads += 1
+                        if reads == 2:
+                            response.append(copy.deepcopy(response[0]))
+                    return response
+
+                errors = self.verify(gh)
+                self.assertTrue(any(error.endswith("; retry") for error in errors))
+                self.assertEqual(self.statuses[-1][:2], (HEAD, "failure"))
+                self.assertIn("not successful", self.statuses[-1][2])
+
+    def test_malformed_comment_nodes_still_publish_failure(self) -> None:
+        def gh(endpoint: str) -> dict | list:
+            response = self.api(endpoint)
+            if endpoint.startswith("graphql?"):
+                response["data"]["repository"]["pullRequest"]["comments"]["nodes"] = (
+                    None
+                )
+            return response
+
+        self.assertEqual(
+            self.verify(gh), ["comment edit evidence nodes must be a list"]
+        )
+        self.assertEqual(self.statuses[-1][:2], (HEAD, "failure"))
+
+    def test_older_checker_without_retry_type_remains_compatible(self) -> None:
+        source = Path(__file__).with_name("check.py").read_bytes()
+        for failure in (False, True):
+            with self.subTest(failure=failure):
+                legacy = source + b"\ndel RetryCollection\n"
+                if failure:
+                    legacy += (
+                        b"def collect(*args, **kwargs):\n"
+                        b"    raise ValueError('PR changed during collection; retry')\n"
+                    )
+                self.api.contents["scripts/epic_guard/check.py"] = blob(legacy)
+                errors = self.verify()
+                self.assertEqual(bool(errors), failure)
+                self.assertEqual(
+                    self.statuses[-1][:2], (HEAD, "failure" if failure else "success")
+                )
 
 
 if __name__ == "__main__":

@@ -544,7 +544,10 @@ class PolicyTests(unittest.TestCase):
             ("tools/agent-monitoring/grafana/dashboards/agent.json", "Claude"),
             ("tools/agent-monitoring/grafana/dashboards/overview.json", "Claude"),
             ("tools/agent-monitoring/grafana/dashboards/README.md", "Codex"),
-            ("tools/agent-monitoring/grafana/provisioning/dashboards/agents.yml", "Codex"),
+            (
+                "tools/agent-monitoring/grafana/provisioning/dashboards/agents.yml",
+                "Codex",
+            ),
             ("tools/agent-monitoring/compose.yaml", "Codex"),
             ("tools/agent-monitoring/alloy.alloy", "Codex"),
             ("tools/agent-monitoring/runtime/alloy/targets.json", "Codex"),
