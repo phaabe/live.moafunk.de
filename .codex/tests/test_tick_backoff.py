@@ -23,6 +23,45 @@ backoff = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(backoff)
 
 
+class EscalationGitHub:
+    """Stateful REST boundary, including a lost write response."""
+
+    def __init__(self) -> None:
+        self.head = "a" * 40
+        self.labels: list[dict[str, str]] = []
+        self.comments: list[dict[str, str]] = []
+        self.writes: list[str] = []
+        self.fail: str | None = None
+
+    def __call__(self, args: list[str], timeout: int) -> str:
+        endpoint = args[1]
+        method = args[args.index("--method") + 1] if "--method" in args else "GET"
+        if self.fail == "read" and method == "GET":
+            raise subprocess.CalledProcessError(1, args)
+        if method == "POST" and endpoint.endswith("/labels"):
+            if self.fail == "label":
+                raise subprocess.CalledProcessError(1, args)
+            self.labels = [{"name": "needs-anton"}]
+            self.writes.append("label")
+        elif method == "POST" and endpoint.endswith("/comments"):
+            self.comments.append({"body": args[-1].removeprefix("body=")})
+            self.writes.append("comment")
+            if self.fail == "comment-response":
+                raise subprocess.TimeoutExpired(args, timeout)
+        elif method == "DELETE":
+            self.labels = []
+            self.writes.append("remove-label")
+        elif method == "GET" and "/comments?" in endpoint:
+            return json.dumps([self.comments])
+        elif method == "GET":
+            return json.dumps(
+                {"state": "open", "head": {"sha": self.head}, "labels": self.labels}
+            )
+        else:
+            raise AssertionError(args)
+        return "{}"
+
+
 class BackoffTests(unittest.TestCase):
     def setUp(self) -> None:
         environment = patch.dict(os.environ, {"EPIC_SHARED_READER": "0"})
@@ -46,6 +85,130 @@ class BackoffTests(unittest.TestCase):
 
     def entries(self) -> dict[str, dict[str, object]]:
         return json.loads((self.state / "codex-backoff.json").read_text())
+
+    def test_three_blocks_escalate_once_and_stay_suppressed_after_ttl(self) -> None:
+        github = EscalationGitHub()
+        with patch.object(backoff.github_quota, "run_gh", side_effect=github):
+            for count in range(1, 4):
+                self.result.write_text(
+                    json.dumps({"status": "blocked", "summary": f"Reason {count}"})
+                )
+                self.assertEqual(self.record(), 3)
+                self.assertEqual(
+                    next(iter(self.entries().values()))["blocked_count"], count
+                )
+                self.assertEqual(backoff.check(self.action, self.state, 900, 1899), 3)
+                if count < 3:
+                    self.assertEqual(
+                        backoff.check(self.action, self.state, 900, 1900), 0
+                    )
+                    self.assertEqual(github.writes, [])
+            for _ in range(2):
+                backoff.reconcile(self.state, self.state)
+                self.assertEqual(backoff.check(self.action, self.state, 900, 99999), 3)
+            self.assertEqual(github.writes, ["label", "comment"])
+            self.assertIn("Reason 3", github.comments[0]["body"])
+            self.assertNotIn("Reason 2", github.comments[0]["body"])
+
+    def test_new_head_and_label_removal_reset_escalation(self) -> None:
+        self.action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        github = EscalationGitHub()
+        with patch.object(backoff.github_quota, "run_gh", side_effect=github):
+            for reset in ("head", "label"):
+                with self.subTest(reset=reset):
+                    for _ in range(3):
+                        self.assertEqual(self.record(), 3)
+                    if reset == "head":
+                        github.head = "b" * 40
+                        self.action["sha"] = github.head
+                    else:
+                        github.labels = []
+                    backoff.reconcile(self.state, self.state)
+                    self.assertEqual(self.entries(), {})
+                    self.assertEqual(github.labels, [])
+                    self.assertEqual(
+                        backoff.check(self.action, self.state, 900, 1001), 0
+                    )
+            self.assertEqual(self.record(), 3)
+            self.assertEqual(next(iter(self.entries().values()))["blocked_count"], 1)
+            self.assertEqual(github.writes.count("label"), 2)
+            self.assertEqual(github.writes.count("comment"), 2)
+
+    def test_failed_notification_retries_without_model_or_duplicate_comment(
+        self,
+    ) -> None:
+        github = EscalationGitHub()
+        with patch.object(backoff.github_quota, "run_gh", side_effect=github):
+            self.record()
+            self.record()
+            github.fail = "label"
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.record()
+            self.assertEqual(backoff.check(self.action, self.state, 900, 99999), 3)
+            github.fail = "comment-response"
+            with self.assertRaises(subprocess.TimeoutExpired):
+                backoff.reconcile(self.state, self.state)
+            self.assertEqual(backoff.check(self.action, self.state, 900, 99999), 3)
+            github.fail = None
+            backoff.reconcile(self.state, self.state)
+            self.assertEqual(github.writes, ["label", "comment"])
+            self.assertEqual(next(iter(self.entries().values()))["blocked_count"], 3)
+
+    def test_quota_wait_preserves_limit_and_delays_notification(self) -> None:
+        github = EscalationGitHub()
+        with patch.object(backoff.github_quota, "run_gh", side_effect=github):
+            self.record()
+            self.record()
+            with patch.object(backoff.github_quota, "check", return_value=(3, "later")):
+                with self.assertRaises(backoff.QuotaWait):
+                    self.record()
+            self.assertEqual(github.writes, [])
+            self.assertEqual(backoff.check(self.action, self.state, 900, 99999), 3)
+            backoff.reconcile(self.state, self.state)
+            self.assertEqual(github.writes, ["label", "comment"])
+
+    def test_failed_result_preserves_count_but_does_not_increment_it(self) -> None:
+        self.record()
+        for _ in range(3):
+            self.assertEqual(self.record(code=17), 75)
+        self.assertEqual(next(iter(self.entries().values()))["blocked_count"], 1)
+        self.assertEqual(self.record(), 3)
+        self.assertEqual(next(iter(self.entries().values()))["blocked_count"], 2)
+
+    def test_reconcile_read_failure_cannot_reset_escalation(self) -> None:
+        github = EscalationGitHub()
+        with patch.object(backoff.github_quota, "run_gh", side_effect=github):
+            for _ in range(3):
+                self.record()
+            before = self.entries()
+            github.fail = "read"
+            with self.assertRaises(subprocess.CalledProcessError):
+                backoff.reconcile(self.state, self.state)
+            self.assertEqual(self.entries(), before)
+            self.assertEqual(backoff.check(self.action, self.state, 900, 99999), 3)
+
+    def test_new_head_does_not_remove_preexisting_label(self) -> None:
+        self.action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        github = EscalationGitHub()
+        github.labels = [{"name": "needs-anton"}]
+        with patch.object(backoff.github_quota, "run_gh", side_effect=github):
+            for _ in range(3):
+                self.record()
+            github.head = "b" * 40
+            backoff.reconcile(self.state, self.state)
+            self.assertEqual(github.labels, [{"name": "needs-anton"}])
+            self.assertEqual(github.writes, ["comment"])
+
+    def test_invalid_blocked_count_fails_closed(self) -> None:
+        self.record()
+        entries = self.entries()
+        entry = next(iter(entries.values()))
+        for count in (-1, True, "3", 4, 3):
+            with self.subTest(count=count):
+                entry["blocked_count"] = count
+                backoff.save_entries(self.state, entries)
+                with self.assertRaises(ValueError):
+                    backoff.load_entries(self.state)
 
     def test_record_stores_the_expiry_and_check_obeys_it(self) -> None:
         self.assertEqual(self.record(), 3)
@@ -141,6 +304,7 @@ class BackoffTests(unittest.TestCase):
         self.record()
         action = {"action": "continue", "pr": 410, "sha": "a" * 40}
         original = backoff.load_entries(self.state)[backoff.target_key(self.action)]
+        original["blocked_count"] = 0
         metadata = {
             "body": f"Executor: Codex\r\nIssue: {self.action['issue']}\r\n",
             "headRefOid": action["sha"],
@@ -271,6 +435,16 @@ class BackoffTests(unittest.TestCase):
         result = self.fresh_cli({}, auth_context=False)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(path.read_bytes(), original)
+
+    def test_issue_count_does_not_transfer_to_new_pr_head(self) -> None:
+        self.record()
+        self.record()
+        action = {"action": "continue", "pr": 410, "sha": "a" * 40}
+        with patch.object(backoff, "pr_issue", return_value=self.action["issue"]):
+            self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
+        self.assertEqual(backoff.check(action, self.state, 900, 1900), 0)
+        self.assertEqual(self.record(action), 3)
+        self.assertEqual(self.entries()[backoff.target_key(action)]["blocked_count"], 1)
 
     def test_migration_preserves_unrelated_entries(self) -> None:
         self.record()

@@ -197,6 +197,11 @@ else:
             "    record(pathlib.Path(os.environ['EPIC_QUOTA_DIR']), time.time(), os.environ['TEST_RESET'])\n"
             "if os.environ.get('TEST_PAUSE_AFTER_SELECT'):\n"
             "    (pathlib.Path.home() / '.epic-pause').touch()\n"
+            "if os.environ.get('TEST_ESCALATION_STATE'):\n"
+            "    remote = json.loads(pathlib.Path(os.environ['TEST_ESCALATION_STATE']).read_text())\n"
+            "    if remote['labels']:\n"
+            "        print(json.dumps({'action': 'idle'}))\n"
+            "        sys.exit(0)\n"
             "print(os.environ['TEST_DECISION'])\n"
         )
         selector.write_text(
@@ -232,6 +237,27 @@ else:
             "time.sleep(float(os.environ.get('TEST_GH_DELAY', '0')))\n"
             "with open(os.environ['TEST_GH_CALLS'], 'a') as f:\n"
             "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if os.environ.get('TEST_ESCALATION_STATE') and sys.argv[1] == 'api' and '--jq' not in sys.argv:\n"
+            "    path = pathlib.Path(os.environ['TEST_ESCALATION_STATE'])\n"
+            "    data = json.loads(path.read_text())\n"
+            "    endpoint = sys.argv[2]\n"
+            "    method = sys.argv[sys.argv.index('--method') + 1] if '--method' in sys.argv else 'GET'\n"
+            "    if method == 'POST' and endpoint.endswith('/labels'):\n"
+            "        data['labels'] = [{'name': 'needs-anton'}]\n"
+            "        data['writes'].append('label')\n"
+            "    elif method == 'POST' and endpoint.endswith('/comments'):\n"
+            "        data['comments'].append({'body': sys.argv[-1].removeprefix('body=')})\n"
+            "        data['writes'].append('comment')\n"
+            "    elif method == 'DELETE':\n"
+            "        data['labels'] = []\n"
+            "        data['writes'].append('remove-label')\n"
+            "    elif method == 'GET' and '/comments?' in endpoint:\n"
+            "        print(json.dumps([data['comments']]))\n"
+            "        sys.exit(0)\n"
+            "    elif method != 'GET': raise AssertionError(sys.argv)\n"
+            "    path.write_text(json.dumps(data))\n"
+            "    print(json.dumps(data))\n"
+            "    sys.exit(0)\n"
             "if sys.argv[1:3] == ['api', '-i']:\n"
             "    board = json.loads(os.environ.get('TEST_BOARD_RESPONSES', '{}'))\n"
             "    if sys.argv[-1] in board:\n"
@@ -760,6 +786,7 @@ else:
         self.assertEqual(self.run_tick().returncode, 75)
         entries = json.loads((self.state / "codex-backoff.json").read_text())
         entry = entries[f"issue:{issue}"]
+        entry["blocked_count"] = 0
         self.env["TEST_DECISION"] = json.dumps(
             {"action": "continue", "pr": 417, "sha": "a" * 40}
         )
@@ -1612,6 +1639,59 @@ else:
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertEqual(self.record.read_text(), record)
+
+    def test_three_blocks_stop_models_and_reset_before_selection(self) -> None:
+        remote = self.root / "escalation.json"
+        remote.write_text(
+            json.dumps(
+                {
+                    "state": "open",
+                    "head": {"sha": "a" * 40},
+                    "labels": [],
+                    "comments": [],
+                    "writes": [],
+                }
+            )
+        )
+        self.env["TEST_ESCALATION_STATE"] = str(remote)
+        action = {"action": "continue", "pr": 406, "sha": "a" * 40}
+        self.env["TEST_DECISION"] = json.dumps(action)
+        for cycle in range(2):
+            for count in range(1, 4):
+                self.env["TEST_RESULT"] = json.dumps(
+                    {"status": "blocked", "summary": f"Block {count}"}
+                )
+                result = self.run_tick()
+                self.assertEqual(
+                    result.returncode, 75, (self.state / "codex.log").read_text()
+                )
+                self.assertEqual(
+                    len(self.calls.read_text().splitlines()), cycle * 3 + count
+                )
+                # No early retry during either of the first two 15-minute waits.
+                self.assertEqual(self.run_tick().returncode, 0)
+                self.assertEqual(
+                    len(self.calls.read_text().splitlines()), cycle * 3 + count
+                )
+                self.expire_cooldown()
+            self.assertEqual(self.run_tick().returncode, 0)
+            self.assertEqual(len(self.calls.read_text().splitlines()), (cycle + 1) * 3)
+            data = json.loads(remote.read_text())
+            self.assertEqual(data["writes"].count("label"), cycle + 1)
+            self.assertEqual(data["writes"].count("comment"), cycle + 1)
+            self.assertIn("Block 3", data["comments"][-1]["body"])
+            if cycle == 0:
+                # Selector emits idle while labeled; reconciliation must precede it.
+                action["sha"] = "b" * 40
+                data["head"]["sha"] = action["sha"]
+                self.env["TEST_DECISION"] = json.dumps(action)
+            else:
+                data["labels"] = []
+            remote.write_text(json.dumps(data))
+        self.assertEqual(self.run_tick().returncode, 75)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 7)
+        entries = json.loads((self.state / "codex-backoff.json").read_text())
+        self.assertEqual(entries[f"pr:406:{'b' * 40}"]["blocked_count"], 1)
 
     def test_blocked_claim_suppresses_continue_for_the_same_issue(self) -> None:
         self.env["TEST_DECISION"] = json.dumps(
