@@ -62,3 +62,12 @@ The runner asks for a structured result at the end. Set `status` from what reall
 - `quota`: a GitHub API rate limit stopped you. The runner sets no cooldown.
 
 Do not report `blocked` for a failing test or a conflict you can still fix: fix it.
+
+## 7. Tests and time
+
+The runner stops the session after `EPIC_TICK_TIMEOUT_SECONDS` (default 30 minutes). Work that is not pushed is lost, and the next tick starts again from zero.
+
+- Run the tests for the files you changed first. Run each full suite (`python3 scripts/epic/run_tests.py <suite> -j 10`) at most once per session, in the foreground, when your change is done.
+- Never `sleep` to wait for a background test run.
+- A test fails that your change does not touch: rerun only that test, at most twice. Passes now: name it as flaky in your PR comment and go on. Fails every time: run it on `origin/<base>`; fails there too: name it as a base failure in your PR comment and go on. Do not debug it in this session.
+- Commit and push as soon as a step works, and well before the timeout.
