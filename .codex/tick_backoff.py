@@ -21,7 +21,6 @@ from uuid import uuid4
 # Reuse the shared quota contract without changing Claude-owned scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "epic"))
 import github_quota  # noqa: E402
-import github_state  # noqa: E402
 import target_lock  # noqa: E402
 
 SKIP = 3
@@ -147,6 +146,8 @@ def save_entries(state_dir: Path, entries: dict[str, Entry]) -> None:
 
 
 def pr_issue(action: dict[str, object]) -> str | None:
+    import github_state
+
     if github_state.enabled():
         reader = github_state.FreshReader("backoff", github_state.settings().recheck)
         pull = reader.pull(action["pr"])
@@ -527,7 +528,18 @@ def main() -> int:
         if not isinstance(action, dict):
             raise ValueError("invalid action")
         if args.command == "check":
-            return check(action, args.state_dir, args.ttl, time.time())
+            # The shared reader imports the selector. Reconciliation and result
+            # recording must not load it before the tick's one selection.
+            import github_state
+
+            try:
+                return check(action, args.state_dir, args.ttl, time.time())
+            except github_state.ConfigError as error:
+                logging.error("backoff: %s", error)
+                return 2
+            except github_state.ReadBlocked as error:
+                logging.error("backoff: read blocked: %s", error)
+                return 5
         return record(
             action,
             args.state_dir,
@@ -541,12 +553,6 @@ def main() -> int:
         return github_quota.QUOTA
     except github_quota.QuotaExhausted as error:
         return github_quota.stop_on_quota(error, quota_dir)
-    except github_state.ConfigError as error:
-        logging.error("backoff: %s", error)
-        return 2
-    except github_state.ReadBlocked as error:
-        logging.error("backoff: read blocked: %s", error)
-        return 5
     except StaleAction as error:
         logging.info("backoff: skipped: %s", error)
         return 6
