@@ -210,6 +210,25 @@ class CooldownTest(unittest.TestCase):
                 stored = (self.state / tc.FILE).exists() and self.entries()
                 self.assertEqual(bool(stored), outcome == tc.BLOCKED)
 
+    def test_model_api_error_is_retried_without_cooldown(self) -> None:
+        # Seen live: 529 Overloaded, no structured output, nothing spent.
+        output = {"is_error": True, "terminal_reason": "api_error", "total_cost_usd": 0}
+        self.github["pulls/5 --jq .state"] = f"open\n{SHA}"
+        for model, verify, outcome in (
+            (1, 1, tc.UNKNOWN),
+            (0, 1, tc.UNKNOWN),
+            (1, 0, tc.DONE),
+        ):
+            with self.subTest(model=model, verify=verify):
+                (self.state / tc.FILE).unlink(missing_ok=True)
+                self.assertEqual(self.check(FIX), tc.RUN)
+                self.result.write_text(json.dumps(output))
+                got = tc.record(
+                    FIX, self.state, self.seen, self.result, model, verify, NOW
+                )
+                self.assertEqual(got, outcome)
+                self.assertFalse((self.state / tc.FILE).exists())
+
     def test_invalid_structured_result_is_no_evidence(self) -> None:
         for output in (
             {"structured_output": {"status": "blocked"}},

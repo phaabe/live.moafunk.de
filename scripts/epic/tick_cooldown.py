@@ -10,6 +10,7 @@ exit code and timeout, runs tick_verify.py, then calls `record`:
 
   model result `blocked`                        cooldown
   model result `quota`                          no cooldown, no gate record (exit 4)
+  model API error, not landed                   no cooldown, no gate record (exit 6)
   verify exit 1, PR open with the selected head  cooldown ("target unchanged")
   verify passed                                 done: gate record, cooldown cleared
   anything else                                 no cooldown; the gate record as before
@@ -264,6 +265,19 @@ def model_result(result_file: Path) -> dict[str, str] | None:
     return result
 
 
+def api_error(result_file: Path) -> bool:
+    """The session ended on a model API error (for example 529 Overloaded).
+
+    `claude -p --output-format json` says so in `terminal_reason`. Such an
+    error is temporary and costs no tokens, so the next tick simply retries.
+    """
+    try:
+        output = json.loads(result_file.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(output, dict) and output.get("terminal_reason") == "api_error"
+
+
 def unchanged(action: dict[str, Any]) -> bool | None:
     """True when the PR is still open at the selected head; None if unknown."""
     try:
@@ -288,6 +302,7 @@ def classify(
     result: dict[str, str] | None,
     model_exit: int,
     verify_exit: int,
+    api_failed: bool = False,
 ) -> tuple[int, str]:
     """(outcome, reason) from runner evidence only."""
     if result is not None and result["status"] == "quota":
@@ -299,6 +314,8 @@ def classify(
         if model_exit == 0 or action["action"] in LANDING:
             return DONE, "landed"
         return UNKNOWN, f"{ended(model_exit)}; {action['action']} is not verified"
+    if api_failed:
+        return UNKNOWN, f"{ended(model_exit)} on a model API error; retry next tick"
     if verify_exit == 1 and action.get("pr") and action["action"] in LANDING:
         state = unchanged(action)
         if state:
@@ -326,7 +343,11 @@ def record(
         raise ValueError("cooldown: record does not match the checked action")
     seen_file.unlink()
     outcome, reason = classify(
-        action, model_result(result_file), model_exit, verify_exit
+        action,
+        model_result(result_file),
+        model_exit,
+        verify_exit,
+        api_error(result_file),
     )
     print(f"cooldown: {found}: {reason}", file=sys.stderr)
     if outcome not in (DONE, BLOCKED):
