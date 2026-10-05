@@ -17,6 +17,7 @@ import dashboards
 import delivery
 import fixtures
 import monitor
+import tickets
 
 
 def pages() -> dict[str, dashboards.Json]:
@@ -24,7 +25,12 @@ def pages() -> dict[str, dashboards.Json]:
 
 
 def panels(page: dashboards.Json) -> list[dashboards.Json]:
-    return page["panels"]
+    """Every panel, also those inside a collapsed row."""
+    return [
+        nested
+        for panel in page["panels"]
+        for nested in [panel, *panel.get("panels", [])]
+    ]
 
 
 def exprs(page: dashboards.Json) -> list[str]:
@@ -55,6 +61,7 @@ class DashboardTest(unittest.TestCase):
                 "overview.json": "epic-agents",
                 "agent.json": "epic-agent",
                 "delivery.json": "epic-delivery",
+                "tickets.json": "epic-tickets",
                 "claude.json": "epic-agent-claude",
                 "codex.json": "epic-agent-codex",
             },
@@ -103,7 +110,8 @@ class DashboardTest(unittest.TestCase):
     def test_links_use_kept_fields_and_link_fields_are_hidden(self) -> None:
         for name, page in pages().items():
             for panel in panels(page):
-                text = json.dumps(panel)
+                # A row's own links only, not those of the panels inside it.
+                text = json.dumps({k: v for k, v in panel.items() if k != "panels"})
                 keep = [
                     t["options"]["include"]["names"]
                     for t in panel.get("transformations", [])
@@ -228,6 +236,10 @@ class DashboardTest(unittest.TestCase):
                     monitor.github_metrics(state, now),
                     sink.render(),
                 )
+                texts += (
+                    fixtures.ticket_metrics(now),
+                    fixtures.ticket_health(now, True),
+                )
                 for text in texts:
                     published |= set(re.findall(r"^(epic_\w+)", text, re.M))
         # Health files written by the collection loops.
@@ -242,6 +254,74 @@ class DashboardTest(unittest.TestCase):
                 for metric in re.findall(r"\bepic_\w+", expr):
                     with self.subTest(page=name, metric=metric):
                         self.assertIn(metric, published)
+
+
+class TicketsPageTest(unittest.TestCase):
+    def page(self) -> dashboards.Json:
+        return pages()["tickets.json"]
+
+    def by_title(self, title: str) -> dashboards.Json:
+        [panel] = [p for p in panels(self.page()) if p["title"] == title]
+        return panel
+
+    def test_every_page_links_to_tickets(self) -> None:
+        for name in ("overview.json", "agent.json", "delivery.json", "tickets.json"):
+            with self.subTest(name=name):
+                urls = [link["url"] for link in pages()[name]["links"]]
+                self.assertIn("/d/epic-tickets", urls)
+
+    def test_check_picker_matches_the_collector(self) -> None:
+        [variable] = self.page()["templating"]["list"]
+        values = [part.split(" : ")[1] for part in variable["query"].split(", ")]
+        self.assertEqual(values, ["all", *(check.id for check in tickets.CHECKS)])
+        self.assertEqual(variable["current"]["value"], "all")
+        self.assertEqual(
+            [check[0] for check in dashboards.CHECKS],
+            [check.id for check in tickets.CHECKS],
+        )
+
+    def test_tiles_filter_the_table_and_keep_the_time_range(self) -> None:
+        for check, title, *_ in dashboards.CHECKS:
+            with self.subTest(check=check):
+                tile = self.by_title(title)
+                [link] = tile["fieldConfig"]["defaults"]["links"]
+                self.assertEqual(
+                    link["url"],
+                    f"/d/epic-tickets?var-check={check}&${{__url_time_range}}",
+                )
+                self.assertFalse(link["targetBlank"])
+                # Unknown (no count from the collector) is grey, never 0.
+                expr = tile["targets"][0]["expr"]
+                self.assertTrue(expr.endswith(" or on() vector(-1))"))
+                [mapping] = tile["fieldConfig"]["defaults"]["mappings"]
+                self.assertEqual(mapping["options"]["-1"]["text"], "unknown")
+        table = self.by_title("Tickets · $check")
+        self.assertIn('"check", "$check"', table["targets"][0]["expr"])
+
+    def test_board_is_a_collapsed_row_and_done_sorts_by_done_sort(self) -> None:
+        [row] = [p for p in self.page()["panels"] if p["type"] == "row"]
+        self.assertTrue(row["collapsed"])
+        self.assertEqual([p["title"] for p in row["panels"]], list(dashboards.STATUS))
+        done = row["panels"][-1]
+        sort = [t for t in done["transformations"] if t["id"] == "sortBy"]
+        self.assertEqual(
+            sort[0]["options"]["sort"], [{"field": "done_sort", "desc": True}]
+        )
+        conversions = done["transformations"][0]["options"]["conversions"]
+        self.assertIn(
+            {"targetField": "done_sort", "destinationType": "number"}, conversions
+        )
+
+    def test_counts_show_gaps_not_zero(self) -> None:
+        flow = self.by_title("Tickets per status")
+        self.assertFalse(flow["fieldConfig"]["defaults"]["custom"]["spanNulls"])
+        for p in panels(self.page()):
+            for t in p.get("targets", []):
+                if "epic_ticket" in t["expr"]:
+                    with self.subTest(panel=p["title"]):
+                        self.assertIn(dashboards.TICKETS, t["expr"])
+        self.assertEqual(self.page()["refresh"], "1m")
+        self.assertEqual(self.page()["time"]["from"], "now-14d")
 
 
 def title_of(panel: dashboards.Json) -> str:
@@ -294,11 +374,16 @@ class QuerySemanticsTest(unittest.TestCase):
     """Codex review of https://github.com/phaabe/live.moafunk.de/pull/479:
     the generated queries, evaluated by Prometheus's own test tool."""
 
-    def run_promtool(self, tests: list[dashboards.Json]) -> None:
+    def run_promtool(
+        self, tests: list[dashboards.Json], evaluation_interval: str = "1m"
+    ) -> None:
+        """`evaluation_interval` is also the default subquery step."""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "queries.test.yml"
             # JSON is valid YAML.
-            path.write_text(json.dumps({"evaluation_interval": "1m", "tests": tests}))
+            path.write_text(
+                json.dumps({"evaluation_interval": evaluation_interval, "tests": tests})
+            )
             result = subprocess.run(
                 ["docker", "run", "--rm", "-v", f"{directory}:/w:ro", "-w", "/w"]
                 + ["--entrypoint", "promtool", "prom/prometheus:v3.15.0"]
@@ -373,6 +458,267 @@ class QuerySemanticsTest(unittest.TestCase):
                     ],
                 }
             ]
+        )
+
+    def test_ticket_filter_and_unknown_tiles(self) -> None:
+        """The check picker filters the table; All shows every ticket. A tile
+        whose count is missing or stale shows -1 (unknown), never 0."""
+        table = panel_expr("tickets.json", "Tickets · $check")
+        tile = panel_expr("tickets.json", "Board Done · issue open")
+        series = [
+            {
+                "series": "epic_ticket_snapshot_timestamp_seconds",
+                "values": "0+60x5 300x20",
+            },
+            *(
+                {"series": f'epic_ticket_info{{issue="{n}"}}', "values": "1x25"}
+                for n in (1, 2, 3)
+            ),
+            {
+                "series": 'epic_ticket_check_member{issue="2",check="done_open"}',
+                "values": "1x25",
+            },
+            {
+                "series": 'epic_ticket_check_count{check="done_open"}',
+                "values": "1x25",
+            },
+            {"series": 'epic_tickets_by_status{status="Ready"}', "values": "2x25"},
+            {"series": 'epic_ticket_source_ok{source="board"}', "values": "1x25"},
+        ]
+        # The stat, not the Board column of the same name.
+        [ready] = [
+            p["targets"][0]["expr"]
+            for p in panels(pages()["tickets.json"])
+            if p["title"] == "Ready" and p["type"] == "stat"
+        ]
+
+        def rows(*numbers: int) -> list[dashboards.Json]:
+            return [
+                {"labels": f'epic_ticket_info{{issue="{n}"}}', "value": 1}
+                for n in numbers
+            ]
+
+        tests = [
+            {
+                "expr": table.replace("$check", "all"),
+                "eval_time": "4m",
+                "exp_samples": rows(1, 2, 3),
+            },
+            {
+                "expr": table.replace("$check", "done_open"),
+                "eval_time": "4m",
+                "exp_samples": rows(2),
+            },
+            {
+                "expr": table.replace("$check", "ready_claimable"),
+                "eval_time": "4m",
+                "exp_samples": [],
+            },
+            # Stale: no rows at all.
+            {
+                "expr": table.replace("$check", "all"),
+                "eval_time": "20m",
+                "exp_samples": [],
+            },
+            {
+                "expr": tile,
+                "eval_time": "4m",
+                "exp_samples": [
+                    {"labels": 'epic_ticket_check_count{check="done_open"}', "value": 1}
+                ],
+            },
+            {
+                "expr": tile,
+                "eval_time": "20m",
+                "exp_samples": [{"labels": "{}", "value": -1}],
+            },
+            {
+                "expr": panel_expr("tickets.json", "Ready · may be claimed"),
+                "eval_time": "4m",
+                "exp_samples": [{"labels": "{}", "value": -1}],
+            },
+            # A status stat keeps no old number once the data is stale.
+            {
+                "expr": as_range(ready),
+                "eval_time": "4m",
+                "exp_samples": [
+                    {"labels": 'epic_tickets_by_status{status="Ready"}', "value": 2}
+                ],
+            },
+            {"expr": as_range(ready), "eval_time": "20m", "exp_samples": []},
+        ]
+        self.run_promtool(
+            [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]
+        )
+
+    def test_tickets_hide_cached_data_after_a_failed_read(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/637:
+        a failed board read keeps the old, still young tickets.prom; a status
+        series that vanishes must not leave its old count in the stat."""
+        table = panel_expr("tickets.json", "Tickets · $check").replace("$check", "all")
+        tile = panel_expr("tickets.json", "Board Done · issue open")
+        flow = panel_expr("tickets.json", "Tickets per status")
+        [ready] = [
+            p["targets"][0]["expr"]
+            for p in panels(pages()["tickets.json"])
+            if p["title"] == "Ready" and p["type"] == "stat"
+        ]
+        fresh = {
+            "series": "epic_ticket_snapshot_timestamp_seconds",
+            "values": "0+60x25",
+        }
+        info = {"series": 'epic_ticket_info{issue="1"}', "values": "1x25"}
+        count = {
+            "series": 'epic_ticket_check_count{check="done_open"}',
+            "values": "0x25",
+        }
+        self.run_promtool(
+            [
+                {
+                    # The board read fails at 6 min; the old file stays young.
+                    "interval": "1m",
+                    "input_series": [
+                        fresh,
+                        info,
+                        count,
+                        {
+                            "series": 'epic_ticket_source_ok{source="board"}',
+                            "values": "1x5 0x20",
+                        },
+                        {
+                            "series": 'epic_tickets_by_status{status="Ready"}',
+                            "values": "2x25",
+                        },
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": table,
+                            "eval_time": "4m",
+                            "exp_samples": [
+                                {"labels": 'epic_ticket_info{issue="1"}', "value": 1}
+                            ],
+                        },
+                        {"expr": table, "eval_time": "10m", "exp_samples": []},
+                        {
+                            "expr": tile,
+                            "eval_time": "10m",
+                            "exp_samples": [{"labels": "{}", "value": -1}],
+                        },
+                        {"expr": flow, "eval_time": "10m", "exp_samples": []},
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "10m",
+                            "exp_samples": [],
+                        },
+                    ],
+                },
+                {
+                    # The Ready series vanishes at 6 min; all else stays good.
+                    "interval": "1m",
+                    "input_series": [
+                        fresh,
+                        {
+                            "series": 'epic_ticket_source_ok{source="board"}',
+                            "values": "1x25",
+                        },
+                        {
+                            "series": 'epic_tickets_by_status{status="Ready"}',
+                            "values": "2x5",
+                        },
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "4m",
+                            "exp_samples": [
+                                {
+                                    "labels": 'epic_tickets_by_status{status="Ready"}',
+                                    "value": 2,
+                                }
+                            ],
+                        },
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "20m",
+                            "exp_samples": [],
+                        },
+                    ],
+                },
+            ]
+        )
+
+    def test_status_stats_drop_cached_counts_at_the_deployed_interval(self) -> None:
+        """Codex review round 2 of https://github.com/phaabe/live.moafunk.de/pull/637:
+        with Prometheus's 5 s evaluation interval (the default subquery
+        step), no older good sample may keep a status count on screen."""
+        [ready] = [
+            p["targets"][0]["expr"]
+            for p in panels(pages()["tickets.json"])
+            if p["title"] == "Ready" and p["type"] == "stat"
+        ]
+        count = {
+            "labels": 'epic_tickets_by_status{status="Ready"}',
+            "value": 2,
+        }
+        status = {"series": 'epic_tickets_by_status{status="Ready"}', "values": "2x400"}
+        self.run_promtool(
+            [
+                {
+                    # The board read fails at 10 min; the snapshot stays fresh.
+                    "interval": "5s",
+                    "input_series": [
+                        {
+                            "series": "epic_ticket_snapshot_timestamp_seconds",
+                            "values": "0+5x400",
+                        },
+                        {
+                            "series": 'epic_ticket_source_ok{source="board"}',
+                            "values": "1x119 0x280",
+                        },
+                        status,
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "9m55s",
+                            "exp_samples": [count],
+                        },
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "10m5s",
+                            "exp_samples": [],
+                        },
+                    ],
+                },
+                {
+                    # The collector stops at 10 min: 5 min later the data expires.
+                    "interval": "5s",
+                    "input_series": [
+                        {
+                            "series": "epic_ticket_snapshot_timestamp_seconds",
+                            "values": "0+5x120 600x280",
+                        },
+                        {
+                            "series": 'epic_ticket_source_ok{source="board"}',
+                            "values": "1x400",
+                        },
+                        status,
+                    ],
+                    "promql_expr_test": [
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "14m55s",
+                            "exp_samples": [count],
+                        },
+                        {
+                            "expr": as_range(ready),
+                            "eval_time": "15m5s",
+                            "exp_samples": [],
+                        },
+                    ],
+                },
+            ],
+            evaluation_interval="5s",
         )
 
     def test_medians_show_nothing_once_delivery_data_is_stale(self) -> None:

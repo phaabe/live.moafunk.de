@@ -28,6 +28,7 @@ import agents
 import delivery
 import monitor
 import tick_events
+import tickets
 import ticks
 
 REPO_URL = monitor.REPO_URL
@@ -488,6 +489,7 @@ def github_snapshot() -> monitor.Json:
                 "title": f"Fixture task {number}",
                 "body": body,
                 "labels": [],
+                "state": "open",
             },
         }
 
@@ -530,6 +532,63 @@ def github_snapshot() -> monitor.Json:
         "merged_prs": [],
         "batch_order": [],
     }
+
+
+def ticket_state(now: float) -> monitor.Json:
+    """The GitHub snapshot plus tickets for every Tickets check and status."""
+    state = github_snapshot()
+
+    def extra(number: int, executor: str, status: str, **content: object):
+        return {
+            "executor": executor,
+            "status": status,
+            "area": "Coordination",
+            "level": "Task",
+            "readiness": f"**Ready:** Start after {REPO_URL}/issues/301."
+            if status == "Ready"
+            else "",
+            "content": {
+                "type": "Issue",
+                "number": number,
+                "url": f"{REPO_URL}/issues/{number}",
+                "title": f"Fixture ticket {number}",
+                "body": "Fixture body",
+                "state": "open",
+                **content,
+            },
+        }
+
+    state["items"] = [
+        *state["items"],
+        extra(305, "Claude", "Refinement"),
+        extra(306, "Codex", "Done", state="closed", closed_at=iso(now - 3 * 3600)),
+        extra(307, "Claude", "In review"),
+        extra(308, "Claude", "Ready"),
+    ]
+    return state
+
+
+def ticket_metrics(now: float) -> str:
+    """tickets.prom: 308 needs an undeclared ticket, 305 has no body review,
+    303 is Done on the board with its issue open."""
+    state = monitor.epic_view(ticket_state(now))
+    request = tickets.wanted(state, now)
+    deps = {number: [] for number in request["ready"]}
+    deps[308] = [f"{REPO_URL}/issues/301", f"{REPO_URL}/issues/309"]
+    reviews: dict[int, monitor.Json | None] = {
+        number: None for number in request["refinement"]
+    }
+    metrics = monitor.Metrics()
+    # No focus file: the preview never reads the real one.
+    claims = tickets.claimable(state, Path("/nonexistent/epic-focus"))
+    tickets.ticket_metrics(metrics, state, tickets.Extra(deps, reviews), claims, now)
+    return metrics.render()
+
+
+def ticket_health(now: float, ok: bool) -> str:
+    metrics = monitor.Metrics()
+    tickets.source_metrics(metrics, dict.fromkeys(tickets.SOURCES, ok), now)
+    return metrics.render()
 
 
 def delivery_data(now: float) -> monitor.Json:
@@ -584,6 +643,8 @@ def publish_remote(output: Path, now: float, stale: bool) -> None:
     health.add("github_collection_success", int(not stale))
     health.add("github_attempt_timestamp_seconds", now)
     monitor.atomic_write(output / "github-health.prom", health.render())
+    monitor.atomic_write(output / "tickets.prom", ticket_metrics(at))
+    monitor.atomic_write(output / "tickets-health.prom", ticket_health(now, not stale))
 
 
 REAL_RUNTIME = Path(__file__).resolve().parents[2] / "tools/agent-monitoring/runtime"
