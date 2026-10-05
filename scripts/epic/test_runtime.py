@@ -466,8 +466,12 @@ class Ticks:
         self.named[tick_id] = proc
         return proc
 
-    def admitted(self, tick_id: str, timeout: float = 10) -> bool:
-        """The tick wrote its marker file; False as soon as it exited without."""
+    def admitted(self, tick_id: str, timeout: float = 60) -> bool:
+        """The tick wrote its marker file; False as soon as it exited without.
+
+        It returns as soon as either happens, so the long limit only matters
+        on a loaded machine, where starting bash and Python can take seconds.
+        """
         ok = self.case.tmp / f"{tick_id}.ok"
         proc = self.named.get(tick_id)
         deadline = time.monotonic() + timeout
