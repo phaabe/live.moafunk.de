@@ -512,6 +512,28 @@ class SlotsTest(unittest.TestCase):
         self.assertIsNone(slots.folder)
         self.assertIn("machine-wide slots off", out.getvalue())
 
+    @unittest.skipIf(os.geteuid() == 0, "root ignores folder permissions")
+    def test_an_unwritable_folder_turns_slots_off_loudly(self) -> None:
+        # Regression: mkdir passes on an existing folder that denies new files.
+        self.folder.mkdir(mode=0o500)
+        self.addCleanup(self.folder.chmod, 0o700)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            slots = self.slots(1)
+        self.assertIsNone(slots.folder)
+        self.assertIn("machine-wide slots off", out.getvalue())
+
+    def test_a_slot_file_error_runs_the_part_without_a_slot(self) -> None:
+        slots = self.slots(2)
+        out = io.StringIO()
+        denied = PermissionError(13, "denied")
+        with contextlib.redirect_stdout(out):
+            with patch.object(run_tests, "open", side_effect=denied, create=True):
+                with slots.slot(lambda: False) as a, slots.slot(lambda: False) as b:
+                    self.assertTrue(a and b)
+        self.assertIsNone(slots.folder)
+        self.assertEqual(out.getvalue().count("machine-wide slots off"), 1)
+
     def test_the_user_temp_dir_prefers_the_os_answer_over_tmpdir(self) -> None:
         with patch.dict(os.environ, {"TMPDIR": "/elsewhere"}):
             with patch.object(run_tests.os, "confstr", return_value="/per-user/T/"):
@@ -582,6 +604,53 @@ class SlotRunTest(FixtureSuite):
         threading.Timer(3, held.close).start()  # frees the slot after 3 s
         out = self.run_tests("--part-timeout", "2", env=self.slot_env())
         self.assertEqual(out.returncode, 0, out.stdout)
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores folder permissions")
+    def test_an_unwritable_slot_folder_still_runs_every_test(self) -> None:
+        self.write("test_fast.py", plain_module(1, "pass"))
+        (self.root / "slots").mkdir(mode=0o500)
+        self.addCleanup((self.root / "slots").chmod, 0o700)
+        out = self.run_tests(env=self.slot_env())
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertIn("machine-wide slots off", out.stdout)
+        self.assertIn("Ran 1 of 1 tests", out.stdout)
+
+    def test_ctrl_c_stops_a_part_that_waits_for_a_slot(self) -> None:
+        # Regression: the executor joined the waiting part before the run
+        # stopped, so Ctrl-C hung while another run held every slot.
+        self.write("test_fast.py", plain_module(1, "pass"))
+        (self.root / "slots").mkdir()
+        held = open(self.root / "slots" / "slot-0.lock", "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        proc = subprocess.Popen(
+            [sys.executable, str(RUNNER), str(self.top), "-j", "2"],
+            env=self.slot_env(),
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            # A parent that ignores SIGINT would pass that on; Ctrl-C needs it.
+            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
+        )
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        assert proc.stdout is not None
+        killer = threading.Timer(30, proc.kill)  # readline must not hang
+        killer.start()
+        first = proc.stdout.readline()
+        killer.cancel()
+        self.assertIn("at most 1 parts machine-wide", first)
+        time.sleep(0.5)  # the part now waits for slot 0
+        start = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+        try:
+            output, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail("the runner hung after SIGINT while a part waited")
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertNotEqual(proc.returncode, 0, output)
+        self.assertIn("KeyboardInterrupt", output)
 
 
 class IsolationTest(FixtureSuite):

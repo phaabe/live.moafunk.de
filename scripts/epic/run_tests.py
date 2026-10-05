@@ -52,7 +52,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 ISOLATED_ENV = Path(__file__).resolve().parent / "isolated_env.py"
 SPLIT_ABOVE = 20
@@ -245,44 +245,70 @@ class Slots:
     def __init__(self, folder: Path | None, count: int) -> None:
         self.folder = folder  # None: no slots (nested run, or turned off)
         self.count = count
+        self.lock = threading.Lock()
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Slots:
         values = os.environ if env is None else env
         if values.get(NESTED_ENV):
             return cls(None, 0)
-        count = int(values.get(SLOTS_ENV) or os.cpu_count() or 1)
+        count = max(int(values.get(SLOTS_ENV) or os.cpu_count() or 1), 1)
         folder = Path(
             values.get(SLOTS_DIR_ENV) or Path(user_temp_dir()) / "epic-test-slots"
         )
         try:
             folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+            for i in range(count):  # an existing folder may deny new files
+                open(folder / f"slot-{i}.lock", "a").close()
         except OSError as error:
             print(f"run_tests: machine-wide slots off: {error}", flush=True)
             return cls(None, 0)
-        return cls(folder, max(count, 1))
+        return cls(folder, count)
+
+    def turn_off(self, error: OSError) -> None:
+        """Run the rest without slots, with one printed line."""
+        with self.lock:
+            if self.folder is None:
+                return
+            self.folder = None
+        print(f"run_tests: machine-wide slots off: {error}", flush=True)
+
+    def take(self, folder: Path) -> IO[str] | None:
+        """A free slot's locked file, or None when every slot is held."""
+        for i in range(self.count):
+            held = open(folder / f"slot-{i}.lock", "a")
+            try:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                held.close()
+                continue
+            except OSError:
+                held.close()
+                raise
+            return held
+        return None
 
     @contextmanager
     def slot(self, stopped: Callable[[], bool]) -> Iterator[bool]:
-        """Hold one slot; False when the run stopped while this part waited."""
-        if self.folder is None:
-            yield True
-            return
-        while not stopped():
-            for i in range(self.count):
-                held = open(self.folder / f"slot-{i}.lock", "a")
-                try:
-                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    held.close()
-                    continue
-                try:
-                    yield True
-                finally:
-                    held.close()  # frees the lock
+        """Hold one slot; False when the run stopped while this part waited.
+        A slot file that cannot be opened or locked turns slots off."""
+        held = None
+        while held is None and (folder := self.folder) is not None:
+            if stopped():
+                yield False
                 return
-            time.sleep(SLOT_POLL)
-        yield False
+            try:
+                held = self.take(folder)
+            except OSError as error:
+                self.turn_off(error)
+                break
+            if held is None:
+                time.sleep(SLOT_POLL)
+        try:
+            yield True
+        finally:
+            if held is not None:
+                held.close()  # frees the lock
 
 
 def run_part(
@@ -445,11 +471,12 @@ def _run(
         slots = Slots.from_env()
         if slots.folder is not None:
             print(
-                f"run_tests: at most {slots.count} parts machine-wide ({slots.folder})"
+                f"run_tests: at most {slots.count} parts machine-wide ({slots.folder})",
+                flush=True,
             )
         outcomes: list[Outcome] = []
-        try:
-            with ThreadPoolExecutor(max_workers=jobs) as executor:
+        with ThreadPoolExecutor(max_workers=jobs) as executor:
+            try:
                 futures = [
                     executor.submit(
                         run_part, pool, top, part, folder, n, timeout, slots
@@ -465,8 +492,10 @@ def _run(
                         f"{out.seconds:6.1f} s  {out.part.label}",
                         flush=True,
                     )
-        finally:
-            pool.stop()
+            finally:
+                # Before the executor joins its workers: on Ctrl-C a part that
+                # runs or waits for a slot must see the flag, or the join hangs.
+                pool.stop()
         problems = check(outcomes, listed)
         ok = summarize(outcomes, problems, time.monotonic() - start, jobs, len(listed))
     return 0 if ok else 1
