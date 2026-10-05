@@ -575,7 +575,10 @@ class CodexInterfaceTest(unittest.TestCase):
             self.assertEqual(github_quota.main(), DEFERRED)
         self.assertIn(first["retry_at"], out.getvalue())
         self.assertIn("writer pid 111 ", out.getvalue())
-        self.assertNotIn("222", out.getvalue())
+        # Match the writer field, not bare digits: the checkout path in the
+        # output can contain any digits (for example a commit SHA).
+        self.assertNotIn("writer pid 222", out.getvalue())
+        self.assertNotIn(second["retry_at"], out.getvalue())
 
     def test_bad_file_exits_2(self) -> None:
         (self.state / github_quota.WAIT_FILE).write_text("not json")
