@@ -323,6 +323,19 @@ def ticket_metrics(
         )
 
 
+def declared_dependencies(item: Json) -> set[str]:
+    """What the readiness comments' "Start after" lines name: the runner's
+    leaves and ticket URLs, plus issues in other repositories. Blocked-by
+    issues can live in other repositories; the runner rules stay as they are.
+    """
+    foreign = {
+        url
+        for clause in epic.START_AFTER.findall(item.get("readiness") or "")
+        for url in DEPENDENCY_URL.findall(clause)
+    }
+    return epic.start_after(item) | foreign
+
+
 def ticket_note(
     ticket: Ticket,
     extra: Extra,
@@ -337,7 +350,7 @@ def ticket_note(
     checks: list[str] = []
     note = ""
     if status == "Ready":
-        declared = epic.start_after(ticket.item)
+        declared = declared_dependencies(ticket.item)
         open_deps = None if extra.deps is None else extra.deps.get(number)
         hidden = sorted(dep for dep in open_deps or [] if dep not in declared)
         if hidden:

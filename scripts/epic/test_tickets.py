@@ -234,6 +234,30 @@ class ChecksTest(unittest.TestCase):
         )
         self.assertEqual(info(sink, 1)["note"], "May be claimed")
 
+    def test_dependencies_in_other_repositories_can_be_declared(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/633."""
+        other = "https://github.com/phaabe/other-project/issues/9"
+        unnamed = "https://github.com/phaabe/other-project/issues/10"
+        state = snapshot(
+            items=[
+                ticket(1, "Ready", readiness=f"**Ready:** Start after {other}."),
+                ticket(2, "Ready", readiness=f"**Ready:** Start after {other}."),
+            ]
+        )
+        sink = render(state, tickets.Extra({1: [other], 2: [other, unnamed]}, {}))
+        self.assertIsNone(
+            sink.value("ticket_check_member", issue="1", check="ready_undeclared")
+        )
+        self.assertEqual(info(sink, 1)["note"], f"Start after {other}")
+        self.assertEqual(
+            sink.value("ticket_check_member", issue="2", check="ready_undeclared"), 1
+        )
+        self.assertEqual(
+            info(sink, 2)["note"], f"Needs {unnamed} (open) · not declared"
+        )
+        # The runner's own rule is unchanged: it reads only this repository.
+        self.assertEqual(tickets.epic.start_after(state["items"][0]), set())
+
     def test_start_after_note_lists_dependencies(self) -> None:
         state = snapshot(
             items=[
