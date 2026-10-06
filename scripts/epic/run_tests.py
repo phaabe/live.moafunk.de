@@ -30,6 +30,15 @@ tests of this runner) takes no slot, so it never waits for its own parent: it
 sees ISOLATED_EPIC_TESTS, which isolated_env.py sets for every test process.
 A slot folder that cannot be used turns slots off with one printed line.
 
+Timing: a part's slot wait is measured apart from its run time; both show in
+the progress line and the summary. A failed part (a timeout, a red test, no
+report) gets one `diagnostics` line after its output: its deadline, the worker
+count, the slot state and the machine load and scheduling right after it
+ended (macOS `background`: the darwin background policy, set by launchd
+ProcessType=Background). A value that cannot be read is null; the line never
+holds environment contents or command arguments, and a failed lookup never
+hides the part's own failure.
+
 Standard library only. Temporary files stay under TMPDIR.
 """
 
@@ -68,6 +77,7 @@ SLOTS_DIR_ENV = "EPIC_TEST_SLOTS_DIR"
 NESTED_ENV = "ISOLATED_EPIC_TESTS"
 SLOT_POLL = 0.1
 DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR
+PRIO_DARWIN_PROCESS = 4  # getpriority(): non-zero under the background policy
 
 
 @dataclass
@@ -101,6 +111,10 @@ class Outcome:
     exit: int | None
     output: str
     report: dict[str, Any] | None
+    waited: float = 0.0  # seconds spent waiting for a machine-wide slot
+    timed_out: bool = False
+    # scheduling() right after a part that did not exit 0
+    evidence: dict[str, Any] | None = None
     problems: list[str] = field(default_factory=list)
 
     @property
@@ -242,16 +256,17 @@ def user_temp_dir() -> str:
 class Slots:
     """Machine-wide part slots, shared by every run (see the module doc)."""
 
-    def __init__(self, folder: Path | None, count: int) -> None:
+    def __init__(self, folder: Path | None, count: int, off: str | None = None) -> None:
         self.folder = folder  # None: no slots (nested run, or turned off)
         self.count = count
+        self.off = off  # why there are no slots: "nested" or "unusable"
         self.lock = threading.Lock()
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Slots:
         values = os.environ if env is None else env
         if values.get(NESTED_ENV):
-            return cls(None, 0)
+            return cls(None, 0, "nested")
         count = max(int(values.get(SLOTS_ENV) or os.cpu_count() or 1), 1)
         folder = Path(
             values.get(SLOTS_DIR_ENV) or Path(user_temp_dir()) / "epic-test-slots"
@@ -262,7 +277,7 @@ class Slots:
                 open(folder / f"slot-{i}.lock", "a").close()
         except OSError as error:
             print(f"run_tests: machine-wide slots off: {error}", flush=True)
-            return cls(None, 0)
+            return cls(None, 0, "unusable")
         return cls(folder, count)
 
     def turn_off(self, error: OSError) -> None:
@@ -271,6 +286,7 @@ class Slots:
             if self.folder is None:
                 return
             self.folder = None
+            self.off = "unusable"
         print(f"run_tests: machine-wide slots off: {error}", flush=True)
 
     def take(self, folder: Path) -> IO[str] | None:
@@ -329,7 +345,8 @@ def run_part(
         top,
         *part.args(),
     ]
-    start = time.monotonic()
+    asked = start = time.monotonic()
+    got = False
     try:
         with (slots or Slots(None, 0)).slot(lambda: pool.stopped) as got:
             start = time.monotonic()
@@ -345,7 +362,72 @@ def run_part(
         report = json.loads(report_file.read_text())
     except (OSError, ValueError):
         pass
-    return Outcome(part, seconds, code, output, report)
+    out = Outcome(part, seconds, code, output, report, waited=start - asked)
+    # Pool.run returns None without a code only for a timeout or a stop.
+    out.timed_out = (
+        bool(got) and code is None and not pool.stopped and seconds >= timeout
+    )
+    if code != 0:
+        out.evidence = scheduling()
+    return out
+
+
+def scheduling() -> dict[str, Any]:
+    """Machine load and this runner's scheduling; None for what cannot be read.
+
+    Only numbers and flags: no environment, no process arguments."""
+    found: dict[str, Any] = {
+        "load": None,
+        "cpus": os.cpu_count(),
+        "nice": None,
+        "background": None,
+    }
+    try:
+        found["load"] = [round(value, 2) for value in os.getloadavg()]
+    except OSError:
+        pass
+    try:
+        found["nice"] = os.getpriority(os.PRIO_PROCESS, 0)
+    except OSError:
+        pass
+    if sys.platform == "darwin":
+        try:
+            found["background"] = os.getpriority(PRIO_DARWIN_PROCESS, 0) != 0
+        except OSError:
+            pass
+    return found
+
+
+def diagnostics(
+    out: Outcome, timeout: float, jobs: int, slots: Slots | None
+) -> dict[str, Any]:
+    """The bounded facts of one failed part, for its `diagnostics` line."""
+    return {
+        "part": out.part.label,
+        "tests": len(out.part.ids),
+        "timed_out": out.timed_out,
+        "deadline": timeout,
+        "ran": round(out.seconds, 1),
+        "slot_wait": round(out.waited, 1),
+        "jobs": jobs,
+        "slots": None if slots is None or slots.folder is None else slots.count,
+        "slots_off": None if slots is None else slots.off,
+        "slot_dir": None
+        if slots is None or slots.folder is None
+        else str(slots.folder),
+        **(out.evidence or scheduling()),
+    }
+
+
+def print_diagnostics(
+    out: Outcome, timeout: float, jobs: int, slots: Slots | None
+) -> None:
+    """One line; a lookup that fails prints that instead, never more."""
+    try:
+        line = json.dumps(diagnostics(out, timeout, jobs, slots), sort_keys=True)
+    except Exception as error:  # noqa: BLE001 - never hide the part's failure
+        line = f"unavailable ({type(error).__name__})"
+    print(f"diagnostics {out.part.label}: {line}")
 
 
 def check(outcomes: list[Outcome], listed: list[str]) -> list[str]:
@@ -392,7 +474,13 @@ def list_tests(pool: Pool, top: str, folder: Path, timeout: float) -> dict[str, 
 
 
 def summarize(
-    outcomes: list[Outcome], problems: list[str], wall: float, jobs: int, total: int
+    outcomes: list[Outcome],
+    problems: list[str],
+    wall: float,
+    jobs: int,
+    total: int,
+    timeout: float = PART_TIMEOUT,
+    slots: Slots | None = None,
 ) -> bool:
     failed = [o for o in outcomes if o.failed]
     for out in failed:
@@ -408,11 +496,19 @@ def summarize(
         if len(out.output) > OUTPUT_TAIL:
             print(f"[last {OUTPUT_TAIL} characters of the output]")
         print(tail.rstrip())
+        # After the part's own output, so it never replaces the failure.
+        print_diagnostics(out, timeout, jobs, slots)
     for problem in problems:
         print(f"\nRUN PROBLEM: {problem}")
     print(f"\nSlowest {SLOWEST} parts:")
     for out in sorted(outcomes, key=lambda o: -o.seconds)[:SLOWEST]:
         print(f"  {out.seconds:7.1f} s  {out.part.label} ({len(out.part.ids)} tests)")
+    if outcomes:
+        longest = max(outcomes, key=lambda o: o.waited)
+        print(
+            f"Slot wait: {sum(o.waited for o in outcomes):.1f} s in total, longest "
+            f"{longest.waited:.1f} s ({longest.part.label})"
+        )
     ran = sum(len(o.report["started"]) for o in outcomes if o.report)
     ok = not failed and not problems
     status = "OK" if ok else f"FAILED ({len(failed)} parts failed)"
@@ -487,9 +583,10 @@ def _run(
                     out = future.result()
                     outcomes.append(out)
                     state = "ok" if out.exit == 0 else f"exit {out.exit}"
+                    waited = f" (slot wait {out.waited:.1f} s)" if out.waited >= 0.1 else ""
                     print(
                         f"[{len(outcomes)}/{len(parts)}] {state:>8} "
-                        f"{out.seconds:6.1f} s  {out.part.label}",
+                        f"{out.seconds:6.1f} s  {out.part.label}{waited}",
                         flush=True,
                     )
             finally:
@@ -497,7 +594,15 @@ def _run(
                 # runs or waits for a slot must see the flag, or the join hangs.
                 pool.stop()
         problems = check(outcomes, listed)
-        ok = summarize(outcomes, problems, time.monotonic() - start, jobs, len(listed))
+        ok = summarize(
+            outcomes,
+            problems,
+            time.monotonic() - start,
+            jobs,
+            len(listed),
+            timeout,
+            slots,
+        )
     return 0 if ok else 1
 
 

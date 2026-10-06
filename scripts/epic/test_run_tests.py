@@ -273,6 +273,55 @@ class RunTest(FixtureSuite):
         self.assertEqual(out.returncode, 1, out.stdout)
         self.assertIn("part timed out after 3 s", out.stdout)
 
+    def diagnostics_of(self, stdout: str, label: str) -> dict[str, Any]:
+        prefix = f"diagnostics {label}: "
+        (line,) = [x for x in stdout.splitlines() if x.startswith(prefix)]
+        return json.loads(line[len(prefix) :])
+
+    def test_a_timeout_prints_its_diagnostics_after_the_failure(self) -> None:
+        self.write("test_hangs.py", plain_module(1, "import time; time.sleep(60)"))
+        out = self.run_tests(
+            "--part-timeout", "2", env=self.env(RUN_TESTS_CANARY="canary-secret-value")
+        )
+        self.assertEqual(out.returncode, 1, out.stdout)
+        found = self.diagnostics_of(out.stdout, "test_hangs.py")
+        self.assertTrue(found["timed_out"])
+        self.assertEqual(found["deadline"], 2.0)
+        self.assertEqual(found["jobs"], 4)
+        self.assertEqual(found["tests"], 1)
+        self.assertGreaterEqual(found["ran"], 2.0)
+        # This fixture run is nested in a test: no slots, and the line says why.
+        self.assertIsNone(found["slots"])
+        self.assertEqual(found["slots_off"], "nested")
+        for key in ("load", "cpus", "nice", "background", "slot_wait", "slot_dir"):
+            self.assertIn(key, found)
+        # The failure itself stays first and whole.
+        failed = out.stdout.index("FAILED part test_hangs.py")
+        self.assertLess(failed, out.stdout.index("part timed out after 2 s"))
+        self.assertLess(
+            out.stdout.index("part timed out after 2 s"),
+            out.stdout.index("diagnostics test_hangs.py"),
+        )
+        line = out.stdout[out.stdout.index("diagnostics test_hangs.py") :].splitlines()[
+            0
+        ]
+        self.assertNotIn("canary-secret-value", line)
+        self.assertNotIn("isolated_env", line)
+        self.assertNotIn("-k", line)
+
+    def test_a_red_test_gets_diagnostics_without_a_timeout(self) -> None:
+        self.write("test_red.py", plain_module(1, "self.fail('red')"))
+        out = self.run_tests()
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertFalse(self.diagnostics_of(out.stdout, "test_red.py")["timed_out"])
+
+    def test_a_green_run_prints_no_diagnostics(self) -> None:
+        self.write("test_green.py", plain_module(2))
+        out = self.run_tests()
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertNotIn("diagnostics ", out.stdout)
+        self.assertIn("Slot wait: 0.0 s in total", out.stdout)
+
     def start_leaky_child(self) -> Path:
         """A test that starts a child which inherits stdout, then hangs."""
         pid_file = self.root / "child.pid"
@@ -604,6 +653,10 @@ class SlotRunTest(FixtureSuite):
         threading.Timer(3, held.close).start()  # frees the slot after 3 s
         out = self.run_tests("--part-timeout", "2", env=self.slot_env())
         self.assertEqual(out.returncode, 0, out.stdout)
+        # The wait is measured apart from the run time.
+        self.assertIn("(slot wait ", out.stdout)
+        total = out.stdout.split("Slot wait: ", 1)[1].split(" s in total", 1)[0]
+        self.assertGreaterEqual(float(total), 2.0)
 
     @unittest.skipIf(os.geteuid() == 0, "root ignores folder permissions")
     def test_an_unwritable_slot_folder_still_runs_every_test(self) -> None:
@@ -651,6 +704,41 @@ class SlotRunTest(FixtureSuite):
         self.assertLess(time.monotonic() - start, 10)
         self.assertNotEqual(proc.returncode, 0, output)
         self.assertIn("KeyboardInterrupt", output)
+
+
+class DiagnosticsTest(unittest.TestCase):
+    def outcome(self) -> run_tests.Outcome:
+        part = run_tests.Part("test_m.py", ["test_m.C.test_a"], split=False)
+        return run_tests.Outcome(part, 1.25, None, "", None, waited=0.5)
+
+    def test_unreadable_metrics_are_null(self) -> None:
+        with (
+            patch.object(run_tests.os, "getloadavg", side_effect=OSError("no")),
+            patch.object(run_tests.os, "getpriority", side_effect=OSError("no")),
+        ):
+            found = run_tests.scheduling()
+        self.assertIsNone(found["load"])
+        self.assertIsNone(found["nice"])
+        self.assertIsNone(found["background"])
+
+    def test_slots_in_use_name_their_count_and_folder(self) -> None:
+        slots = run_tests.Slots(Path("/tmp/epic-test-slots"), 3)
+        found = run_tests.diagnostics(self.outcome(), 9.0, 2, slots)
+        self.assertEqual(found["slots"], 3)
+        self.assertIsNone(found["slots_off"])
+        self.assertEqual(found["slot_dir"], "/tmp/epic-test-slots")
+        self.assertEqual((found["ran"], found["slot_wait"]), (1.2, 0.5))
+
+    def test_a_failed_lookup_prints_one_unavailable_line(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch.object(run_tests, "diagnostics", side_effect=RuntimeError("x")),
+            contextlib.redirect_stdout(stdout),
+        ):
+            run_tests.print_diagnostics(self.outcome(), 9.0, 2, None)
+        self.assertEqual(
+            stdout.getvalue(), "diagnostics test_m.py: unavailable (RuntimeError)\n"
+        )
 
 
 class IsolationTest(FixtureSuite):
