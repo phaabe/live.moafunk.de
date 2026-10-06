@@ -613,6 +613,8 @@ class EventLedger(LogLedger):
                 "tokens": None,
             }
             return None
+        if event.get("event") == "env-block":
+            return None  # a note inside the tick (tick_events.env_block)
         if event.get("event") != "finish":
             return self.reject()
         if state["open"] is None or state["open"]["tick"] != tick:
