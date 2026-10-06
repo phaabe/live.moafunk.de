@@ -691,7 +691,7 @@ fi
 # Codex may inherit only core variables in tool commands. Forward these paths
 # explicitly without changing the configured policy for other variables.
 model_environment=()
-model_variables=(EPIC_STATE_DIR EPIC_QUOTA_DIR EPIC_ACTION_FILE EPIC_TRUSTED_ROOT
+model_variables=(TMPDIR EPIC_STATE_DIR EPIC_QUOTA_DIR EPIC_ACTION_FILE EPIC_TRUSTED_ROOT
     EPIC_RUNTIME_ROOT EPIC_RUNTIME_REVISION EPIC_RUNTIME_MANIFEST EPIC_RUNTIME_HOME
     EPIC_RUNTIME_LEGACY EPIC_CODEX_PROTECTED_CONFIG CODEX_HOME EPIC_LOCK_DIR)
 if [[ "$action" == review ]]; then
@@ -708,10 +708,10 @@ fi
 for variable in "${model_variables[@]}"; do
     value=$("$python_bin" -I -c '
 import json, os, sys
-value = os.environ.get(sys.argv[1])
+value = sys.argv[2] if sys.argv[1] == "TMPDIR" else os.environ.get(sys.argv[1])
 if value is not None:
     print(json.dumps(value, ensure_ascii=False))
-' "$variable")
+' "$variable" "$tick_tmp")
     [[ -n "$value" ]] || continue
     model_environment+=(-c "shell_environment_policy.set.${variable}=${value}")
 done

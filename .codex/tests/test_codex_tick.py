@@ -310,6 +310,7 @@ else:
             "    f.write(json.dumps({'args': sys.argv[1:], 'prompt': sys.stdin.read(), "
             "'action_file': str(action_file), 'action': json.loads(action_file.read_text()), "
             "'body_dir': os.environ.get('EPIC_BODY_DIR'), "
+            "'host_tmpdir': os.environ.get('TMPDIR'), "
             "'body_dir_mode': (os.stat(os.environ['EPIC_BODY_DIR']).st_mode & 0o777 "
             "if os.environ.get('EPIC_BODY_DIR') else None), "
             "'body_dir_inode': (lambda s: f'{s.st_dev}:{s.st_ino}')(os.stat(os.environ['EPIC_BODY_DIR'])) "
@@ -2037,6 +2038,36 @@ else:
 
     def test_tool_child_receives_agent_paths_with_core_inheritance(self) -> None:
         self.tool_child_environment()
+
+    def test_model_tmpdir_is_granted_and_removed_without_changing_host(self) -> None:
+        host_tmp = self.root / "host temp"
+        host_tmp.mkdir()
+        self.env["TMPDIR"] = str(host_tmp)
+        probe = self.root / "temp-probe.py"
+        probe.write_text(
+            "import json, os, tempfile\n"
+            "with tempfile.NamedTemporaryFile() as temporary:\n"
+            "    print(json.dumps({'tmpdir': os.environ['TMPDIR'], "
+            "'file': temporary.name}))\n"
+        )
+        output = self.root / "temp-result.json"
+        self.env["TEST_MODEL_ENV_PROBE"] = str(probe)
+        self.env["TEST_MODEL_ENV_RESULT"] = str(output)
+
+        result = self.run_tick()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = json.loads(self.calls.read_text())
+        granted = Path(call["args"][call["args"].index("--add-dir") + 1])
+        self.assertEqual(granted.parent, self.root)
+        self.assertTrue(granted.name.startswith("codex-tick-"))
+        self.assertEqual(call["tool_env"]["TMPDIR"], str(granted))
+        seen = json.loads(output.read_text())
+        self.assertEqual(seen["tmpdir"], str(granted))
+        self.assertEqual(Path(seen["file"]).parent, granted)
+        self.assertEqual(call["host_tmpdir"], str(host_tmp))
+        self.assertTrue(host_tmp.is_dir())
+        self.assertFalse(granted.exists())
 
     def test_tool_child_keeps_shared_reader_checks_enabled(self) -> None:
         self.env.update(
