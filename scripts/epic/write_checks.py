@@ -65,7 +65,9 @@ PROMOTION_MARKER = "runtime-promotion.json"  # runtime.MARKER
 AGENTS = ("Claude", "Codex")
 PUSH_ACTIONS = {"fix", "fix-checks", "resolve-conflict", "continue", "claim"}
 CREATE_ACTIONS = {"continue", "claim"}
-BOARD_ACTIONS = {"claim", "continue"}
+BOARD_ACTIONS = {"claim", "continue", "refine", "set-ready"}
+# Refinement may change the board only before the work starts.
+REFINEMENT_STATUSES = {None, "", "Backlog", "Todo", "Ready"}
 VERDICT_LINE = re.compile(
     r"^Review: (APPROVED|CHANGES REQUESTED) by (Claude|Codex) at ([0-9a-f]{40})\s*$",
     re.MULTILINE,
@@ -98,7 +100,7 @@ GH_VALUE_FLAGS = {
     "-c", "--comment", "-X", "--method", "-f", "--raw-field", "--field",
     "--input", "-q", "--jq", "--cache", "--hostname", "--preview",
     "--id", "--field-id", "--project-id", "--text", "--number", "--date",
-    "--single-select-option-id", "--iteration-id", "--owner", "--format",
+    "--single-select-option-id", "--iteration-id", "--owner", "--format", "--url",
 }  # fmt: skip
 
 
@@ -351,11 +353,12 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
     if group == "project" and len(words) > 2 and words[2].startswith("item-"):
         if words[2] == "item-list":
             return []
-        item = (
-            first(split_flags(words[3:])[0], "--id")
-            if words[2] == "item-edit"
-            else None
-        )
+        flags = split_flags(words[3:])[0]
+        if words[2] == "item-add":
+            m = na.ISSUE_URL.fullmatch(first(flags, "--url") or "")
+            if m:
+                return [Write("board-add", int(m.group(1)))]
+        item = first(flags, "--id") if words[2] == "item-edit" else None
         return [Write("board", item=item)]
     if group not in ("pr", "issue") or len(words) < 3:
         return []
@@ -598,6 +601,10 @@ def check_board(ctx: Context, write: Write) -> str | None:
         return f"board item {write.item} is issue {number}, not this tick's issue"
     if ctx.kind == "claim":
         return claim_or_owned(ctx)
+    if ctx.kind in ("refine", "set-ready"):
+        if item.get("status") not in REFINEMENT_STATUSES:
+            return f"issue {number} is {item.get('status')}; refinement leaves it alone"
+        return None
     if item.get("status") != "In progress" or item.get("executor") != ctx.agent:
         return (
             f"issue {number} is {item.get('status')} with Executor "
@@ -694,6 +701,13 @@ def check_write(ctx: Context, write: Write) -> str | None:
         return None
     if write.kind == "board":
         return check_board(ctx, write)
+    if write.kind == "board-add":
+        # refine puts an issue that is not on the board yet onto it.
+        if ctx.kind != "refine":
+            return f"a {ctx.kind} tick adds no issue to the board"
+        if write.number != ctx.issue:
+            return f"issue {write.number} is not this tick's issue"
+        return None
     return f"unknown write {write.kind}"
 
 

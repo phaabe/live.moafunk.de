@@ -497,6 +497,37 @@ class Board(Base):
         self.assertIsNone(self.bash(mutation.format("PVTI_21")))
         self.assertIsNotNone(self.bash(mutation.format("PVTI_22")))
 
+    def test_refinement_board_writes_only_before_the_work_starts(self) -> None:
+        for kind in ("refine", "set-ready"):
+            with self.subTest(kind=kind):
+                self.action(action=kind, issue=f"{ISSUES}/21")
+                self.reader.items = [item(21, "Backlog"), item(22, "Backlog")]
+                self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+                self.assertIn("issue 22", self.bash(self.EDIT.format("PVTI_22")) or "")
+                for status in ("In progress", "In review", "Done"):
+                    self.reader.items = [item(21, status)]
+                    self.assertIn(
+                        "refinement leaves it alone",
+                        self.bash(self.EDIT.format("PVTI_21")) or "",
+                    )
+
+    def test_only_refine_adds_its_own_issue_to_the_board(self) -> None:
+        add = "gh project item-add 2 --owner anneoneone --url {}/{}"
+        self.action(action="refine", issue=f"{ISSUES}/21")
+        self.assertIsNone(self.bash(add.format(ISSUES, 21)))
+        self.assertIn("issue 22", self.bash(add.format(ISSUES, 22)) or "")
+        for kind in ("set-ready", "review-refinement", "claim"):
+            with self.subTest(kind=kind):
+                self.action(action=kind, issue=f"{ISSUES}/21")
+                self.assertIn("adds no issue", self.bash(add.format(ISSUES, 21)) or "")
+
+    def test_review_refinement_does_not_change_the_board(self) -> None:
+        self.action(action="review-refinement", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "Backlog")]
+        self.assertIn(
+            "does not change the board", self.bash(self.EDIT.format("PVTI_21")) or ""
+        )
+
     def test_other_ticks_do_not_change_the_board(self) -> None:
         self.action(action="review", pr=5, sha=A)
         self.reader.pulls[5] = pull(5, "Executor: Codex")
