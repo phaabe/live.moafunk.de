@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from github_quota import QuotaExhausted, run_gh, stop_on_quota
-from next_action import EPIC, ESCALATION_LABEL, REPO, body_digest, issue_url, other
+from next_action import EPIC, REPO, body_digest, issue_url, other
 
 PUSHES = {"fix-checks", "resolve-conflict"}
 # Agents whose runner pins attempts and posts rebase records.
@@ -218,8 +218,10 @@ def refined(
         found = [i for i in items() if (i.get("content") or {}).get("url") == url]
         status = found[0].get("status") if found else None
         return status == "Ready", f"issue {number} Status is {status}"
-    # Imported here: runners that copy this file without it keep working.
+    # Imported here: runners that copy this file without it keep working, and
+    # the Codex test fixtures stub next_action with the shared contract names.
     import refinement
+    from next_action import ESCALATION_LABEL
 
     rows = fetch(
         ["api", f"repos/{REPO}/issues/{number}/comments?since={since}&per_page=100"]
