@@ -862,9 +862,19 @@ def definition_of_ready(
     for prefix in ("type::", "project::"):
         if len([n for n in proposed if n.startswith(prefix)]) != 1:
             problems.append(f"needs exactly one {prefix}* label")
-    missing = sorted(proposed - labels(item))
+    live = labels(item)
+    missing = sorted(proposed - live)
     if missing:
         problems.append(f"issue lacks labels {', '.join(missing)}")
+    # Layer and area labels must equal the proposal's; other labels (priority,
+    # waiting, refinement phases) are lifecycle and are not compared.
+    for prefix in ("type::", "project::"):
+        on_issue = {n for n in live if n.startswith(prefix)}
+        if len(on_issue) != 1:
+            problems.append(f"issue needs exactly one {prefix}* label")
+        extra = sorted(on_issue - proposed)
+        if extra:
+            problems.append(f"issue labels not in the proposal: {', '.join(extra)}")
     if data["executor"] not in AGENTS:
         problems.append("no Executor")
     elif item.get("executor") != data["executor"]:

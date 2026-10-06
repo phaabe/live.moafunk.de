@@ -284,6 +284,20 @@ class DefinitionOfReady(unittest.TestCase):
         problems = ready_problems(approved(), labels=["type::ci"])
         self.assertIn("issue lacks labels project::AgentSetup", problems)
 
+    def test_added_issue_label_outside_the_proposal(self) -> None:
+        labels = ["type::ci", "project::AgentSetup", "project::Stream"]
+        problems = ready_problems(approved(), labels=labels)
+        self.assertIn("issue needs exactly one project::* label", problems)
+        self.assertIn("issue labels not in the proposal: project::Stream", problems)
+        # Lifecycle labels are not compared.
+        labels = ["type::ci", "project::AgentSetup", "waiting", "priority::high"]
+        self.assertEqual(ready_problems(approved(), labels=labels), [])
+
+    def test_added_label_blocks_the_claim(self) -> None:
+        labels = ["type::ci", "project::AgentSetup", "project::Stream"]
+        entry = board(approved(), status="Ready", labels=labels)
+        self.assertNotIn("claim", kinds("Codex", entry))
+
     def test_needs_anton_blocks(self) -> None:
         labels = ["type::ci", "project::AgentSetup", "needs-anton"]
         self.assertIn("label needs-anton", ready_problems(approved(), labels=labels))
@@ -568,6 +582,9 @@ class AttemptLimit(unittest.TestCase):
         for bad in ("refine:901:0:none", "pr:1:head:x", None):
             with self.assertRaises(ValueError):
                 rp.attempt_check(
-                    self.dir, "claude", {**data, "attempt_key": bad},
-                    self.dir / "a.json", self.post,
+                    self.dir,
+                    "claude",
+                    {**data, "attempt_key": bad},
+                    self.dir / "a.json",
+                    self.post,
                 )
