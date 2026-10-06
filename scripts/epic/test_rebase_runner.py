@@ -457,6 +457,27 @@ class RebaseRunnerTest(unittest.TestCase):
         self.assertEqual(self.tick("fail"), 1, self.log())
         self.assertEqual(self.models(), 3)
 
+    def test_refine_runs_share_the_attempt_limit(self) -> None:
+        issue = f"https://github.com/{SLUG}/issues/{PR}"
+        refine = {
+            "action": "refine",
+            "reason": "t",
+            "issue": issue,
+            "attempt_key": f"refine:{PR}:0:none",
+        }
+        for _ in range(2):
+            self.assertEqual(self.tick("fail", refine), 1, self.log())
+            self.expire_cooldowns()
+        self.assertEqual(self.models(), 2)
+        self.assertEqual(len(self.lines("labels.jsonl")), 1)
+        self.assertEqual(self.tick("fail", refine), 0, self.log())
+        self.assertEqual(self.models(), 2)
+        self.assertIn("reached its attempt limit", self.log())
+        # A reset by Anton is a new key: the model runs again.
+        reset = {**refine, "attempt_key": f"refine:{PR}:0:55"}
+        self.assertEqual(self.tick("fail", reset), 1, self.log())
+        self.assertEqual(self.models(), 3)
+
     def test_quota_result_is_void(self) -> None:
         self.assertEqual(self.tick("quota"), 75, self.log())
         self.assertEqual([a["outcome"] for a in self.attempts()], ["void"])
