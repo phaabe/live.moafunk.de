@@ -402,7 +402,7 @@ class ClaudeTickTest(RunnerHarness):
         self.assertIn("no candidate to run", (other_state / "claude.log").read_text())
 
     def test_unknown_candidate_action_stops_the_tick(self) -> None:
-        bad = json.dumps({"action": "refine", "reason": "t", "issue": "x"})
+        bad = json.dumps({"action": "rewrite", "reason": "t", "issue": "x"})
         self.assertEqual(self.run_tick(TEST_CANDIDATES=bad).wait(timeout=30), 1)
         self.assertEqual(self.model_targets(), [])
 
