@@ -298,6 +298,34 @@ class TicketsPageTest(unittest.TestCase):
         table = self.by_title("Tickets · $check")
         self.assertIn('"check", "$check"', table["targets"][0]["expr"])
 
+    def test_tile_color_comes_from_the_check_severity(self) -> None:
+        for check, title, *_ in dashboards.CHECKS:
+            with self.subTest(check=check):
+                tile = self.by_title(title)
+                [count, color] = tile["targets"]
+                self.assertEqual(color["refId"], "B")
+                self.assertIn(
+                    f'epic_ticket_check_severity{{check="{check}"}}', color["expr"]
+                )
+                self.assertIn(dashboards.TICKETS, color["expr"])
+                # B is config: the tile shows one value, from any field name.
+                self.assertEqual(tile["options"]["textMode"], "value")
+                self.assertEqual(tile["options"]["reduceOptions"]["fields"], "")
+                labels, config = tile["transformations"]
+                self.assertEqual(labels["id"], "labelsToFields")
+                self.assertEqual(config["id"], "configFromData")
+                options = config["options"]
+                self.assertEqual(options["configRefId"], "B")
+                self.assertEqual(options["applyTo"]["options"], "A")
+                handlers = {
+                    m["fieldName"]: m["handlerKey"] for m in options["mappings"]
+                }
+                self.assertEqual(handlers.pop("color"), "color")
+                self.assertEqual(set(handlers.values()), {"__ignore"})
+                # Unknown stays grey: the mapping color wins over B.
+                [mapping] = tile["fieldConfig"]["defaults"]["mappings"]
+                self.assertEqual(mapping["options"]["-1"]["color"], dashboards.STALE)
+
     def test_board_is_a_collapsed_row_and_done_sorts_by_done_sort(self) -> None:
         [row] = [p for p in self.page()["panels"] if p["type"] == "row"]
         self.assertTrue(row["collapsed"])
@@ -546,6 +574,48 @@ class QuerySemanticsTest(unittest.TestCase):
                 ],
             },
             {"expr": as_range(ready), "eval_time": "20m", "exp_samples": []},
+        ]
+        self.run_promtool(
+            [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]
+        )
+
+    def test_tile_severity_colors(self) -> None:
+        """Severity 3 is red, 2 amber, 0 and 1 neutral; stale data gives no
+        color row, so the unknown tile stays grey."""
+        expr = panel_expr("tickets.json", "In progress > 1 day", ref="B")
+        series = [
+            {
+                "series": "epic_ticket_snapshot_timestamp_seconds",
+                "values": "0+60x5 300x20",
+            },
+            {"series": 'epic_ticket_source_ok{source="board"}', "values": "1x25"},
+            {
+                "series": 'epic_ticket_check_severity{check="in_progress_long"}',
+                "values": "0 1 2 3 3x21",
+            },
+        ]
+
+        def colored(color: str, level: int) -> list[dashboards.Json]:
+            labels = (
+                'epic_ticket_check_severity{check="in_progress_long",'
+                f'color="{color}"}}'
+            )
+            return [{"labels": labels, "value": level}]
+
+        tests = [
+            {"expr": expr, "eval_time": "0m", "exp_samples": colored("text", 0)},
+            {"expr": expr, "eval_time": "1m", "exp_samples": colored("text", 1)},
+            {
+                "expr": expr,
+                "eval_time": "2m",
+                "exp_samples": colored(dashboards.LOOK_SOON, 2),
+            },
+            {
+                "expr": expr,
+                "eval_time": "3m",
+                "exp_samples": colored(dashboards.ACT_NOW, 3),
+            },
+            {"expr": expr, "eval_time": "20m", "exp_samples": []},
         ]
         self.run_promtool(
             [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]

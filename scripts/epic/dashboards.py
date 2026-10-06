@@ -2001,20 +2001,58 @@ def selected_tickets() -> str:
     return f'label_replace({rows}, "pr_url", "{REPO}/pull/$1", "pr", "(.+)")'
 
 
+# epic_ticket_check_severity → tile color: the worst ticket in the check.
+CHECK_SEVERITY = {3: ACT_NOW, 2: LOOK_SOON, 1: NEUTRAL, 0: NEUTRAL}
+
+
+def severity_color(check: str) -> str:
+    """One row with label color for the check's severity; none when unknown."""
+    series = f'epic_ticket_check_severity{{check="{check}"}}'
+    return " or ".join(
+        f'(label_replace(({series}{TICKETS}) == {level}, "color", "{color}", "", ""))'
+        for level, color in CHECK_SEVERITY.items()
+    )
+
+
 def check_tile(check: str, title: str, color: str, rule: str) -> Json:
-    """Count of one check. -1 when its source is unknown: grey, never 0."""
+    """Count of one check. -1 when its source is unknown: grey, never 0.
+
+    Query B sets the color from the check's severity. Without B (unknown or
+    an older collector) the thresholds apply; the "unknown" mapping wins.
+    """
     panel = stat(
         title,
         [
             target(
                 f'((epic_ticket_check_count{{check="{check}"}}{TICKETS})'
                 " or on() vector(-1))"
-            )
+            ),
+            target(severity_color(check), ref="B"),
         ],
         mappings=[value_map({"-1": ("unknown", STALE)})],
         thresholds=steps((None, NEUTRAL), (1, color)),
-        description=rule + " Click to show these tickets in the table.",
+        description=rule + " Color: amber or red when a ticket waits too long. "
+        "Click to show these tickets in the table.",
     )
+    # B is config, not a second value.
+    panel["options"]["textMode"] = "value"
+    panel["transformations"] = [
+        {"id": "labelsToFields", "options": {"mode": "columns"}},
+        {
+            "id": "configFromData",
+            "options": {
+                "configRefId": "B",
+                "applyTo": {"id": "byFrameRefID", "options": "A"},
+                "mappings": [
+                    {"fieldName": "color", "handlerKey": "color"},
+                    *(
+                        {"fieldName": name, "handlerKey": "__ignore"}
+                        for name in ("epic_ticket_check_severity", "Time", "check")
+                    ),
+                ],
+            },
+        },
+    ]
     panel["fieldConfig"]["defaults"]["links"] = [
         link(
             "Show these tickets",
