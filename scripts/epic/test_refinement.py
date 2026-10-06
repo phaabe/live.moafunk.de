@@ -306,3 +306,148 @@ class DefinitionOfReady(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+RULES = [{"pattern": "scripts/epic/*", "owners": ["Codex"], "lanes": ["setup"]}]
+ALL = frozenset(next_action.REFINEMENT_ACTIONS)
+
+
+def board(rows: list[dict[str, object]], **over: object) -> dict[str, object]:
+    found = item(**over)
+    found["refinement_comments"] = rows
+    return found
+
+
+def actions(
+    agent: str,
+    entry: dict[str, object],
+    enabled: frozenset[str] = ALL,
+    exempt: list[str] | None = None,
+) -> list[next_action.Action]:
+    state = {"prs": [], "items": [entry], "refinement_exempt": exempt or []}
+    found = next_action.decide(agent, state, enabled=enabled, rules=RULES)
+    return [a for a in found if a.action != "idle"]
+
+
+def kinds(agent: str, entry: dict[str, object], **kw: object) -> list[str]:
+    return [a.action for a in actions(agent, entry, **kw)]  # type: ignore[arg-type]
+
+
+class DecideRefinement(unittest.TestCase):
+    def test_draft_without_executor_goes_to_claude_for_refine(self) -> None:
+        entry = board([], executor=None, labels=["refinement"])
+        self.assertEqual(kinds("Claude", entry), ["refine"])
+        self.assertEqual(kinds("Codex", entry), [])
+
+    def test_not_enrolled_backlog_issue_gets_nothing(self) -> None:
+        self.assertEqual(kinds("Codex", board([], labels=["type::ci"])), [])
+
+    def test_label_removed_after_proposal_stays_enrolled(self) -> None:
+        rows = [comment(10, proposal_body(proposal_data()), 1)]
+        entry = board(rows, labels=["type::ci", "project::AgentSetup"])
+        found = actions("Codex", entry)
+        self.assertEqual([a.action for a in found], ["review-refinement"])
+        p, _ = r.latest_proposal(ISSUE, rows)
+        assert p is not None
+        self.assertEqual(found[0].digest, p.digest)
+
+    def test_proposer_never_reviews(self) -> None:
+        rows = [comment(10, proposal_body(proposal_data(proposer="Codex")), 1)]
+        self.assertEqual(kinds("Codex", board(rows)), [])
+        self.assertEqual(kinds("Claude", board(rows)), ["review-refinement"])
+
+    def test_changes_requested_routes_back_to_refine(self) -> None:
+        rows = [comment(10, proposal_body(proposal_data()), 1)]
+        p, _ = r.latest_proposal(ISSUE, rows)
+        assert p is not None
+        rows.append(
+            comment(11, verdict_body("CHANGES REQUESTED", "Codex", p.digest), 2)
+        )
+        self.assertEqual(kinds("Codex", board(rows)), ["refine"])
+
+    def test_third_rejection_escalates(self) -> None:
+        rows: list[dict[str, object]] = []
+        for n in range(3):
+            rows.append(comment(10 + 2 * n, proposal_body(proposal_data()), 1 + 2 * n))
+            p, _ = r.latest_proposal(ISSUE, rows)
+            assert p is not None
+            rows.append(
+                comment(
+                    11 + 2 * n,
+                    verdict_body("CHANGES REQUESTED", "Codex", p.digest),
+                    2 + 2 * n,
+                )
+            )
+        found = actions("Codex", board(rows))
+        self.assertEqual([a.action for a in found], ["escalate"])
+        self.assertEqual(found[0].issue, BASE)
+
+    def test_escalation_blocks_until_reset(self) -> None:
+        rows = [comment(10, proposal_body(proposal_data()), 1)]
+        rows.append(comment(20, f"{r.ESCALATION_MARKER}\nask Anton", 3))
+        self.assertEqual(kinds("Codex", board(rows)), [])
+        self.assertEqual(kinds("Claude", board(rows)), [])
+        rows.append(
+            comment(21, f"Refinement reset: Anton for {BASE}#issuecomment-20", 4)
+        )
+        self.assertEqual(kinds("Codex", board(rows)), ["review-refinement"])
+
+    def test_approved_backlog_issue_gets_set_ready(self) -> None:
+        found = actions("Codex", board(approved()))
+        self.assertEqual([a.action for a in found], ["set-ready"])
+        self.assertTrue(found[0].digest)
+
+    def test_set_ready_never_touches_in_progress_or_done(self) -> None:
+        for status in ("In progress", "Done"):
+            self.assertNotIn(
+                "set-ready", kinds("Codex", board(approved(), status=status))
+            )
+
+    def test_approved_and_ready_is_claimed_with_digest(self) -> None:
+        found = actions("Codex", board(approved(), status="Ready"))
+        self.assertEqual([a.action for a in found], ["claim"])
+        self.assertTrue(found[0].digest)
+
+    def test_change_after_approval_routes_to_refine(self) -> None:
+        entry = board(approved(), status="Ready", executor="Claude")
+        found = actions("Claude", entry)
+        self.assertEqual([a.action for a in found], ["refine"])
+        self.assertIn("Executor is not Codex", found[0].reason)
+
+    def test_manually_ready_ticket_routes_to_refine(self) -> None:
+        entry = board([], status="Ready", labels=["type::ci"])
+        self.assertEqual(kinds("Codex", entry), ["refine"])
+
+    def test_exempt_ready_ticket_is_claimed(self) -> None:
+        entry = board([], status="Ready", labels=["type::ci"])
+        self.assertEqual(kinds("Codex", entry, exempt=[BASE]), ["claim"])
+
+    def test_exempt_ticket_loses_exemption_with_a_proposal(self) -> None:
+        rows = [comment(10, proposal_body(proposal_data()), 1)]
+        entry = board(rows, status="Ready")
+        self.assertEqual(kinds("Claude", entry, exempt=[BASE]), [])
+        self.assertEqual(kinds("Codex", entry, exempt=[BASE]), ["review-refinement"])
+
+    def test_without_refine_enabled_claims_stay_as_before(self) -> None:
+        entry = board([], status="Ready", labels=["type::ci"])
+        self.assertEqual(kinds("Codex", entry, enabled=frozenset()), ["claim"])
+
+    def test_depends_on_blocks_the_claim(self) -> None:
+        entry = board(approved(proposal_data(depends_on=["Z1.1.1"])), status="Ready")
+        self.assertEqual(kinds("Codex", entry), [])
+        state = {"prs": [], "items": [entry], "refinement_exempt": []}
+        waits = next_action.decide(
+            "Codex", state, include_waiting=True, enabled=ALL, rules=RULES
+        )
+        self.assertIn("Z1.1.1", waits[0].reason)
+
+    def test_files_with_no_owner_block(self) -> None:
+        rows = approved(proposal_data(files=["nowhere/x"]))
+        self.assertEqual(kinds("Codex", board(rows, executor=None)), [])
+        self.assertEqual(kinds("Claude", board(rows, executor=None)), [])
+
+    def test_unread_comments_never_claim(self) -> None:
+        entry = item(status="Ready")
+        state = {"prs": [], "items": [entry]}
+        found = next_action.decide("Codex", state, enabled=ALL, rules=RULES)
+        self.assertEqual(found[0].action, "idle")

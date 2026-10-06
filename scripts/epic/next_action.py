@@ -109,7 +109,10 @@ FOCUS_FILE = Path.home() / ".epic-focus"
 ESCALATION_LABEL = "needs-anton"
 # New actions are emitted only when listed in EPIC_FOCUS_ACTIONS (comma list).
 # One is added in both runners after both its Claude and Codex leaves merged.
-NEW_ACTIONS = frozenset({"adopt"})
+REFINEMENT_ACTIONS = ("refine", "review-refinement", "set-ready")
+NEW_ACTIONS = frozenset({"adopt", *REFINEMENT_ACTIONS})
+# Statuses set-ready may change to Ready. It never touches In progress or Done.
+PRE_READY = (None, "Backlog", "Todo")
 ACTIONS_ENV = "EPIC_FOCUS_ACTIONS"
 # Ticket dependencies need a closed-as-completed issue (see completed_tickets()).
 COMPLETED_TICKETS_ENV = "EPIC_REQUIRE_COMPLETED_TICKETS"
@@ -184,6 +187,8 @@ class Action:
     # adopt only: the lane to write, and the hash of the body it must keep.
     lane: str | None = None
     body_sha: str | None = None
+    # Refinement actions and claims of refined issues: the proposal digest.
+    digest: str | None = None
     # For --status only. Kept out of the JSON so runner fingerprints stay stable.
     priority: int = DEFAULT_PRIORITY
     # Board/issue mismatches of the tickets a claim waits for. Never a blocker.
@@ -818,6 +823,122 @@ def definition_of_ready(
     return problems
 
 
+@dataclass(frozen=True)
+class Stage:
+    """The refinement step of one issue (refinement_stage).
+
+    `kind`: refine, review-refinement, set-ready, escalate, claim (refined or
+    exempt) or blocked (only Anton can move it). `agent` may act on it.
+    """
+
+    kind: str
+    agent: str | None
+    reason: str
+    digest: str | None = None
+    comments: tuple[str, ...] = ()
+
+
+def approved_dependencies(item: dict[str, Any]) -> set[str]:
+    """The `depends_on` of the issue's newest proposal: claim blockers like
+    "Start after" (refinement_stage decides whether it is approved)."""
+    import refinement as rf
+
+    proposal, _ = rf.latest_proposal(
+        item["content"]["number"], item.get("refinement_comments") or []
+    )
+    return set(proposal.data["depends_on"]) if proposal else set()
+
+
+def refinement_stage(
+    item: dict[str, Any],
+    exempt: frozenset[str] | set[str],
+    rules: list[dict[str, Any]] | None = None,
+    focus: frozenset[str] = frozenset(),
+) -> Stage | None:
+    """The refinement step a board issue needs (rules in issue 487), or None.
+
+    None: its comments were not read, its Status is past Ready, or it is neither
+    enrolled (label `refinement` or a proposal), in focus, nor Ready.
+    """
+    # Imported here: the Codex runner tests copy this file without them.
+    import refinement as rf
+    from routing import load_rules, route
+
+    comments = item.get("refinement_comments")
+    status = item.get("status")
+    if comments is None or status not in (*PRE_READY, "Ready"):
+        return None
+    content = item["content"]
+    names = labels(item)
+    has_proposal = rf.is_enrolled(set(), comments)
+    if not (has_proposal or rf.REFINEMENT_LABEL in names or names & focus):
+        if status != "Ready":
+            return None
+    executor = item.get("executor") if item.get("executor") in AGENTS else None
+    if status == "Ready" and content["url"] in exempt and not has_proposal:
+        return Stage("claim", executor, "exempt Ready ticket")
+    if ESCALATION_LABEL in names or rf.escalated(comments):
+        return Stage("blocked", None, "escalated; waits for Anton's reset")
+    proposal, problem = rf.latest_proposal(content["number"], comments)
+    files = proposal.data["files"] if proposal else None
+    rules = load_rules() if rules is None and files else rules or []
+    author = route(executor, files, rules, "refine")
+    if author.agent is None:
+        return Stage("blocked", None, author.reason)
+    if proposal is None:
+        return Stage("refine", author.agent, problem or "no proposal yet")
+    verdict = rf.current_verdict(proposal, comments)
+    if verdict is None:
+        return Stage(
+            "review-refinement",
+            other(proposal.data["proposer"]),
+            "proposal has no verdict for its digest",
+            proposal.digest,
+            (proposal.url,),
+        )
+    if verdict.state == "CHANGES REQUESTED":
+        rounds = rf.rejected_rounds(comments)
+        if rounds >= rf.MAX_REJECTED_ROUNDS:
+            return Stage(
+                "escalate",
+                author.agent,
+                f"{rounds} rejected refinement rounds; post the escalation "
+                f"comment, add label {ESCALATION_LABEL} and ask Anton",
+                proposal.digest,
+                (verdict.url,),
+            )
+        return Stage(
+            "refine",
+            author.agent,
+            "refinement changes requested",
+            proposal.digest,
+            (proposal.url, verdict.url),
+        )
+    owner = route(None, proposal.data["files"], rules, "claim")
+    problems = definition_of_ready(
+        item, proposal, verdict, None if owner.agent else owner.reason
+    )
+    if problems:
+        return Stage(
+            "refine",
+            author.agent,
+            "approved proposal does not match the issue: " + "; ".join(problems),
+            proposal.digest,
+            (proposal.url, verdict.url),
+        )
+    if status != "Ready":
+        return Stage(
+            "set-ready",
+            author.agent,
+            "approved proposal matches the issue",
+            proposal.digest,
+            (proposal.url, verdict.url),
+        )
+    return Stage(
+        "claim", executor, "approved proposal", proposal.digest, (proposal.url,)
+    )
+
+
 def board_executors(state: dict[str, Any]) -> dict[int, str]:
     """Executor project field of this repository's PRs on the board, by number.
 
@@ -1015,6 +1136,43 @@ def decide(
     for p in all_prs:
         linked |= issue_numbers(p.get("body") or "")
     open_mine = len([p for p in all_prs if pr_author(p) == agent])
+    # Refinement (issue 487): with `refine` enabled, a Ready issue is claimed
+    # only when it is exempt or its approved proposal still matches.
+    stages: dict[int, Stage | None] = {}
+    if set(REFINEMENT_ACTIONS) & enabled:
+        exempt = frozenset(state.get("refinement_exempt") or [])
+        for i in state.get("items", []):
+            content = i.get("content") or {}
+            if (
+                content.get("type") != "Issue"
+                or content.get("number") in linked
+                or (focus and not labels(i) & focus)
+                or (completed_tickets and is_closed(i))
+            ):
+                continue
+            stage = refinement_stage(i, exempt, rules, focus)
+            stages[content["number"]] = stage
+            if stage is None or stage.agent != agent:
+                continue
+            # A refinement escalation comes with `refine`; claims are below.
+            if stage.kind not in enabled and not (
+                stage.kind == "escalate" and "refine" in enabled
+            ):
+                continue
+            add(
+                stage.kind,
+                Action(
+                    stage.kind,
+                    stage.reason,
+                    issue=content["url"],
+                    comments=list(stage.comments),
+                    digest=stage.digest,
+                    priority=priority_rank(labels(i)),
+                    updated_at=content.get("updated_at"),
+                ),
+                # Same key as PR escalations share: priority, then number.
+                content["number"],
+            )
     items = [
         i
         for i in state.get("items", [])
@@ -1064,7 +1222,12 @@ def decide(
                 number,
             )
         elif i.get("status") == "Ready" and open_mine < MAX_OPEN_PRS:
+            stage = stages.get(number)
+            if "refine" in enabled and (stage is None or stage.kind != "claim"):
+                continue  # its refinement action, if any, is queued above
             wanted = start_after(i) | batch.get(number, set())
+            if stage and stage.digest:
+                wanted |= approved_dependencies(i)
             warnings: list[str] = []
             if completed_tickets:
                 tickets = {int(n) for n in ISSUE_URL.findall(" ".join(wanted))}
@@ -1098,6 +1261,7 @@ def decide(
                         "claim",
                         "Ready leaf assigned to me",
                         issue=url,
+                        digest=stage.digest if stage else None,
                         priority=rank,
                         updated_at=i["content"].get("updated_at"),
                         warnings=warnings,
@@ -1113,9 +1277,12 @@ def decide(
         "fix-checks",
         "resolve-conflict",
         "review",
+        "review-refinement",
+        "set-ready",
         "continue",
         "adopt",
         "claim",
+        "refine",
     ]
     if include_waiting:
         order = [*order, "wait"]
