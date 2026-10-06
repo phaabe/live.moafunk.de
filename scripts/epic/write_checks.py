@@ -116,6 +116,8 @@ class Write:
     branch: str | None = None
     delete: bool = False
     item: str | None = None  # board item: node ID or numeric REST id
+    # board: `gh project item-edit` that sets only a single-select option.
+    select_only: bool = False
 
 
 def active(env: Mapping[str, str] | None = None) -> bool:
@@ -358,8 +360,11 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
             m = na.ISSUE_URL.fullmatch(first(flags, "--url") or "")
             if m:
                 return [Write("board-add", int(m.group(1)))]
-        item = first(flags, "--id") if words[2] == "item-edit" else None
-        return [Write("board", item=item)]
+        if words[2] != "item-edit":
+            return [Write("board")]
+        values = {"--text", "--number", "--date", "--iteration-id", "--clear"}
+        select_only = "--single-select-option-id" in flags and not values & set(flags)
+        return [Write("board", item=first(flags, "--id"), select_only=select_only)]
     if group not in ("pr", "issue") or len(words) < 3:
         return []
     sub = words[2]
@@ -580,6 +585,19 @@ def issue_write(ctx: Context) -> str | None:
     return None
 
 
+def set_ready(ctx: Context, write: Write) -> str | None:
+    """`set-ready` sets one single-select field (Status), and only while the
+    selector still gives set-ready for the same approved proposal (digest)."""
+    if not write.select_only:
+        return "set-ready changes only Status: gh project item-edit --single-select-option-id"
+    focus = na.read_focus(na.FOCUS_FILE)
+    enabled = na.read_actions(os.environ.get(na.ACTIONS_ENV))
+    mode = na.completed_tickets()
+    return gs.recheck(
+        ctx.agent, ctx.action, focus, enabled, False, ctx.reader, completed_tickets=mode
+    )
+
+
 def check_board(ctx: Context, write: Write) -> str | None:
     """The item must be the tick's issue and still fit the action."""
     if ctx.kind not in BOARD_ACTIONS:
@@ -604,6 +622,8 @@ def check_board(ctx: Context, write: Write) -> str | None:
     if ctx.kind in ("refine", "set-ready"):
         if item.get("status") not in REFINEMENT_STATUSES:
             return f"issue {number} is {item.get('status')}; refinement leaves it alone"
+        if ctx.kind == "set-ready":
+            return set_ready(ctx, write)
         return None
     if item.get("status") != "In progress" or item.get("executor") != ctx.agent:
         return (

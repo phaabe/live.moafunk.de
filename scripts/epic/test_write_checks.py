@@ -502,7 +502,8 @@ class Board(Base):
             with self.subTest(kind=kind):
                 self.action(action=kind, issue=f"{ISSUES}/21")
                 self.reader.items = [item(21, "Backlog"), item(22, "Backlog")]
-                self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+                with patch.object(gs, "recheck", return_value=None):
+                    self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
                 self.assertIn("issue 22", self.bash(self.EDIT.format("PVTI_22")) or "")
                 for status in ("In progress", "In review", "Done"):
                     self.reader.items = [item(21, status)]
@@ -510,6 +511,39 @@ class Board(Base):
                         "refinement leaves it alone",
                         self.bash(self.EDIT.format("PVTI_21")) or "",
                     )
+
+    def test_set_ready_rechecks_the_approval_before_the_write(self) -> None:
+        self.action(action="set-ready", issue=f"{ISSUES}/21", digest="d" * 64)
+        self.reader.items = [item(21, "Backlog")]
+        with patch.object(gs, "recheck", return_value=None) as recheck:
+            self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+            recheck.assert_called_once()
+            self.assertEqual(recheck.call_args.args[1]["digest"], "d" * 64)
+        withdrawn = "GitHub changed: the selector now gives refine"
+        with patch.object(gs, "recheck", return_value=withdrawn):
+            self.assertIn(
+                "now gives refine", self.bash(self.EDIT.format("PVTI_21")) or ""
+            )
+
+    def test_set_ready_edits_only_a_single_select_field(self) -> None:
+        self.action(action="set-ready", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "Backlog")]
+        mutation = (
+            "gh api graphql -f query='mutation { updateProjectV2ItemFieldValue("
+            'input: {projectId: "P", itemId: "PVTI_21", fieldId: "F"}) { clientMutationId } }\''
+        )
+        with patch.object(gs, "recheck", return_value=None) as recheck:
+            for cmd in (
+                "gh project item-edit --id PVTI_21 --field-id F --text x",
+                "gh project item-edit --id PVTI_21 --field-id F --clear",
+                "gh project item-edit --id PVTI_21 --field-id F "
+                "--single-select-option-id O --text x",
+                mutation,
+                "gh api --method PATCH users/anneoneone/projectsV2/2/items/50021 --input -",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertIn("only Status", self.bash(cmd) or "")
+            recheck.assert_not_called()
 
     def test_only_refine_adds_its_own_issue_to_the_board(self) -> None:
         add = "gh project item-add 2 --owner anneoneone --url {}/{}"
