@@ -8,9 +8,12 @@ from __future__ import annotations
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import next_action
+import rebase_policy as rp
 import refinement as r
 
 ISSUE = 900
@@ -485,3 +488,86 @@ class ReadsComments(unittest.TestCase):
         edited = {**row, "updated_at": "2026-10-06T11:00:00Z"}
         self.assertEqual(next_action.exempt_list([edited]), [])
         self.assertEqual(next_action.exempt_list([]), [])
+
+
+class AttemptLimit(unittest.TestCase):
+    """Failed refine runs in the shared attempt store (rebase_policy.py)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="refine-attempts-")
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.posts: list[int] = []
+        self.ticks = 0
+
+    def post(self, number: int) -> None:
+        self.posts.append(number)
+
+    def action(
+        self, rows: list[dict[str, object]], agent: str = "Claude"
+    ) -> next_action.Action:
+        found = actions(agent, board(rows, executor=None, labels=["refinement"]))
+        self.assertEqual([a.action for a in found], ["refine"])
+        return found[0]
+
+    def run_tick(self, action: next_action.Action, outcome: str | None) -> int:
+        """check, start and (unless the session crashed) finish one tick."""
+        self.ticks += 1
+        out = self.dir / "attempt.json"
+        data = json.loads(action.to_json())
+        code = rp.attempt_check(self.dir, "claude", data, out, self.post)
+        if code != rp.RUN:
+            return code
+        pin = rp.load_attempt(out)
+        self.assertEqual(pin["pr"], ISSUE)
+        tick = f"t{self.ticks}"
+        self.assertEqual(rp.attempt_start(self.dir, pin, tick), rp.RUN)
+        if outcome:
+            rp.attempt_finish(self.dir, pin, tick, outcome, self.post)
+        return rp.RUN
+
+    def suppressed_after_two(
+        self, rows: list[dict[str, object]], agent: str = "Claude"
+    ) -> None:
+        action = self.action(rows, agent)
+        self.assertEqual(self.run_tick(action, "failed"), rp.RUN)
+        self.assertEqual(self.run_tick(action, None), rp.RUN)  # crash counts
+        # Repeated ticks and a fresh decide() (a restart) stay suppressed.
+        for _ in range(2):
+            again = self.action(rows, agent)
+            self.assertEqual(self.run_tick(again, "failed"), rp.SKIP)
+        self.assertEqual(self.posts[-1], ISSUE)
+
+    def test_key_in_the_action_json(self) -> None:
+        data = json.loads(self.action([]).to_json())
+        self.assertEqual(data["attempt_key"], f"refine:{ISSUE}:0:none")
+
+    def test_revision_zero_and_later_revision_with_reset(self) -> None:
+        rows: list[dict[str, object]] = []
+        self.suppressed_after_two(rows)
+        # Anton resets: a new key, two more runs, then suppressed again.
+        esc = comment(30, f"{r.ESCALATION_MARKER}\nx", 20)
+        rows += [esc, comment(31, f"Refinement reset: Anton for {esc['url']}", 21)]
+        self.assertEqual(self.action(rows).attempt_key, f"refine:{ISSUE}:0:31")
+        self.suppressed_after_two(rows)
+        # A rejected later revision is its own key (its files route to Codex).
+        rejection(40, 22, rows)
+        key = self.action(rows, "Codex").attempt_key
+        self.assertEqual(key, f"refine:{ISSUE}:40:31")
+        self.suppressed_after_two(rows, "Codex")
+
+    def test_succeeded_and_void_runs_do_not_count(self) -> None:
+        action = self.action([])
+        for outcome in ("succeeded", "void", "void", "failed"):
+            self.assertEqual(self.run_tick(action, outcome), rp.RUN)
+        self.assertEqual(self.run_tick(action, "failed"), rp.RUN)
+        self.assertEqual(self.run_tick(action, "failed"), rp.SKIP)
+
+    def test_key_must_name_the_issue(self) -> None:
+        data = json.loads(self.action([]).to_json())
+        for bad in ("refine:901:0:none", "pr:1:head:x", None):
+            with self.assertRaises(ValueError):
+                rp.attempt_check(
+                    self.dir, "claude", {**data, "attempt_key": bad},
+                    self.dir / "a.json", self.post,
+                )

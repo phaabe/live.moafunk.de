@@ -191,6 +191,8 @@ class Action:
     body_sha: str | None = None
     # Refinement actions and claims of refined issues: the proposal digest.
     digest: str | None = None
+    # refine only: its key in the shared attempt store (rebase_policy.py).
+    attempt_key: str | None = None
     # For --status only. Kept out of the JSON so runner fingerprints stay stable.
     priority: int = DEFAULT_PRIORITY
     # Board/issue mismatches of the tickets a claim waits for. Never a blocker.
@@ -890,6 +892,8 @@ class Stage:
     reason: str
     digest: str | None = None
     comments: tuple[str, ...] = ()
+    # refine only: refinement.attempt_key (revision and reset of this run).
+    attempt_key: str | None = None
 
 
 def approved_dependencies(item: dict[str, Any]) -> set[str]:
@@ -934,13 +938,16 @@ def refinement_stage(
     if ESCALATION_LABEL in names or rf.escalated(comments):
         return Stage("blocked", None, "escalated; waits for Anton's reset")
     proposal, problem = rf.latest_proposal(content["number"], comments)
+    key = rf.attempt_key(content["number"], comments, proposal)
     files = proposal.data["files"] if proposal else None
     rules = load_rules() if rules is None and files else rules or []
     author = route(executor, files, rules, "refine")
     if author.agent is None:
         return Stage("blocked", None, author.reason)
     if proposal is None:
-        return Stage("refine", author.agent, problem or "no proposal yet")
+        return Stage(
+            "refine", author.agent, problem or "no proposal yet", attempt_key=key
+        )
     verdict = rf.current_verdict(proposal, comments)
     if verdict is None:
         return Stage(
@@ -967,6 +974,7 @@ def refinement_stage(
             "refinement changes requested",
             proposal.digest,
             (proposal.url, verdict.url),
+            key,
         )
     owner = route(None, proposal.data["files"], rules, "claim")
     problems = definition_of_ready(
@@ -979,6 +987,7 @@ def refinement_stage(
             "approved proposal does not match the issue: " + "; ".join(problems),
             proposal.digest,
             (proposal.url, verdict.url),
+            key,
         )
     if status != "Ready":
         return Stage(
@@ -1221,6 +1230,7 @@ def decide(
                     issue=content["url"],
                     comments=list(stage.comments),
                     digest=stage.digest,
+                    attempt_key=stage.attempt_key,
                     priority=priority_rank(labels(i)),
                     updated_at=content.get("updated_at"),
                 ),
