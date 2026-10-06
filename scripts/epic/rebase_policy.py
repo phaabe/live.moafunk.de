@@ -39,8 +39,9 @@ waits and lock skips never start one. Cooldown expiry and comments do not reset
 the count; a new head or a new target tip is a new key. At the limit no model
 starts for the key and the owner's runner adds the label `needs-anton`. When
 that post fails, the key stays suppressed and only the label post is retried.
-For `refine` the limit is refinement.MAX_FAILED_RUNS and the label goes on the
-issue; a new proposal revision or a reset by Anton is a new key.
+For `refine` the limit is refinement.MAX_FAILED_RUNS; the issue gets an
+escalation comment first, then the label. A new proposal revision or Anton's
+reset of that comment is a new key.
 
 Usage:
   rebase_policy.py prove --worktree W --pr N --base BASE [--state-dir D]
@@ -594,20 +595,57 @@ def locked(state_dir: Path) -> Generator[dict[str, Any]]:
             write_json(path, data)
 
 
-def escalate(entry: dict[str, Any], pr: int, post: Callable[[int], None]) -> None:
-    """Post the label once. A failure keeps the key suppressed; the next check
-    retries only the post."""
+def refine_escalation(issue: int, key: str, failed: int) -> str:
+    """URL of the escalation comment for a `refine` key, posted once. Anton's
+    reset names this URL (refinement.active_reset), which makes a new key. The
+    key in the body finds the comment again after a crash before it was
+    recorded."""
+    # Imported here: the Codex runner tests copy this file without it.
+    from refinement import ESCALATION_MARKER
+
+    def find() -> str | None:
+        for c in comments(issue):
+            body = c.get("body") or ""
+            first = body.partition("\n")[0].strip()
+            if first == ESCALATION_MARKER and f"`{key}`" in body and unedited(c):
+                return c.get("html_url")
+        return None
+
+    url = find()
+    if url:
+        return url
+    post_comment(
+        issue,
+        f"{ESCALATION_MARKER}\n"
+        f"Refinement runs for `{key}` failed {failed} times. No model runs for "
+        "this proposal revision until Anton resets it.\n\n"
+        "To reset, post exactly: `Refinement reset: Anton for <this comment URL>`",
+    )
+    url = find()
+    if not url:
+        raise ReadFailed(f"escalation comment for {key} not found after the post")
+    return url
+
+
+def escalate(
+    entry: dict[str, Any], pr: int, post: Callable[[int], None], key: str = ""
+) -> None:
+    """Post the label once; for a `refine` key first the escalation comment
+    Anton resets. A failure keeps the key suppressed; the next check retries
+    only the missing part."""
     if entry.get("escalation") == "posted":
         return
     try:
+        if key.startswith("refine:") and not entry.get("escalation_url"):
+            entry["escalation_url"] = refine_escalation(pr, key, counted(entry))
         post(pr)
     except QuotaExhausted:
         entry["escalation"] = "pending"
         raise
-    except (subprocess.SubprocessError, OSError) as error:
+    except (subprocess.SubprocessError, OSError, ReadFailed, ValueError) as error:
         entry["escalation"] = "pending"
         entry["escalation_error"] = str(error)[:200]
-        print(f"attempts: label post failed for PR {pr}: {error}", file=sys.stderr)
+        print(f"attempts: escalation failed for {pr}: {error}", file=sys.stderr)
         return
     entry["escalation"] = "posted"
     entry.pop("escalation_error", None)
@@ -669,7 +707,7 @@ def pin(state_dir: Path, key: str, number: int, post: Callable[[int], None]) -> 
         entry = data.setdefault(key, {"attempts": []})
         failed = counted(entry)
         if failed >= limit(key):
-            escalate(entry, number, post)
+            escalate(entry, number, post, key)
             print(
                 f"attempts: {key} failed {failed} times; no model "
                 f"(escalation {entry.get('escalation')})",
@@ -734,7 +772,7 @@ def attempt_finish(
         assert entry is not None
         if outcome == "failed" and counted(entry) >= limit(attempt["key"]):
             try:
-                escalate(entry, attempt["pr"], post)
+                escalate(entry, attempt["pr"], post, attempt["key"])
             except QuotaExhausted:
                 print(
                     "attempts: label post hit the quota; retried later", file=sys.stderr

@@ -470,7 +470,13 @@ class RebaseRunnerTest(unittest.TestCase):
             self.expire_cooldowns()
         self.assertEqual(self.models(), 2)
         self.assertEqual(len(self.lines("labels.jsonl")), 1)
+        # The escalation comment that Anton's reset names.
+        (esc,) = self.comments()
+        marker = "<!-- epic-refinement-escalation v1 -->"
+        self.assertTrue(esc["body"].startswith(marker))
+        self.assertIn(f"`refine:{PR}:0:none`", esc["body"])
         self.assertEqual(self.tick("fail", refine), 0, self.log())
+        self.assertEqual(len(self.comments()), 1)
         self.assertEqual(self.models(), 2)
         self.assertIn("reached its attempt limit", self.log())
         # A reset by Anton is a new key: the model runs again.

@@ -572,6 +572,115 @@ class AttemptTest(unittest.TestCase):
         (entry,) = self.store().values()
         self.assertEqual(entry["escalation"], "posted")
 
+    def refine_setup(self) -> list[dict[str, Any]]:
+        """Fake issue comments behind rp.comments and rp.post_comment."""
+        rows: list[dict[str, Any]] = []
+        self.comment_fails = False
+
+        def post_comment(issue: int, body: str) -> None:
+            self.assertEqual(issue, 900)
+            if self.comment_fails:
+                raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+            n = 7000 + len(rows)
+            at = f"2026-10-06T10:00:{len(rows):02d}Z"
+            rows.append(
+                {
+                    "id": n,
+                    "body": body,
+                    "created_at": at,
+                    "updated_at": at,
+                    "html_url": f"https://github.com/{rp.REPO}/issues/900#issuecomment-{n}",
+                }
+            )
+
+        for name, value in (
+            ("comments", lambda issue: list(rows)),
+            ("post_comment", post_comment),
+        ):
+            patcher = mock.patch.object(rp, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return rows
+
+    def refine(self, tick: str, outcome: str | None, key: str) -> int:
+        action = {
+            "action": "refine",
+            "issue": f"https://github.com/{rp.REPO}/issues/900",
+            "attempt_key": key,
+        }
+        out = self.dir / "attempt.json"
+        code = rp.attempt_check(self.dir, "claude", action, out, self.post)
+        if code != rp.RUN:
+            return code
+        pin = rp.load_attempt(out)
+        self.assertEqual(rp.attempt_start(self.dir, pin, tick), rp.RUN)
+        if outcome:
+            rp.attempt_finish(self.dir, pin, tick, outcome, self.post)
+        return rp.RUN
+
+    @staticmethod
+    def as_issue_comments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {"id": r["id"], "body": r["body"], "createdAt": r["created_at"],
+             "url": r["html_url"], "includesCreatedEdit": False}
+            for r in rows
+        ]  # fmt: skip
+
+    def test_refine_limit_posts_an_escalation_anton_can_reset(self) -> None:
+        import refinement as rf
+
+        rows = self.refine_setup()
+        key = rf.attempt_key(900, [], None)
+        self.assertEqual(key, "refine:900:0:none")
+        for tick in ("t1", "t2"):
+            self.assertEqual(self.refine(tick, "failed", key), rp.RUN)
+        (esc,) = rows
+        self.assertEqual(esc["body"].partition("\n")[0], rf.ESCALATION_MARKER)
+        self.assertIn(f"`{key}`", esc["body"])
+        self.assertEqual(self.posts, [900])
+        self.assertEqual(self.store()[key]["escalation_url"], esc["html_url"])
+        self.assertEqual(self.refine("t3", "failed", key), rp.SKIP)
+        self.assertEqual(len(rows), 1)
+        # The selector now sees the escalation; Anton's reset makes a new key.
+        issue = self.as_issue_comments(rows)
+        self.assertTrue(rf.escalated(issue))
+        self.assertEqual(rf.attempt_key(900, issue, None), key)
+        issue.append(
+            {"id": 7100, "body": f"Refinement reset: Anton for {esc['html_url']}",
+             "createdAt": "2026-10-06T11:00:00Z", "url": "u",
+             "includesCreatedEdit": False}
+        )  # fmt: skip
+        self.assertFalse(rf.escalated(issue))
+        reset_key = rf.attempt_key(900, issue, None)
+        self.assertEqual(reset_key, "refine:900:0:7100")
+        self.assertEqual(self.refine("t4", "failed", reset_key), rp.RUN)
+
+    def test_failed_refine_escalation_is_retried_without_duplicates(self) -> None:
+        rows = self.refine_setup()
+        key = "refine:900:0:none"
+        self.comment_fails = True
+        for tick in ("t1", "t2"):
+            self.assertEqual(self.refine(tick, "failed", key), rp.RUN)
+        self.assertEqual((rows, self.posts), ([], []))  # no label without comment
+        self.assertEqual(self.store()[key]["escalation"], "pending")
+        self.comment_fails = False
+        self.post_fails = True
+        self.assertEqual(self.refine("t3", None, key), rp.SKIP)
+        self.assertEqual((len(rows), self.posts), (1, [900]))
+        self.post_fails = False
+        self.assertEqual(self.refine("t4", None, key), rp.SKIP)
+        self.assertEqual((len(rows), self.posts), (1, [900, 900]))
+        self.assertEqual(self.store()[key]["escalation"], "posted")
+
+    def test_refine_escalation_posted_before_a_crash_is_reused(self) -> None:
+        rows = self.refine_setup()
+        key = "refine:900:0:none"
+        rp.post_comment(900, f"<!-- epic-refinement-escalation v1 -->\n`{key}`")
+        for tick in ("t1", "t2"):
+            self.assertEqual(self.refine(tick, "failed", key), rp.RUN)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(self.store()[key]["escalation_url"], rows[0]["html_url"])
+
     def test_crashed_attempt_counts_after_a_restart(self) -> None:
         self.attempt("t1", None)  # the runner died after the model started
         self.attempt("t2", "failed")
