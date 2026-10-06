@@ -24,8 +24,11 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
    `project::ImgGen`, `project::Upload`, `project::Backup`, `project::Infrastructure`, `project::ExternalShows`,
    `project::Ai`, `project::unheard-artist-form`, `project::UNHEARD`. Add `bug`/`enhancement`/`documentation`/`later` as fitting.
 3. **Title**: imperative, Conventional-Commit-flavoured when natural — e.g. `feat(stream): add pre-listen page`.
-4. **Body** (this template):
+4. **Body** (this template). It starts with the request in the user's own words, quoted:
    ```md
+   ## Request
+   > <the task exactly as the user gave it>
+
    ## Context
    <why this matters / where it surfaced>
 
@@ -43,13 +46,16 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
    write the body to a temp file and create the issue over REST:
    ```sh
    gh api repos/{owner}/{repo}/issues -f title="<title>" -F body=@<body-file> \
-     -f 'labels[]=type::…' -f 'labels[]=project::…' --jq .html_url
+     -f 'labels[]=type::…' -f 'labels[]=project::…' -f 'labels[]=refinement' --jq .html_url
    ```
+   The `refinement` label makes the loop refine it (proposal, review by the other agent, then Ready;
+   rules section 8). Do not add it to the board or set a Status: the loop's `refine` adds it.
 6. Print the created issue URL.
 
 ## Hard rules
 - Never create the issue without explicit confirmation of the rendered draft.
 - Only use labels returned by the label read in step 2 — if none fit a dimension, say so rather than guessing.
+- Never set Ready or an Executor here. A draft becomes Ready only through refinement.
 - Keep it to ONE issue; if the task is clearly multi-part, recommend the decomposition workflow.
 
 Task: $ARGUMENTS

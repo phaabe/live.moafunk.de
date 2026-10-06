@@ -194,16 +194,54 @@ Priority, first match wins:
    the owner's `fix-checks` changes the head first. Mergeability
    `UNKNOWN` (GitHub is still computing it) does not block a review; a failed
    or malformed read is an error, never `UNKNOWN`.
-7. `continue`: the agent's draft PR, or its In progress issue without a PR.
+7. `review-refinement`: an issue's newest proposal has no verdict for its
+   digest, and this agent did not write it (see Refinement below).
+8. `set-ready`: an issue's approved proposal matches the issue and its Status
+   is empty, Backlog or Todo. Set only Status to Ready.
+9. `continue`: the agent's draft PR, or its In progress issue without a PR.
    Not while it is waiting (see Waiting work below).
-8. `adopt`: a focus PR with no owner line (`Executor:`, `Author:` or
+10. `adopt`: a focus PR with no owner line (`Executor:`, `Author:` or
    `Reviewer:`, with any value) whose files route to this agent (see Routing below). The agent
    adds the `Epic:`, `Executor:`, `Lane:`, `Reviewer:`, `Leaf IDs:` and `Issue:`
    lines and keeps the rest of the body. A PR with any owner line is never
    adopted.
-9. `claim`: a Ready issue with Executor set to this agent. Not while the agent
-   has work to continue or two open PRs.
-10. `idle`.
+11. `claim`: a Ready issue with Executor set to this agent. Not while the agent
+   has work to continue or two open PRs. While refinement is on, a Ready issue
+   needs a current approval or the exempt list (see Refinement below).
+12. `refine`: an enrolled, focus or Ready issue without an approved proposal
+   that matches it. Write the proposal (see Refinement below).
+13. `idle`.
+
+Refinement (`scripts/epic/refinement.py`, design in
+https://github.com/phaabe/live.moafunk.de/issues/551):
+
+- Enrolled: label `refinement` (or a phase label `refinement::review`,
+  `refinement::changes-requested`), or a proposal comment. Focus issues and
+  Ready issues count too. Old Ready tickets on the exempt list (a comment on
+  https://github.com/phaabe/live.moafunk.de/issues/551 starting with
+  `Refinement exempt: accepted by Anton`) are claimed without a proposal.
+- Proposal: a comment whose first line is `<!-- epic-refinement v1 -->`, then
+  one fenced JSON block with `request`, `proposer`, `executor`, `leaves`,
+  `files`, `depends_on`, `labels`, `acceptance_criteria`, `scope`. Never edit
+  it; post a new one. Its digest (in the action) is what the verdict names.
+- Verdict: a comment that is exactly `Refinement: APPROVED by <agent> at
+  <digest>` or `Refinement: CHANGES REQUESTED by <agent> at <digest>`. Only the
+  agent that did not write the proposal counts. Edited verdicts do not count.
+- Definition of Ready: current approval, acceptance criteria, leaves, files
+  owned by one lane, exactly one `type::*` and one `project::*` label on the
+  issue, the issue's Executor equals the proposal's, its "Start after" tickets
+  are in `depends_on`, on the board, no `needs-anton`. `depends_on` blocks a
+  claim like "Start after". The selector checks this again before `set-ready`
+  and before `claim`; a change after approval needs a new verdict.
+- Goes to Anton (`needs-anton`, questions in a comment): a change of outcome,
+  scope, lane ownership, release policy or production permissions.
+- Limits: 2 failed author runs per attempt key, then `needs-anton`. 3 rejected
+  rounds per ticket, then `escalate`: the escalation comment (first line
+  `<!-- epic-refinement-escalation v1 -->`) and `needs-anton`. Anton resets
+  with `Refinement reset: Anton for <escalation comment URL>`.
+- Board writes: `refine` may add its issue to the board and set fields;
+  `refine` and `set-ready` change the board only while Status is empty,
+  Backlog, Todo or Ready (`write_checks.py`).
 
 New actions: `adopt` (and later actions of
 https://github.com/phaabe/live.moafunk.de/issues/487) are emitted only when
