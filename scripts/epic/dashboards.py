@@ -2283,6 +2283,130 @@ def ticket_table() -> Json:
     )
 
 
+# Hidden variable for the history: the issues of the chosen check, or of the
+# whole table for All. Grafana joins them into a Loki regex (305|307).
+ISSUES = {
+    "name": "issues",
+    "type": "query",
+    "datasource": PROM,
+    "query": {"query": f"query_result({selected_tickets()})", "refId": "issues"},
+    "regex": '/issue="(\\d+)"/',
+    "refresh": 2,
+    "sort": 3,
+    "multi": True,
+    "includeAll": True,
+    "current": {"text": "All", "value": "$__all"},
+    "options": [],
+    "hide": 2,
+}
+
+RETIRED = "retired"  # ticket_history.RETIRED: a segment a later gap replaced
+# One series per segment: the newest rev wins. Retired is kept in the text
+# and dropped in Grafana: a filter in LogQL would bring back the segment's
+# older revisions.
+SEGMENTS = (
+    'topk by (segment_id) (1, max_over_time({stream="ticket_segments"} | json'
+    ' | issue=~"$issues" | keep segment_id, issue, status, agent, start, rev'
+    ' | label_format text="{{.status}}{{if .agent}} · {{.agent}}{{end}}",'
+    ' start_ms="{{.start}}000" | unwrap rev [7d]) by (segment_id, issue, text,'
+    " start_ms))"
+)
+
+
+def to_type(field: str, kind: str) -> Json:
+    return {
+        "id": "convertFieldType",
+        "options": {
+            "conversions": [{"targetField": field, "destinationType": kind}],
+            "fields": {},
+        },
+    }
+
+
+def status_history() -> Json:
+    """One row per ticket, colored by status over 7 days.
+
+    A row draws each segment from its start to the next one, so only the
+    start time is needed. A gap is its own segment: transparent, no text.
+    """
+    mappings = [
+        regex_map(f"^{status}( · .*)?$", color, i)
+        for i, (status, color) in enumerate(STATUS.items())
+    ]
+    mappings.append(
+        {
+            "type": "value",
+            "options": {
+                "gap": {"index": len(STATUS), "text": " ", "color": "transparent"}
+            },
+        }
+    )
+    return {
+        "type": "state-timeline",
+        "title": "Status history · $check",
+        "description": "One row per ticket over 7 days, in the order the rows "
+        "start. In progress and In review show the agent. Empty parts: the "
+        "collector did not see the board then. A check filter keeps the full "
+        "history of its tickets.",
+        "datasource": LOKI,
+        "timeFrom": "7d",
+        "hideTimeOverride": True,
+        "targets": [{"refId": "A", "expr": SEGMENTS, "queryType": "instant"}],
+        "transformations": [
+            {"id": "labelsToFields", "options": {"mode": "columns"}},
+            {"id": "merge", "options": {}},
+            to_type("start_ms", "number"),
+            to_type("start_ms", "time"),
+            {
+                "id": "filterByValue",
+                "options": {
+                    "filters": [
+                        {
+                            "fieldName": "text",
+                            "config": {
+                                "id": "regex",
+                                "options": {"value": f"^{RETIRED}( · .*)?$"},
+                            },
+                        }
+                    ],
+                    "type": "exclude",
+                    "match": "any",
+                },
+            },
+            {
+                "id": "filterFieldsByName",
+                "options": {"include": {"names": ["issue", "text", "start_ms"]}},
+            },
+            {"id": "sortBy", "options": {"sort": [{"field": "start_ms"}]}},
+            {
+                "id": "partitionByValues",
+                "options": {
+                    "fields": ["issue"],
+                    "keepFields": False,
+                    "naming": {"asLabels": True},
+                },
+            },
+        ],
+        "fieldConfig": {
+            "defaults": {
+                "displayName": "#${__field.labels.issue}",
+                "color": {"mode": "fixed", "fixedColor": GREY},
+                "mappings": mappings,
+                "custom": {"fillOpacity": 80, "lineWidth": 0},
+                "noValue": "No history",
+            },
+            "overrides": [],
+        },
+        "options": {
+            "mergeValues": True,
+            "showValue": "auto",
+            "rowHeight": 0.9,
+            "alignValue": "left",
+            "legend": {"showLegend": False},
+        },
+    }
+
+
 def board_column(status: str) -> Json:
     names = ["issue", "title", "executor", "url", "done_sort"]
     rename = {"issue": "Ticket", "title": "Title", "executor": "Executor"}
@@ -2325,7 +2449,8 @@ def tickets_page() -> Json:
             "options": [],
             "includeAll": False,
             "multi": False,
-        }
+        },
+        ISSUES,
     ]
     for i, check in enumerate(CHECKS):
         board.add(check_tile(*check), 4 * i, 0, 4, 3)
@@ -2333,10 +2458,13 @@ def tickets_page() -> Json:
         board.add(status_stat(status), 4 * i, 3, 4, 4)
     board.add(cumulative_flow(), 0, 7, 24, 8)
     board.add(ticket_table(), 0, 15, 24, 9)
+    # 14 units (about 450 px): a check holds few tickets, so each row is
+    # tall enough for its text; All (about 150 rows) shows colors only.
+    board.add(status_history(), 0, 24, 24, 14)
     board.add_row(
         "Board",
-        24,
-        [(board_column(status), 4 * i, 25, 4, 15) for i, status in enumerate(STATUS)],
+        38,
+        [(board_column(status), 4 * i, 39, 4, 15) for i, status in enumerate(STATUS)],
     )
     return board.render()
 

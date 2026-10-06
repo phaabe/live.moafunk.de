@@ -56,6 +56,29 @@
         "options": [],
         "includeAll": false,
         "multi": false
+      },
+      {
+        "name": "issues",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "agent-prometheus"
+        },
+        "query": {
+          "query": "query_result(label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\"))",
+          "refId": "issues"
+        },
+        "regex": "/issue=\"(\\d+)\"/",
+        "refresh": 2,
+        "sort": 3,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "hide": 2
       }
     ]
   },
@@ -1900,13 +1923,222 @@
       }
     },
     {
-      "type": "row",
-      "title": "Board",
-      "collapsed": true,
+      "type": "state-timeline",
+      "title": "Status history · $check",
+      "description": "One row per ticket over 7 days, in the order the rows start. In progress and In review show the agent. Empty parts: the collector did not see the board then. A check filter keeps the full history of its tickets.",
+      "datasource": {
+        "type": "loki",
+        "uid": "agent-loki"
+      },
+      "timeFrom": "7d",
+      "hideTimeOverride": true,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk by (segment_id) (1, max_over_time({stream=\"ticket_segments\"} | json | issue=~\"$issues\" | keep segment_id, issue, status, agent, start, rev | label_format text=\"{{.status}}{{if .agent}} · {{.agent}}{{end}}\", start_ms=\"{{.start}}000\" | unwrap rev [7d]) by (segment_id, issue, text, start_ms))",
+          "queryType": "instant"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "start_ms",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "start_ms",
+                "destinationType": "time"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              {
+                "fieldName": "text",
+                "config": {
+                  "id": "regex",
+                  "options": {
+                    "value": "^retired( · .*)?$"
+                  }
+                }
+              }
+            ],
+            "type": "exclude",
+            "match": "any"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "issue",
+                "text",
+                "start_ms"
+              ]
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "start_ms"
+              }
+            ]
+          }
+        },
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "issue"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "displayName": "#${__field.labels.issue}",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#6E717A"
+          },
+          "mappings": [
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^Backlog( · .*)?$",
+                "result": {
+                  "index": 0,
+                  "color": "#A57BE0"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^Refinement( · .*)?$",
+                "result": {
+                  "index": 1,
+                  "color": "#5B8DEF"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^Ready( · .*)?$",
+                "result": {
+                  "index": 2,
+                  "color": "#E8B530"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^In progress( · .*)?$",
+                "result": {
+                  "index": 3,
+                  "color": "#D96BB0"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^In review( · .*)?$",
+                "result": {
+                  "index": 4,
+                  "color": "#4FC3E8"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^Done( · .*)?$",
+                "result": {
+                  "index": 5,
+                  "color": "#5AB45F"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "gap": {
+                  "index": 6,
+                  "text": " ",
+                  "color": "transparent"
+                }
+              }
+            }
+          ],
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          },
+          "noValue": "No history"
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.9,
+        "alignValue": "left",
+        "legend": {
+          "showLegend": false
+        }
+      },
       "id": 15,
       "gridPos": {
         "x": 0,
         "y": 24,
+        "w": 24,
+        "h": 14
+      }
+    },
+    {
+      "type": "row",
+      "title": "Board",
+      "collapsed": true,
+      "id": 16,
+      "gridPos": {
+        "x": 0,
+        "y": 38,
         "w": 24,
         "h": 1
       },
@@ -2131,10 +2363,10 @@
               "show": false
             }
           },
-          "id": 16,
+          "id": 17,
           "gridPos": {
             "x": 0,
-            "y": 25,
+            "y": 39,
             "w": 4,
             "h": 15
           }
@@ -2359,10 +2591,10 @@
               "show": false
             }
           },
-          "id": 17,
+          "id": 18,
           "gridPos": {
             "x": 4,
-            "y": 25,
+            "y": 39,
             "w": 4,
             "h": 15
           }
@@ -2587,10 +2819,10 @@
               "show": false
             }
           },
-          "id": 18,
+          "id": 19,
           "gridPos": {
             "x": 8,
-            "y": 25,
+            "y": 39,
             "w": 4,
             "h": 15
           }
@@ -2815,10 +3047,10 @@
               "show": false
             }
           },
-          "id": 19,
+          "id": 20,
           "gridPos": {
             "x": 12,
-            "y": 25,
+            "y": 39,
             "w": 4,
             "h": 15
           }
@@ -3043,10 +3275,10 @@
               "show": false
             }
           },
-          "id": 20,
+          "id": 21,
           "gridPos": {
             "x": 16,
-            "y": 25,
+            "y": 39,
             "w": 4,
             "h": 15
           }
@@ -3272,10 +3504,10 @@
               "show": false
             }
           },
-          "id": 21,
+          "id": 22,
           "gridPos": {
             "x": 20,
-            "y": 25,
+            "y": 39,
             "w": 4,
             "h": 15
           }

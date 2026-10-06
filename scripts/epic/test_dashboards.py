@@ -271,7 +271,7 @@ class TicketsPageTest(unittest.TestCase):
                 self.assertIn("/d/epic-tickets", urls)
 
     def test_check_picker_matches_the_collector(self) -> None:
-        [variable] = self.page()["templating"]["list"]
+        variable, _issues = self.page()["templating"]["list"]
         values = [part.split(" : ")[1] for part in variable["query"].split(", ")]
         self.assertEqual(values, ["all", *(check.id for check in tickets.CHECKS)])
         self.assertEqual(variable["current"]["value"], "all")
@@ -361,6 +361,88 @@ class TicketsPageTest(unittest.TestCase):
         # Empty cells show "–", never 0 or a date of 1970.
         self.assertEqual(table["fieldConfig"]["defaults"]["noValue"], "–")
 
+    def test_history_issues_follow_the_check(self) -> None:
+        """Hidden; All selects every issue of the chosen check, or of the
+        whole table, so the history and the table show the same tickets."""
+        _check, issues = self.page()["templating"]["list"]
+        self.assertEqual(issues["name"], "issues")
+        self.assertEqual(issues["hide"], 2)
+        self.assertTrue(issues["multi"] and issues["includeAll"])
+        # No allValue: All expands to the listed issues, never ".*".
+        self.assertNotIn("allValue", issues)
+        self.assertEqual(issues["current"]["value"], "$__all")
+        query = issues["query"]["query"]
+        self.assertEqual(query, f"query_result({dashboards.selected_tickets()})")
+        regex = re.compile(issues["regex"].strip("/"))
+        sample = 'epic_ticket_info{issue="305",status="Ready"} 1 1790000000'
+        self.assertEqual(regex.search(sample).group(1), "305")
+
+    def test_history_reads_the_newest_segment_revision(self) -> None:
+        history = self.by_title("Status history · $check")
+        self.assertEqual(history["type"], "state-timeline")
+        self.assertEqual(history["datasource"], dashboards.LOKI)
+        self.assertEqual(history["timeFrom"], "7d")
+        [query] = history["targets"]
+        self.assertEqual(query["queryType"], "instant")
+        expr = query["expr"]
+        self.assertTrue(expr.startswith("topk by (segment_id) (1, max_over_time("))
+        self.assertIn('{stream="ticket_segments"}', expr)
+        self.assertIn('issue=~"$issues"', expr)
+        self.assertIn("unwrap rev [7d]", expr)
+        # Retired is dropped after topk picks the newest revision: a LogQL
+        # filter would bring back the segment's older revisions.
+        self.assertNotIn("retired", expr)
+        steps = [t["id"] for t in history["transformations"]]
+        self.assertEqual(
+            steps,
+            [
+                "labelsToFields",
+                "merge",
+                "convertFieldType",
+                "convertFieldType",
+                "filterByValue",
+                "filterFieldsByName",
+                "sortBy",
+                "partitionByValues",
+            ],
+        )
+        [retired] = history["transformations"][4]["options"]["filters"]
+        self.assertEqual(history["transformations"][4]["options"]["type"], "exclude")
+        pattern = re.compile(retired["config"]["options"]["value"])
+        self.assertTrue(pattern.match("retired"))
+        self.assertTrue(pattern.match("retired · Claude"))
+        self.assertFalse(pattern.match("Ready"))
+        self.assertEqual(history["transformations"][-1]["options"]["fields"], ["issue"])
+
+    def test_history_colors_status_and_hides_gaps(self) -> None:
+        history = self.by_title("Status history · $check")
+        mappings = history["fieldConfig"]["defaults"]["mappings"]
+        regexes = [m["options"] for m in mappings if m["type"] == "regex"]
+        for status, color in dashboards.STATUS.items():
+            with self.subTest(status=status):
+                [hit] = [
+                    r["result"]["color"]
+                    for r in regexes
+                    if re.match(r["pattern"], f"{status} · Codex")
+                ]
+                self.assertEqual(hit, color)
+                self.assertTrue(any(re.match(r["pattern"], status) for r in regexes))
+        # "In progress" never matches the Ready or Done patterns.
+        self.assertEqual(
+            sum(bool(re.match(r["pattern"], "In progress")) for r in regexes), 1
+        )
+        [gap] = [m["options"]["gap"] for m in mappings if m["type"] == "value"]
+        self.assertEqual((gap["color"], gap["text"]), ("transparent", " "))
+
+    def test_history_sits_between_the_table_and_the_board(self) -> None:
+        page = self.page()
+        table = self.by_title("Tickets · $check")["gridPos"]
+        history = self.by_title("Status history · $check")["gridPos"]
+        [row] = [p for p in page["panels"] if p["type"] == "row"]
+        self.assertEqual(history["y"], table["y"] + table["h"])
+        self.assertEqual(row["gridPos"]["y"], history["y"] + history["h"])
+        self.assertEqual(history["w"], 24)
+
     def test_board_is_a_collapsed_row_and_done_sorts_by_done_sort(self) -> None:
         [row] = [p for p in self.page()["panels"] if p["type"] == "row"]
         self.assertTrue(row["collapsed"])
@@ -433,6 +515,26 @@ def docker_ready() -> bool:
 
 
 @unittest.skipUnless(docker_ready(), "needs docker for promtool")
+class SegmentShippingConfigTest(unittest.TestCase):
+    """Alloy and Loki settings the status history needs (merged in
+    https://github.com/phaabe/live.moafunk.de/pull/641)."""
+
+    root = Path(__file__).resolve().parents[2] / "tools/agent-monitoring"
+
+    def test_alloy_times_segments_by_emitted_at(self) -> None:
+        text = (self.root / "alloy.alloy").read_text()
+        start = text.index('selector = "{stream=\\"ticket_segments\\"}"')
+        # Up to the next stage.match, or the end of the file.
+        stage = text[start:].split("stage.match")[0]
+        self.assertIn('expressions = { emitted_at = "" }', stage)
+        self.assertRegex(stage, r'stage\.timestamp \{\s+source = "emitted_at"')
+        self.assertIn('format = "Unix"', stage)
+
+    def test_loki_allows_a_series_per_segment(self) -> None:
+        text = (self.root / "loki.yaml").read_text()
+        self.assertRegex(text, r"(?m)^\s+max_query_series: 5000$")
+
+
 class QuerySemanticsTest(unittest.TestCase):
     """Codex review of https://github.com/phaabe/live.moafunk.de/pull/479:
     the generated queries, evaluated by Prometheus's own test tool."""

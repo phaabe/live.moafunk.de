@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import os
 from pathlib import Path
@@ -575,6 +575,8 @@ TIMED = {
     307: (30.0, "1", "Claude", False),
     308: (5.0, "gap", "", True),
     305: (50.0, "0", "", True),
+    # Backlog for 9 days: an open segment older than the 7-day history.
+    304: (216.0, "1", "", True),
 }
 
 
@@ -625,6 +627,61 @@ def ticket_metrics(now: float) -> str:
     shown = [t.number for t in tickets.board_tickets(state, now).tickets]
     ticket_history.history_metrics(metrics, summary, shown, now)
     return metrics.render()
+
+
+def ticket_segments(now: float) -> list[monitor.Json]:
+    """ticket-segments.jsonl rows that match the time columns: Backlog since
+    9 days (older than the 7-day panel; still open for 304), Ready from its
+    entry, then the current status, open.
+
+    305 has a retired segment, 307 a corrected In progress agent before its
+    unverified Claude review, 308 a 1 h gap before its Ready entry.
+    """
+    at = int(now)
+    state = monitor.epic_view(ticket_state(now))
+    rows: list[monitor.Json] = []
+
+    def add(segment: ticket_history.Segment, rev: int = 1) -> None:
+        rows.append(ticket_history.segment_row(segment, rev, at))
+
+    for issue, entry in sorted(ticket_summary(state, now).tickets.items()):
+        agent = entry.agent.removesuffix(" (unverified)")
+        # (status, start, agent, verified); each part ends where the next starts.
+        parts = [("Backlog", at - 9 * ticket_history.DAY, "", 1)]
+        if entry.ready_entered and entry.status != "Ready":
+            parts.append(("Ready", entry.ready_entered, "", 1))
+        if issue == 307:
+            parts.append(("In progress", entry.entered - 3600, "Codex", 1))
+        if issue == 308:
+            parts.append(("gap", entry.entered - 3600, "", 1))
+        if entry.status != "Backlog":
+            parts.append(
+                (entry.status, entry.entered, agent, int(agent == entry.agent))
+            )
+        for (status, start, who, verified), after in zip(
+            parts, [*parts[1:], None], strict=True
+        ):
+            segment = ticket_history.Segment(
+                f"{issue}-{start}",
+                issue,
+                status,
+                start,
+                after[1] if after else None,
+                who,
+                verified,
+            )
+            add(segment)
+            if issue == 307 and status == "In progress":
+                # The agent was corrected: the newer revision wins.
+                add(replace(segment, agent="Claude"), rev=2)
+        if issue == 305:
+            # A gap replaced this segment: its newest revision is retired.
+            old = ticket_history.Segment(
+                f"{issue}-old", issue, "Refinement", entry.entered - 600, None
+            )
+            add(old)
+            add(replace(old, status=ticket_history.RETIRED), rev=2)
+    return rows
 
 
 def ticket_health(now: float, ok: bool) -> str:
@@ -763,6 +820,12 @@ def main(argv: list[str] | None = None) -> int:
     if paused:
         pause.write_text("fixture\n")
     args.output.mkdir(parents=True, exist_ok=True)
+    # Once: the status history is static; Alloy ships it to Loki.
+    segments = runtime / ticket_history.SEGMENTS
+    segments.parent.mkdir(exist_ok=True)
+    monitor.atomic_write(
+        segments, "".join(json.dumps(row) + "\n" for row in ticket_segments(now))
+    )
     ledgers = monitor.Ledgers(runtime)
     local = argparse.Namespace(
         state_dir=args.state_dir, pause_file=pause, output=args.output
