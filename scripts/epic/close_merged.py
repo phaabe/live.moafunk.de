@@ -13,6 +13,12 @@ what it would do.
      (`- [ ] **X1.2.3**`) that no merged PR (of any age, for any ticket)
      lists in `Leaf IDs:` stays open and gets one note.
   4. Otherwise post one evidence comment and close it as completed.
+  5. Set board Status Done for every ticket of step 2 that is closed as
+     completed and on the board with another Status. Under the ticket's lock
+     the ticket is read again first: it may have been reopened and claimed
+     since the board read. This also retries a board write that failed
+     before, until the PR leaves the window. A board error is logged; it
+     never reopens a ticket.
 
 Every comment ends with a hidden marker naming the PR. The ticket's comments
 are searched for it first, so a rerun never posts twice; a run that posted
@@ -49,13 +55,17 @@ import github_quota
 import next_action
 import target_lock
 from github_quota import QuotaExhausted, parse_iso, run_gh
-from next_action import BASES, EPIC, LEAF, REPO, issue_url
+from next_action import BASES, EPIC, LEAF, PROJECT_API, REPO, issue_url
 
 WINDOW_DAYS = 14
 DEFERRED = 3
 ANY_ISSUE_LINE = re.compile(r"^Issue:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 ISSUE_TARGET = re.compile(rf"https://github\.com/{re.escape(REPO)}/issues/(\d+)")
-UNCHECKED_LEAF = re.compile(r"- \[ \] \*\*([A-Z][0-9]+\.[0-9]+\.[0-9]+)\*\*")
+# A checkbox that starts the line. Inline code (`- [ ] **X1.2.3**`) is an
+# example, not a leaf.
+UNCHECKED_LEAF = re.compile(
+    r"^[ \t]*- \[ \] \*\*([A-Z][0-9]+\.[0-9]+\.[0-9]+)\*\*", re.MULTILINE
+)
 VALIDATION = re.compile(r"^Validation:[ \t]*(.+)$", re.MULTILINE)
 MARKER = "<!-- epic-close-merged {kind} pr={pr} -->"
 MARKERS = re.compile(r"<!-- epic-close-merged (close|note) pr=(\d+) -->")
@@ -76,7 +86,19 @@ OPEN_ISSUES_JQ = (
     " sub_issues: (.sub_issues_summary.total // 0)}"
 )
 TICKET_JQ = "{number, body, state, sub_issues: (.sub_issues_summary.total // 0)}"
+CLOSURE_JQ = "{state, state_reason}"
 REOPENED_JQ = '.[] | select(.event == "reopened") | .created_at | tojson'
+DONE = "Done"
+STATUS_JQ = (
+    '.[] | select(.name == "Status")'
+    ' | {id, done: ([.options[]? | select(.name.raw == "Done") | .id] | first)}'
+)
+BOARD_JQ = (
+    '.[] | select(.content_type == "Issue") | {id, number: .content.number,'
+    " repo: .content.repository_url, state: .content.state,"
+    " reason: .content.state_reason,"
+    ' status: ([.fields[]? | select(.name == "Status") | .value.id] | first)}'
+)
 MARKERS_JQ = (
     '.[] | .body // "" | [scan("<!-- epic-close-merged (?:close|note) pr=[0-9]+ -->")]'
     " | .[] | tojson"
@@ -220,6 +242,15 @@ def ticket_now(gh: Gh, number: int) -> dict[str, Any] | None:
     return found[0]
 
 
+def closed_completed(gh: Gh, number: int) -> bool:
+    """True when GitHub has the ticket closed as completed now."""
+    found = lines(gh, ["api", f"repos/{REPO}/issues/{number}", "--jq", CLOSURE_JQ])
+    return bool(found) and (found[0]["state"], found[0]["state_reason"]) == (
+        "closed",
+        "completed",
+    )
+
+
 def held(
     ticket: dict[str, Any], in_review: set[int], log: Callable[[str], None]
 ) -> bool:
@@ -330,6 +361,75 @@ def close(gh: Gh, number: int) -> None:
     )
 
 
+def board_done(
+    gh: Gh, numbers: set[int], dry_run: bool, log: Callable[[str], None]
+) -> bool:
+    """Set Status Done on the board items of these tickets that are closed as
+    completed. False when a board call failed (logged)."""
+    try:
+        found = lines(
+            gh, ["api", f"{PROJECT_API}/fields?per_page=100", "--jq", STATUS_JQ]
+        )
+        if len(found) != 1 or not found[0]["done"]:
+            log(f"close: board has no Status field with option {DONE}")
+            return False
+        field, done = found[0]["id"], found[0]["done"]
+        items = lines(
+            gh,
+            [
+                "api",
+                "--paginate",
+                f"{PROJECT_API}/items?per_page=100&fields[]={field}",
+                "--jq",
+                BOARD_JQ,
+            ],
+        )
+    except subprocess.SubprocessError as error:
+        detail = getattr(error, "stderr", "") or error
+        log(f"close: board read failed: {str(detail).strip()}")
+        return False
+    ok = True
+    for item in items:
+        if (
+            item["number"] not in numbers
+            or not str(item.get("repo") or "").endswith(f"/repos/{REPO}")
+            or item["state"] != "closed"
+            or item["reason"] != "completed"
+            or item["status"] == done
+        ):
+            continue
+        url = issue_url(item["number"])
+        try:
+            with ticket_lock(item["number"]) as locked:
+                if not locked:
+                    log(f"close: {url} is locked by another runner; board next tick")
+                    continue
+                # The board list may predate a reopen and a new claim.
+                if not closed_completed(gh, item["number"]):
+                    log(f"close: {url} is no longer closed as completed; board left")
+                    continue
+                log(f"close: {url} is closed; board Status to {DONE}")
+                if dry_run:
+                    continue
+                gh(
+                    [
+                        "api",
+                        "-X",
+                        "PATCH",
+                        f"{PROJECT_API}/items/{item['id']}",
+                        "-F",
+                        f"fields[][id]={field}",
+                        "-f",
+                        f"fields[][value]={done}",
+                    ]
+                )
+        except subprocess.SubprocessError as error:
+            ok = False
+            detail = getattr(error, "stderr", "") or error
+            log(f"close: {url}: board write failed: {str(detail).strip()}")
+    return ok
+
+
 def settle(
     gh: Gh,
     ticket: dict[str, Any],
@@ -337,30 +437,32 @@ def settle(
     listed: set[str],
     dry_run: bool,
     log: Callable[[str], None],
-) -> None:
-    """Note or close one ticket. The caller holds the ticket's lock."""
+) -> bool:
+    """Note or close one ticket; True when it closed it. The caller holds the
+    ticket's lock."""
     number = ticket["number"]
     url = issue_url(number)
     if reopened_since(gh, number, newest["merged_at"]):
         log(
             f"close: {url} was reopened after {pr_url(newest['number'])} merged; left open"
         )
-        return
+        return False
     leaves = uncovered(ticket.get("body") or "", listed)
     done = markers(gh, number)
     if leaves:
         if ("note", newest["number"]) in done:
-            return
+            return False
         log(f"close: {url} keeps open leaves {', '.join(leaves)}; noting it")
         if not dry_run:
             comment(gh, number, note_comment(newest, leaves))
-        return
+        return False
     log(f"close: {url} done by {pr_url(newest['number'])}; closing")
     if dry_run:
-        return
+        return False
     if ("close", newest["number"]) not in done:
         comment(gh, number, close_comment(newest))
     close(gh, number)
+    return True
 
 
 def run(
@@ -376,11 +478,28 @@ def run(
     if not by_ticket:
         return 0
     tickets = open_tickets(gh)
-    if not tickets.keys() & by_ticket.keys():
-        return 0
+    closed = set(by_ticket) - set(tickets)
+    failed = False
+    if tickets.keys() & by_ticket.keys():
+        failed, now_closed = close_tickets(gh, tickets, by_ticket, dry_run, log)
+        closed |= now_closed
+    if closed and not board_done(gh, closed, dry_run, log):
+        failed = True
+    return 1 if failed else 0
+
+
+def close_tickets(
+    gh: Gh,
+    tickets: dict[int, dict[str, Any]],
+    by_ticket: dict[int, list[dict[str, Any]]],
+    dry_run: bool,
+    log: Callable[[str], None],
+) -> tuple[bool, set[int]]:
+    """Steps 3 and 4. Returns (a GitHub call failed, the tickets it closed)."""
     in_review = open_pr_tickets(gh)
     listed: set[str] | None = None
     failed = False
+    closed: set[int] = set()
     for number, its_prs in sorted(by_ticket.items()):
         ticket = tickets.get(number)
         if ticket is None:
@@ -400,12 +519,13 @@ def run(
                     continue
                 if UNCHECKED_LEAF.search(ticket.get("body") or "") and listed is None:
                     listed = listed_leaves(gh)
-                settle(gh, ticket, newest, listed or set(), dry_run, log)
+                if settle(gh, ticket, newest, listed or set(), dry_run, log):
+                    closed.add(number)
         except subprocess.SubprocessError as error:
             failed = True
             detail = getattr(error, "stderr", "") or error
             log(f"close: {url}: GitHub call failed: {str(detail).strip()}")
-    return 1 if failed else 0
+    return failed, closed
 
 
 def main(argv: list[str] | None = None) -> int:

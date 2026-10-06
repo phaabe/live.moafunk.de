@@ -869,7 +869,9 @@ class ClaudeTickTest(RunnerHarness):
             (
                 {
                     **transcript,
-                    "EPIC_TICK_TIMEOUT_SECONDS": "2",
+                    # Long enough for the stub to store its transcript before
+                    # the timeout, also when the full suite loads the machine.
+                    "EPIC_TICK_TIMEOUT_SECONDS": "10",
                     "TEST_MODEL_SLEEP": "30",
                 },
                 (124, "timeout", "model"),

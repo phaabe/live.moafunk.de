@@ -272,17 +272,20 @@ class Completion(unittest.TestCase):
 
 
 class ClosedIssues(unittest.TestCase):
-    def test_closed_ready_gets_no_claim_when_on(self) -> None:
+    # Closed issues are skipped with the switch off too: a board Status the
+    # close step could not update must not starve a Ready issue.
+    # https://github.com/phaabe/live.moafunk.de/issues/642
+    def test_closed_ready_gets_no_claim(self) -> None:
         s = with_tickets(state(item(507, "Ready", state="closed", reason="completed")))
-        self.assertEqual(first(s, on=False).action, "claim")  # old behavior
-        self.assertEqual(first(s, on=True).action, "idle")
+        for on in (False, True):
+            self.assertEqual(first(s, on).action, "idle")
 
     def test_closed_in_progress_does_not_starve_claims(self) -> None:
         stale = item(430, "In progress", state="closed", reason="completed")
         ready = item(521, "Ready", readiness="Ready.")
         s = with_tickets(state(stale, ready))
-        self.assertEqual(kinds(s, on=False), [("continue", f"{ISSUES}/430")])
-        self.assertEqual(kinds(s, on=True), [("claim", f"{ISSUES}/521")])
+        for on in (False, True):
+            self.assertEqual(kinds(s, on), [("claim", f"{ISSUES}/521")])
 
     def test_missing_state_is_not_treated_as_closed(self) -> None:
         s = with_tickets(state(item(521, "Ready", state=None, readiness="Ready.")))
@@ -450,6 +453,19 @@ class SharedReader(Env):
         act = first(s, on=True)
         self.assertEqual(act.action, "wait")
         self.assertEqual(act.warnings, [f"{PREREQ} is open; board Status is Done"])
+
+    def test_off_closed_in_progress_does_not_starve_a_ready_issue(self) -> None:
+        # Issue 655 on 2026-10-06: closed, board Status still In progress.
+        self.repo.add_item(655, "In progress", "Claude")
+        self.repo.items[-1]["content"].update(
+            {"state": "closed", "state_reason": "completed"}
+        )
+        self.repo.add_item(642, "Ready", "Claude", readiness="**Ready:** all.")
+        self.repo.publish()
+        on = na.completed_tickets({})  # the switch unset
+        acts = na.decide("Claude", self.build(on), include_waiting=True)
+        self.assertNotIn(f"{ISSUES}/655", [a.issue for a in acts])
+        self.assertIn(("claim", f"{ISSUES}/642"), [(a.action, a.issue) for a in acts])
 
     def test_404_and_410_block_only_the_successor(self) -> None:
         for status in (404, 410):
