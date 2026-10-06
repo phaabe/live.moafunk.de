@@ -5,7 +5,8 @@
       "type": "string",
       "enum": ["completed", "blocked", "quota"]
     },
-    "summary": {"type": "string"}
+    "summary": {"type": "string"},
+    "reason_code": {"type": "string", "enum": ["environment"]}
   },
   "required": ["status", "summary"],
   "additionalProperties": false

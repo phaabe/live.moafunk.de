@@ -323,5 +323,160 @@ class CooldownTest(unittest.TestCase):
         self.assertEqual(self.entries()[tc.key(FIX)]["by"], "claude-2")
 
 
+OTHER = {**FIX, "pr": 6}
+CLAIM = {"action": "claim", "reason": "t", "issue": ISSUE, "updated_at": "u1"}
+TICK = "2026-10-06T08:00:00Z"
+
+
+class EnvironmentHoldTest(unittest.TestCase):
+    """reason_code `environment`: env-block events and the model hold."""
+
+    read = CooldownTest.read
+    check = CooldownTest.check
+    entries = CooldownTest.entries
+
+    def setUp(self) -> None:
+        CooldownTest.setUp(self)  # type: ignore[arg-type]
+        self.github["pulls/6 --jq .state"] = f"open\n{SHA}"
+        self.events = self.state / "claude-ticks.jsonl"
+
+    def env_block(
+        self,
+        action: dict[str, Any],
+        now: float = NOW,
+        reason_code: str | None = "environment",
+    ) -> int:
+        self.assertEqual(self.check(action, now), tc.RUN)
+        output: dict[str, Any] = {"status": "blocked", "summary": "sandbox\n refused"}
+        if reason_code is not None:
+            output["reason_code"] = reason_code
+        self.result.write_text(json.dumps({"structured_output": output}))
+        return tc.record(
+            action,
+            self.state,
+            self.seen,
+            self.result,
+            0,
+            1,
+            now,
+            self.events,
+            TICK,
+        )
+
+    def hold(self) -> dict[str, Any] | None:
+        return tc.held(self.state)
+
+    def env_events(self) -> list[dict[str, Any]]:
+        if not self.events.exists():
+            return []
+        return [json.loads(line) for line in self.events.read_text().splitlines()]
+
+    def test_one_environment_block_cools_down_as_today(self) -> None:
+        self.assertEqual(self.env_block(FIX), tc.BLOCKED)
+        self.assertIn(tc.key(FIX), self.entries())
+        self.assertIsNone(self.hold())
+        (event,) = self.env_events()
+        self.assertEqual(event["event"], "env-block")
+        self.assertEqual(event["tick"], TICK)
+        self.assertEqual(event["action"], "fix")
+        self.assertEqual(event["target"], "pr:5")
+        self.assertEqual(event["reason"], "model reported blocked: sandbox refused")
+        self.assertIs(event["hold"], False)
+
+    def test_second_block_on_another_target_sets_the_hold(self) -> None:
+        self.env_block(FIX)
+        self.assertEqual(self.env_block(CLAIM, NOW + 60), tc.BLOCKED)
+        hold = self.hold()
+        assert hold is not None
+        self.assertEqual(hold["targets"], [f"issue:{ISSUE}", "pr:5"])
+        self.assertEqual(hold["at"], tc.when(NOW + 60))
+        self.assertIn("sandbox refused", hold["reason"])
+        self.assertIs(self.env_events()[-1]["hold"], True)
+        # The second target cools down too.
+        self.assertIn(tc.key(CLAIM), self.entries())
+
+    def test_same_target_twice_sets_no_hold(self) -> None:
+        self.env_block(FIX)
+        # A new head of the same PR is the same target.
+        self.env_block({**FIX, "sha": "c" * 40}, NOW + 60)
+        self.assertIsNone(self.hold())
+
+    def test_blocks_more_than_six_hours_apart_set_no_hold(self) -> None:
+        self.env_block(FIX)
+        self.env_block(OTHER, NOW + tc.HOLD_WINDOW + 1)
+        self.assertIsNone(self.hold())
+        self.env_block(CLAIM, NOW + tc.HOLD_WINDOW + 2)
+        self.assertIsNotNone(self.hold())
+
+    def test_ticket_blocks_do_not_count(self) -> None:
+        self.env_block(FIX, reason_code=None)
+        self.env_block(OTHER, NOW + 60, reason_code=None)
+        self.assertIsNone(self.hold())
+        self.assertEqual(self.env_events(), [])
+        self.assertFalse((self.state / tc.ENV_FILE).exists())
+
+    def test_unknown_reason_code_is_no_result(self) -> None:
+        # An invalid result is no evidence: the verify failure decides alone.
+        self.env_block(FIX, reason_code="ticket")
+        self.assertIsNone(self.hold())
+        self.assertNotIn("model reported", self.entries()[tc.key(FIX)]["reason"])
+
+    def test_deleting_the_hold_resumes_and_needs_two_new_blocks(self) -> None:
+        self.env_block(FIX)
+        self.env_block(OTHER, NOW + 60)
+        self.assertIsNotNone(self.hold())
+        (self.state / tc.HOLD_FILE).unlink()
+        self.assertIsNone(self.hold())
+        # The blocks that set the hold are used up.
+        self.env_block(CLAIM, NOW + 120)
+        self.assertIsNone(self.hold())
+        self.env_block({**FIX, "sha": "c" * 40}, NOW + 180)
+        self.assertIsNotNone(self.hold())
+
+    def test_hold_command_exits_3_while_held(self) -> None:
+        argv = ["tick_cooldown.py", "hold", "--state-dir", str(self.state)]
+        with mock.patch("sys.argv", argv):
+            self.assertEqual(tc.main(), tc.RUN)
+            self.env_block(FIX)
+            self.env_block(OTHER, NOW + 60)
+            with mock.patch("sys.stderr"):
+                self.assertEqual(tc.main(), tc.SKIP)
+            (self.state / tc.HOLD_FILE).unlink()
+            self.assertEqual(tc.main(), tc.RUN)
+
+    def test_any_hold_file_holds(self) -> None:
+        (self.state / tc.HOLD_FILE).write_text("{")
+        hold = self.hold()
+        assert hold is not None
+        self.assertIn("unreadable", hold["reason"])
+        (self.state / tc.HOLD_FILE).write_text("[]")
+        self.assertIsNotNone(self.hold())
+
+    def test_status_shows_the_hold(self) -> None:
+        self.assertEqual(tc.hold_lines(self.state), ["  none"])
+        self.env_block(FIX)
+        self.env_block(OTHER, NOW + 60)
+        lines = tc.hold_lines(self.state)
+        self.assertIn("HELD since", lines[0])
+        self.assertEqual(lines[1], "  targets: pr:5, pr:6")
+        self.assertIn(tc.HOLD_FILE, lines[2])
+
+    def test_failed_event_write_keeps_the_cooldown(self) -> None:
+        self.events.mkdir()  # not a regular file
+        with mock.patch("sys.stderr"):
+            self.assertEqual(self.env_block(FIX), tc.BLOCKED)
+        self.assertIn(tc.key(FIX), self.entries())
+
+    def test_ticks_ledger_accepts_env_block_lines(self) -> None:
+        import ticks
+
+        ledger = ticks.EventLedger.__new__(ticks.EventLedger)
+        ledger.pending = 0
+        ledger.state = {"open": None, "ticks": [], "first_start": None}
+        self.env_block(FIX)
+        ledger.feed(self.events.read_text().strip(), 0, NOW)
+        self.assertEqual(ledger.pending, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,13 @@
 # paths still verify. A blocked tick writes no repeat-gate record, so the retry
 # after expiry or a new base reaches the model.
 #
+# Environment hold (tick_cooldown.py): a blocked result with reason_code
+# `environment` also writes an `env-block` tick event. Such blocks on 2
+# different targets within 6 hours write claude-hold.json in the shared state
+# dir. While it exists, no model starts: the tick still closes, selects and
+# logs, then stops before the target lock and again right before the model.
+# Anton deletes the file to resume.
+#
 # Rebase policy (rebase_policy.py, shared with the Codex runner): before a
 # `resolve-conflict` model, `attempt-check` pins the base tip for this attempt
 # and skips a key (PR, head, target tip) that already failed
@@ -426,6 +433,23 @@ release_target() {
 discard_seen() {
     rm -f "${state_dir}/claude-gate-seen.json"
 }
+# The environment hold (claude-hold.json): no model; the tick ends blocked.
+stop_if_held() {
+    local result=0
+    "$py" "${code_root}/scripts/epic/tick_cooldown.py" hold \
+        --state-dir "$registry_dir" || result=$?
+    if [[ "$result" == 0 ]]; then
+        return 0
+    fi
+    discard_seen
+    if [[ "$result" == 3 ]]; then
+        printf 'tick: %s held by the environment hold; no model\n' "$action"
+        tick_outcome=blocked
+        tick_phase=backoff
+        exit 0
+    fi
+    exit "$result"
+}
 # Locks the targets of action.json on fds 8 and 9. 1 when another runner holds one.
 # Called from `if`, where set -e is off: every failure exits explicitly.
 lock_target() {
@@ -485,6 +509,7 @@ while IFS= read -r -u 3 candidate; do
             exit 1
             ;;
     esac
+    stop_if_held
     tick_phase=lock
     if ! lock_target; then
         printf 'tick: %s target locked by another runner; next candidate\n' "$action"
@@ -656,6 +681,8 @@ fi
 if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
+# Another Claude runner may have set the hold since the loop checked.
+stop_if_held
 if ! quota_open; then
     tick_phase=quota
     exit 0
@@ -833,7 +860,8 @@ recorded=0
 "$py" "${code_root}/scripts/epic/tick_cooldown.py" record --state-dir "$registry_dir" \
     --action-file "${lock_dir}/action.json" --seen-file "${lock_dir}/cooldown.json" \
     --result-file "${lock_dir}/result.json" --model-exit "$model_exit" \
-    --verify-exit "$verify" || recorded=$?
+    --verify-exit "$verify" --events-file "$events_file" --tick "$tick_started" \
+    || recorded=$?
 if [[ "$recorded" == 4 ]]; then
     attempt_finish void
 elif [[ "$verify" == 0 ]]; then

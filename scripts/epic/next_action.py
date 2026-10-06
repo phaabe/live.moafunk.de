@@ -1599,10 +1599,12 @@ def main() -> int:
             )
         )
         # Local runner state, no GitHub read. Imported here: only --status needs it.
-        from tick_cooldown import status_lines
+        from tick_cooldown import hold_lines, status_lines
 
         print("\nClaude cooldowns (tick_cooldown.py):")
         print("\n".join(status_lines(STATE_DIR, time.time())))
+        print("\nClaude model hold (tick_cooldown.py):")
+        print("\n".join(hold_lines(STATE_DIR)))
         from rebase_policy import attempt_lines
 
         print("\nRebase attempts (rebase_policy.py):")

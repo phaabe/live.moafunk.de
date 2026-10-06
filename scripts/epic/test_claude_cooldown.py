@@ -266,6 +266,48 @@ class ClaudeCooldownTest(harness.RunnerHarness):
         self.assertEqual(self.cooldowns(), {})
         self.assertEqual(self.gate_targets(), {})
 
+    def test_environment_blocks_hold_all_models_until_the_file_is_deleted(
+        self,
+    ) -> None:
+        env = json.dumps(
+            {
+                "type": "result",
+                "structured_output": {
+                    "status": "blocked",
+                    "summary": "sandbox refused FETCH_HEAD",
+                    "reason_code": "environment",
+                },
+            }
+        )
+        # One environment block: a cooldown as today, no hold.
+        self.assertEqual(self.tick(CONFLICT, TEST_MODEL_RESULT=env), 0)
+        self.assertFalse((self.state / "claude-hold.json").exists())
+        # The second, on another target, sets the hold.
+        self.assertEqual(self.tick(CONFLICT, REVIEW, TEST_MODEL_RESULT=env), 0)
+        self.assertEqual(self.models(), 2)
+        hold = json.loads((self.state / "claude-hold.json").read_text())
+        self.assertEqual(hold["targets"], ["pr:526", "pr:527"])
+        events = [
+            json.loads(line)
+            for line in (self.state / "claude-ticks.jsonl").read_text().splitlines()
+        ]
+        blocks = [e for e in events if e["event"] == "env-block"]
+        self.assertEqual([b["hold"] for b in blocks], [False, True])
+        # Held: selection runs, no model starts, also for eligible work.
+        fresh = {**REVIEW, "pr": 528, "sha": "d" * 40}
+        self.github_for(fresh)
+        self.assertEqual(self.tick(fresh, TEST_MODEL_RESULT=result("completed")), 0)
+        self.assertEqual(self.models(), 2)
+        self.assertIn("held by the environment hold; no model", self.log())
+        finish = json.loads(
+            (self.state / "claude-ticks.jsonl").read_text().splitlines()[-1]
+        )
+        self.assertEqual(finish["outcome"], "blocked")
+        # Deleting the file resumes.
+        (self.state / "claude-hold.json").unlink()
+        self.assertEqual(self.tick(fresh, TEST_MODEL_RESULT=result("completed")), 0)
+        self.assertEqual(self.models(), 3)
+
     def test_read_failure_blocks_the_tick_without_cooldown(self) -> None:
         del self.github["git/ref/heads/dev/312-interim"]
         self.save_github()

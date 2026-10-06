@@ -59,6 +59,7 @@ The runner asks for a structured result at the end. Set `status` from what reall
 
 - `completed`: you did the action, or found nothing left to do.
 - `blocked`: the action cannot succeed until something changes that you cannot change in this tick: a command the permission gate refused, a missing permission, a decision only Anton or Codex can make. Name the blocker in `summary`. The runner then skips this action on this target until the PR head (or, for `resolve-conflict`, the base) changes or the cooldown ends. Comments do not end it.
+  - Also set `reason_code` to `environment` when the runner's environment stopped you, not the ticket: the sandbox, a refused permission or classifier decision, a missing tool, or protected config. Leave `reason_code` out for a ticket problem (a decision only Anton or Codex can make, a target that changed). Two `environment` blocks on different targets stop all Claude model runs until Anton clears the hold.
 - `quota`: a GitHub API rate limit stopped you. The runner sets no cooldown.
 
 Do not report `blocked` for a failing test or a conflict you can still fix: fix it.

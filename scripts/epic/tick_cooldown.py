@@ -49,16 +49,32 @@ Issue to PR: a `claim` or `continue` cooldown on an issue moves to the
 of that issue move at once, as one entry with the latest end time, keyed to
 the PR head seen then; a later push clears it.
 
+Environment hold: a blocked result with `reason_code: "environment"` means
+the runner's environment stopped the model (sandbox, permissions, classifier,
+missing tool, protected config), not the ticket. It cools down like any
+block, and `record` writes an `env-block` tick event (tick_events.py) when the
+runner passes --events-file and --tick. Environment blocks on 2 different
+targets (PR or issue) within HOLD_WINDOW (6 hours) set the hold:
+`claude-hold.json` in the shared state dir (reason, targets, time). While the
+file exists, `hold` exits 3 and the runner starts no model; selection and
+closing still run. Only Anton clears it, by deleting the file. Setting the
+hold uses up the blocks seen so far, so after the delete it takes 2 new ones.
+The blocks seen are kept in `claude-env-blocks.json`. The Codex runner uses
+the same hold format and event name in its own `codex-hold.json`.
+
 Usage:
   tick_cooldown.py check  --action-file A --state-dir D --seen-file S
   tick_cooldown.py record --action-file A --state-dir D --seen-file S
                           --result-file R --model-exit N --verify-exit M
+                          [--events-file E --tick T]
+  tick_cooldown.py hold   --state-dir D
   tick_cooldown.py status --state-dir D
 
 check exits 0 (run), 3 (skip: cooling down), 4 (GraphQL quota, wait stored),
 5 (GitHub read failed: no action), 2 (bad input or state). record exits 0
 (done), 1 (did not land, no evidence: record the gate), 3 (cooldown stored),
 4 (model reported the GitHub quota), 6 (no evidence: no gate record), 2.
+hold exits 0 (no hold) or 3 (held: no model).
 """
 
 from __future__ import annotations
@@ -78,11 +94,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
 
+import tick_events
 from github_quota import QuotaExhausted, run_gh, stop_on_quota
 
 REPO = "phaabe/live.moafunk.de"
 AGENT = "claude"
 FILE = f"{AGENT}-cooldown.json"
+HOLD_FILE = f"{AGENT}-hold.json"
+ENV_FILE = f"{AGENT}-env-blocks.json"
+HOLD_WINDOW = 6 * 60 * 60
+HOLD_TARGETS = 2
+ENVIRONMENT = "environment"
 DEFAULT_SECONDS = 4 * 60 * 60
 ENV_SECONDS = "EPIC_BLOCKED_COOLDOWN_SECONDS"
 # The actions tick_verify.py checks (tick_verify.CHECKED). Kept here so this
@@ -257,12 +279,23 @@ def model_result(result_file: Path) -> dict[str, str] | None:
     result = output.get("structured_output") if isinstance(output, dict) else None
     if (
         not isinstance(result, dict)
-        or set(result) != {"status", "summary"}
+        or not {"status", "summary"}
+        <= set(result)
+        <= {"status", "summary", "reason_code"}
         or result["status"] not in ("completed", "blocked", "quota")
         or not isinstance(result["summary"], str)
+        or result.get("reason_code", ENVIRONMENT) != ENVIRONMENT
     ):
         return None
     return result
+
+
+def target_of(action: dict[str, Any]) -> str:
+    """The target without head or base: `pr:<n>` or `issue:<url>`."""
+    base_key(action)  # validates the target
+    if action.get("pr") is not None:
+        return f"pr:{action['pr']}"
+    return f"issue:{action['issue'].rstrip('/')}"
 
 
 def api_error(result_file: Path) -> bool:
@@ -328,6 +361,76 @@ def classify(
     return UNKNOWN, f"{ended(model_exit)}; no evidence"
 
 
+def held(state_dir: Path) -> dict[str, Any] | None:
+    """The hold, or None. Any file is a hold, also one that cannot be read."""
+    path = state_dir / HOLD_FILE
+    try:
+        hold = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        return {"reason": f"unreadable {HOLD_FILE}: {error}", "targets": []}
+    if not isinstance(hold, dict):
+        return {"reason": f"invalid {HOLD_FILE}", "targets": []}
+    return hold
+
+
+def env_blocks(state_dir: Path, now: float) -> list[dict[str, Any]]:
+    """Environment blocks inside HOLD_WINDOW; a bad file counts as none."""
+    try:
+        blocks = json.loads((state_dir / ENV_FILE).read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(blocks, list):
+        return []
+    return [
+        b
+        for b in blocks
+        if isinstance(b, dict)
+        and type(b.get("at")) in (int, float)
+        and math.isfinite(b["at"])
+        and now - HOLD_WINDOW < b["at"] <= now
+        and isinstance(b.get("target"), str)
+        and isinstance(b.get("reason"), str)
+    ]
+
+
+def write_json(path: Path, data: Any) -> None:
+    with tempfile.NamedTemporaryFile(
+        "w", dir=path.parent, prefix=f".{path.name}-", delete=False
+    ) as out:
+        json.dump(data, out, indent=1, sort_keys=True, allow_nan=False)
+        out.write("\n")
+    os.replace(out.name, path)
+
+
+def env_block(state_dir: Path, target: str, reason: str, now: float) -> bool:
+    """Store one environment block. True when it sets the hold.
+
+    Call with the cooldown lock held.
+    """
+    blocks = [
+        *env_blocks(state_dir, now),
+        {"at": now, "target": target, "reason": reason},
+    ]
+    targets = sorted({b["target"] for b in blocks})
+    if len(targets) < HOLD_TARGETS or held(state_dir) is not None:
+        write_json(state_dir / ENV_FILE, blocks)
+        return False
+    write_json(
+        state_dir / HOLD_FILE,
+        {"at": when(now), "reason": reason, "targets": targets},
+    )
+    # The hold uses up these blocks: after Anton deletes it, 2 new ones count.
+    write_json(state_dir / ENV_FILE, [])
+    print(
+        f"hold: environment blocks on {', '.join(targets)}; no model until "
+        f"{state_dir / HOLD_FILE} is deleted",
+        file=sys.stderr,
+    )
+    return True
+
+
 def record(
     action: dict[str, Any],
     state_dir: Path,
@@ -336,15 +439,18 @@ def record(
     model_exit: int,
     verify_exit: int,
     now: float,
+    events_file: Path | None = None,
+    tick: str | None = None,
 ) -> int:
     seen = json.loads(seen_file.read_text())
     found = seen.get("key")
     if not isinstance(found, str) or not found.startswith(base_key(action)):
         raise ValueError("cooldown: record does not match the checked action")
     seen_file.unlink()
+    result = model_result(result_file)
     outcome, reason = classify(
         action,
-        model_result(result_file),
+        result,
         model_exit,
         verify_exit,
         api_error(result_file),
@@ -352,6 +458,13 @@ def record(
     print(f"cooldown: {found}: {reason}", file=sys.stderr)
     if outcome not in (DONE, BLOCKED):
         return outcome
+    environment = (
+        outcome == BLOCKED
+        and result is not None
+        and result["status"] == "blocked"
+        and result.get("reason_code") == ENVIRONMENT
+    )
+    hold = False
     with locked(state_dir):
         entries = load(state_dir)
         if outcome == DONE and found not in entries:
@@ -367,6 +480,16 @@ def record(
             }
             print(f"cooldown: stored until {when(until)}", file=sys.stderr)
         save(state_dir, entries, now)
+        if environment:
+            hold = env_block(state_dir, target_of(action), reason, now)
+    if environment and events_file is not None and tick is not None:
+        # The event is for the monitor only: a failed write changes nothing.
+        try:
+            tick_events.env_block(
+                events_file, tick, action, target_of(action), reason, hold
+            )
+        except (OSError, ValueError) as error:
+            print(f"cooldown: env-block event not written: {error}", file=sys.stderr)
     return outcome
 
 
@@ -382,22 +505,43 @@ def status_lines(state_dir: Path, now: float) -> list[str]:
     ] or ["  none"]
 
 
+def hold_lines(state_dir: Path) -> list[str]:
+    """The model hold for --status."""
+    hold = held(state_dir)
+    if hold is None:
+        return ["  none"]
+    targets = hold.get("targets")
+    listed = ", ".join(map(str, targets)) if isinstance(targets, list) else "?"
+    return [
+        f"  HELD since {hold.get('at', '?')}: {hold.get('reason', '?')}",
+        f"  targets: {listed or '?'}",
+        f"  delete {state_dir / HOLD_FILE} to resume",
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("command", choices=["check", "record", "status"])
+    parser.add_argument("command", choices=["check", "record", "hold", "status"])
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--action-file", type=Path)
     parser.add_argument("--seen-file", type=Path)
     parser.add_argument("--result-file", type=Path)
     parser.add_argument("--model-exit", type=int)
     parser.add_argument("--verify-exit", type=int)
+    parser.add_argument("--events-file", type=Path)
+    parser.add_argument("--tick")
     args = parser.parse_args()
     now = time.time()
     if args.command == "status":
         print("\n".join(status_lines(args.state_dir, now)))
         return 0
+    if args.command == "hold":
+        if held(args.state_dir) is None:
+            return RUN
+        print("\n".join(hold_lines(args.state_dir)), file=sys.stderr)
+        return SKIP
     if args.action_file is None or args.seen_file is None:
         parser.error("check and record need --action-file and --seen-file")
     try:
@@ -417,6 +561,8 @@ def main() -> int:
             args.model_exit,
             args.verify_exit,
             now,
+            args.events_file,
+            args.tick,
         )
     except QuotaExhausted as error:
         return stop_on_quota(error, args.state_dir)

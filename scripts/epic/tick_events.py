@@ -12,7 +12,9 @@ file opened for appending, so lines of two writers never interleave.
                         [--claude-session ID --launch-dir D [--model-exit N]]
 
 Only enums, numbers, timestamps and the selector's action/PR/issue are
-written: no model text, prompts or commands. Both events carry `runtime`: the
+written: no model text, prompts or commands. The one exception is the
+`env-block` event (`env_block()`, written by tick_cooldown.py): it keeps the
+model's one-line reason for an environment block. Both events carry `runtime`: the
 pinned runtime revision (EPIC_RUNTIME_REVISION, 40-hex) or null in legacy
 mode. Event readers ignore unknown keys; tick checkpoints do not store it.
 
@@ -74,6 +76,9 @@ ACTION = re.compile(r"[a-z][a-z-]{0,31}")
 ISSUE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d{1,9}")
 TOKENS = re.compile(r"[0-9]{1,3}(?:,[0-9]{3}){0,4}|[0-9]{1,15}")
 MAX_LINE = 4096
+# Length of the reason in an `env-block` event; escaped, it stays well inside
+# MAX_LINE.
+REASON_CHARS = 300
 MAX_ACTION_FILE = 65_536
 # Only the end of the session's output is scanned for the token count.
 MAX_SCAN = 1_048_576
@@ -353,6 +358,42 @@ def append(path: Path, event: dict[str, Any]) -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def env_block(
+    path: Path,
+    tick: str,
+    action: dict[str, Any],
+    target: str,
+    reason: str,
+    hold: bool,
+) -> None:
+    """One `env-block` event, between the tick's start and finish.
+
+    The runner's environment stopped the model (tick_cooldown.py). Unlike the
+    other events it carries the model's short reason, one line of at most
+    REASON_CHARS characters, because the reason is what Anton must fix.
+    `hold` is true when this block set the model hold.
+    """
+    if not TICK.fullmatch(tick):
+        raise ValueError("tick must look like 2026-09-28T15:39:39Z")
+    name = action.get("action")
+    append(
+        path,
+        {
+            "v": 1,
+            "event": "env-block",
+            "tick": tick,
+            "at": now_iso(),
+            "action": name
+            if isinstance(name, str) and ACTION.fullmatch(name)
+            else None,
+            "target": target,
+            "reason": " ".join(reason.split())[:REASON_CHARS],
+            "hold": hold,
+            "runtime": runtime_revision(),
+        },
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
