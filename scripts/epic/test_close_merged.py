@@ -63,6 +63,7 @@ class FakeGh:
         self.fail_writes = False
         self.board: dict[int, str] = {}  # ticket -> Status option id
         self.fail_board = False
+        self.not_planned: set[int] = set()  # closed tickets not completed
 
     def ticket(self, n: int, body: str = "Do it.", sub_issues: int = 0) -> None:
         self.tickets[n] = {"number": n, "body": body, "sub_issues": sub_issues}
@@ -97,8 +98,18 @@ class FakeGh:
         n = int(re.match(r"issues/(\d+)", path).group(1))
         if path == f"issues/{n}":
             if n not in self.tickets:
-                return out([{"number": n, "body": "", "state": "closed"}])
-            return out([{**self.tickets[n], "state": "open"}])
+                reason = "not_planned" if n in self.not_planned else "completed"
+                return out(
+                    [
+                        {
+                            "number": n,
+                            "body": "",
+                            "state": "closed",
+                            "state_reason": reason,
+                        }
+                    ]
+                )
+            return out([{**self.tickets[n], "state": "open", "state_reason": None}])
         if path.endswith("events?per_page=100"):
             return out(self.reopened.get(n, []))
         if "/comments" in path:
@@ -149,7 +160,11 @@ class FakeGh:
                     "number": n,
                     "repo": f"https://api.github.com/repos/{REPO}",
                     "state": "open" if n in self.tickets else "closed",
-                    "reason": None if n in self.tickets else "completed",
+                    "reason": None
+                    if n in self.tickets
+                    else "not_planned"
+                    if n in self.not_planned
+                    else "completed",
                     "status": status,
                 }
                 for n, status in self.board.items()
@@ -463,6 +478,48 @@ class CloseMergedTest(unittest.TestCase):
         self.gh.board[521] = "3a81da46"  # closed, Status left behind
         self.assertEqual(self.run_once(), 0)
         self.assertEqual(self.gh.writes, [])
+
+    def test_board_skips_a_ticket_locked_by_a_running_tick(self) -> None:
+        self.gh.merged = [pr(612, 521)]
+        self.gh.board[521] = "3a81da46"  # closed, Status left behind
+        with close_merged.ticket_lock(521) as locked:
+            self.assertTrue(locked)
+            self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [])
+        self.assertTrue(any("locked by another runner" in x for x in self.log))
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [("done", 521)])
+
+    def test_board_change_after_the_board_read_is_seen_under_the_lock(
+        self,
+    ) -> None:
+        # Another runner reopens (and claims) or closes the ticket as not
+        # planned right after the board list is read. Status must stay.
+        def reopened(gh: FakeGh) -> None:
+            gh.ticket(521)
+
+        def not_planned(gh: FakeGh) -> None:
+            gh.not_planned.add(521)
+
+        for name, change in {"reopened": reopened, "not planned": not_planned}.items():
+            with self.subTest(name):
+                self.gh = FakeGh()
+                self.gh.merged = [pr(612, 521)]
+                self.gh.board[521] = "3a81da46"  # In progress
+                fake, pending = self.gh, [change]
+
+                def gh(args: list[str], fake=fake, pending=pending) -> str:
+                    result = fake(args)
+                    if any("/items?" in a for a in args) and pending:
+                        with close_merged.ticket_lock(521) as locked:
+                            self.assertTrue(locked)
+                            pending.pop()(fake)
+                    return result
+
+                self.assertEqual(close_merged.run(gh, NOW, log=self.log.append), 0)
+                self.assertEqual(self.gh.writes, [])
+                self.assertEqual(self.gh.board[521], "3a81da46")
+                self.assertIn("no longer closed as completed", self.log[-1])
 
     def test_dry_run_sets_no_board_status(self) -> None:
         self.gh.merged = [pr(612, 521)]

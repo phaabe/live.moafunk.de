@@ -14,9 +14,11 @@ what it would do.
      lists in `Leaf IDs:` stays open and gets one note.
   4. Otherwise post one evidence comment and close it as completed.
   5. Set board Status Done for every ticket of step 2 that is closed as
-     completed and on the board with another Status. This also retries a
-     board write that failed before, until the PR leaves the window. A board
-     error is logged; it never reopens a ticket.
+     completed and on the board with another Status. Under the ticket's lock
+     the ticket is read again first: it may have been reopened and claimed
+     since the board read. This also retries a board write that failed
+     before, until the PR leaves the window. A board error is logged; it
+     never reopens a ticket.
 
 Every comment ends with a hidden marker naming the PR. The ticket's comments
 are searched for it first, so a rerun never posts twice; a run that posted
@@ -84,6 +86,7 @@ OPEN_ISSUES_JQ = (
     " sub_issues: (.sub_issues_summary.total // 0)}"
 )
 TICKET_JQ = "{number, body, state, sub_issues: (.sub_issues_summary.total // 0)}"
+CLOSURE_JQ = "{state, state_reason}"
 REOPENED_JQ = '.[] | select(.event == "reopened") | .created_at | tojson'
 DONE = "Done"
 STATUS_JQ = (
@@ -239,6 +242,15 @@ def ticket_now(gh: Gh, number: int) -> dict[str, Any] | None:
     return found[0]
 
 
+def closed_completed(gh: Gh, number: int) -> bool:
+    """True when GitHub has the ticket closed as completed now."""
+    found = lines(gh, ["api", f"repos/{REPO}/issues/{number}", "--jq", CLOSURE_JQ])
+    return bool(found) and (found[0]["state"], found[0]["state_reason"]) == (
+        "closed",
+        "completed",
+    )
+
+
 def held(
     ticket: dict[str, Any], in_review: set[int], log: Callable[[str], None]
 ) -> bool:
@@ -387,22 +399,30 @@ def board_done(
         ):
             continue
         url = issue_url(item["number"])
-        log(f"close: {url} is closed; board Status to {DONE}")
-        if dry_run:
-            continue
         try:
-            gh(
-                [
-                    "api",
-                    "-X",
-                    "PATCH",
-                    f"{PROJECT_API}/items/{item['id']}",
-                    "-F",
-                    f"fields[][id]={field}",
-                    "-f",
-                    f"fields[][value]={done}",
-                ]
-            )
+            with ticket_lock(item["number"]) as locked:
+                if not locked:
+                    log(f"close: {url} is locked by another runner; board next tick")
+                    continue
+                # The board list may predate a reopen and a new claim.
+                if not closed_completed(gh, item["number"]):
+                    log(f"close: {url} is no longer closed as completed; board left")
+                    continue
+                log(f"close: {url} is closed; board Status to {DONE}")
+                if dry_run:
+                    continue
+                gh(
+                    [
+                        "api",
+                        "-X",
+                        "PATCH",
+                        f"{PROJECT_API}/items/{item['id']}",
+                        "-F",
+                        f"fields[][id]={field}",
+                        "-f",
+                        f"fields[][value]={done}",
+                    ]
+                )
         except subprocess.SubprocessError as error:
             ok = False
             detail = getattr(error, "stderr", "") or error
