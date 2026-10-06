@@ -24,7 +24,8 @@ from fixture_readiness import STARTUP_SECONDS, accept_ready, stop_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REAL_GIT = shutil.which("git")
+sys.path.insert(0, str(ROOT))
+from feature_git import GIT as REAL_GIT  # noqa: E402
 
 
 class TickTests(unittest.TestCase):
