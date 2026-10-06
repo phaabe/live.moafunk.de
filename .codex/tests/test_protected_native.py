@@ -10,6 +10,7 @@ import isolated_env  # noqa: E402, F401
 
 import errno
 import json
+import os
 import shlex
 import subprocess
 import tempfile
@@ -75,6 +76,9 @@ Path("matrix-results.json").write_text(json.dumps(rows, indent=2))
 """
 
 
+@unittest.skipIf(
+    os.environ.get("CODEX_SANDBOX") == "seatbelt", "macOS forbids nested sandboxes"
+)
 class ProtectedNativeTests(unittest.TestCase):
     def setUp(self) -> None:
         SCRATCH.mkdir(parents=True, exist_ok=True)
