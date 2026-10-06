@@ -221,16 +221,26 @@ class NoiseTest(unittest.TestCase):
         self.noise()
         lock = self.repo / ".gitnexus/.analyze.lock"
         real_check = gitnexus_noise.check
+        real_wait = gitnexus_noise.wait_for_analyze
         calls: list[int] = []
 
         def check(repo: Path) -> list[str]:
             if not calls:
-                calls.append(self.start_analyzer(lock))
+                # Long-lived: a slow check must not outlast the analyzer.
+                calls.append(self.start_analyzer(lock, "30"))
             else:
                 calls.append(0)
             return real_check(repo)
 
-        with mock.patch.object(gitnexus_noise, "check", check):
+        def wait_for_analyze(locks: list[Path], wait: float) -> None:
+            if calls:  # second round: the analyzer finishes now
+                self.kill_quietly(calls[0])
+            real_wait(locks, wait)
+
+        with (
+            mock.patch.object(gitnexus_noise, "check", check),
+            mock.patch.object(gitnexus_noise, "wait_for_analyze", wait_for_analyze),
+        ):
             self.assertEqual(self.run_in_process(), 0)
         self.assertEqual(len(calls), 2)
         self.assertEqual(lock.read_text(), f"{calls[0]}\n")
