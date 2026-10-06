@@ -1208,6 +1208,27 @@ class Recheck(Env):
         action = {"action": "claim", "reason": "r", "issue": f"{ISSUES}/21"}
         self.assertIsNotNone(self.recheck(action))
 
+    def test_same_action_compares_digest_and_attempt_key(self) -> None:
+        selected = {"action": "claim", "reason": "r", "issue": f"{ISSUES}/21"}
+        now = na.Action("claim", "r", issue=f"{ISSUES}/21", digest="a" * 64)
+        self.assertTrue(gs.same_action(now, {**selected, "digest": "a" * 64}))
+        # A new approved proposal is other work than the one selected.
+        self.assertFalse(gs.same_action(now, {**selected, "digest": "b" * 64}))
+        self.assertFalse(gs.same_action(now, selected))
+        refine = na.Action(
+            "refine", "r", issue=f"{ISSUES}/21", attempt_key="refine:21:7:none"
+        )
+        self.assertFalse(
+            gs.same_action(
+                refine,
+                {
+                    "action": "refine",
+                    "issue": f"{ISSUES}/21",
+                    "attempt_key": "refine:21:0:none",
+                },
+            )
+        )
+
     def test_failed_read_blocks(self) -> None:
         action = self.merge_pr()
         self.gh.fail(f"{REPO}/pulls/5", "502")

@@ -1202,6 +1202,9 @@ def same_action(a: na.Action, action: dict[str, Any]) -> bool:
         and a.sha == action.get("sha")
         and a.lane == action.get("lane")
         and a.body_sha == action.get("body_sha")
+        # Refinement: the proposal (digest) and attempt the model was given.
+        and a.digest == action.get("digest")
+        and a.attempt_key == action.get("attempt_key")
     )
 
 
