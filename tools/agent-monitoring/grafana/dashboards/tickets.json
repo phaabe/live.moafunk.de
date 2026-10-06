@@ -1382,7 +1382,7 @@
     {
       "type": "table",
       "title": "Tickets · $check",
-      "description": "Choose a check with a tile or the Check picker; All shows every ticket: not Done, plus Done in the last 7 days or still open.",
+      "description": "Choose a check with a tile or the Check picker; All shows every ticket: not Done, plus Done in the last 7 days or still open. In status: since the collector saw the ticket enter its status; ≥ is a lower bound (found there, or the entry is unsure), ? crosses a gap in the collector's data. Since Ready: the last entry into Ready. (unverified): the agent comes from a run event, not from GitHub.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -1395,9 +1395,47 @@
           "range": false,
           "legendFormat": "",
           "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "(time() - epic_ticket_status_entered_seconds and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) and on(issue) label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\")",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "expr": "(max by (issue) (epic_ticket_status_entered_seconds) * 1000 and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) and on(issue) label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\")",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
         }
       ],
       "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "issue",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              {
+                "fieldName": "title",
+                "config": {
+                  "id": "isNotNull"
+                }
+              }
+            ],
+            "type": "include",
+            "match": "all"
+          }
+        },
         {
           "id": "convertFieldType",
           "options": {
@@ -1409,6 +1447,11 @@
               {
                 "targetField": "done_sort",
                 "destinationType": "number"
+              },
+              {
+                "targetField": "ready_entered",
+                "destinationType": "time",
+                "dateFormat": "X"
               }
             ],
             "fields": {}
@@ -1423,6 +1466,11 @@
                 "title",
                 "status",
                 "executor",
+                "last_agent",
+                "Value #C",
+                "exact",
+                "Value #B",
+                "ready_entered",
                 "pr_url",
                 "note",
                 "url"
@@ -1439,15 +1487,25 @@
               "title": 1,
               "status": 2,
               "executor": 3,
-              "pr_url": 4,
-              "note": 5,
-              "url": 6
+              "last_agent": 4,
+              "Value #C": 5,
+              "exact": 6,
+              "Value #B": 7,
+              "ready_entered": 8,
+              "pr_url": 9,
+              "note": 10,
+              "url": 11
             },
             "renameByName": {
               "issue": "Ticket",
               "title": "Title",
               "status": "Status",
               "executor": "Executor",
+              "last_agent": "Last agent",
+              "Value #C": "Entered",
+              "exact": "≥/?",
+              "Value #B": "In status",
+              "ready_entered": "Since Ready",
               "pr_url": "PR",
               "note": "Note"
             }
@@ -1669,6 +1727,151 @@
           },
           {
             "matcher": {
+              "id": "byName",
+              "options": "Last agent"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^Claude( .*)?$",
+                      "result": {
+                        "index": 0,
+                        "color": "#E0875A"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^Codex( .*)?$",
+                      "result": {
+                        "index": 1,
+                        "color": "#35C2C2"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Entered"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocalNoDateIfToday"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "≥/?"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 40
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "index": 0,
+                        "text": " "
+                      },
+                      "0": {
+                        "index": 1,
+                        "text": "≥",
+                        "color": "#9A9BA6"
+                      },
+                      "gap": {
+                        "index": 2,
+                        "text": "?",
+                        "color": "#E0A526"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Since Ready"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
               "id": "byRegexp",
               "options": ".*"
             },
@@ -1738,6 +1941,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -1961,6 +2169,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -2184,6 +2397,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -2407,6 +2625,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -2630,6 +2853,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -2853,6 +3081,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}

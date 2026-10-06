@@ -211,6 +211,29 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class TicketTimesTest(unittest.TestCase):
+    def test_time_columns_have_every_kind_of_value(self) -> None:
+        """Exact, lower bound and gap ages, an unverified Claude agent and a
+        Ready time, so the preview shows every Tickets column."""
+        now = 1_790_000_000.0
+        text = fixtures.ticket_metrics(now)
+        exact = dict(
+            re.findall(
+                r'^epic_ticket_status_entered_seconds\{exact="(\w+)",issue="(\d+)"\}',
+                text,
+                re.M,
+            )
+        )
+        self.assertEqual(set(exact), {"1", "0", "gap"})
+        self.assertEqual((exact["0"], exact["gap"]), ("305", "308"))
+        self.assertIn('last_agent="Claude (unverified)"', text)
+        ready = re.findall(r'ready_entered="(\d+)"', text)
+        self.assertTrue(ready)
+        self.assertTrue(all(int(t) < now for t in ready))
+        # The time checks read the history: the ledger is not unknown.
+        self.assertIn('epic_ticket_check_count{check="in_review_long"} 1', text)
+
+
 class DockerSkipTest(unittest.TestCase):
     """The promtool test skips when the daemon is unreachable (sandboxes)."""
 

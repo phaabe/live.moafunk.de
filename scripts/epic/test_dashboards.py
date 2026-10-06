@@ -326,6 +326,41 @@ class TicketsPageTest(unittest.TestCase):
                 [mapping] = tile["fieldConfig"]["defaults"]["mappings"]
                 self.assertEqual(mapping["options"]["-1"]["color"], dashboards.STALE)
 
+    def test_table_has_the_time_columns(self) -> None:
+        table = self.by_title("Tickets · $check")
+        refs = [t["refId"] for t in table["targets"]]
+        self.assertEqual(refs, ["A", "B", "C"])
+        organize = [t for t in table["transformations"] if t["id"] == "organize"]
+        shown = list(organize[0]["options"]["renameByName"].values())
+        for column in ("Last agent", "Entered", "≥/?", "In status", "Since Ready"):
+            with self.subTest(column=column):
+                self.assertIn(column, shown)
+        # The mark sits left of the age it qualifies.
+        self.assertEqual(shown.index("≥/?") + 1, shown.index("In status"))
+        overrides = {
+            o["matcher"]["options"]: {p["id"]: p["value"] for p in o["properties"]}
+            for o in table["fieldConfig"]["overrides"]
+        }
+        marks = overrides["≥/?"]["mappings"][0]["options"]
+        self.assertEqual((marks["0"]["text"], marks["gap"]["text"]), ("≥", "?"))
+        self.assertEqual(overrides["In status"]["unit"], "s")
+        self.assertEqual(overrides["Since Ready"]["unit"], "dateTimeFromNow")
+        # ready_entered is a label: a Unix-seconds string, converted to time.
+        conversions = table["transformations"][2]["options"]["conversions"]
+        self.assertIn(
+            {
+                "targetField": "ready_entered",
+                "destinationType": "time",
+                "dateFormat": "X",
+            },
+            conversions,
+        )
+        # B and C join on the ticket and never add a row of their own.
+        self.assertEqual(table["transformations"][0], dashboards.join("issue"))
+        self.assertEqual(table["transformations"][1]["id"], "filterByValue")
+        # Empty cells show "–", never 0 or a date of 1970.
+        self.assertEqual(table["fieldConfig"]["defaults"]["noValue"], "–")
+
     def test_board_is_a_collapsed_row_and_done_sorts_by_done_sort(self) -> None:
         [row] = [p for p in self.page()["panels"] if p["type"] == "row"]
         self.assertTrue(row["collapsed"])
@@ -616,6 +651,71 @@ class QuerySemanticsTest(unittest.TestCase):
                 "exp_samples": colored(dashboards.ACT_NOW, 3),
             },
             {"expr": expr, "eval_time": "20m", "exp_samples": []},
+        ]
+        self.run_promtool(
+            [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]
+        )
+
+    def test_ticket_time_columns(self) -> None:
+        """In status keeps the exact mark; both time queries follow the check
+        filter and show nothing once the ticket data is stale."""
+        age = panel_expr("tickets.json", "Tickets · $check", ref="B")
+        entered = panel_expr("tickets.json", "Tickets · $check", ref="C")
+        series = [
+            {
+                "series": "epic_ticket_snapshot_timestamp_seconds",
+                "values": "0+60x5 300x20",
+            },
+            {"series": 'epic_ticket_source_ok{source="board"}', "values": "1x25"},
+            *(
+                {"series": f'epic_ticket_info{{issue="{n}"}}', "values": "1x25"}
+                for n in (1, 2)
+            ),
+            {
+                "series": 'epic_ticket_check_member{issue="2",check="done_open"}',
+                "values": "1x25",
+            },
+            {
+                "series": 'epic_ticket_status_entered_seconds{issue="1",exact="1"}',
+                "values": "60x25",
+            },
+            {
+                "series": 'epic_ticket_status_entered_seconds{issue="2",exact="gap"}',
+                "values": "120x25",
+            },
+        ]
+        tests = [
+            {
+                "expr": age.replace("$check", "all"),
+                "eval_time": "4m",
+                "exp_samples": [
+                    {"labels": '{issue="1",exact="1"}', "value": 180},
+                    {"labels": '{issue="2",exact="gap"}', "value": 120},
+                ],
+            },
+            {
+                "expr": age.replace("$check", "done_open"),
+                "eval_time": "4m",
+                "exp_samples": [{"labels": '{issue="2",exact="gap"}', "value": 120}],
+            },
+            {
+                "expr": entered.replace("$check", "all"),
+                "eval_time": "4m",
+                "exp_samples": [
+                    {"labels": '{issue="1"}', "value": 60_000},
+                    {"labels": '{issue="2"}', "value": 120_000},
+                ],
+            },
+            {
+                "expr": age.replace("$check", "all"),
+                "eval_time": "20m",
+                "exp_samples": [],
+            },
+            {
+                "expr": entered.replace("$check", "all"),
+                "eval_time": "20m",
+                "exp_samples": [],
+            },
         ]
         self.run_promtool(
             [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]

@@ -28,6 +28,7 @@ import agents
 import delivery
 import monitor
 import tick_events
+import ticket_history
 import tickets
 import ticks
 
@@ -568,9 +569,45 @@ def ticket_state(now: float) -> monitor.Json:
     return state
 
 
+# Ticket number → (hours in status, exact, agent, verified) for the table's
+# time columns; other tickets are exact, 2 h per position on the board.
+TIMED = {
+    307: (30.0, "1", "Claude", False),
+    308: (5.0, "gap", "", True),
+    305: (50.0, "0", "", True),
+}
+
+
+def ticket_summary(state: monitor.Json, now: float) -> ticket_history.Summary:
+    """The history summary of every board ticket: a seeded ("≥"), a gap ("?")
+    and an unverified Claude agent, so every table column has values."""
+    summary = ticket_history.Summary()
+    for i, ticket in enumerate(tickets.board_tickets(state, now).tickets):
+        hours, exact, agent, verified = TIMED.get(
+            ticket.number, (2.0 * (i + 1), "1", "Codex", True)
+        )
+        if ticket.status not in ticket_history.AGENT_STATUSES:
+            agent = ""
+        elif agent and not verified:
+            agent += " (unverified)"
+        entered = int(now - hours * 3600)
+        ready = ticket.status in ("Ready", *ticket_history.AGENT_STATUSES, "Done")
+        summary.tickets[ticket.number] = ticket_history.TicketTime(
+            ticket.status,
+            entered,
+            exact,
+            # Ready 3 h before the current status, or the entry into Ready.
+            (entered if ticket.status == "Ready" else entered - 3 * 3600)
+            if ready
+            else None,
+            agent,
+        )
+    return summary
+
+
 def ticket_metrics(now: float) -> str:
     """tickets.prom: 308 needs an undeclared ticket, 305 has no body review,
-    303 is Done on the board with its issue open."""
+    303 is Done on the board with its issue open. With the history summary."""
     state = monitor.epic_view(ticket_state(now))
     request = tickets.wanted(state, now)
     deps = {number: [] for number in request["ready"]}
@@ -581,7 +618,12 @@ def ticket_metrics(now: float) -> str:
     metrics = monitor.Metrics()
     # No focus file: the preview never reads the real one.
     claims = tickets.claimable(state, Path("/nonexistent/epic-focus"))
-    tickets.ticket_metrics(metrics, state, tickets.Extra(deps, reviews), claims, now)
+    summary = ticket_summary(state, now)
+    tickets.ticket_metrics(
+        metrics, state, tickets.Extra(deps, reviews), claims, now, summary
+    )
+    shown = [t.number for t in tickets.board_tickets(state, now).tickets]
+    ticket_history.history_metrics(metrics, summary, shown, now)
     return metrics.render()
 
 

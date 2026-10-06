@@ -2125,7 +2125,10 @@ def cumulative_flow() -> Json:
 
 
 def ticket_columns(names: list[str], rename: dict[str, str]) -> list[Json]:
-    """Issue numbers sort as numbers; Done sorts by done_sort."""
+    """Issue numbers sort as numbers; Done sorts by done_sort.
+
+    ready_entered is a Unix time in a label: a time field, empty when unknown.
+    """
     return [
         {
             "id": "convertFieldType",
@@ -2133,6 +2136,11 @@ def ticket_columns(names: list[str], rename: dict[str, str]) -> list[Json]:
                 "conversions": [
                     {"targetField": "issue", "destinationType": "number"},
                     {"targetField": "done_sort", "destinationType": "number"},
+                    {
+                        "targetField": "ready_entered",
+                        "destinationType": "time",
+                        "dateFormat": "X",
+                    },
                 ],
                 "fields": {},
             },
@@ -2169,30 +2177,109 @@ def ticket_overrides(shown: list[str]) -> list[Json]:
             ("mappings", SHORT_LINKS),
             ("links", [link("Open on GitHub", "${__value.raw}")]),
         ),
+        by_name(
+            "Last agent",
+            ("custom.width", 150),
+            cell("color-text"),
+            (
+                "mappings",
+                [
+                    regex_map(f"^{name}( .*)?$", EXECUTOR[name], i)
+                    for i, name in enumerate(("Claude", "Codex"))
+                ],
+            ),
+        ),
+        by_name(
+            "Entered",
+            ("custom.width", 120),
+            ("unit", "dateTimeAsLocalNoDateIfToday"),
+        ),
+        by_name(
+            "≥/?",
+            ("custom.width", 40),
+            ("custom.align", "right"),
+            cell("color-text"),
+            ("noValue", " "),
+            ("mappings", [EXACT_MARK]),
+        ),
+        by_name("In status", ("custom.width", 90), ("unit", "s"), ("decimals", 0)),
+        by_name("Since Ready", ("custom.width", 100), ("unit", "dateTimeFromNow")),
     ]
     return [o for o in overrides if o["matcher"]["options"] in shown]
 
 
+# epic_ticket_status_entered_seconds{exact}: "≥" a lower bound, "?" the time
+# crosses a coverage gap of the collector.
+EXACT_MARK = {
+    "type": "value",
+    "options": {
+        "1": {"index": 0, "text": " "},
+        "0": {"index": 1, "text": "≥", "color": MUTED},
+        "gap": {"index": 2, "text": "?", "color": LOOK_SOON},
+    },
+}
+ENTERED = "epic_ticket_status_entered_seconds"
+
+
 def ticket_table() -> Json:
-    names = ["issue", "title", "status", "executor", "pr_url", "note", "url"]
+    selected = selected_tickets()
+    queries = {
+        "A": selected,
+        # Keeps the exact label for the "≥" / "?" mark.
+        "B": f"(time() - {ENTERED}{TICKETS}) and on(issue) {selected}",
+        "C": f"(max by (issue) ({ENTERED}) * 1000{TICKETS}) and on(issue) {selected}",
+    }
+    names = [
+        "issue",
+        "title",
+        "status",
+        "executor",
+        "last_agent",
+        "Value #C",
+        "exact",
+        "Value #B",
+        "ready_entered",
+        "pr_url",
+        "note",
+        "url",
+    ]
     rename = {
         "issue": "Ticket",
         "title": "Title",
         "status": "Status",
         "executor": "Executor",
+        "last_agent": "Last agent",
+        "Value #C": "Entered",
+        "exact": "≥/?",
+        "Value #B": "In status",
+        "ready_entered": "Since Ready",
         "pr_url": "PR",
         "note": "Note",
     }
     return table_panel(
         "Tickets · $check",
-        [target(selected_tickets(), table=True)],
+        [target(q, table=True, ref=r) for r, q in queries.items()],
         [
+            join("issue"),
+            # Only the tickets of query A: B and C never add a row.
+            {
+                "id": "filterByValue",
+                "options": {
+                    "filters": [{"fieldName": "title", "config": {"id": "isNotNull"}}],
+                    "type": "include",
+                    "match": "all",
+                },
+            },
             *ticket_columns(names, rename),
             {"id": "sortBy", "options": {"sort": [{"field": "Ticket"}]}},
         ],
         ticket_overrides([*rename.values(), "url"]),
         description="Choose a check with a tile or the Check picker; All shows "
-        "every ticket: not Done, plus Done in the last 7 days or still open.",
+        "every ticket: not Done, plus Done in the last 7 days or still open. "
+        "In status: since the collector saw the ticket enter its status; ≥ is a "
+        "lower bound (found there, or the entry is unsure), ? crosses a gap in "
+        "the collector's data. Since Ready: the last entry into Ready. "
+        "(unverified): the agent comes from a run event, not from GitHub.",
     )
 
 
