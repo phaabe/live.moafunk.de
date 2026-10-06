@@ -717,7 +717,8 @@ fi
 model_environment=()
 model_variables=(TMPDIR EPIC_STATE_DIR EPIC_QUOTA_DIR EPIC_ACTION_FILE EPIC_TRUSTED_ROOT
     EPIC_RUNTIME_ROOT EPIC_RUNTIME_REVISION EPIC_RUNTIME_MANIFEST EPIC_RUNTIME_HOME
-    EPIC_RUNTIME_LEGACY EPIC_CODEX_PROTECTED_CONFIG CODEX_HOME EPIC_LOCK_DIR)
+    EPIC_RUNTIME_LEGACY EPIC_CODEX_PROTECTED_CONFIG CODEX_HOME EPIC_LOCK_DIR
+    EPIC_TEST_SLOTS_DIR EPIC_TEST_SLOTS)
 if [[ "$action" == review ]]; then
     model_variables+=(EPIC_REVIEW_DIR EPIC_REVIEW_ATTEMPT_DIR)
 elif [[ "$action" == adopt ]]; then
@@ -733,9 +734,13 @@ for variable in "${model_variables[@]}"; do
     value=$("$python_bin" -I -c '
 import json, os, sys
 value = sys.argv[2] if sys.argv[1] == "TMPDIR" else os.environ.get(sys.argv[1])
+if sys.argv[1] in ("EPIC_TEST_SLOTS_DIR", "EPIC_TEST_SLOTS"):
+    slots = json.loads(sys.argv[3]).get("test_slots")
+    key = "directory" if sys.argv[1] == "EPIC_TEST_SLOTS_DIR" else "count"
+    value = str(slots[key]) if slots else None
 if value is not None:
     print(json.dumps(value, ensure_ascii=False))
-' "$variable" "$tick_tmp")
+' "$variable" "$tick_tmp" "$protected")
     [[ -n "$value" ]] || continue
     model_environment+=(-c "shell_environment_policy.set.${variable}=${value}")
 done
