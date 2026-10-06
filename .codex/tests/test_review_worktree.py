@@ -10,6 +10,7 @@ import isolated_env  # noqa: E402, F401
 
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -756,24 +757,13 @@ class RunnerReviewLifecycleTests(unittest.TestCase):
         )
 
     def test_model_timeout_stops_child_then_removes_real_checkout(self) -> None:
-        self.env["EPIC_TICK_TIMEOUT_SECONDS"] = "1"
-        # Keep the timeout focused on a running child, not the Python fake's
-        # imports and socket handshake competing with parallel test workers.
-        (self.fixture.bin / "codex").write_text(
-            "#!/bin/bash\nset -euo pipefail\n"
-            'printf "%s\\n" "$$" > "$EPIC_REVIEW_ATTEMPT_DIR/model.pid"\n'
-            "printf 'fake Codex stdout\\n'\n"
-            "printf 'fake Codex stderr\\n' >&2\n"
-            "exec /bin/sleep 60\n"
-        )
-        result = self.fixture.run_tick()
-        self.assertEqual(
-            result.returncode,
-            124,
-            result.stdout
-            + result.stderr
-            + (self.fixture.state / "codex.log").read_text(),
-        )
+        self.env["EPIC_TICK_TIMEOUT_SECONDS"] = "60"
+        timeout_pid = self.fixture.timeout_command("codex")
+        process, connection = self.fixture.blocked_tick()
+        # Startup has completed; expire the real GNU timeout process now.
+        os.kill(int(timeout_pid.read_text()), signal.SIGALRM)
+        self.assertEqual(process.wait(timeout=15), 124)
+        self.assertEqual(connection.recv(1), b"")
         attempt = self.assert_review_cleaned_with_evidence()
         with self.assertRaises(ProcessLookupError):
             os.kill(int((attempt / "model.pid").read_text()), 0)
