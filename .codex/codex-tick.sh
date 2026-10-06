@@ -678,7 +678,17 @@ tick_tmp=$(mktemp -d "${temporary_parent}/codex-tick-XXXXXXXX")
 if [[ "$action" == merge || "$action" == escalate || "$action" == adopt ]]; then
     model_root="$tick_tmp"
 fi
-model_options=(--sandbox workspace-write --add-dir "$tick_tmp")
+permission_profile=$("$python_bin" -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("permission_profile") or "")' "$protected")
+model_options=(--add-dir "$tick_tmp")
+if [[ "$permission_profile" == epic-source-edit ]]; then
+    # Old --sandbox settings override permission profiles in native Codex.
+    model_options+=(-c 'default_permissions="epic-source-edit"')
+elif [[ -z "$permission_profile" ]]; then
+    model_options+=(--sandbox workspace-write)
+else
+    printf 'tick: unknown protected permission profile\n' >&2
+    exit 78
+fi
 if [[ "$model_root" == "$tick_tmp" ]]; then
     # Git identity was checked by the host; this cwd contains only scratch work.
     model_options+=(--skip-git-repo-check)
