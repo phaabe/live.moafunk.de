@@ -2191,7 +2191,8 @@ def ticket_overrides(shown: list[str]) -> list[Json]:
         ),
         by_name(
             "Entered",
-            ("custom.width", 120),
+            # A full date and time: 120 px cut the year at 1280 px.
+            ("custom.width", 170),
             ("unit", "dateTimeAsLocalNoDateIfToday"),
         ),
         by_name(
