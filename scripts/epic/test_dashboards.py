@@ -506,6 +506,15 @@ class TicketsPageTest(unittest.TestCase):
         self.assertEqual(
             sort[0]["options"]["sort"], [{"field": "In status", "desc": True}]
         )
+        # One override per column; a fixed width would cut long ages.
+        names = [o["matcher"]["options"] for o in aging["fieldConfig"]["overrides"]]
+        self.assertEqual(len(names), len(set(names)))
+        [age] = [
+            o
+            for o in aging["fieldConfig"]["overrides"]
+            if o["matcher"]["options"] == "In status"
+        ]
+        self.assertNotIn("custom.width", [p["id"] for p in age["properties"]])
         done = self.by_title("Done tickets · cycle and lead time")
         self.assertEqual(done["transformations"][0], dashboards.join("key"))
         for t in done["targets"]:
@@ -901,6 +910,13 @@ class QuerySemanticsTest(unittest.TestCase):
             {
                 "series": 'epic_ticket_info{issue="2",status="Done",title="b",'
                 'url="u2",executor="Codex"}',
+                "values": "1x25",
+            },
+            # The same ticket after its last agent changed, still within
+            # the lookback: aging must not fail on many-to-many.
+            {
+                "series": 'epic_ticket_info{issue="1",status="Ready",title="a",'
+                'url="u1",executor="Codex",last_agent="Codex"}',
                 "values": "1x25",
             },
             {

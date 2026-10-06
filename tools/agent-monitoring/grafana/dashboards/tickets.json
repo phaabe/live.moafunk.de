@@ -1815,7 +1815,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 40
+                "value": 50
               },
               {
                 "id": "custom.align",
@@ -3537,7 +3537,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "topk(20, (time() - epic_ticket_status_entered_seconds) * on(issue) group_left(title, status, url) epic_ticket_info{status!=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1))",
+              "expr": "topk(20, (time() - epic_ticket_status_entered_seconds) * on(issue) group_left(title, status, url) max by (issue, title, status, url) (epic_ticket_info{status!=\"Done\"}) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1))",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -3730,7 +3730,7 @@
                 "properties": [
                   {
                     "id": "custom.width",
-                    "value": 40
+                    "value": 50
                   },
                   {
                     "id": "custom.align",
@@ -3779,51 +3779,12 @@
                 },
                 "properties": [
                   {
-                    "id": "custom.width",
-                    "value": 90
-                  },
-                  {
                     "id": "unit",
                     "value": "s"
                   },
                   {
                     "id": "decimals",
                     "value": 0
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "In status"
-                },
-                "properties": [
-                  {
-                    "id": "unit",
-                    "value": "s"
-                  },
-                  {
-                    "id": "decimals",
-                    "value": 0
-                  },
-                  {
-                    "id": "min",
-                    "value": 0
-                  },
-                  {
-                    "id": "color",
-                    "value": {
-                      "mode": "fixed",
-                      "fixedColor": "#6E717A"
-                    }
-                  },
-                  {
-                    "id": "custom.cellOptions",
-                    "value": {
-                      "type": "gauge",
-                      "mode": "basic",
-                      "valueDisplayMode": "text"
-                    }
                   }
                 ]
               },
@@ -4071,7 +4032,11 @@
             "graphMode": "none",
             "justifyMode": "center",
             "orientation": "horizontal",
-            "wideLayout": true
+            "wideLayout": true,
+            "text": {
+              "titleSize": 14,
+              "valueSize": 20
+            }
           },
           "id": 26,
           "gridPos": {
@@ -4127,12 +4092,16 @@
               "values": false,
               "fields": ""
             },
-            "textMode": "value",
+            "textMode": "value_and_name",
             "colorMode": "value",
             "graphMode": "none",
             "justifyMode": "center",
             "orientation": "horizontal",
-            "wideLayout": true
+            "wideLayout": true,
+            "text": {
+              "titleSize": 14,
+              "valueSize": 20
+            }
           },
           "id": 27,
           "gridPos": {
@@ -4491,8 +4460,12 @@
                 },
                 "properties": [
                   {
+                    "id": "custom.width",
+                    "value": 110
+                  },
+                  {
                     "id": "unit",
-                    "value": "dateTimeAsLocalNoDateIfToday"
+                    "value": "dateTimeFromNow"
                   }
                 ]
               },
@@ -4502,6 +4475,10 @@
                   "options": "Cycle"
                 },
                 "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 90
+                  },
                   {
                     "id": "unit",
                     "value": "s"
@@ -4518,6 +4495,10 @@
                   "options": "Lead"
                 },
                 "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 90
+                  },
                   {
                     "id": "unit",
                     "value": "s"

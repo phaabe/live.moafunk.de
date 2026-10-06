@@ -2196,7 +2196,8 @@ def ticket_overrides(shown: list[str]) -> list[Json]:
         ),
         by_name(
             "≥/?",
-            ("custom.width", 40),
+            # Grafana's minimum column width; a smaller one overflows the panel.
+            ("custom.width", 50),
             ("custom.align", "right"),
             cell("color-text"),
             ("noValue", " "),
@@ -2435,7 +2436,9 @@ TIMED = ("Refinement", "Ready", "In progress", "In review")
 
 def aging() -> Json:
     """The 20 open tickets that sit longest in their status."""
-    info = 'epic_ticket_info{status!="Done"}'
+    # Only the copied labels: an info series whose other labels changed
+    # (last_agent, note) must not make the match many-to-many.
+    info = 'max by (issue, title, status, url) (epic_ticket_info{status!="Done"})'
     expr = (
         f"topk(20, (time() - {ENTERED}) * on(issue)"
         f" group_left(title, status, url) {info}{TICKETS})"
@@ -2459,15 +2462,9 @@ def aging() -> Json:
             },
         ],
         [
-            *ticket_overrides([*rename.values(), "url"]),
-            by_name(
-                "In status",
-                ("unit", "s"),
-                ("decimals", 0),
-                ("min", 0),
-                ("color", {"mode": "fixed", "fixedColor": GREY}),
-                cell("gauge", mode="basic", valueDisplayMode="text"),
-            ),
+            # Its own In status: the table's fixed width cuts long ages here.
+            *ticket_overrides(["Ticket", "Title", "Status", "≥/?", "url"]),
+            by_name("In status", ("unit", "s"), ("decimals", 0)),
         ],
         description="Open tickets (not Done) by time in their current status. "
         "≥ is a lower bound, ? crosses a gap in the collector's data.",
@@ -2514,7 +2511,7 @@ def done_per_day() -> Json:
 
 def flow_stat(title: str, queries: dict[str, str], description: str) -> Json:
     """Seconds; "–" when the collector has no samples, never 0."""
-    return stat(
+    panel = stat(
         title,
         [
             target(f"{expr}{TICKETS}", legend=legend, ref=chr(ord("A") + i))
@@ -2525,6 +2522,10 @@ def flow_stat(title: str, queries: dict[str, str], description: str) -> Json:
         decimals=1,
         description=description,
     )
+    # Named values in one text size: one value alone would draw larger.
+    panel["options"]["textMode"] = "value_and_name"
+    panel["options"]["text"] = {"titleSize": 14, "valueSize": 20}
+    return panel
 
 
 def ordered(expr: str, label: str, values: tuple[str, ...]) -> str:
@@ -2610,9 +2611,10 @@ def done_tickets() -> Json:
                 ("links", [link("Open on GitHub", f"{REPO}/issues/${{__value.raw}}")]),
             ),
             *ticket_overrides(["Executor"]),
-            by_name("Done", ("unit", "dateTimeAsLocalNoDateIfToday")),
-            by_name("Cycle", ("unit", "s"), ("decimals", 1)),
-            by_name("Lead", ("unit", "s"), ("decimals", 1)),
+            # Fits 10 of 24 columns at 1280 px.
+            by_name("Done", ("custom.width", 110), ("unit", "dateTimeFromNow")),
+            by_name("Cycle", ("custom.width", 90), ("unit", "s"), ("decimals", 1)),
+            by_name("Lead", ("custom.width", 90), ("unit", "s"), ("decimals", 1)),
         ],
         description="Tickets that entered Done in the last 14 days, newest "
         "first. Cycle: first In progress to Done. Lead: first Ready to Done. "
