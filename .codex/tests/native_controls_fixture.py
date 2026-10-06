@@ -204,14 +204,14 @@ class Responses:
         extra_roots: tuple[Path, ...] = (),
         *,
         skip_git_check: bool = True,
+        source_profile: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             [
                 str(NATIVE),
                 "exec",
                 *(["--skip-git-repo-check"] if skip_git_check else []),
-                "--sandbox",
-                "workspace-write",
+                *([] if source_profile else ["--sandbox", "workspace-write"]),
                 "--json",
                 "--cd",
                 str(cwd),

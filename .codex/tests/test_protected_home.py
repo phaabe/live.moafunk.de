@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import unittest
 
-from protected_home_fixture import prepare
+from protected_home_fixture import enable_source_profile, prepare
 
 SOURCE = Path(__file__).resolve().parents[1] / "protected_home.py"
 spec = importlib.util.spec_from_file_location("protected_home", SOURCE)
@@ -58,6 +58,55 @@ class ProtectedHomeTests(unittest.TestCase):
             result["writable_roots"],
             [str(self.repo / ".git"), str(self.fixture.gitnexus)],
         )
+
+    def test_source_profile_accepts_only_the_exact_bound_policy(self) -> None:
+        enable_source_profile(self.fixture)
+        self.assertEqual(self.check()["permission_profile"], "epic-source-edit")
+        config = self.fixture.home / "config.toml"
+        original = config.read_text()
+        cases = [
+            original.replace('".codex" = "read"', '".codex" = "write"'),
+            original.replace('":slash_tmp" = "read"', '":slash_tmp" = "write"'),
+            original.replace('".codex/tests"', '".codex/hooks"'),
+            original.replace("enabled = false", "enabled = true"),
+            'sandbox_mode = "workspace-write"\n' + original,
+            original.replace(
+                'default_permissions = "epic-source-edit"',
+                'default_permissions = ":workspace"',
+            ),
+            original + '\n[permissions.extra]\nextends = ":workspace"\n',
+        ]
+        for changed in cases:
+            with self.subTest(config=changed):
+                config.write_text(changed)
+                self.fixture.reseal()
+                with self.assertRaisesRegex(module.ProtectedHomeError, "permission"):
+                    self.check()
+
+    def test_source_profile_refuses_existing_symlink_and_hardlink_grants(self) -> None:
+        enable_source_profile(self.fixture)
+        temp = self.fixture.temporary_parent / "codex-tick-source"
+        temp.mkdir()
+        sources = temp / ".codex"
+        sources.mkdir()
+        target = self.fixture.home / "config.toml"
+        source = sources / "epic_lock.py"
+        for hardlink in (False, True):
+            with self.subTest(hardlink=hardlink):
+                if hardlink:
+                    os.link(target, source)
+                else:
+                    source.symlink_to(target)
+                try:
+                    with self.assertRaisesRegex(module.ProtectedHomeError, "alias"):
+                        self.check(temp_dir=temp, model_root=temp)
+                finally:
+                    source.unlink()
+        tests = sources / "tests"
+        tests.mkdir()
+        (tests / "escape").symlink_to(self.fixture.home, target_is_directory=True)
+        with self.assertRaisesRegex(module.ProtectedHomeError, "alias"):
+            self.check(temp_dir=temp, model_root=temp)
 
     def test_missing_home_or_binding_refuses(self) -> None:
         for key in self.fixture.env:

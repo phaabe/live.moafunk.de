@@ -394,7 +394,7 @@ else:
         # foundation/native suites exercise the real validator and config.
         (self.runner.parent / "protected_home.py").write_text(
             "import json, os\n"
-            "print(json.dumps({'temporary_parent': os.environ['TEST_TEMP_PARENT']}))\n"
+            "print(json.dumps({'temporary_parent': os.environ['TEST_TEMP_PARENT'], 'permission_profile': os.environ.get('TEST_PERMISSION_PROFILE')}))\n"
         )
         self.env = {
             **os.environ,
@@ -1192,6 +1192,19 @@ else:
         log = (self.state / "codex.log").read_text()
         self.assertIn("fake Codex stdout", log)
         self.assertIn("fake Codex stderr", log)
+
+    def test_source_profile_does_not_pass_the_legacy_sandbox_flag(self) -> None:
+        self.env["TEST_PERMISSION_PROFILE"] = "epic-source-edit"
+        self.assertEqual(self.run_tick().returncode, 0)
+        args = json.loads(self.calls.read_text().splitlines()[0])["args"]
+        self.assertNotIn("--sandbox", args)
+        self.assertIn('default_permissions="epic-source-edit"', args)
+        self.assertIn("--add-dir", args)
+
+    def test_unknown_permission_profile_starts_no_model(self) -> None:
+        self.env["TEST_PERMISSION_PROFILE"] = "unknown"
+        self.assertEqual(self.run_tick().returncode, 78)
+        self.assertFalse(self.calls.exists())
 
     def review_lifecycle(self) -> list[dict[str, object]]:
         return [json.loads(line) for line in self.review_calls.read_text().splitlines()]

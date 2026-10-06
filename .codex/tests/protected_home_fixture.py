@@ -179,3 +179,37 @@ class ProtectedFixture:
 
 def prepare(base: Path, repo: Path, code_root: Path | None = None) -> ProtectedFixture:
     return ProtectedFixture(base, repo, code_root)
+
+
+def enable_source_profile(fixture: ProtectedFixture) -> None:
+    """Operator-style migration of a disposable, already sealed home."""
+    config = fixture.home / "config.toml"
+    lines = []
+    legacy_table = False
+    for line in config.read_text().splitlines():
+        if line.startswith("["):
+            legacy_table = line == "[sandbox_workspace_write]"
+        if not legacy_table and not line.startswith("sandbox_mode ="):
+            lines.append(line)
+    profile = "epic-source-edit"
+    text = f'default_permissions = "{profile}"\n' + "\n".join(lines) + "\n"
+    text += f'[permissions.{profile}]\nextends = ":workspace"\n'
+    text += f"[permissions.{profile}.filesystem]\n"
+    for path, access in (
+        (":slash_tmp", "read"),
+        (":tmpdir", "read"),
+        (str(fixture.metadata), "write"),
+        (str(fixture.gitnexus), "write"),
+    ):
+        text += f'{json.dumps(path)} = "{access}"\n'
+    text += f'[permissions.{profile}.filesystem.":workspace_roots"]\n'
+    for path, access in (
+        (".codex", "read"),
+        (".codex/epic_lock.py", "write"),
+        (".codex/tests", "write"),
+        (".codex/README.md", "write"),
+    ):
+        text += f'{json.dumps(path)} = "{access}"\n'
+    text += f"[permissions.{profile}.network]\nenabled = {json.dumps(fixture.data['network_access'])}\n"
+    config.write_text(text)
+    fixture.reseal()

@@ -17,7 +17,7 @@ import tempfile
 import unittest
 
 from native_controls_fixture import Responses, identity, list_hooks, native_env
-from protected_home_fixture import ProtectedFixture, prepare
+from protected_home_fixture import ProtectedFixture, enable_source_profile, prepare
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRATCH = Path("/tmp/codex-586")
@@ -285,6 +285,69 @@ class ProtectedNativeTests(unittest.TestCase):
         self.assertTrue((cwd / "hook-called").is_file())
         self.assertFalse((cwd / "rule-denied").exists())
         self.assertFalse((self.base / "mcp-started").exists())
+
+    def test_source_edits_keep_native_boundaries_hooks_and_rules(self) -> None:
+        with Responses(self.base, []) as api:
+            fixture = self.fixture(api)
+            enable_source_profile(fixture)
+            cwd = self.work
+            allowed = [
+                cwd / ".codex/epic_lock.py",
+                cwd / ".codex/tests/probe.py",
+                cwd / ".codex/README.md",
+            ]
+            denied = [
+                cwd / ".codex/hooks/guard.py",
+                cwd / ".codex/config.toml",
+                cwd / ".codex/runtime/config.toml",
+            ]
+            for path in allowed + denied:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# fixture\n")
+            # Config is tracked so preflight can distinguish it from local settings.
+            subprocess.run(
+                ["git", "-C", str(cwd), "add", ".codex"],
+                env=self.env,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(cwd), "commit", "-qm", "fixture sources"],
+                env=self.env,
+                check=True,
+                capture_output=True,
+            )
+            rule = fixture.home / "rules/codex-feature-git.rules"
+            rule.write_text(
+                'prefix_rule(pattern = ["/usr/bin/touch"], decision = "forbidden")\n'
+            )
+            fixture.reseal()
+            checked = self.preflight()
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            spec = self.write_matrix(fixture, cwd)
+            # Include active runner files, user settings and replace/escape checks.
+            probe = "from pathlib import Path\n"
+            for path in allowed:
+                probe += f"Path({str(path)!r}).write_text('edited')\n"
+            for path in denied:
+                probe += f"try:\n    Path({str(path)!r}).write_text('unsafe')\nexcept PermissionError:\n    pass\nelse:\n    raise AssertionError({str(path)!r})\n"
+            escape = cwd / ".codex/tests/escape"
+            escape.symlink_to(fixture.home, target_is_directory=True)
+            probe += "try:\n    Path('.codex/tests/escape/config.toml').write_text('unsafe')\nexcept PermissionError:\n    pass\nelse:\n    raise AssertionError('source symlink escape')\n"
+            probe += "try:\n    Path('.codex').rename('.codex-moved')\nexcept PermissionError:\n    pass\nelse:\n    raise AssertionError('protected directory rename')\n"
+            probe += "Path('source-proof-ok').touch()\n"
+            (cwd / "source-probe.py").write_text(probe)
+            api.commands[:] = [
+                shlex.quote(sys.executable) + " source-probe.py",
+                shlex.quote(sys.executable) + " matrix-probe.py",
+                "/usr/bin/touch " + shlex.quote(str(cwd / "rule-denied")),
+            ]
+            result = api.launch(
+                cwd, self.env, (self.temp, self.review), source_profile=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((cwd / "source-proof-ok").exists(), result.stdout)
+            self.check_matrix(cwd, spec)
 
     def test_native_allowlist_hooks_rules_and_untrusted_layers(self) -> None:
         with Responses(self.base, []) as api:

@@ -43,6 +43,29 @@ FOUNDATION_FILES = (
 )
 
 
+SOURCE_PROFILE = "epic-source-edit"
+SOURCE_PATHS = (".codex/epic_lock.py", ".codex/tests", ".codex/README.md")
+
+
+def source_permissions(writable: list[Path], network: bool) -> dict[str, Any]:
+    """Exact opt-in policy; active code and the dedicated home stay outside roots."""
+    return {
+        SOURCE_PROFILE: {
+            "extends": ":workspace",
+            "filesystem": {
+                ":slash_tmp": "read",
+                ":tmpdir": "read",
+                **{str(path): "write" for path in writable[:2]},
+                ":workspace_roots": {
+                    ".codex": "read",
+                    **{path: "write" for path in SOURCE_PATHS},
+                },
+            },
+            "network": {"enabled": network},
+        }
+    }
+
+
 class ProtectedHomeError(ValueError):
     """The operator binding does not describe a protected runner."""
 
@@ -484,34 +507,61 @@ def validate(
         if (home / name).exists() or (home / name).is_symlink():
             raise ProtectedHomeError(f"unexpected protected-home settings: {name}")
     config = tomllib.loads((home / "config.toml").read_text())
-    if set(config) & {"profile", "profiles", "permissions", "sandbox_permissions"}:
+    if set(config) & {"profile", "profiles", "sandbox_permissions"}:
         raise ProtectedHomeError(
             "alternate permission or profile settings are not allowed"
         )
-    if (
-        config.get("sandbox_mode") != "workspace-write"
-        or config.get("approval_policy") != "never"
-    ):
-        raise ProtectedHomeError(
-            "protected config must use workspace-write and approval never"
-        )
-    sandbox = config.get("sandbox_workspace_write", {})
-    if sandbox.get("writable_roots") != [str(p) for p in writable[:2]]:
-        raise ProtectedHomeError(
-            "config writable roots differ from protected allowlist"
-        )
+    if config.get("approval_policy") != "never":
+        raise ProtectedHomeError("protected config must use approval never")
     network_access = data.get("network_access")
     if type(network_access) is not bool:
         raise ProtectedHomeError("protected network_access policy is missing")
-    if any(
-        sandbox.get(key) is not expected
-        for key, expected in (
-            ("network_access", network_access),
-            ("exclude_tmpdir_env_var", True),
-            ("exclude_slash_tmp", True),
-        )
-    ):
-        raise ProtectedHomeError("protected config widens network or temporary access")
+    permission_profile = config.get("default_permissions")
+    if "permissions" in config or "default_permissions" in config:
+        if (
+            permission_profile != SOURCE_PROFILE
+            or config.get("permissions") != source_permissions(writable, network_access)
+            or set(config) & {"sandbox_mode", "sandbox_workspace_write"}
+        ):
+            raise ProtectedHomeError(
+                "alternate permission profile differs from protected allowlist"
+            )
+        # Native permissions resolve paths at startup. Never let a source
+        # alias turn an exact source grant into a write to protected state.
+        for root in writable[2:]:
+            for relative in SOURCE_PATHS:
+                source = root / relative
+                if source.resolve() != source:
+                    raise ProtectedHomeError("source permission path is aliased")
+                entries = (source, *source.rglob("*")) if source.is_dir() else (source,)
+                for path in entries:
+                    if path.is_symlink() or (
+                        path.is_file() and path.stat().st_nlink != 1
+                    ):
+                        raise ProtectedHomeError(
+                            "source permission path contains an alias"
+                        )
+    else:
+        if config.get("sandbox_mode") != "workspace-write":
+            raise ProtectedHomeError(
+                "protected config must use workspace-write and approval never"
+            )
+        sandbox = config.get("sandbox_workspace_write", {})
+        if sandbox.get("writable_roots") != [str(p) for p in writable[:2]]:
+            raise ProtectedHomeError(
+                "config writable roots differ from protected allowlist"
+            )
+        if any(
+            sandbox.get(key) is not expected
+            for key, expected in (
+                ("network_access", network_access),
+                ("exclude_tmpdir_env_var", True),
+                ("exclude_slash_tmp", True),
+            )
+        ):
+            raise ProtectedHomeError(
+                "protected config widens network or temporary access"
+            )
     projects = config.get("projects", {})
     if projects.get(str(repo), {}).get("trust_level") != "untrusted" or any(
         value.get("trust_level") != "untrusted" for value in projects.values()
@@ -602,6 +652,7 @@ def validate(
         "repo_root": str(repo),
         "codex_home": str(home),
         "writable_roots": [str(path) for path in writable],
+        "permission_profile": permission_profile,
         "temporary_parent": str(temporary_parent),
         "review_parent": str(review_parent),
         "python3": manifest.get("executables", {})

@@ -706,3 +706,54 @@ remote heads, and absence of permission prompts. Verify that the denied request
 changes neither head and that raw critical Git commands gain no permission.
 Parser tests and a fake Codex binary do not satisfy this check. Do not claim
 activation from the source tests alone or resume schedulers as part of testing.
+
+
+### Optional source-edit profile
+
+The default protected home still uses `workspace-write`. It cannot edit
+`.codex/`. An operator can opt into `epic-source-edit` after this change is
+reviewed and deployed. This allows only `.codex/epic_lock.py`, `.codex/tests/`
+and `.codex/README.md` in the model worktree. It does not grant writes to the
+running checkout, hooks, config or the dedicated home. Other setup tickets
+may still need a separate permission change.
+
+While the runners are drained, back up the protected config and binding.
+Remove `sandbox_mode` and the entire `sandbox_workspace_write` table from
+the protected config. Add `default_permissions = "epic-source-edit"` before
+any table. Add this profile, replacing both absolute paths with the existing
+bound writable roots and matching the bound network policy:
+
+```toml
+[permissions.epic-source-edit]
+extends = ":workspace"
+
+[permissions.epic-source-edit.filesystem]
+":slash_tmp" = "read"
+":tmpdir" = "read"
+"/ABSOLUTE/GIT/METADATA" = "write"
+"/ABSOLUTE/GITNEXUS/STATE" = "write"
+
+[permissions.epic-source-edit.filesystem.":workspace_roots"]
+".codex" = "read"
+".codex/epic_lock.py" = "write"
+".codex/tests" = "write"
+".codex/README.md" = "write"
+
+[permissions.epic-source-edit.network]
+enabled = true
+```
+
+Keep the existing approval policy, trusted hooks, rules, MCP binding and
+untrusted project settings. Re-seal only the reviewed deployed files and
+operator-approved config, then run the protected-home preflight before
+restarting. The validator refuses extra profiles, widened roots, mixed
+legacy settings and any different source allowlist. Existing installation
+scripts that render the legacy config must be updated before using them to
+re-seal this profile.
+
+Native regression tests use a disposable home and a fake localhost model
+endpoint. They check source edits, protected config and hook refusals,
+symlink escapes, directory replacement, hook execution and command rules.
+The current macOS process reader uses libproc; it does not require `/bin/ps`.
+The writable Git metadata limitation remains tracked in
+https://github.com/phaabe/live.moafunk.de/issues/643.
