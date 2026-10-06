@@ -46,9 +46,9 @@ Usage:
 
 Completed tickets (EPIC_REQUIRE_COMPLETED_TICKETS, off by default): with 1, a
 ticket named in "Start after" counts as done only while its issue is closed as
-completed. A merged PR or board Status Done is not enough. Closed issues get
-no claim or continue action. Unset or 0 keeps the old rule; other values are
-bad settings (exit 2).
+completed. A merged PR or board Status Done is not enough. Unset or 0 keeps
+the old rule; other values are bad settings (exit 2). Closed issues get no
+claim or continue action either way.
 
 Shared reader (github_state.py): when on, fetch_state() reads the shared REST
 snapshot instead of calling GitHub itself. github_state.enabled() resolves
@@ -972,8 +972,8 @@ def decide(
         and ESCALATION_LABEL not in labels(i)
         and (not focus or labels(i) & focus)
         # A closed issue left Ready or In progress is no work and must not
-        # suppress claims through a `continue`.
-        and not (completed_tickets and is_closed(i))
+        # suppress claims through a `continue`, whatever the board says.
+        and not is_closed(i)
     ]
     batch = batch_blockers(state, agent)
     for i in items:

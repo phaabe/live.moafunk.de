@@ -23,6 +23,9 @@ import next_action
 from github_quota import parse_iso
 
 REPO = next_action.REPO
+BOARD = next_action.PROJECT_API
+STATUS_FIELD = 417511516
+DONE = "edaabf77"
 NOW = parse_iso("2026-10-05T12:00:00Z")
 SHA = "a" * 40
 
@@ -58,11 +61,15 @@ class FakeGh:
         self.writes: list[tuple[str, int]] = []
         self.pages: list[int] = []  # page numbers of the recent-merge reads
         self.fail_writes = False
+        self.board: dict[int, str] = {}  # ticket -> Status option id
+        self.fail_board = False
 
     def ticket(self, n: int, body: str = "Do it.", sub_issues: int = 0) -> None:
         self.tickets[n] = {"number": n, "body": body, "sub_issues": sub_issues}
 
     def __call__(self, args: list[str]) -> str:
+        if any(a.startswith(f"{BOARD}/") for a in args):
+            return self.project(args)
         url = next(a for a in args if a.startswith("repos/"))
         path = url.removeprefix(f"repos/{REPO}/")
         if "-X" in args:
@@ -117,6 +124,37 @@ class FakeGh:
             self.tickets.pop(n)
             self.writes.append(("close", n))
         return ""
+
+    def project(self, args: list[str]) -> str:
+        """The board REST API, projected the way the jq filters do."""
+        if self.fail_board:
+            raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 503")
+        path = next(a for a in args if a.startswith(f"{BOARD}/"))
+        if "-X" in args:
+            item = int(path.rsplit("/", 1)[1])
+            assert args[args.index("-X") + 1] == "PATCH", args
+            assert f"fields[][id]={STATUS_FIELD}" in args, args
+            value = next(a for a in args if a.startswith("fields[][value]="))
+            n = item - 70_000
+            self.board[n] = value.split("=", 1)[1]
+            self.writes.append(("done", n))
+            return ""
+        if "/fields?" in path:
+            return out([{"id": STATUS_FIELD, "done": DONE}])
+        assert f"fields[]={STATUS_FIELD}" in path, path
+        return out(
+            [
+                {
+                    "id": 70_000 + n,
+                    "number": n,
+                    "repo": f"https://api.github.com/repos/{REPO}",
+                    "state": "open" if n in self.tickets else "closed",
+                    "reason": None if n in self.tickets else "completed",
+                    "status": status,
+                }
+                for n, status in self.board.items()
+            ]
+        )
 
     @staticmethod
     def assertion_close(args: list[str]) -> None:
@@ -355,6 +393,84 @@ class CloseMergedTest(unittest.TestCase):
         self.run_once()
         self.assertEqual(self.gh.writes, [("comment", 350), ("close", 350)])
 
+    def test_example_leaf_in_inline_code_does_not_keep_the_ticket_open(
+        self,
+    ) -> None:
+        # Issue 453: the leaf format example, not a leaf.
+        body = (
+            "Mark each leaf like `- [ ] **X1.2.3**` in the list.\n"
+            "Example: `- [ ] **X1.2.4**`\n"
+        )
+        self.gh.merged = [pr(410, 453)]
+        self.gh.ticket(453, body=body)
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [("comment", 453), ("close", 453)])
+
+    def test_indented_unchecked_leaf_still_keeps_the_ticket_open(self) -> None:
+        body = "Leaves:\n  - [ ] **B1.1.1** first\n\t- [ ] **B1.1.2** second\n"
+        self.gh.merged = [pr(410, 350)]
+        self.gh.ticket(350, body=body)
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [("comment", 350)])
+        self.assertIn("B1.1.1, B1.1.2.", self.gh.comments[350][0])
+
+    def test_closed_ticket_on_the_board_gets_status_done(self) -> None:
+        self.gh.merged = [pr(612, 521)]
+        self.gh.ticket(521)
+        self.gh.board[521] = "3a81da46"  # In progress
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(
+            self.gh.writes, [("comment", 521), ("close", 521), ("done", 521)]
+        )
+        self.assertEqual(self.gh.board[521], DONE)
+        self.gh.writes.clear()
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_closed_ticket_not_on_the_board_is_fine(self) -> None:
+        self.gh.merged = [pr(612, 521)]
+        self.gh.ticket(521)
+        self.gh.board[999] = "3a81da46"  # another ticket, not merged here
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [("comment", 521), ("close", 521)])
+        self.assertEqual(self.gh.board[999], "3a81da46")
+
+    def test_open_ticket_keeps_its_board_status(self) -> None:
+        self.gh.merged = [pr(612, 521)]
+        self.gh.ticket(521)
+        self.gh.open_prs = [f"Issue: {issue(521)}"]
+        self.gh.board[521] = "3a81da46"
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_board_error_leaves_the_close_and_retries_next_run(self) -> None:
+        self.gh.merged = [pr(612, 521)]
+        self.gh.ticket(521)
+        self.gh.board[521] = "3a81da46"
+        self.gh.fail_board = True
+        self.assertEqual(self.run_once(), 1)
+        self.assertEqual(self.gh.writes, [("comment", 521), ("close", 521)])
+        self.assertNotIn(521, self.gh.tickets)  # still closed
+        self.assertTrue(any("board read failed: HTTP 503" in x for x in self.log))
+        # Issue 655: closed earlier, Status left behind. The next run fixes it.
+        self.gh.fail_board = False
+        self.gh.writes.clear()
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [("done", 521)])
+
+    def test_board_retry_ends_when_the_merge_leaves_the_window(self) -> None:
+        self.gh.merged = [pr(612, 521, merged_at="2026-09-01T00:00:00Z")]
+        self.gh.board[521] = "3a81da46"  # closed, Status left behind
+        self.assertEqual(self.run_once(), 0)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_dry_run_sets_no_board_status(self) -> None:
+        self.gh.merged = [pr(612, 521)]
+        self.gh.board[521] = "3a81da46"
+        self.assertEqual(self.run_once(dry_run=True), 0)
+        self.assertEqual(self.gh.writes, [])
+        self.assertTrue(any("board Status to Done" in x for x in self.log))
+
     def test_dry_run_writes_nothing(self) -> None:
         self.gh.merged = [pr(612, 521)]
         self.gh.ticket(521)
@@ -448,6 +564,34 @@ class JqFilterTest(unittest.TestCase):
         self.assertEqual(
             self.jq(close_merged.REOPENED_JQ, events), ["2026-10-02T00:00:00Z"]
         )
+        fields = [
+            {"id": 1, "name": "Wave", "options": [{"id": "w", "name": {"raw": "1"}}]},
+            {"id": STATUS_FIELD, "name": "Status", "options": [
+                {"id": "3a81da46", "name": {"raw": "In progress"}},
+                {"id": DONE, "name": {"raw": "Done"}}]},
+        ]  # fmt: skip
+        self.assertEqual(
+            self.jq(close_merged.STATUS_JQ, fields),
+            [{"id": STATUS_FIELD, "done": DONE}],
+        )
+        rows = [
+            {"id": 5, "content_type": "Issue",
+             "content": {"number": 521, "state": "closed",
+                         "state_reason": "completed",
+                         "repository_url": f"https://api.github.com/repos/{REPO}"},
+             "fields": [{"name": "Status", "value": {"id": "3a81da46"}}]},
+            {"id": 6, "content_type": "PullRequest", "content": {"number": 7}},
+            {"id": 8, "content_type": "Issue",
+             "content": {"number": 9, "state": "open", "state_reason": None,
+                         "repository_url": "u"}, "fields": []},
+        ]  # fmt: skip
+        self.assertEqual(
+            self.jq(close_merged.BOARD_JQ, rows),
+            [{"id": 5, "number": 521, "repo": f"https://api.github.com/repos/{REPO}",
+              "state": "closed", "reason": "completed", "status": "3a81da46"},
+             {"id": 8, "number": 9, "repo": "u", "state": "open", "reason": None,
+              "status": None}],
+        )  # fmt: skip
         comments = [
             {"body": "Closed.\n\n<!-- epic-close-merged close pr=612 -->"},
             {"body": None},
