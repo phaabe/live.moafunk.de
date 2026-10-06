@@ -480,14 +480,17 @@ def board_issues(state: dict[str, Any]) -> dict[int, dict[str, Any]]:
 
 
 def ticket_prerequisites(items: list[dict[str, Any]]) -> set[int]:
-    """Tickets named in the "Start after" lines of Ready board issues."""
-    return {
-        int(ISSUE_URL.fullmatch(url).group(1))  # type: ignore[union-attr]
-        for item in items
-        if item.get("status") == "Ready"
-        for url in start_after(item)
-        if ISSUE_URL.fullmatch(url)
-    }
+    """Tickets named in the "Start after" lines of Ready board issues, and in
+    the `depends_on` of their proposals (read only while refinement is on)."""
+    found = set()
+    for item in items:
+        if item.get("status") != "Ready":
+            continue
+        urls = start_after(item)
+        if "refinement_comments" in item:
+            urls |= approved_dependencies(item)
+        found |= {int(m.group(1)) for url in urls if (m := ISSUE_URL.fullmatch(url))}
+    return found
 
 
 def read_tickets(

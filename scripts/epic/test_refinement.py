@@ -458,6 +458,40 @@ class DecideRefinement(unittest.TestCase):
         )
         self.assertIn("Z1.1.1", waits[0].reason)
 
+    def test_depends_on_ticket_is_read_and_follows_completion(self) -> None:
+        dep = "https://github.com/phaabe/live.moafunk.de/issues/77"
+        entry = board(approved(proposal_data(depends_on=[dep])), status="Ready")
+        ticket = {"state": "closed", "state_reason": "completed"}
+        calls: list[int] = []
+
+        def read(n: int) -> dict[str, object]:
+            calls.append(n)
+            return dict(ticket)
+
+        def decided() -> list[next_action.Action]:
+            state = {
+                "prs": [],
+                "items": [entry],
+                "refinement_exempt": [],
+                "completed_tickets": True,
+                "tickets": next_action.read_tickets([entry], read),
+            }
+            return next_action.decide(
+                "Codex",
+                state,
+                include_waiting=True,
+                enabled=ALL,
+                rules=RULES,
+                completed_tickets=True,
+            )
+
+        self.assertEqual([a.action for a in decided()], ["claim"])
+        self.assertEqual(calls, [77])
+        ticket["state"] = "open"  # reopened: blocks again, no new comment needed
+        waits = decided()
+        self.assertEqual(waits[0].action, "wait")
+        self.assertIn(dep, waits[0].reason)
+
     def test_files_with_no_owner_block(self) -> None:
         rows = approved(proposal_data(files=["nowhere/x"]))
         self.assertEqual(kinds("Codex", board(rows, executor=None)), [])
