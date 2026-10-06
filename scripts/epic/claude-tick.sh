@@ -132,6 +132,20 @@ cleanup() {
     local result=$?
     if [[ "$lock_held" == 1 ]]; then
         step_mark cleanup
+        # Teardown first, so the cleanup duration includes it. Kept for after
+        # the finish event: its inputs (action.json, timings.txt), owner.json
+        # (the lock owner) and the lock itself.
+        rm -f "${lock_dir}/prompt.txt" "${lock_dir}/context.json" \
+            "${lock_dir}/result.json" "${lock_dir}/cooldown.json" \
+            "${lock_dir}/attempt.json" "${lock_dir}/scope.json" || true
+        if [[ -n "$body_dir" ]]; then
+            rm -rf "$body_dir" || true
+        fi
+        # $py and $events are absolute paths in pinned mode, so finish does
+        # not need these links.
+        if [[ -n "$pinned_bin" ]]; then
+            rm -rf "$pinned_bin" || true
+        fi
         # Log the finish while the lock is held, so the next tick's start line
         # always comes after it (the monitor pairs start and finish lines).
         # A failed log write must not skip the lock release below (set -e).
@@ -147,17 +161,16 @@ cleanup() {
                 --log "$log_file" --since "$tick_offset" "${usage_args[@]}" \
                 --timings "${lock_dir}/timings.txt" || true
         fi
-        rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" \
-            "${lock_dir}/context.json" "${lock_dir}/result.json" "${lock_dir}/cooldown.json" \
-            "${lock_dir}/attempt.json" "${lock_dir}/scope.json" \
+        rm -f "${lock_dir}/action.json" "${lock_dir}/owner.json" \
             "${lock_dir}/timings.txt" || true
         rmdir "$lock_dir" || true
-    fi
-    if [[ -n "$body_dir" ]]; then
-        rm -rf "$body_dir" || true
-    fi
-    if [[ -n "$pinned_bin" ]]; then
-        rm -rf "$pinned_bin" || true
+    else
+        if [[ -n "$body_dir" ]]; then
+            rm -rf "$body_dir" || true
+        fi
+        if [[ -n "$pinned_bin" ]]; then
+            rm -rf "$pinned_bin" || true
+        fi
     fi
     # Last: the admission record. fd 17 closes when the shell exits.
     if [[ "$admitted" == 1 ]]; then

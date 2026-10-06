@@ -816,6 +816,24 @@ class ClaudeTickTest(RunnerHarness):
         # The marks file goes with the lock dir.
         self.assertFalse((self.state / "claude.lock").exists())
 
+    def test_cleanup_duration_includes_the_teardown(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/pull/660: a slow removal of
+        # the tick files counts in `cleanup`, not after the finish event.
+        slow_bin = self.root / "slow-bin"
+        slow_bin.mkdir()
+        rm = slow_bin / "rm"
+        rm.write_text(
+            "#!/bin/bash\n"
+            'case "$*" in *claude.lock/prompt.txt*) sleep 1 ;; esac\n'
+            'exec /bin/rm "$@"\n'
+        )
+        rm.chmod(0o755)
+        path = f"{slow_bin}:{self.env['PATH']}"
+        self.assertEqual(self.run_tick(PATH=path).wait(timeout=30), 0)
+        durations = self.tick_events()[-1]["durations"]
+        self.assertGreaterEqual(durations["cleanup"], 1.0)
+        self.assertFalse((self.state / "claude.lock").exists())
+
     def session_arg(self) -> str:
         [args] = [c[1] for c in self.calls_made() if c[0] == "claude"]
         words = args.split()
