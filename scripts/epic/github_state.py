@@ -732,6 +732,36 @@ def board_items(client: Client, rest_ids: bool = False) -> list[dict[str, Any]]:
     return items
 
 
+def status_target(client: Client) -> dict[str, str]:
+    """The node IDs `gh project item-edit` needs to set Status to Ready:
+    project, Status field and the Ready option."""
+    project = client.json(na.PROJECT_API)
+    status = next(
+        (
+            f
+            for f in client.pages(f"{na.PROJECT_API}/fields?per_page=100")
+            if f.get("name") == "Status"
+        ),
+        None,
+    )
+    if not isinstance(project, dict) or status is None:
+        raise ReadBlocked("project board or its Status field is missing")
+
+    def name(option: dict[str, Any]) -> Any:
+        value = option.get("name")
+        return value.get("raw") if isinstance(value, dict) else value
+
+    ready = [o.get("id") for o in status.get("options") or [] if name(o) == "Ready"]
+    target = {
+        "project": project.get("node_id"),
+        "field": status.get("node_id"),
+        "ready": ready[0] if len(ready) == 1 else None,
+    }
+    if not all(isinstance(v, str) and v for v in target.values()):
+        raise ReadBlocked(f"project board Status IDs are incomplete: {target}")
+    return target
+
+
 def search_focus(client: Client, focus: set[str]) -> list[dict[str, Any]]:
     """Open issues with a focus label, on the board or not. One entry per issue."""
     found: dict[int, dict[str, Any]] = {}
@@ -1133,6 +1163,9 @@ class FreshReader:
 
     def board_items(self) -> list[dict[str, Any]]:
         return board_items(self.client, rest_ids=True)
+
+    def status_target(self) -> dict[str, str]:
+        return status_target(self.client)
 
     def graphql(self, endpoint: str) -> Any:
         """GraphQL for the merge guard's edit evidence only. Logged by purpose."""

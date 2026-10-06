@@ -1522,5 +1522,35 @@ class NextActionCli(Env):
             self.main("--status", "--recheck", "x.json")
 
 
+class StatusTarget(Env):
+    """The IDs set-ready may write, read from the board (REST)."""
+
+    def fields(self, *options: str) -> None:
+        status = {
+            "id": 1,
+            "node_id": "PVTSSF_status",
+            "name": "Status",
+            "options": [{"id": f"opt-{o}", "name": {"raw": o}} for o in options],
+        }
+        executor = {"id": 2, "node_id": "PVTSSF_exec", "name": "Executor"}
+        self.gh.set(f"{na.PROJECT_API}/fields?per_page=100", [executor, status])
+
+    def test_reads_project_status_field_and_ready_option(self) -> None:
+        self.gh.set(na.PROJECT_API, {"id": 2, "node_id": "PVT_board"})
+        self.fields("Backlog", "Ready", "Done")
+        self.assertEqual(
+            gs.status_target(self.client()),
+            {"project": "PVT_board", "field": "PVTSSF_status", "ready": "opt-Ready"},
+        )
+
+    def test_missing_or_ambiguous_ready_option_blocks(self) -> None:
+        self.gh.set(na.PROJECT_API, {"id": 2, "node_id": "PVT_board"})
+        for options in (("Backlog", "Done"), ("Ready", "Ready")):
+            with self.subTest(options=options):
+                self.fields(*options)
+                with self.assertRaises(gs.ReadBlocked):
+                    gs.status_target(self.client())
+
+
 if __name__ == "__main__":
     unittest.main()

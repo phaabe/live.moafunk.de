@@ -75,6 +75,10 @@ class FakeReader:
         self._read()
         return self.items
 
+    def status_target(self) -> dict[str, str]:
+        self._read()
+        return {"project": "P", "field": "F", "ready": "O"}
+
     def pulls_for_branch(self, branch: str) -> list[dict[str, Any]]:
         self._read()
         return self.branch_pulls
@@ -455,7 +459,10 @@ class Merges(Base):
 
 
 class Board(Base):
-    EDIT = "gh project item-edit --id {} --field-id F --single-select-option-id O"
+    EDIT = (
+        "gh project item-edit --id {} --project-id P --field-id F "
+        "--single-select-option-id O"
+    )
 
     def test_claim_board_write_rechecks_the_claim(self) -> None:
         self.action(action="claim", issue=f"{ISSUES}/21")
@@ -544,6 +551,27 @@ class Board(Base):
                 with self.subTest(cmd=cmd):
                     self.assertIn("only Status", self.bash(cmd) or "")
             recheck.assert_not_called()
+
+    def test_set_ready_sets_only_status_to_ready(self) -> None:
+        self.action(action="set-ready", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "Backlog")]
+        edit = "gh project item-edit --id PVTI_21 --project-id {} --field-id {} "
+        with patch.object(gs, "recheck", return_value=None) as recheck:
+            for project, field, option in (
+                ("P", "EXECUTOR", "CODEX"),  # another field
+                ("P", "F", "DONE"),  # Status, but not Ready
+                ("OTHER", "F", "O"),  # another project
+            ):
+                with self.subTest(field=field, option=option):
+                    cmd = edit.format(project, field)
+                    cmd += f"--single-select-option-id {option}"
+                    self.assertIn("only Status to Ready", self.bash(cmd) or "")
+            no_project = "gh project item-edit --id PVTI_21 --field-id F "
+            no_project += "--single-select-option-id O"
+            self.assertIn("only Status to Ready", self.bash(no_project) or "")
+            recheck.assert_not_called()
+            self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+            recheck.assert_called_once()
 
     def test_only_refine_adds_its_own_issue_to_the_board(self) -> None:
         add = "gh project item-add 2 --owner anneoneone --url {}/{}"

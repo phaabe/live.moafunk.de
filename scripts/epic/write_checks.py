@@ -116,8 +116,10 @@ class Write:
     branch: str | None = None
     delete: bool = False
     item: str | None = None  # board item: node ID or numeric REST id
-    # board: `gh project item-edit` that sets only a single-select option.
+    # board: `gh project item-edit` that sets only a single-select option,
+    # with its --project-id, --field-id and --single-select-option-id.
     select_only: bool = False
+    target: tuple[str | None, str | None, str | None] = (None, None, None)
 
 
 def active(env: Mapping[str, str] | None = None) -> bool:
@@ -364,7 +366,18 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
             return [Write("board")]
         values = {"--text", "--number", "--date", "--iteration-id", "--clear"}
         select_only = "--single-select-option-id" in flags and not values & set(flags)
-        return [Write("board", item=first(flags, "--id"), select_only=select_only)]
+        target = tuple(
+            first(flags, f)
+            for f in ("--project-id", "--field-id", "--single-select-option-id")
+        )
+        return [
+            Write(
+                "board",
+                item=first(flags, "--id"),
+                select_only=select_only,
+                target=target,  # type: ignore[arg-type]
+            )
+        ]
     if group not in ("pr", "issue") or len(words) < 3:
         return []
     sub = words[2]
@@ -586,10 +599,19 @@ def issue_write(ctx: Context) -> str | None:
 
 
 def set_ready(ctx: Context, write: Write) -> str | None:
-    """`set-ready` sets one single-select field (Status), and only while the
-    selector still gives set-ready for the same approved proposal (digest)."""
+    """`set-ready` sets this item's Status to Ready and nothing else, and only
+    while the selector still gives set-ready for the same approved proposal
+    (digest). The project, field and option IDs are read from the board."""
     if not write.select_only:
         return "set-ready changes only Status: gh project item-edit --single-select-option-id"
+    want = ctx.reader.status_target()
+    if write.target != (want["project"], want["field"], want["ready"]):
+        project, field, option = write.target
+        return (
+            f"set-ready sets only Status to Ready: --project-id {want['project']} "
+            f"--field-id {want['field']} --single-select-option-id {want['ready']}, "
+            f"not {project} {field} {option}"
+        )
     focus = na.read_focus(na.FOCUS_FILE)
     enabled = na.read_actions(os.environ.get(na.ACTIONS_ENV))
     mode = na.completed_tickets()
