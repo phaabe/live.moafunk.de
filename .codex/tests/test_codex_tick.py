@@ -446,13 +446,36 @@ else:
             text=True,
             start_new_session=True,
         )
+        # Keep leaked children visible to the test's lock/cleanup assertions.
+        # Dispose of them afterwards, even when one of those assertions fails.
+        self.addCleanup(stop_fixture, process)
         try:
             stdout, stderr = process.communicate(timeout=STARTUP_SECONDS)
             return subprocess.CompletedProcess(
                 process.args, process.returncode, stdout, stderr
             )
-        finally:
+        except BaseException:
             stop_fixture(process)
+            raise
+
+    def test_run_tick_keeps_leaked_target_lock_visible(self) -> None:
+        # Inject a bug only in the disposable runner: a child inherits fd 8
+        # and outlives the tick. Its output goes to codex.log, so communicate
+        # still returns and the lock assertion must see the leak.
+        source = self.runner.read_text()
+        anchor = (
+            '        "$python_bin" "${code_root}/scripts/epic/target_lock.py" '
+            "acquire --fd 8 || result=$?\n"
+        )
+        self.assertEqual(source.count(anchor), 1)
+        self.runner.write_text(
+            source.replace(anchor, anchor + "        /bin/sleep 300 &\n")
+        )
+
+        self.assertEqual(self.run_tick().returncode, 0)
+        with (self.target_locks / "406.lock").open("a") as lock:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def timeout_command(self, name: str, command: str = "") -> Path:
         """Record the requested duration before controlling the real timeout."""
