@@ -929,7 +929,8 @@ def refinement_stage(
     """The refinement step a board issue needs (rules in issue 487), or None.
 
     None: its comments were not read, its Status is past Ready, or it is neither
-    enrolled (label `refinement` or a proposal), in focus, nor Ready.
+    enrolled (label `refinement`, a phase label or a proposal), in focus, nor
+    Ready.
     """
     # Imported here: the Codex runner tests copy this file without them.
     import refinement as rf
@@ -942,7 +943,8 @@ def refinement_stage(
     content = item["content"]
     names = labels(item)
     has_proposal = rf.is_enrolled(set(), comments)
-    if not (has_proposal or rf.REFINEMENT_LABEL in names or names & focus):
+    marked = names & {rf.REFINEMENT_LABEL, *rf.PHASE_LABELS, *focus}
+    if not (has_proposal or marked):
         if status != "Ready":
             return None
     executor = item.get("executor") if item.get("executor") in AGENTS else None

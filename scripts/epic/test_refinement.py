@@ -11,6 +11,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import next_action
 import rebase_policy as rp
@@ -368,6 +369,17 @@ class DecideRefinement(unittest.TestCase):
         assert p is not None
         self.assertEqual(found[0].digest, p.digest)
 
+    def test_phase_label_alone_enrolls_from_rest_rows(self) -> None:
+        # Read path and stage: the label decides the read, REST rows the stage.
+        for phase in r.PHASE_LABELS:
+            with self.subTest(phase=phase):
+                entry = item(executor=None, labels=[phase])
+                self.assertTrue(next_action.reads_comments(entry, frozenset(), True))
+                rows = [{"id": 5, "body": "hi", "created_at": "2026-10-01T00:00:00Z",
+                         "updated_at": "2026-10-01T00:00:00Z", "html_url": "u"}]  # fmt: skip
+                next_action.set_comments(entry, rows, True)
+                self.assertEqual(kinds("Claude", entry), ["refine"])
+
     def test_proposer_never_reviews(self) -> None:
         rows = [comment(10, proposal_body(proposal_data(proposer="Codex")), 1)]
         self.assertEqual(kinds("Codex", board(rows)), [])
@@ -547,9 +559,33 @@ class AttemptLimit(unittest.TestCase):
         self.dir = Path(tmp.name)
         self.posts: list[int] = []
         self.ticks = 0
+        # The issue's comments: the runner posts its escalation here and
+        # reads them back over REST (rebase_policy.comments).
+        self.rows: list[dict[str, object]] = []
+        for name, value in (
+            ("comments", self.rest_comments),
+            ("post_comment", self.post_comment),
+        ):
+            patcher = patch.object(rp, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def post(self, number: int) -> None:
         self.posts.append(number)
+
+    def next_minute(self) -> int:
+        return 1 + max((int(str(c["createdAt"])[14:16]) for c in self.rows), default=0)
+
+    def post_comment(self, issue: int, body: str) -> None:
+        self.assertEqual(issue, ISSUE)
+        self.rows.append(comment(100 + len(self.rows), body, self.next_minute()))
+
+    def rest_comments(self, issue: int) -> list[dict[str, object]]:
+        return [
+            {"id": c["id"], "body": c["body"], "created_at": c["createdAt"],
+             "updated_at": c["createdAt"], "html_url": c["url"]}
+            for c in self.rows
+        ]  # fmt: skip
 
     def action(
         self, rows: list[dict[str, object]], agent: str = "Claude"
@@ -580,28 +616,41 @@ class AttemptLimit(unittest.TestCase):
         action = self.action(rows, agent)
         self.assertEqual(self.run_tick(action, "failed"), rp.RUN)
         self.assertEqual(self.run_tick(action, None), rp.RUN)  # crash counts
-        # Repeated ticks and a fresh decide() (a restart) stay suppressed.
+        # Repeated ticks stay suppressed and post the escalation once.
         for _ in range(2):
-            again = self.action(rows, agent)
-            self.assertEqual(self.run_tick(again, "failed"), rp.SKIP)
+            self.assertEqual(self.run_tick(action, "failed"), rp.SKIP)
         self.assertEqual(self.posts[-1], ISSUE)
+        escalations = [c for c in rows if r.ESCALATION_MARKER in str(c["body"])]
+        self.assertIn(f"`{action.attempt_key}`", str(escalations[-1]["body"]))
+        # A fresh decide() (a restart) sees it and waits for Anton's reset.
+        entry = board(rows, executor=None, labels=["refinement"])
+        self.assertEqual(kinds(agent, entry), [])
 
     def test_key_in_the_action_json(self) -> None:
         data = json.loads(self.action([]).to_json())
         self.assertEqual(data["attempt_key"], f"refine:{ISSUE}:0:none")
 
+    def reset(self, cid: int) -> None:
+        """Anton resets the escalation the runner posted last."""
+        escalations = [c for c in self.rows if r.ESCALATION_MARKER in str(c["body"])]
+        url = escalations[-1]["url"]
+        self.rows.append(
+            comment(cid, f"Refinement reset: Anton for {url}", self.next_minute())
+        )
+
     def test_revision_zero_and_later_revision_with_reset(self) -> None:
-        rows: list[dict[str, object]] = []
+        rows = self.rows
         self.suppressed_after_two(rows)
-        # Anton resets: a new key, two more runs, then suppressed again.
-        esc = comment(30, f"{r.ESCALATION_MARKER}\nx", 20)
-        rows += [esc, comment(31, f"Refinement reset: Anton for {esc['url']}", 21)]
+        self.assertTrue(r.escalated(rows))
+        # Anton resets it: a new key, two more runs, then suppressed again.
+        self.reset(31)
         self.assertEqual(self.action(rows).attempt_key, f"refine:{ISSUE}:0:31")
         self.suppressed_after_two(rows)
         # A rejected later revision is its own key (its files route to Codex).
-        rejection(40, 22, rows)
+        self.reset(32)
+        rejection(40, self.next_minute(), rows)
         key = self.action(rows, "Codex").attempt_key
-        self.assertEqual(key, f"refine:{ISSUE}:40:31")
+        self.assertEqual(key, f"refine:{ISSUE}:40:32")
         self.suppressed_after_two(rows, "Codex")
 
     def test_succeeded_and_void_runs_do_not_count(self) -> None:
