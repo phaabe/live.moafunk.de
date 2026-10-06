@@ -17,6 +17,7 @@ import dashboards
 import delivery
 import fixtures
 import monitor
+import ticket_history
 import tickets
 
 
@@ -435,16 +436,15 @@ class TicketsPageTest(unittest.TestCase):
         self.assertEqual((gap["color"], gap["text"]), ("transparent", " "))
 
     def test_history_sits_between_the_table_and_the_board(self) -> None:
-        page = self.page()
         table = self.by_title("Tickets · $check")["gridPos"]
         history = self.by_title("Status history · $check")["gridPos"]
-        [row] = [p for p in page["panels"] if p["type"] == "row"]
+        row = self.by_title("Board")
         self.assertEqual(history["y"], table["y"] + table["h"])
         self.assertEqual(row["gridPos"]["y"], history["y"] + history["h"])
         self.assertEqual(history["w"], 24)
 
     def test_board_is_a_collapsed_row_and_done_sorts_by_done_sort(self) -> None:
-        [row] = [p for p in self.page()["panels"] if p["type"] == "row"]
+        row = self.by_title("Board")
         self.assertTrue(row["collapsed"])
         self.assertEqual([p["title"] for p in row["panels"]], list(dashboards.STATUS))
         done = row["panels"][-1]
@@ -456,6 +456,60 @@ class TicketsPageTest(unittest.TestCase):
         self.assertIn(
             {"targetField": "done_sort", "destinationType": "number"}, conversions
         )
+
+    def test_flow_times_is_a_collapsed_row_below_the_board(self) -> None:
+        rows = [p for p in self.page()["panels"] if p["type"] == "row"]
+        self.assertEqual([r["title"] for r in rows], ["Board", "Flow times"])
+        flow = rows[1]
+        self.assertTrue(flow["collapsed"])
+        self.assertEqual(
+            [p["title"] for p in flow["panels"]],
+            [
+                "Aging · 20 longest in status",
+                "Done per day · by executor",
+                "Cycle time",
+                "Lead time · median",
+                "Time in status · p50 and p85",
+                "Done tickets · cycle and lead time",
+            ],
+        )
+        # Every panel starts below the row header.
+        top = flow["gridPos"]["y"] + 1
+        self.assertEqual(min(p["gridPos"]["y"] for p in flow["panels"]), top)
+
+    def test_flow_times_show_a_dash_without_samples(self) -> None:
+        """No samples: "–", never 0."""
+        flow = self.by_title("Flow times")
+        for panel in flow["panels"]:
+            with self.subTest(panel=panel["title"]):
+                self.assertEqual(panel["fieldConfig"]["defaults"]["noValue"], "–")
+        cycle = self.by_title("Cycle time")
+        self.assertEqual([t["legendFormat"] for t in cycle["targets"]], ["p50", "p85"])
+        self.assertEqual(cycle["fieldConfig"]["defaults"]["unit"], "s")
+
+    def test_time_in_status_follows_the_flow_order(self) -> None:
+        self.assertEqual(dashboards.TIMED, ticket_history.TIMED)
+        panel = self.by_title("Time in status · p50 and p85")
+        expr = panel["targets"][0]["expr"]
+        for i, status in enumerate(ticket_history.TIMED):
+            self.assertIn(f'"order", "{i}", "status", "{status}"', expr)
+        ids = [t["id"] for t in panel["transformations"]]
+        self.assertEqual(ids[:3], ["joinByField", "convertFieldType", "sortBy"])
+        # The sort key is not drawn as a bar.
+        keep = panel["transformations"][3]["options"]["include"]["names"]
+        self.assertNotIn("order", keep)
+
+    def test_aging_and_done_tables(self) -> None:
+        aging = self.by_title("Aging · 20 longest in status")
+        self.assertIn('status!="Done"', aging["targets"][0]["expr"])
+        sort = [t for t in aging["transformations"] if t["id"] == "sortBy"]
+        self.assertEqual(
+            sort[0]["options"]["sort"], [{"field": "In status", "desc": True}]
+        )
+        done = self.by_title("Done tickets · cycle and lead time")
+        self.assertEqual(done["transformations"][0], dashboards.join("key"))
+        for t in done["targets"]:
+            self.assertIn('"key", "/", "issue", "episode"', t["expr"])
 
     def test_counts_show_gaps_not_zero(self) -> None:
         flow = self.by_title("Tickets per status")
@@ -818,6 +872,105 @@ class QuerySemanticsTest(unittest.TestCase):
                 "eval_time": "20m",
                 "exp_samples": [],
             },
+        ]
+        self.run_promtool(
+            [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]
+        )
+
+    def test_flow_times(self) -> None:
+        """Aging keeps open tickets with their status and mark; done rows join
+        by episode; quantiles without samples stay empty; stale data hides."""
+        aging = panel_expr("tickets.json", "Aging · 20 longest in status")
+        done = panel_expr("tickets.json", "Done tickets · cycle and lead time")
+        cycle = panel_expr(
+            "tickets.json", "Done tickets · cycle and lead time", ref="B"
+        )
+        p50 = panel_expr("tickets.json", "Cycle time")
+        in_status = panel_expr("tickets.json", "Time in status · p50 and p85")
+        series = [
+            {
+                "series": "epic_ticket_snapshot_timestamp_seconds",
+                "values": "0+60x5 300x20",
+            },
+            {"series": 'epic_ticket_source_ok{source="board"}', "values": "1x25"},
+            {
+                "series": 'epic_ticket_info{issue="1",status="Ready",title="a",'
+                'url="u1",executor="Codex"}',
+                "values": "1x25",
+            },
+            {
+                "series": 'epic_ticket_info{issue="2",status="Done",title="b",'
+                'url="u2",executor="Codex"}',
+                "values": "1x25",
+            },
+            {
+                "series": 'epic_ticket_status_entered_seconds{issue="1",exact="0"}',
+                "values": "60x25",
+            },
+            {
+                "series": 'epic_ticket_status_entered_seconds{issue="2",exact="1"}',
+                "values": "0x25",
+            },
+            {
+                "series": 'epic_ticket_done_seconds{issue="2",episode="100",'
+                'executor="Claude"}',
+                "values": "100x25",
+            },
+            {
+                "series": 'epic_ticket_cycle_seconds{issue="2",episode="100"}',
+                "values": "50x25",
+            },
+            {
+                "series": 'epic_ticket_time_in_status_seconds{status="In review",'
+                'quantile="0.5"}',
+                "values": "30x25",
+            },
+        ]
+        tests = [
+            {
+                "expr": aging,
+                "eval_time": "4m",
+                "exp_samples": [
+                    {
+                        "labels": '{issue="1",exact="0",status="Ready",title="a",'
+                        'url="u1"}',
+                        "value": 180,
+                    }
+                ],
+            },
+            {
+                "expr": done,
+                "eval_time": "4m",
+                "exp_samples": [
+                    {
+                        "labels": '{issue="2",episode="100",executor="Claude",'
+                        'key="2/100"}',
+                        "value": 100_000,
+                    }
+                ],
+            },
+            {
+                "expr": cycle,
+                "eval_time": "4m",
+                "exp_samples": [{"labels": '{key="2/100"}', "value": 50}],
+            },
+            # No cycle samples: no row, so the stat shows "–".
+            {"expr": p50, "eval_time": "4m", "exp_samples": []},
+            {
+                "expr": in_status,
+                "eval_time": "4m",
+                "exp_samples": [
+                    {
+                        "labels": 'epic_ticket_time_in_status_seconds{status="In '
+                        'review",quantile="0.5",order="3"}',
+                        "value": 30,
+                    }
+                ],
+            },
+            *(
+                {"expr": expr, "eval_time": "20m", "exp_samples": []}
+                for expr in (aging, done, cycle, in_status)
+            ),
         ]
         self.run_promtool(
             [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]

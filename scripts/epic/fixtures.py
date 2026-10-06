@@ -607,6 +607,45 @@ def ticket_summary(state: monitor.Json, now: float) -> ticket_history.Summary:
     return summary
 
 
+# Done episodes: (issue, days ago, executor, cycle h, lead h). 291 skipped
+# In progress (no cycle), 293 crossed a gap before Ready (no lead). No
+# episode has a clean Refinement time: that bar stays empty, never 0.
+DONE = (
+    (290, 0.2, "Claude", 5.0, 9.0),
+    (291, 1.5, "Codex", None, 4.0),
+    (292, 2.3, "Codex", 11.0, 30.0),
+    (293, 4.1, "Claude", 7.5, None),
+    (294, 6.0, "Anton", 2.0, 3.0),
+    (295, 9.4, "Claude", 20.0, 46.0),
+    (296, 12.7, "Codex", 3.5, 8.0),
+)
+
+
+def done_episodes(now: float) -> list[ticket_history.Episode]:
+    """Newest first, as History.summary returns them."""
+    found = []
+    for issue, days, executor, cycle, lead in DONE:
+        times = {"Ready": 2 * 3600.0}
+        if cycle is not None:
+            times |= {
+                "In progress": 3600 * cycle * 0.7,
+                "In review": 3600 * cycle * 0.3,
+            }
+        done = ticket_history.Entry(
+            issue, "Done", int(now - days * ticket_history.DAY), executor
+        )
+        found.append(
+            ticket_history.Episode(
+                issue,
+                done,
+                None if cycle is None else 3600 * cycle,
+                None if lead is None else 3600 * lead,
+                times,
+            )
+        )
+    return found
+
+
 def ticket_metrics(now: float) -> str:
     """tickets.prom: 308 needs an undeclared ticket, 305 has no body review,
     303 is Done on the board with its issue open. With the history summary."""
@@ -621,6 +660,7 @@ def ticket_metrics(now: float) -> str:
     # No focus file: the preview never reads the real one.
     claims = tickets.claimable(state, Path("/nonexistent/epic-focus"))
     summary = ticket_summary(state, now)
+    summary.episodes = done_episodes(now)
     tickets.ticket_metrics(
         metrics, state, tickets.Extra(deps, reviews), claims, now, summary
     )

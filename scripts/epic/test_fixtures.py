@@ -234,6 +234,27 @@ class TicketTimesTest(unittest.TestCase):
         # The time checks read the history: the ledger is not unknown.
         self.assertIn('epic_ticket_check_count{check="in_review_long"} 1', text)
 
+    def test_flow_times_have_values_and_gaps(self) -> None:
+        """Every flow panel has data; a skipped or unclean time has none."""
+        now = 1_790_000_000.0
+        text = fixtures.ticket_metrics(now)
+        for name in (
+            "epic_ticket_cycle_quantile_seconds",
+            "epic_ticket_lead_median_seconds",
+            "epic_ticket_done_seconds",
+        ):
+            with self.subTest(metric=name):
+                self.assertRegex(text, re.compile(rf"^{name}\b", re.M))
+        self.assertNotRegex(text, r'epic_ticket_cycle_seconds\{[^}]*issue="291"')
+        self.assertNotRegex(text, r'epic_ticket_lead_seconds\{[^}]*issue="293"')
+        timed = set(re.findall(r'time_in_status_seconds\{[^}]*status="([^"]+)"', text))
+        self.assertEqual(timed, {"Ready", "In progress", "In review"})
+        done = [
+            int(n)
+            for n in re.findall(r"^epic_tickets_done_day\{[^}]*\} (\d+)", text, re.M)
+        ]
+        self.assertEqual(sum(done), len(fixtures.DONE))
+
 
 class TicketSegmentsTest(unittest.TestCase):
     now = 1_790_000_000.0

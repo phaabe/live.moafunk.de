@@ -3513,6 +3513,1051 @@
           }
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Flow times",
+      "collapsed": true,
+      "id": 23,
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "type": "table",
+          "title": "Aging · 20 longest in status",
+          "description": "Open tickets (not Done) by time in their current status. ≥ is a lower bound, ? crosses a gap in the collector's data.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(20, (time() - epic_ticket_status_entered_seconds) * on(issue) group_left(title, status, url) epic_ticket_info{status!=\"Done\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1))",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "status",
+                    "exact",
+                    "Value",
+                    "url"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "status": 2,
+                  "exact": 3,
+                  "Value": 4,
+                  "url": 5
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "status": "Status",
+                  "exact": "≥/?",
+                  "Value": "In status"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "In status",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Status"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 110
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Backlog": {
+                            "index": 0,
+                            "color": "#A57BE0"
+                          },
+                          "Refinement": {
+                            "index": 1,
+                            "color": "#5B8DEF"
+                          },
+                          "Ready": {
+                            "index": 2,
+                            "color": "#E8B530"
+                          },
+                          "In progress": {
+                            "index": 3,
+                            "color": "#D96BB0"
+                          },
+                          "In review": {
+                            "index": 4,
+                            "color": "#4FC3E8"
+                          },
+                          "Done": {
+                            "index": 5,
+                            "color": "#5AB45F"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "≥/?"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 40
+                  },
+                  {
+                    "id": "custom.align",
+                    "value": "right"
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "noValue",
+                    "value": " "
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "1": {
+                            "index": 0,
+                            "text": " "
+                          },
+                          "0": {
+                            "index": 1,
+                            "text": "≥",
+                            "color": "#9A9BA6"
+                          },
+                          "gap": {
+                            "index": 2,
+                            "text": "?",
+                            "color": "#E0A526"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "In status"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 90
+                  },
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "In status"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#6E717A"
+                    }
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "gauge",
+                      "mode": "basic",
+                      "valueDisplayMode": "text"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 24,
+          "gridPos": {
+            "x": 0,
+            "y": 55,
+            "w": 12,
+            "h": 12
+          }
+        },
+        {
+          "type": "barchart",
+          "title": "Done per day · by executor",
+          "description": "Tickets that entered Done per day (Berlin time), last 14 days, by the Executor at that time.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_tickets_done_day and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "groupingToMatrix",
+              "filter": {
+                "id": "byRefId",
+                "options": "A"
+              },
+              "options": {
+                "columnField": "executor",
+                "rowField": "day",
+                "valueField": "Value"
+              }
+            },
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^day\\\\executor$",
+                "renamePattern": "day"
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "day",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "min": 0,
+              "decimals": 0,
+              "noValue": "–",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#6E717A"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Claude"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#E0875A"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Codex"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#35C2C2"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Anton"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#9A9BA6"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Unassigned"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#9A9BA6"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Unknown"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#9A9BA6"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "stacking": "normal",
+            "showValue": "never",
+            "xField": "day",
+            "xTickLabelRotation": -45,
+            "legend": {
+              "showLegend": true,
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "id": 25,
+          "gridPos": {
+            "x": 12,
+            "y": 55,
+            "w": 12,
+            "h": 12
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Cycle time",
+          "description": "First In progress to Done, tickets done in the last 14 days.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_cycle_quantile_seconds{quantile=\"0.5\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "expr": "epic_ticket_cycle_quantile_seconds{quantile=\"0.85\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "p85"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "–",
+              "mappings": [],
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              },
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false,
+              "fields": ""
+            },
+            "textMode": "value_and_name",
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "wideLayout": true
+          },
+          "id": 26,
+          "gridPos": {
+            "x": 0,
+            "y": 67,
+            "w": 6,
+            "h": 6
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Lead time · median",
+          "description": "First Ready to Done, tickets done in the last 14 days.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_lead_median_seconds and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "median"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "–",
+              "mappings": [],
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              },
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false,
+              "fields": ""
+            },
+            "textMode": "value",
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "wideLayout": true
+          },
+          "id": 27,
+          "gridPos": {
+            "x": 0,
+            "y": 73,
+            "w": 6,
+            "h": 6
+          }
+        },
+        {
+          "type": "barchart",
+          "title": "Time in status · p50 and p85",
+          "description": "Summed time in each status per done ticket, last 14 days. A status without clean samples has no bar.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_replace(label_replace(label_replace(label_replace(epic_ticket_time_in_status_seconds{quantile=\"0.5\"}, \"order\", \"0\", \"status\", \"Refinement\"), \"order\", \"1\", \"status\", \"Ready\"), \"order\", \"2\", \"status\", \"In progress\"), \"order\", \"3\", \"status\", \"In review\") and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "expr": "epic_ticket_time_in_status_seconds{quantile=\"0.85\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "status",
+                "mode": "outer"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "order",
+                    "destinationType": "number"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "order"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "status",
+                    "Value #A",
+                    "Value #B"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "status": 0,
+                  "Value #A": 1,
+                  "Value #B": 2
+                },
+                "renameByName": {
+                  "Value #A": "p50",
+                  "Value #B": "p85"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "noValue": "–"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "p50"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#9A9BA6"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "p85"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#6E717A"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "orientation": "horizontal",
+            "showValue": "never",
+            "xField": "status",
+            "legend": {
+              "showLegend": true,
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "id": 28,
+          "gridPos": {
+            "x": 6,
+            "y": 67,
+            "w": 8,
+            "h": 12
+          }
+        },
+        {
+          "type": "table",
+          "title": "Done tickets · cycle and lead time",
+          "description": "Tickets that entered Done in the last 14 days, newest first. Cycle: first In progress to Done. Lead: first Ready to Done. –: not measured (the ticket skipped the status, or the time crosses a gap in the collector's data).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_join(epic_ticket_done_seconds * 1000, \"key\", \"/\", \"issue\", \"episode\") and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "expr": "sum by (key) (label_join(epic_ticket_cycle_seconds, \"key\", \"/\", \"issue\", \"episode\")) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            },
+            {
+              "refId": "C",
+              "expr": "sum by (key) (label_join(epic_ticket_lead_seconds, \"key\", \"/\", \"issue\", \"episode\")) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "key",
+                "mode": "outer"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "executor",
+                    "Value #A",
+                    "Value #B",
+                    "Value #C"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "executor": 1,
+                  "Value #A": 2,
+                  "Value #B": 3,
+                  "Value #C": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "executor": "Executor",
+                  "Value #A": "Done",
+                  "Value #B": "Cycle",
+                  "Value #C": "Lead"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Done",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "https://github.com/phaabe/live.moafunk.de/issues/${__value.raw}",
+                        "targetBlank": true
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Done"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "dateTimeAsLocalNoDateIfToday"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Cycle"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 1
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Lead"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 1
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 29,
+          "gridPos": {
+            "x": 14,
+            "y": 67,
+            "w": 10,
+            "h": 12
+          }
+        }
+      ]
     }
   ]
 }

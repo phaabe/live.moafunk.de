@@ -2429,6 +2429,233 @@ def board_column(status: str) -> Json:
     )
 
 
+# ticket_history.TIMED, in flow order.
+TIMED = ("Refinement", "Ready", "In progress", "In review")
+
+
+def aging() -> Json:
+    """The 20 open tickets that sit longest in their status."""
+    info = 'epic_ticket_info{status!="Done"}'
+    expr = (
+        f"topk(20, (time() - {ENTERED}) * on(issue)"
+        f" group_left(title, status, url) {info}{TICKETS})"
+    )
+    names = ["issue", "title", "status", "exact", "Value", "url"]
+    rename = {
+        "issue": "Ticket",
+        "title": "Title",
+        "status": "Status",
+        "exact": "≥/?",
+        "Value": "In status",
+    }
+    return table_panel(
+        "Aging · 20 longest in status",
+        [target(expr, table=True)],
+        [
+            *ticket_columns(names, rename),
+            {
+                "id": "sortBy",
+                "options": {"sort": [{"field": "In status", "desc": True}]},
+            },
+        ],
+        [
+            *ticket_overrides([*rename.values(), "url"]),
+            by_name(
+                "In status",
+                ("unit", "s"),
+                ("decimals", 0),
+                ("min", 0),
+                ("color", {"mode": "fixed", "fixedColor": GREY}),
+                cell("gauge", mode="basic", valueDisplayMode="text"),
+            ),
+        ],
+        description="Open tickets (not Done) by time in their current status. "
+        "≥ is a lower bound, ? crosses a gap in the collector's data.",
+    )
+
+
+def done_per_day() -> Json:
+    return {
+        "type": "barchart",
+        "title": "Done per day · by executor",
+        "description": "Tickets that entered Done per day (Berlin time), last "
+        "14 days, by the Executor at that time.",
+        "datasource": PROM,
+        "targets": [target(f"epic_tickets_done_day{TICKETS}", table=True)],
+        "transformations": [
+            *matrix("A", "day", "executor", single=True),
+            {"id": "sortBy", "options": {"sort": [{"field": "day", "desc": False}]}},
+        ],
+        "fieldConfig": {
+            "defaults": {
+                "min": 0,
+                "decimals": 0,
+                "noValue": "–",
+                "color": {"mode": "fixed", "fixedColor": GREY},
+            },
+            "overrides": [
+                by_name(name, ("color", {"mode": "fixed", "fixedColor": color}))
+                for name, color in EXECUTOR.items()
+            ],
+        },
+        "options": {
+            "stacking": "normal",
+            "showValue": "never",
+            "xField": "day",
+            "xTickLabelRotation": -45,
+            "legend": {
+                "showLegend": True,
+                "displayMode": "list",
+                "placement": "bottom",
+            },
+        },
+    }
+
+
+def flow_stat(title: str, queries: dict[str, str], description: str) -> Json:
+    """Seconds; "–" when the collector has no samples, never 0."""
+    return stat(
+        title,
+        [
+            target(f"{expr}{TICKETS}", legend=legend, ref=chr(ord("A") + i))
+            for i, (legend, expr) in enumerate(queries.items())
+        ],
+        unit="s",
+        no_value="–",
+        decimals=1,
+        description=description,
+    )
+
+
+def ordered(expr: str, label: str, values: tuple[str, ...]) -> str:
+    """Adds label "order" with each value's position, for a sort."""
+    for i, value in enumerate(values):
+        expr = f'label_replace({expr}, "order", "{i}", "{label}", "{value}")'
+    return expr
+
+
+def time_in_status() -> Json:
+    series = "epic_ticket_time_in_status_seconds"
+    queries = {
+        "A": ordered(f'{series}{{quantile="0.5"}}', "status", TIMED),
+        "B": f'{series}{{quantile="0.85"}}',
+    }
+    names = ["status", "Value #A", "Value #B"]
+    return {
+        "type": "barchart",
+        "title": "Time in status · p50 and p85",
+        "description": "Summed time in each status per done ticket, last 14 "
+        "days. A status without clean samples has no bar.",
+        "datasource": PROM,
+        "targets": [
+            target(f"{q}{TICKETS}", table=True, ref=r) for r, q in queries.items()
+        ],
+        "transformations": [
+            join("status"),
+            to_type("order", "number"),
+            {"id": "sortBy", "options": {"sort": [{"field": "order"}]}},
+            *keep_fields(names, {"Value #A": "p50", "Value #B": "p85"}, []),
+        ],
+        "fieldConfig": {
+            "defaults": {"unit": "s", "min": 0, "noValue": "–"},
+            "overrides": [
+                by_name("p50", ("color", {"mode": "fixed", "fixedColor": MUTED})),
+                by_name("p85", ("color", {"mode": "fixed", "fixedColor": GREY})),
+            ],
+        },
+        "options": {
+            "orientation": "horizontal",
+            "showValue": "never",
+            "xField": "status",
+            "legend": {
+                "showLegend": True,
+                "displayMode": "list",
+                "placement": "bottom",
+            },
+        },
+    }
+
+
+def episode_key(series: str) -> str:
+    """One row per done episode: key "issue/episode"."""
+    return f'label_join({series}, "key", "/", "issue", "episode")'
+
+
+def done_tickets() -> Json:
+    queries = {
+        "A": f"{episode_key('epic_ticket_done_seconds * 1000')}{TICKETS}",
+        "B": f"sum by (key) ({episode_key('epic_ticket_cycle_seconds')}){TICKETS}",
+        "C": f"sum by (key) ({episode_key('epic_ticket_lead_seconds')}){TICKETS}",
+    }
+    names = ["issue", "executor", "Value #A", "Value #B", "Value #C"]
+    rename = {
+        "issue": "Ticket",
+        "executor": "Executor",
+        "Value #A": "Done",
+        "Value #B": "Cycle",
+        "Value #C": "Lead",
+    }
+    return table_panel(
+        "Done tickets · cycle and lead time",
+        [target(q, table=True, ref=r) for r, q in queries.items()],
+        [
+            join("key"),
+            *ticket_columns(names, rename),
+            {"id": "sortBy", "options": {"sort": [{"field": "Done", "desc": True}]}},
+        ],
+        [
+            by_name(
+                "Ticket",
+                ("custom.width", 80),
+                ("links", [link("Open on GitHub", f"{REPO}/issues/${{__value.raw}}")]),
+            ),
+            *ticket_overrides(["Executor"]),
+            by_name("Done", ("unit", "dateTimeAsLocalNoDateIfToday")),
+            by_name("Cycle", ("unit", "s"), ("decimals", 1)),
+            by_name("Lead", ("unit", "s"), ("decimals", 1)),
+        ],
+        description="Tickets that entered Done in the last 14 days, newest "
+        "first. Cycle: first In progress to Done. Lead: first Ready to Done. "
+        "–: not measured (the ticket skipped the status, or the time crosses "
+        "a gap in the collector's data).",
+    )
+
+
+def flow_times(y: int) -> list[tuple[Json, int, int, int, int]]:
+    cycle = "epic_ticket_cycle_quantile_seconds"
+    return [
+        (aging(), 0, y, 12, 12),
+        (done_per_day(), 12, y, 12, 12),
+        (
+            flow_stat(
+                "Cycle time",
+                {
+                    "p50": f'{cycle}{{quantile="0.5"}}',
+                    "p85": f'{cycle}{{quantile="0.85"}}',
+                },
+                "First In progress to Done, tickets done in the last 14 days.",
+            ),
+            0,
+            y + 12,
+            6,
+            6,
+        ),
+        (
+            flow_stat(
+                "Lead time · median",
+                {"median": "epic_ticket_lead_median_seconds"},
+                "First Ready to Done, tickets done in the last 14 days.",
+            ),
+            0,
+            y + 18,
+            6,
+            6,
+        ),
+        (time_in_status(), 6, y + 12, 8, 12),
+        (done_tickets(), 14, y + 12, 10, 12),
+    ]
+
+
 def tickets_page() -> Json:
     board = Board(
         "epic-tickets",
@@ -2466,6 +2693,7 @@ def tickets_page() -> Json:
         38,
         [(board_column(status), 4 * i, 39, 4, 15) for i, status in enumerate(STATUS)],
     )
+    board.add_row("Flow times", 54, flow_times(55))
     return board.render()
 
 
