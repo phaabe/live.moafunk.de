@@ -48,6 +48,17 @@ class TestsSectionTest(unittest.TestCase):
         self.assertIn("Only a green full run counts", section)
         self.assertIn("also when the base fails too or the test is flaky", section)
 
+    def test_long_commands_use_the_wait_helper(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/426: one blocking
+        # call per long command, inside the Bash tool's 600 s limit.
+        section = tests_section()
+        self.assertIn(
+            "scripts/epic/wait_cmd.sh --agent claude --timeout 570 --", section
+        )
+        self.assertIn("`cargo`, `npm test`, `npm run build`", section)
+        self.assertIn("timeout 600000", section)
+        self.assertTrue((ROOT / "scripts/epic/wait_cmd.sh").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
