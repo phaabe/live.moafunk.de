@@ -1,2 +1,2 @@
 # Replace the operator helper path in the protected copy.
-prefix_rule(pattern = ["python3", "/REPLACE/operator/.local/libexec/codex-feature-git.py"], decision = "allow")
+prefix_rule(pattern = ["python3", "-I", "/REPLACE/operator/.local/libexec/codex-feature-git.py"], decision = "allow")
