@@ -2397,6 +2397,8 @@ else:
 
     def test_shared_reader_validates_all_deadlines_before_work(self) -> None:
         self.env["EPIC_SHARED_READER"] = "1"
+        # The invalid lock/refresh values below are relative to this budget.
+        self.env["EPIC_SELECT_TIMEOUT_SECONDS"] = "10"
         for key, value in (
             ("EPIC_RECHECK_TIMEOUT_SECONDS", "0"),
             ("EPIC_RECHECK_TIMEOUT_SECONDS", "1.5"),
