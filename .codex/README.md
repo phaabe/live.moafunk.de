@@ -92,11 +92,50 @@ including from a fresh linked worktree with a space in its path.
 ## One-tick runner
 
 Run `/bin/bash /path/to/checkout/.codex/codex-tick.sh` from any directory.
-The runner lives in Codex's setup lane. It uses Bash 3.2, Python 3.10+, GNU
+The runner lives in Codex's setup lane. It uses Bash 3.2, Python 3.11+, GNU
 `timeout` (or `gtimeout`), authenticated `gh`, and an authenticated Codex CLI.
 Use a dedicated runner checkout on `dev/312-interim` with that branch as its
-upstream. Keep feature work in separate worktrees. Trust its project hooks
-before unattended use, as described above.
+upstream. Keep feature work in separate worktrees. Runner sessions use a
+dedicated protected home and user-layer hooks; keep the runner project untrusted.
+
+### Protected-home foundation
+
+Before merge, Anton must confirm `EPIC_RUNTIME_LEGACY=1`, the dedicated
+`CODEX_HOME` with separate auth, and the protected config, rules, hooks and
+their parent directories. Remove the live untracked runner `.codex/config.toml`
+together with switching its approved roots into protected config. Removing it
+first breaks linked-worktree Git. No command in this change installs or changes
+live settings. The validator requires Python 3.11 or newer.
+
+The [binding format and operator templates](runtime/README.md) define the exact
+Git metadata and GitNexus roots. Each tick grants only its allocated temporary
+directory, plus the exact PR/SHA evidence directory for reviews. Feature and
+review sessions use their linked worktree as cwd; other actions use the tick's
+temporary directory. No blanket HOME, CODEX_HOME, parent or `/tmp` grant is used.
+Native-owned session state needs no model-writable home directory.
+
+Before operational code loads, the stdlib bootstrap checks mode and protected
+root bindings. Shared `runtime.py mode` then confirms the entry mode. An
+untracked or ignored runner Codex config refuses with 78 before API access;
+checks repeat after the legacy pull and before model start. Admission on fd 17
+precedes logs, registration, tick locks, context deletion and selection. Owned
+cleanup removes the admission record and closes fd 17 last. Admission refusal
+preserves exit 75, 2 or 78 and does not remove another tick's context.
+
+Legacy keeps the existing `codex exec` launcher and its documented unlocked
+child limitation. Pinned mode validates the manifest, fetches checkout refs
+without pulling, and keeps operational code in the selected install. Pinned
+model start exits 78 until the child-lock mechanism is delivered. This foundation
+does not supply child retention, helper/proof binding, install or smoke parts;
+it permits no promotion or bootstrap. The launchd example therefore shows
+explicit legacy mode. The later rollout switches to
+`<EPIC_RUNTIME_HOME>/bin/epic-tick codex`.
+
+Every hook call checks the promotion marker before operational early returns.
+During promotion, shell calls and GitHub MCP writes require admitted host
+ancestry. GitHub MCP reads remain available. A configured manual session without
+a marker works without a runtime environment. Protected pinned hooks use their
+validated runtime checker and interpreter.
 
 Edit actions (`claim`, `continue`, `fix`, `fix-checks`, `resolve-conflict`) use
 `.codex/feature_worktree.py` before model launch. Their fixed directory is the

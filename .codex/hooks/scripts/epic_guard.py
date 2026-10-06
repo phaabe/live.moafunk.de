@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -398,8 +400,106 @@ def helper_push_command(command: str, cwd: Path) -> tuple[str, Path]:
     return shlex.join(["git", "push", "origin", f"HEAD:refs/heads/{branch}"]), worktree
 
 
+def load_checks(root: Path) -> ModuleType:
+    """Import only the selected checker's absolute source."""
+    sys.path.insert(0, str(root / "scripts" / "epic"))
+    try:
+        path = root / "scripts/epic/write_checks.py"
+        if not path.is_file():
+            raise ValueError("write checker is missing from the trusted checkout")
+        checks = importlib.import_module("write_checks")
+        if Path(checks.__file__).resolve() != path.resolve():
+            raise ValueError("write checker did not load from the trusted checkout")
+        return checks
+    except Exception as error:  # An import failure must block the proposed write.
+        raise ValueError(f"Runner write checks are unavailable: {error}") from error
+
+
+def operational_root() -> Path:
+    """Pinned hooks validate their source before loading runtime operations."""
+    own_root = Path(__file__).resolve().parents[3]
+    pinned = os.environ.get("EPIC_RUNTIME_ROOT")
+    if pinned or os.environ.get("EPIC_CODEX_PROTECTED_CONFIG"):
+        try:
+            if pinned and Path(pinned) != own_root:
+                raise ValueError("hook source does not match the selected runtime")
+            path = own_root / ".codex/protected_home.py"
+            spec = importlib.util.spec_from_file_location("codex_protected_home", path)
+            if spec is None or spec.loader is None:
+                raise ValueError("protected-home validator is unavailable")
+            validator = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(validator)
+            if pinned:
+                checked = validator.validate_hook(Path(pinned))
+            else:
+                checked = validator.validate(
+                    "legacy", Path(os.environ.get("EPIC_TRUSTED_ROOT", "")), own_root
+                )
+            root = Path(checked["code_root"])
+            if root != own_root:
+                raise ValueError("hook source does not match the validated runtime")
+            return root
+        except Exception as error:  # A broken binding cannot use repo code instead.
+            raise ValueError(
+                f"Protected hook runtime is unavailable: {error}"
+            ) from error
+    root = Path(os.environ.get("EPIC_TRUSTED_ROOT") or own_root)
+    sys.path.insert(0, str(own_root / "scripts/epic"))
+    try:
+        runtime = importlib.import_module("runtime")
+        return runtime.code_root(root)
+    except Exception as error:
+        raise ValueError(f"Runner runtime is unavailable: {error}") from error
+
+
+def promotion_barrier(tool: str, tool_input: dict[str, Any], cwd: Path) -> None:
+    """Check the marker before imports, including for independent sessions."""
+    lock_dir = Path(
+        os.environ.get("EPIC_LOCK_DIR")
+        or Path.home() / ".local/state/epic-loop/target-locks"
+    )
+    marker = lock_dir / "runtime-promotion.json"
+    try:
+        info = marker.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ValueError(f"Runtime promotion marker is unreadable: {error}") from error
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("Runtime promotion marker is not a regular file")
+    try:
+        with marker.open("rb") as source:
+            source.read(1)
+    except OSError as error:
+        raise ValueError(f"Runtime promotion marker is unreadable: {error}") from error
+    root = (
+        operational_root()
+        if os.environ.get("EPIC_RUNTIME_ROOT")
+        else Path(__file__).resolve().parents[3]
+    )
+    checks = load_checks(root)
+    if tool in ("exec_command", "shell_command"):
+        tool = "Bash"
+    try:
+        refused = checks.promotion_refusal(tool, tool_input, str(cwd))
+    except Exception as error:
+        raise ValueError(f"Runtime promotion check failed: {error}") from error
+    if refused:
+        raise ValueError(f"Runtime promotion: {refused}")
+
+
 def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None:
     """Use the runner's trusted checker immediately before a GitHub write."""
+    promotion_barrier(tool, tool_input, cwd)
+    # Protected runner hooks validate even when no action is selected.
+    root = (
+        operational_root()
+        if (
+            os.environ.get("EPIC_RUNTIME_ROOT")
+            or os.environ.get("EPIC_CODEX_PROTECTED_CONFIG")
+        )
+        else None
+    )
     if not os.environ.get("EPIC_ACTION_FILE"):
         return
     shared = os.environ.get("EPIC_SHARED_READER") == "1"
@@ -420,21 +520,8 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
     )
     if action_error is None and not shared and not issue_action:
         return
-    root = Path(
-        os.environ.get("EPIC_TRUSTED_ROOT") or Path(__file__).resolve().parents[3]
-    )
-    sys.path.insert(0, str(root / "scripts" / "epic"))
-    try:
-        if not (root / "scripts/epic/write_checks.py").is_file():
-            raise ValueError("write checker is missing from the trusted checkout")
-        checks = importlib.import_module("write_checks")
-        if (
-            Path(checks.__file__).resolve()
-            != (root / "scripts/epic/write_checks.py").resolve()
-        ):
-            raise ValueError("write checker did not load from the trusted checkout")
-    except Exception as error:  # Import failures must block the proposed write.
-        raise ValueError(f"Runner write checks are unavailable: {error}") from error
+    root = root or operational_root()
+    checks = load_checks(root)
 
     if tool in ("exec_command", "shell_command"):
         tool = "Bash"
