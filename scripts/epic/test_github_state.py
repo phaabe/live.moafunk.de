@@ -1002,6 +1002,61 @@ class BuildState(Env):
             },
         )
 
+    def refinement_board(self) -> None:
+        self.repo.add_item(21, "Ready", "Claude")
+        self.repo.add_item(23, "Backlog", "Claude", labels=("refinement",))
+        self.repo.add_item(24, "Todo", "Claude", labels=("refinement::review",))
+        self.repo.add_item(25, "Backlog", "Claude")
+        self.repo.add_item(26, "In progress", "Claude", labels=("refinement",))
+        at = "2026-09-29T08:00:00Z"
+        self.gh.set(
+            f"{REPO}/issues/23/comments?per_page=100",
+            [comment(1230, "**Ready**", at, edited_at="2026-09-29T09:00:00Z")],
+        )
+
+    def test_refinement_reads_enrolled_issues_and_the_exempt_list(self) -> None:
+        self.refinement_board()
+        exempt = f"Refinement exempt: accepted by Anton\n{ISSUES}/21"
+        self.gh.set(
+            f"{REPO}/issues/{na.EXEMPT_ISSUE}/comments?per_page=100",
+            [comment(5510, exempt, "2026-09-29T08:00:00Z")],
+        )
+        with patch.dict(os.environ, {na.ACTIONS_ENV: "refine"}):
+            state = self.build()
+        items = {i["content"]["number"]: i for i in state["items"]}
+        self.assertEqual(state["refinement_exempt"], [f"{ISSUES}/21"])
+        self.assertEqual(items[21]["refinement_comments"][0]["id"], 1110)
+        self.assertEqual(items[24]["refinement_comments"][0]["id"], 1140)
+        # Comment IDs and the edited flag reach refinement.py.
+        [edited] = items[23]["refinement_comments"]
+        self.assertEqual((edited["id"], edited["includesCreatedEdit"]), (1230, True))
+        # Not enrolled by a label, or past Ready: not read.
+        self.assertNotIn("refinement_comments", items[25])
+        self.assertNotIn("refinement_comments", items[26])
+
+    def test_refinement_off_reads_only_ready_issues(self) -> None:
+        self.refinement_board()
+        with patch.dict(os.environ, {na.ACTIONS_ENV: "adopt"}):
+            state = self.build()  # the exempt issue has no fake comments
+        items = {i["content"]["number"]: i for i in state["items"]}
+        self.assertEqual(state["refinement_exempt"], [])
+        self.assertEqual(items[21]["readiness"], "**Ready**")
+        for n in (21, 23, 24, 25):
+            self.assertNotIn("refinement_comments", items[n])
+        self.assertNotIn("readiness", items[23])
+
+    def test_recheck_reads_its_own_issue_before_ready_only_to_refine(self) -> None:
+        self.refinement_board()
+        self.gh.set(f"{REPO}/issues/{na.EXEMPT_ISSUE}/comments?per_page=100", [])
+        for actions, read in (("refine", True), ("", False)):
+            with patch.dict(os.environ, {na.ACTIONS_ENV: actions}):
+                state = gs.build_state(
+                    self.client(), set(), pr_details=False, readiness_for={25}
+                )
+            items = {i["content"]["number"]: i for i in state["items"]}
+            self.assertEqual("refinement_comments" in items[25], read, actions)
+            self.assertNotIn("readiness", items[23])
+
     def test_linked_labels_off_the_board(self) -> None:
         self.gh.set(
             f"{REPO}/issues/77", {"id": 77, "labels": [{"name": "priority::high"}]}

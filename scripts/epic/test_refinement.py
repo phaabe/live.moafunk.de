@@ -451,3 +451,37 @@ class DecideRefinement(unittest.TestCase):
         state = {"prs": [], "items": [entry]}
         found = next_action.decide("Codex", state, enabled=ALL, rules=RULES)
         self.assertEqual(found[0].action, "idle")
+
+
+class ReadsComments(unittest.TestCase):
+    def reads(
+        self, refine: bool = True, focus: frozenset[str] = frozenset(), **over: object
+    ) -> bool:
+        return next_action.reads_comments(item(**over), focus, refine)
+
+    def test_ready_issues_are_always_read(self) -> None:
+        self.assertTrue(self.reads(refine=False, status="Ready", labels=[]))
+
+    def test_enrolled_or_focus_issues_before_ready_are_read_to_refine(self) -> None:
+        self.assertTrue(self.reads())
+        self.assertTrue(self.reads(status=None, labels=[r.PHASE_CHANGES]))
+        self.assertTrue(self.reads(status="Todo", labels=["x"], focus=frozenset({"x"})))
+        self.assertFalse(self.reads(labels=[]))
+        self.assertFalse(self.reads(refine=False))
+
+    def test_past_ready_and_pull_requests_are_not_read(self) -> None:
+        self.assertFalse(self.reads(status="In progress"))
+        self.assertFalse(self.reads(content={"type": "PullRequest", "number": 1}))
+
+    def test_exempt_list_from_rest_rows(self) -> None:
+        url = "https://github.com/phaabe/live.moafunk.de/issues/77"
+        row = {
+            "body": f"{r.EXEMPT_START}\n- {url}",
+            "created_at": "2026-10-06T10:00:00Z",
+            "updated_at": "2026-10-06T10:00:00Z",
+            "html_url": f"{BASE}#issuecomment-1",
+        }
+        self.assertEqual(next_action.exempt_list([row]), [url])
+        edited = {**row, "updated_at": "2026-10-06T11:00:00Z"}
+        self.assertEqual(next_action.exempt_list([edited]), [])
+        self.assertEqual(next_action.exempt_list([]), [])

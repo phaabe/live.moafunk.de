@@ -113,6 +113,8 @@ REFINEMENT_ACTIONS = ("refine", "review-refinement", "set-ready")
 NEW_ACTIONS = frozenset({"adopt", *REFINEMENT_ACTIONS})
 # Statuses set-ready may change to Ready. It never touches In progress or Done.
 PRE_READY = (None, "Backlog", "Todo")
+# Its newest "Refinement exempt" comment lists the exempt Ready tickets.
+EXEMPT_ISSUE = 551
 ACTIONS_ENV = "EPIC_FOCUS_ACTIONS"
 # Ticket dependencies need a closed-as-completed issue (see completed_tickets()).
 COMPLETED_TICKETS_ENV = "EPIC_REQUIRE_COMPLETED_TICKETS"
@@ -381,6 +383,58 @@ def set_readiness(item: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     ]
     item["readiness_comments"] = comments
     item["readiness"] = "\n".join(c["body"] for c in comments)
+
+
+def refining() -> bool:
+    """A refinement action is enabled in EPIC_FOCUS_ACTIONS. Off, no comments
+    of issues before Ready and no exempt list are read."""
+    return bool(set(REFINEMENT_ACTIONS) & read_actions(os.environ.get(ACTIONS_ENV)))
+
+
+def reads_comments(
+    item: dict[str, Any], focus: frozenset[str] | set[str], refine: bool
+) -> bool:
+    """Whether decide() needs this board issue's comments: Ready, or with
+    `refine` before Ready with label `refinement`, a refinement phase label or
+    a focus label.
+
+    An issue whose proposal stays but whose labels were all removed is not read.
+    """
+    content = item.get("content") or {}
+    if content.get("type") != "Issue":
+        return False
+    if item.get("status") == "Ready":
+        return True
+    if not refine or item.get("status") not in PRE_READY:
+        return False
+    import refinement as rf  # here: the Codex runner tests copy this file alone
+
+    names = labels(item)
+    return bool(names & {*focus, rf.REFINEMENT_LABEL, *rf.PHASE_LABELS})
+
+
+def set_comments(
+    item: dict[str, Any], rows: list[dict[str, Any]], refine: bool
+) -> None:
+    """Store an issue's readiness comments from its REST rows; with `refine`
+    also its refinement comments (with comment IDs and the edited flag)."""
+    set_readiness(item, rows)
+    if not refine:
+        return
+    comments = rows_as_comments(rows)
+    for comment, row in zip(comments, rows, strict=True):
+        if isinstance(row.get("id"), int):
+            comment["id"] = row["id"]
+    item["refinement_comments"] = comments
+
+
+def exempt_list(rows: list[dict[str, Any]]) -> list[str]:
+    """Exempt Ready tickets from the comment rows of EXEMPT_ISSUE, sorted."""
+    if not rows:
+        return []
+    import refinement as rf  # here: the Codex runner tests copy this file alone
+
+    return sorted(rf.exempt_issues(rows_as_comments(rows)))
 
 
 def dependency_sources(item: dict[str, Any]) -> dict[str, list[str]]:
@@ -1469,6 +1523,7 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
     """The state decide() reads. EPIC_REQUIRE_COMPLETED_TICKETS=1 adds the
     prerequisite tickets' issue state; off, no ticket is read."""
     mode = completed_tickets()
+    refine = refining()
     if shared_reader():
         # Imported here: the Codex runner tests copy this file alone.
         import github_state
@@ -1539,14 +1594,14 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
             issue = gh_json(["api", f"repos/{REPO}/issues/{n}"])
             linked_labels[str(n)] = sorted(labels(issue))
     for item in items:
-        # Only Ready issues need their readiness comments ("Start after ...").
-        content = item.get("content") or {}
-        if item.get("status") == "Ready" and content.get("type") == "Issue":
-            pages = gh_json(
-                ["api", "--paginate", "--slurp"]
-                + [f"repos/{REPO}/issues/{content['number']}/comments?per_page=100"]
+        # Readiness ("Start after ...") and refinement comments.
+        if reads_comments(item, focus, refine):
+            number = item["content"]["number"]
+            set_comments(
+                item,
+                rest_rows(f"repos/{REPO}/issues/{number}/comments?per_page=100"),
+                refine,
             )
-            set_readiness(item, [row for page in pages for row in page])
     # Batch order tables ("Scope, in order") live in comments on the epic.
     pages = gh_json(
         ["api", "--paginate", "--slurp"]
@@ -1558,12 +1613,18 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
         for row in page
         if "Scope, in order" in (row.get("body") or "")
     ]
+    exempt = (
+        rest_rows(f"repos/{REPO}/issues/{EXEMPT_ISSUE}/comments?per_page=100")
+        if refine
+        else []
+    )
     state: dict[str, Any] = {
         "prs": prs,
         "items": items,
         "linked_labels": linked_labels,
         "merged_prs": merged,
         "batch_order": batch_order,
+        "refinement_exempt": exempt_list(exempt),
         # Focus issues also off the board, so --status can name them.
         "focus_issues": focus_issues(focus) if focus else [],
     }

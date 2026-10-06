@@ -791,9 +791,9 @@ def build_state(
     """The fetch_state() dict from REST. Raises ReadBlocked on any gap.
 
     Without `pr_details` open PRs come from the list only (no comments, checks
-    or mergeable): enough for claims. `readiness_for` limits the readiness
-    comments to these issues. `completed_tickets` adds the prerequisite
-    tickets' issue state (`tickets`), read with this client.
+    or mergeable): enough for claims. `readiness_for` limits the readiness and
+    refinement comments to these issues. `completed_tickets` adds the
+    prerequisite tickets' issue state (`tickets`), read with this client.
     """
     try:
         prs: list[dict[str, Any]] = []
@@ -818,13 +818,21 @@ def build_state(
             if n not in on_board:
                 issue = client.json(f"repos/{na.REPO}/issues/{n}")
                 linked_labels[str(n)] = sorted(na.labels(issue))
+        refine = na.refining()
         for item in items:
             content = item.get("content") or {}
-            if item.get("status") != "Ready" or content.get("type") != "Issue":
-                continue
-            if readiness_for is not None and content.get("number") not in readiness_for:
-                continue
-            na.set_readiness(item, comment_rows(client, content["number"]))
+            if readiness_for is None:
+                wanted = na.reads_comments(item, focus, refine)
+            else:
+                # A recheck reads its own issue, before Ready only to refine.
+                statuses = (*na.PRE_READY, "Ready") if refine else ("Ready",)
+                wanted = (
+                    content.get("number") in readiness_for
+                    and content.get("type") == "Issue"
+                    and item.get("status") in statuses
+                )
+            if wanted:
+                na.set_comments(item, comment_rows(client, content["number"]), refine)
         batch_order = [
             r.get("body") or ""
             for r in comment_rows(client, na.EPIC)
@@ -836,6 +844,9 @@ def build_state(
             "linked_labels": linked_labels,
             "merged_prs": merged,
             "batch_order": batch_order,
+            "refinement_exempt": na.exempt_list(
+                comment_rows(client, na.EXEMPT_ISSUE) if refine else []
+            ),
             "focus_issues": search_focus(client, focus) if focus else [],
         }
         # Every labeled draft PR and In progress issue, also in a claim
