@@ -45,6 +45,7 @@ COMMON = (
     "scripts/epic/target_lock.py",
     "scripts/epic/tick_gate.py",
     "scripts/epic/routing.py",
+    "scripts/epic/refinement.py",
     "scripts/epic/rebase_policy.py",
     ".codex/epic_lock.py",
 )

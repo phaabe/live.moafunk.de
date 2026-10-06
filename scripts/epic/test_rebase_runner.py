@@ -59,6 +59,7 @@ COPIED = (
     "scripts/epic/lockhold",
     "scripts/epic/permission_gate.py",
     "scripts/epic/routing.py",
+    "scripts/epic/refinement.py",
     ".codex/epic_lock.py",
     ".claude/commands/epic/epic-tick.md",
 )

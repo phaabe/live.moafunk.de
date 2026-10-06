@@ -235,7 +235,7 @@ class AdoptDecideTest(unittest.TestCase):
         self.assertEqual([a.action for a in got], ["adopt", "claim"])
 
     def test_read_actions(self) -> None:
-        self.assertEqual(read_actions("adopt, refine,close-out"), ADOPT)
+        self.assertEqual(read_actions("adopt, refine,close-out"), ADOPT | {"refine"})
         self.assertEqual(read_actions(None), frozenset())
         self.assertEqual(read_actions("merge"), frozenset())
 
