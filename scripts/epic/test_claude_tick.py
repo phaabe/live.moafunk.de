@@ -797,6 +797,25 @@ class ClaudeTickTest(RunnerHarness):
         self.assertEqual((finish["action"], finish["pr"]), ("fix", 1))
         self.assertIsNone(finish["tokens"])
 
+    def test_finish_event_measures_each_step(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/655
+        for env, steps in (
+            (
+                {},
+                ["refresh", "closing", "selection", "model", "validation", "cleanup"],
+            ),
+            ({"TEST_SELECT_EXIT": "3"}, ["refresh", "closing", "selection", "cleanup"]),
+        ):
+            with self.subTest(env=env):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.run_tick(**env).wait(timeout=30)
+                durations = self.tick_events()[-1]["durations"]
+                self.assertIsInstance(durations, dict)
+                self.assertEqual(list(durations), steps)
+                self.assertTrue(all(v >= 0 for v in durations.values()))
+        # The marks file goes with the lock dir.
+        self.assertFalse((self.state / "claude.lock").exists())
+
     def session_arg(self) -> str:
         [args] = [c[1] for c in self.calls_made() if c[0] == "claude"]
         words = args.split()

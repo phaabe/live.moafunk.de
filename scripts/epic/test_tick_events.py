@@ -177,6 +177,93 @@ class TickEventsTest(unittest.TestCase):
         self.assertEqual(code, 1)
 
 
+class DurationsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.timings = self.root / "timings.txt"
+        self.file = self.root / "claude-ticks.jsonl"
+
+    def finish(self, *extra: str) -> dict[str, object]:
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = tick_events.main(
+                [
+                    *("finish", "--file", str(self.file), "--tick", TICK),
+                    *("--exit", "0", "--phase", "record", *extra),
+                ]
+            )
+        self.assertEqual(code, 0)
+        return json.loads(self.file.read_text().splitlines()[-1])
+
+    def test_each_step_lasts_until_the_next_mark(self) -> None:
+        self.timings.write_text(
+            "refresh 10.0\nclosing 10.5\nselection 12.0\nmodel 13.0\n"
+            "validation 73.25\ncleanup 74.0\n"
+        )
+        self.assertEqual(
+            tick_events.durations_of(self.timings, 75.0),
+            {
+                "refresh": 0.5,
+                "closing": 1.5,
+                "selection": 1.0,
+                "model": 60.25,
+                "validation": 0.75,
+                "cleanup": 1.0,
+            },
+        )
+
+    def test_a_step_marked_twice_adds_up_and_bad_lines_are_skipped(self) -> None:
+        self.timings.write_text(
+            "refresh 1.0\nthinking 2.0\nselection 2.0\nselection x\n"
+            "refresh 4.0\nmodel 3.0\nmodel nan\nmodel inf\nonly-one-word\n"
+        )
+        # The out-of-order `model 3.0` is not a mark of this clock.
+        self.assertEqual(
+            tick_events.durations_of(self.timings, 5.0),
+            {"refresh": 2.0, "selection": 2.0},
+        )
+
+    def test_unavailable_timings_are_null(self) -> None:
+        self.assertIsNone(tick_events.durations_of(None, 1.0))
+        self.assertIsNone(tick_events.durations_of(self.root / "missing.txt", 1.0))
+        self.timings.write_text("")
+        self.assertIsNone(tick_events.durations_of(self.timings, 1.0))
+        self.timings.write_text("refresh 1.0\n" * 1000)  # larger than MAX_TIMINGS
+        self.assertIsNone(tick_events.durations_of(self.timings, 2.0))
+        fifo = self.root / "fifo"
+        os.mkfifo(fifo)
+        self.assertIsNone(tick_events.durations_of(fifo, 1.0))
+
+    def test_mark_then_finish_writes_durations(self) -> None:
+        for step in ("refresh", "selection"):
+            self.assertEqual(
+                tick_events.main(
+                    ["mark", "--file", str(self.timings), "--phase", step]
+                ),
+                0,
+            )
+        event = self.finish("--timings", str(self.timings))
+        self.assertEqual(set(event["durations"]), {"refresh", "selection"})
+        self.assertTrue(all(v >= 0 for v in event["durations"].values()))
+
+    def test_missing_timings_keep_the_finish_event(self) -> None:
+        event = self.finish("--timings", str(self.root / "missing.txt"))
+        self.assertIsNone(event["durations"])
+        self.assertEqual(event["outcome"], "ok")
+        # Without --timings (the Codex runner) the key is absent.
+        self.assertNotIn("durations", self.finish())
+
+    def test_a_bad_mark_is_refused_or_reported(self) -> None:
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            tick_events.main(["mark", "--file", str(self.timings), "--phase", "lock"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = tick_events.main(
+                ["mark", "--file", str(self.root / "no/dir.txt"), "--phase", "model"]
+            )
+        self.assertEqual(code, 1)
+
+
 def record(msg: str | None, output: int, *, tool: str = "Bash", **usage: object) -> str:
     """One model record of a transcript; usage keys override the defaults."""
     counts: dict[str, object] = {

@@ -78,6 +78,11 @@
 # from its transcript, also after a timeout or a stop. A missing count stays
 # null with a reason; reading it never changes the tick's result.
 #
+# Step durations (tick_events.py `mark`): the runner marks when refresh,
+# closing, selection, model, validation and cleanup begin, in timings.txt in
+# the lock dir. The finish event's `durations` holds the monotonic seconds of
+# each step reached. A failed mark only loses that measurement.
+#
 # Run from a scheduler or a loop, for example:
 #   while true; do /bin/bash scripts/epic/claude-tick.sh; sleep 600; done
 set -euo pipefail
@@ -104,6 +109,8 @@ events_open=0
 tick_offset=0
 tick_phase=lock
 tick_outcome=auto
+# Set once the lock dir exists; empty means no step marks.
+timings_file=""
 # Empty until a model session starts; model_done once its exit is known.
 session_id=""
 model_done=0
@@ -124,6 +131,7 @@ unset EPIC_BODY_DIR EPIC_BODY_DIR_ID
 cleanup() {
     local result=$?
     if [[ "$lock_held" == 1 ]]; then
+        step_mark cleanup
         # Log the finish while the lock is held, so the next tick's start line
         # always comes after it (the monitor pairs start and finish lines).
         # A failed log write must not skip the lock release below (set -e).
@@ -136,11 +144,13 @@ cleanup() {
             "$py" "$events" finish --file "$events_file" --tick "$tick_started" \
                 --exit "$result" --phase "$tick_phase" --outcome "$tick_outcome" \
                 --action-file "${lock_dir}/action.json" \
-                --log "$log_file" --since "$tick_offset" "${usage_args[@]}" || true
+                --log "$log_file" --since "$tick_offset" "${usage_args[@]}" \
+                --timings "${lock_dir}/timings.txt" || true
         fi
         rm -f "${lock_dir}/action.json" "${lock_dir}/prompt.txt" "${lock_dir}/owner.json" \
             "${lock_dir}/context.json" "${lock_dir}/result.json" "${lock_dir}/cooldown.json" \
-            "${lock_dir}/attempt.json" "${lock_dir}/scope.json" || true
+            "${lock_dir}/attempt.json" "${lock_dir}/scope.json" \
+            "${lock_dir}/timings.txt" || true
         rmdir "$lock_dir" || true
     fi
     if [[ -n "$body_dir" ]]; then
@@ -153,6 +163,12 @@ cleanup() {
     if [[ "$admitted" == 1 ]]; then
         "$py" "${code_root}/scripts/epic/runtime.py" release \
             --tick-id "$admission_id" || true
+    fi
+}
+# Marks the start of one measured step. Never fails the tick.
+step_mark() {
+    if [[ -n "$timings_file" ]]; then
+        "$py" "$events" mark --file "$timings_file" --phase "$1" || true
     fi
 }
 # Stop the running child (selector or model) before the lock is released, so a
@@ -374,6 +390,8 @@ if tick_offset=$("$py" "$events" start --file "$events_file" \
 else
     tick_offset=0
 fi
+timings_file="${lock_dir}/timings.txt"
+step_mark refresh
 cd "$repo_root"
 tick_phase=refresh
 if [[ "$runtime_mode" == pinned ]]; then
@@ -399,12 +417,14 @@ fi
 # Close tickets whose implementation merged (close_merged.py). It keeps no
 # state, so a failed or deferred run simply repeats next tick; it never stops
 # this one.
+step_mark closing
 close=0
 run_bounded "${close_timeout}s" "$py" "${code_root}/scripts/epic/close_merged.py" || close=$?
 case "$close" in
     0 | 3) ;;
     *) printf 'tick: close step failed with exit %s; continuing\n' "$close" >&2 ;;
 esac
+step_mark selection
 tick_phase=select
 select=0
 run_bounded "${select_timeout}s" \
@@ -800,6 +820,7 @@ fi
 # (124 or 137 on timeout) is kept: the action is still verified.
 # Set before the start, so a stop during the session still finds its usage.
 session_id=$("${py_snippet[@]}" -c 'import uuid; print(uuid.uuid4())')
+step_mark model
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
     EPIC_WORKTREE="$worktree" EPIC_ATTEMPT_FILE="${lock_dir}/attempt.json" GIT_EDITOR=true \
@@ -813,6 +834,7 @@ run_bounded "${tick_timeout}s" \
     ${worktree_args[@]+"${worktree_args[@]}"} < "${lock_dir}/prompt.txt" \
     > "${lock_dir}/result.json" || model_exit=$?
 model_done=1
+step_mark validation
 cat "${lock_dir}/result.json" || true
 printf '\ntick: model exit=%s\n' "$model_exit"
 # A session can exit 0 while its push or merge was denied. Check GitHub.

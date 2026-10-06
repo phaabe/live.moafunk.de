@@ -7,9 +7,12 @@ file opened for appending, so lines of two writers never interleave.
 
   tick_events.py start  --file F --tick 2026-09-28T15:39:39Z --log L
       prints the log size, the offset where this tick's output begins
+  tick_events.py mark   --file M --phase STEP
+      appends the monotonic time STEP began
   tick_events.py finish --file F --tick T --exit N --phase P [--outcome O|auto]
                         [--action-file A] [--log L --since OFFSET]
                         [--claude-session ID --launch-dir D [--model-exit N]]
+                        [--timings M]
 
 Only enums, numbers, timestamps and the selector's action/PR/issue are
 written: no model text, prompts or commands. The one exception is the
@@ -36,6 +39,13 @@ message's repeated records count once, with the largest value of each
 counter. A counter that could not be read is null, never 0, and does not
 cost the other counters; a partial session keeps the counts it has. Permission classifier calls are not part of
 the transcript and not counted.
+
+`durations` (only with --timings): seconds per step of the tick, from the
+`mark` lines the runner wrote: a step lasts until the next mark, the last one
+until the finish. Steps are STEPS; a step marked twice adds up; a step never
+reached is missing. The clock is time.monotonic(), shared by all processes, so
+a wall clock change does not move it. null when the file is missing,
+unreadable, too large or has no valid mark; a bad line is skipped.
 """
 
 from __future__ import annotations
@@ -70,6 +80,10 @@ PHASES = (
     "record",
     "unknown",
 )
+# Steps whose duration the runner measures (`mark`, `durations`).
+STEPS = ("refresh", "closing", "selection", "model", "validation", "cleanup")
+# A tick writes about six marks; more is not a runner file.
+MAX_TIMINGS = 4096
 TICK = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 REVISION = re.compile(r"[0-9a-f]{40}")
 ACTION = re.compile(r"[a-z][a-z-]{0,31}")
@@ -344,6 +358,48 @@ def claude_fields(
     return {"session_id": session, "usage": usage}
 
 
+def durations_of(path: Path | None, now: float) -> dict[str, float] | None:
+    """Seconds per step from the runner's marks; None when unavailable."""
+    if path is None:
+        return None
+    try:
+        with read_regular(path) as stream:
+            raw = stream.read(MAX_TIMINGS + 1)
+    except OSError:
+        return None
+    if len(raw) > MAX_TIMINGS:
+        return None
+    marks: list[tuple[str, float]] = []
+    for line in raw.decode("utf-8", "replace").splitlines():
+        words = line.split()
+        if len(words) != 2 or words[0] not in STEPS:
+            continue
+        try:
+            at = float(words[1])
+        except ValueError:
+            continue
+        # Out of order or not finite: not a mark of this clock.
+        if not 0 <= at <= now or (marks and at < marks[-1][1]):
+            continue
+        marks.append((words[0], at))
+    if not marks:
+        return None
+    found: dict[str, float] = {}
+    for (step, at), (_, until) in zip(marks, [*marks[1:], ("", now)]):
+        found[step] = found.get(step, 0.0) + until - at
+    return {step: round(seconds, 3) for step, seconds in found.items()}
+
+
+def mark(path: Path, step: str) -> None:
+    """One mark line; one write on an append-only file."""
+    line = f"{step} {time.monotonic():.6f}\n".encode()
+    fd = open_regular(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    try:
+        os.write(fd, line)
+    finally:
+        os.close(fd)
+
+
 def append(path: Path, event: dict[str, Any]) -> None:
     line = (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
     if len(line) >= MAX_LINE:
@@ -401,6 +457,9 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     start = commands.add_parser("start")
     finish = commands.add_parser("finish")
+    marker = commands.add_parser("mark")
+    marker.add_argument("--file", type=Path, required=True)
+    marker.add_argument("--phase", choices=STEPS, required=True)
     for command in (start, finish):
         command.add_argument("--file", type=Path, required=True)
         command.add_argument("--tick", required=True)
@@ -414,7 +473,15 @@ def main(argv: list[str] | None = None) -> int:
     finish.add_argument("--claude-session")
     finish.add_argument("--launch-dir", type=Path)
     finish.add_argument("--model-exit", type=int)
+    finish.add_argument("--timings", type=Path)
     args = parser.parse_args(argv)
+    if args.command == "mark":
+        try:
+            mark(args.file, args.phase)
+        except OSError as error:
+            print(f"tick: mark failed: {error}", file=sys.stderr)
+            return 1
+        return 0
     if not TICK.fullmatch(args.tick):
         parser.error("--tick must look like 2026-09-28T15:39:39Z")
     # A hard deadline: whatever blocks, the runner's cleanup goes on.
@@ -478,6 +545,11 @@ def write(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                     else claude_fields(
                         args.claude_session, args.launch_dir, args.model_exit
                     )
+                ),
+                **(
+                    {}
+                    if args.timings is None
+                    else {"durations": durations_of(args.timings, time.monotonic())}
                 ),
             },
         )
