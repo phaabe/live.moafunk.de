@@ -14,17 +14,21 @@ STARTUP_SECONDS = 60.0
 
 def stop_fixture(process: subprocess.Popen) -> None:
     """Stop a disposable fixture started with start_new_session=True."""
-    if process.poll() is not None:
-        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
+        pass
     try:
         process.wait(timeout=15)
     except subprocess.TimeoutExpired:
+        pass
+    # Reaping the leader does not prove its children released sockets or locks.
+    # Kill any remaining group members, including children that ignore SIGTERM.
+    try:
         os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=5)
 
 
 def accept_ready(

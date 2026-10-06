@@ -455,17 +455,21 @@ else:
             stop_fixture(process)
 
     def timeout_command(self, name: str, command: str = "") -> Path:
-        """Record model timeout PID, or shorten only the named helper deadline."""
+        """Record the requested duration before controlling the real timeout."""
         real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
         self.assertIsNotNone(real_timeout)
         timeout_pid = self.root / "timeout.pid"
+        duration = timeout_pid.with_suffix(".duration")
+        duration.unlink(missing_ok=True)
         timeout = self.bin / "timeout"
         timeout.write_text(
             f"#!{sys.executable}\n"
             "import os, pathlib, sys\n"
             f"if {name!r} == 'codex' and sys.argv[3] == 'codex':\n"
+            f"    pathlib.Path({str(duration)!r}).write_text(sys.argv[2])\n"
             f"    pathlib.Path({str(timeout_pid)!r}).write_text(str(os.getpid()))\n"
             f"elif any(pathlib.Path(arg).name == {name!r} for arg in sys.argv[3:]) and {command!r} in sys.argv[3:]:\n"
+            f"    pathlib.Path({str(duration)!r}).write_text(sys.argv[2])\n"
             "    sys.argv[2] = '1s'\n"
             f"os.execv({real_timeout!r}, [{real_timeout!r}, *sys.argv[1:]])\n"
         )
@@ -1272,9 +1276,12 @@ else:
     def test_delivery_timeout_preserves_pending_state_without_cooldown(self) -> None:
         for command in ("resume", "publish"):
             with self.subTest(command=command):
-                self.timeout_command("review_delivery.py", command)
+                timeout_pid = self.timeout_command("review_delivery.py", command)
                 self.env["TEST_DELIVERY_SLEEP"] = command
                 self.assertEqual(self.run_tick().returncode, 75)
+                self.assertEqual(
+                    timeout_pid.with_suffix(".duration").read_text(), "30s"
+                )
                 self.assertFalse(self.record.exists())
                 self.assertFalse((self.state / "codex-backoff.json").exists())
                 self.assertFalse(self.lock.exists())
@@ -1374,8 +1381,9 @@ else:
 
     def test_review_cleanup_timeout_keeps_result_and_releases_lock(self) -> None:
         self.env["TEST_REVIEW_CLEANUP_SLEEP"] = "1"
-        self.timeout_command("review_worktree.py", "cleanup")
+        timeout_pid = self.timeout_command("review_worktree.py", "cleanup")
         self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(timeout_pid.with_suffix(".duration").read_text(), "30s")
         [prepared] = self.review_lifecycle()
         self.assertTrue(self.record.exists())
         self.assertTrue(Path(prepared["worktree"]).exists())
@@ -2541,6 +2549,7 @@ else:
         process, connection = self.blocked_tick()
         os.kill(int(timeout_pid.read_text()), signal.SIGALRM)
         self.assertEqual(process.wait(timeout=15), 124)
+        self.assertEqual(timeout_pid.with_suffix(".duration").read_text(), "60s")
         self.assertEqual(connection.recv(1), b"")
         self.assertFalse(self.lock.exists())
         self.assertFalse(self.record.exists())

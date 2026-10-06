@@ -8,6 +8,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/epic"))
 import isolated_env  # noqa: E402, F401
 
+import os
+import signal
 import socket
 import subprocess
 import tempfile
@@ -83,6 +85,38 @@ class ReadinessTests(unittest.TestCase):
                 accept_ready(self.listener, process, self.log, timeout=0.2)
             self.assertEqual(connection.recv(1), b"")
         self.assertIsNotNone(process.poll())
+
+    def test_early_exit_stops_term_ignoring_child_and_closes_socket(self) -> None:
+        child = (
+            "import signal,socket,sys,time; "
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+            "s=socket.socket(fileno=int(sys.argv[1])); "
+            "s.sendall(b'waiting'); time.sleep(60)"
+        )
+        process = self.start(
+            "import socket,subprocess,sys\n"
+            "s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\n"
+            f"s.connect({self.address!r})\n"
+            f"subprocess.Popen([sys.executable,'-c',{child!r},str(s.fileno())],pass_fds=(s.fileno(),))\n"
+            "raise SystemExit(3)\n"
+        )
+        try:
+            self.listener.settimeout(5)
+            connection, _ = self.listener.accept()
+            with connection:
+                connection.settimeout(5)
+                # The child has installed its signal handler and holds the socket.
+                self.assertEqual(connection.recv(7), b"waiting")
+                self.assertEqual(process.wait(timeout=5), 3)
+                with self.assertRaisesRegex(AssertionError, "exited before ready: 3"):
+                    accept_ready(self.listener, process, self.log, timeout=5)
+                self.assertEqual(connection.recv(1), b"")
+        finally:
+            # Also clean up when running this regression against the broken helper.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 if __name__ == "__main__":

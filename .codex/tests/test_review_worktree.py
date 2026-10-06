@@ -763,6 +763,7 @@ class RunnerReviewLifecycleTests(unittest.TestCase):
         # Startup has completed; expire the real GNU timeout process now.
         os.kill(int(timeout_pid.read_text()), signal.SIGALRM)
         self.assertEqual(process.wait(timeout=15), 124)
+        self.assertEqual(timeout_pid.with_suffix(".duration").read_text(), "60s")
         self.assertEqual(connection.recv(1), b"")
         attempt = self.assert_review_cleaned_with_evidence()
         with self.assertRaises(ProcessLookupError):
