@@ -88,6 +88,7 @@ from github_quota import (
 )
 
 if TYPE_CHECKING:
+    from refinement import Proposal, Verdict
     from routing import Route
 
 REPO = "phaabe/live.moafunk.de"
@@ -765,6 +766,56 @@ def ownerless(pr: dict[str, Any]) -> bool:
     Only such a PR may be adopted: `adopt` must never overwrite an owner.
     """
     return pr_author(pr) is None and not ANY_OWNER_LINE.search(pr.get("body") or "")
+
+
+def definition_of_ready(
+    item: dict[str, Any],
+    proposal: Proposal | None,
+    verdict: Verdict | None,
+    route_problem: str | None = None,
+    on_board: bool = True,
+) -> list[str]:
+    """Why an issue is not Ready under its approved proposal; empty means Ready.
+
+    Pure: `proposal` is the newest valid proposal (refinement.latest_proposal),
+    `verdict` its current verdict (refinement.current_verdict), `route_problem`
+    the routing result for the proposal's files (None when one lane owns them).
+    The issue's Executor, labels and "Start after" dependencies must match the
+    proposal; free text in the body is not compared.
+    """
+    if proposal is None:
+        return ["no proposal"]
+    data = proposal.data
+    problems = []
+    if verdict is None or verdict.state != "APPROVED":
+        problems.append("no current approval by the other agent")
+    if not [c for c in data["acceptance_criteria"] if c.strip()]:
+        problems.append("no acceptance criteria")
+    if not [x for x in data["leaves"] if x.strip()]:
+        problems.append("no leaves")
+    if not [f for f in data["files"] if f.strip()]:
+        problems.append("no files")
+    if route_problem:
+        problems.append(f"file ownership: {route_problem}")
+    proposed = set(data["labels"])
+    for prefix in ("type::", "project::"):
+        if len([n for n in proposed if n.startswith(prefix)]) != 1:
+            problems.append(f"needs exactly one {prefix}* label")
+    missing = sorted(proposed - labels(item))
+    if missing:
+        problems.append(f"issue lacks labels {', '.join(missing)}")
+    if data["executor"] not in AGENTS:
+        problems.append("no Executor")
+    elif item.get("executor") != data["executor"]:
+        problems.append(f"issue Executor is not {data['executor']}")
+    extra = sorted(start_after(item) - set(data["depends_on"]))
+    if extra:
+        problems.append(f"dependencies not in the proposal: {', '.join(extra)}")
+    if not on_board:
+        problems.append("not on the board")
+    if ESCALATION_LABEL in labels(item):
+        problems.append(f"label {ESCALATION_LABEL}")
+    return problems
 
 
 def board_executors(state: dict[str, Any]) -> dict[int, str]:
