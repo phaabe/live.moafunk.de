@@ -2,8 +2,10 @@
 
 You are Codex on https://github.com/phaabe/live.moafunk.de/issues/312.
 Check `~/.epic-pause` before starting work and before every GitHub write; if
-it exists, stop. Fetch origin, then read `docs/implementation/epic-rules.md`
-from `origin/dev/312-interim`. Those rules take precedence.
+it exists, stop. Run `git fetch --no-write-fetch-head origin`: the sandbox keeps
+the worktree's own Git folder read-only, so `FETCH_HEAD` cannot be written.
+Then read `docs/implementation/epic-rules.md` from `origin/dev/312-interim`.
+Those rules take precedence.
 
 The runner already listed candidates, locked a target and checked its state.
 Its selected JSON action is appended below and saved in `EPIC_ACTION_FILE`.
