@@ -5,11 +5,13 @@ from __future__ import annotations
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import contextlib
+import errno
 import fcntl
 import io
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -74,6 +76,16 @@ CLASS_FIXTURE = plain_module(25).replace(
 MODULE_FIXTURE = plain_module(22) + "\n\ndef setUpModule():\n    pass\n"
 
 
+def slot_folder(path: Path, count: int = 1) -> Path:
+    """A shared slot folder as the operator makes it. `path` must be canonical."""
+    path.mkdir(mode=0o700)
+    path.chmod(0o700)  # whatever the umask
+    capacity = path / run_tests.CAPACITY_FILE
+    capacity.write_text(json.dumps({"schema": 1, "slots": count}) + "\n")
+    capacity.chmod(0o600)
+    return path
+
+
 class SplitRuleTest(unittest.TestCase):
     def parts(self, **modules: dict[str, Any]) -> list[run_tests.Part]:
         return run_tests.plan({"modules": modules})
@@ -136,11 +148,12 @@ class FixtureSuite(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory(prefix="run-tests-fixture-")
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        self.root = Path(tmp.name).resolve()  # a shared slot folder is canonical
         self.top = self.root / "suite"
         self.top.mkdir()
         self.tmpdir = self.root / "tmpdir"
         self.tmpdir.mkdir()
+        self.slots = slot_folder(self.root / "slots")
 
     def write(self, name: str, text: str) -> None:
         (self.top / name).write_text(text)
@@ -150,7 +163,7 @@ class FixtureSuite(unittest.TestCase):
         return {
             **os.environ,
             "TMPDIR": str(self.tmpdir),
-            run_tests.SLOTS_DIR_ENV: str(self.root / "slots"),
+            run_tests.SLOTS_DIR_ENV: str(self.slots),
             **extra,
         }
 
@@ -511,12 +524,29 @@ class SlotsTest(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory(prefix="run-tests-slots-")
         self.addCleanup(tmp.cleanup)
-        self.folder = Path(tmp.name) / "slots"
+        self.base = Path(tmp.name).resolve()
+        self.folder = self.base / "slots"
+        self.outside = self.base / "outside"
+        self.outside.mkdir()
 
-    def slots(self, count: int = 1) -> run_tests.Slots:
+    def slots(self, count: int = 1, **extra: str) -> run_tests.Slots:
+        if not self.folder.exists():
+            slot_folder(self.folder, count)
         return run_tests.Slots.from_env(
-            {run_tests.SLOTS_ENV: str(count), run_tests.SLOTS_DIR_ENV: str(self.folder)}
+            {run_tests.SLOTS_DIR_ENV: str(self.folder), **extra}
         )
+
+    def refused(self, env: dict[str, str], why: str) -> run_tests.SlotError:
+        with self.assertRaises(run_tests.SlotError) as caught:
+            run_tests.Slots.from_env(env)
+        self.assertIn(why, str(caught.exception))
+        return caught.exception
+
+    def fresh(self, name: str, count: int = 2) -> Path:
+        return slot_folder(self.base / name, count)
+
+    def entries(self, folder: Path) -> list[str]:
+        return sorted(p.name for p in folder.iterdir())
 
     def test_a_held_slot_makes_the_next_part_wait(self) -> None:
         first, second = self.slots(1), self.slots(1)  # two runs, one folder
@@ -532,6 +562,7 @@ class SlotsTest(unittest.TestCase):
             order.append("first ends")
         waiter.join(10)
         self.assertEqual(order, ["first ends", "second"])
+        self.assertIsNone(second.error)  # waiting for a held slot is no error
 
     def test_count_slots_run_together(self) -> None:
         slots = self.slots(2)
@@ -548,40 +579,339 @@ class SlotsTest(unittest.TestCase):
 
     def test_a_run_inside_a_test_takes_no_slot(self) -> None:
         self.assertEqual(run_tests.NESTED_ENV, isolated_env.MARKER)
-        env = {run_tests.NESTED_ENV: "1", run_tests.SLOTS_DIR_ENV: str(self.folder)}
-        self.assertIsNone(run_tests.Slots.from_env(env).folder)
-        self.assertFalse(self.folder.exists())
+        for extra in ({}, {run_tests.SLOTS_ENV: "0"}, {run_tests.SLOTS_ENV: "x"}):
+            with self.subTest(extra=extra):
+                env = {
+                    run_tests.NESTED_ENV: "1",
+                    run_tests.SLOTS_DIR_ENV: str(self.folder),
+                    **extra,
+                }
+                slots = run_tests.Slots.from_env(env)
+                self.assertIsNone(slots.folder)
+                self.assertEqual(slots.off, "nested")
+                with slots.slot(lambda: False) as got:
+                    self.assertTrue(got)
+                self.assertFalse(self.folder.exists())
 
-    def test_an_unusable_folder_turns_slots_off_loudly(self) -> None:
-        self.folder.parent.mkdir(exist_ok=True)
-        self.folder.write_text("a file, not a folder")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            slots = self.slots(1)
-        self.assertIsNone(slots.folder)
-        self.assertIn("machine-wide slots off", out.getvalue())
+    def test_the_capacity_sets_the_count(self) -> None:
+        folder = self.fresh("two", 2)
+        env = {run_tests.SLOTS_DIR_ENV: str(folder)}
+        with patch.object(run_tests.os, "cpu_count", return_value=7):
+            slots = run_tests.Slots.from_env(env)
+            same = run_tests.Slots.from_env({**env, run_tests.SLOTS_ENV: "2"})
+        self.assertEqual((slots.folder, slots.count, slots.shared), (folder, 2, True))
+        self.assertEqual(same.count, 2)
+        self.assertEqual(
+            self.entries(folder), ["capacity.json", "slot-0.lock", "slot-1.lock"]
+        )
 
-    @unittest.skipIf(os.geteuid() == 0, "root ignores folder permissions")
-    def test_an_unwritable_folder_turns_slots_off_loudly(self) -> None:
-        # Regression: mkdir passes on an existing folder that denies new files.
-        self.folder.mkdir(mode=0o500)
-        self.addCleanup(self.folder.chmod, 0o700)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            slots = self.slots(1)
-        self.assertIsNone(slots.folder)
-        self.assertIn("machine-wide slots off", out.getvalue())
+    def test_a_differing_slot_count_setting_is_refused(self) -> None:
+        folder = self.fresh("two", 2)
+        for given in ("3", "1", "", "02", " 2", "2.0", "+2"):
+            with self.subTest(given=given):
+                env = {run_tests.SLOTS_DIR_ENV: str(folder), run_tests.SLOTS_ENV: given}
+                self.refused(env, "differs from the capacity 2")
+        self.assertEqual(self.entries(folder), ["capacity.json"])
 
-    def test_a_slot_file_error_runs_the_part_without_a_slot(self) -> None:
+    def test_capacity_must_be_exactly_schema_one_with_a_positive_count(self) -> None:
+        cases = {
+            "missing": None,
+            "empty": "",
+            "not json": "slots: 2",
+            "list": "[1, 2]",
+            "no slots": '{"schema": 1}',
+            "extra key": '{"schema": 1, "slots": 2, "owner": "x"}',
+            "schema 2": '{"schema": 2, "slots": 2}',
+            "schema text": '{"schema": "1", "slots": 2}',
+            "schema bool": '{"schema": true, "slots": 2}',
+            "slots true": '{"schema": 1, "slots": true}',
+            "slots false": '{"schema": 1, "slots": false}',
+            "slots zero": '{"schema": 1, "slots": 0}',
+            "slots negative": '{"schema": 1, "slots": -1}',
+            "slots float": '{"schema": 1, "slots": 2.0}',
+            "slots text": '{"schema": 1, "slots": "2"}',
+            "slots null": '{"schema": 1, "slots": null}',
+            "too large": '{"schema": 1, "slots": 2}' + " " * 5000,
+        }
+        for n, (name, content) in enumerate(cases.items()):
+            with self.subTest(name):
+                folder = self.fresh(f"bad-{n}")
+                capacity = folder / "capacity.json"
+                if content is None:
+                    capacity.unlink()
+                else:
+                    capacity.write_text(content)
+                why = "cannot open" if content is None else "must be exactly"
+                self.refused({run_tests.SLOTS_DIR_ENV: str(folder)}, why)
+                self.assertEqual(
+                    self.entries(folder), [] if content is None else ["capacity.json"]
+                )
+
+    def test_the_shared_folder_must_be_canonical_private_and_owned(self) -> None:
+        good = self.fresh("good")
+        link = self.base / "link"
+        link.symlink_to(good)
+        afile = self.base / "afile"
+        afile.write_text("")
+        open_mode = self.fresh("open-mode")
+        open_mode.chmod(0o755)
+        group = self.fresh("group")
+        group.chmod(0o770)
+        cases = [
+            ("slots", "must be an absolute path"),
+            ("", "must be an absolute path"),
+            (str(self.base / "missing"), "cannot be used"),
+            (str(good) + "/", "must be canonical"),
+            (f"{self.base}/./good", "must be canonical"),
+            (f"{self.base}/outside/../good", "must be canonical"),
+            (str(link), "must be canonical"),
+            (str(afile), "must be a directory with mode 0700"),
+            (str(open_mode), "must be a directory with mode 0700"),
+            (str(group), "must be a directory with mode 0700"),
+        ]
+        for value, why in cases:
+            with self.subTest(value=value):
+                self.refused({run_tests.SLOTS_DIR_ENV: value}, why)
+        with patch.object(run_tests.os, "getuid", return_value=os.getuid() + 1):
+            self.refused({run_tests.SLOTS_DIR_ENV: str(good)}, "not owned by this user")
+        self.assertEqual(self.entries(good), ["capacity.json"])
+
+    def test_a_writable_parent_is_refused_unless_sticky(self) -> None:
+        parent = self.base / "parent"
+        parent.mkdir()
+        folder = slot_folder(parent / "slots")
+        self.addCleanup(parent.chmod, 0o700)
+        parent.chmod(0o777)
+        self.refused({run_tests.SLOTS_DIR_ENV: str(folder)}, "writable parent")
+        parent.chmod(0o1777)  # like /tmp: others cannot replace the folder
+        self.assertEqual(
+            run_tests.Slots.from_env({run_tests.SLOTS_DIR_ENV: str(folder)}).count, 1
+        )
+
+    def test_the_capacity_file_must_be_private(self) -> None:
+        folder = self.fresh("open-capacity")
+        (folder / "capacity.json").chmod(0o664)
+        self.refused({run_tests.SLOTS_DIR_ENV: str(folder)}, "group or world writable")
+
+    def test_aliases_are_refused_and_left_alone(self) -> None:
+        target = self.outside / "target.lock"
+        target.write_text("other\n")
+        valid = self.outside / "capacity.json"
+        valid.write_text('{"schema": 1, "slots": 2}')
+        valid.chmod(0o600)
+        cases = {
+            "lock symlink": lambda f: (f / "slot-0.lock").symlink_to(target),
+            "dangling lock symlink": lambda f: (f / "slot-0.lock").symlink_to(
+                self.outside / "never-created.lock"
+            ),
+            "lock hardlink": lambda f: os.link(target, f / "slot-0.lock"),
+            "capacity symlink": lambda f: (
+                (f / "capacity.json").unlink(),
+                (f / "capacity.json").symlink_to(valid),
+            ),
+            "capacity hardlink": lambda f: (
+                (f / "capacity.json").unlink(),
+                os.link(valid, f / "capacity.json"),
+            ),
+        }
+        for n, (name, alias) in enumerate(cases.items()):
+            with self.subTest(name):
+                folder = self.fresh(f"alias-{n}")
+                alias(folder)
+                before = self.entries(folder)
+                with self.assertRaises(run_tests.SlotError):
+                    run_tests.Slots.from_env({run_tests.SLOTS_DIR_ENV: str(folder)})
+                self.assertEqual(self.entries(folder), before)
+        self.assertEqual(target.read_text(), "other\n")
+        self.assertFalse((self.outside / "never-created.lock").exists())
+
+    def test_only_slot_lock_files_may_sit_beside_the_capacity(self) -> None:
+        cases = {
+            "slot-2.lock": lambda p: p.write_text(""),  # capacity 2: slots 0 and 1
+            "notes.txt": lambda p: p.write_text(""),
+            "sub": lambda p: p.mkdir(),
+            "slot-01.lock": lambda p: p.write_text(""),
+        }
+        for n, (name, make) in enumerate(cases.items()):
+            with self.subTest(name):
+                folder = self.fresh(f"extra-{n}")
+                make(folder / name)
+                self.refused(
+                    {run_tests.SLOTS_DIR_ENV: str(folder)},
+                    f"unexpected entry in {folder}: {name}",
+                )
+        folder = self.fresh("lock-dir")
+        (folder / "slot-0.lock").mkdir()
+        self.refused({run_tests.SLOTS_DIR_ENV: str(folder)}, "cannot open")
+
+    def test_existing_lock_files_are_kept_and_new_ones_are_private(self) -> None:
+        folder = self.fresh("keep")
+        kept = folder / "slot-0.lock"
+        kept.write_text("keep\n")
+        kept.chmod(0o600)
+        inode = kept.stat().st_ino
+        old_umask = os.umask(0)
+        try:
+            slots = run_tests.Slots.from_env({run_tests.SLOTS_DIR_ENV: str(folder)})
+        finally:
+            os.umask(old_umask)
+        with slots.slot(lambda: False) as a, slots.slot(lambda: False) as b:
+            self.assertTrue(a and b)
+        self.assertEqual(
+            self.entries(folder), ["capacity.json", "slot-0.lock", "slot-1.lock"]
+        )
+        self.assertEqual((kept.stat().st_ino, kept.read_text()), (inode, "keep\n"))
+        self.assertEqual(stat.S_IMODE((folder / "slot-1.lock").stat().st_mode), 0o600)
+
+    def test_a_writable_lock_file_in_the_shared_folder_is_refused(self) -> None:
+        folder = self.fresh("open-lock")
+        (folder / "slot-0.lock").write_text("")
+        (folder / "slot-0.lock").chmod(0o660)
+        self.refused({run_tests.SLOTS_DIR_ENV: str(folder)}, "group or world writable")
+
+    def test_denied_lock_creation_fails(self) -> None:
+        real_open = os.open
+
+        def no_create(path: Any, flags: int, *args: Any) -> int:
+            if flags & os.O_CREAT:
+                raise PermissionError(errno.EACCES, "denied", str(path))
+            return real_open(path, flags, *args)
+
+        folder = self.fresh("no-create")
+        with patch.object(run_tests.os, "open", side_effect=no_create):
+            self.refused({run_tests.SLOTS_DIR_ENV: str(folder)}, "cannot open")
+        self.assertEqual(self.entries(folder), ["capacity.json"])
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores file permissions")
+    def test_a_lock_file_that_cannot_be_opened_fails(self) -> None:
+        folder = self.fresh("no-open")
+        lock = folder / "slot-0.lock"
+        lock.write_text("")
+        lock.chmod(0o000)
+        self.addCleanup(lock.chmod, 0o600)
+        self.refused({run_tests.SLOTS_DIR_ENV: str(folder)}, "Permission denied")
+
+    def test_a_lock_error_fails_the_part_and_stops_the_waiting_ones(self) -> None:
         slots = self.slots(2)
         out = io.StringIO()
-        denied = PermissionError(13, "denied")
+        ran: list[str] = []
+        denied = OSError(errno.ENOLCK, "no locks available")
         with contextlib.redirect_stdout(out):
-            with patch.object(run_tests, "open", side_effect=denied, create=True):
-                with slots.slot(lambda: False) as a, slots.slot(lambda: False) as b:
-                    self.assertTrue(a and b)
-        self.assertIsNone(slots.folder)
-        self.assertEqual(out.getvalue().count("machine-wide slots off"), 1)
+            with patch.object(run_tests.fcntl, "flock", side_effect=denied):
+                with self.assertRaises(run_tests.SlotError):
+                    with slots.slot(lambda: False):
+                        ran.append("first")
+            # Later parts never start, also without the error in place.
+            with slots.slot(lambda: False) as got:
+                self.assertFalse(got)
+        self.assertEqual(ran, [])
+        self.assertIn("no locks available", str(slots.error))
+        self.assertEqual(out.getvalue().count("test slots failed"), 1)
+
+    def test_a_lock_file_replaced_or_removed_after_startup_fails(self) -> None:
+        for change in ("replace", "remove"):
+            with self.subTest(change):
+                folder = self.fresh(f"{change}d")
+                slots = run_tests.Slots.from_env({run_tests.SLOTS_DIR_ENV: str(folder)})
+                lock = folder / "slot-0.lock"
+                if change == "replace":
+                    (folder / "new").write_text("")
+                    os.replace(folder / "new", lock)
+                else:
+                    lock.unlink()
+                ran: list[str] = []
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(run_tests.SlotError):
+                        with slots.slot(lambda: False):
+                            ran.append("part")
+                self.assertEqual(ran, [])
+                why = "was replaced" if change == "replace" else "cannot open"
+                self.assertIn(why, str(slots.error))
+
+    def test_an_interrupted_holder_releases_its_slot(self) -> None:
+        slot_folder(self.folder, 1)
+        env = {**os.environ, run_tests.SLOTS_DIR_ENV: str(self.folder)}
+        env.pop(run_tests.NESTED_ENV, None)
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys, time; sys.path.insert(0, sys.argv[1]); import run_tests\n"
+                "slots = run_tests.Slots.from_env()\n"
+                "with slots.slot(lambda: False):\n"
+                "    print('held', flush=True); time.sleep(300)\n",
+                str(HERE),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert holder.stdout is not None
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        killer = threading.Timer(30, holder.kill)  # readline must not hang
+        killer.start()
+        self.assertEqual(holder.stdout.readline(), "held\n")
+        killer.cancel()
+        slots = run_tests.Slots.from_env({run_tests.SLOTS_DIR_ENV: str(self.folder)})
+        self.assertIsNone(slots.take())  # the holder has the only slot
+        holder.kill()
+        holder.wait(10)
+        held = slots.take()
+        self.assertIsNotNone(held)
+        assert held is not None
+        os.close(held)
+
+    def test_the_local_default_keeps_its_folder_and_count(self) -> None:
+        temp = self.base / "user-temp"
+        temp.mkdir()
+        with (
+            patch.object(run_tests, "user_temp_dir", return_value=str(temp)),
+            patch.object(run_tests.os, "cpu_count", return_value=3),
+        ):
+            slots = run_tests.Slots.from_env({})
+            two = run_tests.Slots.from_env({run_tests.SLOTS_ENV: "2"})
+        folder = temp / "epic-test-slots"
+        self.assertEqual((slots.folder, slots.count, slots.shared), (folder, 3, False))
+        self.assertEqual(two.count, 2)
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+        self.assertEqual(self.entries(folder), [f"slot-{i}.lock" for i in range(3)])
+
+    def test_a_malformed_local_slot_count_is_refused(self) -> None:
+        temp = self.base / "user-temp"
+        temp.mkdir()
+        with patch.object(run_tests, "user_temp_dir", return_value=str(temp)):
+            for given in ("0", "-1", "", "abc", "1.5", "true", "02"):
+                with self.subTest(given=given):
+                    self.refused(
+                        {run_tests.SLOTS_ENV: given}, "must be a positive integer"
+                    )
+        self.assertFalse((temp / "epic-test-slots").exists())
+
+    def test_a_local_folder_that_cannot_be_made_fails(self) -> None:
+        blocker = self.base / "a-file"
+        blocker.write_text("not a folder")
+        with patch.object(run_tests, "user_temp_dir", return_value=str(blocker)):
+            self.refused({}, "cannot create")
+
+    def test_a_local_symlink_folder_is_refused(self) -> None:
+        temp = self.base / "user-temp"
+        temp.mkdir()
+        (temp / "epic-test-slots").symlink_to(self.outside)
+        with patch.object(run_tests, "user_temp_dir", return_value=str(temp)):
+            self.refused({}, "must be a directory")
+        self.assertEqual(self.entries(self.outside), [])
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores folder permissions")
+    def test_a_local_folder_that_denies_new_files_fails(self) -> None:
+        # Regression: mkdir passes on an existing folder that denies new files.
+        temp = self.base / "user-temp"
+        folder = temp / "epic-test-slots"
+        folder.mkdir(parents=True, mode=0o500)
+        self.addCleanup(folder.chmod, 0o700)
+        with patch.object(run_tests, "user_temp_dir", return_value=str(temp)):
+            self.refused({run_tests.SLOTS_ENV: "1"}, "cannot open")
 
     def test_the_user_temp_dir_prefers_the_os_answer_over_tmpdir(self) -> None:
         with patch.dict(os.environ, {"TMPDIR": "/elsewhere"}):
@@ -605,21 +935,37 @@ class SlotRunTest(FixtureSuite):
         env.pop(run_tests.NESTED_ENV, None)  # this test runs under isolated_env
         return env
 
-    def test_two_runs_share_the_slots(self) -> None:
+    def marker_modules(self, count: int) -> list[Path]:
+        """Modules whose import and test each leave a file: proof that they ran."""
+        marks = []
+        for n in range(count):
+            mark = self.root / f"ran-{n}"
+            marks.append(mark)
+            self.write(
+                f"test_mark{n}.py",
+                f"open({str(mark)!r}, 'a').write('import\\n')\n"
+                + plain_module(1, f"open({str(mark)!r}, 'a').write('test\\n')"),
+            )
+        return marks
+
+    def test_two_runs_with_different_tmpdirs_share_the_slots(self) -> None:
         log = self.root / "log"
         for n in range(3):
             self.write(f"test_m{n}.py", plain_module(1, self.RECORD))
-        env = self.slot_env(RUN_TESTS_LOG=str(log))
         command = [sys.executable, str(RUNNER), str(self.top), "-j", "4"]
-        runs = [
-            subprocess.Popen(command, env=env, cwd=self.root, text=True,
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            for _ in range(2)
-        ]  # fmt: skip
+        runs = []
+        for n in range(2):
+            tmpdir = self.root / f"tmpdir-{n}"  # like the host and the sandbox
+            tmpdir.mkdir()
+            env = self.slot_env(RUN_TESTS_LOG=str(log), TMPDIR=str(tmpdir))
+            runs.append(
+                subprocess.Popen(command, env=env, cwd=self.root, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            )  # fmt: skip
         outputs = [run.communicate(timeout=120)[0] for run in runs]
         for run, output in zip(runs, outputs):
             self.assertEqual(run.returncode, 0, output)
-            self.assertIn("at most 1 parts machine-wide", output)
+            self.assertIn(f"at most 1 parts machine-wide ({self.slots})", output)
         events = sorted(
             (float(t), kind) for kind, t in (line.split() for line in log.read_text().splitlines())
         )  # fmt: skip
@@ -646,8 +992,7 @@ class SlotRunTest(FixtureSuite):
 
     def test_the_timeout_starts_after_the_slot(self) -> None:
         self.write("test_fast.py", plain_module(1, "pass"))
-        (self.root / "slots").mkdir()
-        held = open(self.root / "slots" / "slot-0.lock", "a")
+        held = open(self.slots / "slot-0.lock", "a")
         self.addCleanup(held.close)
         fcntl.flock(held, fcntl.LOCK_EX)
         threading.Timer(3, held.close).start()  # frees the slot after 3 s
@@ -658,22 +1003,93 @@ class SlotRunTest(FixtureSuite):
         total = out.stdout.split("Slot wait: ", 1)[1].split(" s in total", 1)[0]
         self.assertGreaterEqual(float(total), 2.0)
 
-    @unittest.skipIf(os.geteuid() == 0, "root ignores folder permissions")
-    def test_an_unwritable_slot_folder_still_runs_every_test(self) -> None:
-        self.write("test_fast.py", plain_module(1, "pass"))
-        (self.root / "slots").mkdir(mode=0o500)
-        self.addCleanup((self.root / "slots").chmod, 0o700)
-        out = self.run_tests(env=self.slot_env())
-        self.assertEqual(out.returncode, 0, out.stdout)
-        self.assertIn("machine-wide slots off", out.stdout)
-        self.assertIn("Ran 1 of 1 tests", out.stdout)
+    def test_unusable_slots_fail_the_run_before_any_test(self) -> None:
+        marks = self.marker_modules(2)
+        capacity = self.slots / "capacity.json"
+        cases = [
+            ("env mismatch", lambda: None, {run_tests.SLOTS_ENV: "2"}),
+            (
+                "malformed capacity",
+                lambda: capacity.write_text('{"schema": 1, "slots": 0}'),
+                {},
+            ),
+            ("folder mode", lambda: self.slots.chmod(0o500), {}),
+        ]
+        self.addCleanup(self.slots.chmod, 0o700)
+        for name, damage, extra in cases:
+            with self.subTest(name):
+                damage()
+                out = self.run_tests(env=self.slot_env(**extra))
+                self.assertEqual(out.returncode, 1, out.stdout)
+                self.assertIn("test slots unusable, no test ran", out.stdout)
+                self.assertNotIn("Ran ", out.stdout)
+                self.assertFalse(any(m.exists() for m in marks))
+
+    def test_a_slot_failure_while_a_part_waits_never_starts_it(self) -> None:
+        marks = self.marker_modules(2)
+        lock = self.slots / "slot-0.lock"
+        lock.write_text("")
+        lock.chmod(0o600)
+        held = open(lock, "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX)  # every part waits
+        proc = subprocess.Popen(
+            [sys.executable, str(RUNNER), str(self.top), "-j", "2"],
+            env=self.slot_env(),
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        assert proc.stdout is not None
+        killer = threading.Timer(30, proc.kill)  # readline must not hang
+        killer.start()
+        first = proc.stdout.readline()
+        killer.cancel()
+        self.assertIn("at most 1 parts machine-wide", first)
+        # The listing imported each module once; wait until parts wait.
+        deadline = time.monotonic() + 30
+        while not all(m.exists() for m in marks) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.5)
+        (self.slots / "new").write_text("")
+        os.replace(self.slots / "new", lock)  # the held inode is gone
+        output, _ = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 1, output)
+        self.assertIn("test slots failed", output)
+        self.assertIn("was replaced during the run", output)
+        self.assertIn("RUN PROBLEM: test slots failed", output)
+        for mark in marks:
+            self.assertEqual(mark.read_text(), "import\n")  # listed, never run
+
+    def test_check_slots_reports_the_folder_and_count(self) -> None:
+        def check(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, str(RUNNER), "--check-slots"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+        out = check(self.slot_env())
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(
+            out.stdout, f"run_tests: 1 slots (capacity.json) in {self.slots}\n"
+        )
+        out = check(self.slot_env(**{run_tests.SLOTS_ENV: "4"}))
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("test slots unusable", out.stdout)
+        out = check({**self.slot_env(), run_tests.NESTED_ENV: "1"})
+        self.assertEqual(out.stdout, "run_tests: no slots (a run inside a test)\n")
 
     def test_ctrl_c_stops_a_part_that_waits_for_a_slot(self) -> None:
         # Regression: the executor joined the waiting part before the run
         # stopped, so Ctrl-C hung while another run held every slot.
         self.write("test_fast.py", plain_module(1, "pass"))
-        (self.root / "slots").mkdir()
-        held = open(self.root / "slots" / "slot-0.lock", "a")
+        held = open(self.slots / "slot-0.lock", "a")
         self.addCleanup(held.close)
         fcntl.flock(held, fcntl.LOCK_EX)
         proc = subprocess.Popen(
@@ -757,6 +1173,7 @@ class IsolationTest(FixtureSuite):
             EPIC_STATE_DIR=str(live),
             EPIC_QUOTA_DIR=str(live),
             RUN_TESTS_PROBE=str(probe),
+            **{run_tests.SLOTS_ENV: "1"},  # the slot settings stop at the runner
         )
         env.pop(isolated_env.MARKER, None)
         if marker:
@@ -798,6 +1215,30 @@ class SuiteTableTest(unittest.TestCase):
         rules = (REPO / "docs/implementation/epic-rules.md").read_text()
         for name in ("epic", "codex"):
             self.assertIn(f"`{' '.join(commands[name])}`", rules)
+
+    def test_suite_runs_get_only_the_shared_slot_settings(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="run-tests-suite-")
+        self.addCleanup(tmp.cleanup)
+        slots = slot_folder(Path(tmp.name).resolve() / "slots", 3)
+        settings = {
+            "EPIC_STATE_DIR": "/live/state",
+            run_tests.SLOTS_DIR_ENV: str(slots),
+            run_tests.SLOTS_ENV: "3",
+        }
+        suite = {
+            "name": "probe",
+            "cwd": ".",
+            "command": [sys.executable, str(RUNNER), "--check-slots"],
+        }
+        with patch.dict(os.environ, settings):
+            env = rebase_policy.suite_env()
+            os.environ.pop(run_tests.NESTED_ENV, None)  # a top-level proof run
+            result = rebase_policy.run_suite(REPO, suite)
+        self.assertEqual(env[run_tests.SLOTS_DIR_ENV], str(slots))
+        self.assertEqual(env[run_tests.SLOTS_ENV], "3")
+        self.assertNotIn("EPIC_STATE_DIR", env)
+        self.assertEqual(result["result"], "passed", result["tail"])
+        self.assertIn(f"3 slots (capacity.json) in {slots}", result["tail"])
 
 
 if __name__ == "__main__":
