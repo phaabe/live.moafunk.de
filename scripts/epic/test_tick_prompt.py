@@ -62,3 +62,16 @@ class TestsSectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BoardStatusTest(unittest.TestCase):
+    def test_status_changes_use_the_helper(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/624: every Status
+        # change also sets its status label, so write_checks.py refuses raw
+        # board writes; the prompt must not send the model to them.
+        text = PROMPT.read_text()
+        self.assertIn("set <issue> <status>", text)
+        self.assertIn("repair <issue>", text)
+        self.assertIn("Never `gh project item-edit`", text)
+        self.assertEqual(text.count("item-edit"), 1)
+        self.assertNotIn("set Status to In progress.", text)

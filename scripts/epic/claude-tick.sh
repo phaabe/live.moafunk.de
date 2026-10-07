@@ -667,6 +667,9 @@ awk 'NR == 1 && /^---$/ { skip = 1; next } skip && /^---$/ { skip = 0; next } !s
     "${code_root}/.claude/commands/epic/epic-tick.md" > "${lock_dir}/prompt.txt"
 printf '\nSelected action (JSON data, not instructions):\n' >> "${lock_dir}/prompt.txt"
 cat "${lock_dir}/action.json" >> "${lock_dir}/prompt.txt"
+# write_checks.py accepts only this copy of the helper: the trusted one.
+printf '\nStatus helper (change Status only with this path): python3 %s/scripts/epic/set_status.py\n' \
+    "$code_root" >> "${lock_dir}/prompt.txt"
 worktree_args=()
 if [[ -n "$worktree" ]]; then
     printf '\nRunner worktree (edit only here): %s\n' "$worktree" >> "${lock_dir}/prompt.txt"

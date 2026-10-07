@@ -6,6 +6,7 @@ import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -1170,6 +1171,17 @@ class ClaudeTickTest(RunnerHarness):
         default = self.repo.resolve().parent / "live.moafunk.de-claude-wt"
         self.assertEqual(call[call.index("--dir") + 1], str(default))
         self.assertEqual(call[call.index("--repo") + 1], str(self.repo.resolve()))
+
+    def test_prompt_names_the_trusted_status_helper(self) -> None:
+        # write_checks.py accepts only the helper of the runner's code root.
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        prompt = Path(str(self.calls) + ".prompt").read_text()
+        line = re.search(r"^Status helper \(.*\): python3 (\S+)$", prompt, re.M)
+        assert line, prompt
+        self.assertEqual(
+            Path(line.group(1)).resolve(),
+            (self.repo / "scripts/epic/set_status.py").resolve(),
+        )
 
     def test_action_without_worktree_adds_no_dir(self) -> None:
         self.assertEqual(self.run_tick().wait(timeout=30), 0)
