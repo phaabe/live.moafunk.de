@@ -10,11 +10,32 @@ import isolated_env  # noqa: E402, F401
 
 import json
 import os
+import runpy
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from native_controls_fixture import NATIVE, native_env
+
+
+class FixtureGitSelectionTests(unittest.TestCase):
+    def test_tick_uses_feature_git_independent_of_path(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with mock.patch.object(sys, "path", [str(root), *sys.path]):
+            import feature_git
+
+            # Force distinct choices without consulting PATH or Apple's cache.
+            selected_git = "/Library/Developer/CommandLineTools/usr/bin/git"
+            for path_git in ("/usr/bin/git", "/custom/bin/git", None):
+                with (
+                    self.subTest(path_git=path_git),
+                    mock.patch.object(feature_git, "GIT", selected_git),
+                    mock.patch("shutil.which", return_value=path_git),
+                ):
+                    # Execute afresh even if another test already imported tick.
+                    tick = runpy.run_path(str(root / "tests/test_codex_tick.py"))
+                    self.assertEqual(tick["REAL_GIT"], feature_git.GIT)
 
 
 @unittest.skipIf(
@@ -53,7 +74,7 @@ class FixtureGitNativeTests(unittest.TestCase):
                 "'test_review_delivery_runner',\n]\n"
                 "suite = unittest.defaultTestLoader.loadTestsFromNames(names)\n"
                 "result = unittest.TextTestRunner(verbosity=2).run(suite)\n"
-                "sys.exit(0 if result.wasSuccessful() else 1)\n"
+                "sys.exit(0 if result.wasSuccessful() and result.testsRun >= 14 else 1)\n"
             )
             result = subprocess.run(
                 [
@@ -75,7 +96,6 @@ class FixtureGitNativeTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertNotIn("xcrun_db", result.stdout + result.stderr)
-            self.assertIn("Ran 14 tests", result.stderr)
 
 
 if __name__ == "__main__":
