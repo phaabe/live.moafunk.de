@@ -85,6 +85,8 @@ LIMIT_ENV = "EPIC_REBASE_ATTEMPT_LIMIT"
 DEFAULT_LIMIT = 2
 SUITES_ENV = "EPIC_REBASE_SUITES"
 SUITE_TIMEOUT = 1800
+# run_tests.SLOTS_DIR_ENV and SLOTS_ENV (docs/implementation/shared-test-slots.md)
+SLOT_SETTINGS = ("EPIC_TEST_SLOTS_DIR", "EPIC_TEST_SLOTS")
 # Keep in sync with the table in docs/implementation/epic-rules.md, section 8.
 SUITES: tuple[dict[str, Any], ...] = (
     {
@@ -275,8 +277,14 @@ def write_json(path: Path, data: Any) -> None:
 
 
 def suite_env() -> dict[str, str]:
-    """Tests never see runner settings or live state."""
-    return {k: v for k, v in os.environ.items() if not k.startswith("EPIC_")}
+    """Tests never see runner settings or live state. Only the shared test-slot
+    settings reach the suite's runner (run_tests.py), so a proof run shares the
+    machine-wide slots; isolated_env.py removes them from every test."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("EPIC_") or k in SLOT_SETTINGS
+    }
 
 
 def run_suite(top: Path, suite: dict[str, Any]) -> dict[str, Any]:

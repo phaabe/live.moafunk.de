@@ -1,9 +1,9 @@
 # Shared test slots
 
-Status: proposed contract for
-https://github.com/phaabe/live.moafunk.de/issues/664. The Codex binding is one
-part. Claude's shared test runner must also read capacity and fail on slot
-errors before activation. Do not enable this from the Codex patch alone.
+Status: contract for https://github.com/phaabe/live.moafunk.de/issues/664.
+Both code parts exist: the Codex binding
+(https://github.com/phaabe/live.moafunk.de/pull/669) and the shared test runner
+`scripts/epic/run_tests.py`. Nothing is active until the operator rollout below.
 
 ## Contract
 
@@ -39,12 +39,41 @@ Codex forwards `EPIC_TEST_SLOTS_DIR` and `EPIC_TEST_SLOTS` from the validated
 binding into tool commands. Inherited values, when present, must match exactly.
 Different per-tick `TMPDIR` values do not change the shared directory.
 
-Claude's shared runner reads capacity before starting parts. An explicit
-`EPIC_TEST_SLOTS`, if present, must match capacity. Invalid configuration or
-failed lock access stops a required top-level suite. Nested disposable runners
-keep their existing no-slot behavior. Manual callers without an explicit
-shared directory retain the local default, so they are not covered by this
-machine-wide contract until they use the shared settings.
+The shared runner (`scripts/epic/run_tests.py`) checks the slot settings
+before the listing and before any part starts:
+
+- With `EPIC_TEST_SLOTS_DIR` it applies the checks above: canonical absolute
+  path, a directory of this user with mode 0700, no group or world writable
+  parent (sticky ones excepted), `capacity.json` exactly as above (a private,
+  regular single-link file), and only `slot-N.lock` entries with N below the
+  capacity. The capacity is the slot count. A set `EPIC_TEST_SLOTS` must be
+  exactly that number.
+- It creates missing lock files with mode 0600 and opens lock files without
+  following symlinks. It refuses hardlinks and a lock file replaced during the
+  run. It never truncates, replaces or deletes a file there.
+- Any slot error fails the run with exit 1: invalid settings, or a folder or
+  lock file that cannot be created, opened or locked. No part runs without a
+  slot and no part starts after the error. A held slot is no error; the part
+  waits.
+- Nested disposable runners (started by a test) keep their no-slot behavior.
+- Without `EPIC_TEST_SLOTS_DIR` the runner keeps its local default,
+  `<user temp dir>/epic-test-slots` with `EPIC_TEST_SLOTS` slots (default: CPU
+  count). Slot errors fail the run there too. Such callers are not part of the
+  machine-wide limit until they use the shared settings.
+- `python3 scripts/epic/run_tests.py --check-slots` prints the folder and count
+  a run would use, or the error, and runs no test.
+- The Claude runner passes its environment to the model's commands unchanged.
+  Rebase proofs (`rebase_policy.py`) drop runner settings but pass these two
+  variables to the suite's runner; `isolated_env.py` removes them from every
+  test.
+
+Merge order: once the shared-runner part is merged, a slot error fails every
+top-level suite instead of running it without slots. The protected Codex
+runner reported its local default folder as unwritable
+(https://github.com/phaabe/live.moafunk.de/issues/503#issuecomment-6019510017),
+so its suites will likely fail until its binding and grant are active. Merge
+that part during the drained rollout below, and activate before the loop
+resumes.
 
 This coordinates cooperating test processes. It does not prevent an operator
 from replacing a lock file or an arbitrary process from ignoring the protocol.
@@ -70,7 +99,8 @@ chmod 600 "$slot_dir/capacity.json"
 
 Add the binding and exact config grant described above. Re-seal the reviewed
 foundation files and config using the protected-home setup procedure. Set
-these values in both runner environments and the manual suite environment:
+these values in both runner environments (the `EnvironmentVariables` of both
+launchd jobs), the nightly test job and the manual suite environment:
 
 ```bash
 export EPIC_TEST_SLOTS_DIR="$HOME/.local/state/epic-loop/test-slots"
@@ -90,7 +120,10 @@ python3 -I .codex/protected_home.py check --mode legacy \
 Run this from the deployed Codex runner checkout. A failure blocks restart.
 Then run the disposable native slot controls and simultaneous host/sandbox
 proof. Confirm the shared runner reports the same directory and capacity in
-both environments. Only then reload both jobs and resume the loop.
+both environments: `python3 scripts/epic/run_tests.py --check-slots` on the
+host and in a native sandbox command must both print
+`run_tests: 4 slots (capacity.json) in <directory>`. Only then reload both jobs
+and resume the loop.
 
 ## Rollback
 

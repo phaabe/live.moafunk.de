@@ -21,14 +21,30 @@ the run. The exit code is 0 only when every part passed and every id ran once;
 a part that fails to start, load or report also fails the run.
 
 Machine-wide slots: every part takes a free slot before it starts and frees
-it when it ends, so all runs on this machine together (both runners, manual
-sessions, the Codex sandbox) run at most EPIC_TEST_SLOTS parts (default: CPU
-count). A slot is a `flock` on `slot-<i>.lock` in EPIC_TEST_SLOTS_DIR, default
-`<user temp dir>/epic-test-slots`; the OS frees it when a runner dies. A
-part's timeout starts once it holds its slot. A run started by a test (the
-tests of this runner) takes no slot, so it never waits for its own parent: it
-sees ISOLATED_EPIC_TESTS, which isolated_env.py sets for every test process.
-A slot folder that cannot be used turns slots off with one printed line.
+it when it ends, so all runs that share a slot folder (both runners, manual
+sessions, the Codex sandbox) run at most that many parts together. A slot is
+a `flock` on `slot-<i>.lock`; the OS frees it when a runner dies. A part's
+timeout starts once it holds its slot.
+
+- Shared folder, EPIC_TEST_SLOTS_DIR (docs/implementation/shared-test-slots.md):
+  the operator creates it (canonical absolute path, owned by this user, mode
+  0700, no group or world writable parent) with capacity.json, exactly
+  `{"schema":1,"slots":N}`. N is the slot count. A set EPIC_TEST_SLOTS other
+  than exactly N is refused. Only slot-<i>.lock files (i < N) may sit beside it.
+- Local default, without EPIC_TEST_SLOTS_DIR: `<user temp dir>/epic-test-slots`
+  with EPIC_TEST_SLOTS slots (a positive integer; default: CPU count).
+
+A missing lock file is created with mode 0600. Lock files are opened without
+following symlinks, must be regular single-link files of this user, and are
+never truncated, replaced or deleted. Any slot error (bad settings, a folder
+or lock file that cannot be created, opened or locked, a lock file replaced
+during the run) fails the run: no part ever runs without its slot, and no
+part starts after the error. A held slot is no error: the part waits.
+
+A run started by a test (the tests of this runner) takes no slot, so it never
+waits for its own parent: it sees ISOLATED_EPIC_TESTS, which isolated_env.py
+sets for every test process. `--check-slots` checks the slot settings, prints
+the folder and count, and runs no test.
 
 Timing: a part's slot wait is measured apart from its run time; both show in
 the progress line and the summary. A failed part (a timeout, a red test, no
@@ -49,7 +65,9 @@ import fcntl
 import json
 import math
 import os
+import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -61,7 +79,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 ISOLATED_ENV = Path(__file__).resolve().parent / "isolated_env.py"
 SPLIT_ABOVE = 20
@@ -73,6 +91,10 @@ SLOWEST = 5
 OUTPUT_TAIL = 20000
 SLOTS_ENV = "EPIC_TEST_SLOTS"
 SLOTS_DIR_ENV = "EPIC_TEST_SLOTS_DIR"
+CAPACITY_FILE = "capacity.json"
+CAPACITY_BYTES = 4096  # a larger capacity.json is refused
+COUNT = re.compile(r"[1-9][0-9]*")
+LOCK_NAME = re.compile(r"slot-(0|[1-9][0-9]*)\.lock")
 # isolated_env.MARKER: set in every test process (EPIC_* names are removed there).
 NESTED_ENV = "ISOLATED_EPIC_TESTS"
 SLOT_POLL = 0.1
@@ -253,78 +275,232 @@ def user_temp_dir() -> str:
     return found or os.environ.get("TMPDIR") or tempfile.gettempdir()
 
 
+class SlotError(Exception):
+    """The slot settings or a slot file cannot be used: the run fails."""
+
+
+def owned(path: Path, info: os.stat_result, what: str, private: bool) -> None:
+    """Owned by this user; with `private` also not group or world writable."""
+    if info.st_uid != os.getuid():
+        raise SlotError(f"{what} is not owned by this user: {path}")
+    if private and info.st_mode & 0o022:
+        raise SlotError(f"{what} is group or world writable: {path}")
+
+
+def shared_folder(value: str) -> Path:
+    """The operator's slot folder, checked like the Codex protected binding."""
+    if not os.path.isabs(value):
+        raise SlotError(f"{SLOTS_DIR_ENV} must be an absolute path: {value!r}")
+    try:
+        folder = Path(value).resolve(strict=True)
+        info = os.lstat(folder)
+    except (OSError, RuntimeError) as error:
+        raise SlotError(f"{SLOTS_DIR_ENV} cannot be used: {error}") from error
+    if str(folder) != value:
+        raise SlotError(f"{SLOTS_DIR_ENV} must be canonical, without aliases: {value}")
+    if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
+        raise SlotError(f"{SLOTS_DIR_ENV} must be a directory with mode 0700: {value}")
+    owned(folder, info, "slot folder", private=True)
+    for parent in folder.parents:
+        try:
+            mode = os.stat(parent).st_mode
+        except OSError as error:
+            raise SlotError(f"cannot check {parent}: {error}") from error
+        if mode & 0o022 and not mode & stat.S_ISVTX:
+            raise SlotError(
+                f"slot folder has a group or world writable parent: {parent}"
+            )
+    return folder
+
+
+def read_capacity(folder: Path) -> int:
+    """The slot count from capacity.json: exactly {"schema":1,"slots":N}."""
+    path = folder / CAPACITY_FILE
+    try:
+        # O_NONBLOCK: a FIFO in its place cannot block the open.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as error:
+        raise SlotError(f"cannot open {path}: {error}") from error
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise SlotError(f"{path} must be a regular file without aliases")
+        owned(path, info, "capacity file", private=True)
+        data = os.read(fd, CAPACITY_BYTES + 1)
+    except OSError as error:
+        raise SlotError(f"cannot read {path}: {error}") from error
+    finally:
+        os.close(fd)
+    try:
+        value = json.loads(data) if len(data) <= CAPACITY_BYTES else None
+    except ValueError:
+        value = None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "slots"}
+        or type(value["schema"]) is not int
+        or value["schema"] != 1
+        or type(value["slots"]) is not int
+        or value["slots"] < 1
+    ):
+        raise SlotError(
+            f'{path} must be exactly {{"schema":1,"slots":N}} with a positive integer N'
+        )
+    return value["slots"]
+
+
+def only_slot_files(folder: Path, count: int) -> None:
+    """Beside capacity.json only slot-<i>.lock with i < count."""
+    try:
+        names = os.listdir(folder)
+    except OSError as error:
+        raise SlotError(f"cannot list {folder}: {error}") from error
+    for name in sorted(names):
+        match = LOCK_NAME.fullmatch(name)
+        if name != CAPACITY_FILE and (match is None or int(match[1]) >= count):
+            raise SlotError(f"unexpected entry in {folder}: {name}")
+
+
 class Slots:
     """Machine-wide part slots, shared by every run (see the module doc)."""
 
-    def __init__(self, folder: Path | None, count: int, off: str | None = None) -> None:
-        self.folder = folder  # None: no slots (nested run, or turned off)
+    def __init__(
+        self,
+        folder: Path | None,
+        count: int,
+        off: str | None = None,
+        shared: bool = False,
+    ) -> None:
+        self.folder = folder  # None: no slots (a nested run)
         self.count = count
-        self.off = off  # why there are no slots: "nested" or "unusable"
+        self.off = off  # why there are no slots: "nested"
+        self.shared = shared  # EPIC_TEST_SLOTS_DIR: capacity.json sets the count
+        self.error: SlotError | None = None  # the first slot error of the run
+        self.files: dict[int, tuple[int, int]] = {}  # slot: (st_dev, st_ino)
         self.lock = threading.Lock()
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Slots:
+        """The slots of this run; SlotError when they cannot be used."""
         values = os.environ if env is None else env
         if values.get(NESTED_ENV):
             return cls(None, 0, "nested")
-        count = max(int(values.get(SLOTS_ENV) or os.cpu_count() or 1), 1)
-        folder = Path(
-            values.get(SLOTS_DIR_ENV) or Path(user_temp_dir()) / "epic-test-slots"
-        )
-        try:
-            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-            for i in range(count):  # an existing folder may deny new files
-                open(folder / f"slot-{i}.lock", "a").close()
-        except OSError as error:
-            print(f"run_tests: machine-wide slots off: {error}", flush=True)
-            return cls(None, 0, "unusable")
-        return cls(folder, count)
-
-    def turn_off(self, error: OSError) -> None:
-        """Run the rest without slots, with one printed line."""
-        with self.lock:
-            if self.folder is None:
-                return
-            self.folder = None
-            self.off = "unusable"
-        print(f"run_tests: machine-wide slots off: {error}", flush=True)
-
-    def take(self, folder: Path) -> IO[str] | None:
-        """A free slot's locked file, or None when every slot is held."""
-        for i in range(self.count):
-            held = open(folder / f"slot-{i}.lock", "a")
+        given = values.get(SLOTS_ENV)
+        if SLOTS_DIR_ENV in values:
+            folder = shared_folder(values[SLOTS_DIR_ENV])
+            count = read_capacity(folder)
+            if given is not None and given != str(count):
+                raise SlotError(
+                    f"{SLOTS_ENV}={given!r} differs from the capacity {count} "
+                    f"in {folder / CAPACITY_FILE}"
+                )
+            only_slot_files(folder, count)
+            slots = cls(folder, count, shared=True)
+        else:
+            if given is not None and not COUNT.fullmatch(given):
+                raise SlotError(f"{SLOTS_ENV} must be a positive integer: {given!r}")
+            count = int(given) if given is not None else os.cpu_count() or 1
+            folder = Path(user_temp_dir()) / "epic-test-slots"
             try:
-                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+                info = os.lstat(folder)
+            except OSError as error:
+                raise SlotError(f"cannot create {folder}: {error}") from error
+            if not stat.S_ISDIR(info.st_mode):
+                raise SlotError(f"slot folder must be a directory: {folder}")
+            owned(folder, info, "slot folder", private=False)
+            slots = cls(folder, count)
+        for i in range(count):  # an existing folder may deny new files
+            os.close(slots.open_slot(i, create=True))
+        return slots
+
+    def open_slot(self, i: int, create: bool = False) -> int:
+        """A new descriptor of slot-<i>.lock. Never follows a symlink, never
+        truncates; refuses aliases and a file replaced since the first open."""
+        assert self.folder is not None
+        path = self.folder / f"slot-{i}.lock"
+        flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+        fd = None
+        try:
+            if create:
+                try:
+                    fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+                    os.fchmod(fd, 0o600)  # whatever the umask
+                except FileExistsError:
+                    pass
+            if fd is None:
+                fd = os.open(path, flags)
+        except OSError as error:
+            if fd is not None:
+                os.close(fd)
+            raise SlotError(f"cannot open {path}: {error}") from error
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise SlotError(f"{path} must be a regular file without aliases")
+            owned(path, info, "slot lock file", private=self.shared)
+            identity = (info.st_dev, info.st_ino)
+            if self.files.setdefault(i, identity) != identity:
+                raise SlotError(f"{path} was replaced during the run")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def fail(self, error: SlotError) -> None:
+        """Keep the first slot error; no part starts after it."""
+        with self.lock:
+            if self.error is not None:
+                return
+            self.error = error
+        print(f"run_tests: test slots failed, no new part starts: {error}", flush=True)
+
+    def take(self) -> int | None:
+        """A free slot's locked descriptor, or None when every slot is held."""
+        for i in range(self.count):
+            fd = self.open_slot(i)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                held.close()
+                os.close(fd)
                 continue
-            except OSError:
-                held.close()
-                raise
-            return held
+            except OSError as error:
+                os.close(fd)
+                raise SlotError(f"cannot lock slot-{i}.lock: {error}") from error
+            return fd
         return None
 
     @contextmanager
     def slot(self, stopped: Callable[[], bool]) -> Iterator[bool]:
-        """Hold one slot; False when the run stopped while this part waited.
-        A slot file that cannot be opened or locked turns slots off."""
+        """Hold one slot; False when the run stopped or the slots failed while
+        this part waited. A slot error raises SlotError, so the part never
+        starts without its slot."""
         held = None
-        while held is None and (folder := self.folder) is not None:
-            if stopped():
+        while held is None and self.folder is not None:
+            if stopped() or self.error is not None:
                 yield False
                 return
             try:
-                held = self.take(folder)
-            except OSError as error:
-                self.turn_off(error)
-                break
+                held = self.take()
+            except SlotError as error:
+                self.fail(error)
+                raise
             if held is None:
                 time.sleep(SLOT_POLL)
+        if held is not None:
+            # fail() takes the lock too: a part is admitted before the error
+            # or not at all, also when the error came while take() ran.
+            with self.lock:
+                refused = stopped() or self.error is not None
+            if refused:
+                os.close(held)
+                yield False
+                return
         try:
             yield True
         finally:
             if held is not None:
-                held.close()  # frees the lock
+                os.close(held)  # frees the lock
 
 
 def run_part(
@@ -352,8 +528,12 @@ def run_part(
             start = time.monotonic()
             if got:
                 code, output = pool.run(command, timeout)
+            elif slots is not None and slots.error is not None:
+                code, output = None, "not started: the test slots failed\n"
             else:
                 code, output = None, "not started: the run was stopped\n"
+    except SlotError as error:
+        code, output = None, f"not started: {error}\n"
     except OSError as error:
         code, output = None, f"part failed to start: {error}\n"
     seconds = time.monotonic() - start
@@ -555,6 +735,17 @@ def _run(
     pool: Pool,
     start: float,
 ) -> int:
+    # Before anything runs: a run never goes on without its slots.
+    try:
+        slots = Slots.from_env()
+    except SlotError as error:
+        print(f"run_tests: test slots unusable, no test ran: {error}", flush=True)
+        return 1
+    if slots.folder is not None:
+        print(
+            f"run_tests: at most {slots.count} parts machine-wide ({slots.folder})",
+            flush=True,
+        )
     with tempfile.TemporaryDirectory(prefix="epic-run-tests-") as name:
         folder = Path(name)
         try:
@@ -564,12 +755,6 @@ def _run(
             return 1
         listed = [i for entry in listing["modules"].values() for i in entry["ids"]]
         parts = planner(listing)
-        slots = Slots.from_env()
-        if slots.folder is not None:
-            print(
-                f"run_tests: at most {slots.count} parts machine-wide ({slots.folder})",
-                flush=True,
-            )
         outcomes: list[Outcome] = []
         with ThreadPoolExecutor(max_workers=jobs) as executor:
             try:
@@ -583,7 +768,9 @@ def _run(
                     out = future.result()
                     outcomes.append(out)
                     state = "ok" if out.exit == 0 else f"exit {out.exit}"
-                    waited = f" (slot wait {out.waited:.1f} s)" if out.waited >= 0.1 else ""
+                    waited = (
+                        f" (slot wait {out.waited:.1f} s)" if out.waited >= 0.1 else ""
+                    )
                     print(
                         f"[{len(outcomes)}/{len(parts)}] {state:>8} "
                         f"{out.seconds:6.1f} s  {out.part.label}{waited}",
@@ -594,6 +781,8 @@ def _run(
                 # runs or waits for a slot must see the flag, or the join hangs.
                 pool.stop()
         problems = check(outcomes, listed)
+        if slots.error is not None:
+            problems.insert(0, f"test slots failed: {slots.error}")
         ok = summarize(
             outcomes,
             problems,
@@ -606,9 +795,31 @@ def _run(
     return 0 if ok else 1
 
 
+def check_slots(env: dict[str, str] | None = None) -> int:
+    """`--check-slots`: the slot settings this run would use; no test runs."""
+    try:
+        slots = Slots.from_env(env)
+    except SlotError as error:
+        print(f"run_tests: test slots unusable: {error}")
+        return 1
+    if slots.folder is None:
+        print("run_tests: no slots (a run inside a test)")
+    else:
+        source = CAPACITY_FILE if slots.shared else "local default"
+        print(f"run_tests: {slots.count} slots ({source}) in {slots.folder}")
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("top", help="test directory, for example scripts/epic")
+    parser.add_argument(
+        "top", nargs="?", help="test directory, for example scripts/epic"
+    )
+    parser.add_argument(
+        "--check-slots",
+        action="store_true",
+        help="check the slot settings, print the folder and count, run no test",
+    )
     parser.add_argument(
         "-j",
         "--jobs",
@@ -625,13 +836,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("-j must be at least 1")
-    if not Path(args.top).is_dir():
+    if args.check_slots:
+        if args.top is not None:
+            parser.error("--check-slots takes no test directory")
+    elif args.top is None or not Path(args.top).is_dir():
         parser.error(f"no test directory: {args.top}")
     return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.check_slots:
+        return check_slots()
     return run(args.top, args.jobs, args.part_timeout)
 
 

@@ -6,6 +6,8 @@ launchd starts the stable launcher, which runs the pinned install's
 scripts/epic/claude-tick.sh. EPIC_TRUSTED_ROOT is the runner checkout (git
 only; no code runs from it). Install the launcher and the first pin first
 (promotion, https://github.com/phaabe/live.moafunk.de/issues/587).
+Shared test slots: add EPIC_TEST_SLOTS_DIR and EPIC_TEST_SLOTS only during
+their rollout (docs/implementation/shared-test-slots.md).
 -->
 <plist version="1.0">
 <dict>
