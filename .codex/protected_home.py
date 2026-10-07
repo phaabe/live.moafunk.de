@@ -47,7 +47,9 @@ SOURCE_PROFILE = "epic-source-edit"
 SOURCE_PATHS = (".codex/epic_lock.py", ".codex/tests", ".codex/README.md")
 
 
-def source_permissions(writable: list[Path], network: bool) -> dict[str, Any]:
+def source_permissions(
+    writable: list[Path], network: bool, slot_directory: Path | None = None
+) -> dict[str, Any]:
     """Exact opt-in policy; active code and the dedicated home stay outside roots."""
     return {
         SOURCE_PROFILE: {
@@ -56,6 +58,7 @@ def source_permissions(writable: list[Path], network: bool) -> dict[str, Any]:
                 ":slash_tmp": "read",
                 ":tmpdir": "read",
                 **{str(path): "write" for path in writable[:2]},
+                **({str(slot_directory): "write"} if slot_directory else {}),
                 ":workspace_roots": {
                     ".codex": "read",
                     **{path: "write" for path in SOURCE_PATHS},
@@ -160,6 +163,63 @@ def owner_only(path: Path) -> None:
         raise ProtectedHomeError(
             f"protected path is not owned by this operator: {path}"
         )
+
+
+def checked_test_slots(
+    data: dict[str, Any], values: Mapping[str, str], forbidden: list[Path]
+) -> dict[str, Any] | None:
+    """Read the optional shared capacity without creating or replacing locks."""
+    names = ("EPIC_TEST_SLOTS_DIR", "EPIC_TEST_SLOTS")
+    if "test_slots" not in data:
+        if any(name in values for name in names):
+            raise ProtectedHomeError("test slot environment needs a protected binding")
+        return None
+    slots = data["test_slots"]
+    if not isinstance(slots, dict) or set(slots) != {"directory", "count"}:
+        raise ProtectedHomeError("test_slots must name directory and count")
+    count = slots["count"]
+    if type(count) is not int or count < 1:
+        raise ProtectedHomeError("test slot count must be a positive integer")
+    directory = canonical(slots["directory"], "test slot directory")
+    if not directory.is_dir() or stat.S_IMODE(directory.stat().st_mode) != 0o700:
+        raise ProtectedHomeError(
+            "test slot directory must be a directory with mode 0700"
+        )
+    owner_only(directory)
+    if any(within(directory, path) or within(path, directory) for path in forbidden):
+        raise ProtectedHomeError(
+            "test slot directory overlaps protected or allocated paths"
+        )
+    capacity = canonical(str(directory / "capacity.json"), "test slot capacity")
+    owner_only(capacity)
+    if not capacity.is_file() or capacity.stat().st_nlink != 1:
+        raise ProtectedHomeError(
+            "test slot capacity must be a regular file without aliases"
+        )
+    declared = object_file(capacity)
+    if (
+        set(declared) != {"schema", "slots"}
+        or type(declared["schema"]) is not int
+        or declared["schema"] != 1
+        or type(declared["slots"]) is not int
+        or declared["slots"] != count
+    ):
+        raise ProtectedHomeError("test slot capacity differs from protected binding")
+    for path in directory.iterdir():
+        if path.name == "capacity.json":
+            continue
+        match = re.fullmatch(r"slot-(0|[1-9][0-9]*)\.lock", path.name)
+        if match is None or int(match[1]) >= count:
+            raise ProtectedHomeError("unexpected entry in test slot directory")
+        if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+            raise ProtectedHomeError(
+                "test slot lock must be a regular file without aliases"
+            )
+        owner_only(path)
+    for name, expected in zip(names, (str(directory), str(count))):
+        if name in values and values[name] != expected:
+            raise ProtectedHomeError(f"{name} differs from protected binding")
+    return {"directory": str(directory), "count": count}
 
 
 def git(repo: Path, *args: str, executable: str = "git") -> str:
@@ -365,6 +425,13 @@ def validate(
             for value in data.get("worktree_parents", [])
         ),
     ]
+    test_slots = checked_test_slots(
+        data, values, [binding.parent, home, code, repo, *writable, *allocation_parents]
+    )
+    slot_directory = Path(test_slots["directory"]) if test_slots else None
+    if slot_directory is not None:
+        writable.append(slot_directory)
+    static_roots = list(writable)
     for root in writable:
         if any(
             within(parent, root) or within(root, parent)
@@ -520,7 +587,8 @@ def validate(
     if "permissions" in config or "default_permissions" in config:
         if (
             permission_profile != SOURCE_PROFILE
-            or config.get("permissions") != source_permissions(writable, network_access)
+            or config.get("permissions")
+            != source_permissions(writable, network_access, slot_directory)
             or set(config) & {"sandbox_mode", "sandbox_workspace_write"}
         ):
             raise ProtectedHomeError(
@@ -528,7 +596,7 @@ def validate(
             )
         # Native permissions resolve paths at startup. Never let a source
         # alias turn an exact source grant into a write to protected state.
-        for root in writable[2:]:
+        for root in writable[len(static_roots) :]:
             for relative in SOURCE_PATHS:
                 source = root / relative
                 if source.resolve() != source:
@@ -547,7 +615,7 @@ def validate(
                 "protected config must use workspace-write and approval never"
             )
         sandbox = config.get("sandbox_workspace_write", {})
-        if sandbox.get("writable_roots") != [str(p) for p in writable[:2]]:
+        if sandbox.get("writable_roots") != [str(p) for p in static_roots]:
             raise ProtectedHomeError(
                 "config writable roots differ from protected allowlist"
             )
@@ -653,6 +721,7 @@ def validate(
         "codex_home": str(home),
         "writable_roots": [str(path) for path in writable],
         "permission_profile": permission_profile,
+        "test_slots": test_slots,
         "temporary_parent": str(temporary_parent),
         "review_parent": str(review_parent),
         "python3": manifest.get("executables", {})
