@@ -1079,6 +1079,30 @@ class ReconcileTest(unittest.TestCase):
         # A second pass finds the change already used.
         self.assertEqual(th.reconcile(got, changes), got)
 
+    def test_executor_change_and_reopen_keep_the_matched_done_executor(self) -> None:
+        """Done by Claude, the board Executor becomes Codex, reopened within
+        10 min: the Done keeps Claude from its own snapshot entry."""
+        minute = 60
+        done = snap("Done", "In review", NOW, NOW + 2 * minute)
+        reopened = snap(
+            "In progress", "Done", NOW + 2 * minute, NOW + 8 * minute, "Codex"
+        )
+        # Both labels lag their snapshot; the reopen is inside the Done's lag.
+        changes = th.label_changes(
+            set_events(1, "in-review", "done", NOW + 3 * minute)
+            + set_events(3, "done", "in-progress", NOW + 6 * minute)
+        )
+        got = th.reconcile([done, reopened], changes)
+        self.assertEqual(
+            [(e.to, e.seen_at, e.executor, e.event) for e in got],
+            [
+                ("Done", NOW + 3 * minute, "Claude", 1),
+                ("In progress", NOW + 6 * minute, "Codex", 3),
+            ],
+        )
+        self.assertEqual(got[0].episode_id, NOW + 2 * minute)
+        self.assertEqual([th.Entry.parse(e.row()) for e in got], got)
+
 
 class MergeLabelsTest(Base):
     """The ledger takes the recorded change times (History.merge_labels)."""
@@ -1102,6 +1126,49 @@ class MergeLabelsTest(Base):
         self.assertEqual(replayed.entries, self.history.entries)
         self.assertFalse(replayed.merge_labels(events))
         self.assertEqual(self.lines(th.LEDGER), rows)
+
+    def test_stack_off_during_three_changes_measures_from_label_times(self) -> None:
+        """The collector is off for 2 h while three set calls move the ticket
+        Ready -> Done. The label times give the measurements; the history
+        chart still shows the gap."""
+        t0 = NOW - 3 * H
+        self.see(t0, {1: "Backlog"})
+        self.see(t0 + 120, {1: "Ready"})
+        self.see(t0 + 120 + 2 * H, {1: "Done"})
+        events = {
+            1: [
+                *set_events(10, "ready", "in-progress", t0 + 1200),
+                *set_events(20, "in-progress", "in-review", t0 + 3600),
+                *set_events(30, "in-review", "done", t0 + 6000),
+            ]
+        }
+        self.assertTrue(self.history.merge_labels(events))
+        for history in (self.history, self.fresh()):
+            [episode] = history.summary(NOW).episodes
+            self.assertEqual(episode.done.seen_at, t0 + 6000)
+            self.assertEqual(episode.cycle, 6000 - 1200)
+            self.assertEqual(episode.lead, 6000 - 120)
+            self.assertEqual(
+                episode.times,
+                {"Ready": 1080, "In progress": 2400, "In review": 2400},
+            )
+        chart = th.intervals(self.history.entries[1], self.history.gaps)
+        self.assertIn("gap", [s.status for s in chart])
+
+    def test_a_hand_move_over_a_gap_stays_unmeasured_next_to_label_changes(
+        self,
+    ) -> None:
+        """In review set by hand in the gap: no label explains it."""
+        t0 = NOW - 3 * H
+        self.see(t0, {1: "Backlog"})
+        self.see(t0 + 120, {1: "Ready"})
+        self.see(t0 + 120 + 2 * H, {1: "In review"})
+        self.see(t0 + 240 + 2 * H, {1: "Done"})
+        events = {1: set_events(10, "ready", "in-progress", t0 + 1200)}
+        self.assertFalse(self.history.merge_labels(events))
+        [episode] = self.history.summary(NOW).episodes
+        self.assertIsNone(episode.cycle)
+        self.assertIsNone(episode.lead)
 
     def test_sync_events_and_unknown_issues_change_nothing(self) -> None:
         self.see(NOW - 600, {1: "Ready"})

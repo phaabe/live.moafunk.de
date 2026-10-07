@@ -397,25 +397,28 @@ def measure(entries: list[Entry], gaps: list[Gap]) -> Episode | None:
     if done.to != "Done" or not done.clean:
         return None
 
-    def span(first: Entry | None) -> float | None:
-        if first is None or not first.clean:
-            return None
-        if overlaps(gaps, first.seen_at, done.seen_at):
-            return None
-        return float(done.seen_at - first.seen_at)
+    # Per interval: no gap may hide a change in it. A label change that ends
+    # the interval names the status it left, so a gap there hides nothing
+    # the helper wrote (a move by hand stays invisible, as between snapshots).
+    exact = [
+        (after.event is not None and after.frm == entry.to)
+        or not overlaps(gaps, entry.seen_at, after.seen_at)
+        for entry, after in zip(entries, entries[1:], strict=False)
+    ]
 
-    starts = [e for e in entries[:-1] if e.to == "In progress"]
-    readies = [e for e in entries[:-1] if e.to == "Ready"]
+    def span(first: int | None) -> float | None:
+        if first is None or not entries[first].clean or not all(exact[first:]):
+            return None
+        return float(done.seen_at - entries[first].seen_at)
+
+    starts = [i for i, e in enumerate(entries[:-1]) if e.to == "In progress"]
+    readies = [i for i, e in enumerate(entries[:-1]) if e.to == "Ready"]
     times: dict[str, float] = {}
     bad: set[str] = set()
-    for entry, after in zip(entries, entries[1:], strict=False):
+    for i, (entry, after) in enumerate(zip(entries, entries[1:], strict=False)):
         if entry.to not in TIMED:
             continue
-        if (
-            not entry.clean
-            or not after.clean
-            or overlaps(gaps, entry.seen_at, after.seen_at)
-        ):
+        if not entry.clean or not after.clean or not exact[i]:
             bad.add(entry.to)
             continue
         times[entry.to] = times.get(entry.to, 0.0) + after.seen_at - entry.seen_at
