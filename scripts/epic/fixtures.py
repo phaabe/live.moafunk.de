@@ -566,6 +566,13 @@ def ticket_state(now: float) -> monitor.Json:
         extra(307, "Claude", "In review"),
         extra(308, "Claude", "Ready"),
     ]
+    # Status labels match the board, except 307: the label still names its
+    # old status (the "Label out of sync" check).
+    for item in state["items"]:
+        status = "In progress" if item["content"]["number"] == 307 else item["status"]
+        item["labels"] = [
+            ticket_history.LABEL_PREFIX + status.lower().replace(" ", "-")
+        ]
     return state
 
 
@@ -648,7 +655,8 @@ def done_episodes(now: float) -> list[ticket_history.Episode]:
 
 def ticket_metrics(now: float) -> str:
     """tickets.prom: 308 needs an undeclared ticket, 305 has no body review,
-    303 is Done on the board with its issue open. With the history summary."""
+    303 is Done on the board with its issue open, 307's status label is out
+    of sync. With the history summary."""
     state = monitor.epic_view(ticket_state(now))
     request = tickets.wanted(state, now)
     deps = {number: [] for number in request["ready"]}

@@ -48,7 +48,7 @@
         "name": "check",
         "label": "Check",
         "type": "custom",
-        "query": "All : all, Ready · dep. not declared : ready_undeclared, Ready · may be claimed : ready_claimable, In progress > 1 day : in_progress_long, In review > 1 day : in_review_long, Refinement · not reviewed : refinement_unreviewed, Board Done · issue open : done_open",
+        "query": "All : all, Ready · dep. not declared : ready_undeclared, Ready · may be claimed : ready_claimable, In progress > 1d : in_progress_long, In review > 1d : in_review_long, Refinement · not reviewed : refinement_unreviewed, Done · issue open : done_open, Label out of sync : label_out_of_sync",
         "current": {
           "text": "All",
           "value": "all"
@@ -335,7 +335,7 @@
     },
     {
       "type": "stat",
-      "title": "In progress > 1 day",
+      "title": "In progress > 1d",
       "description": "In progress for more than 24 h (since the collector saw it enter; at least that long for tickets it found there). Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
@@ -454,13 +454,13 @@
       "gridPos": {
         "x": 8,
         "y": 0,
-        "w": 4,
+        "w": 3,
         "h": 3
       }
     },
     {
       "type": "stat",
-      "title": "In review > 1 day",
+      "title": "In review > 1d",
       "description": "In review for more than 24 h (since the collector saw it enter; at least that long for tickets it found there). Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
@@ -577,9 +577,9 @@
       ],
       "id": 4,
       "gridPos": {
-        "x": 12,
+        "x": 11,
         "y": 0,
-        "w": 4,
+        "w": 3,
         "h": 3
       }
     },
@@ -702,7 +702,7 @@
       ],
       "id": 5,
       "gridPos": {
-        "x": 16,
+        "x": 14,
         "y": 0,
         "w": 4,
         "h": 3
@@ -710,7 +710,7 @@
     },
     {
       "type": "stat",
-      "title": "Board Done · issue open",
+      "title": "Done · issue open",
       "description": "Board Status is Done but the issue is still open. Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
@@ -827,9 +827,134 @@
       ],
       "id": 6,
       "gridPos": {
-        "x": 20,
+        "x": 18,
         "y": 0,
-        "w": 4,
+        "w": 3,
+        "h": 3
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Label out of sync",
+      "description": "The status:: label does not match the board Status: no label, two or more, another status, or status::sync left by an unfinished sync. Fix with set_status.py repair. A change shows here for one refresh until the helper's label write follows its board write. Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agent-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((epic_ticket_check_count{check=\"label_out_of_sync\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        },
+        {
+          "refId": "B",
+          "expr": "(label_replace((epic_ticket_check_severity{check=\"label_out_of_sync\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 3, \"color\", \"#C8342E\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"label_out_of_sync\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 2, \"color\", \"#E0A526\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"label_out_of_sync\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 1, \"color\", \"text\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"label_out_of_sync\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 0, \"color\", \"text\", \"\", \"\"))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "index": 0,
+                  "color": "#9A9BA6",
+                  "text": "unknown"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "text"
+              },
+              {
+                "value": 1,
+                "color": "#E0A526"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show these tickets",
+              "url": "/d/epic-tickets?var-check=label_out_of_sync&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "wideLayout": true
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "configFromData",
+          "options": {
+            "configRefId": "B",
+            "applyTo": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "mappings": [
+              {
+                "fieldName": "color",
+                "handlerKey": "color"
+              },
+              {
+                "fieldName": "epic_ticket_check_severity",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "Time",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "check",
+                "handlerKey": "__ignore"
+              }
+            ]
+          }
+        }
+      ],
+      "id": 7,
+      "gridPos": {
+        "x": 21,
+        "y": 0,
+        "w": 3,
         "h": 3
       }
     },
@@ -896,7 +1021,7 @@
       },
       "hideTimeOverride": true,
       "maxDataPoints": 2016,
-      "id": 7,
+      "id": 8,
       "gridPos": {
         "x": 0,
         "y": 3,
@@ -967,7 +1092,7 @@
       },
       "hideTimeOverride": true,
       "maxDataPoints": 2016,
-      "id": 8,
+      "id": 9,
       "gridPos": {
         "x": 4,
         "y": 3,
@@ -1038,7 +1163,7 @@
       },
       "hideTimeOverride": true,
       "maxDataPoints": 2016,
-      "id": 9,
+      "id": 10,
       "gridPos": {
         "x": 8,
         "y": 3,
@@ -1109,7 +1234,7 @@
       },
       "hideTimeOverride": true,
       "maxDataPoints": 2016,
-      "id": 10,
+      "id": 11,
       "gridPos": {
         "x": 12,
         "y": 3,
@@ -1180,7 +1305,7 @@
       },
       "hideTimeOverride": true,
       "maxDataPoints": 2016,
-      "id": 11,
+      "id": 12,
       "gridPos": {
         "x": 16,
         "y": 3,
@@ -1251,7 +1376,7 @@
       },
       "hideTimeOverride": true,
       "maxDataPoints": 2016,
-      "id": 12,
+      "id": 13,
       "gridPos": {
         "x": 20,
         "y": 3,
@@ -1394,7 +1519,7 @@
           "placement": "bottom"
         }
       },
-      "id": 13,
+      "id": 14,
       "gridPos": {
         "x": 0,
         "y": 7,
@@ -1914,7 +2039,7 @@
           "show": false
         }
       },
-      "id": 14,
+      "id": 15,
       "gridPos": {
         "x": 0,
         "y": 15,
@@ -2123,7 +2248,7 @@
           "showLegend": false
         }
       },
-      "id": 15,
+      "id": 16,
       "gridPos": {
         "x": 0,
         "y": 24,
@@ -2135,7 +2260,7 @@
       "type": "row",
       "title": "Board",
       "collapsed": true,
-      "id": 16,
+      "id": 17,
       "gridPos": {
         "x": 0,
         "y": 38,
@@ -2363,7 +2488,7 @@
               "show": false
             }
           },
-          "id": 17,
+          "id": 18,
           "gridPos": {
             "x": 0,
             "y": 39,
@@ -2591,7 +2716,7 @@
               "show": false
             }
           },
-          "id": 18,
+          "id": 19,
           "gridPos": {
             "x": 4,
             "y": 39,
@@ -2819,7 +2944,7 @@
               "show": false
             }
           },
-          "id": 19,
+          "id": 20,
           "gridPos": {
             "x": 8,
             "y": 39,
@@ -3047,7 +3172,7 @@
               "show": false
             }
           },
-          "id": 20,
+          "id": 21,
           "gridPos": {
             "x": 12,
             "y": 39,
@@ -3275,7 +3400,7 @@
               "show": false
             }
           },
-          "id": 21,
+          "id": 22,
           "gridPos": {
             "x": 16,
             "y": 39,
@@ -3504,7 +3629,7 @@
               "show": false
             }
           },
-          "id": 22,
+          "id": 23,
           "gridPos": {
             "x": 20,
             "y": 39,
@@ -3518,7 +3643,7 @@
       "type": "row",
       "title": "Flow times",
       "collapsed": true,
-      "id": 23,
+      "id": 24,
       "gridPos": {
         "x": 0,
         "y": 54,
@@ -3809,7 +3934,7 @@
               "show": false
             }
           },
-          "id": 24,
+          "id": 25,
           "gridPos": {
             "x": 0,
             "y": 55,
@@ -3966,7 +4091,7 @@
               "placement": "bottom"
             }
           },
-          "id": 25,
+          "id": 26,
           "gridPos": {
             "x": 12,
             "y": 55,
@@ -4038,7 +4163,7 @@
               "valueSize": 20
             }
           },
-          "id": 26,
+          "id": 27,
           "gridPos": {
             "x": 0,
             "y": 67,
@@ -4103,7 +4228,7 @@
               "valueSize": 20
             }
           },
-          "id": 27,
+          "id": 28,
           "gridPos": {
             "x": 0,
             "y": 73,
@@ -4244,7 +4369,7 @@
               "placement": "bottom"
             }
           },
-          "id": 28,
+          "id": 29,
           "gridPos": {
             "x": 6,
             "y": 67,
@@ -4530,7 +4655,7 @@
               "show": false
             }
           },
-          "id": 29,
+          "id": 30,
           "gridPos": {
             "x": 14,
             "y": 67,

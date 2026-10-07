@@ -235,6 +235,15 @@ class TicketTimesTest(unittest.TestCase):
         # The time checks read the history: the ledger is not unknown.
         self.assertIn('epic_ticket_check_count{check="in_review_long"} 1', text)
 
+    def test_label_out_of_sync_tile_has_a_member(self) -> None:
+        """307's status label names its old status: the seventh tile is amber."""
+        text = fixtures.ticket_metrics(1_790_000_000.0)
+        self.assertIn(
+            'epic_ticket_check_member{check="label_out_of_sync",issue="307"} 1', text
+        )
+        self.assertIn('epic_ticket_check_count{check="label_out_of_sync"} 1', text)
+        self.assertIn('epic_ticket_check_severity{check="label_out_of_sync"} 2', text)
+
     def test_flow_times_have_values_and_gaps(self) -> None:
         """Every flow panel has data; a skipped or unclean time has none."""
         now = 1_790_000_000.0

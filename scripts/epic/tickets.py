@@ -30,7 +30,7 @@ import re
 from typing import Any
 
 import next_action as epic
-from ticket_history import CODES, Summary
+from ticket_history import CODES, LABEL_MARKER, LABEL_STATUSES, Summary
 from ticks import Sink
 
 Json = dict[str, Any]
@@ -91,6 +91,7 @@ CHECKS = (
         ((72 * HOUR, 2),),
     ),
     Check("done_open", "Board Done · issue open", 2, "board"),
+    Check("label_out_of_sync", "Status label out of sync", 2, "board"),
 )
 
 # A blocked-by issue, in this repository or another one.
@@ -462,7 +463,33 @@ def ticket_note(
             checks.append("done_open")
         elif pr is not None and pr[1] == "merged":
             note = "Merged"
+    label = label_note(ticket)
+    if label:
+        checks.append("label_out_of_sync")
+        note = f"{note} · {label}" if note else label
     return note, checks
+
+
+def label_note(ticket: Ticket) -> str:
+    """Why the status labels do not match the board Status; "" when they do.
+
+    Read from the same board snapshot as the Status (the board's Labels
+    field). A ticket without a known Status or without the labels field is
+    not judged.
+    """
+    if ticket.status not in STATUSES or not isinstance(ticket.item.get("labels"), list):
+        return ""
+    names = epic.labels(ticket.item)
+    if LABEL_MARKER in names:
+        return "Sync not finished"
+    found = sorted(LABEL_STATUSES[name] for name in names if name in LABEL_STATUSES)
+    if not found:
+        return "No status label"
+    if len(found) > 1:
+        return "Labels " + ", ".join(found)
+    if found[0] != ticket.status:
+        return f"Label {found[0]}, board {ticket.status}"
+    return ""
 
 
 def source_metrics(metrics: Sink, ok: dict[str, bool], now: float) -> None:

@@ -281,6 +281,20 @@ class TicketsPageTest(unittest.TestCase):
             [check.id for check in tickets.CHECKS],
         )
 
+    def test_seven_check_tiles_fill_the_first_row(self) -> None:
+        """Side by side in the collector's order. A title fits its tile at
+        1280 px: at most 17 characters in 3 columns, 25 in 4."""
+        grid = [self.by_title(title)["gridPos"] for _, title, *_ in dashboards.CHECKS]
+        self.assertEqual(len(grid), 7)
+        self.assertEqual({g["y"] for g in grid}, {0})
+        self.assertEqual(
+            [g["x"] for g in grid], [sum(g["w"] for g in grid[:i]) for i in range(7)]
+        )
+        self.assertEqual(sum(g["w"] for g in grid), 24)
+        for (_, title, *_), g in zip(dashboards.CHECKS, grid, strict=True):
+            with self.subTest(title=title):
+                self.assertLessEqual(len(title), {3: 17, 4: 25}[g["w"]])
+
     def test_tiles_filter_the_table_and_keep_the_time_range(self) -> None:
         for check, title, *_ in dashboards.CHECKS:
             with self.subTest(check=check):
@@ -699,7 +713,7 @@ class QuerySemanticsTest(unittest.TestCase):
         """The check picker filters the table; All shows every ticket. A tile
         whose count is missing or stale shows -1 (unknown), never 0."""
         table = panel_expr("tickets.json", "Tickets · $check")
-        tile = panel_expr("tickets.json", "Board Done · issue open")
+        tile = panel_expr("tickets.json", "Done · issue open")
         series = [
             {
                 "series": "epic_ticket_snapshot_timestamp_seconds",
@@ -789,7 +803,7 @@ class QuerySemanticsTest(unittest.TestCase):
     def test_tile_severity_colors(self) -> None:
         """Severity 3 is red, 2 amber, 0 and 1 neutral; stale data gives no
         color row, so the unknown tile stays grey."""
-        expr = panel_expr("tickets.json", "In progress > 1 day", ref="B")
+        expr = panel_expr("tickets.json", "In progress > 1d", ref="B")
         series = [
             {
                 "series": "epic_ticket_snapshot_timestamp_seconds",
@@ -1004,7 +1018,7 @@ class QuerySemanticsTest(unittest.TestCase):
         a failed board read keeps the old, still young tickets.prom; a status
         series that vanishes must not leave its old count in the stat."""
         table = panel_expr("tickets.json", "Tickets · $check").replace("$check", "all")
-        tile = panel_expr("tickets.json", "Board Done · issue open")
+        tile = panel_expr("tickets.json", "Done · issue open")
         flow = panel_expr("tickets.json", "Tickets per status")
         [ready] = [
             p["targets"][0]["expr"]

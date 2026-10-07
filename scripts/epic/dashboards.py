@@ -1953,14 +1953,14 @@ CHECKS = (
     ),
     (
         "in_progress_long",
-        "In progress > 1 day",
+        "In progress > 1d",
         LOOK_SOON,
         "In progress for more than 24 h (since the collector saw it enter; at "
         "least that long for tickets it found there).",
     ),
     (
         "in_review_long",
-        "In review > 1 day",
+        "In review > 1d",
         ACT_NOW,
         "In review for more than 24 h (since the collector saw it enter; at "
         "least that long for tickets it found there).",
@@ -1973,11 +1973,22 @@ CHECKS = (
     ),
     (
         "done_open",
-        "Board Done · issue open",
+        "Done · issue open",
         LOOK_SOON,
         "Board Status is Done but the issue is still open.",
     ),
+    (
+        "label_out_of_sync",
+        "Label out of sync",
+        LOOK_SOON,
+        "The status:: label does not match the board Status: no label, two or "
+        "more, another status, or status::sync left by an unfinished sync. "
+        "Fix with set_status.py repair. A change shows here for one refresh "
+        "until the helper's label write follows its board write.",
+    ),
 )
+# Tile widths in the CHECKS order; the short titles fit 3 columns at 1280 px.
+CHECK_WIDTHS = (4, 4, 3, 3, 4, 3, 3)
 TICKETS_URL = "/d/epic-tickets"
 
 
@@ -2686,8 +2697,10 @@ def tickets_page() -> Json:
         },
         ISSUES,
     ]
-    for i, check in enumerate(CHECKS):
-        board.add(check_tile(*check), 4 * i, 0, 4, 3)
+    x = 0
+    for check, width in zip(CHECKS, CHECK_WIDTHS, strict=True):
+        board.add(check_tile(*check), x, 0, width, 3)
+        x += width
     for i, status in enumerate(STATUS):
         board.add(status_stat(status), 4 * i, 3, 4, 4)
     board.add(cumulative_flow(), 0, 7, 24, 8)

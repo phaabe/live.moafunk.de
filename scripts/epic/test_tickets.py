@@ -340,6 +340,63 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(sorts[1], int(NOW - DAY))
         self.assertEqual(info(sink, 4)["done_sort"], "")
 
+    def test_status_label_out_of_sync(self) -> None:
+        """The board's labels against its Status, from the same snapshot."""
+        cases = {
+            1: ("Backlog", ["status::backlog", "project::Stream"], ""),
+            2: ("Backlog", [], "No status label"),
+            3: ("Backlog", ["status::in-progress"], "Label In progress, board Backlog"),
+            4: (
+                "Backlog",
+                ["status::backlog", "status::ready"],
+                "Labels Backlog, Ready",
+            ),
+            5: ("Backlog", ["status::backlog", "status::sync"], "Sync not finished"),
+            6: ("Backlog", ["status::sync"], "Sync not finished"),
+            # A status:: label that names no Status is not a status label.
+            7: ("Backlog", ["status::backlog", "status::other"], ""),
+        }
+        items = []
+        for number, (status, labels, _) in cases.items():
+            item = ticket(number, status)
+            item["labels"] = labels
+            items.append(item)
+        # No labels field (not read) or no known Status: not judged.
+        items += [ticket(8, "Backlog"), ticket(9, "Bogus")]
+        items[-1]["labels"] = []
+        open_done = ticket(10, "Done")
+        open_done["labels"] = ["status::in-review"]
+        sink = render(snapshot(items=[*items, open_done]))
+        for number, (_, _, note) in cases.items():
+            with self.subTest(issue=number):
+                self.assertEqual(info(sink, number)["note"], note)
+                self.assertEqual(
+                    sink.value(
+                        "ticket_check_member",
+                        issue=str(number),
+                        check="label_out_of_sync",
+                    ),
+                    1 if note else None,
+                )
+        self.assertEqual(info(sink, 8)["note"], "")
+        self.assertEqual(
+            info(sink, 10)["note"],
+            "Board Done · issue open · Label In review, board Done",
+        )
+        self.assertEqual(sink.value("ticket_check_count", check="label_out_of_sync"), 6)
+        # Amber, also when a member waits long: no time steps.
+        self.assertEqual(
+            sink.value("ticket_check_severity", check="label_out_of_sync"), 2
+        )
+
+    def test_label_check_needs_only_the_board(self) -> None:
+        """The labels events source can be down; the check still counts."""
+        item = ticket(1, "Ready")
+        item["labels"] = []
+        sink = render(snapshot(items=[item]), tickets.Extra(None, None, None), None)
+        self.assertEqual(sink.value("ticket_check_count", check="label_out_of_sync"), 1)
+        self.assertIsNone(sink.value("ticket_check_count", check="ready_undeclared"))
+
 
 class InfoTest(unittest.TestCase):
     def test_pr_notes_and_labels(self) -> None:
