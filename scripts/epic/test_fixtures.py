@@ -235,6 +235,15 @@ class TicketTimesTest(unittest.TestCase):
         # The time checks read the history: the ledger is not unknown.
         self.assertIn('epic_ticket_check_count{check="in_review_long"} 1', text)
 
+    def test_label_out_of_sync_tile_has_a_member(self) -> None:
+        """307's status label names its old status: the seventh tile is amber."""
+        text = fixtures.ticket_metrics(1_790_000_000.0)
+        self.assertIn(
+            'epic_ticket_check_member{check="label_out_of_sync",issue="307"} 1', text
+        )
+        self.assertIn('epic_ticket_check_count{check="label_out_of_sync"} 1', text)
+        self.assertIn('epic_ticket_check_severity{check="label_out_of_sync"} 2', text)
+
     def test_flow_times_have_values_and_gaps(self) -> None:
         """Every flow panel has data; a skipped or unclean time has none."""
         now = 1_790_000_000.0
@@ -254,7 +263,21 @@ class TicketTimesTest(unittest.TestCase):
             int(n)
             for n in re.findall(r"^epic_tickets_done_day\{[^}]*\} (\d+)", text, re.M)
         ]
-        self.assertEqual(sum(done), len(fixtures.DONE))
+        # DONE plus 306 from its real ledger.
+        self.assertEqual(sum(done), len(fixtures.DONE) + 1)
+
+    def test_stack_off_during_three_changes_keeps_exact_measurements(self) -> None:
+        """306 moved Ready -> Done by three set calls while the stack was off:
+        the label times give cycle 5 h and lead 9 h."""
+        text = fixtures.ticket_metrics(1_790_000_000.0)
+        self.assertRegex(text, r'epic_ticket_cycle_seconds\{[^}]*issue="306"\} 18000\n')
+        self.assertRegex(text, r'epic_ticket_lead_seconds\{[^}]*issue="306"\} 32400\n')
+        now = 1_790_000_000.0
+        [episode] = fixtures.outage_history(now).summary(now).episodes
+        self.assertEqual(
+            episode.times,
+            {"Ready": 4 * 3600.0, "In progress": 3 * 3600.0, "In review": 2 * 3600.0},
+        )
 
 
 class TicketSegmentsTest(unittest.TestCase):
@@ -287,8 +310,10 @@ class TicketSegmentsTest(unittest.TestCase):
         newest = self.newest()
         week = self.now - 7 * ticket_history.DAY
         self.assertTrue(any(s.end is None and s.start < week for s in newest.values()))
-        [gap] = [s for s in newest.values() if s.status == "gap"]
-        self.assertEqual(gap.issue, 308)
+        gaps = [s.issue for s in newest.values() if s.status == "gap"]
+        # 308: a 1 h gap; 306: the stack was off during three changes.
+        self.assertEqual(gaps.count(308), 1)
+        self.assertEqual(set(gaps), {306, 308})
         [corrected] = [
             r["segment_id"] for r in rows if r["rev"] == 2 and r["status"] != "retired"
         ]
@@ -324,6 +349,13 @@ class TicketSegmentsTest(unittest.TestCase):
                 last = segments[-1]
                 self.assertIsNone(last.end)
                 time_ = summary.tickets[issue]
+                if issue == fixtures.OUTAGE:
+                    # The label time is inside the gap; the chart keeps the gap.
+                    gap = segments[-2]
+                    self.assertEqual(gap.status, "gap")
+                    self.assertLessEqual(gap.start, time_.entered)
+                    self.assertEqual((last.status, time_.exact), ("Done", "gap"))
+                    continue
                 self.assertEqual(
                     (last.status, last.start), (time_.status, time_.entered)
                 )

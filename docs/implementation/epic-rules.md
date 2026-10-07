@@ -31,6 +31,13 @@ removed in a reviewed PR.
   comment; the rest of the issue stays blocked.
 - Claim the leaf on its issue: comment with the leaf IDs, the files you will
   edit and your branch, then set Status to In progress.
+- Change the board Status only with the trusted helper:
+  `python3 <trusted checkout>/scripts/epic/set_status.py set <issue> <status>`
+  (the runner prompt names the path). It also sets the issue's `status::*`
+  label, which keeps the change time. After a change that stopped half way,
+  `repair <issue>` copies the board Status to the label. `sync` is Anton's
+  backfill. Raw board writes and raw `status::*` label edits are refused in a
+  runner tick.
 - Check the file owner first. One editor per shared file (see section 2). If a
   file you need belongs to the other lane, ask its owner; do not edit it.
 - Recheck the code anchors against the current branch and run GitNexus impact

@@ -1287,8 +1287,11 @@ def record_history(
     view: Json,
     now: float,
     tick_rows: tuple[float, dict[str, list[Json]]] | None,
+    events: dict[int, list[Json]] | None = None,
 ) -> tuple[ticket_history.Summary | None, bool]:
-    """Record this snapshot in the status history and write segments.
+    """Record this snapshot in the status history, merge the recorded change
+    times of the status label events (None: labels source down, nothing
+    merged) and write segments.
 
     Returns the summary (None when the history files fail) and whether
     runner ticks were current. The board was validated before.
@@ -1301,6 +1304,8 @@ def record_history(
         if type(fetched_at) is not int or fetched_at <= 0:
             raise ValueError("snapshot without fetched_at")
         history.observe(ticket_history.board_statuses(view), fetched_at)
+        if events is not None:
+            history.merge_labels(events)
         shown = [t.number for t in tickets.board_tickets(view, now).tickets]
         prs = {issue: pr[0] for issue, pr in tickets.linked_prs(view).items()}
         history.update_segments(
@@ -1341,7 +1346,6 @@ def collect_tickets(
         tickets.board_tickets(view, now)
         runtime = output.parent
         history = HISTORY.setdefault(runtime, ticket_history.History(runtime))
-        summary, local = record_history(history, view, now, LATEST.ticks)
         request = tickets.wanted(view, now)
         try:
             extra = tickets.valid_extra(fetch(cache, request, timeout), request)
@@ -1353,6 +1357,7 @@ def collect_tickets(
         ) as error:
             logging.error("Ticket reads failed: %s", type(error).__name__)
             extra = tickets.Extra(None, None)
+        summary, local = record_history(history, view, now, LATEST.ticks, extra.events)
         metrics = Metrics()
         tickets.ticket_metrics(
             metrics, view, extra, tickets.claimable(view), now, summary
@@ -1368,6 +1373,7 @@ def collect_tickets(
             review=extra.reviews is not None,
             ledger=summary is not None,
             local=local,
+            labels=summary is not None and extra.events is not None,
         )
     except (OSError, ValueError, KeyError, TypeError) as error:
         logging.error("Ticket collection failed: %s", type(error).__name__)

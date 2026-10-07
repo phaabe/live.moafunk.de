@@ -935,11 +935,13 @@ class ScrapeSizeTest(unittest.TestCase):
         metrics = monitor.Metrics()
         delivery.delivery_metrics(metrics, data, prs, NOW)
         # Tickets worst case: every not-Done ticket is Ready and in both Ready
-        # checks, every Done one is open (done_open), both caps are full.
+        # checks, every Done one is open (done_open), both caps are full, and
+        # every status label is out of sync.
         ready = [issue(5000 + i, "Claude", "Ready") for i in range(150)]
         done = [issue(6000 + i, "Claude", "Done") for i in range(60)]
         for item in [*ready, *done]:
             item["level"] = "Task"
+            item["labels"] = ["status::sync"]
             item["content"]["title"] = "t" * 300
             item["content"]["state"] = "open"
         hidden = {
@@ -980,9 +982,10 @@ class ScrapeSizeTest(unittest.TestCase):
         ticket_history.history_metrics(metrics, summary, shown, NOW)
         tickets.source_metrics(metrics, {}, NOW)
         metrics.add("ticket_collection_duration_seconds", 1)
+        self.assertIn('epic_ticket_source_ok{source="labels"}', metrics.render())
         self.assertEqual(
             metrics.render().count("epic_ticket_check_member{"),
-            2 * tickets.MAX_OPEN + tickets.MAX_DONE,
+            3 * tickets.MAX_OPEN + 2 * tickets.MAX_DONE,
         )
         samples = [
             line

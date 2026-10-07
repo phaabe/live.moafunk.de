@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import random
 import shutil
+import tempfile
 import time
 from typing import BinaryIO
 
@@ -566,6 +567,13 @@ def ticket_state(now: float) -> monitor.Json:
         extra(307, "Claude", "In review"),
         extra(308, "Claude", "Ready"),
     ]
+    # Status labels match the board, except 307: the label still names its
+    # old status (the "Label mismatch" check).
+    for item in state["items"]:
+        status = "In progress" if item["content"]["number"] == 307 else item["status"]
+        item["labels"] = [
+            ticket_history.LABEL_PREFIX + status.lower().replace(" ", "-")
+        ]
     return state
 
 
@@ -578,6 +586,42 @@ TIMED = {
     # Backlog for 9 days: an open segment older than the 7-day history.
     304: (216.0, "1", "", True),
 }
+
+
+# 306 was Done while the stack was off: its history is a real ledger.
+OUTAGE = 306
+
+
+def label_event(ident: int, kind: str, name: str, at: int) -> monitor.Json:
+    return {"id": ident, "event": kind, "label": {"name": name}, "created_at": iso(at)}
+
+
+def outage_history(now: float) -> ticket_history.History:
+    """306: the collector is off for 6 h while three set_status.py calls move
+    it Ready -> Done; it is back 10 min after the Done. The label events give
+    exact times and measurements; the history chart keeps the gap."""
+    done = int(now - 3.5 * 3600)
+    ready, off = done - 9 * 3600, done - 6 * 3600
+    moves = [
+        ("ready", "in-progress", done - 5 * 3600),
+        ("in-progress", "in-review", done - 2 * 3600),
+        ("in-review", "done", done),
+    ]
+    events = []
+    for i, (frm, to, at) in enumerate(moves):
+        events += [
+            label_event(10 * i + 1, "labeled", f"status::{to}", at),
+            label_event(10 * i + 2, "unlabeled", f"status::{frm}", at + 1),
+        ]
+    with tempfile.TemporaryDirectory() as directory:
+        history = ticket_history.History(Path(directory))
+        history.load(now)
+        history.observe({OUTAGE: ("Backlog", "Codex")}, ready - 600)
+        for at in range(ready, off + 1, 600):
+            history.observe({OUTAGE: ("Ready", "Codex")}, at)
+        history.observe({OUTAGE: ("Done", "Codex")}, done + 600)
+        history.merge_labels({OUTAGE: events})
+    return history
 
 
 def ticket_summary(state: monitor.Json, now: float) -> ticket_history.Summary:
@@ -604,6 +648,7 @@ def ticket_summary(state: monitor.Json, now: float) -> ticket_history.Summary:
             else None,
             agent,
         )
+    summary.tickets[OUTAGE] = outage_history(now).summary(now).tickets[OUTAGE]
     return summary
 
 
@@ -622,8 +667,9 @@ DONE = (
 
 
 def done_episodes(now: float) -> list[ticket_history.Episode]:
-    """Newest first, as History.summary returns them."""
-    found = []
+    """Newest first, as History.summary returns them. With 306 from its
+    real ledger (outage_history)."""
+    found = outage_history(now).summary(now).episodes
     for issue, days, executor, cycle, lead in DONE:
         times = {"Ready": 2 * 3600.0}
         if cycle is not None:
@@ -643,12 +689,13 @@ def done_episodes(now: float) -> list[ticket_history.Episode]:
                 times,
             )
         )
-    return found
+    return sorted(found, key=lambda e: (-e.done.seen_at, e.issue))
 
 
 def ticket_metrics(now: float) -> str:
     """tickets.prom: 308 needs an undeclared ticket, 305 has no body review,
-    303 is Done on the board with its issue open. With the history summary."""
+    303 is Done on the board with its issue open, 307's status label is out
+    of sync. With the history summary."""
     state = monitor.epic_view(ticket_state(now))
     request = tickets.wanted(state, now)
     deps = {number: [] for number in request["ready"]}
@@ -675,7 +722,8 @@ def ticket_segments(now: float) -> list[monitor.Json]:
     entry, then the current status, open.
 
     305 has a retired segment, 307 a corrected In progress agent before its
-    unverified Claude review, 308 a 1 h gap before its Ready entry.
+    unverified Claude review, 308 a 1 h gap before its Ready entry. 306 comes
+    from its real ledger: label times inside a 6 h gap (outage_history).
     """
     at = int(now)
     state = monitor.epic_view(ticket_state(now))
@@ -684,7 +732,12 @@ def ticket_segments(now: float) -> list[monitor.Json]:
     def add(segment: ticket_history.Segment, rev: int = 1) -> None:
         rows.append(ticket_history.segment_row(segment, rev, at))
 
+    outage = outage_history(now)
+    for segment in ticket_history.intervals(outage.entries[OUTAGE], outage.gaps):
+        add(segment)
     for issue, entry in sorted(ticket_summary(state, now).tickets.items()):
+        if issue == OUTAGE:
+            continue
         agent = entry.agent.removesuffix(" (unverified)")
         # (status, start, agent, verified); each part ends where the next starts.
         parts = [("Backlog", at - 9 * ticket_history.DAY, "", 1)]

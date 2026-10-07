@@ -145,6 +145,15 @@ class Entry:
     frm: str | None = None
     seen_before: int | None = None
     seed: bool = False
+    # A recorded change time: the GitHub event id of its status label.
+    event: int | None = None
+    # A Done entry's episode id when it is not seen_at (a label change
+    # replaced the snapshot time, or an earlier Done of one chain).
+    episode: int | None = None
+
+    @property
+    def episode_id(self) -> int:
+        return self.seen_at if self.episode is None else self.episode
 
     @property
     def uncertain(self) -> bool:
@@ -169,11 +178,14 @@ class Entry:
         }
         if self.seed:
             row["source"] = "seed"
+        if self.event is not None:
+            row["source"] = "label"
+            row["event"] = self.event
         if self.uncertain:
             row["uncertain"] = True
         if self.to == "Done":
             # The episode id; never changed after it is written.
-            row["episode"] = self.seen_at
+            row["episode"] = self.episode_id
         return row
 
     @classmethod
@@ -181,24 +193,30 @@ class Entry:
         issue, to, executor = row.get("issue"), row.get("to"), row.get("executor")
         frm, before = row.get("from"), row.get("seen_before")
         seed = row.get("source") == "seed"
+        label = row.get("source") == "label"
         if (
             type(issue) is not int
             or issue <= 0
             or to not in CODES
             or executor not in EXECUTORS
-            or row.get("source") not in (None, "seed")
+            or row.get("source") not in (None, "seed", "label")
             or (seed and (frm is not None or before is not None))
             or (not seed and (frm not in CODES or frm == to))
+            or (label and type(row.get("event")) is not int)
         ):
             raise ValueError("bad ticket status row")
+        seen_at = whole(row.get("seen_at"))
+        episode = row.get("episode")
         entry = cls(
             issue,
             to,
-            whole(row.get("seen_at")),
+            seen_at,
             executor,
             frm,
             None if before is None else whole(before),
             seed,
+            row["event"] if label else None,
+            None if episode is None or episode == seen_at else whole(episode),
         )
         if entry.seen_before is not None and entry.seen_before > entry.seen_at:
             raise ValueError("seen_before after seen_at")
@@ -220,6 +238,206 @@ class Gap:
 
 def overlaps(gaps: Iterable[Gap], start: float, end: float) -> bool:
     return any(gap.start < end and gap.end > start for gap in gaps)
+
+
+# --- status labels (set_status.py) ---
+
+LABEL_PREFIX = "status::"
+LABEL_MARKER = "status::sync"
+LABEL_STATUSES = {
+    LABEL_PREFIX + status.lower().replace(" ", "-"): status for status in STATUSES
+}
+LABEL_PAIR = 300  # seconds from the new label to the old one's removal
+LABEL_LAG = 300  # seconds a label change may come after the snapshot
+
+
+@dataclass(frozen=True)
+class LabelChange:
+    """A recorded change time: the helper's `set` added status::<to> and then
+    removed status::<frm>, outside a status::sync window."""
+
+    frm: str
+    to: str
+    at: int
+    event: int
+
+
+def event_time(value: object) -> int:
+    if not isinstance(value, str):
+        raise ValueError("event without created_at")
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+
+
+def label_changes(events: Iterable[Json]) -> list[LabelChange]:
+    """The label changes in one issue's events (REST issues/{n}/events).
+
+    Every status label event between a status::sync add and its removal (by
+    event id) is a sync, never a change; a marker left by a crash keeps the
+    window open. A `labeled` event counts only when the next status label
+    event removes another status label, as `set` does.
+    """
+    rows = []
+    for event in events:
+        name = (event.get("label") or {}).get("name")
+        kind = event.get("event")
+        if kind not in ("labeled", "unlabeled") or not isinstance(name, str):
+            continue
+        if not name.startswith(LABEL_PREFIX) or type(event.get("id")) is not int:
+            continue
+        rows.append((event["id"], kind, name, event_time(event.get("created_at"))))
+    rows.sort()
+    found: list[LabelChange] = []
+    syncing = False
+    plain: list[tuple[int, str, str, int]] = []  # status label events outside sync
+    for row in rows:
+        if row[2] == LABEL_MARKER:
+            syncing = row[1] == "labeled"
+            # A window also splits the events around it into separate runs.
+            plain.append((row[0], "marker", row[2], row[3]))
+        elif not syncing:
+            plain.append(row)
+    for added, removed in zip(plain, plain[1:], strict=False):
+        _, kind, name, at = added
+        _, next_kind, old, removed_at = removed
+        if (
+            kind == "labeled"
+            and next_kind == "unlabeled"
+            and name in LABEL_STATUSES
+            and old in LABEL_STATUSES
+            and old != name
+            and 0 <= removed_at - at <= LABEL_PAIR
+        ):
+            found.append(
+                LabelChange(LABEL_STATUSES[old], LABEL_STATUSES[name], at, added[0])
+            )
+    return found
+
+
+def chain_for(
+    entry: Entry, changes: list[LabelChange], used: set[int]
+) -> list[LabelChange] | None:
+    """The label changes that replace one snapshot entry, or None."""
+    assert entry.seen_before is not None
+    free = [c for c in changes if c.event not in used]
+    chain = [c for c in free if entry.seen_before <= c.at <= entry.seen_at]
+    if not chain or chain[-1].to != entry.to:
+        for change in free:
+            if entry.seen_at < change.at <= entry.seen_at + LABEL_LAG:
+                chain.append(change)
+                if change.to == entry.to:
+                    break
+    if not chain or chain[0].frm != entry.frm or chain[-1].to != entry.to:
+        return None
+    if any(a.to != b.frm for a, b in zip(chain, chain[1:], strict=False)):
+        return None
+    return chain
+
+
+def round_trip(start: str, free: list[LabelChange]) -> list[LabelChange]:
+    """The longest run at the start of `free` that leaves `start` and comes
+    back to it, each change starting where the one before ended; else []."""
+    found, status = 0, start
+    for i, change in enumerate(free):
+        if change.frm != status:
+            break
+        status = change.to
+        if status == start:
+            found = i + 1
+    return free[:found]
+
+
+def reconcile(
+    entries: list[Entry], changes: list[LabelChange], seen: int | None = None
+) -> list[Entry]:
+    """One ticket's entries with each snapshot entry replaced by the label
+    changes that explain it (chain_for), oldest first; each change is used at
+    most once. Only the chain's last Done keeps the snapshot's episode and
+    Executor: an earlier Done of the chain is another completion.
+
+    Then the round trips no snapshot saw: unused changes between two entries
+    (or the last entry and `seen`, the ticket's last snapshot) that leave the
+    status and come back to it. Their Done has Executor Unknown.
+
+    Repeated until nothing changes: a round trip can use a late label that
+    kept the next entry's chain from matching."""
+    changes = sorted(changes, key=lambda c: (c.at, c.event))
+    while True:
+        merged = reconcile_once(entries, changes, seen)
+        if merged == entries:
+            return merged
+        entries = merged
+
+
+def reconcile_once(
+    entries: list[Entry], changes: list[LabelChange], seen: int | None
+) -> list[Entry]:
+    """One pass of reconcile; `changes` sorted by time."""
+    used = {e.event for e in entries if e.event is not None}
+    out: list[Entry] = []
+    for entry in entries:
+        if entry.seed or entry.event is not None or entry.seen_before is None:
+            out.append(entry)
+            continue
+        chain = chain_for(entry, changes, used)
+        if chain is None:
+            out.append(entry)
+            continue
+        used |= {c.event for c in chain}
+        for i, change in enumerate(chain):
+            last = i == len(chain) - 1
+            done = change.to == "Done"
+            out.append(
+                Entry(
+                    entry.issue,
+                    change.to,
+                    change.at,
+                    entry.executor if last or not done else "Unknown",
+                    change.frm,
+                    change.at,
+                    event=change.event,
+                    episode=entry.episode_id if last and done else None,
+                )
+            )
+    out.sort(key=lambda e: e.seen_at)
+    trips: list[Entry] = []
+    for i, entry in enumerate(out):
+        after = out[i + 1] if i + 1 < len(out) else None
+        snapshot = True  # a board snapshot at `end` saw entry.to
+        if after is None:
+            end = seen
+        elif after.event is None and after.seen_before is not None:
+            end = after.seen_before  # the last snapshot still at entry.to
+        else:
+            end, snapshot = after.seen_at, False
+        if end is None:
+            continue
+        free = [
+            c for c in changes if c.event not in used and entry.seen_at < c.at < end
+        ]
+        if snapshot and len(round_trip(entry.to, free)) < len(free):
+            # A trip left before the snapshot, so the board was back by then;
+            # the label that comes back may still lag it by LABEL_LAG.
+            for change in changes:
+                if change.event in used or not end <= change.at <= end + LABEL_LAG:
+                    continue
+                free.append(change)
+                if change.to == entry.to:
+                    break
+        for change in round_trip(entry.to, free):
+            used.add(change.event)
+            done = change.to == "Done"
+            trips.append(
+                Entry(
+                    entry.issue,
+                    change.to,
+                    change.at,
+                    "Unknown" if done else entry.executor,
+                    change.frm,
+                    change.at,
+                    event=change.event,
+                )
+            )
+    return sorted(out + trips, key=lambda e: e.seen_at)
 
 
 # --- episodes and measurements ---
@@ -251,25 +469,28 @@ def measure(entries: list[Entry], gaps: list[Gap]) -> Episode | None:
     if done.to != "Done" or not done.clean:
         return None
 
-    def span(first: Entry | None) -> float | None:
-        if first is None or not first.clean:
-            return None
-        if overlaps(gaps, first.seen_at, done.seen_at):
-            return None
-        return float(done.seen_at - first.seen_at)
+    # Per interval: no gap may hide a change in it. A label change that ends
+    # the interval names the status it left, so a gap there hides nothing
+    # the helper wrote (a move by hand stays invisible, as between snapshots).
+    exact = [
+        (after.event is not None and after.frm == entry.to)
+        or not overlaps(gaps, entry.seen_at, after.seen_at)
+        for entry, after in zip(entries, entries[1:], strict=False)
+    ]
 
-    starts = [e for e in entries[:-1] if e.to == "In progress"]
-    readies = [e for e in entries[:-1] if e.to == "Ready"]
+    def span(first: int | None) -> float | None:
+        if first is None or not entries[first].clean or not all(exact[first:]):
+            return None
+        return float(done.seen_at - entries[first].seen_at)
+
+    starts = [i for i, e in enumerate(entries[:-1]) if e.to == "In progress"]
+    readies = [i for i, e in enumerate(entries[:-1]) if e.to == "Ready"]
     times: dict[str, float] = {}
     bad: set[str] = set()
-    for entry, after in zip(entries, entries[1:], strict=False):
+    for i, (entry, after) in enumerate(zip(entries, entries[1:], strict=False)):
         if entry.to not in TIMED:
             continue
-        if (
-            not entry.clean
-            or not after.clean
-            or overlaps(gaps, entry.seen_at, after.seen_at)
-        ):
+        if not entry.clean or not after.clean or not exact[i]:
             bad.add(entry.to)
             continue
         times[entry.to] = times.get(entry.to, 0.0) + after.seen_at - entry.seen_at
@@ -566,6 +787,30 @@ class History:
         os.replace(temporary, self.path(STATE))
         return True
 
+    def merge_labels(self, events: dict[int, list[Json]]) -> bool:
+        """Replace snapshot entries with the recorded change times in the
+        issues' status label events, and add the round trips between equal
+        snapshots (reconcile). The ledger is rewritten
+        only when an entry changed; replay keeps the result, because a
+        label entry is never reconciled again. Returns True on a change."""
+        changed = False
+        for issue, rows in sorted(events.items()):
+            entries = self.entries.get(issue)
+            changes = label_changes(rows)
+            if not entries or not changes:
+                continue
+            merged = reconcile(entries, changes, self.seen.get(issue))
+            if merged != entries:
+                self.entries[issue] = merged
+                changed = True
+        if changed:
+            everything = sorted(
+                (e for rows in self.entries.values() for e in rows),
+                key=lambda e: (e.seen_at, e.issue),
+            )
+            rewrite_lines(self.path(LEDGER), (e.row() for e in everything))
+        return changed
+
     def update_segments(
         self,
         shown: Iterable[int],
@@ -782,7 +1027,7 @@ def history_metrics(
         )
     eligible = summary.episodes
     for episode in eligible[:MAX_EPISODES]:
-        labels = {"issue": str(episode.issue), "episode": str(episode.done.seen_at)}
+        labels = {"issue": str(episode.issue), "episode": str(episode.done.episode_id)}
         metrics.add(
             "ticket_done_seconds",
             episode.done.seen_at,

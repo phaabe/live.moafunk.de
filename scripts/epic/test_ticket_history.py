@@ -853,6 +853,7 @@ class CollectorTest(unittest.TestCase):
             return {
                 "deps": {str(n): [] for n in request["ready"]},
                 "reviews": {str(n): None for n in request["refinement"]},
+                "events": {str(n): [] for n in request["events"]},
             }
 
         with patch.object(monitor.LATEST, "ticks", ticks):
@@ -935,6 +936,493 @@ class PlumbingTest(unittest.TestCase):
         ):
             state = monitor.fetch_state_with_time()
         self.assertEqual(state["fetched_at"], NOW)
+
+
+def label_event(ident: int, kind: str, name: str, at: int) -> monitor.Json:
+    created = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"id": ident, "event": kind, "label": {"name": name}, "created_at": created}
+
+
+def set_events(ident: int, frm: str, to: str, at: int) -> list[monitor.Json]:
+    """The two events of one set_status.py `set`: add new, remove old."""
+    return [
+        label_event(ident, "labeled", f"status::{to}", at),
+        label_event(ident + 1, "unlabeled", f"status::{frm}", at + 1),
+    ]
+
+
+def snap(to: str, frm: str, before: int, at: int, executor: str = "Claude") -> th.Entry:
+    return th.Entry(1, to, at, executor, frm, before)
+
+
+class LabelChangeTest(unittest.TestCase):
+    """https://github.com/phaabe/live.moafunk.de/issues/624"""
+
+    def test_set_is_a_change_with_its_label_time_and_event_id(self) -> None:
+        events = set_events(10, "ready", "in-progress", NOW)
+        self.assertEqual(
+            th.label_changes(events),
+            [th.LabelChange("Ready", "In progress", NOW, 10)],
+        )
+
+    def test_backfill_and_repair_inside_a_sync_window_are_not_changes(self) -> None:
+        events = [
+            label_event(1, "labeled", "status::sync", NOW),
+            label_event(2, "labeled", "status::done", NOW + 1),
+            label_event(3, "unlabeled", "status::ready", NOW + 2),
+            label_event(4, "unlabeled", "status::sync", NOW + 3),
+        ]
+        self.assertEqual(th.label_changes(events), [])
+
+    def test_a_marker_left_by_a_crash_keeps_the_window_open(self) -> None:
+        events = [label_event(1, "labeled", "status::sync", NOW)]
+        events += set_events(2, "ready", "done", NOW + 60)
+        self.assertEqual(th.label_changes(events), [])
+
+    def test_a_delayed_sync_after_a_manual_move_is_not_a_change(self) -> None:
+        events = set_events(1, "ready", "in-progress", NOW)
+        events += [
+            label_event(3, "labeled", "status::sync", NOW + 3 * H),
+            label_event(4, "labeled", "status::done", NOW + 3 * H),
+            label_event(5, "unlabeled", "status::in-progress", NOW + 3 * H),
+            label_event(6, "unlabeled", "status::sync", NOW + 3 * H),
+        ]
+        self.assertEqual([c.event for c in th.label_changes(events)], [1])
+
+    def test_an_add_without_the_old_label_removed_is_not_a_change(self) -> None:
+        # Board ok, label removal failed: only repair fixes it, in a window.
+        events = [
+            label_event(1, "labeled", "status::done", NOW),
+            label_event(2, "labeled", "status::sync", NOW + 60),
+            label_event(3, "unlabeled", "status::ready", NOW + 60),
+            label_event(4, "unlabeled", "status::sync", NOW + 61),
+        ]
+        self.assertEqual(th.label_changes(events), [])
+
+    def test_order_is_by_event_id_and_other_labels_are_ignored(self) -> None:
+        events = set_events(5, "ready", "done", NOW)[::-1]
+        events.insert(1, label_event(6, "labeled", "needs-anton", NOW))
+        self.assertEqual([c.to for c in th.label_changes(events)], ["Done"])
+
+
+class ReconcileTest(unittest.TestCase):
+    def test_label_change_replaces_the_snapshot_and_keeps_episode_and_executor(
+        self,
+    ) -> None:
+        entry = snap("Done", "In review", NOW - 300, NOW)
+        changes = th.label_changes(set_events(1, "in-review", "done", NOW - 200))
+        (got,) = th.reconcile([entry], changes)
+        self.assertEqual(
+            (got.seen_at, got.event, got.executor), (NOW - 200, 1, "Claude")
+        )
+        self.assertEqual(got.episode_id, NOW)
+        self.assertTrue(got.clean)
+        self.assertEqual(th.Entry.parse(got.row()), got)
+
+    def test_example_1_adjacent_snapshots_during_an_outage(self) -> None:
+        minute = 60
+        t0 = NOW
+        entries = [
+            snap("In progress", "Ready", t0, t0 + 2 * minute),
+            snap("In review", "In progress", t0 + 2 * minute, t0 + 4 * minute),
+        ]
+        changes = th.label_changes(
+            set_events(1, "ready", "in-progress", t0 + minute)
+            + set_events(3, "in-progress", "in-review", t0 + 3 * minute)
+        )
+        got = th.reconcile(entries, changes)
+        self.assertEqual(
+            [(e.to, e.seen_at, e.event) for e in got],
+            [("In progress", t0 + minute, 1), ("In review", t0 + 3 * minute, 3)],
+        )
+
+    def test_example_2_two_completions_between_two_snapshots(self) -> None:
+        minute = 60
+        t0 = NOW
+        entry = snap("Done", "Ready", t0, t0 + 4 * minute)
+        changes = th.label_changes(
+            set_events(1, "ready", "done", t0 + minute)
+            + set_events(3, "done", "in-progress", t0 + 2 * minute)
+            + set_events(5, "in-progress", "done", t0 + 3 * minute)
+        )
+        got = th.reconcile([entry], changes)
+        self.assertEqual([e.to for e in got], ["Done", "In progress", "Done"])
+        first, _, last = got
+        self.assertEqual((first.executor, first.episode_id), ("Unknown", t0 + minute))
+        self.assertEqual((last.executor, last.episode_id), ("Claude", t0 + 4 * minute))
+        # Replay of the stored rows gives the same entries.
+        self.assertEqual([th.Entry.parse(e.row()) for e in got], got)
+        self.assertEqual(len(th.episodes(got)), 2)
+
+    def test_a_late_label_within_the_lag_still_matches(self) -> None:
+        entry = snap("Done", "In review", NOW - 300, NOW)
+        changes = th.label_changes(set_events(1, "in-review", "done", NOW + 5))
+        (got,) = th.reconcile([entry], changes)
+        self.assertEqual(got.seen_at, NOW + 5)
+
+    def test_a_chain_that_does_not_explain_the_entry_changes_nothing(self) -> None:
+        entry = snap("Done", "In review", NOW - 300, NOW)
+        changes = th.label_changes(set_events(1, "ready", "done", NOW - 100))
+        self.assertEqual(th.reconcile([entry], changes), [entry])
+        late = th.label_changes(set_events(1, "in-review", "done", NOW + 600))
+        self.assertEqual(th.reconcile([entry], late), [entry])
+
+    def test_each_change_is_used_once_and_seeds_stay(self) -> None:
+        seed = th.Entry(1, "Ready", NOW - 900, "Claude", seed=True)
+        first = snap("Done", "Ready", NOW - 600, NOW - 300)
+        second = snap("Ready", "Done", NOW - 300, NOW)
+        changes = th.label_changes(set_events(1, "ready", "done", NOW - 300))
+        got = th.reconcile([seed, first, second], changes)
+        self.assertEqual(got[0], seed)
+        self.assertEqual(got[1].event, 1)
+        self.assertEqual(got[2], second)
+        # A second pass finds the change already used.
+        self.assertEqual(th.reconcile(got, changes), got)
+
+    def test_executor_change_and_reopen_keep_the_matched_done_executor(self) -> None:
+        """Done by Claude, the board Executor becomes Codex, reopened within
+        10 min: the Done keeps Claude from its own snapshot entry."""
+        minute = 60
+        done = snap("Done", "In review", NOW, NOW + 2 * minute)
+        reopened = snap(
+            "In progress", "Done", NOW + 2 * minute, NOW + 8 * minute, "Codex"
+        )
+        # Both labels lag their snapshot; the reopen is inside the Done's lag.
+        changes = th.label_changes(
+            set_events(1, "in-review", "done", NOW + 3 * minute)
+            + set_events(3, "done", "in-progress", NOW + 6 * minute)
+        )
+        got = th.reconcile([done, reopened], changes)
+        self.assertEqual(
+            [(e.to, e.seen_at, e.executor, e.event) for e in got],
+            [
+                ("Done", NOW + 3 * minute, "Claude", 1),
+                ("In progress", NOW + 6 * minute, "Codex", 3),
+            ],
+        )
+        self.assertEqual(got[0].episode_id, NOW + 2 * minute)
+        self.assertEqual([th.Entry.parse(e.row()) for e in got], got)
+
+    def round_trip_changes(self, t0: int) -> list[th.LabelChange]:
+        return th.label_changes(
+            set_events(10, "ready", "in-progress", t0 + 600)
+            + set_events(20, "in-progress", "done", t0 + 1200)
+            + set_events(30, "done", "ready", t0 + 1800)
+        )
+
+    def test_a_round_trip_between_equal_snapshots_is_added(self) -> None:
+        seed = th.Entry(1, "Ready", NOW, "Claude", seed=True)
+        got = th.reconcile([seed], self.round_trip_changes(NOW), seen=NOW + 3 * H)
+        self.assertEqual(
+            [(e.frm, e.to, e.seen_at, e.executor, e.event) for e in got],
+            [
+                (None, "Ready", NOW, "Claude", None),
+                ("Ready", "In progress", NOW + 600, "Claude", 10),
+                ("In progress", "Done", NOW + 1200, "Unknown", 20),
+                ("Done", "Ready", NOW + 1800, "Claude", 30),
+            ],
+        )
+        self.assertEqual([th.Entry.parse(e.row()) for e in got], got)
+        # The changes are used now: a second pass adds nothing.
+        self.assertEqual(
+            th.reconcile(got, self.round_trip_changes(NOW), NOW + 3 * H), got
+        )
+
+    def test_a_round_trip_before_the_next_snapshot_entry_is_added(self) -> None:
+        seed = th.Entry(1, "Ready", NOW, "Claude", seed=True)
+        later = snap("Backlog", "Ready", NOW + 2 * H, NOW + 2 * H + 120)
+        got = th.reconcile([seed, later], self.round_trip_changes(NOW))
+        self.assertEqual([e.event for e in got], [None, 10, 20, 30, None])
+        self.assertEqual(got[-1], later)
+
+    def test_no_round_trip_without_a_closed_chain_or_after_the_last_snapshot(
+        self,
+    ) -> None:
+        seed = th.Entry(1, "Ready", NOW, "Claude", seed=True)
+        # A move by hand (In progress -> Done) breaks the chain.
+        broken = th.label_changes(
+            set_events(10, "ready", "in-progress", NOW + 600)
+            + set_events(30, "done", "ready", NOW + 1800)
+        )
+        self.assertEqual(th.reconcile([seed], broken, seen=NOW + 3 * H), [seed])
+        # No snapshot after the changes yet: not confirmed, nothing added.
+        changes = self.round_trip_changes(NOW)
+        self.assertEqual(th.reconcile([seed], changes, seen=NOW + 1000), [seed])
+        self.assertEqual(th.reconcile([seed], changes), [seed])
+
+    def test_a_round_trip_label_may_lag_its_snapshot_but_no_further(self) -> None:
+        seed = th.Entry(1, "Ready", NOW, "Claude", seed=True)
+        # Left at +600, back at +1200: the snapshot at +1000 saw Ready again.
+        changes = th.label_changes(
+            set_events(10, "ready", "in-progress", NOW + 600)
+            + set_events(20, "in-progress", "ready", NOW + 1200)
+        )
+        got = th.reconcile([seed], changes, seen=NOW + 1000)
+        self.assertEqual([e.event for e in got], [None, 10, 20])
+        # Back more than LABEL_LAG after the snapshot: not this trip.
+        self.assertEqual(th.reconcile([seed], changes, seen=NOW + 800), [seed])
+        # A trip that starts after the snapshot is not confirmed by it.
+        self.assertEqual(th.reconcile([seed], changes, seen=NOW + 590), [seed])
+
+
+class MergeLabelsTest(Base):
+    """The ledger takes the recorded change times (History.merge_labels)."""
+
+    def test_label_time_replaces_the_snapshot_entry_and_replay_keeps_it(self) -> None:
+        self.see(NOW - 600, {1: "Ready"})
+        self.see(NOW, {1: "In progress"})
+        events = {1: set_events(7, "ready", "in-progress", NOW - 300)}
+        self.assertTrue(self.history.merge_labels(events))
+        rows = self.lines(th.LEDGER)
+        self.assertEqual(
+            [(r["to"], r["seen_at"], r.get("source"), r.get("event")) for r in rows],
+            [
+                ("Ready", NOW - 600, "seed", None),
+                ("In progress", NOW - 300, "label", 7),
+            ],
+        )
+        # Same events again, and after a restart: nothing changes.
+        self.assertFalse(self.history.merge_labels(events))
+        replayed = self.fresh()
+        self.assertEqual(replayed.entries, self.history.entries)
+        self.assertFalse(replayed.merge_labels(events))
+        self.assertEqual(self.lines(th.LEDGER), rows)
+
+    def test_stack_off_during_three_changes_measures_from_label_times(self) -> None:
+        """The collector is off for 2 h while three set calls move the ticket
+        Ready -> Done. The label times give the measurements; the history
+        chart still shows the gap."""
+        t0 = NOW - 3 * H
+        self.see(t0, {1: "Backlog"})
+        self.see(t0 + 120, {1: "Ready"})
+        self.see(t0 + 120 + 2 * H, {1: "Done"})
+        events = {
+            1: [
+                *set_events(10, "ready", "in-progress", t0 + 1200),
+                *set_events(20, "in-progress", "in-review", t0 + 3600),
+                *set_events(30, "in-review", "done", t0 + 6000),
+            ]
+        }
+        self.assertTrue(self.history.merge_labels(events))
+        for history in (self.history, self.fresh()):
+            [episode] = history.summary(NOW).episodes
+            self.assertEqual(episode.done.seen_at, t0 + 6000)
+            self.assertEqual(episode.cycle, 6000 - 1200)
+            self.assertEqual(episode.lead, 6000 - 120)
+            self.assertEqual(
+                episode.times,
+                {"Ready": 1080, "In progress": 2400, "In review": 2400},
+            )
+        chart = th.intervals(self.history.entries[1], self.history.gaps)
+        self.assertIn("gap", [s.status for s in chart])
+
+    def test_a_hand_move_over_a_gap_stays_unmeasured_next_to_label_changes(
+        self,
+    ) -> None:
+        """In review set by hand in the gap: no label explains it."""
+        t0 = NOW - 3 * H
+        self.see(t0, {1: "Backlog"})
+        self.see(t0 + 120, {1: "Ready"})
+        self.see(t0 + 120 + 2 * H, {1: "In review"})
+        self.see(t0 + 240 + 2 * H, {1: "Done"})
+        events = {1: set_events(10, "ready", "in-progress", t0 + 1200)}
+        self.assertFalse(self.history.merge_labels(events))
+        [episode] = self.history.summary(NOW).episodes
+        self.assertIsNone(episode.cycle)
+        self.assertIsNone(episode.lead)
+
+    def test_round_trip_while_the_stack_was_off_keeps_its_completion(self) -> None:
+        """Ready -> In progress -> Done -> Ready by set calls while the
+        collector is off: both snapshots say Ready, the labels say more."""
+        t0 = NOW - 4 * H
+        self.see(t0, {1: "Ready"})
+        self.see(t0 + 3 * H, {1: "Ready"})
+        rows = [
+            *set_events(10, "ready", "in-progress", t0 + 600),
+            *set_events(20, "in-progress", "done", t0 + 1200),
+            *set_events(30, "done", "ready", t0 + 1800),
+        ]
+        self.assertTrue(self.history.merge_labels({1: rows}))
+        ledger = self.lines(th.LEDGER)
+        self.assertEqual(
+            [(r["to"], r.get("event"), r["executor"]) for r in ledger],
+            [
+                ("Ready", None, "Claude"),
+                ("In progress", 10, "Claude"),
+                ("Done", 20, "Unknown"),
+                ("Ready", 30, "Claude"),
+            ],
+        )
+        # The same events again, twice in one list, and after a restart: the
+        # event ids are used, nothing is added twice.
+        self.assertFalse(self.history.merge_labels({1: rows + rows}))
+        replayed = self.fresh()
+        self.assertEqual(replayed.entries, self.history.entries)
+        self.assertFalse(replayed.merge_labels({1: rows}))
+        self.assertEqual(self.lines(th.LEDGER), ledger)
+        for history in (self.history, replayed):
+            [episode] = history.summary(NOW).episodes
+            self.assertEqual(episode.done.seen_at, t0 + 1200)
+            self.assertEqual(episode.done.executor, "Unknown")
+            self.assertEqual(episode.cycle, 600)
+
+    def lagged_trip(self, t0: int) -> list[monitor.Json]:
+        """Done -> In progress -> Done -> Ready by set calls; each label
+        comes 5 s after the board move a snapshot saw (t0+160, t0+220)."""
+        return [
+            *set_events(10, "done", "in-progress", t0 + 105),
+            *set_events(20, "in-progress", "done", t0 + 165),
+            *set_events(30, "done", "ready", t0 + 225),
+        ]
+
+    def assert_lagged_trip_kept(self, t0: int, rows: list[monitor.Json]) -> None:
+        expected = [
+            ("Done", None, "Claude"),
+            ("In progress", 10, "Claude"),
+            ("Done", 20, "Unknown"),
+            ("Ready", 30, "Claude"),
+        ]
+        ledger = self.lines(th.LEDGER)
+        self.assertEqual(
+            [(r["to"], r.get("event"), r["executor"]) for r in ledger], expected
+        )
+        # The complete events again, twice in one list, and after a restart.
+        self.assertFalse(self.history.merge_labels({1: rows + rows}))
+        replayed = self.fresh()
+        self.assertEqual(replayed.entries, self.history.entries)
+        self.assertFalse(replayed.merge_labels({1: rows}))
+        self.assertEqual(self.lines(th.LEDGER), ledger)
+        for history in (self.history, replayed):
+            [episode] = history.summary(NOW).episodes
+            self.assertEqual(episode.done.seen_at, t0 + 165)
+            self.assertEqual(episode.done.executor, "Unknown")
+            self.assertEqual(episode.cycle, 60)
+
+    def test_round_trip_label_lagging_the_equal_snapshot_is_kept(self) -> None:
+        """The label back to Done comes after the snapshot that saw Done, and
+        the events are read between the snapshots."""
+        t0 = NOW - H
+        rows = self.lagged_trip(t0)
+        self.see(t0, {1: "Done"})
+        self.history.merge_labels({1: rows[:2]})
+        self.see(t0 + 160, {1: "Done"})
+        self.history.merge_labels({1: rows[:4]})
+        self.see(t0 + 220, {1: "Ready"})
+        self.history.merge_labels({1: rows})
+        self.see(t0 + 300, {1: "Ready"})
+        self.history.merge_labels({1: rows})
+        self.assert_lagged_trip_kept(t0, rows)
+
+    def test_round_trip_label_lagging_the_equal_snapshot_read_late(self) -> None:
+        """The same moves, with every event read only after the last snapshot."""
+        t0 = NOW - H
+        rows = self.lagged_trip(t0)
+        self.see(t0, {1: "Done"})
+        self.see(t0 + 160, {1: "Done"})
+        self.see(t0 + 220, {1: "Ready"})
+        self.see(t0 + 300, {1: "Ready"})
+        self.assertTrue(self.history.merge_labels({1: rows}))
+        self.assert_lagged_trip_kept(t0, rows)
+
+    def test_sync_events_and_unknown_issues_change_nothing(self) -> None:
+        self.see(NOW - 600, {1: "Ready"})
+        self.see(NOW, {1: "Done"})
+        before = self.lines(th.LEDGER)
+        backfill = [
+            label_event(1, "labeled", "status::sync", NOW - 300),
+            label_event(2, "labeled", "status::done", NOW - 300),
+            label_event(3, "unlabeled", "status::ready", NOW - 300),
+            label_event(4, "unlabeled", "status::sync", NOW - 299),
+        ]
+        other = set_events(9, "ready", "done", NOW - 300)
+        self.assertFalse(self.history.merge_labels({1: backfill, 2: other, 3: []}))
+        self.assertEqual(self.lines(th.LEDGER), before)
+
+
+class CollectorLabelsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "metrics").mkdir()
+        patcher = patch.object(tickets.epic, "shared_reader", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def collect(self, state: monitor.Json, events) -> bool:  # type: ignore[no-untyped-def]
+        def fetch(cache: Path, request: monitor.Json, timeout: float) -> monitor.Json:
+            return {
+                "deps": {str(n): [] for n in request["ready"]},
+                "reviews": {str(n): None for n in request["refinement"]},
+                "events": events(request),
+            }
+
+        with patch.object(monitor.LATEST, "ticks", (time.time(), {})):
+            return monitor.collect_tickets(
+                self.root / "metrics", self.root / "cache", 5, state, fetch
+            )
+
+    def health(self) -> str:
+        return (self.root / "metrics/tickets-health.prom").read_text()
+
+    def test_label_events_reach_the_ledger_and_their_source_health(self) -> None:
+        start = int(time.time()) - 600
+        state = snapshot(items=[ticket(1, "Ready")])
+        state["fetched_at"] = start
+        self.assertTrue(
+            self.collect(state, lambda r: {str(n): [] for n in r["events"]})
+        )
+        state = snapshot(items=[ticket(1, "In progress")])
+        state["fetched_at"] = start + 120
+        changed = {"1": set_events(7, "ready", "in-progress", start + 60)}
+        self.assertTrue(self.collect(state, lambda r: changed))
+        self.assertIn('epic_ticket_source_ok{source="labels"} 1', self.health())
+        last = [json.loads(x) for x in (self.root / th.LEDGER).read_text().splitlines()]
+        self.assertEqual((last[-1]["seen_at"], last[-1]["event"]), (start + 60, 7))
+
+    def test_labels_source_down_adds_nothing_and_is_unknown(self) -> None:
+        state = snapshot(items=[ticket(1, "Ready")])
+        state["fetched_at"] = int(time.time())
+        self.assertFalse(self.collect(state, lambda r: None))
+        self.assertIn('epic_ticket_source_ok{source="labels"} 0', self.health())
+        self.assertIn('epic_ticket_source_ok{source="ledger"} 1', self.health())
+
+    def test_changes_while_labels_are_down_merge_after_recovery(self) -> None:
+        """Snapshot Ready, then Done while the labels source is down; three
+        set calls in between. Back up: the chain replaces the snapshot
+        entry, one completion only, and a replay changes nothing."""
+        start = int(time.time()) - 900
+        state = snapshot(items=[ticket(1, "Ready")])
+        state["fetched_at"] = start
+        self.collect(state, lambda r: {str(n): [] for n in r["events"]})
+        state = snapshot(items=[ticket(1, "Done")])
+        state["fetched_at"] = start + 600
+        self.collect(state, lambda r: None)
+        self.assertIn('epic_ticket_source_ok{source="labels"} 0', self.health())
+        events = {
+            "1": [
+                *set_events(10, "ready", "in-progress", start + 100),
+                *set_events(20, "in-progress", "in-review", start + 200),
+                *set_events(30, "in-review", "done", start + 300),
+            ]
+        }
+        state["fetched_at"] = start + 660
+        self.collect(state, lambda r: events)
+        self.assertIn('epic_ticket_source_ok{source="labels"} 1', self.health())
+        ledger = self.root / th.LEDGER
+        rows = [json.loads(x) for x in ledger.read_text().splitlines()]
+        self.assertEqual(
+            [(r["to"], r["seen_at"], r.get("source")) for r in rows[1:]],
+            [
+                ("In progress", start + 100, "label"),
+                ("In review", start + 200, "label"),
+                ("Done", start + 300, "label"),
+            ],
+        )
+        before = ledger.read_text()
+        state["fetched_at"] = start + 720
+        self.collect(state, lambda r: events)
+        self.assertEqual(ledger.read_text(), before)
 
 
 if __name__ == "__main__":

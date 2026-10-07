@@ -12,13 +12,17 @@ default. Interactive sessions (no EPIC_ACTION_FILE) are not checked. The
 caller names the agent (Claude or Codex); "this agent" below means that one.
 
   Write                          Fresh check
-  claim (board write or claim    the selector still gives this claim: Ready,
-  comment on the issue)          Executor this agent, no blockers, a free
+  claim (status helper `set` or  the selector still gives this claim: Ready,
+  claim comment on the issue)    Executor this agent, no blockers, a free
                                  slot; once In progress for this agent, owner
                                  writes pass
-  board write in a continue      the named item is the tick's issue (or the
-                                 PR's `Issue:` ticket), In progress for this
-                                 agent
+  status helper `set` in a       the issue is the tick's issue (or the PR's
+  continue                       `Issue:` ticket), In progress for this agent
+  status helper `repair`         the tick's issue (or the PR's `Issue:`
+                                 ticket), Executor this agent, any Status
+  status helper `sync`, raw      refused: Status changes go only through the
+  board write, raw status::*     trusted helper (set_status.py), so every
+  label edit                     change also gets its status label
   push, PR create                PR open and not merged, branch is the PR's
                                  head, every issue of the PR In progress with
                                  Executor this agent; without a PR: the same
@@ -54,6 +58,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import github_state as gs
 import next_action as na
@@ -70,6 +75,11 @@ VERDICT_LINE = re.compile(
     r"^Review: (APPROVED|CHANGES REQUESTED) by (Claude|Codex) at ([0-9a-f]{40})\s*$",
     re.MULTILINE,
 )
+STATUS_HELPER = Path(__file__).resolve().parent / "set_status.py"
+# set_status.PREFIX; the helper is imported only to read a helper call, so a
+# runner checkout without it still loads this module.
+STATUS_PREFIX = "status::"
+STATUS_HINT = f"change Status only with python3 {STATUS_HELPER} set <issue> <status>"
 # Text that may write through git or gh. Used only when a command cannot be
 # read word by word: then it is refused instead of guessed.
 WRITE_HINT = re.compile(
@@ -77,9 +87,12 @@ WRITE_HINT = re.compile(
     r"|\bgh\b.*\b(?:pr|issue)\b.*\b(?:merge|comment|ready|edit|close|reopen|create|review)\b"
     r"|\bgh\b.*\bproject\b.*\bitem-"
     r"|\bgh\b.*\bapi\b.*(?:-X|--method)[ =]*(?:POST|PATCH|PUT|DELETE)"
-    r"|\bgh\b.*\bapi\b.*(?:\s-[fF]\s|--field|--raw-field|--input)",
+    r"|\bgh\b.*\bapi\b.*(?:\s-[fF]\s|--field|--raw-field|--input)"
+    r"|\bset_status\b",
     re.DOTALL,
 )
+# Text that may change the board Status or a status label.
+STATUS_TEXT = re.compile(r"set_status|\bitem-|projectsV2|ProjectV2|status::|status%3A")
 WRAPPERS = {"env", "command", "nohup", "time", "exec"}
 SHELLS = {"bash", "sh", "zsh", "eval", "xargs", "python", "python3"}
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
@@ -106,14 +119,21 @@ class Unclear(Exception):
     """A command that may write but cannot be read safely."""
 
 
+class StatusUnclear(Unclear):
+    """A status helper call that is not the one allowed form."""
+
+
 @dataclass
 class Write:
-    kind: str  # push, pr-create, merge, verdict, comment, pr-write, issue-write, board
+    # push, pr-create, merge, verdict, comment, pr-write, issue-write, board,
+    # status (the helper), status-label (a raw status::* label edit)
+    kind: str
     number: int | None = None
     sha: str | None = None
     branch: str | None = None
     delete: bool = False
     item: str | None = None  # board item: node ID or numeric REST id
+    mode: str | None = None  # status helper: set, sync or repair
 
 
 def active(env: Mapping[str, str] | None = None) -> bool:
@@ -323,6 +343,21 @@ def api_writes(args: list[str], cwd: str, stdin: str) -> list[Write]:
         m = re.search(r"projectsV2/\d+/items/(\d+)$", endpoint)
         return [Write("board", item=m.group(1) if m else None)]
     repo = rf"repos/{REPO_PATH}"
+    if m := re.fullmatch(rf"{repo}/issues/(\d+)(/labels(?:/.*)?)?", endpoint):
+        source = first(flags, "--input")
+        sent = " ".join(fields) + (read_file(source, cwd, stdin) if source else "")
+        if m.group(2):
+            # Adding or removing a status label, or replacing or clearing all
+            # labels (which can drop one).
+            touched = STATUS_PREFIX in unquote(endpoint) + sent or (
+                m.group(2) == "/labels" and method in ("PUT", "DELETE")
+            )
+        else:
+            touched = any(f.startswith("labels") for f in fields) or (
+                bool(source) and '"labels"' in sent
+            )
+        if touched:
+            return [Write("status-label", int(m.group(1)))]
     if m := re.fullmatch(rf"{repo}/issues/(\d+)/comments", endpoint):
         return [comment_write(int(m.group(1)), body())]
     if re.fullmatch(rf"{repo}/issues/comments/\d+", endpoint):
@@ -373,11 +408,43 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
         if sub == "review" and found.kind == "comment":
             return [Write("pr-write", number)]
         return [found]
+    if sub == "edit":
+        labels = flags.get("--add-label", []) + flags.get("--remove-label", [])
+        if any(
+            name.strip().startswith(STATUS_PREFIX)
+            for value in labels
+            for name in value.split(",")
+        ):
+            return [Write("status-label", number)]
     if sub in ("ready", "edit", "close", "reopen", "lock", "unlock"):
         return [Write("pr-write" if group == "pr" else "issue-write", number)]
     if group == "pr" and sub == "create":
         return [Write("pr-create")]
     return []
+
+
+def unclear(text: str) -> type[Unclear]:
+    """StatusUnclear for text that may change the Status or a status label."""
+    return StatusUnclear if STATUS_TEXT.search(text) else Unclear
+
+
+def status_write(words: list[str], cwd: str) -> Write:
+    """`python3 <trusted helper> <mode> <issue> [<status>]`, nothing else: not
+    the worktree's copy, no interpreter flags, a valid helper call."""
+    if not os.path.basename(words[0]).startswith("python") or len(words) < 2:
+        raise StatusUnclear(f"run the status helper as python3 {STATUS_HELPER} ...")
+    script = Path(cwd) / os.path.expanduser(words[1])
+    if script.resolve() != STATUS_HELPER:
+        raise StatusUnclear(
+            f"run the trusted status helper {STATUS_HELPER}, not {script}"
+        )
+    import set_status
+
+    try:
+        mode, issues, _ = set_status.parse(words[2:])
+    except set_status.Usage as error:
+        raise StatusUnclear(f"malformed status helper call: {error}") from None
+    return Write("status", issues[0], mode=mode)
 
 
 def bash_writes(command: str, cwd: str) -> list[Write]:
@@ -386,7 +453,7 @@ def bash_writes(command: str, cwd: str) -> list[Write]:
         commands = words_of(line)
         if commands is None:
             if WRITE_HINT.search(line):
-                raise Unclear(
+                raise unclear(line)(
                     "a write must be one plain command, without $( ) or backticks"
                 )
             continue
@@ -397,8 +464,16 @@ def bash_writes(command: str, cwd: str) -> list[Write]:
             name = os.path.basename(words[0])
             if name == "cd" and len(words) == 2:
                 cwd = str(Path(cwd) / os.path.expanduser(words[1]))
+            elif name == "set_status.py" or (
+                name.startswith("python")
+                and len(words) > 1
+                and os.path.basename(words[1]) == "set_status.py"
+            ):
+                writes.append(status_write(words, cwd))
             elif name in SHELLS and WRITE_HINT.search(" ".join(words[1:])):
-                raise Unclear(f"a write inside {name} is not checked; run it directly")
+                raise unclear(" ".join(words))(
+                    f"a write inside {name} is not checked; run it directly"
+                )
             elif name == "git":
                 i, run_cwd = 1, cwd
                 while i < len(words) and words[i].startswith("-"):
@@ -434,6 +509,9 @@ def tool_writes(tool_name: str, tool_input: dict[str, Any], cwd: str) -> list[Wr
         found = comment_write(number, str(tool_input.get("body") or ""))
         return [found if found.kind == "verdict" else Write("pr-write", number)]
     if tool_name == "mcp__github__update_issue":
+        # A labels list replaces all labels, so it can drop a status label.
+        if "labels" in tool_input:
+            return [Write("status-label", number)]
         return [Write("issue-write", number)]
     if tool_name == "mcp__github__update_pull_request":
         return [Write("pr-write", number)]
@@ -577,25 +655,34 @@ def issue_write(ctx: Context) -> str | None:
     return None
 
 
-def check_board(ctx: Context, write: Write) -> str | None:
-    """The item must be the tick's issue and still fit the action."""
-    if ctx.kind not in BOARD_ACTIONS:
-        return f"a {ctx.kind} tick does not change the board"
-    if not write.item:
-        return "name the board item (--id, items/<id> or itemId)"
-    item = next(
-        (i for i in ctx.items() if write.item in (i.get("id"), str(i.get("rest_id")))),
-        None,
-    )
-    if item is None:
-        return f"board item {write.item} is not on the board"
-    content = item.get("content") or {}
-    number = content.get("number")
-    if not na.ISSUE_URL.fullmatch(content.get("url") or ""):
-        return f"board item {write.item} is not an issue of {na.REPO}"
+def status_rule(write: Write, kind: Any) -> str | None:
+    """The Status rules that need no GitHub read: Status changes only through
+    the helper, no sync in a tick, `set` only in a claim or continue."""
+    if write.kind == "board":
+        return f"no raw board writes in a tick: {STATUS_HINT}"
+    if write.kind == "status-label":
+        return f"no raw status:: label edits in a tick: {STATUS_HINT}, or repair"
+    if write.kind == "status" and write.mode == "sync":
+        return "sync is Anton's backfill; in a tick use repair for the tick's issue"
+    if write.kind == "status" and write.mode == "set" and kind not in BOARD_ACTIONS:
+        return f"a {kind} tick does not change the board"
+    return None
+
+
+def check_status(ctx: Context, write: Write) -> str | None:
+    """A status helper call (status_rule passed): `set` like a board write of
+    the claim or continue, `repair` for this agent's own ticket in any Status."""
+    number = write.number
     allowed = {ctx.issue} if ctx.pr is None else ctx.targets() - {ctx.pr}
     if number not in allowed:
-        return f"board item {write.item} is issue {number}, not this tick's issue"
+        return f"issue {number} is not this tick's issue"
+    item = ctx.item(number) if number is not None else None
+    if item is None:
+        return f"issue {number} is not on the board"
+    if write.mode == "repair":
+        if item.get("executor") != ctx.agent:
+            return f"issue {number} Executor is {item.get('executor')}, not {ctx.agent}"
+        return None
     if ctx.kind == "claim":
         return claim_or_owned(ctx)
     if item.get("status") != "In progress" or item.get("executor") != ctx.agent:
@@ -692,8 +779,8 @@ def check_write(ctx: Context, write: Write) -> str | None:
         if ctx.pr is None and write.number == ctx.issue:
             return issue_write(ctx)
         return None
-    if write.kind == "board":
-        return check_board(ctx, write)
+    if write.kind in ("board", "status-label", "status"):
+        return status_rule(write, ctx.kind) or check_status(ctx, write)
     return f"unknown write {write.kind}"
 
 
@@ -734,6 +821,32 @@ def promotion_refusal(
     if not promotion_writes(tool_name, tool_input):
         return None
     return runtime.write_barrier()
+
+
+def status_refusal(tool_name: str, tool_input: dict[str, Any], cwd: str) -> str | None:
+    """The Status rules without a GitHub read (status_rule), for a runner
+    child with the shared reader off (EPIC_SHARED_READER=0). With it on,
+    guard() applies them together with the fresh checks. The helper itself
+    refuses issues outside the tick's targets."""
+    if not os.environ.get("EPIC_ACTION_FILE"):
+        return None
+    try:
+        writes = tool_writes(tool_name, tool_input, cwd)
+    except StatusUnclear as error:
+        return str(error)
+    except Unclear:
+        return None  # not about the Status: the other checks decide
+    for write in writes:
+        if write.kind not in ("board", "status-label", "status"):
+            continue
+        try:
+            kind = load_action().get("action")
+        except (OSError, ValueError) as error:
+            return f"no selected action or bad input: {error}"
+        reason = status_rule(write, kind)
+        if reason:
+            return reason
+    return None
 
 
 def guard(
