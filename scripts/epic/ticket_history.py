@@ -356,8 +356,22 @@ def reconcile(
 
     Then the round trips no snapshot saw: unused changes between two entries
     (or the last entry and `seen`, the ticket's last snapshot) that leave the
-    status and come back to it. Their Done has Executor Unknown."""
+    status and come back to it. Their Done has Executor Unknown.
+
+    Repeated until nothing changes: a round trip can use a late label that
+    kept the next entry's chain from matching."""
     changes = sorted(changes, key=lambda c: (c.at, c.event))
+    while True:
+        merged = reconcile_once(entries, changes, seen)
+        if merged == entries:
+            return merged
+        entries = merged
+
+
+def reconcile_once(
+    entries: list[Entry], changes: list[LabelChange], seen: int | None
+) -> list[Entry]:
+    """One pass of reconcile; `changes` sorted by time."""
     used = {e.event for e in entries if e.event is not None}
     out: list[Entry] = []
     for entry in entries:
@@ -388,17 +402,27 @@ def reconcile(
     trips: list[Entry] = []
     for i, entry in enumerate(out):
         after = out[i + 1] if i + 1 < len(out) else None
+        snapshot = True  # a board snapshot at `end` saw entry.to
         if after is None:
             end = seen
         elif after.event is None and after.seen_before is not None:
             end = after.seen_before  # the last snapshot still at entry.to
         else:
-            end = after.seen_at
+            end, snapshot = after.seen_at, False
         if end is None:
             continue
         free = [
             c for c in changes if c.event not in used and entry.seen_at < c.at < end
         ]
+        if snapshot and len(round_trip(entry.to, free)) < len(free):
+            # A trip left before the snapshot, so the board was back by then;
+            # the label that comes back may still lag it by LABEL_LAG.
+            for change in changes:
+                if change.event in used or not end <= change.at <= end + LABEL_LAG:
+                    continue
+                free.append(change)
+                if change.to == entry.to:
+                    break
         for change in round_trip(entry.to, free):
             used.add(change.event)
             done = change.to == "Done"

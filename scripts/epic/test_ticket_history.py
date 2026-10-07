@@ -1150,6 +1150,20 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(th.reconcile([seed], changes, seen=NOW + 1000), [seed])
         self.assertEqual(th.reconcile([seed], changes), [seed])
 
+    def test_a_round_trip_label_may_lag_its_snapshot_but_no_further(self) -> None:
+        seed = th.Entry(1, "Ready", NOW, "Claude", seed=True)
+        # Left at +600, back at +1200: the snapshot at +1000 saw Ready again.
+        changes = th.label_changes(
+            set_events(10, "ready", "in-progress", NOW + 600)
+            + set_events(20, "in-progress", "ready", NOW + 1200)
+        )
+        got = th.reconcile([seed], changes, seen=NOW + 1000)
+        self.assertEqual([e.event for e in got], [None, 10, 20])
+        # Back more than LABEL_LAG after the snapshot: not this trip.
+        self.assertEqual(th.reconcile([seed], changes, seen=NOW + 800), [seed])
+        # A trip that starts after the snapshot is not confirmed by it.
+        self.assertEqual(th.reconcile([seed], changes, seen=NOW + 590), [seed])
+
 
 class MergeLabelsTest(Base):
     """The ledger takes the recorded change times (History.merge_labels)."""
@@ -1251,6 +1265,64 @@ class MergeLabelsTest(Base):
             self.assertEqual(episode.done.seen_at, t0 + 1200)
             self.assertEqual(episode.done.executor, "Unknown")
             self.assertEqual(episode.cycle, 600)
+
+    def lagged_trip(self, t0: int) -> list[monitor.Json]:
+        """Done -> In progress -> Done -> Ready by set calls; each label
+        comes 5 s after the board move a snapshot saw (t0+160, t0+220)."""
+        return [
+            *set_events(10, "done", "in-progress", t0 + 105),
+            *set_events(20, "in-progress", "done", t0 + 165),
+            *set_events(30, "done", "ready", t0 + 225),
+        ]
+
+    def assert_lagged_trip_kept(self, t0: int, rows: list[monitor.Json]) -> None:
+        expected = [
+            ("Done", None, "Claude"),
+            ("In progress", 10, "Claude"),
+            ("Done", 20, "Unknown"),
+            ("Ready", 30, "Claude"),
+        ]
+        ledger = self.lines(th.LEDGER)
+        self.assertEqual(
+            [(r["to"], r.get("event"), r["executor"]) for r in ledger], expected
+        )
+        # The complete events again, twice in one list, and after a restart.
+        self.assertFalse(self.history.merge_labels({1: rows + rows}))
+        replayed = self.fresh()
+        self.assertEqual(replayed.entries, self.history.entries)
+        self.assertFalse(replayed.merge_labels({1: rows}))
+        self.assertEqual(self.lines(th.LEDGER), ledger)
+        for history in (self.history, replayed):
+            [episode] = history.summary(NOW).episodes
+            self.assertEqual(episode.done.seen_at, t0 + 165)
+            self.assertEqual(episode.done.executor, "Unknown")
+            self.assertEqual(episode.cycle, 60)
+
+    def test_round_trip_label_lagging_the_equal_snapshot_is_kept(self) -> None:
+        """The label back to Done comes after the snapshot that saw Done, and
+        the events are read between the snapshots."""
+        t0 = NOW - H
+        rows = self.lagged_trip(t0)
+        self.see(t0, {1: "Done"})
+        self.history.merge_labels({1: rows[:2]})
+        self.see(t0 + 160, {1: "Done"})
+        self.history.merge_labels({1: rows[:4]})
+        self.see(t0 + 220, {1: "Ready"})
+        self.history.merge_labels({1: rows})
+        self.see(t0 + 300, {1: "Ready"})
+        self.history.merge_labels({1: rows})
+        self.assert_lagged_trip_kept(t0, rows)
+
+    def test_round_trip_label_lagging_the_equal_snapshot_read_late(self) -> None:
+        """The same moves, with every event read only after the last snapshot."""
+        t0 = NOW - H
+        rows = self.lagged_trip(t0)
+        self.see(t0, {1: "Done"})
+        self.see(t0 + 160, {1: "Done"})
+        self.see(t0 + 220, {1: "Ready"})
+        self.see(t0 + 300, {1: "Ready"})
+        self.assertTrue(self.history.merge_labels({1: rows}))
+        self.assert_lagged_trip_kept(t0, rows)
 
     def test_sync_events_and_unknown_issues_change_nothing(self) -> None:
         self.see(NOW - 600, {1: "Ready"})
