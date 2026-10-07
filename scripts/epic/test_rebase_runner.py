@@ -52,6 +52,7 @@ COPIED = (
     "scripts/epic/tick_events.py",
     "scripts/epic/target_lock.py",
     "scripts/epic/tick_cooldown.py",
+    "scripts/epic/claude_usage.py",
     "scripts/epic/tick_verify.py",
     "scripts/epic/rebase_policy.py",
     "scripts/epic/git_gate.py",
@@ -145,7 +146,9 @@ else:
     sys.exit(1)
 """
 # The owner's steps. TEST_MODEL_MODE: resolve, no-proof, edit-after-proof,
-# fail (does nothing), quota (reports the GitHub quota), review.
+# fail (does nothing), quota (reports the GitHub quota), review,
+# session-limit (the CLI refuses the session at once), session-limit-work
+# (the limit after some model work).
 MODEL = """\
 #!/usr/bin/env python3
 import json, os, re, shlex, subprocess, sys
@@ -163,6 +166,18 @@ if mode in ('fail', 'review'):
     done()
 if mode == 'quota':
     done('quota')
+if mode.startswith('session-limit'):
+    work = mode == 'session-limit-work'
+    print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': True,
+                      'terminal_reason': 'api_error', 'api_error_status': 429,
+                      'result': "You've hit your session limit \\u00b7 resets 1am (UTC)",
+                      'session_id': sys.argv[sys.argv.index('--session-id') + 1],
+                      'duration_api_ms': 900 if work else 0, 'num_turns': 4 if work else 1,
+                      'total_cost_usd': 0.4 if work else 0,
+                      'usage': {'input_tokens': 50 if work else 0,
+                                'output_tokens': 70 if work else 0},
+                      'permission_denials': []}))
+    sys.exit(1)
 args = sys.argv
 gate_env = json.loads(args[args.index('--mcp-config') + 1])['mcpServers']['epic-gate']['env']
 os.environ.update(gate_env)
@@ -459,6 +474,18 @@ class RebaseRunnerTest(unittest.TestCase):
     def test_quota_result_is_void(self) -> None:
         self.assertEqual(self.tick("quota"), 75, self.log())
         self.assertEqual([a["outcome"] for a in self.attempts()], ["void"])
+
+    def test_session_limit_before_any_work_voids_the_attempt(self) -> None:
+        self.assertEqual(self.tick("session-limit"), 75, self.log())
+        self.assertEqual([a["outcome"] for a in self.attempts()], ["void"])
+        # The usage wait holds the next tick: no model and no new attempt.
+        self.assertEqual(self.tick("session-limit"), 0, self.log())
+        self.assertEqual(self.models(), 1)
+        self.assertEqual(len(self.attempts()), 1)
+
+    def test_session_limit_after_model_work_counts_the_attempt(self) -> None:
+        self.assertEqual(self.tick("session-limit-work"), 75, self.log())
+        self.assertEqual([a["outcome"] for a in self.attempts()], ["failed"])
 
     def test_review_prompt_carries_the_scope(self) -> None:
         review = self.action("review")

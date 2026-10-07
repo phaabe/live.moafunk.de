@@ -57,6 +57,18 @@
 # logs, then stops before the target lock and again right before the model.
 # Anton deletes the file to resume.
 #
+# Claude usage wait (claude_usage.py): a terminal CLI result with the
+# account's session limit stores a wait for the Claude account
+# (EPIC_CLAUDE_ACCOUNT_KEY, default `default`) in the shared state dir. The
+# tick checks it before selection and again right before the model, where
+# the admission is recorded under the account lock. A wait, the running
+# recovery probe or an unresolved earlier admission ends the tick with exit 0:
+# no model, cooldown, gate record or rebase attempt. The admission lock
+# (fd 19) and the probe lock (fd 18) stay with this shell and never reach the
+# model. The result is stored right after the CLI exits, before any check
+# that can end the tick; the EXIT trap resolves an admission whose result was
+# never read. A session limit after the model ends the tick blocked (75).
+#
 # Rebase policy (rebase_policy.py, shared with the Codex runner): before a
 # `resolve-conflict` model, `attempt-check` pins the base tip for this attempt
 # and skips a key (PR, head, target tip) that already failed
@@ -120,6 +132,14 @@ model_exit=0
 admitted=0
 lock_held=0
 admission_id=""
+# The Claude usage admission (claude_usage.py): its ID is the session ID.
+# usage_open: admitted and its result not stored yet.
+usage_id=""
+usage_open=0
+model_started=0
+usage_kind=""
+usage_void=0
+usage_failed=0
 py=python3
 code_root=$script_root
 repo_root=$script_root
@@ -130,6 +150,17 @@ pinned_bin=""
 unset EPIC_BODY_DIR EPIC_BODY_DIR_ID
 cleanup() {
     local result=$?
+    # An admission whose result was never stored: no model ran (withdrawn),
+    # or the tick stopped during or after it (inconclusive). Before the
+    # locks: fd 18 and 19 close only when this shell exits.
+    if [[ "$usage_open" == 1 ]]; then
+        usage_open=0
+        local how=--withdrawn
+        if [[ "$model_started" == 1 ]]; then
+            how=--inconclusive
+        fi
+        "$py" "${code_root}/scripts/epic/claude_usage.py" finish --id "$usage_id" "$how" || true
+    fi
     if [[ "$lock_held" == 1 ]]; then
         step_mark cleanup
         # Teardown first, so the cleanup duration includes it. Kept for after
@@ -362,6 +393,21 @@ read_blocked() {
     tick_phase=$1
     exit 75
 }
+# 0 when a Claude model may start (claude_usage.py check, read only). A usage
+# wait, the running probe or an unresolved admission ends the tick with exit
+# 0; an unusable store stops it with that error.
+usage_check() {
+    local result=0
+    "$py" "${code_root}/scripts/epic/claude_usage.py" check || result=$?
+    if [[ "$result" == 0 ]]; then
+        return 0
+    fi
+    tick_phase=usage
+    if [[ "$result" == 3 ]]; then
+        exit 0
+    fi
+    exit "$result"
+}
 
 if ! quota_open; then
     exit 0
@@ -437,6 +483,8 @@ case "$close" in
     0 | 3) ;;
     *) printf 'tick: close step failed with exit %s; continuing\n' "$close" >&2 ;;
 esac
+# A Claude usage wait: no selection, no model.
+usage_check
 step_mark selection
 tick_phase=select
 select=0
@@ -723,6 +771,39 @@ if ! quota_open; then
     tick_phase=quota
     exit 0
 fi
+# The Claude usage admission, under the account lock: another runner may
+# have stored a wait since usage_check. This shell keeps the admission lock
+# (fd 19) and, for the recovery probe, the probe lock (fd 18).
+usage_id=$("${py_snippet[@]}" -c 'import uuid; print(uuid.uuid4())')
+usage_dir=""
+usage_ready=0
+usage_dir=$("$py" "${code_root}/scripts/epic/claude_usage.py" path) || usage_ready=$?
+if [[ "$usage_ready" != 0 ]]; then
+    discard_seen
+    tick_phase=usage
+    exit "$usage_ready"
+fi
+if ! exec 18>> "${usage_dir}/probe.lock" 19>> "${usage_dir}/admissions/${usage_id}.lock"; then
+    discard_seen
+    tick_phase=usage
+    exit 1
+fi
+admit=0
+"$py" "${code_root}/scripts/epic/claude_usage.py" admit --id "$usage_id" \
+    --fd 19 --probe-fd 18 || admit=$?
+case "$admit" in
+    0) usage_open=1 ;;
+    3)
+        discard_seen
+        tick_phase=usage
+        exit 0
+        ;;
+    *)
+        discard_seen
+        tick_phase=usage
+        exit "$admit"
+        ;;
+esac
 # The attempt counts from here, once, whatever happens next.
 tick_id="${tick_started}-$$"
 attempt_open=0
@@ -835,8 +916,11 @@ fi
 # The session's JSON result goes to result.json and then into the log. Its exit
 # (124 or 137 on timeout) is kept: the action is still verified.
 # Set before the start, so a stop during the session still finds its usage.
-session_id=$("${py_snippet[@]}" -c 'import uuid; print(uuid.uuid4())')
+# The usage admission's ID, so its terminal result names this admission.
+session_id=$usage_id
 step_mark model
+model_started=1
+# 18>&- 19>&-: the usage locks stay with this shell, never with the model.
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
     EPIC_WORKTREE="$worktree" EPIC_ATTEMPT_FILE="${lock_dir}/attempt.json" GIT_EDITOR=true \
@@ -848,11 +932,26 @@ run_bounded "${tick_timeout}s" \
     --output-format json \
     --json-schema "$(cat "${code_root}/scripts/epic/claude-result-schema.json")" \
     ${worktree_args[@]+"${worktree_args[@]}"} < "${lock_dir}/prompt.txt" \
-    > "${lock_dir}/result.json" || model_exit=$?
+    > "${lock_dir}/result.json" 18>&- 19>&- || model_exit=$?
+receipt=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 model_done=1
 step_mark validation
 cat "${lock_dir}/result.json" || true
 printf '\ntick: model exit=%s\n' "$model_exit"
+# The usage evidence first: the checks below may end the tick. A failed write
+# leaves the admission unresolved, so no model starts until it is repaired.
+usage_open=0
+usage_out=""
+if usage_out=$("$py" "${code_root}/scripts/epic/claude_usage.py" finish --id "$usage_id" \
+    --result-file "${lock_dir}/result.json" --receipt "$receipt"); then
+    read -r usage_kind usage_flag <<< "$usage_out" || true
+    if [[ "${usage_flag:-}" == void ]]; then
+        usage_void=1
+    fi
+else
+    usage_failed=1
+    printf 'tick: Claude usage result not stored; no model starts until repair\n' >&2
+fi
 # A session can exit 0 while its push or merge was denied. Check GitHub.
 # A quota wait (stored by the other runner during the session, or by verify)
 # ends the tick before the gate record, so the unverified action is not
@@ -904,6 +1003,9 @@ if [[ "$recorded" == 4 ]]; then
     attempt_finish void
 elif [[ "$verify" == 0 ]]; then
     attempt_finish succeeded
+elif [[ "$usage_void" == 1 ]]; then
+    # The session limit refused the session before any model work.
+    attempt_finish void
 else
     attempt_finish failed
 fi
@@ -934,6 +1036,17 @@ case "$recorded" in
         exit "$recorded"
         ;;
 esac
+if [[ "$usage_failed" == 1 ]]; then
+    tick_phase=usage
+    exit 1
+fi
+# Not landed and the session limit: blocked until the wait ends.
+if [[ "$usage_kind" == usage_quota && "$recorded" != 0 ]]; then
+    printf 'tick: Claude session limit; no model until the wait ends\n'
+    tick_outcome=blocked
+    tick_phase=usage
+    exit 75
+fi
 if [[ "$model_exit" != 0 ]]; then
     tick_phase=model
     exit "$model_exit"

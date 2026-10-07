@@ -52,6 +52,7 @@ FILES = {
     "claude": (
         "scripts/epic/claude-tick.sh",
         "scripts/epic/tick_cooldown.py",
+        "scripts/epic/claude_usage.py",
         "scripts/epic/claude-result-schema.json",
         # Passed to the model only; the stub model ignores them.
         "scripts/epic/claude-runner-settings.json",

@@ -80,6 +80,7 @@ class RunnerHarness(unittest.TestCase):
             "scripts/epic/tick_events.py",
             "scripts/epic/target_lock.py",
             "scripts/epic/tick_cooldown.py",
+            "scripts/epic/claude_usage.py",
             "scripts/epic/rebase_policy.py",
             "scripts/epic/claude-result-schema.json",
             # Passed to the model only; the stub model ignores them.
@@ -202,6 +203,9 @@ class RunnerHarness(unittest.TestCase):
             '"$EPIC_BODY_DIR" > "$TEST_CALLS.body-inode"\n'
             "fi\n"
             'cat > "$TEST_CALLS.prompt"\n'
+            # Usage locks (fd 18, 19) that reached the model; none should.
+            "for fd in 18 19; do if [[ -e /dev/fd/$fd ]]; then printf '%s ' \"$fd\"; fi; done "
+            '> "$TEST_CALLS.usage-fds"\n'
             # The session's runtime environment: prefix, updater, python3.
             "printf '%s\\n%s\\n%s\\n' \"${CLAUDE_CODE_SHELL_PREFIX:-}\" "
             '"${DISABLE_AUTOUPDATER:-}" '
@@ -214,6 +218,11 @@ class RunnerHarness(unittest.TestCase):
             '    echo $! > "$TEST_CALLS.child"\n'
             "fi\n"
             + TRANSCRIPT_STUB
+            # A terminal CLI result for this session (usage_result()), exit 1.
+            + 'if [[ -n "${TEST_MODEL_LIMIT:-}" ]]; then\n'
+            + "    printf '%s' \"${TEST_MODEL_LIMIT//@SESSION@/$session}\"\n"
+            + "    exit 1\n"
+            + "fi\n"
             + 'if [[ -n "${TEST_MODEL_RESULT:-}" ]]; then printf \'%s\' "$TEST_MODEL_RESULT"; fi\n'
             # Another runner stores a quota wait while this session runs.
             'if [[ -n "${TEST_MODEL_WAIT:-}" ]]; then\n'
@@ -1317,6 +1326,214 @@ class ClaudeTickTest(RunnerHarness):
         (args,) = self.model_targets()
         self.assertTrue(args.endswith(f"--add-dir {wt / branch}"))
         self.assertEqual(git(wt / branch, "branch", "--show-current").strip(), branch)
+
+
+def usage_result(**fields: object) -> str:
+    """A terminal CLI result for TEST_MODEL_LIMIT; the stub fills in its session."""
+    data: dict[str, object] = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "terminal_reason": "api_error",
+        "api_error_status": 429,
+        "result": "You've hit your session limit · resets 1am (UTC)",
+        "session_id": "@SESSION@",
+        "duration_api_ms": 0,
+        "num_turns": 1,
+        "total_cost_usd": 0,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "permission_denials": [],
+    }
+    data.update(fields)
+    return json.dumps(data, ensure_ascii=False)
+
+
+class UsageWaitTickTest(RunnerHarness):
+    """The Claude usage wait in the real tick (claude_usage.py)."""
+
+    def usage(self, key: str = "default") -> dict[str, object] | None:
+        path = self.state / "claude-usage" / key / "state.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def last_finish(self) -> tuple[object, object, object]:
+        events = (self.state / "claude-ticks.jsonl").read_text().splitlines()
+        finish = json.loads(events[-1])
+        return finish["exit"], finish["outcome"], finish["phase"]
+
+    def log(self) -> str:
+        return (self.state / "claude.log").read_text()
+
+    def fresh_calls(self) -> None:
+        self.calls.unlink(missing_ok=True)
+
+    def wait_for_model(self) -> int:
+        deadline = time.time() + 30
+        while not self.model_pid.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        return int(self.model_pid.read_text())
+
+    def test_session_limit_stores_a_wait_and_the_next_tick_waits(self) -> None:
+        tick = self.run_tick(TEST_MODEL_LIMIT=usage_result(), TEST_VERIFY_EXIT="1")
+        self.assertEqual(tick.wait(timeout=30), 75)
+        self.assertEqual(self.last_finish(), (75, "blocked", "usage"))
+        usage = self.usage()
+        assert usage is not None
+        wait = usage["wait"]
+        assert isinstance(wait, dict)
+        self.assertEqual(wait["reason"], "session_limit")
+        self.assertEqual(usage["admissions"], {})
+        # No repeat-gate record and no target cooldown.
+        self.assertEqual(
+            [c for c in self.calls_made() if c[0] == "gate"], [["gate", "check"]]
+        )
+        self.assertFalse((self.state / "claude-gate-seen.json").exists())
+        cooldowns = self.state / "claude-cooldown.json"
+        self.assertTrue(
+            not cooldowns.exists() or json.loads(cooldowns.read_text()) == {}
+        )
+        self.assertIn("Claude session limit", self.log())
+
+        # The next tick stops before the selector: no GitHub selection, no model.
+        self.fresh_calls()
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        kinds = {c[0] for c in self.calls_made()}
+        self.assertNotIn("select", kinds)
+        self.assertNotIn("claude", kinds)
+        self.assertEqual(self.last_finish(), (0, "ok", "usage"))
+        self.assertIn(
+            f"claude usage (default): session_limit until {wait['retry_at']}; no model",
+            self.log(),
+        )
+
+    def test_a_wait_stored_after_the_first_check_stops_the_model(self) -> None:
+        # Another runner stores the wait while this tick runs its gate.
+        (self.repo / "scripts/epic/tick_gate.py").write_text(
+            "import json, os, sys\n"
+            f"sys.path.insert(0, {str(self.repo / 'scripts/epic')!r})\n"
+            "import claude_usage as cu\n"
+            "with open(os.environ['TEST_CALLS'], 'a') as f:\n"
+            "    f.write(json.dumps(['gate', sys.argv[1]]) + '\\n')\n"
+            "if sys.argv[1] == 'check':\n"
+            "    open(os.path.join(os.environ['EPIC_STATE_DIR'], 'claude-gate-seen.json'), 'w').write('{}')\n"
+            "    store = cu.Store.from_env(os.environ)\n"
+            "    store.create()\n"
+            "    data = cu.empty()\n"
+            "    data['generation'] = 1\n"
+            "    data['wait'] = {'reason': 'session_limit', 'observed_at': '2026-01-01T00:00:00Z',\n"
+            "                    'reset_at': None, 'retry_at': '2099-01-01T00:00:00Z',\n"
+            "                    'source': 'fallback', 'fallback_count': 1, 'detail': 'past_reset'}\n"
+            "    store.save(data)\n"
+        )
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertEqual(self.model_targets(), [])
+        self.assertNotIn(["gate", "record"], self.calls_made())
+        self.assertFalse((self.state / "claude-gate-seen.json").exists())
+        self.assertEqual(self.last_finish(), (0, "ok", "usage"))
+        self.assertEqual(
+            list((self.state / "claude-usage/default/admissions").iterdir()), []
+        )
+
+    def test_other_api_errors_keep_the_next_tick_running(self) -> None:
+        transient = usage_result(
+            result="API Error: 529 Overloaded", api_error_status=529
+        )
+        self.assertEqual(self.run_tick(TEST_MODEL_LIMIT=transient).wait(timeout=30), 1)
+        usage = self.usage()
+        assert usage is not None
+        self.assertIsNone(usage["wait"])
+        self.fresh_calls()
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertEqual(len(self.model_targets()), 1)
+
+    def test_landed_work_stays_done_with_the_session_limit(self) -> None:
+        # fix lands (verify passes) and the session also hit the limit.
+        tick = self.run_tick(TEST_MODEL_LIMIT=usage_result(), TEST_VERIFY_EXIT="0")
+        self.assertEqual(tick.wait(timeout=30), 1)  # the model's own exit, as before
+        self.assertIn(["gate", "record"], self.calls_made())
+        usage = self.usage()
+        assert usage is not None
+        self.assertIsNotNone(usage["wait"])
+
+    def test_usage_locks_never_reach_the_model(self) -> None:
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertEqual(Path(f"{self.calls}.usage-fds").read_text(), "")
+        usage = self.usage()
+        assert usage is not None
+        self.assertEqual((usage["wait"], usage["admissions"]), (None, {}))
+
+    def test_a_running_model_shows_as_a_running_admission(self) -> None:
+        tick = self.run_tick(TEST_MODEL_SLEEP="30")
+        self.wait_for_model()
+        status = subprocess.run(
+            ["python3", str(self.repo / "scripts/epic/claude_usage.py"), "status"],
+            env={**self.env, "EPIC_QUOTA_DIR": str(self.state)},
+            capture_output=True, text=True, timeout=30,
+        )  # fmt: skip
+        self.assertIn("running since", status.stdout)
+        tick.send_signal(signal.SIGTERM)
+        self.assertEqual(tick.wait(timeout=30), 143)
+        # The stopped tick resolved its admission: the next tick runs.
+        usage = self.usage()
+        assert usage is not None
+        self.assertEqual(usage["admissions"], {})
+        self.model_pid.unlink()
+        self.fresh_calls()
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertEqual(len(self.model_targets()), 1)
+
+    def test_a_killed_tick_waits_for_repair(self) -> None:
+        tick = self.run_tick(TEST_MODEL_SLEEP="30")
+        model = self.wait_for_model()
+        tick.kill()
+        tick.wait(timeout=30)
+        os.kill(model, signal.SIGKILL)
+        time.sleep(0.5)
+        usage = self.usage()
+        assert usage is not None
+        admissions = usage["admissions"]
+        assert isinstance(admissions, dict)
+        (admission,) = admissions
+        # The killed tick leaves its lock dir for manual review, as before.
+        shutil.rmtree(self.state / "claude.lock")
+        self.fresh_calls()
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertEqual(self.model_targets(), [])
+        self.assertIn(f"unresolved admission {admission}", self.log())
+        repaired = subprocess.run(
+            ["python3", str(self.repo / "scripts/epic/claude_usage.py"), "repair", "--id", admission],
+            env={**self.env, "EPIC_QUOTA_DIR": str(self.state)},
+            capture_output=True, text=True, timeout=30,
+        )  # fmt: skip
+        self.assertEqual(repaired.returncode, 0, repaired.stderr)
+        self.model_pid.unlink()
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertEqual(len(self.model_targets()), 1)
+
+    def test_an_unusable_store_or_key_stops_the_tick(self) -> None:
+        self.state.mkdir(mode=0o700)
+        (self.state / "claude-usage").mkdir(mode=0o755)
+        (self.state / "claude-usage").chmod(0o755)
+        self.assertEqual(self.run_tick().wait(timeout=30), 1)
+        self.assertEqual(self.model_targets(), [])
+        self.assertNotIn("select", {c[0] for c in self.calls_made()})
+        self.assertIn("must have mode 0700", self.log())
+        (self.state / "claude-usage").chmod(0o700)
+        self.fresh_calls()
+        tick = self.run_tick(EPIC_CLAUDE_ACCOUNT_KEY="bad key")
+        self.assertEqual(tick.wait(timeout=30), 2)
+        self.assertEqual(self.model_targets(), [])
+
+    def test_another_account_is_not_held(self) -> None:
+        self.assertEqual(
+            self.run_tick(TEST_MODEL_LIMIT=usage_result(), TEST_VERIFY_EXIT="1").wait(
+                timeout=30
+            ),
+            75,
+        )
+        self.fresh_calls()
+        tick = self.run_tick(EPIC_CLAUDE_ACCOUNT_KEY="second")
+        self.assertEqual(tick.wait(timeout=30), 0)
+        self.assertEqual(len(self.model_targets()), 1)
 
 
 if __name__ == "__main__":
