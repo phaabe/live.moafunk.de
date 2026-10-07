@@ -15,6 +15,7 @@ from unittest.mock import patch
 import fixtures
 import monitor
 import ticket_history
+import test_dashboards
 from test_dashboards import docker_ready
 
 
@@ -358,6 +359,26 @@ class DockerSkipTest(unittest.TestCase):
                 HistoryTest("test_promtool_accepts_the_history").run(result)
         self.assertEqual(result.errors + result.failures, [])
         self.assertEqual(len(result.skipped), 1)
+
+    def test_query_tests_skip_and_config_tests_run_without_a_daemon(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/668:
+        the guard sat on the config tests, not on the promtool tests."""
+        queries_test = test_dashboards.QuerySemanticsTest("test_tile_severity_colors")
+        config_test = test_dashboards.SegmentShippingConfigTest(
+            "test_loki_allows_a_series_per_segment"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.sock"
+            with patch.dict("os.environ", {"DOCKER_HOST": f"unix://{missing}"}):
+                queries = unittest.TestResult()
+                unittest.TestSuite([queries_test]).run(queries)
+                config = unittest.TestResult()
+                unittest.TestSuite([config_test]).run(config)
+        self.assertEqual(queries.errors + queries.failures, [])
+        self.assertEqual(len(queries.skipped), 1)
+        self.assertEqual(queries.testsRun, 0)
+        self.assertEqual(config.errors + config.failures + config.skipped, [])
+        self.assertEqual(config.testsRun, 1)
 
 
 class PreviewRuntimeTest(unittest.TestCase):

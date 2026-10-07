@@ -579,7 +579,6 @@ def docker_ready() -> bool:
         return False
 
 
-@unittest.skipUnless(docker_ready(), "needs docker for promtool")
 class SegmentShippingConfigTest(unittest.TestCase):
     """Alloy and Loki settings the status history needs (merged in
     https://github.com/phaabe/live.moafunk.de/pull/641)."""
@@ -603,6 +602,12 @@ class SegmentShippingConfigTest(unittest.TestCase):
 class QuerySemanticsTest(unittest.TestCase):
     """Codex review of https://github.com/phaabe/live.moafunk.de/pull/479:
     the generated queries, evaluated by Prometheus's own test tool."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Checked at run time, not import time, so the skip can be tested.
+        if not docker_ready():
+            raise unittest.SkipTest("needs docker for promtool")
 
     def run_promtool(
         self, tests: list[dashboards.Json], evaluation_interval: str = "1m"
