@@ -487,6 +487,15 @@ class Slots:
                 raise
             if held is None:
                 time.sleep(SLOT_POLL)
+        if held is not None:
+            # fail() takes the lock too: a part is admitted before the error
+            # or not at all, also when the error came while take() ran.
+            with self.lock:
+                refused = stopped() or self.error is not None
+            if refused:
+                os.close(held)
+                yield False
+                return
         try:
             yield True
         finally:
@@ -759,7 +768,9 @@ def _run(
                     out = future.result()
                     outcomes.append(out)
                     state = "ok" if out.exit == 0 else f"exit {out.exit}"
-                    waited = f" (slot wait {out.waited:.1f} s)" if out.waited >= 0.1 else ""
+                    waited = (
+                        f" (slot wait {out.waited:.1f} s)" if out.waited >= 0.1 else ""
+                    )
                     print(
                         f"[{len(outcomes)}/{len(parts)}] {state:>8} "
                         f"{out.seconds:6.1f} s  {out.part.label}{waited}",

@@ -577,6 +577,42 @@ class SlotsTest(unittest.TestCase):
             with slots.slot(stop.is_set) as got:
                 self.assertFalse(got)
 
+    def test_a_stop_during_take_frees_the_slot_and_starts_nothing(self) -> None:
+        for cause in ("slot error", "stop"):
+            with self.subTest(cause=cause):
+                slots = self.slots(1)
+                inside, resume = threading.Event(), threading.Event()
+                stop = threading.Event()
+                real_take = slots.take
+
+                def paused_take() -> int | None:
+                    fd = real_take()  # the slot is locked here
+                    inside.set()
+                    resume.wait(10)
+                    return fd
+
+                got: list[bool] = []
+
+                def worker() -> None:
+                    with patch.object(slots, "take", paused_take):
+                        with slots.slot(stop.is_set) as admitted:
+                            got.append(admitted)
+
+                thread = threading.Thread(target=worker)
+                thread.start()
+                self.assertTrue(inside.wait(10))
+                if cause == "stop":
+                    stop.set()
+                else:
+                    slots.fail(run_tests.SlotError("broken on purpose"))
+                resume.set()
+                thread.join(10)
+                self.assertEqual(got, [False])
+                other = self.slots(1)  # the refused part released its lock
+                fd = other.take()
+                self.assertIsNotNone(fd)
+                os.close(fd)
+
     def test_a_run_inside_a_test_takes_no_slot(self) -> None:
         self.assertEqual(run_tests.NESTED_ENV, isolated_env.MARKER)
         for extra in ({}, {run_tests.SLOTS_ENV: "0"}, {run_tests.SLOTS_ENV: "x"}):
