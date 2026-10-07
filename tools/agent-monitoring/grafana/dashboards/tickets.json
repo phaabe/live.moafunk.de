@@ -1799,11 +1799,11 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 170
+                "value": 140
               },
               {
                 "id": "unit",
-                "value": "dateTimeAsLocalNoDateIfToday"
+                "value": "time:YYYY-MM-DD HH:mm"
               }
             ]
           },

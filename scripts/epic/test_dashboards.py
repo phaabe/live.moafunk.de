@@ -346,6 +346,8 @@ class TicketsPageTest(unittest.TestCase):
         self.assertEqual((marks["0"]["text"], marks["gap"]["text"]), ("≥", "?"))
         self.assertEqual(overrides["In status"]["unit"], "s")
         self.assertEqual(overrides["Since Ready"]["unit"], "dateTimeFromNow")
+        # A fixed format: the browser's local one was cut at 170 px.
+        self.assertEqual(overrides["Entered"]["unit"], "time:YYYY-MM-DD HH:mm")
         # ready_entered is a label: a Unix-seconds string, converted to time.
         conversions = table["transformations"][2]["options"]["conversions"]
         self.assertIn(

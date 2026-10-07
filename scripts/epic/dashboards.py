@@ -2191,9 +2191,10 @@ def ticket_overrides(shown: list[str]) -> list[Json]:
         ),
         by_name(
             "Entered",
-            # A full date and time: 120 px cut the year at 1280 px.
-            ("custom.width", 170),
-            ("unit", "dateTimeAsLocalNoDateIfToday"),
+            # A fixed short format: the browser's local format ("10/06/2026,
+            # 10:18:48 PM") lost its first digit even at 170 px.
+            ("custom.width", 140),
+            ("unit", ENTERED_FORMAT),
         ),
         by_name(
             "≥/?",
@@ -2208,6 +2209,9 @@ def ticket_overrides(shown: list[str]) -> list[Json]:
         by_name("Since Ready", ("custom.width", 100), ("unit", "dateTimeFromNow")),
     ]
     return [o for o in overrides if o["matcher"]["options"] in shown]
+
+
+ENTERED_FORMAT = "time:YYYY-MM-DD HH:mm"
 
 
 # epic_ticket_status_entered_seconds{exact}: "≥" a lower bound, "?" the time
