@@ -939,3 +939,145 @@ class PlumbingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def label_event(ident: int, kind: str, name: str, at: int) -> monitor.Json:
+    created = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"id": ident, "event": kind, "label": {"name": name}, "created_at": created}
+
+
+def set_events(ident: int, frm: str, to: str, at: int) -> list[monitor.Json]:
+    """The two events of one set_status.py `set`: add new, remove old."""
+    return [
+        label_event(ident, "labeled", f"status::{to}", at),
+        label_event(ident + 1, "unlabeled", f"status::{frm}", at + 1),
+    ]
+
+
+def snap(to: str, frm: str, before: int, at: int, executor: str = "Claude") -> th.Entry:
+    return th.Entry(1, to, at, executor, frm, before)
+
+
+class LabelChangeTest(unittest.TestCase):
+    """https://github.com/phaabe/live.moafunk.de/issues/624"""
+
+    def test_set_is_a_change_with_its_label_time_and_event_id(self) -> None:
+        events = set_events(10, "ready", "in-progress", NOW)
+        self.assertEqual(
+            th.label_changes(events),
+            [th.LabelChange("Ready", "In progress", NOW, 10)],
+        )
+
+    def test_backfill_and_repair_inside_a_sync_window_are_not_changes(self) -> None:
+        events = [
+            label_event(1, "labeled", "status::sync", NOW),
+            label_event(2, "labeled", "status::done", NOW + 1),
+            label_event(3, "unlabeled", "status::ready", NOW + 2),
+            label_event(4, "unlabeled", "status::sync", NOW + 3),
+        ]
+        self.assertEqual(th.label_changes(events), [])
+
+    def test_a_marker_left_by_a_crash_keeps_the_window_open(self) -> None:
+        events = [label_event(1, "labeled", "status::sync", NOW)]
+        events += set_events(2, "ready", "done", NOW + 60)
+        self.assertEqual(th.label_changes(events), [])
+
+    def test_a_delayed_sync_after_a_manual_move_is_not_a_change(self) -> None:
+        events = set_events(1, "ready", "in-progress", NOW)
+        events += [
+            label_event(3, "labeled", "status::sync", NOW + 3 * H),
+            label_event(4, "labeled", "status::done", NOW + 3 * H),
+            label_event(5, "unlabeled", "status::in-progress", NOW + 3 * H),
+            label_event(6, "unlabeled", "status::sync", NOW + 3 * H),
+        ]
+        self.assertEqual([c.event for c in th.label_changes(events)], [1])
+
+    def test_an_add_without_the_old_label_removed_is_not_a_change(self) -> None:
+        # Board ok, label removal failed: only repair fixes it, in a window.
+        events = [
+            label_event(1, "labeled", "status::done", NOW),
+            label_event(2, "labeled", "status::sync", NOW + 60),
+            label_event(3, "unlabeled", "status::ready", NOW + 60),
+            label_event(4, "unlabeled", "status::sync", NOW + 61),
+        ]
+        self.assertEqual(th.label_changes(events), [])
+
+    def test_order_is_by_event_id_and_other_labels_are_ignored(self) -> None:
+        events = set_events(5, "ready", "done", NOW)[::-1]
+        events.insert(1, label_event(6, "labeled", "needs-anton", NOW))
+        self.assertEqual([c.to for c in th.label_changes(events)], ["Done"])
+
+
+class ReconcileTest(unittest.TestCase):
+    def test_label_change_replaces_the_snapshot_and_keeps_episode_and_executor(
+        self,
+    ) -> None:
+        entry = snap("Done", "In review", NOW - 300, NOW)
+        changes = th.label_changes(set_events(1, "in-review", "done", NOW - 200))
+        (got,) = th.reconcile([entry], changes)
+        self.assertEqual(
+            (got.seen_at, got.event, got.executor), (NOW - 200, 1, "Claude")
+        )
+        self.assertEqual(got.episode_id, NOW)
+        self.assertTrue(got.clean)
+        self.assertEqual(th.Entry.parse(got.row()), got)
+
+    def test_example_1_adjacent_snapshots_during_an_outage(self) -> None:
+        minute = 60
+        t0 = NOW
+        entries = [
+            snap("In progress", "Ready", t0, t0 + 2 * minute),
+            snap("In review", "In progress", t0 + 2 * minute, t0 + 4 * minute),
+        ]
+        changes = th.label_changes(
+            set_events(1, "ready", "in-progress", t0 + minute)
+            + set_events(3, "in-progress", "in-review", t0 + 3 * minute)
+        )
+        got = th.reconcile(entries, changes)
+        self.assertEqual(
+            [(e.to, e.seen_at, e.event) for e in got],
+            [("In progress", t0 + minute, 1), ("In review", t0 + 3 * minute, 3)],
+        )
+
+    def test_example_2_two_completions_between_two_snapshots(self) -> None:
+        minute = 60
+        t0 = NOW
+        entry = snap("Done", "Ready", t0, t0 + 4 * minute)
+        changes = th.label_changes(
+            set_events(1, "ready", "done", t0 + minute)
+            + set_events(3, "done", "in-progress", t0 + 2 * minute)
+            + set_events(5, "in-progress", "done", t0 + 3 * minute)
+        )
+        got = th.reconcile([entry], changes)
+        self.assertEqual([e.to for e in got], ["Done", "In progress", "Done"])
+        first, _, last = got
+        self.assertEqual((first.executor, first.episode_id), ("Unknown", t0 + minute))
+        self.assertEqual((last.executor, last.episode_id), ("Claude", t0 + 4 * minute))
+        # Replay of the stored rows gives the same entries.
+        self.assertEqual([th.Entry.parse(e.row()) for e in got], got)
+        self.assertEqual(len(th.episodes(got)), 2)
+
+    def test_a_late_label_within_the_lag_still_matches(self) -> None:
+        entry = snap("Done", "In review", NOW - 300, NOW)
+        changes = th.label_changes(set_events(1, "in-review", "done", NOW + 5))
+        (got,) = th.reconcile([entry], changes)
+        self.assertEqual(got.seen_at, NOW + 5)
+
+    def test_a_chain_that_does_not_explain_the_entry_changes_nothing(self) -> None:
+        entry = snap("Done", "In review", NOW - 300, NOW)
+        changes = th.label_changes(set_events(1, "ready", "done", NOW - 100))
+        self.assertEqual(th.reconcile([entry], changes), [entry])
+        late = th.label_changes(set_events(1, "in-review", "done", NOW + 600))
+        self.assertEqual(th.reconcile([entry], late), [entry])
+
+    def test_each_change_is_used_once_and_seeds_stay(self) -> None:
+        seed = th.Entry(1, "Ready", NOW - 900, "Claude", seed=True)
+        first = snap("Done", "Ready", NOW - 600, NOW - 300)
+        second = snap("Ready", "Done", NOW - 300, NOW)
+        changes = th.label_changes(set_events(1, "ready", "done", NOW - 300))
+        got = th.reconcile([seed, first, second], changes)
+        self.assertEqual(got[0], seed)
+        self.assertEqual(got[1].event, 1)
+        self.assertEqual(got[2], second)
+        # A second pass finds the change already used.
+        self.assertEqual(th.reconcile(got, changes), got)
