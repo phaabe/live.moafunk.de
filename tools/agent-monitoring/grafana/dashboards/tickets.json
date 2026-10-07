@@ -48,7 +48,7 @@
         "name": "check",
         "label": "Check",
         "type": "custom",
-        "query": "All : all, Ready · dep. not declared : ready_undeclared, Ready · may be claimed : ready_claimable, In progress > 1d : in_progress_long, In review > 1d : in_review_long, Refinement · not reviewed : refinement_unreviewed, Done · issue open : done_open, Label out of sync : label_out_of_sync",
+        "query": "All : all, Ready · dep. not declared : ready_undeclared, Ready · may be claimed : ready_claimable, In progress > 1d : in_progress_long, In review > 1d : in_review_long, Refinement · not reviewed : refinement_unreviewed, Done but open : done_open, Label mismatch : label_out_of_sync",
         "current": {
           "text": "All",
           "value": "all"
@@ -710,7 +710,7 @@
     },
     {
       "type": "stat",
-      "title": "Done · issue open",
+      "title": "Done but open",
       "description": "Board Status is Done but the issue is still open. Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
@@ -835,7 +835,7 @@
     },
     {
       "type": "stat",
-      "title": "Label out of sync",
+      "title": "Label mismatch",
       "description": "The status:: label does not match the board Status: no label, two or more, another status, or status::sync left by an unfinished sync. Fix with set_status.py repair. A change shows here for one refresh until the helper's label write follows its board write. Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",

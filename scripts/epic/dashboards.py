@@ -1973,13 +1973,13 @@ CHECKS = (
     ),
     (
         "done_open",
-        "Done · issue open",
+        "Done but open",
         LOOK_SOON,
         "Board Status is Done but the issue is still open.",
     ),
     (
         "label_out_of_sync",
-        "Label out of sync",
+        "Label mismatch",
         LOOK_SOON,
         "The status:: label does not match the board Status: no label, two or "
         "more, another status, or status::sync left by an unfinished sync. "
@@ -1987,7 +1987,8 @@ CHECKS = (
         "until the helper's label write follows its board write.",
     ),
 )
-# Tile widths in the CHECKS order; the short titles fit 3 columns at 1280 px.
+# Tile widths in the CHECKS order. At 1280 px Grafana cut 17-character
+# titles in 3 columns; 16 ("In progress > 1d") fit.
 CHECK_WIDTHS = (4, 4, 3, 3, 4, 3, 3)
 TICKETS_URL = "/d/epic-tickets"
 

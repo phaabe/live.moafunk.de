@@ -568,7 +568,7 @@ def ticket_state(now: float) -> monitor.Json:
         extra(308, "Claude", "Ready"),
     ]
     # Status labels match the board, except 307: the label still names its
-    # old status (the "Label out of sync" check).
+    # old status (the "Label mismatch" check).
     for item in state["items"]:
         status = "In progress" if item["content"]["number"] == 307 else item["status"]
         item["labels"] = [
