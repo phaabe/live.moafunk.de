@@ -455,52 +455,157 @@ class Merges(Base):
 
 
 class Board(Base):
-    EDIT = "gh project item-edit --id {} --field-id F --single-select-option-id O"
+    """Status changes only through the trusted helper (set_status.py), in both
+    reader modes. https://github.com/phaabe/live.moafunk.de/issues/624"""
 
-    def test_claim_board_write_rechecks_the_claim(self) -> None:
+    EDIT = "gh project item-edit --id {} --field-id F --single-select-option-id O"
+    REST = "gh api --method PATCH users/anneoneone/projectsV2/2/items/{} --input -"
+    MUTATION = (
+        "gh api graphql -f query='mutation {{ updateProjectV2ItemFieldValue("
+        'input: {{projectId: "P", itemId: "{}", fieldId: "F"}}) {{ clientMutationId }} }}\''
+    )
+
+    def helper(self, *args: str) -> str:
+        return " ".join(["python3", str(wc.STATUS_HELPER), *args])
+
+    def test_raw_board_writes_are_refused(self) -> None:
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
+        for command in (
+            self.EDIT.format("PVTI_21"),
+            self.REST.format(50_021),
+            self.MUTATION.format("PVTI_21"),
+            "gh project item-add 2 --url x",
+        ):
+            with self.subTest(command=command):
+                reason = self.bash(command) or ""
+                self.assertIn("no raw board writes", reason)
+                self.assertIn(str(wc.STATUS_HELPER), reason)
+
+    def test_raw_status_label_edits_are_refused(self) -> None:
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
+        labels = f"repos/{na.REPO}/issues/21/labels"
+        for command in (
+            "gh issue edit 21 --add-label status::done",
+            "gh issue edit 21 --remove-label bug,status::ready",
+            f"gh api {labels} -f 'labels[]=status::done'",
+            f"gh api --method DELETE {labels}/status%3A%3Aready",
+            f"gh api --method PUT {labels} -f 'labels[]=bug'",
+            f"gh api --method DELETE {labels}",
+            f"gh api --method PATCH repos/{na.REPO}/issues/21 -f 'labels[]=bug'",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("no raw status:: label", self.bash(command) or "")
+        self.assertIsNone(self.bash("gh issue edit 21 --add-label bug"))
+        self.assertIsNone(self.bash(f"gh api {labels} -f 'labels[]=bug'"))
+        reason = wc.guard(
+            "mcp__github__update_issue",
+            {"issue_number": 21, "labels": ["bug"]},
+            str(self.root),
+            lambda: self.reader,
+        )
+        self.assertIn("no raw status:: label", reason or "")
+
+    def test_claim_set_rechecks_the_claim(self) -> None:
         self.action(action="claim", issue=f"{ISSUES}/21")
         self.reader.items = [item(21, "Ready"), item(22, "Ready")]
+        cmd = self.helper("set", "21", "'In progress'")
         with patch.object(gs, "recheck", return_value=None) as recheck:
-            self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+            self.assertIsNone(self.bash(cmd))
             recheck.assert_called_once()
         with patch.object(gs, "recheck", return_value="issue 21 is not Ready"):
-            self.assertIn("not Ready", self.bash(self.EDIT.format("PVTI_21")) or "")
+            self.assertIn("not Ready", self.bash(cmd) or "")
         with patch.object(gs, "recheck", return_value=None):
-            self.assertIn("issue 22", self.bash(self.EDIT.format("PVTI_22")) or "")
+            other = self.helper("set", "22", "'In progress'")
+            self.assertIn("issue 22", self.bash(other) or "")
 
-    def test_continue_board_write_checks_item_and_assignment(self) -> None:
-        # Codex review P1 on https://github.com/phaabe/live.moafunk.de/pull/511.
+    def test_continue_set_checks_issue_and_assignment(self) -> None:
         self.action(action="continue", issue=f"{ISSUES}/21")
         self.reader.items = [item(21, "In progress"), item(22, "In progress")]
-        self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
-        self.assertIn("issue 22", self.bash(self.EDIT.format("PVTI_22")) or "")
-        self.assertIn("not on the board", self.bash(self.EDIT.format("PVTI_9")) or "")
-        self.assertIn(
-            "name the board item", self.bash("gh project item-add 2 --url x") or ""
-        )
+        done = self.helper("set", "21", "Done")
+        self.assertIsNone(self.bash(done))
+        self.assertIn("issue 22", self.bash(self.helper("set", "22", "Done")) or "")
         self.reader.items = [item(21, "In progress", "Codex")]
-        self.assertIn("Executor Codex", self.bash(self.EDIT.format("PVTI_21")) or "")
+        self.assertIn("Executor Codex", self.bash(done) or "")
         self.reader.fail = gs.ReadBlocked("HTTP 502")
-        self.assertIn("read failed", self.bash(self.EDIT.format("PVTI_21")) or "")
+        self.assertIn("read failed", self.bash(done) or "")
 
-    def test_continue_on_a_pr_may_edit_its_issue_item(self) -> None:
+    def test_continue_on_a_pr_may_set_its_issue(self) -> None:
         self.action(action="continue", pr=5, sha=A)
         self.reader.pulls[5] = pull(5, f"Executor: Claude\nIssue: {ISSUES}/21")
         self.reader.items = [item(21, "In progress"), item(22, "In progress")]
-        rest = "gh api --method PATCH users/anneoneone/projectsV2/2/items/{} --input -"
-        self.assertIsNone(self.bash(rest.format(50_021)))
-        self.assertIsNotNone(self.bash(rest.format(50_022)))
-        mutation = (
-            "gh api graphql -f query='mutation {{ updateProjectV2ItemFieldValue("
-            'input: {{projectId: "P", itemId: "{}", fieldId: "F"}}) {{ clientMutationId }} }}\''
-        )
-        self.assertIsNone(self.bash(mutation.format("PVTI_21")))
-        self.assertIsNotNone(self.bash(mutation.format("PVTI_22")))
+        self.assertIsNone(self.bash(self.helper("set", "21", "Backlog")))
+        self.assertIsNotNone(self.bash(self.helper("set", "22", "Backlog")))
 
-    def test_other_ticks_do_not_change_the_board(self) -> None:
+    def test_repair_of_own_ticket_in_any_status(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        self.reader.pulls[5] = pull(5, f"Executor: Claude\nIssue: {ISSUES}/21")
+        self.reader.items = [item(21, "In review"), item(22, "In review")]
+        repair = self.helper("repair", "21")
+        self.assertIsNone(self.bash(repair))
+        self.assertIn("issue 22", self.bash(self.helper("repair", "22")) or "")
+        self.reader.items = [item(21, "In review", "Codex")]
+        self.assertIn("Executor is Codex", self.bash(repair) or "")
+        # A fix tick repairs, but does not set.
+        done = self.helper("set", "21", "Done")
+        self.assertIn("does not change", self.bash(done) or "")
+
+    def test_sync_and_other_ticks_are_refused(self) -> None:
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
+        self.assertIn("backfill", self.bash(self.helper("sync", "21")) or "")
         self.action(action="review", pr=5, sha=A)
         self.reader.pulls[5] = pull(5, "Executor: Codex")
-        self.assertIn("board", self.bash(self.EDIT.format("PVTI_21")) or "")
+        self.assertIn("board", self.bash(self.helper("set", "21", "Done")) or "")
+
+    def test_only_the_trusted_helper_in_the_plain_form(self) -> None:
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
+        copy = self.root / "scripts/epic/set_status.py"
+        repair = self.helper("repair", "21")
+        for command, cwd in (
+            ("python3 scripts/epic/set_status.py set 21 Done", str(self.root)),
+            (f"python3 {copy} set 21 Done", None),
+            (f"{wc.STATUS_HELPER} set 21 Done", None),
+            (self.helper("set", "21", "Finished"), None),
+            (self.helper("set", "x", "Done"), None),
+            (self.helper("move", "21"), None),
+            (self.helper("repair", "21", "22"), None),
+            ("python3 -c 'import set_status'", None),
+            (f"bash -c '{repair}'", None),
+            (f"echo $({repair})", None),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNotNone(self.bash(command, cwd))
+        # Relative to the trusted checkout it is the same file.
+        trusted = str(wc.STATUS_HELPER.parents[2])
+        relative = "python3 scripts/epic/set_status.py set 21 Done"
+        self.assertIsNone(self.bash(relative, trusted))
+
+    def test_reader_off_still_applies_the_status_rules(self) -> None:
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.fail = gs.ReadBlocked("no reads with the reader off")
+
+        def refuse(command: str) -> str | None:
+            return wc.status_refusal("Bash", {"command": command}, str(self.root))
+
+        with patch.dict(os.environ, {"EPIC_SHARED_READER": "0"}):
+            self.assertIn("no raw board", refuse(self.EDIT.format("PVTI_21")) or "")
+            label = "gh issue edit 21 --add-label status::done"
+            self.assertIn("no raw status::", refuse(label) or "")
+            self.assertIn("backfill", refuse(self.helper("sync", "21")) or "")
+            self.assertIn("malformed", refuse(self.helper("set", "21")) or "")
+            self.assertIn("not checked", refuse(f"bash -c '{self.EDIT}'") or "")
+            self.assertIsNone(refuse(self.helper("set", "21", "Done")))
+            self.assertIsNone(refuse("gh pr comment 5 --body hi"))
+            self.assertIsNone(refuse("echo $(gh pr comment 5 --body hi)"))
+            self.action(action="fix", pr=5, sha=A)
+            done = self.helper("set", "21", "Done")
+            self.assertIn("does not change", refuse(done) or "")
+            self.assertIsNone(refuse(self.helper("repair", "21")))
+        with patch.dict(os.environ, {"EPIC_ACTION_FILE": ""}):
+            self.assertIsNone(refuse(self.EDIT.format("PVTI_21")))
 
 
 class ClaimComments(Base):
@@ -631,14 +736,23 @@ class Callers(Base):
         trusted = self.root / "trusted"
         (trusted / "scripts/epic").mkdir(parents=True)
         (trusted / "scripts/epic/write_checks.py").write_text(
+            "import os\n"
             "def guard(tool, tool_input, cwd, agent=None):\n"
             "    assert agent == 'Claude', agent\n"
             "    return 'PR 5 is merged'\n"
+            "def status_refusal(tool, tool_input, cwd):\n"
+            "    return os.environ.get('FAKE_STATUS_REFUSAL')\n"
         )
         blocked = self.hook(trusted)
         self.assertEqual(blocked.returncode, 2, blocked.stderr)
         self.assertIn("PR 5 is merged", blocked.stderr)
         self.assertEqual(self.hook(trusted, EPIC_SHARED_READER="0").returncode, 0)
+        # Reader off: only the Status rules run (issue 624).
+        off = self.hook(
+            trusted, EPIC_SHARED_READER="0", FAKE_STATUS_REFUSAL="no raw board"
+        )
+        self.assertEqual(off.returncode, 2, off.stderr)
+        self.assertIn("no raw board", off.stderr)
         self.assertEqual(self.hook(trusted, EPIC_ACTION_FILE="").returncode, 0)
 
     def test_hook_blocks_when_the_check_raises(self) -> None:

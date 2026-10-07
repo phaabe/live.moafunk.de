@@ -22,7 +22,8 @@ Rules:
   7. Headless runner with the shared reader (EPIC_SHARED_READER=1 and
      EPIC_ACTION_FILE set by scripts/epic/claude-tick.sh; with an action file,
      a missing, empty or invalid EPIC_SHARED_READER blocks every write, and an
-     explicit 0 keeps only the other rules): each GitHub write
+     explicit 0 keeps only the other rules and the Status rules that need no
+     read, write_checks.status_refusal): each GitHub write
      is checked fresh right before it runs (scripts/epic/write_checks.py,
      loaded from EPIC_RUNTIME_ROOT, the pinned runtime; without pinned mode
      from EPIC_TRUSTED_ROOT, the runner checkout). Pinned mode configured
@@ -408,11 +409,13 @@ def runner_write_check(tool: str, tool_input: dict, cwd: str) -> None:
     # write_checks.guard(), which refuses writes on a bad setting.
     if not os.environ.get("EPIC_ACTION_FILE"):
         return
-    if os.environ.get("EPIC_SHARED_READER") == "0":
-        return
     write_checks = load_write_checks(code_root(), "Runner write checks")
     try:
-        refused = write_checks.guard(tool, tool_input, cwd, agent="Claude")
+        if os.environ.get("EPIC_SHARED_READER") == "0":
+            # Reader off: only the Status rules, which need no GitHub read.
+            refused = write_checks.status_refusal(tool, tool_input, cwd)
+        else:
+            refused = write_checks.guard(tool, tool_input, cwd, agent="Claude")
     except Exception as exc:  # exit 1 would let the write through
         block(f"Runner write check failed: {exc!r}")
     if refused:
