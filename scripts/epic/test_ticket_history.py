@@ -1103,6 +1103,53 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(got[0].episode_id, NOW + 2 * minute)
         self.assertEqual([th.Entry.parse(e.row()) for e in got], got)
 
+    def round_trip_changes(self, t0: int) -> list[th.LabelChange]:
+        return th.label_changes(
+            set_events(10, "ready", "in-progress", t0 + 600)
+            + set_events(20, "in-progress", "done", t0 + 1200)
+            + set_events(30, "done", "ready", t0 + 1800)
+        )
+
+    def test_a_round_trip_between_equal_snapshots_is_added(self) -> None:
+        seed = th.Entry(1, "Ready", NOW, "Claude", seed=True)
+        got = th.reconcile([seed], self.round_trip_changes(NOW), seen=NOW + 3 * H)
+        self.assertEqual(
+            [(e.frm, e.to, e.seen_at, e.executor, e.event) for e in got],
+            [
+                (None, "Ready", NOW, "Claude", None),
+                ("Ready", "In progress", NOW + 600, "Claude", 10),
+                ("In progress", "Done", NOW + 1200, "Unknown", 20),
+                ("Done", "Ready", NOW + 1800, "Claude", 30),
+            ],
+        )
+        self.assertEqual([th.Entry.parse(e.row()) for e in got], got)
+        # The changes are used now: a second pass adds nothing.
+        self.assertEqual(
+            th.reconcile(got, self.round_trip_changes(NOW), NOW + 3 * H), got
+        )
+
+    def test_a_round_trip_before_the_next_snapshot_entry_is_added(self) -> None:
+        seed = th.Entry(1, "Ready", NOW, "Claude", seed=True)
+        later = snap("Backlog", "Ready", NOW + 2 * H, NOW + 2 * H + 120)
+        got = th.reconcile([seed, later], self.round_trip_changes(NOW))
+        self.assertEqual([e.event for e in got], [None, 10, 20, 30, None])
+        self.assertEqual(got[-1], later)
+
+    def test_no_round_trip_without_a_closed_chain_or_after_the_last_snapshot(
+        self,
+    ) -> None:
+        seed = th.Entry(1, "Ready", NOW, "Claude", seed=True)
+        # A move by hand (In progress -> Done) breaks the chain.
+        broken = th.label_changes(
+            set_events(10, "ready", "in-progress", NOW + 600)
+            + set_events(30, "done", "ready", NOW + 1800)
+        )
+        self.assertEqual(th.reconcile([seed], broken, seen=NOW + 3 * H), [seed])
+        # No snapshot after the changes yet: not confirmed, nothing added.
+        changes = self.round_trip_changes(NOW)
+        self.assertEqual(th.reconcile([seed], changes, seen=NOW + 1000), [seed])
+        self.assertEqual(th.reconcile([seed], changes), [seed])
+
 
 class MergeLabelsTest(Base):
     """The ledger takes the recorded change times (History.merge_labels)."""
@@ -1169,6 +1216,41 @@ class MergeLabelsTest(Base):
         [episode] = self.history.summary(NOW).episodes
         self.assertIsNone(episode.cycle)
         self.assertIsNone(episode.lead)
+
+    def test_round_trip_while_the_stack_was_off_keeps_its_completion(self) -> None:
+        """Ready -> In progress -> Done -> Ready by set calls while the
+        collector is off: both snapshots say Ready, the labels say more."""
+        t0 = NOW - 4 * H
+        self.see(t0, {1: "Ready"})
+        self.see(t0 + 3 * H, {1: "Ready"})
+        rows = [
+            *set_events(10, "ready", "in-progress", t0 + 600),
+            *set_events(20, "in-progress", "done", t0 + 1200),
+            *set_events(30, "done", "ready", t0 + 1800),
+        ]
+        self.assertTrue(self.history.merge_labels({1: rows}))
+        ledger = self.lines(th.LEDGER)
+        self.assertEqual(
+            [(r["to"], r.get("event"), r["executor"]) for r in ledger],
+            [
+                ("Ready", None, "Claude"),
+                ("In progress", 10, "Claude"),
+                ("Done", 20, "Unknown"),
+                ("Ready", 30, "Claude"),
+            ],
+        )
+        # The same events again, twice in one list, and after a restart: the
+        # event ids are used, nothing is added twice.
+        self.assertFalse(self.history.merge_labels({1: rows + rows}))
+        replayed = self.fresh()
+        self.assertEqual(replayed.entries, self.history.entries)
+        self.assertFalse(replayed.merge_labels({1: rows}))
+        self.assertEqual(self.lines(th.LEDGER), ledger)
+        for history in (self.history, replayed):
+            [episode] = history.summary(NOW).episodes
+            self.assertEqual(episode.done.seen_at, t0 + 1200)
+            self.assertEqual(episode.done.executor, "Unknown")
+            self.assertEqual(episode.cycle, 600)
 
     def test_sync_events_and_unknown_issues_change_nothing(self) -> None:
         self.see(NOW - 600, {1: "Ready"})

@@ -333,11 +333,30 @@ def chain_for(
     return chain
 
 
-def reconcile(entries: list[Entry], changes: list[LabelChange]) -> list[Entry]:
+def round_trip(start: str, free: list[LabelChange]) -> list[LabelChange]:
+    """The longest run at the start of `free` that leaves `start` and comes
+    back to it, each change starting where the one before ended; else []."""
+    found, status = 0, start
+    for i, change in enumerate(free):
+        if change.frm != status:
+            break
+        status = change.to
+        if status == start:
+            found = i + 1
+    return free[:found]
+
+
+def reconcile(
+    entries: list[Entry], changes: list[LabelChange], seen: int | None = None
+) -> list[Entry]:
     """One ticket's entries with each snapshot entry replaced by the label
     changes that explain it (chain_for), oldest first; each change is used at
     most once. Only the chain's last Done keeps the snapshot's episode and
-    Executor: an earlier Done of the chain is another completion."""
+    Executor: an earlier Done of the chain is another completion.
+
+    Then the round trips no snapshot saw: unused changes between two entries
+    (or the last entry and `seen`, the ticket's last snapshot) that leave the
+    status and come back to it. Their Done has Executor Unknown."""
     changes = sorted(changes, key=lambda c: (c.at, c.event))
     used = {e.event for e in entries if e.event is not None}
     out: list[Entry] = []
@@ -365,7 +384,36 @@ def reconcile(entries: list[Entry], changes: list[LabelChange]) -> list[Entry]:
                     episode=entry.episode_id if last and done else None,
                 )
             )
-    return out
+    out.sort(key=lambda e: e.seen_at)
+    trips: list[Entry] = []
+    for i, entry in enumerate(out):
+        after = out[i + 1] if i + 1 < len(out) else None
+        if after is None:
+            end = seen
+        elif after.event is None and after.seen_before is not None:
+            end = after.seen_before  # the last snapshot still at entry.to
+        else:
+            end = after.seen_at
+        if end is None:
+            continue
+        free = [
+            c for c in changes if c.event not in used and entry.seen_at < c.at < end
+        ]
+        for change in round_trip(entry.to, free):
+            used.add(change.event)
+            done = change.to == "Done"
+            trips.append(
+                Entry(
+                    entry.issue,
+                    change.to,
+                    change.at,
+                    "Unknown" if done else entry.executor,
+                    change.frm,
+                    change.at,
+                    event=change.event,
+                )
+            )
+    return sorted(out + trips, key=lambda e: e.seen_at)
 
 
 # --- episodes and measurements ---
@@ -717,7 +765,8 @@ class History:
 
     def merge_labels(self, events: dict[int, list[Json]]) -> bool:
         """Replace snapshot entries with the recorded change times in the
-        issues' status label events (reconcile). The ledger is rewritten
+        issues' status label events, and add the round trips between equal
+        snapshots (reconcile). The ledger is rewritten
         only when an entry changed; replay keeps the result, because a
         label entry is never reconciled again. Returns True on a change."""
         changed = False
@@ -726,7 +775,7 @@ class History:
             changes = label_changes(rows)
             if not entries or not changes:
                 continue
-            merged = sorted(reconcile(entries, changes), key=lambda e: e.seen_at)
+            merged = reconcile(entries, changes, self.seen.get(issue))
             if merged != entries:
                 self.entries[issue] = merged
                 changed = True
