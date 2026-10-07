@@ -1166,6 +1166,43 @@ class CollectorLabelsTest(unittest.TestCase):
         self.assertIn('epic_ticket_source_ok{source="labels"} 0', self.health())
         self.assertIn('epic_ticket_source_ok{source="ledger"} 1', self.health())
 
+    def test_changes_while_labels_are_down_merge_after_recovery(self) -> None:
+        """Snapshot Ready, then Done while the labels source is down; three
+        set calls in between. Back up: the chain replaces the snapshot
+        entry, one completion only, and a replay changes nothing."""
+        start = int(time.time()) - 900
+        state = snapshot(items=[ticket(1, "Ready")])
+        state["fetched_at"] = start
+        self.collect(state, lambda r: {str(n): [] for n in r["events"]})
+        state = snapshot(items=[ticket(1, "Done")])
+        state["fetched_at"] = start + 600
+        self.collect(state, lambda r: None)
+        self.assertIn('epic_ticket_source_ok{source="labels"} 0', self.health())
+        events = {
+            "1": [
+                *set_events(10, "ready", "in-progress", start + 100),
+                *set_events(20, "in-progress", "in-review", start + 200),
+                *set_events(30, "in-review", "done", start + 300),
+            ]
+        }
+        state["fetched_at"] = start + 660
+        self.collect(state, lambda r: events)
+        self.assertIn('epic_ticket_source_ok{source="labels"} 1', self.health())
+        ledger = self.root / th.LEDGER
+        rows = [json.loads(x) for x in ledger.read_text().splitlines()]
+        self.assertEqual(
+            [(r["to"], r["seen_at"], r.get("source")) for r in rows[1:]],
+            [
+                ("In progress", start + 100, "label"),
+                ("In review", start + 200, "label"),
+                ("Done", start + 300, "label"),
+            ],
+        )
+        before = ledger.read_text()
+        state["fetched_at"] = start + 720
+        self.collect(state, lambda r: events)
+        self.assertEqual(ledger.read_text(), before)
+
 
 if __name__ == "__main__":
     unittest.main()
