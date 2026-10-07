@@ -32,6 +32,11 @@ class FakeGh:
         self.fail: dict[str, str] = {}  # write kind -> "error" | "timeout"
         self.fail_reads = False
         self.after_board_write: str | None = None  # someone else moves it
+        self.pulls: dict[int, str] = {}  # PR number -> body
+        self.fail_pulls = False
+        # Only the status::sync POST: "error", "timeout" (after writing) or
+        # "lost" (answers ok, but the label never lands).
+        self.fail_marker: str | None = None
 
     def item_row(self) -> dict[str, Any]:
         value = None if self.status is None else {"name": {"raw": self.status}}
@@ -49,6 +54,11 @@ class FakeGh:
         if self.fail_reads:
             raise RuntimeError("network down")
         endpoint = args[-1]
+        if "/pulls/" in endpoint:
+            if self.fail_pulls:
+                raise RuntimeError("PR read failed")
+            number = int(endpoint.rsplit("/", 1)[1])
+            return json.dumps({"number": number, "body": self.pulls[number]})
         if "/fields" in endpoint:
             options = [{"id": v, "name": {"raw": k}} for k, v in OPTIONS.items()]
             return json.dumps([[{"id": 11, "name": "Status", "options": options}]])
@@ -62,6 +72,8 @@ class FakeGh:
         method = args[args.index("--method") + 1]
         kind = {"PATCH": "board", "POST": "add", "DELETE": "remove"}[method]
         mode = self.fail.get(kind)
+        if kind == "add" and ss.MARKER in json.loads(stdin or "{}")["labels"]:
+            mode = self.fail_marker or mode
         if mode == "error":
             raise RuntimeError(f"{kind} failed")
         if kind == "board":
@@ -72,6 +84,8 @@ class FakeGh:
         elif kind == "add":
             for name in json.loads(stdin or "{}")["labels"]:
                 self.added.append(name)
+                if mode == "lost":
+                    continue
                 if name not in self.labels:
                     self.labels.append(name)
         else:
@@ -241,6 +255,125 @@ class SetStatusTest(unittest.TestCase):
         self.assertEqual(code, ss.USAGE)
         self.assertIn("repair", err)
         self.assertEqual(gh.calls, [])
+
+    def test_sync_stops_when_the_marker_is_not_added(self) -> None:
+        # Only the marker write fails, or it answers ok and never lands: no
+        # status label may change, else the swap reads as a real change.
+        for mode in ("error", "lost"):
+            with self.subTest(mode=mode):
+                gh = FakeGh("Done", ["status::ready"])
+                gh.fail_marker = mode
+                code, out, err = self.run_main(["repair", "7"], gh, self.tick_env())
+                self.assertEqual(code, ss.FAILED)
+                self.assertEqual((out["board"], out["label"]), ("ok", "failed"))
+                self.assertIn("status::sync", err)
+                self.assertEqual(gh.labels, ["status::ready"])
+                self.assertNotIn("status::done", gh.added)
+                posts = [c for c in gh.calls if "POST" in c]
+                self.assertEqual(len(posts), 1)  # the marker only
+                self.assertFalse([c for c in gh.calls if "DELETE" in c])
+
+    def test_sync_goes_on_after_a_timeout_that_wrote_the_marker(self) -> None:
+        gh = FakeGh("Done", ["status::ready"])
+        gh.fail_marker = "timeout"
+        code, out, _ = self.run_main(["repair", "7"], gh, self.tick_env())
+        self.assertEqual(code, ss.OK)
+        self.assertEqual(gh.labels, ["status::done"])
+        self.assertEqual(gh.added, ["status::sync", "status::done"])
+
+    def test_sync_is_unknown_when_the_marker_cannot_be_read(self) -> None:
+        gh = FakeGh("Done", ["status::ready"])
+        real = gh.write
+
+        def mark_then_go_dark(args: list[str], stdin: str | None) -> str:
+            gh.fail_reads = True
+            real(args, stdin)
+            raise TimeoutError("timed out")
+
+        gh.write = mark_then_go_dark  # type: ignore[method-assign]
+        code, out, _ = self.run_main(["repair", "7"], gh, self.tick_env())
+        self.assertEqual(code, ss.UNKNOWN)
+        self.assertEqual((out["board"], out["label"]), ("ok", "unknown"))
+        self.assertEqual(gh.added, ["status::sync"])
+        self.assertIn("status::ready", gh.labels)
+
+    def pr_tick(self, kind: str, pr: int = 5) -> dict[str, str]:
+        """The selector's PR action: a PR and a SHA, no issue."""
+        action = self.tmp / "action.json"
+        action.write_text(json.dumps({"action": kind, "pr": pr, "sha": "a" * 40}))
+        return {"EPIC_ACTION_FILE": str(action)}
+
+    def test_pr_tick_may_change_the_prs_issue_end_to_end(self) -> None:
+        import write_checks as wc
+
+        body = f"Executor: Claude\nIssue: {REPO_URL}7\nRefs: {REPO_URL}8"
+        for kind, argv, status in (
+            ("continue", ["set", "7", "Done"], "In progress"),
+            ("fix", ["repair", "7"], "Done"),
+        ):
+            with self.subTest(kind=kind):
+                env = self.pr_tick(kind)
+                action = json.loads(Path(env["EPIC_ACTION_FILE"]).read_text())
+                reader = mock.Mock()
+                reader.pull.return_value = {"number": 5, "body": body}
+                reader.board_items.return_value = [
+                    {
+                        "status": status,
+                        "executor": "Claude",
+                        "content": {"number": n, "url": f"{REPO_URL}{n}"},
+                    }
+                    for n in (7, 8)
+                ]
+                ctx = wc.Context(action, lambda: reader)
+                command = f"python3 {wc.STATUS_HELPER} {' '.join(argv)}"
+                (write,) = wc.bash_writes(command, str(self.tmp))
+                self.assertIsNone(wc.status_rule(write, kind))
+                self.assertIsNone(wc.check_status(ctx, write))
+
+                gh = FakeGh(
+                    status,
+                    ["status::ready" if kind == "fix" else "status::in-progress"],
+                )
+                gh.pulls[5] = body
+                code, out, err = self.run_main(argv, gh, env)
+                self.assertEqual(code, ss.OK, err)
+                self.assertEqual((out["board"], out["label"]), ("ok", "ok"))
+
+                # An issue the PR only links (no `Issue:` line) stays refused.
+                other = [argv[0], "8", *argv[2:]]
+                (write,) = wc.bash_writes(
+                    f"python3 {wc.STATUS_HELPER} {' '.join(other)}", str(self.tmp)
+                )
+                self.assertIsNotNone(wc.check_status(ctx, write))
+                gh = FakeGh(status, ["status::in-progress"])
+                gh.pulls[5] = body
+                code, _, err = self.run_main(other, gh, env)
+                self.assertEqual(code, ss.USAGE)
+                self.assertIn("not this tick's target", err)
+                self.assertFalse([c for c in gh.calls if "--method" in c])
+
+    def test_pr_tick_takes_the_issue_lock_the_runner_does_not_hold(self) -> None:
+        env = self.pr_tick("continue")
+        pr_lock = ss.lock(self.tmp / "locks" / "5.lock")  # the runner's lock
+        self.addCleanup(os.close, pr_lock)
+        gh = FakeGh("In progress", ["status::in-progress"])
+        gh.pulls[5] = f"Issue: {REPO_URL}7"
+        held = ss.lock(self.tmp / "locks" / "7.lock")  # another runner on 7
+        code, _, _ = self.run_main(["set", "7", "Done"], gh, env)
+        self.assertEqual(code, ss.BUSY)
+        self.assertFalse([c for c in gh.calls if "--method" in c])
+        os.close(held)
+        code, _, _ = self.run_main(["set", "7", "Done"], gh, env)
+        self.assertEqual(code, ss.OK)
+        self.assertEqual(gh.status, "Done")
+
+    def test_pr_tick_with_an_unreadable_pr_is_refused(self) -> None:
+        gh = FakeGh("In progress", ["status::in-progress"])
+        gh.fail_pulls = True
+        code, _, err = self.run_main(["set", "7", "Done"], gh, self.pr_tick("continue"))
+        self.assertEqual(code, ss.USAGE)
+        self.assertIn("cannot read PR 5", err)
+        self.assertFalse([c for c in gh.calls if "--method" in c])
 
     def test_wrong_tick_target_refused(self) -> None:
         gh = FakeGh("Ready", ["status::ready"])

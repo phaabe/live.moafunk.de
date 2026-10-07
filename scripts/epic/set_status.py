@@ -16,15 +16,22 @@ Modes:
           Anton only (backfill, cards moved by hand); refused inside a tick.
   repair  same as sync for one issue, also inside a runner tick (half-done set).
 
+Inside a runner tick (EPIC_ACTION_FILE) only the tick's issue is allowed: the
+action's issue, or for a PR action the tickets of the PR's `Issue:` lines, read
+fresh from GitHub. The runner locks only the action's targets, so the helper
+also takes the issue lock of a PR's ticket.
+
 Every call prints one JSON line: issue, mode, from, to, board, label, where
 board and label are "ok", "failed" or "unknown".
 
 Exit codes:
   0  board and label match the wanted Status
   1  a write failed and the read after it proves it
-  2  usage error, issue not on the board or not in this repo, wrong tick target
+  2  usage error, issue not on the board or not in this repo, wrong tick target,
+     or the tick's PR could not be read
   3  conflict: the board moved during the call; no label written
-  4  unknown: a read after a failed or timed-out write failed too
+  4  unknown: a read after a failed or timed-out write failed too (also the
+     read that confirms the sync marker)
   5  not clean (missing, extra or wrong status label, or a leftover
      status::sync marker): run repair first; nothing written
   75 the issue is locked by another helper call or runner
@@ -44,6 +51,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import next_action  # noqa: E402
 import target_lock  # noqa: E402
 
 REPO = "phaabe/live.moafunk.de"
@@ -223,8 +231,8 @@ def lock(path: Path) -> int | None:
     return fd
 
 
-def tick_targets(env: dict[str, str]) -> list[int] | None:
-    """Targets of the running tick, or None outside a runner tick."""
+def tick_action(env: dict[str, str]) -> dict[str, Any] | None:
+    """The running tick's action, or None outside a runner tick."""
     path = env.get("EPIC_ACTION_FILE")
     if not path:
         return None
@@ -232,16 +240,38 @@ def tick_targets(env: dict[str, str]) -> list[int] | None:
         action = json.loads(Path(path).read_text())
     except (OSError, ValueError) as err:
         raise Usage(f"cannot read the tick action: {err}") from err
-    return target_lock.targets(action)
+    if not isinstance(action, dict):
+        raise Usage("the tick action is not an object")
+    return action
 
 
-def take_locks(issue: int, env: dict[str, str]) -> list[int] | None:
-    """Tick lock (outside a tick only; a tick already holds it), then the helper
-    lock. None when either is busy."""
+def pr_issues(board: Board, pr: int) -> set[int]:
+    """The tickets a PR names in its `Issue:` lines, read fresh (the same rule
+    as the runner's write check)."""
+    try:
+        pull = json.loads(board.gh(["api", f"repos/{REPO}/pulls/{pr}"], None))
+    except Exception as err:
+        raise Usage(f"cannot read PR {pr} for its Issue: line: {err}") from err
+    return next_action.issue_numbers(str(pull.get("body") or ""))
+
+
+def check_target(board: Board, issue: int, action: dict[str, Any]) -> None:
+    """Usage unless `issue` is the tick's issue or its PR's `Issue:` ticket."""
+    pr = action.get("pr") if isinstance(action.get("pr"), int) else None
+    allowed = set(target_lock.targets(action)) - {pr}
+    if issue not in allowed and pr is not None:
+        allowed |= pr_issues(board, pr)
+    if issue not in allowed:
+        raise Usage(f"issue {issue} is not this tick's target {sorted(allowed)}")
+
+
+def take_locks(issue: int, action: dict[str, Any] | None) -> list[int] | None:
+    """Tick lock unless the runner already holds it (the action's own targets,
+    not a PR's `Issue:` ticket), then the helper lock. None when either is busy."""
     root = target_lock.lock_dir()
     held: list[int] = []
     names = [f"status-{issue}.lock"]
-    if tick_targets(env) is None:
+    if action is None or issue not in target_lock.targets(action):
         names.insert(0, f"{issue}.lock")
     for name in names:
         fd = lock(root / name)
@@ -331,15 +361,24 @@ def do_sync(board: Board, issue: int, mode: str) -> tuple[int, dict[str, Any]]:
     want = label_for(status)
     found = board.labels(issue)
     old = status_labels(found)
+    previous = ",".join(old) or None
     if old != [want] or MARKER in found:
         try_write(lambda: board.add_label(issue, MARKER))
+        # Without a confirmed marker the label swap would read as a change.
+        try:
+            marked = MARKER in board.labels(issue)
+        except ReadFailed:
+            print(f"set_status: cannot confirm {MARKER} on {issue}", file=sys.stderr)
+            return UNKNOWN, report(issue, mode, previous, want, "ok", "unknown")
+        if not marked:
+            print(f"set_status: adding {MARKER} to {issue} failed", file=sys.stderr)
+            return FAILED, report(issue, mode, previous, want, "ok", "failed")
         if want not in old:
             try_write(lambda: board.add_label(issue, want))
         for name in old:
             if name != want:
                 try_write(lambda name=name: board.remove_label(issue, name))
         try_write(lambda: board.remove_label(issue, MARKER))
-    previous = ",".join(old) or None
     result = report(issue, mode, previous, want, *final(board, issue, status))
     return code_of(result), result
 
@@ -370,18 +409,17 @@ def main(
     board = board or Board()
     try:
         mode, issues, status = parse(argv)
-        targets = tick_targets(env)
-        if targets is not None:
+        action = tick_action(env)
+        if action is not None:
             if mode == "sync":
                 raise Usage("sync is Anton's backfill; inside a tick use repair")
-            if issues[0] not in targets:
-                raise Usage(f"issue {issues[0]} is not this tick's target {targets}")
+            check_target(board, issues[0], action)
     except Usage as err:
         print(f"set_status: {err}", file=sys.stderr)
         return USAGE
     worst = OK
     for issue in issues:
-        fds = take_locks(issue, env)
+        fds = take_locks(issue, action)
         if fds is None:
             print(f"set_status: issue {issue} is locked; retry", file=sys.stderr)
             return BUSY
