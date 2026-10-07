@@ -468,6 +468,12 @@ class Board(Base):
     def helper(self, *args: str) -> str:
         return " ".join(["python3", str(wc.STATUS_HELPER), *args])
 
+    def test_label_prefix_matches_the_helper(self) -> None:
+        # write_checks.py keeps its own copy: it loads without set_status.py.
+        import set_status
+
+        self.assertEqual(wc.STATUS_PREFIX, set_status.PREFIX)
+
     def test_raw_board_writes_are_refused(self) -> None:
         self.action(action="continue", issue=f"{ISSUES}/21")
         self.reader.items = [item(21, "In progress")]

@@ -62,7 +62,6 @@ from urllib.parse import unquote
 
 import github_state as gs
 import next_action as na
-import set_status
 import target_lock
 from github_quota import QuotaExhausted
 
@@ -77,6 +76,9 @@ VERDICT_LINE = re.compile(
     re.MULTILINE,
 )
 STATUS_HELPER = Path(__file__).resolve().parent / "set_status.py"
+# set_status.PREFIX; the helper is imported only to read a helper call, so a
+# runner checkout without it still loads this module.
+STATUS_PREFIX = "status::"
 STATUS_HINT = f"change Status only with python3 {STATUS_HELPER} set <issue> <status>"
 # Text that may write through git or gh. Used only when a command cannot be
 # read word by word: then it is refused instead of guessed.
@@ -347,7 +349,7 @@ def api_writes(args: list[str], cwd: str, stdin: str) -> list[Write]:
         if m.group(2):
             # Adding or removing a status label, or replacing or clearing all
             # labels (which can drop one).
-            touched = set_status.PREFIX in unquote(endpoint) + sent or (
+            touched = STATUS_PREFIX in unquote(endpoint) + sent or (
                 m.group(2) == "/labels" and method in ("PUT", "DELETE")
             )
         else:
@@ -409,7 +411,7 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
     if sub == "edit":
         labels = flags.get("--add-label", []) + flags.get("--remove-label", [])
         if any(
-            name.strip().startswith(set_status.PREFIX)
+            name.strip().startswith(STATUS_PREFIX)
             for value in labels
             for name in value.split(",")
         ):
@@ -436,6 +438,8 @@ def status_write(words: list[str], cwd: str) -> Write:
         raise StatusUnclear(
             f"run the trusted status helper {STATUS_HELPER}, not {script}"
         )
+    import set_status
+
     try:
         mode, issues, _ = set_status.parse(words[2:])
     except set_status.Usage as error:
