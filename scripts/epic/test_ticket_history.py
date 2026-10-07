@@ -853,6 +853,7 @@ class CollectorTest(unittest.TestCase):
             return {
                 "deps": {str(n): [] for n in request["ready"]},
                 "reviews": {str(n): None for n in request["refinement"]},
+                "events": {str(n): [] for n in request["events"]},
             }
 
         with patch.object(monitor.LATEST, "ticks", ticks):
@@ -935,10 +936,6 @@ class PlumbingTest(unittest.TestCase):
         ):
             state = monitor.fetch_state_with_time()
         self.assertEqual(state["fetched_at"], NOW)
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 def label_event(ident: int, kind: str, name: str, at: int) -> monitor.Json:
@@ -1081,3 +1078,94 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(got[2], second)
         # A second pass finds the change already used.
         self.assertEqual(th.reconcile(got, changes), got)
+
+
+class MergeLabelsTest(Base):
+    """The ledger takes the recorded change times (History.merge_labels)."""
+
+    def test_label_time_replaces_the_snapshot_entry_and_replay_keeps_it(self) -> None:
+        self.see(NOW - 600, {1: "Ready"})
+        self.see(NOW, {1: "In progress"})
+        events = {1: set_events(7, "ready", "in-progress", NOW - 300)}
+        self.assertTrue(self.history.merge_labels(events))
+        rows = self.lines(th.LEDGER)
+        self.assertEqual(
+            [(r["to"], r["seen_at"], r.get("source"), r.get("event")) for r in rows],
+            [
+                ("Ready", NOW - 600, "seed", None),
+                ("In progress", NOW - 300, "label", 7),
+            ],
+        )
+        # Same events again, and after a restart: nothing changes.
+        self.assertFalse(self.history.merge_labels(events))
+        replayed = self.fresh()
+        self.assertEqual(replayed.entries, self.history.entries)
+        self.assertFalse(replayed.merge_labels(events))
+        self.assertEqual(self.lines(th.LEDGER), rows)
+
+    def test_sync_events_and_unknown_issues_change_nothing(self) -> None:
+        self.see(NOW - 600, {1: "Ready"})
+        self.see(NOW, {1: "Done"})
+        before = self.lines(th.LEDGER)
+        backfill = [
+            label_event(1, "labeled", "status::sync", NOW - 300),
+            label_event(2, "labeled", "status::done", NOW - 300),
+            label_event(3, "unlabeled", "status::ready", NOW - 300),
+            label_event(4, "unlabeled", "status::sync", NOW - 299),
+        ]
+        other = set_events(9, "ready", "done", NOW - 300)
+        self.assertFalse(self.history.merge_labels({1: backfill, 2: other, 3: []}))
+        self.assertEqual(self.lines(th.LEDGER), before)
+
+
+class CollectorLabelsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "metrics").mkdir()
+        patcher = patch.object(tickets.epic, "shared_reader", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def collect(self, state: monitor.Json, events) -> bool:  # type: ignore[no-untyped-def]
+        def fetch(cache: Path, request: monitor.Json, timeout: float) -> monitor.Json:
+            return {
+                "deps": {str(n): [] for n in request["ready"]},
+                "reviews": {str(n): None for n in request["refinement"]},
+                "events": events(request),
+            }
+
+        with patch.object(monitor.LATEST, "ticks", (time.time(), {})):
+            return monitor.collect_tickets(
+                self.root / "metrics", self.root / "cache", 5, state, fetch
+            )
+
+    def health(self) -> str:
+        return (self.root / "metrics/tickets-health.prom").read_text()
+
+    def test_label_events_reach_the_ledger_and_their_source_health(self) -> None:
+        start = int(time.time()) - 600
+        state = snapshot(items=[ticket(1, "Ready")])
+        state["fetched_at"] = start
+        self.assertTrue(
+            self.collect(state, lambda r: {str(n): [] for n in r["events"]})
+        )
+        state = snapshot(items=[ticket(1, "In progress")])
+        state["fetched_at"] = start + 120
+        changed = {"1": set_events(7, "ready", "in-progress", start + 60)}
+        self.assertTrue(self.collect(state, lambda r: changed))
+        self.assertIn('epic_ticket_source_ok{source="labels"} 1', self.health())
+        last = [json.loads(x) for x in (self.root / th.LEDGER).read_text().splitlines()]
+        self.assertEqual((last[-1]["seen_at"], last[-1]["event"]), (start + 60, 7))
+
+    def test_labels_source_down_adds_nothing_and_is_unknown(self) -> None:
+        state = snapshot(items=[ticket(1, "Ready")])
+        state["fetched_at"] = int(time.time())
+        self.assertFalse(self.collect(state, lambda r: None))
+        self.assertIn('epic_ticket_source_ok{source="labels"} 0', self.health())
+        self.assertIn('epic_ticket_source_ok{source="ledger"} 1', self.health())
+
+
+if __name__ == "__main__":
+    unittest.main()

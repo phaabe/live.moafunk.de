@@ -10,8 +10,10 @@ Sources, each with its own health (`epic_ticket_source_ok`):
   review  REST issue comments of Refinement tickets (body reviews)
   ledger  the status history files (time in status, flow times)
   local   runner ticks from the local loop (agent names)
+  labels  REST issue events of every shown ticket: status label changes
+          (set_status.py), merged into the ledger as recorded change times
 
-deps and review are read in a child process with conditional REST requests
+deps, review and labels are read in a child process with conditional REST requests
 (ETags under `runtime/ticket-cache`). A failed source makes its check and
 notes unknown; it never turns into "no problem".
 """
@@ -43,7 +45,7 @@ DONE_DAYS = 7
 # done_sort of a Done ticket whose issue is still open: sorts before every
 # closed one when the table sorts descending.
 OPEN_DONE_SORT = 9_999_999_999
-SOURCES = ("board", "github", "deps", "review", "ledger", "local")
+SOURCES = ("board", "github", "deps", "review", "ledger", "local", "labels")
 # Which not-Done tickets fill MAX_OPEN first.
 CAP_ORDER = ("In review", "In progress", "Ready", "Refinement", "Unknown", "Backlog")
 
@@ -293,6 +295,8 @@ class Extra:
     deps: dict[int, list[str]] | None
     # Refinement issue -> newest valid body review (or None).
     reviews: dict[int, Json | None] | None
+    # Shown issue -> its status label events (status_events rows).
+    events: dict[int, list[Json]] | None = None
 
 
 def ticket_metrics(
@@ -468,11 +472,37 @@ def source_metrics(metrics: Sink, ok: dict[str, bool], now: float) -> None:
 
 
 def wanted(state: Json, now: float) -> Json:
-    """Issue numbers the child process reads: Ready and Refinement tickets."""
+    """Issue numbers the child process reads: Ready and Refinement tickets,
+    and the label events of every shown ticket."""
     tickets = board_tickets(state, now).tickets
     return {
         "ready": [t.number for t in tickets if t.status == "Ready"],
         "refinement": [t.number for t in tickets if t.status == "Refinement"],
+        "events": [t.number for t in tickets],
+    }
+
+
+EVENT_KINDS = ("labeled", "unlabeled")
+
+
+def status_event(row: Json) -> Json | None:
+    """The fields of a status label event, None for any other event.
+
+    A label event without an id or a readable time raises Malformed: it
+    could be a change, so the whole source is unknown.
+    """
+    if row.get("event") not in EVENT_KINDS:
+        return None
+    name = (row.get("label") or {}).get("name")
+    if not isinstance(name, str) or not name.startswith("status::"):
+        return None
+    if type(row.get("id")) is not int or parse_time(row.get("created_at")) is None:
+        raise Malformed("status label event without id or time")
+    return {
+        "id": row["id"],
+        "event": row["event"],
+        "label": {"name": name},
+        "created_at": row["created_at"],
     }
 
 
@@ -523,7 +553,22 @@ def fetch_extra(
         }
     except (*blocked, Malformed):
         reviews = None
-    return {"deps": deps, "reviews": reviews}
+    events: dict[str, list[Json]] | None
+    try:
+        # All pages of every issue, or nothing: a partial read adds nothing.
+        events = {
+            str(number): [
+                found
+                for row in pages(
+                    f"repos/{epic.REPO}/issues/{number}/events?per_page=100"
+                )
+                if (found := status_event(row)) is not None
+            ]
+            for number in request.get("events", [])
+        }
+    except (*blocked, Malformed):
+        events = None
+    return {"deps": deps, "reviews": reviews, "events": events}
 
 
 def valid_extra(data: object, request: Json) -> Extra:
@@ -555,7 +600,27 @@ def valid_extra(data: object, request: Json) -> Extra:
             for review in reviews.values()
         ):
             good_reviews = {int(n): review for n, review in reviews.items()}
-    return Extra(good_deps, good_reviews)
+    events = data.get("events")
+    good_events: dict[int, list[Json]] | None = None
+    if isinstance(events, dict) and set(events) == {
+        str(n) for n in request.get("events", [])
+    }:
+        try:
+            good_events = {
+                int(n): [valid_event(row) for row in rows] for n, rows in events.items()
+            }
+        except (Malformed, AttributeError, TypeError):
+            good_events = None
+    return Extra(good_deps, good_reviews, good_events)
+
+
+def valid_event(row: object) -> Json:
+    if not isinstance(row, dict):
+        raise Malformed("event row is not an object")
+    found = status_event(row)
+    if found is None or found != row:
+        raise Malformed("not a status label event row")
+    return found
 
 
 def main_fetch(cache: Path, request: Json, seconds: float) -> Json:
@@ -583,4 +648,6 @@ def read_request(text: str) -> Json:
     data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError("request must be an object")
-    return {key: numbers(data.get(key) or []) for key in ("ready", "refinement")}
+    return {
+        key: numbers(data.get(key) or []) for key in ("ready", "refinement", "events")
+    }

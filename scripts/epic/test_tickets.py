@@ -475,7 +475,10 @@ class FetchTest(unittest.TestCase):
 
         request = {"ready": [1], "refinement": [2]}
         data = tickets.fetch_extra(request, pages, (self.Blocked,))
-        self.assertEqual(data, {"deps": {"1": [f"{URL}/issues/9"]}, "reviews": None})
+        self.assertEqual(
+            data,
+            {"deps": {"1": [f"{URL}/issues/9"]}, "reviews": None, "events": {}},
+        )
         extra = tickets.valid_extra(json.loads(json.dumps(data)), request)
         self.assertEqual(extra.deps, {1: [f"{URL}/issues/9"]})
         self.assertIsNone(extra.reviews)
@@ -509,7 +512,7 @@ class FetchTest(unittest.TestCase):
     def test_read_request_refuses_bad_numbers(self) -> None:
         self.assertEqual(
             tickets.read_request('{"ready": [1], "refinement": []}'),
-            {"ready": [1], "refinement": []},
+            {"ready": [1], "refinement": [], "events": []},
         )
         for text in ('{"ready": [0]}', '{"ready": ["1"]}', '{"ready": 1}', "[]"):
             with self.subTest(text=text), self.assertRaises(ValueError):
@@ -519,7 +522,62 @@ class FetchTest(unittest.TestCase):
         state = snapshot(
             items=[ticket(1, "Ready"), ticket(2, "Refinement"), ticket(3, "Backlog")]
         )
-        self.assertEqual(tickets.wanted(state, NOW), {"ready": [1], "refinement": [2]})
+        self.assertEqual(
+            tickets.wanted(state, NOW),
+            {"ready": [1], "refinement": [2], "events": [1, 2, 3]},
+        )
+
+    def test_events_keep_only_status_label_events(self) -> None:
+        label = {
+            "id": 5,
+            "event": "labeled",
+            "label": {"name": "status::done"},
+            "created_at": "2026-10-05T12:00:00Z",
+            "actor": {"login": "x"},
+        }
+        rows = [
+            label,
+            {**label, "id": 6, "label": {"name": "needs-anton"}},
+            {"id": 7, "event": "closed", "created_at": "2026-10-05T12:00:00Z"},
+        ]
+        request = {"ready": [], "refinement": [], "events": [1]}
+        data = tickets.fetch_extra(request, lambda url: rows, (self.Blocked,))
+        kept = {k: label[k] for k in ("id", "event", "label", "created_at")}
+        self.assertEqual(data["events"], {"1": [kept]})
+        extra = tickets.valid_extra(json.loads(json.dumps(data)), request)
+        self.assertEqual(extra.events, {1: [kept]})
+
+    def test_unreadable_or_partial_events_make_the_labels_source_unknown(
+        self,
+    ) -> None:
+        request = {"ready": [1], "refinement": [], "events": [1, 2]}
+        no_time = {"id": 5, "event": "unlabeled", "label": {"name": "status::ready"}}
+
+        def pages(url: str) -> list[monitor.Json]:
+            if url.endswith("/2/events?per_page=100"):
+                raise self.Blocked()
+            return []
+
+        def unreadable(url: str) -> list[monitor.Json]:
+            return [no_time] if url.endswith("/events?per_page=100") else []
+
+        for read in (unreadable, pages):
+            with self.subTest(read=read):
+                data = tickets.fetch_extra(request, read, (self.Blocked,))
+                self.assertIsNone(data["events"])
+                self.assertEqual(data["deps"], {"1": []})
+        for events in (
+            {"1": []},
+            {"1": [], "2": [{"id": 1}]},
+            {"1": [], "2": "x"},
+            {"1": [], "2": [{**no_time, "created_at": "2026-10-05T12:00:00Z", "x": 1}]},
+        ):
+            with self.subTest(events=events):
+                extra = tickets.valid_extra(
+                    {"deps": {"1": []}, "reviews": {}, "events": events}, request
+                )
+                self.assertIsNone(extra.events)
+                self.assertEqual(extra.deps, {1: []})
 
 
 class CollectTest(unittest.TestCase):
@@ -549,8 +607,14 @@ class CollectTest(unittest.TestCase):
 
     def test_success_writes_rows_and_health(self) -> None:
         def fetch(cache: Path, request: monitor.Json, timeout: float) -> monitor.Json:
-            self.assertEqual(request, {"ready": [1], "refinement": [2]})
-            return {"deps": {"1": []}, "reviews": {"2": None}}
+            self.assertEqual(
+                request, {"ready": [1], "refinement": [2], "events": [1, 2]}
+            )
+            return {
+                "deps": {"1": []},
+                "reviews": {"2": None},
+                "events": {"1": [], "2": []},
+            }
 
         self.assertTrue(self.collect(self.state, fetch))
         text = (self.root / "metrics/tickets.prom").read_text()

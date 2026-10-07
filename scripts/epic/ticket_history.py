@@ -712,6 +712,29 @@ class History:
         os.replace(temporary, self.path(STATE))
         return True
 
+    def merge_labels(self, events: dict[int, list[Json]]) -> bool:
+        """Replace snapshot entries with the recorded change times in the
+        issues' status label events (reconcile). The ledger is rewritten
+        only when an entry changed; replay keeps the result, because a
+        label entry is never reconciled again. Returns True on a change."""
+        changed = False
+        for issue, rows in sorted(events.items()):
+            entries = self.entries.get(issue)
+            changes = label_changes(rows)
+            if not entries or not changes:
+                continue
+            merged = sorted(reconcile(entries, changes), key=lambda e: e.seen_at)
+            if merged != entries:
+                self.entries[issue] = merged
+                changed = True
+        if changed:
+            everything = sorted(
+                (e for rows in self.entries.values() for e in rows),
+                key=lambda e: (e.seen_at, e.issue),
+            )
+            rewrite_lines(self.path(LEDGER), (e.row() for e in everything))
+        return changed
+
     def update_segments(
         self,
         shown: Iterable[int],
