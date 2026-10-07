@@ -716,7 +716,8 @@ class PersistenceTest(StoreCase):
 
 
 # One bash wrapper per process: open both lock files, admit, then wait for a
-# go file and store the result named by the test.
+# go file and store the result named by the test. Like the model in the tick,
+# the waiting child never gets the usage locks (18>&- 19>&-).
 WRAPPER = r"""
 set -euo pipefail
 helper=$1; id=$2; work=$3
@@ -726,7 +727,7 @@ code=0
 python3 "$helper" admit --id "$id" --fd 19 --probe-fd 18 > "$work/$id.admit" || code=$?
 echo "$code" > "$work/$id.code"
 if [[ "$code" != 0 ]]; then exit 0; fi
-while [[ ! -e "$work/$id.go" ]]; do sleep 0.05; done
+while [[ ! -e "$work/$id.go" ]]; do sleep 0.05 18>&- 19>&-; done
 python3 "$helper" finish --id "$id" --result-file "$work/$id.result" \
     --receipt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$work/$id.finish" 2> "$work/$id.log"
 """
@@ -740,14 +741,36 @@ class ProcessTest(StoreCase):
         process = subprocess.Popen(
             ["/bin/bash", "-c", WRAPPER, "_", str(HELPER), admission, str(self.tmp)],
             env=env,
+            start_new_session=True,
         )
         self.addCleanup(self.stop, process)
         return process
 
     def stop(self, process: subprocess.Popen[bytes]) -> None:
         if process.poll() is None:
-            process.kill()
-            process.wait(timeout=10)
+            self.kill(process)
+
+    def kill(self, process: subprocess.Popen[bytes]) -> None:
+        """SIGKILL the wrapper's whole process group and return only when every
+        member has exited, so no child of it can still hold a usage lock."""
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        process.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                os.killpg(process.pid, 0)
+            except (ProcessLookupError, PermissionError):
+                return  # gone; macOS refuses a group of zombies with EPERM
+            if time.monotonic() > deadline:
+                raise AssertionError(f"process group {process.pid} did not exit")
+            time.sleep(0.01)
+
+    def lock_taken(self, path: Path) -> bool:
+        with path.open("a") as lock:
+            return not cu.take(lock.fileno())  # closing drops the test lock
 
     def code(self, admission: str) -> int:
         path = self.tmp / f"{admission}.code"
@@ -821,8 +844,10 @@ class ProcessTest(StoreCase):
         self.assertIn(
             "as the recovery probe", (self.tmp / f"{probe}.admit").read_text()
         )
-        holder.send_signal(signal.SIGKILL)
-        holder.wait(timeout=10)
+        self.kill(holder)
+        # Nothing of the killed wrapper runs, so nothing holds its locks.
+        self.assertFalse(self.store.alive(probe))
+        self.assertFalse(self.lock_taken(self.store.folder / cu.PROBE_LOCK))
         later = str(uuid.uuid4())
         self.start(later).wait(timeout=30)
         self.assertEqual(self.code(later), cu.WAIT)
