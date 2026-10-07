@@ -2635,7 +2635,10 @@ def done_tickets() -> Json:
         description="Tickets that entered Done in the last 14 days, newest "
         "first. Cycle: first In progress to Done. Lead: first Ready to Done. "
         "–: not measured (the ticket skipped the status, or the time crosses "
-        "a gap in the collector's data).",
+        "a gap in the collector's data that no status label change explains). "
+        "Label changes from set_status.py give exact times also while the "
+        "collector was off; a status moved by hand on the board in such a gap "
+        "stays invisible.",
     )
 
 
