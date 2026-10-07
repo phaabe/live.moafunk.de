@@ -88,6 +88,7 @@ from github_quota import (
 )
 
 if TYPE_CHECKING:
+    from refinement import Proposal, Verdict
     from routing import Route
 
 REPO = "phaabe/live.moafunk.de"
@@ -108,7 +109,12 @@ FOCUS_FILE = Path.home() / ".epic-focus"
 ESCALATION_LABEL = "needs-anton"
 # New actions are emitted only when listed in EPIC_FOCUS_ACTIONS (comma list).
 # One is added in both runners after both its Claude and Codex leaves merged.
-NEW_ACTIONS = frozenset({"adopt"})
+REFINEMENT_ACTIONS = ("refine", "review-refinement", "set-ready")
+NEW_ACTIONS = frozenset({"adopt", *REFINEMENT_ACTIONS})
+# Statuses set-ready may change to Ready. It never touches In progress or Done.
+PRE_READY = (None, "Backlog", "Todo")
+# Its newest "Refinement exempt" comment lists the exempt Ready tickets.
+EXEMPT_ISSUE = 551
 ACTIONS_ENV = "EPIC_FOCUS_ACTIONS"
 # Ticket dependencies need a closed-as-completed issue (see completed_tickets()).
 COMPLETED_TICKETS_ENV = "EPIC_REQUIRE_COMPLETED_TICKETS"
@@ -183,6 +189,10 @@ class Action:
     # adopt only: the lane to write, and the hash of the body it must keep.
     lane: str | None = None
     body_sha: str | None = None
+    # Refinement actions and claims of refined issues: the proposal digest.
+    digest: str | None = None
+    # refine only: its key in the shared attempt store (rebase_policy.py).
+    attempt_key: str | None = None
     # For --status only. Kept out of the JSON so runner fingerprints stay stable.
     priority: int = DEFAULT_PRIORITY
     # Board/issue mismatches of the tickets a claim waits for. Never a blocker.
@@ -377,6 +387,58 @@ def set_readiness(item: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     item["readiness"] = "\n".join(c["body"] for c in comments)
 
 
+def refining() -> bool:
+    """A refinement action is enabled in EPIC_FOCUS_ACTIONS. Off, no comments
+    of issues before Ready and no exempt list are read."""
+    return bool(set(REFINEMENT_ACTIONS) & read_actions(os.environ.get(ACTIONS_ENV)))
+
+
+def reads_comments(
+    item: dict[str, Any], focus: frozenset[str] | set[str], refine: bool
+) -> bool:
+    """Whether decide() needs this board issue's comments: Ready, or with
+    `refine` before Ready with label `refinement`, a refinement phase label or
+    a focus label.
+
+    An issue whose proposal stays but whose labels were all removed is not read.
+    """
+    content = item.get("content") or {}
+    if content.get("type") != "Issue":
+        return False
+    if item.get("status") == "Ready":
+        return True
+    if not refine or item.get("status") not in PRE_READY:
+        return False
+    import refinement as rf  # here: the Codex runner tests copy this file alone
+
+    names = labels(item)
+    return bool(names & {*focus, rf.REFINEMENT_LABEL, *rf.PHASE_LABELS})
+
+
+def set_comments(
+    item: dict[str, Any], rows: list[dict[str, Any]], refine: bool
+) -> None:
+    """Store an issue's readiness comments from its REST rows; with `refine`
+    also its refinement comments (with comment IDs and the edited flag)."""
+    set_readiness(item, rows)
+    if not refine:
+        return
+    comments = rows_as_comments(rows)
+    for comment, row in zip(comments, rows, strict=True):
+        if isinstance(row.get("id"), int):
+            comment["id"] = row["id"]
+    item["refinement_comments"] = comments
+
+
+def exempt_list(rows: list[dict[str, Any]]) -> list[str]:
+    """Exempt Ready tickets from the comment rows of EXEMPT_ISSUE, sorted."""
+    if not rows:
+        return []
+    import refinement as rf  # here: the Codex runner tests copy this file alone
+
+    return sorted(rf.exempt_issues(rows_as_comments(rows)))
+
+
 def dependency_sources(item: dict[str, Any]) -> dict[str, list[str]]:
     """Each dependency of a Ready issue with the readiness comments that name it."""
     found: dict[str, list[str]] = {}
@@ -418,14 +480,17 @@ def board_issues(state: dict[str, Any]) -> dict[int, dict[str, Any]]:
 
 
 def ticket_prerequisites(items: list[dict[str, Any]]) -> set[int]:
-    """Tickets named in the "Start after" lines of Ready board issues."""
-    return {
-        int(ISSUE_URL.fullmatch(url).group(1))  # type: ignore[union-attr]
-        for item in items
-        if item.get("status") == "Ready"
-        for url in start_after(item)
-        if ISSUE_URL.fullmatch(url)
-    }
+    """Tickets named in the "Start after" lines of Ready board issues, and in
+    the `depends_on` of their proposals (read only while refinement is on)."""
+    found = set()
+    for item in items:
+        if item.get("status") != "Ready":
+            continue
+        urls = start_after(item)
+        if "refinement_comments" in item:
+            urls |= approved_dependencies(item)
+        found |= {int(m.group(1)) for url in urls if (m := ISSUE_URL.fullmatch(url))}
+    return found
 
 
 def read_tickets(
@@ -767,6 +832,191 @@ def ownerless(pr: dict[str, Any]) -> bool:
     return pr_author(pr) is None and not ANY_OWNER_LINE.search(pr.get("body") or "")
 
 
+def definition_of_ready(
+    item: dict[str, Any],
+    proposal: Proposal | None,
+    verdict: Verdict | None,
+    route_problem: str | None = None,
+    on_board: bool = True,
+) -> list[str]:
+    """Why an issue is not Ready under its approved proposal; empty means Ready.
+
+    Pure: `proposal` is the newest valid proposal (refinement.latest_proposal),
+    `verdict` its current verdict (refinement.current_verdict), `route_problem`
+    the routing result for the proposal's files (None when one lane owns them).
+    The issue's Executor, labels and "Start after" dependencies must match the
+    proposal; free text in the body is not compared.
+    """
+    if proposal is None:
+        return ["no proposal"]
+    data = proposal.data
+    problems = []
+    if verdict is None or verdict.state != "APPROVED":
+        problems.append("no current approval by the other agent")
+    if not [c for c in data["acceptance_criteria"] if c.strip()]:
+        problems.append("no acceptance criteria")
+    if not [x for x in data["leaves"] if x.strip()]:
+        problems.append("no leaves")
+    if not [f for f in data["files"] if f.strip()]:
+        problems.append("no files")
+    if route_problem:
+        problems.append(f"file ownership: {route_problem}")
+    proposed = set(data["labels"])
+    for prefix in ("type::", "project::"):
+        if len([n for n in proposed if n.startswith(prefix)]) != 1:
+            problems.append(f"needs exactly one {prefix}* label")
+    live = labels(item)
+    missing = sorted(proposed - live)
+    if missing:
+        problems.append(f"issue lacks labels {', '.join(missing)}")
+    # Layer and area labels must equal the proposal's; other labels (priority,
+    # waiting, refinement phases) are lifecycle and are not compared.
+    for prefix in ("type::", "project::"):
+        on_issue = {n for n in live if n.startswith(prefix)}
+        if len(on_issue) != 1:
+            problems.append(f"issue needs exactly one {prefix}* label")
+        extra = sorted(on_issue - proposed)
+        if extra:
+            problems.append(f"issue labels not in the proposal: {', '.join(extra)}")
+    if data["executor"] not in AGENTS:
+        problems.append("no Executor")
+    elif item.get("executor") != data["executor"]:
+        problems.append(f"issue Executor is not {data['executor']}")
+    extra = sorted(start_after(item) - set(data["depends_on"]))
+    if extra:
+        problems.append(f"dependencies not in the proposal: {', '.join(extra)}")
+    if not on_board:
+        problems.append("not on the board")
+    if ESCALATION_LABEL in labels(item):
+        problems.append(f"label {ESCALATION_LABEL}")
+    return problems
+
+
+@dataclass(frozen=True)
+class Stage:
+    """The refinement step of one issue (refinement_stage).
+
+    `kind`: refine, review-refinement, set-ready, escalate, claim (refined or
+    exempt) or blocked (only Anton can move it). `agent` may act on it.
+    """
+
+    kind: str
+    agent: str | None
+    reason: str
+    digest: str | None = None
+    comments: tuple[str, ...] = ()
+    # refine only: refinement.attempt_key (revision and reset of this run).
+    attempt_key: str | None = None
+
+
+def approved_dependencies(item: dict[str, Any]) -> set[str]:
+    """The `depends_on` of the issue's newest proposal: claim blockers like
+    "Start after" (refinement_stage decides whether it is approved)."""
+    import refinement as rf
+
+    proposal, _ = rf.latest_proposal(
+        item["content"]["number"], item.get("refinement_comments") or []
+    )
+    return set(proposal.data["depends_on"]) if proposal else set()
+
+
+def refinement_stage(
+    item: dict[str, Any],
+    exempt: frozenset[str] | set[str],
+    rules: list[dict[str, Any]] | None = None,
+    focus: frozenset[str] = frozenset(),
+) -> Stage | None:
+    """The refinement step a board issue needs (rules in issue 487), or None.
+
+    None: its comments were not read, its Status is past Ready, or it is neither
+    enrolled (label `refinement`, a phase label or a proposal), in focus, nor
+    Ready.
+    """
+    # Imported here: the Codex runner tests copy this file without them.
+    import refinement as rf
+    from routing import load_rules, route
+
+    comments = item.get("refinement_comments")
+    status = item.get("status")
+    if comments is None or status not in (*PRE_READY, "Ready"):
+        return None
+    content = item["content"]
+    names = labels(item)
+    has_proposal = rf.is_enrolled(set(), comments)
+    marked = names & {rf.REFINEMENT_LABEL, *rf.PHASE_LABELS, *focus}
+    if not (has_proposal or marked):
+        if status != "Ready":
+            return None
+    executor = item.get("executor") if item.get("executor") in AGENTS else None
+    if status == "Ready" and content["url"] in exempt and not has_proposal:
+        return Stage("claim", executor, "exempt Ready ticket")
+    if ESCALATION_LABEL in names or rf.escalated(comments):
+        return Stage("blocked", None, "escalated; waits for Anton's reset")
+    proposal, problem = rf.latest_proposal(content["number"], comments)
+    key = rf.attempt_key(content["number"], comments, proposal)
+    files = proposal.data["files"] if proposal else None
+    rules = load_rules() if rules is None and files else rules or []
+    author = route(executor, files, rules, "refine")
+    if author.agent is None:
+        return Stage("blocked", None, author.reason)
+    if proposal is None:
+        return Stage(
+            "refine", author.agent, problem or "no proposal yet", attempt_key=key
+        )
+    verdict = rf.current_verdict(proposal, comments)
+    if verdict is None:
+        return Stage(
+            "review-refinement",
+            other(proposal.data["proposer"]),
+            "proposal has no verdict for its digest",
+            proposal.digest,
+            (proposal.url,),
+        )
+    if verdict.state == "CHANGES REQUESTED":
+        rounds = rf.rejected_rounds(comments)
+        if rounds >= rf.MAX_REJECTED_ROUNDS:
+            return Stage(
+                "escalate",
+                author.agent,
+                f"{rounds} rejected refinement rounds; post the escalation "
+                f"comment, add label {ESCALATION_LABEL} and ask Anton",
+                proposal.digest,
+                (verdict.url,),
+            )
+        return Stage(
+            "refine",
+            author.agent,
+            "refinement changes requested",
+            proposal.digest,
+            (proposal.url, verdict.url),
+            key,
+        )
+    owner = route(None, proposal.data["files"], rules, "claim")
+    problems = definition_of_ready(
+        item, proposal, verdict, None if owner.agent else owner.reason
+    )
+    if problems:
+        return Stage(
+            "refine",
+            author.agent,
+            "approved proposal does not match the issue: " + "; ".join(problems),
+            proposal.digest,
+            (proposal.url, verdict.url),
+            key,
+        )
+    if status != "Ready":
+        return Stage(
+            "set-ready",
+            author.agent,
+            "approved proposal matches the issue",
+            proposal.digest,
+            (proposal.url, verdict.url),
+        )
+    return Stage(
+        "claim", executor, "approved proposal", proposal.digest, (proposal.url,)
+    )
+
+
 def board_executors(state: dict[str, Any]) -> dict[int, str]:
     """Executor project field of this repository's PRs on the board, by number.
 
@@ -964,6 +1214,44 @@ def decide(
     for p in all_prs:
         linked |= issue_numbers(p.get("body") or "")
     open_mine = len([p for p in all_prs if pr_author(p) == agent])
+    # Refinement (issue 487): with `refine` enabled, a Ready issue is claimed
+    # only when it is exempt or its approved proposal still matches.
+    stages: dict[int, Stage | None] = {}
+    if set(REFINEMENT_ACTIONS) & enabled:
+        exempt = frozenset(state.get("refinement_exempt") or [])
+        for i in state.get("items", []):
+            content = i.get("content") or {}
+            if (
+                content.get("type") != "Issue"
+                or content.get("number") in linked
+                or (focus and not labels(i) & focus)
+                or (completed_tickets and is_closed(i))
+            ):
+                continue
+            stage = refinement_stage(i, exempt, rules, focus)
+            stages[content["number"]] = stage
+            if stage is None or stage.agent != agent:
+                continue
+            # A refinement escalation comes with `refine`; claims are below.
+            if stage.kind not in enabled and not (
+                stage.kind == "escalate" and "refine" in enabled
+            ):
+                continue
+            add(
+                stage.kind,
+                Action(
+                    stage.kind,
+                    stage.reason,
+                    issue=content["url"],
+                    comments=list(stage.comments),
+                    digest=stage.digest,
+                    attempt_key=stage.attempt_key,
+                    priority=priority_rank(labels(i)),
+                    updated_at=content.get("updated_at"),
+                ),
+                # Same key as PR escalations share: priority, then number.
+                content["number"],
+            )
     items = [
         i
         for i in state.get("items", [])
@@ -1013,7 +1301,12 @@ def decide(
                 number,
             )
         elif i.get("status") == "Ready" and open_mine < MAX_OPEN_PRS:
+            stage = stages.get(number)
+            if "refine" in enabled and (stage is None or stage.kind != "claim"):
+                continue  # its refinement action, if any, is queued above
             wanted = start_after(i) | batch.get(number, set())
+            if stage and stage.digest:
+                wanted |= approved_dependencies(i)
             warnings: list[str] = []
             if completed_tickets:
                 tickets = {int(n) for n in ISSUE_URL.findall(" ".join(wanted))}
@@ -1047,6 +1340,7 @@ def decide(
                         "claim",
                         "Ready leaf assigned to me",
                         issue=url,
+                        digest=stage.digest if stage else None,
                         priority=rank,
                         updated_at=i["content"].get("updated_at"),
                         warnings=warnings,
@@ -1062,9 +1356,12 @@ def decide(
         "fix-checks",
         "resolve-conflict",
         "review",
+        "review-refinement",
+        "set-ready",
         "continue",
         "adopt",
         "claim",
+        "refine",
     ]
     if include_waiting:
         order = [*order, "wait"]
@@ -1251,6 +1548,7 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
     """The state decide() reads. EPIC_REQUIRE_COMPLETED_TICKETS=1 adds the
     prerequisite tickets' issue state; off, no ticket is read."""
     mode = completed_tickets()
+    refine = refining()
     if shared_reader():
         # Imported here: the Codex runner tests copy this file alone.
         import github_state
@@ -1321,14 +1619,14 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
             issue = gh_json(["api", f"repos/{REPO}/issues/{n}"])
             linked_labels[str(n)] = sorted(labels(issue))
     for item in items:
-        # Only Ready issues need their readiness comments ("Start after ...").
-        content = item.get("content") or {}
-        if item.get("status") == "Ready" and content.get("type") == "Issue":
-            pages = gh_json(
-                ["api", "--paginate", "--slurp"]
-                + [f"repos/{REPO}/issues/{content['number']}/comments?per_page=100"]
+        # Readiness ("Start after ...") and refinement comments.
+        if reads_comments(item, focus, refine):
+            number = item["content"]["number"]
+            set_comments(
+                item,
+                rest_rows(f"repos/{REPO}/issues/{number}/comments?per_page=100"),
+                refine,
             )
-            set_readiness(item, [row for page in pages for row in page])
     # Batch order tables ("Scope, in order") live in comments on the epic.
     pages = gh_json(
         ["api", "--paginate", "--slurp"]
@@ -1340,12 +1638,18 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
         for row in page
         if "Scope, in order" in (row.get("body") or "")
     ]
+    exempt = (
+        rest_rows(f"repos/{REPO}/issues/{EXEMPT_ISSUE}/comments?per_page=100")
+        if refine
+        else []
+    )
     state: dict[str, Any] = {
         "prs": prs,
         "items": items,
         "linked_labels": linked_labels,
         "merged_prs": merged,
         "batch_order": batch_order,
+        "refinement_exempt": exempt_list(exempt),
         # Focus issues also off the board, so --status can name them.
         "focus_issues": focus_issues(focus) if focus else [],
     }

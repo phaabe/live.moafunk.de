@@ -17,6 +17,14 @@ a push or merge was denied. claude-tick.sh runs this after the session:
                                 was created during the tick
   adopt                         the PR body has the owner lines for this agent
                                 at line start and still holds the original body
+  refine                        an unedited proposal by this agent (refinement.py
+                                format) was posted during the tick, or the issue
+                                has label needs-anton and a new comment (questions).
+                                The issue fields are not checked here: a mismatch
+                                with the approved proposal routes back to refine.
+  review-refinement             an unedited "Refinement: ... by <Agent> at <digest>"
+                                comment for the selected digest was posted
+  set-ready                     the issue's board Status is Ready
 
 `continue`, `claim`, `escalate`, `idle` and `stop` are not checked yet. An
 unknown action is bad input: it never passes. Exit 0 when the action landed or
@@ -55,7 +63,9 @@ from next_action import EPIC, REPO, body_digest, issue_url, other
 PUSHES = {"fix-checks", "resolve-conflict"}
 # Agents whose runner pins attempts and posts rebase records.
 PROVEN_REBASES = {"claude", "codex"}
-CHECKED = {"merge", "review", "fix", "adopt", *PUSHES}
+# Issue actions of refinement (next_action.REFINEMENT_ACTIONS).
+ISSUE_ACTIONS = {"refine", "review-refinement", "set-ready"}
+CHECKED = {"merge", "review", "fix", "adopt", *PUSHES, *ISSUE_ACTIONS}
 UNCHECKED = {"continue", "claim", "escalate", "idle", "stop"}
 READ_FAILED = 5
 
@@ -99,13 +109,17 @@ def landed(
     fetch: Fetch = gh_json,
     worktree: str | None = None,
     attempt: dict[str, Any] | None = None,
+    items: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> tuple[bool, str]:
-    """(landed, reason) for one selected action."""
+    """(landed, reason) for one selected action. `items` reads the board
+    (default next_action.project_items, REST)."""
     kind = action.get("action")
     if kind in UNCHECKED:
         return True, f"{kind} is not checked"
     if kind not in CHECKED:
         raise ValueError(f"unknown action {kind!r}")
+    if kind in ISSUE_ACTIONS:
+        return refined(agent, action, since, fetch, items)
     number, sha = action.get("pr"), action.get("sha")
     if not isinstance(number, int) or not isinstance(sha, str):
         raise ValueError(f"{kind} action needs pr and sha")
@@ -183,6 +197,59 @@ def resolution(
     if problem:
         return False, f"PR {number} head moved, but {problem}"
     return True, f"PR {number} rebased to {head[:7]} with test proof and rebase record"
+
+
+def refined(
+    agent: str,
+    action: dict[str, Any],
+    since: str,
+    fetch: Fetch,
+    items: Callable[[], list[dict[str, Any]]] | None,
+) -> tuple[bool, str]:
+    """A refinement action on an issue landed (see the module docstring)."""
+    kind, url = action["action"], action.get("issue")
+    m = re.fullmatch(re.escape(issue_url(0)[:-1]) + r"(\d+)", url or "")
+    if not m:
+        raise ValueError(f"{kind} action needs its issue URL")
+    number = int(m.group(1))
+    if kind == "set-ready":
+        if items is None:
+            from next_action import project_items as items
+        found = [i for i in items() if (i.get("content") or {}).get("url") == url]
+        status = found[0].get("status") if found else None
+        return status == "Ready", f"issue {number} Status is {status}"
+    # Imported here: runners that copy this file without it keep working, and
+    # the Codex test fixtures stub next_action with the shared contract names.
+    import refinement
+    from next_action import ESCALATION_LABEL
+
+    rows = fetch(
+        ["api", f"repos/{REPO}/issues/{number}/comments?since={since}&per_page=100"]
+    )
+    new = [
+        c
+        for c in rows
+        if c.get("created_at", "") >= since and c.get("updated_at") == c["created_at"]
+    ]
+    name = agent.capitalize()
+    if kind == "review-refinement":
+        digest = action.get("digest")
+        if not isinstance(digest, str):
+            raise ValueError("review-refinement action needs digest")
+        verdict = re.compile(
+            rf"Refinement: (APPROVED|CHANGES REQUESTED) by {name} at {digest}"
+        )
+        found = any(verdict.fullmatch(c.get("body") or "") for c in new)
+        return found, f"refinement verdict {'posted' if found else 'missing'}"
+    for c in new:
+        data, _ = refinement.parse_proposal(c.get("body") or "")
+        if data and data["proposer"] == name:
+            return True, f"proposal posted on issue {number}"
+    if new:
+        issue = fetch(["api", f"repos/{REPO}/issues/{number}"])
+        if ESCALATION_LABEL in {lbl.get("name") for lbl in issue.get("labels") or []}:
+            return True, f"issue {number} waits for Anton"
+    return False, f"no proposal by {name} and no question for Anton on issue {number}"
 
 
 def owner_lines(agent: str, lane: str | None) -> dict[str, re.Pattern[str]]:

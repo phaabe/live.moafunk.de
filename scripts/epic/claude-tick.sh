@@ -69,6 +69,11 @@
 # proof and the record. Before a `review`, `scope` works out whether a rebase
 # record allows a focused review; the prompt carries the result.
 #
+# `refine` uses the same attempt store under the key the action carries
+# (refinement.py attempt_key): 2 failed runs per key, then needs-anton on the
+# issue. `refine`, `review-refinement` and `set-ready` work on an issue and get
+# no worktree.
+#
 # Closing finished tickets (close_merged.py): before the selector, each tick
 # closes open tickets whose implementation merged, with one evidence comment.
 # It keeps no state; its failure is logged and the tick goes on.
@@ -535,7 +540,9 @@ while IFS= read -r -u 3 candidate; do
         idle|stop) exit 0 ;;
         merge|escalate) model=sonnet effort=low ;;
         adopt) model=sonnet effort=medium ;;
-        claim) model=opus effort=medium ;;
+        claim|refine) model=opus effort=medium ;;
+        review-refinement) model=opus effort=high ;;
+        set-ready) model=sonnet effort=low ;;
         review|fix|fix-checks|resolve-conflict|continue) model=opus effort=high ;;
         *)
             printf 'tick: unknown action %s\n' "$action" >&2
@@ -554,10 +561,10 @@ while IFS= read -r -u 3 candidate; do
         tick_phase=quota
         exit 0
     fi
-    # A resolve-conflict key at its attempt limit starts no model; the check
-    # posts the escalation label (again, if the last post failed).
+    # A resolve-conflict or refine key at its attempt limit starts no model;
+    # the check posts the escalation label (again, if the last post failed).
     tick_phase=backoff
-    if [[ "$action" == resolve-conflict ]]; then
+    if [[ "$action" == resolve-conflict || "$action" == refine ]]; then
         attempts=0
         "$py" "${code_root}/scripts/epic/rebase_policy.py" attempt-check --state-dir "$registry_dir" \
             --agent claude --action-file "${lock_dir}/action.json" \
@@ -723,7 +730,7 @@ fi
 # The attempt counts from here, once, whatever happens next.
 tick_id="${tick_started}-$$"
 attempt_open=0
-if [[ "$action" == resolve-conflict ]]; then
+if [[ "$action" == resolve-conflict || "$action" == refine ]]; then
     started=0
     "$py" "${code_root}/scripts/epic/rebase_policy.py" attempt-start --state-dir "$registry_dir" \
         --attempt-file "${lock_dir}/attempt.json" --id "$tick_id" || started=$?

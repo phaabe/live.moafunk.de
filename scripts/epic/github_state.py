@@ -732,6 +732,36 @@ def board_items(client: Client, rest_ids: bool = False) -> list[dict[str, Any]]:
     return items
 
 
+def status_target(client: Client) -> dict[str, str]:
+    """The node IDs `gh project item-edit` needs to set Status to Ready:
+    project, Status field and the Ready option."""
+    project = client.json(na.PROJECT_API)
+    status = next(
+        (
+            f
+            for f in client.pages(f"{na.PROJECT_API}/fields?per_page=100")
+            if f.get("name") == "Status"
+        ),
+        None,
+    )
+    if not isinstance(project, dict) or status is None:
+        raise ReadBlocked("project board or its Status field is missing")
+
+    def name(option: dict[str, Any]) -> Any:
+        value = option.get("name")
+        return value.get("raw") if isinstance(value, dict) else value
+
+    ready = [o.get("id") for o in status.get("options") or [] if name(o) == "Ready"]
+    target = {
+        "project": project.get("node_id"),
+        "field": status.get("node_id"),
+        "ready": ready[0] if len(ready) == 1 else None,
+    }
+    if not all(isinstance(v, str) and v for v in target.values()):
+        raise ReadBlocked(f"project board Status IDs are incomplete: {target}")
+    return target
+
+
 def search_focus(client: Client, focus: set[str]) -> list[dict[str, Any]]:
     """Open issues with a focus label, on the board or not. One entry per issue."""
     found: dict[int, dict[str, Any]] = {}
@@ -791,9 +821,9 @@ def build_state(
     """The fetch_state() dict from REST. Raises ReadBlocked on any gap.
 
     Without `pr_details` open PRs come from the list only (no comments, checks
-    or mergeable): enough for claims. `readiness_for` limits the readiness
-    comments to these issues. `completed_tickets` adds the prerequisite
-    tickets' issue state (`tickets`), read with this client.
+    or mergeable): enough for claims. `readiness_for` limits the readiness and
+    refinement comments to these issues. `completed_tickets` adds the
+    prerequisite tickets' issue state (`tickets`), read with this client.
     """
     try:
         prs: list[dict[str, Any]] = []
@@ -818,13 +848,21 @@ def build_state(
             if n not in on_board:
                 issue = client.json(f"repos/{na.REPO}/issues/{n}")
                 linked_labels[str(n)] = sorted(na.labels(issue))
+        refine = na.refining()
         for item in items:
             content = item.get("content") or {}
-            if item.get("status") != "Ready" or content.get("type") != "Issue":
-                continue
-            if readiness_for is not None and content.get("number") not in readiness_for:
-                continue
-            na.set_readiness(item, comment_rows(client, content["number"]))
+            if readiness_for is None:
+                wanted = na.reads_comments(item, focus, refine)
+            else:
+                # A recheck reads its own issue, before Ready only to refine.
+                statuses = (*na.PRE_READY, "Ready") if refine else ("Ready",)
+                wanted = (
+                    content.get("number") in readiness_for
+                    and content.get("type") == "Issue"
+                    and item.get("status") in statuses
+                )
+            if wanted:
+                na.set_comments(item, comment_rows(client, content["number"]), refine)
         batch_order = [
             r.get("body") or ""
             for r in comment_rows(client, na.EPIC)
@@ -836,6 +874,9 @@ def build_state(
             "linked_labels": linked_labels,
             "merged_prs": merged,
             "batch_order": batch_order,
+            "refinement_exempt": na.exempt_list(
+                comment_rows(client, na.EXEMPT_ISSUE) if refine else []
+            ),
             "focus_issues": search_focus(client, focus) if focus else [],
         }
         # Every labeled draft PR and In progress issue, also in a claim
@@ -1123,6 +1164,9 @@ class FreshReader:
     def board_items(self) -> list[dict[str, Any]]:
         return board_items(self.client, rest_ids=True)
 
+    def status_target(self) -> dict[str, str]:
+        return status_target(self.client)
+
     def graphql(self, endpoint: str) -> Any:
         """GraphQL for the merge guard's edit evidence only. Logged by purpose."""
         if not endpoint.startswith("graphql?"):
@@ -1191,6 +1235,9 @@ def same_action(a: na.Action, action: dict[str, Any]) -> bool:
         and a.sha == action.get("sha")
         and a.lane == action.get("lane")
         and a.body_sha == action.get("body_sha")
+        # Refinement: the proposal (digest) and attempt the model was given.
+        and a.digest == action.get("digest")
+        and a.attempt_key == action.get("attempt_key")
     )
 
 

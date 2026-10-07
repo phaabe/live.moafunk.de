@@ -109,7 +109,17 @@ DEFAULT_SECONDS = 4 * 60 * 60
 ENV_SECONDS = "EPIC_BLOCKED_COOLDOWN_SECONDS"
 # The actions tick_verify.py checks (tick_verify.CHECKED). Kept here so this
 # module does not import next_action.py; a test keeps both sets equal.
-LANDING = {"merge", "review", "fix", "adopt", "fix-checks", "resolve-conflict"}
+LANDING = {
+    "merge",
+    "review",
+    "fix",
+    "adopt",
+    "fix-checks",
+    "resolve-conflict",
+    "refine",
+    "review-refinement",
+    "set-ready",
+}
 # Issue cooldowns of these actions move to the `continue` of the issue's PR.
 TRANSFER = {"claim", "continue"}
 TIMEOUT_EXITS = {124, 137}

@@ -16,6 +16,8 @@ This module makes a rebase cheap to re-review and safe to publish:
                  verdict, else full.
   attempt limit  one store for both runners, keyed by PR, head and pinned target
                  tip (`attempt-check`, `attempt-start`, `attempt-finish`).
+                 `refine` runs share it under the key next_action.py gives
+                 (`refine:<issue>:<revision>:<reset>`, see refinement.py).
 
 Values of one attempt (docs/implementation/epic-rules.md, section 8):
 
@@ -37,6 +39,9 @@ waits and lock skips never start one. Cooldown expiry and comments do not reset
 the count; a new head or a new target tip is a new key. At the limit no model
 starts for the key and the owner's runner adds the label `needs-anton`. When
 that post fails, the key stays suppressed and only the label post is retried.
+For `refine` the limit is refinement.MAX_FAILED_RUNS; the issue gets an
+escalation comment first, then the label. A new proposal revision or Anton's
+reset of that comment is a new key.
 
 Usage:
   rebase_policy.py prove --worktree W --pr N --base BASE [--state-dir D]
@@ -75,6 +80,8 @@ from github_quota import QuotaExhausted, run_gh, stop_on_quota
 REPO = "phaabe/live.moafunk.de"
 ESCALATION_LABEL = "needs-anton"
 SHA = re.compile(r"[0-9a-f]{40}")
+ISSUE_URL = re.compile(rf"https://github\.com/{re.escape(REPO)}/issues/(\d+)")
+REFINE_KEY = re.compile(r"refine:(\d+):(\d+):(none|\d+)")
 VERDICT = re.compile(
     r"^Review: (APPROVED|CHANGES REQUESTED) by (Claude|Codex) at ([0-9a-f]{40})$"
 )
@@ -540,7 +547,12 @@ def post_comment(pr: int, body: str) -> None:
 # --- attempts ---------------------------------------------------------------
 
 
-def limit() -> int:
+def limit(key: str = "") -> int:
+    if key.startswith("refine:"):
+        # Imported here: the Codex runner tests copy this file without it.
+        from refinement import MAX_FAILED_RUNS
+
+        return MAX_FAILED_RUNS
     value = os.environ.get(LIMIT_ENV, str(DEFAULT_LIMIT))
     if not value.isdigit() or int(value) <= 0:
         raise ValueError(f"{LIMIT_ENV} must be a positive integer")
@@ -583,20 +595,57 @@ def locked(state_dir: Path) -> Generator[dict[str, Any]]:
             write_json(path, data)
 
 
-def escalate(entry: dict[str, Any], pr: int, post: Callable[[int], None]) -> None:
-    """Post the label once. A failure keeps the key suppressed; the next check
-    retries only the post."""
+def refine_escalation(issue: int, key: str, failed: int) -> str:
+    """URL of the escalation comment for a `refine` key, posted once. Anton's
+    reset names this URL (refinement.active_reset), which makes a new key. The
+    key in the body finds the comment again after a crash before it was
+    recorded."""
+    # Imported here: the Codex runner tests copy this file without it.
+    from refinement import ESCALATION_MARKER
+
+    def find() -> str | None:
+        for c in comments(issue):
+            body = c.get("body") or ""
+            first = body.partition("\n")[0].strip()
+            if first == ESCALATION_MARKER and f"`{key}`" in body and unedited(c):
+                return c.get("html_url")
+        return None
+
+    url = find()
+    if url:
+        return url
+    post_comment(
+        issue,
+        f"{ESCALATION_MARKER}\n"
+        f"Refinement runs for `{key}` failed {failed} times. No model runs for "
+        "this proposal revision until Anton resets it.\n\n"
+        "To reset, post exactly: `Refinement reset: Anton for <this comment URL>`",
+    )
+    url = find()
+    if not url:
+        raise ReadFailed(f"escalation comment for {key} not found after the post")
+    return url
+
+
+def escalate(
+    entry: dict[str, Any], pr: int, post: Callable[[int], None], key: str = ""
+) -> None:
+    """Post the label once; for a `refine` key first the escalation comment
+    Anton resets. A failure keeps the key suppressed; the next check retries
+    only the missing part."""
     if entry.get("escalation") == "posted":
         return
     try:
+        if key.startswith("refine:") and not entry.get("escalation_url"):
+            entry["escalation_url"] = refine_escalation(pr, key, counted(entry))
         post(pr)
     except QuotaExhausted:
         entry["escalation"] = "pending"
         raise
-    except (subprocess.SubprocessError, OSError) as error:
+    except (subprocess.SubprocessError, OSError, ReadFailed, ValueError) as error:
         entry["escalation"] = "pending"
         entry["escalation_error"] = str(error)[:200]
-        print(f"attempts: label post failed for PR {pr}: {error}", file=sys.stderr)
+        print(f"attempts: escalation failed for {pr}: {error}", file=sys.stderr)
         return
     entry["escalation"] = "posted"
     entry.pop("escalation_error", None)
@@ -612,6 +661,8 @@ def attempt_check(
 ) -> int:
     """SKIP at the limit (and post the label); else pin the attempt in `out`."""
     out.unlink(missing_ok=True)
+    if action.get("action") == "refine":
+        return refine_check(state_dir, agent, action, out, post)
     pr, head = action.get("pr"), action.get("sha")
     if action.get("action") != "resolve-conflict" or type(pr) is not int:
         raise ValueError("attempts count only resolve-conflict on a PR")
@@ -620,11 +671,43 @@ def attempt_check(
     ref = base_ref(pr)
     tip = base_tip(ref)
     key = attempt_key(pr, head, tip)
+    if pin(state_dir, key, pr, post) == SKIP:
+        return SKIP
+    write_json(
+        out,
+        {"key": key, "agent": agent, "pr": pr, "head": head, "base": ref, "tip": tip},
+    )
+    return RUN
+
+
+def refine_check(
+    state_dir: Path,
+    agent: str,
+    action: dict[str, Any],
+    out: Path,
+    post: Callable[[int], None],
+) -> int:
+    """attempt_check for `refine`: the key comes from the action, and it must
+    name the action's issue. `pr` in the attempt file is the issue number."""
+    m = ISSUE_URL.fullmatch(action.get("issue") or "")
+    key = action.get("attempt_key")
+    k = REFINE_KEY.fullmatch(key) if isinstance(key, str) else None
+    if not m or not k or k.group(1) != m.group(1):
+        raise ValueError("refine needs its issue URL and a matching attempt_key")
+    issue = int(m.group(1))
+    if pin(state_dir, k.group(0), issue, post) == SKIP:
+        return SKIP
+    write_json(out, {"key": k.group(0), "agent": agent, "pr": issue, "issue": issue})
+    return RUN
+
+
+def pin(state_dir: Path, key: str, number: int, post: Callable[[int], None]) -> int:
+    """SKIP when `key` is at its limit (the label is posted on `number`)."""
     with locked(state_dir) as data:
         entry = data.setdefault(key, {"attempts": []})
         failed = counted(entry)
-        if failed >= limit():
-            escalate(entry, pr, post)
+        if failed >= limit(key):
+            escalate(entry, number, post, key)
             print(
                 f"attempts: {key} failed {failed} times; no model "
                 f"(escalation {entry.get('escalation')})",
@@ -633,10 +716,6 @@ def attempt_check(
             return SKIP
         if not entry["attempts"]:
             data.pop(key)
-    write_json(
-        out,
-        {"key": key, "agent": agent, "pr": pr, "head": head, "base": ref, "tip": tip},
-    )
     return RUN
 
 
@@ -654,7 +733,7 @@ def attempt_start(state_dir: Path, attempt: dict[str, Any], tick: str) -> int:
         entry = data.setdefault(attempt["key"], {"attempts": []})
         if any(a.get("id") == tick for a in entry["attempts"]):
             return RUN
-        if counted(entry) >= limit():
+        if counted(entry) >= limit(attempt["key"]):
             return SKIP
         entry["attempts"].append(
             {
@@ -691,9 +770,9 @@ def attempt_finish(
             return RUN
         mine[0]["outcome"] = outcome
         assert entry is not None
-        if outcome == "failed" and counted(entry) >= limit():
+        if outcome == "failed" and counted(entry) >= limit(attempt["key"]):
             try:
-                escalate(entry, attempt["pr"], post)
+                escalate(entry, attempt["pr"], post, attempt["key"])
             except QuotaExhausted:
                 print(
                     "attempts: label post hit the quota; retried later", file=sys.stderr
@@ -714,6 +793,7 @@ def attempt_lines(state_dir: Path) -> list[str]:
     for key, entry in sorted(data.items()):
         failed = counted(entry) if isinstance(entry, dict) else 0
         if failed:
+            cap = limit(key)
             state = "suppressed" if failed >= cap else "open"
             esc = entry.get("escalation") or "-"
             lines.append(f"  {key}  failed {failed}/{cap} {state} escalation={esc}")

@@ -567,7 +567,12 @@ class ClaudeRunner(unittest.TestCase):
         self.addCleanup(helper.doCleanups)
         self.helper = helper
         epic = helper.repo / "scripts/epic"
-        for name in ("next_action.py", "github_state.py", "routing.py"):
+        for name in (
+            "next_action.py",
+            "github_state.py",
+            "routing.py",
+            "refinement.py",
+        ):
             shutil.copyfile(ROOT / "scripts/epic" / name, epic / name)
         self.map = helper.root / "gh-map.json"
         self.next_map = helper.root / "gh-map-next.json"
@@ -668,9 +673,8 @@ class CodexRunner(unittest.TestCase):
         self.helper = helper
         epic = helper.repo / "scripts/epic"
         # The real selector replaces the harness's selector stub.
-        shutil.copyfile(
-            ROOT.parent / "scripts/epic/next_action.py", epic / "next_action.py"
-        )
+        for name in ("next_action.py", "refinement.py"):
+            shutil.copyfile(ROOT.parent / "scripts/epic" / name, epic / name)
         self.map = helper.root / "gh-map.json"
         self.next_map = helper.root / "gh-map-next.json"
         gh = helper.bin / "gh"

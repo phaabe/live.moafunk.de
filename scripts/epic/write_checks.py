@@ -65,7 +65,9 @@ PROMOTION_MARKER = "runtime-promotion.json"  # runtime.MARKER
 AGENTS = ("Claude", "Codex")
 PUSH_ACTIONS = {"fix", "fix-checks", "resolve-conflict", "continue", "claim"}
 CREATE_ACTIONS = {"continue", "claim"}
-BOARD_ACTIONS = {"claim", "continue"}
+BOARD_ACTIONS = {"claim", "continue", "refine", "set-ready"}
+# Refinement may change the board only before the work starts.
+REFINEMENT_STATUSES = {None, "", "Backlog", "Todo", "Ready"}
 VERDICT_LINE = re.compile(
     r"^Review: (APPROVED|CHANGES REQUESTED) by (Claude|Codex) at ([0-9a-f]{40})\s*$",
     re.MULTILINE,
@@ -98,7 +100,7 @@ GH_VALUE_FLAGS = {
     "-c", "--comment", "-X", "--method", "-f", "--raw-field", "--field",
     "--input", "-q", "--jq", "--cache", "--hostname", "--preview",
     "--id", "--field-id", "--project-id", "--text", "--number", "--date",
-    "--single-select-option-id", "--iteration-id", "--owner", "--format",
+    "--single-select-option-id", "--iteration-id", "--owner", "--format", "--url",
 }  # fmt: skip
 
 
@@ -114,6 +116,10 @@ class Write:
     branch: str | None = None
     delete: bool = False
     item: str | None = None  # board item: node ID or numeric REST id
+    # board: `gh project item-edit` that sets only a single-select option,
+    # with its --project-id, --field-id and --single-select-option-id.
+    select_only: bool = False
+    target: tuple[str | None, str | None, str | None] = (None, None, None)
 
 
 def active(env: Mapping[str, str] | None = None) -> bool:
@@ -351,12 +357,27 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
     if group == "project" and len(words) > 2 and words[2].startswith("item-"):
         if words[2] == "item-list":
             return []
-        item = (
-            first(split_flags(words[3:])[0], "--id")
-            if words[2] == "item-edit"
-            else None
+        flags = split_flags(words[3:])[0]
+        if words[2] == "item-add":
+            m = na.ISSUE_URL.fullmatch(first(flags, "--url") or "")
+            if m:
+                return [Write("board-add", int(m.group(1)))]
+        if words[2] != "item-edit":
+            return [Write("board")]
+        values = {"--text", "--number", "--date", "--iteration-id", "--clear"}
+        select_only = "--single-select-option-id" in flags and not values & set(flags)
+        target = tuple(
+            first(flags, f)
+            for f in ("--project-id", "--field-id", "--single-select-option-id")
         )
-        return [Write("board", item=item)]
+        return [
+            Write(
+                "board",
+                item=first(flags, "--id"),
+                select_only=select_only,
+                target=target,  # type: ignore[arg-type]
+            )
+        ]
     if group not in ("pr", "issue") or len(words) < 3:
         return []
     sub = words[2]
@@ -577,6 +598,28 @@ def issue_write(ctx: Context) -> str | None:
     return None
 
 
+def set_ready(ctx: Context, write: Write) -> str | None:
+    """`set-ready` sets this item's Status to Ready and nothing else, and only
+    while the selector still gives set-ready for the same approved proposal
+    (digest). The project, field and option IDs are read from the board."""
+    if not write.select_only:
+        return "set-ready changes only Status: gh project item-edit --single-select-option-id"
+    want = ctx.reader.status_target()
+    if write.target != (want["project"], want["field"], want["ready"]):
+        project, field, option = write.target
+        return (
+            f"set-ready sets only Status to Ready: --project-id {want['project']} "
+            f"--field-id {want['field']} --single-select-option-id {want['ready']}, "
+            f"not {project} {field} {option}"
+        )
+    focus = na.read_focus(na.FOCUS_FILE)
+    enabled = na.read_actions(os.environ.get(na.ACTIONS_ENV))
+    mode = na.completed_tickets()
+    return gs.recheck(
+        ctx.agent, ctx.action, focus, enabled, False, ctx.reader, completed_tickets=mode
+    )
+
+
 def check_board(ctx: Context, write: Write) -> str | None:
     """The item must be the tick's issue and still fit the action."""
     if ctx.kind not in BOARD_ACTIONS:
@@ -598,6 +641,12 @@ def check_board(ctx: Context, write: Write) -> str | None:
         return f"board item {write.item} is issue {number}, not this tick's issue"
     if ctx.kind == "claim":
         return claim_or_owned(ctx)
+    if ctx.kind in ("refine", "set-ready"):
+        if item.get("status") not in REFINEMENT_STATUSES:
+            return f"issue {number} is {item.get('status')}; refinement leaves it alone"
+        if ctx.kind == "set-ready":
+            return set_ready(ctx, write)
+        return None
     if item.get("status") != "In progress" or item.get("executor") != ctx.agent:
         return (
             f"issue {number} is {item.get('status')} with Executor "
@@ -694,6 +743,13 @@ def check_write(ctx: Context, write: Write) -> str | None:
         return None
     if write.kind == "board":
         return check_board(ctx, write)
+    if write.kind == "board-add":
+        # refine puts an issue that is not on the board yet onto it.
+        if ctx.kind != "refine":
+            return f"a {ctx.kind} tick adds no issue to the board"
+        if write.number != ctx.issue:
+            return f"issue {write.number} is not this tick's issue"
+        return None
     return f"unknown write {write.kind}"
 
 

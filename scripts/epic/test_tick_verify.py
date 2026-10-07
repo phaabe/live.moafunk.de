@@ -294,3 +294,85 @@ class LandedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+ISSUE = "https://github.com/phaabe/live.moafunk.de/issues/900"
+DIGEST = "d" * 64
+
+
+def issue_rows(*bodies: str, edited: bool = False, labels: tuple[str, ...] = ()):
+    """Fetch for an issue: comment rows (REST shape) and its labels."""
+    rows = [
+        {
+            "body": body,
+            "created_at": "2026-09-28T12:05:00Z",
+            "updated_at": "2026-09-28T12:09:00Z" if edited else "2026-09-28T12:05:00Z",
+        }
+        for body in bodies
+    ]
+
+    def fetch(args: list[str]) -> Any:
+        if args[1].endswith("/issues/900"):
+            return {"labels": [{"name": n} for n in labels]}
+        return rows
+
+    return fetch
+
+
+def refine_landed(kind: str, fetch, agent: str = "claude", **extra: Any) -> bool:
+    action = {"action": kind, "issue": ISSUE, "digest": DIGEST, **extra}
+    return tick_verify.landed(agent, action, SINCE, fetch)[0]
+
+
+class RefinementLandedTest(unittest.TestCase):
+    def proposal(self, proposer: str) -> str:
+        import refinement
+
+        data = {key: [] for key in refinement.LIST_KEYS}
+        data.update(request="> x", scope="x", executor=None, proposer=proposer)
+        return f"{refinement.PROPOSAL_MARKER}\n```json\n{json.dumps(data)}\n```"
+
+    def test_refine_needs_own_unedited_proposal(self) -> None:
+        self.assertTrue(refine_landed("refine", issue_rows(self.proposal("Claude"))))
+        self.assertFalse(refine_landed("refine", issue_rows(self.proposal("Codex"))))
+        edited = issue_rows(self.proposal("Claude"), edited=True)
+        self.assertFalse(refine_landed("refine", edited))
+        self.assertFalse(refine_landed("refine", issue_rows("progress")))
+
+    def test_refine_with_questions_for_anton(self) -> None:
+        asked = issue_rows("Questions for Anton: ...", labels=("needs-anton",))
+        self.assertTrue(refine_landed("refine", asked))
+        # The label alone, without a new comment, is no refine run.
+        self.assertFalse(refine_landed("refine", issue_rows(labels=("needs-anton",))))
+
+    def test_review_refinement_needs_own_verdict_for_the_digest(self) -> None:
+        mine = f"Refinement: APPROVED by Claude at {DIGEST}"
+        self.assertTrue(refine_landed("review-refinement", issue_rows(mine)))
+        for other in (
+            f"Refinement: APPROVED by Codex at {DIGEST}",
+            f"Refinement: APPROVED by Claude at {'e' * 64}",
+            mine + "\n",
+        ):
+            with self.subTest(body=other):
+                self.assertFalse(refine_landed("review-refinement", issue_rows(other)))
+        self.assertFalse(
+            refine_landed("review-refinement", issue_rows(mine, edited=True))
+        )
+
+    def test_set_ready_reads_the_board_status(self) -> None:
+        def board(status: str | None):
+            return lambda: [{"content": {"url": ISSUE}, "status": status}]
+
+        action = {"action": "set-ready", "issue": ISSUE}
+        landed = tick_verify.landed("claude", action, SINCE, items=board("Ready"))
+        self.assertTrue(landed[0])
+        for status in ("Backlog", None):
+            with self.subTest(status=status):
+                self.assertFalse(
+                    tick_verify.landed("claude", action, SINCE, items=board(status))[0]
+                )
+        self.assertFalse(tick_verify.landed("claude", action, SINCE, items=list)[0])
+
+    def test_issue_url_is_required(self) -> None:
+        with self.assertRaises(ValueError):
+            tick_verify.landed("claude", {"action": "refine"}, SINCE, issue_rows())

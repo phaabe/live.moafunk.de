@@ -75,6 +75,10 @@ class FakeReader:
         self._read()
         return self.items
 
+    def status_target(self) -> dict[str, str]:
+        self._read()
+        return {"project": "P", "field": "F", "ready": "O"}
+
     def pulls_for_branch(self, branch: str) -> list[dict[str, Any]]:
         self._read()
         return self.branch_pulls
@@ -455,7 +459,10 @@ class Merges(Base):
 
 
 class Board(Base):
-    EDIT = "gh project item-edit --id {} --field-id F --single-select-option-id O"
+    EDIT = (
+        "gh project item-edit --id {} --project-id P --field-id F "
+        "--single-select-option-id O"
+    )
 
     def test_claim_board_write_rechecks_the_claim(self) -> None:
         self.action(action="claim", issue=f"{ISSUES}/21")
@@ -496,6 +503,92 @@ class Board(Base):
         )
         self.assertIsNone(self.bash(mutation.format("PVTI_21")))
         self.assertIsNotNone(self.bash(mutation.format("PVTI_22")))
+
+    def test_refinement_board_writes_only_before_the_work_starts(self) -> None:
+        for kind in ("refine", "set-ready"):
+            with self.subTest(kind=kind):
+                self.action(action=kind, issue=f"{ISSUES}/21")
+                self.reader.items = [item(21, "Backlog"), item(22, "Backlog")]
+                with patch.object(gs, "recheck", return_value=None):
+                    self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+                self.assertIn("issue 22", self.bash(self.EDIT.format("PVTI_22")) or "")
+                for status in ("In progress", "In review", "Done"):
+                    self.reader.items = [item(21, status)]
+                    self.assertIn(
+                        "refinement leaves it alone",
+                        self.bash(self.EDIT.format("PVTI_21")) or "",
+                    )
+
+    def test_set_ready_rechecks_the_approval_before_the_write(self) -> None:
+        self.action(action="set-ready", issue=f"{ISSUES}/21", digest="d" * 64)
+        self.reader.items = [item(21, "Backlog")]
+        with patch.object(gs, "recheck", return_value=None) as recheck:
+            self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+            recheck.assert_called_once()
+            self.assertEqual(recheck.call_args.args[1]["digest"], "d" * 64)
+        withdrawn = "GitHub changed: the selector now gives refine"
+        with patch.object(gs, "recheck", return_value=withdrawn):
+            self.assertIn(
+                "now gives refine", self.bash(self.EDIT.format("PVTI_21")) or ""
+            )
+
+    def test_set_ready_edits_only_a_single_select_field(self) -> None:
+        self.action(action="set-ready", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "Backlog")]
+        mutation = (
+            "gh api graphql -f query='mutation { updateProjectV2ItemFieldValue("
+            'input: {projectId: "P", itemId: "PVTI_21", fieldId: "F"}) { clientMutationId } }\''
+        )
+        with patch.object(gs, "recheck", return_value=None) as recheck:
+            for cmd in (
+                "gh project item-edit --id PVTI_21 --field-id F --text x",
+                "gh project item-edit --id PVTI_21 --field-id F --clear",
+                "gh project item-edit --id PVTI_21 --field-id F "
+                "--single-select-option-id O --text x",
+                mutation,
+                "gh api --method PATCH users/anneoneone/projectsV2/2/items/50021 --input -",
+            ):
+                with self.subTest(cmd=cmd):
+                    self.assertIn("only Status", self.bash(cmd) or "")
+            recheck.assert_not_called()
+
+    def test_set_ready_sets_only_status_to_ready(self) -> None:
+        self.action(action="set-ready", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "Backlog")]
+        edit = "gh project item-edit --id PVTI_21 --project-id {} --field-id {} "
+        with patch.object(gs, "recheck", return_value=None) as recheck:
+            for project, field, option in (
+                ("P", "EXECUTOR", "CODEX"),  # another field
+                ("P", "F", "DONE"),  # Status, but not Ready
+                ("OTHER", "F", "O"),  # another project
+            ):
+                with self.subTest(field=field, option=option):
+                    cmd = edit.format(project, field)
+                    cmd += f"--single-select-option-id {option}"
+                    self.assertIn("only Status to Ready", self.bash(cmd) or "")
+            no_project = "gh project item-edit --id PVTI_21 --field-id F "
+            no_project += "--single-select-option-id O"
+            self.assertIn("only Status to Ready", self.bash(no_project) or "")
+            recheck.assert_not_called()
+            self.assertIsNone(self.bash(self.EDIT.format("PVTI_21")))
+            recheck.assert_called_once()
+
+    def test_only_refine_adds_its_own_issue_to_the_board(self) -> None:
+        add = "gh project item-add 2 --owner anneoneone --url {}/{}"
+        self.action(action="refine", issue=f"{ISSUES}/21")
+        self.assertIsNone(self.bash(add.format(ISSUES, 21)))
+        self.assertIn("issue 22", self.bash(add.format(ISSUES, 22)) or "")
+        for kind in ("set-ready", "review-refinement", "claim"):
+            with self.subTest(kind=kind):
+                self.action(action=kind, issue=f"{ISSUES}/21")
+                self.assertIn("adds no issue", self.bash(add.format(ISSUES, 21)) or "")
+
+    def test_review_refinement_does_not_change_the_board(self) -> None:
+        self.action(action="review-refinement", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "Backlog")]
+        self.assertIn(
+            "does not change the board", self.bash(self.EDIT.format("PVTI_21")) or ""
+        )
 
     def test_other_ticks_do_not_change_the_board(self) -> None:
         self.action(action="review", pr=5, sha=A)
