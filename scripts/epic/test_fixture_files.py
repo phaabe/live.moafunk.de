@@ -126,10 +126,22 @@ def load_time(body: list[ast.stmt]) -> Iterator[ast.stmt]:
             for handler in node.handlers:
                 yield from load_time(handler.body)
             yield from load_time(node.orelse + node.finalbody)
-        elif isinstance(node, (ast.If, ast.With, ast.For, ast.While)):
+        elif isinstance(node, ast.If):
+            # The body of `if TYPE_CHECKING:` never runs.
+            if not type_checking(node.test):
+                yield from load_time(node.body)
+            yield from load_time(node.orelse)
+        elif isinstance(node, (ast.With, ast.For, ast.While)):
             yield from load_time(node.body + getattr(node, "orelse", []))
         elif isinstance(node, ast.ClassDef):
             yield from load_time(node.body)
+
+
+def type_checking(test: ast.expr) -> bool:
+    """`TYPE_CHECKING` or `typing.TYPE_CHECKING`."""
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
 
 
 def handler_names(handler: ast.ExceptHandler) -> list[str]:
@@ -314,10 +326,29 @@ class Guard(unittest.TestCase):
         )
 
     def test_a_module_a_copied_file_imports_is_missing(self) -> None:
-        # Only Python code imports routing.py; the runner script never names it.
-        (self.checkout / "scripts/epic/routing.py").unlink()
+        # real_next_action.py imports github_quota when it loads. (It imports
+        # routing only for type checking and inside a function.)
+        (self.checkout / "scripts/epic/github_quota.py").unlink()
         self.assertIn(
-            "scripts/epic/real_next_action.py imports missing routing",
+            "scripts/epic/real_next_action.py imports missing github_quota",
+            problems(self.checkout, self.runners),
+        )
+
+    def test_an_import_only_for_type_checking_is_no_gap(self) -> None:
+        # .codex/epic_lock.py imports leases only under `if TYPE_CHECKING:`.
+        path = self.checkout / ".codex/epic_lock.py"
+        source = path.read_text()
+        path.write_text(
+            "import typing\n"
+            "if typing.TYPE_CHECKING:\n"
+            "    import leases\n"
+            "else:\n"
+            "    pass\n" + source
+        )
+        self.assertEqual(problems(self.checkout, self.runners), [])
+        path.write_text("import leases\n" + source)
+        self.assertIn(
+            ".codex/epic_lock.py imports missing leases",
             problems(self.checkout, self.runners),
         )
 
