@@ -11,7 +11,8 @@ Priority (first match wins), see docs/implementation/epic-rules.md section 8:
 Focus: when ~/.epic-focus lists labels (one per line, e.g. project::Stream),
 only issues with one of them, and PRs whose own labels or `Issue:` ticket have
 one, get actions. Everything else is frozen. No file or an empty file: all.
-  escalate  my PR reached MAX_ROUNDS changes-requested verdicts
+  escalate  my PR reached MAX_ROUNDS changes-requested verdicts, and no
+            operator grant names the newest one (granted())
   merge     my PR is approved for its head, checks green, no conflict
   fix       my PR has a changes-requested verdict for its head
   fix-checks  my PR has failing checks on its head
@@ -129,6 +130,15 @@ PRIORITY_NAMES = {rank: name.split("::")[1] for name, rank in PRIORITIES.items()
 VERDICT = re.compile(
     r"^Review: (APPROVED|CHANGES REQUESTED) by (Claude|Codex) at ([0-9a-f]{40})$"
 )
+# One more fix/review round after MAX_ROUNDS, for one rejection. The whole
+# comment body is this line; see docs/implementation/epic-rules.md section 8.
+GRANT = re.compile(
+    r"Operator grant: one more fix round for ([0-9a-f]{40}) after "
+    rf"(https://github\.com/{re.escape(REPO)}/pull/(\d+)#issuecomment-\d+)"
+)
+# Logins whose grants count. Both agents use this account too: agents post a
+# grant only when Anton tells them to, never as part of an escalation.
+OPERATOR_LOGINS = frozenset({"anneoneone"})
 EXECUTOR_LINE = re.compile(
     r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t]*$", re.MULTILINE
 )
@@ -266,6 +276,31 @@ def verdicts(pr: dict[str, Any], by: str) -> list[dict[str, Any]]:
                 }
             )
     return sorted(found, key=lambda v: v["at"])
+
+
+def granted(pr: dict[str, Any], latest: dict[str, Any] | None) -> bool:
+    """An operator grant names `latest`, the peer's newest valid verdict.
+
+    The grant must be unedited, from OPERATOR_LOGINS, posted after the verdict,
+    and name this PR, the verdict's head and its exact URL. Any later peer
+    verdict becomes `latest`, so it consumes the grant.
+    """
+    if not latest or latest["state"] != "CHANGES REQUESTED" or not latest.get("url"):
+        return False
+    for c in pr.get("comments") or []:
+        if c.get("includesCreatedEdit") or c.get("author") not in OPERATOR_LOGINS:
+            continue
+        m = GRANT.fullmatch((c.get("body") or "").strip())
+        if (
+            m
+            and m.group(1) == latest["sha"]
+            and m.group(2) == latest["url"]
+            and int(m.group(3)) == pr.get("number")
+            and isinstance(c.get("createdAt"), str)
+            and c["createdAt"] > latest["at"]
+        ):
+            return True
+    return False
 
 
 def checks_state(pr: dict[str, Any]) -> str:
@@ -895,7 +930,7 @@ def decide(
         changes = (
             latest and latest["sha"] == head and latest["state"] == "CHANGES REQUESTED"
         )
-        if changes and rounds >= MAX_ROUNDS:
+        if changes and rounds >= MAX_ROUNDS and not granted(p, latest):
             pr_action(
                 p,
                 "escalate",
@@ -1099,6 +1134,9 @@ def comments_from_rest(
             "createdAt": r["created_at"],
             "url": r.get("html_url"),
             "includesCreatedEdit": r.get("updated_at") != r["created_at"],
+            # Operator grants need the author and the comment identity.
+            "id": r.get("id"),
+            "author": (r.get("user") or {}).get("login"),
         }
         for r in rows
     ]
