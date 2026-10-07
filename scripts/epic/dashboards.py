@@ -2001,20 +2001,58 @@ def selected_tickets() -> str:
     return f'label_replace({rows}, "pr_url", "{REPO}/pull/$1", "pr", "(.+)")'
 
 
+# epic_ticket_check_severity → tile color: the worst ticket in the check.
+CHECK_SEVERITY = {3: ACT_NOW, 2: LOOK_SOON, 1: NEUTRAL, 0: NEUTRAL}
+
+
+def severity_color(check: str) -> str:
+    """One row with label color for the check's severity; none when unknown."""
+    series = f'epic_ticket_check_severity{{check="{check}"}}'
+    return " or ".join(
+        f'(label_replace(({series}{TICKETS}) == {level}, "color", "{color}", "", ""))'
+        for level, color in CHECK_SEVERITY.items()
+    )
+
+
 def check_tile(check: str, title: str, color: str, rule: str) -> Json:
-    """Count of one check. -1 when its source is unknown: grey, never 0."""
+    """Count of one check. -1 when its source is unknown: grey, never 0.
+
+    Query B sets the color from the check's severity. Without B (unknown or
+    an older collector) the thresholds apply; the "unknown" mapping wins.
+    """
     panel = stat(
         title,
         [
             target(
                 f'((epic_ticket_check_count{{check="{check}"}}{TICKETS})'
                 " or on() vector(-1))"
-            )
+            ),
+            target(severity_color(check), ref="B"),
         ],
         mappings=[value_map({"-1": ("unknown", STALE)})],
         thresholds=steps((None, NEUTRAL), (1, color)),
-        description=rule + " Click to show these tickets in the table.",
+        description=rule + " Color: amber or red when a ticket waits too long. "
+        "Click to show these tickets in the table.",
     )
+    # B is config, not a second value.
+    panel["options"]["textMode"] = "value"
+    panel["transformations"] = [
+        {"id": "labelsToFields", "options": {"mode": "columns"}},
+        {
+            "id": "configFromData",
+            "options": {
+                "configRefId": "B",
+                "applyTo": {"id": "byFrameRefID", "options": "A"},
+                "mappings": [
+                    {"fieldName": "color", "handlerKey": "color"},
+                    *(
+                        {"fieldName": name, "handlerKey": "__ignore"}
+                        for name in ("epic_ticket_check_severity", "Time", "check")
+                    ),
+                ],
+            },
+        },
+    ]
     panel["fieldConfig"]["defaults"]["links"] = [
         link(
             "Show these tickets",
@@ -2087,7 +2125,10 @@ def cumulative_flow() -> Json:
 
 
 def ticket_columns(names: list[str], rename: dict[str, str]) -> list[Json]:
-    """Issue numbers sort as numbers; Done sorts by done_sort."""
+    """Issue numbers sort as numbers; Done sorts by done_sort.
+
+    ready_entered is a Unix time in a label: a time field, empty when unknown.
+    """
     return [
         {
             "id": "convertFieldType",
@@ -2095,6 +2136,11 @@ def ticket_columns(names: list[str], rename: dict[str, str]) -> list[Json]:
                 "conversions": [
                     {"targetField": "issue", "destinationType": "number"},
                     {"targetField": "done_sort", "destinationType": "number"},
+                    {
+                        "targetField": "ready_entered",
+                        "destinationType": "time",
+                        "dateFormat": "X",
+                    },
                 ],
                 "fields": {},
             },
@@ -2131,31 +2177,240 @@ def ticket_overrides(shown: list[str]) -> list[Json]:
             ("mappings", SHORT_LINKS),
             ("links", [link("Open on GitHub", "${__value.raw}")]),
         ),
+        by_name(
+            "Last agent",
+            ("custom.width", 150),
+            cell("color-text"),
+            (
+                "mappings",
+                [
+                    regex_map(f"^{name}( .*)?$", EXECUTOR[name], i)
+                    for i, name in enumerate(("Claude", "Codex"))
+                ],
+            ),
+        ),
+        by_name(
+            "Entered",
+            # A fixed short format: the browser's local format ("10/06/2026,
+            # 10:18:48 PM") lost its first digit even at 170 px.
+            ("custom.width", 140),
+            ("unit", ENTERED_FORMAT),
+        ),
+        by_name(
+            "≥/?",
+            # Grafana's minimum column width; a smaller one overflows the panel.
+            ("custom.width", 50),
+            ("custom.align", "right"),
+            cell("color-text"),
+            ("noValue", " "),
+            ("mappings", [EXACT_MARK]),
+        ),
+        by_name("In status", ("custom.width", 90), ("unit", "s"), ("decimals", 0)),
+        by_name("Since Ready", ("custom.width", 100), ("unit", "dateTimeFromNow")),
     ]
     return [o for o in overrides if o["matcher"]["options"] in shown]
 
 
+ENTERED_FORMAT = "time:YYYY-MM-DD HH:mm"
+
+
+# epic_ticket_status_entered_seconds{exact}: "≥" a lower bound, "?" the time
+# crosses a coverage gap of the collector.
+EXACT_MARK = {
+    "type": "value",
+    "options": {
+        "1": {"index": 0, "text": " "},
+        "0": {"index": 1, "text": "≥", "color": MUTED},
+        "gap": {"index": 2, "text": "?", "color": LOOK_SOON},
+    },
+}
+ENTERED = "epic_ticket_status_entered_seconds"
+
+
 def ticket_table() -> Json:
-    names = ["issue", "title", "status", "executor", "pr_url", "note", "url"]
+    selected = selected_tickets()
+    queries = {
+        "A": selected,
+        # Keeps the exact label for the "≥" / "?" mark.
+        "B": f"(time() - {ENTERED}{TICKETS}) and on(issue) {selected}",
+        "C": f"(max by (issue) ({ENTERED}) * 1000{TICKETS}) and on(issue) {selected}",
+    }
+    names = [
+        "issue",
+        "title",
+        "status",
+        "executor",
+        "last_agent",
+        "Value #C",
+        "exact",
+        "Value #B",
+        "ready_entered",
+        "pr_url",
+        "note",
+        "url",
+    ]
     rename = {
         "issue": "Ticket",
         "title": "Title",
         "status": "Status",
         "executor": "Executor",
+        "last_agent": "Last agent",
+        "Value #C": "Entered",
+        "exact": "≥/?",
+        "Value #B": "In status",
+        "ready_entered": "Since Ready",
         "pr_url": "PR",
         "note": "Note",
     }
     return table_panel(
         "Tickets · $check",
-        [target(selected_tickets(), table=True)],
+        [target(q, table=True, ref=r) for r, q in queries.items()],
         [
+            join("issue"),
+            # Only the tickets of query A: B and C never add a row.
+            {
+                "id": "filterByValue",
+                "options": {
+                    "filters": [{"fieldName": "title", "config": {"id": "isNotNull"}}],
+                    "type": "include",
+                    "match": "all",
+                },
+            },
             *ticket_columns(names, rename),
             {"id": "sortBy", "options": {"sort": [{"field": "Ticket"}]}},
         ],
         ticket_overrides([*rename.values(), "url"]),
         description="Choose a check with a tile or the Check picker; All shows "
-        "every ticket: not Done, plus Done in the last 7 days or still open.",
+        "every ticket: not Done, plus Done in the last 7 days or still open. "
+        "In status: since the collector saw the ticket enter its status; ≥ is a "
+        "lower bound (found there, or the entry is unsure), ? crosses a gap in "
+        "the collector's data. Since Ready: the last entry into Ready. "
+        "(unverified): the agent comes from a run event, not from GitHub.",
     )
+
+
+# Hidden variable for the history: the issues of the chosen check, or of the
+# whole table for All. Grafana joins them into a Loki regex (305|307).
+ISSUES = {
+    "name": "issues",
+    "type": "query",
+    "datasource": PROM,
+    "query": {"query": f"query_result({selected_tickets()})", "refId": "issues"},
+    "regex": '/issue="(\\d+)"/',
+    "refresh": 2,
+    "sort": 3,
+    "multi": True,
+    "includeAll": True,
+    "current": {"text": "All", "value": "$__all"},
+    "options": [],
+    "hide": 2,
+}
+
+RETIRED = "retired"  # ticket_history.RETIRED: a segment a later gap replaced
+# One series per segment: the newest rev wins. Retired is kept in the text
+# and dropped in Grafana: a filter in LogQL would bring back the segment's
+# older revisions.
+SEGMENTS = (
+    'topk by (segment_id) (1, max_over_time({stream="ticket_segments"} | json'
+    ' | issue=~"$issues" | keep segment_id, issue, status, agent, start, rev'
+    ' | label_format text="{{.status}}{{if .agent}} · {{.agent}}{{end}}",'
+    ' start_ms="{{.start}}000" | unwrap rev [7d]) by (segment_id, issue, text,'
+    " start_ms))"
+)
+
+
+def to_type(field: str, kind: str) -> Json:
+    return {
+        "id": "convertFieldType",
+        "options": {
+            "conversions": [{"targetField": field, "destinationType": kind}],
+            "fields": {},
+        },
+    }
+
+
+def status_history() -> Json:
+    """One row per ticket, colored by status over 7 days.
+
+    A row draws each segment from its start to the next one, so only the
+    start time is needed. A gap is its own segment: transparent, no text.
+    """
+    mappings = [
+        regex_map(f"^{status}( · .*)?$", color, i)
+        for i, (status, color) in enumerate(STATUS.items())
+    ]
+    mappings.append(
+        {
+            "type": "value",
+            "options": {
+                "gap": {"index": len(STATUS), "text": " ", "color": "transparent"}
+            },
+        }
+    )
+    return {
+        "type": "state-timeline",
+        "title": "Status history · $check",
+        "description": "One row per ticket over 7 days, in the order the rows "
+        "start. In progress and In review show the agent. Empty parts: the "
+        "collector did not see the board then. A check filter keeps the full "
+        "history of its tickets.",
+        "datasource": LOKI,
+        "timeFrom": "7d",
+        "hideTimeOverride": True,
+        "targets": [{"refId": "A", "expr": SEGMENTS, "queryType": "instant"}],
+        "transformations": [
+            {"id": "labelsToFields", "options": {"mode": "columns"}},
+            {"id": "merge", "options": {}},
+            to_type("start_ms", "number"),
+            to_type("start_ms", "time"),
+            {
+                "id": "filterByValue",
+                "options": {
+                    "filters": [
+                        {
+                            "fieldName": "text",
+                            "config": {
+                                "id": "regex",
+                                "options": {"value": f"^{RETIRED}( · .*)?$"},
+                            },
+                        }
+                    ],
+                    "type": "exclude",
+                    "match": "any",
+                },
+            },
+            {
+                "id": "filterFieldsByName",
+                "options": {"include": {"names": ["issue", "text", "start_ms"]}},
+            },
+            {"id": "sortBy", "options": {"sort": [{"field": "start_ms"}]}},
+            {
+                "id": "partitionByValues",
+                "options": {
+                    "fields": ["issue"],
+                    "keepFields": False,
+                    "naming": {"asLabels": True},
+                },
+            },
+        ],
+        "fieldConfig": {
+            "defaults": {
+                "displayName": "#${__field.labels.issue}",
+                "color": {"mode": "fixed", "fixedColor": GREY},
+                "mappings": mappings,
+                "custom": {"fillOpacity": 80, "lineWidth": 0},
+                "noValue": "No history",
+            },
+            "overrides": [],
+        },
+        "options": {
+            "mergeValues": True,
+            "showValue": "auto",
+            "rowHeight": 0.9,
+            "alignValue": "left",
+            "legend": {"showLegend": False},
+        },
+    }
 
 
 def board_column(status: str) -> Json:
@@ -2180,6 +2435,234 @@ def board_column(status: str) -> Json:
     )
 
 
+# ticket_history.TIMED, in flow order.
+TIMED = ("Refinement", "Ready", "In progress", "In review")
+
+
+def aging() -> Json:
+    """The 20 open tickets that sit longest in their status."""
+    # Only the copied labels: an info series whose other labels changed
+    # (last_agent, note) must not make the match many-to-many.
+    info = 'max by (issue, title, status, url) (epic_ticket_info{status!="Done"})'
+    expr = (
+        f"topk(20, (time() - {ENTERED}) * on(issue)"
+        f" group_left(title, status, url) {info}{TICKETS})"
+    )
+    names = ["issue", "title", "status", "exact", "Value", "url"]
+    rename = {
+        "issue": "Ticket",
+        "title": "Title",
+        "status": "Status",
+        "exact": "≥/?",
+        "Value": "In status",
+    }
+    return table_panel(
+        "Aging · 20 longest in status",
+        [target(expr, table=True)],
+        [
+            *ticket_columns(names, rename),
+            {
+                "id": "sortBy",
+                "options": {"sort": [{"field": "In status", "desc": True}]},
+            },
+        ],
+        [
+            # Its own In status: the table's fixed width cuts long ages here.
+            *ticket_overrides(["Ticket", "Title", "Status", "≥/?", "url"]),
+            by_name("In status", ("unit", "s"), ("decimals", 0)),
+        ],
+        description="Open tickets (not Done) by time in their current status. "
+        "≥ is a lower bound, ? crosses a gap in the collector's data.",
+    )
+
+
+def done_per_day() -> Json:
+    return {
+        "type": "barchart",
+        "title": "Done per day · by executor",
+        "description": "Tickets that entered Done per day (Berlin time), last "
+        "14 days, by the Executor at that time.",
+        "datasource": PROM,
+        "targets": [target(f"epic_tickets_done_day{TICKETS}", table=True)],
+        "transformations": [
+            *matrix("A", "day", "executor", single=True),
+            {"id": "sortBy", "options": {"sort": [{"field": "day", "desc": False}]}},
+        ],
+        "fieldConfig": {
+            "defaults": {
+                "min": 0,
+                "decimals": 0,
+                "noValue": "–",
+                "color": {"mode": "fixed", "fixedColor": GREY},
+            },
+            "overrides": [
+                by_name(name, ("color", {"mode": "fixed", "fixedColor": color}))
+                for name, color in EXECUTOR.items()
+            ],
+        },
+        "options": {
+            "stacking": "normal",
+            "showValue": "never",
+            "xField": "day",
+            "xTickLabelRotation": -45,
+            "legend": {
+                "showLegend": True,
+                "displayMode": "list",
+                "placement": "bottom",
+            },
+        },
+    }
+
+
+def flow_stat(title: str, queries: dict[str, str], description: str) -> Json:
+    """Seconds; "–" when the collector has no samples, never 0."""
+    panel = stat(
+        title,
+        [
+            target(f"{expr}{TICKETS}", legend=legend, ref=chr(ord("A") + i))
+            for i, (legend, expr) in enumerate(queries.items())
+        ],
+        unit="s",
+        no_value="–",
+        decimals=1,
+        description=description,
+    )
+    # Named values in one text size: one value alone would draw larger.
+    panel["options"]["textMode"] = "value_and_name"
+    panel["options"]["text"] = {"titleSize": 14, "valueSize": 20}
+    return panel
+
+
+def ordered(expr: str, label: str, values: tuple[str, ...]) -> str:
+    """Adds label "order" with each value's position, for a sort."""
+    for i, value in enumerate(values):
+        expr = f'label_replace({expr}, "order", "{i}", "{label}", "{value}")'
+    return expr
+
+
+def time_in_status() -> Json:
+    series = "epic_ticket_time_in_status_seconds"
+    queries = {
+        "A": ordered(f'{series}{{quantile="0.5"}}', "status", TIMED),
+        "B": f'{series}{{quantile="0.85"}}',
+    }
+    names = ["status", "Value #A", "Value #B"]
+    return {
+        "type": "barchart",
+        "title": "Time in status · p50 and p85",
+        "description": "Summed time in each status per done ticket, last 14 "
+        "days. A status without clean samples has no bar.",
+        "datasource": PROM,
+        "targets": [
+            target(f"{q}{TICKETS}", table=True, ref=r) for r, q in queries.items()
+        ],
+        "transformations": [
+            join("status"),
+            to_type("order", "number"),
+            {"id": "sortBy", "options": {"sort": [{"field": "order"}]}},
+            *keep_fields(names, {"Value #A": "p50", "Value #B": "p85"}, []),
+        ],
+        "fieldConfig": {
+            "defaults": {"unit": "s", "min": 0, "noValue": "–"},
+            "overrides": [
+                by_name("p50", ("color", {"mode": "fixed", "fixedColor": MUTED})),
+                by_name("p85", ("color", {"mode": "fixed", "fixedColor": GREY})),
+            ],
+        },
+        "options": {
+            "orientation": "horizontal",
+            "showValue": "never",
+            "xField": "status",
+            "legend": {
+                "showLegend": True,
+                "displayMode": "list",
+                "placement": "bottom",
+            },
+        },
+    }
+
+
+def episode_key(series: str) -> str:
+    """One row per done episode: key "issue/episode"."""
+    return f'label_join({series}, "key", "/", "issue", "episode")'
+
+
+def done_tickets() -> Json:
+    queries = {
+        "A": f"{episode_key('epic_ticket_done_seconds * 1000')}{TICKETS}",
+        "B": f"sum by (key) ({episode_key('epic_ticket_cycle_seconds')}){TICKETS}",
+        "C": f"sum by (key) ({episode_key('epic_ticket_lead_seconds')}){TICKETS}",
+    }
+    names = ["issue", "executor", "Value #A", "Value #B", "Value #C"]
+    rename = {
+        "issue": "Ticket",
+        "executor": "Executor",
+        "Value #A": "Done",
+        "Value #B": "Cycle",
+        "Value #C": "Lead",
+    }
+    return table_panel(
+        "Done tickets · cycle and lead time",
+        [target(q, table=True, ref=r) for r, q in queries.items()],
+        [
+            join("key"),
+            *ticket_columns(names, rename),
+            {"id": "sortBy", "options": {"sort": [{"field": "Done", "desc": True}]}},
+        ],
+        [
+            by_name(
+                "Ticket",
+                ("custom.width", 80),
+                ("links", [link("Open on GitHub", f"{REPO}/issues/${{__value.raw}}")]),
+            ),
+            *ticket_overrides(["Executor"]),
+            # Fits 10 of 24 columns at 1280 px.
+            by_name("Done", ("custom.width", 110), ("unit", "dateTimeFromNow")),
+            by_name("Cycle", ("custom.width", 90), ("unit", "s"), ("decimals", 1)),
+            by_name("Lead", ("custom.width", 90), ("unit", "s"), ("decimals", 1)),
+        ],
+        description="Tickets that entered Done in the last 14 days, newest "
+        "first. Cycle: first In progress to Done. Lead: first Ready to Done. "
+        "–: not measured (the ticket skipped the status, or the time crosses "
+        "a gap in the collector's data).",
+    )
+
+
+def flow_times(y: int) -> list[tuple[Json, int, int, int, int]]:
+    cycle = "epic_ticket_cycle_quantile_seconds"
+    return [
+        (aging(), 0, y, 12, 12),
+        (done_per_day(), 12, y, 12, 12),
+        (
+            flow_stat(
+                "Cycle time",
+                {
+                    "p50": f'{cycle}{{quantile="0.5"}}',
+                    "p85": f'{cycle}{{quantile="0.85"}}',
+                },
+                "First In progress to Done, tickets done in the last 14 days.",
+            ),
+            0,
+            y + 12,
+            6,
+            6,
+        ),
+        (
+            flow_stat(
+                "Lead time · median",
+                {"median": "epic_ticket_lead_median_seconds"},
+                "First Ready to Done, tickets done in the last 14 days.",
+            ),
+            0,
+            y + 18,
+            6,
+            6,
+        ),
+        (time_in_status(), 6, y + 12, 8, 12),
+        (done_tickets(), 14, y + 12, 10, 12),
+    ]
+
+
 def tickets_page() -> Json:
     board = Board(
         "epic-tickets",
@@ -2200,7 +2683,8 @@ def tickets_page() -> Json:
             "options": [],
             "includeAll": False,
             "multi": False,
-        }
+        },
+        ISSUES,
     ]
     for i, check in enumerate(CHECKS):
         board.add(check_tile(*check), 4 * i, 0, 4, 3)
@@ -2208,11 +2692,15 @@ def tickets_page() -> Json:
         board.add(status_stat(status), 4 * i, 3, 4, 4)
     board.add(cumulative_flow(), 0, 7, 24, 8)
     board.add(ticket_table(), 0, 15, 24, 9)
+    # 14 units (about 450 px): a check holds few tickets, so each row is
+    # tall enough for its text; All (about 150 rows) shows colors only.
+    board.add(status_history(), 0, 24, 24, 14)
     board.add_row(
         "Board",
-        24,
-        [(board_column(status), 4 * i, 25, 4, 15) for i, status in enumerate(STATUS)],
+        38,
+        [(board_column(status), 4 * i, 39, 4, 15) for i, status in enumerate(STATUS)],
     )
+    board.add_row("Flow times", 54, flow_times(55))
     return board.render()
 
 

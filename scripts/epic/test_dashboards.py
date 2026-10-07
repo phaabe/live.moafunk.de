@@ -17,6 +17,7 @@ import dashboards
 import delivery
 import fixtures
 import monitor
+import ticket_history
 import tickets
 
 
@@ -271,7 +272,7 @@ class TicketsPageTest(unittest.TestCase):
                 self.assertIn("/d/epic-tickets", urls)
 
     def test_check_picker_matches_the_collector(self) -> None:
-        [variable] = self.page()["templating"]["list"]
+        variable, _issues = self.page()["templating"]["list"]
         values = [part.split(" : ")[1] for part in variable["query"].split(", ")]
         self.assertEqual(values, ["all", *(check.id for check in tickets.CHECKS)])
         self.assertEqual(variable["current"]["value"], "all")
@@ -298,8 +299,154 @@ class TicketsPageTest(unittest.TestCase):
         table = self.by_title("Tickets · $check")
         self.assertIn('"check", "$check"', table["targets"][0]["expr"])
 
+    def test_tile_color_comes_from_the_check_severity(self) -> None:
+        for check, title, *_ in dashboards.CHECKS:
+            with self.subTest(check=check):
+                tile = self.by_title(title)
+                [count, color] = tile["targets"]
+                self.assertEqual(color["refId"], "B")
+                self.assertIn(
+                    f'epic_ticket_check_severity{{check="{check}"}}', color["expr"]
+                )
+                self.assertIn(dashboards.TICKETS, color["expr"])
+                # B is config: the tile shows one value, from any field name.
+                self.assertEqual(tile["options"]["textMode"], "value")
+                self.assertEqual(tile["options"]["reduceOptions"]["fields"], "")
+                labels, config = tile["transformations"]
+                self.assertEqual(labels["id"], "labelsToFields")
+                self.assertEqual(config["id"], "configFromData")
+                options = config["options"]
+                self.assertEqual(options["configRefId"], "B")
+                self.assertEqual(options["applyTo"]["options"], "A")
+                handlers = {
+                    m["fieldName"]: m["handlerKey"] for m in options["mappings"]
+                }
+                self.assertEqual(handlers.pop("color"), "color")
+                self.assertEqual(set(handlers.values()), {"__ignore"})
+                # Unknown stays grey: the mapping color wins over B.
+                [mapping] = tile["fieldConfig"]["defaults"]["mappings"]
+                self.assertEqual(mapping["options"]["-1"]["color"], dashboards.STALE)
+
+    def test_table_has_the_time_columns(self) -> None:
+        table = self.by_title("Tickets · $check")
+        refs = [t["refId"] for t in table["targets"]]
+        self.assertEqual(refs, ["A", "B", "C"])
+        organize = [t for t in table["transformations"] if t["id"] == "organize"]
+        shown = list(organize[0]["options"]["renameByName"].values())
+        for column in ("Last agent", "Entered", "≥/?", "In status", "Since Ready"):
+            with self.subTest(column=column):
+                self.assertIn(column, shown)
+        # The mark sits left of the age it qualifies.
+        self.assertEqual(shown.index("≥/?") + 1, shown.index("In status"))
+        overrides = {
+            o["matcher"]["options"]: {p["id"]: p["value"] for p in o["properties"]}
+            for o in table["fieldConfig"]["overrides"]
+        }
+        marks = overrides["≥/?"]["mappings"][0]["options"]
+        self.assertEqual((marks["0"]["text"], marks["gap"]["text"]), ("≥", "?"))
+        self.assertEqual(overrides["In status"]["unit"], "s")
+        self.assertEqual(overrides["Since Ready"]["unit"], "dateTimeFromNow")
+        # A fixed format: the browser's local one was cut at 170 px.
+        self.assertEqual(overrides["Entered"]["unit"], "time:YYYY-MM-DD HH:mm")
+        # ready_entered is a label: a Unix-seconds string, converted to time.
+        conversions = table["transformations"][2]["options"]["conversions"]
+        self.assertIn(
+            {
+                "targetField": "ready_entered",
+                "destinationType": "time",
+                "dateFormat": "X",
+            },
+            conversions,
+        )
+        # B and C join on the ticket and never add a row of their own.
+        self.assertEqual(table["transformations"][0], dashboards.join("issue"))
+        self.assertEqual(table["transformations"][1]["id"], "filterByValue")
+        # Empty cells show "–", never 0 or a date of 1970.
+        self.assertEqual(table["fieldConfig"]["defaults"]["noValue"], "–")
+
+    def test_history_issues_follow_the_check(self) -> None:
+        """Hidden; All selects every issue of the chosen check, or of the
+        whole table, so the history and the table show the same tickets."""
+        _check, issues = self.page()["templating"]["list"]
+        self.assertEqual(issues["name"], "issues")
+        self.assertEqual(issues["hide"], 2)
+        self.assertTrue(issues["multi"] and issues["includeAll"])
+        # No allValue: All expands to the listed issues, never ".*".
+        self.assertNotIn("allValue", issues)
+        self.assertEqual(issues["current"]["value"], "$__all")
+        query = issues["query"]["query"]
+        self.assertEqual(query, f"query_result({dashboards.selected_tickets()})")
+        regex = re.compile(issues["regex"].strip("/"))
+        sample = 'epic_ticket_info{issue="305",status="Ready"} 1 1790000000'
+        self.assertEqual(regex.search(sample).group(1), "305")
+
+    def test_history_reads_the_newest_segment_revision(self) -> None:
+        history = self.by_title("Status history · $check")
+        self.assertEqual(history["type"], "state-timeline")
+        self.assertEqual(history["datasource"], dashboards.LOKI)
+        self.assertEqual(history["timeFrom"], "7d")
+        [query] = history["targets"]
+        self.assertEqual(query["queryType"], "instant")
+        expr = query["expr"]
+        self.assertTrue(expr.startswith("topk by (segment_id) (1, max_over_time("))
+        self.assertIn('{stream="ticket_segments"}', expr)
+        self.assertIn('issue=~"$issues"', expr)
+        self.assertIn("unwrap rev [7d]", expr)
+        # Retired is dropped after topk picks the newest revision: a LogQL
+        # filter would bring back the segment's older revisions.
+        self.assertNotIn("retired", expr)
+        steps = [t["id"] for t in history["transformations"]]
+        self.assertEqual(
+            steps,
+            [
+                "labelsToFields",
+                "merge",
+                "convertFieldType",
+                "convertFieldType",
+                "filterByValue",
+                "filterFieldsByName",
+                "sortBy",
+                "partitionByValues",
+            ],
+        )
+        [retired] = history["transformations"][4]["options"]["filters"]
+        self.assertEqual(history["transformations"][4]["options"]["type"], "exclude")
+        pattern = re.compile(retired["config"]["options"]["value"])
+        self.assertTrue(pattern.match("retired"))
+        self.assertTrue(pattern.match("retired · Claude"))
+        self.assertFalse(pattern.match("Ready"))
+        self.assertEqual(history["transformations"][-1]["options"]["fields"], ["issue"])
+
+    def test_history_colors_status_and_hides_gaps(self) -> None:
+        history = self.by_title("Status history · $check")
+        mappings = history["fieldConfig"]["defaults"]["mappings"]
+        regexes = [m["options"] for m in mappings if m["type"] == "regex"]
+        for status, color in dashboards.STATUS.items():
+            with self.subTest(status=status):
+                [hit] = [
+                    r["result"]["color"]
+                    for r in regexes
+                    if re.match(r["pattern"], f"{status} · Codex")
+                ]
+                self.assertEqual(hit, color)
+                self.assertTrue(any(re.match(r["pattern"], status) for r in regexes))
+        # "In progress" never matches the Ready or Done patterns.
+        self.assertEqual(
+            sum(bool(re.match(r["pattern"], "In progress")) for r in regexes), 1
+        )
+        [gap] = [m["options"]["gap"] for m in mappings if m["type"] == "value"]
+        self.assertEqual((gap["color"], gap["text"]), ("transparent", " "))
+
+    def test_history_sits_between_the_table_and_the_board(self) -> None:
+        table = self.by_title("Tickets · $check")["gridPos"]
+        history = self.by_title("Status history · $check")["gridPos"]
+        row = self.by_title("Board")
+        self.assertEqual(history["y"], table["y"] + table["h"])
+        self.assertEqual(row["gridPos"]["y"], history["y"] + history["h"])
+        self.assertEqual(history["w"], 24)
+
     def test_board_is_a_collapsed_row_and_done_sorts_by_done_sort(self) -> None:
-        [row] = [p for p in self.page()["panels"] if p["type"] == "row"]
+        row = self.by_title("Board")
         self.assertTrue(row["collapsed"])
         self.assertEqual([p["title"] for p in row["panels"]], list(dashboards.STATUS))
         done = row["panels"][-1]
@@ -311,6 +458,69 @@ class TicketsPageTest(unittest.TestCase):
         self.assertIn(
             {"targetField": "done_sort", "destinationType": "number"}, conversions
         )
+
+    def test_flow_times_is_a_collapsed_row_below_the_board(self) -> None:
+        rows = [p for p in self.page()["panels"] if p["type"] == "row"]
+        self.assertEqual([r["title"] for r in rows], ["Board", "Flow times"])
+        flow = rows[1]
+        self.assertTrue(flow["collapsed"])
+        self.assertEqual(
+            [p["title"] for p in flow["panels"]],
+            [
+                "Aging · 20 longest in status",
+                "Done per day · by executor",
+                "Cycle time",
+                "Lead time · median",
+                "Time in status · p50 and p85",
+                "Done tickets · cycle and lead time",
+            ],
+        )
+        # Every panel starts below the row header.
+        top = flow["gridPos"]["y"] + 1
+        self.assertEqual(min(p["gridPos"]["y"] for p in flow["panels"]), top)
+
+    def test_flow_times_show_a_dash_without_samples(self) -> None:
+        """No samples: "–", never 0."""
+        flow = self.by_title("Flow times")
+        for panel in flow["panels"]:
+            with self.subTest(panel=panel["title"]):
+                self.assertEqual(panel["fieldConfig"]["defaults"]["noValue"], "–")
+        cycle = self.by_title("Cycle time")
+        self.assertEqual([t["legendFormat"] for t in cycle["targets"]], ["p50", "p85"])
+        self.assertEqual(cycle["fieldConfig"]["defaults"]["unit"], "s")
+
+    def test_time_in_status_follows_the_flow_order(self) -> None:
+        self.assertEqual(dashboards.TIMED, ticket_history.TIMED)
+        panel = self.by_title("Time in status · p50 and p85")
+        expr = panel["targets"][0]["expr"]
+        for i, status in enumerate(ticket_history.TIMED):
+            self.assertIn(f'"order", "{i}", "status", "{status}"', expr)
+        ids = [t["id"] for t in panel["transformations"]]
+        self.assertEqual(ids[:3], ["joinByField", "convertFieldType", "sortBy"])
+        # The sort key is not drawn as a bar.
+        keep = panel["transformations"][3]["options"]["include"]["names"]
+        self.assertNotIn("order", keep)
+
+    def test_aging_and_done_tables(self) -> None:
+        aging = self.by_title("Aging · 20 longest in status")
+        self.assertIn('status!="Done"', aging["targets"][0]["expr"])
+        sort = [t for t in aging["transformations"] if t["id"] == "sortBy"]
+        self.assertEqual(
+            sort[0]["options"]["sort"], [{"field": "In status", "desc": True}]
+        )
+        # One override per column; a fixed width would cut long ages.
+        names = [o["matcher"]["options"] for o in aging["fieldConfig"]["overrides"]]
+        self.assertEqual(len(names), len(set(names)))
+        [age] = [
+            o
+            for o in aging["fieldConfig"]["overrides"]
+            if o["matcher"]["options"] == "In status"
+        ]
+        self.assertNotIn("custom.width", [p["id"] for p in age["properties"]])
+        done = self.by_title("Done tickets · cycle and lead time")
+        self.assertEqual(done["transformations"][0], dashboards.join("key"))
+        for t in done["targets"]:
+            self.assertIn('"key", "/", "issue", "episode"', t["expr"])
 
     def test_counts_show_gaps_not_zero(self) -> None:
         flow = self.by_title("Tickets per status")
@@ -369,10 +579,35 @@ def docker_ready() -> bool:
         return False
 
 
-@unittest.skipUnless(docker_ready(), "needs docker for promtool")
+class SegmentShippingConfigTest(unittest.TestCase):
+    """Alloy and Loki settings the status history needs (merged in
+    https://github.com/phaabe/live.moafunk.de/pull/641)."""
+
+    root = Path(__file__).resolve().parents[2] / "tools/agent-monitoring"
+
+    def test_alloy_times_segments_by_emitted_at(self) -> None:
+        text = (self.root / "alloy.alloy").read_text()
+        start = text.index('selector = "{stream=\\"ticket_segments\\"}"')
+        # Up to the next stage.match, or the end of the file.
+        stage = text[start:].split("stage.match")[0]
+        self.assertIn('expressions = { emitted_at = "" }', stage)
+        self.assertRegex(stage, r'stage\.timestamp \{\s+source = "emitted_at"')
+        self.assertIn('format = "Unix"', stage)
+
+    def test_loki_allows_a_series_per_segment(self) -> None:
+        text = (self.root / "loki.yaml").read_text()
+        self.assertRegex(text, r"(?m)^\s+max_query_series: 5000$")
+
+
 class QuerySemanticsTest(unittest.TestCase):
     """Codex review of https://github.com/phaabe/live.moafunk.de/pull/479:
     the generated queries, evaluated by Prometheus's own test tool."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Checked at run time, not import time, so the skip can be tested.
+        if not docker_ready():
+            raise unittest.SkipTest("needs docker for promtool")
 
     def run_promtool(
         self, tests: list[dashboards.Json], evaluation_interval: str = "1m"
@@ -546,6 +781,219 @@ class QuerySemanticsTest(unittest.TestCase):
                 ],
             },
             {"expr": as_range(ready), "eval_time": "20m", "exp_samples": []},
+        ]
+        self.run_promtool(
+            [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]
+        )
+
+    def test_tile_severity_colors(self) -> None:
+        """Severity 3 is red, 2 amber, 0 and 1 neutral; stale data gives no
+        color row, so the unknown tile stays grey."""
+        expr = panel_expr("tickets.json", "In progress > 1 day", ref="B")
+        series = [
+            {
+                "series": "epic_ticket_snapshot_timestamp_seconds",
+                "values": "0+60x5 300x20",
+            },
+            {"series": 'epic_ticket_source_ok{source="board"}', "values": "1x25"},
+            {
+                "series": 'epic_ticket_check_severity{check="in_progress_long"}',
+                "values": "0 1 2 3 3x21",
+            },
+        ]
+
+        def colored(color: str, level: int) -> list[dashboards.Json]:
+            labels = (
+                'epic_ticket_check_severity{check="in_progress_long",'
+                f'color="{color}"}}'
+            )
+            return [{"labels": labels, "value": level}]
+
+        tests = [
+            {"expr": expr, "eval_time": "0m", "exp_samples": colored("text", 0)},
+            {"expr": expr, "eval_time": "1m", "exp_samples": colored("text", 1)},
+            {
+                "expr": expr,
+                "eval_time": "2m",
+                "exp_samples": colored(dashboards.LOOK_SOON, 2),
+            },
+            {
+                "expr": expr,
+                "eval_time": "3m",
+                "exp_samples": colored(dashboards.ACT_NOW, 3),
+            },
+            {"expr": expr, "eval_time": "20m", "exp_samples": []},
+        ]
+        self.run_promtool(
+            [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]
+        )
+
+    def test_ticket_time_columns(self) -> None:
+        """In status keeps the exact mark; both time queries follow the check
+        filter and show nothing once the ticket data is stale."""
+        age = panel_expr("tickets.json", "Tickets · $check", ref="B")
+        entered = panel_expr("tickets.json", "Tickets · $check", ref="C")
+        series = [
+            {
+                "series": "epic_ticket_snapshot_timestamp_seconds",
+                "values": "0+60x5 300x20",
+            },
+            {"series": 'epic_ticket_source_ok{source="board"}', "values": "1x25"},
+            *(
+                {"series": f'epic_ticket_info{{issue="{n}"}}', "values": "1x25"}
+                for n in (1, 2)
+            ),
+            {
+                "series": 'epic_ticket_check_member{issue="2",check="done_open"}',
+                "values": "1x25",
+            },
+            {
+                "series": 'epic_ticket_status_entered_seconds{issue="1",exact="1"}',
+                "values": "60x25",
+            },
+            {
+                "series": 'epic_ticket_status_entered_seconds{issue="2",exact="gap"}',
+                "values": "120x25",
+            },
+        ]
+        tests = [
+            {
+                "expr": age.replace("$check", "all"),
+                "eval_time": "4m",
+                "exp_samples": [
+                    {"labels": '{issue="1",exact="1"}', "value": 180},
+                    {"labels": '{issue="2",exact="gap"}', "value": 120},
+                ],
+            },
+            {
+                "expr": age.replace("$check", "done_open"),
+                "eval_time": "4m",
+                "exp_samples": [{"labels": '{issue="2",exact="gap"}', "value": 120}],
+            },
+            {
+                "expr": entered.replace("$check", "all"),
+                "eval_time": "4m",
+                "exp_samples": [
+                    {"labels": '{issue="1"}', "value": 60_000},
+                    {"labels": '{issue="2"}', "value": 120_000},
+                ],
+            },
+            {
+                "expr": age.replace("$check", "all"),
+                "eval_time": "20m",
+                "exp_samples": [],
+            },
+            {
+                "expr": entered.replace("$check", "all"),
+                "eval_time": "20m",
+                "exp_samples": [],
+            },
+        ]
+        self.run_promtool(
+            [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]
+        )
+
+    def test_flow_times(self) -> None:
+        """Aging keeps open tickets with their status and mark; done rows join
+        by episode; quantiles without samples stay empty; stale data hides."""
+        aging = panel_expr("tickets.json", "Aging · 20 longest in status")
+        done = panel_expr("tickets.json", "Done tickets · cycle and lead time")
+        cycle = panel_expr(
+            "tickets.json", "Done tickets · cycle and lead time", ref="B"
+        )
+        p50 = panel_expr("tickets.json", "Cycle time")
+        in_status = panel_expr("tickets.json", "Time in status · p50 and p85")
+        series = [
+            {
+                "series": "epic_ticket_snapshot_timestamp_seconds",
+                "values": "0+60x5 300x20",
+            },
+            {"series": 'epic_ticket_source_ok{source="board"}', "values": "1x25"},
+            {
+                "series": 'epic_ticket_info{issue="1",status="Ready",title="a",'
+                'url="u1",executor="Codex"}',
+                "values": "1x25",
+            },
+            {
+                "series": 'epic_ticket_info{issue="2",status="Done",title="b",'
+                'url="u2",executor="Codex"}',
+                "values": "1x25",
+            },
+            # The same ticket after its last agent changed, still within
+            # the lookback: aging must not fail on many-to-many.
+            {
+                "series": 'epic_ticket_info{issue="1",status="Ready",title="a",'
+                'url="u1",executor="Codex",last_agent="Codex"}',
+                "values": "1x25",
+            },
+            {
+                "series": 'epic_ticket_status_entered_seconds{issue="1",exact="0"}',
+                "values": "60x25",
+            },
+            {
+                "series": 'epic_ticket_status_entered_seconds{issue="2",exact="1"}',
+                "values": "0x25",
+            },
+            {
+                "series": 'epic_ticket_done_seconds{issue="2",episode="100",'
+                'executor="Claude"}',
+                "values": "100x25",
+            },
+            {
+                "series": 'epic_ticket_cycle_seconds{issue="2",episode="100"}',
+                "values": "50x25",
+            },
+            {
+                "series": 'epic_ticket_time_in_status_seconds{status="In review",'
+                'quantile="0.5"}',
+                "values": "30x25",
+            },
+        ]
+        tests = [
+            {
+                "expr": aging,
+                "eval_time": "4m",
+                "exp_samples": [
+                    {
+                        "labels": '{issue="1",exact="0",status="Ready",title="a",'
+                        'url="u1"}',
+                        "value": 180,
+                    }
+                ],
+            },
+            {
+                "expr": done,
+                "eval_time": "4m",
+                "exp_samples": [
+                    {
+                        "labels": '{issue="2",episode="100",executor="Claude",'
+                        'key="2/100"}',
+                        "value": 100_000,
+                    }
+                ],
+            },
+            {
+                "expr": cycle,
+                "eval_time": "4m",
+                "exp_samples": [{"labels": '{key="2/100"}', "value": 50}],
+            },
+            # No cycle samples: no row, so the stat shows "–".
+            {"expr": p50, "eval_time": "4m", "exp_samples": []},
+            {
+                "expr": in_status,
+                "eval_time": "4m",
+                "exp_samples": [
+                    {
+                        "labels": 'epic_ticket_time_in_status_seconds{status="In '
+                        'review",quantile="0.5",order="3"}',
+                        "value": 30,
+                    }
+                ],
+            },
+            *(
+                {"expr": expr, "eval_time": "20m", "exp_samples": []}
+                for expr in (aging, done, cycle, in_status)
+            ),
         ]
         self.run_promtool(
             [{"interval": "1m", "input_series": series, "promql_expr_test": tests}]

@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import fixtures
 import monitor
+import ticket_history
+import test_dashboards
 from test_dashboards import docker_ready
 
 
@@ -211,6 +213,140 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class TicketTimesTest(unittest.TestCase):
+    def test_time_columns_have_every_kind_of_value(self) -> None:
+        """Exact, lower bound and gap ages, an unverified Claude agent and a
+        Ready time, so the preview shows every Tickets column."""
+        now = 1_790_000_000.0
+        text = fixtures.ticket_metrics(now)
+        exact = dict(
+            re.findall(
+                r'^epic_ticket_status_entered_seconds\{exact="(\w+)",issue="(\d+)"\}',
+                text,
+                re.M,
+            )
+        )
+        self.assertEqual(set(exact), {"1", "0", "gap"})
+        self.assertEqual((exact["0"], exact["gap"]), ("305", "308"))
+        self.assertIn('last_agent="Claude (unverified)"', text)
+        ready = re.findall(r'ready_entered="(\d+)"', text)
+        self.assertTrue(ready)
+        self.assertTrue(all(int(t) < now for t in ready))
+        # The time checks read the history: the ledger is not unknown.
+        self.assertIn('epic_ticket_check_count{check="in_review_long"} 1', text)
+
+    def test_flow_times_have_values_and_gaps(self) -> None:
+        """Every flow panel has data; a skipped or unclean time has none."""
+        now = 1_790_000_000.0
+        text = fixtures.ticket_metrics(now)
+        for name in (
+            "epic_ticket_cycle_quantile_seconds",
+            "epic_ticket_lead_median_seconds",
+            "epic_ticket_done_seconds",
+        ):
+            with self.subTest(metric=name):
+                self.assertRegex(text, re.compile(rf"^{name}\b", re.M))
+        self.assertNotRegex(text, r'epic_ticket_cycle_seconds\{[^}]*issue="291"')
+        self.assertNotRegex(text, r'epic_ticket_lead_seconds\{[^}]*issue="293"')
+        timed = set(re.findall(r'time_in_status_seconds\{[^}]*status="([^"]+)"', text))
+        self.assertEqual(timed, {"Ready", "In progress", "In review"})
+        done = [
+            int(n)
+            for n in re.findall(r"^epic_tickets_done_day\{[^}]*\} (\d+)", text, re.M)
+        ]
+        self.assertEqual(sum(done), len(fixtures.DONE))
+
+
+class TicketSegmentsTest(unittest.TestCase):
+    now = 1_790_000_000.0
+
+    def newest(self) -> dict[str, ticket_history.Segment]:
+        stored = [
+            ticket_history.parse_segment(row)
+            for row in fixtures.ticket_segments(self.now)
+        ]
+        newest: dict[str, ticket_history.Stored] = {}
+        for s in stored:
+            old = newest.get(s.segment.segment_id)
+            if old is None or s.rev > old.rev:
+                newest[s.segment.segment_id] = s
+        return {k: s.segment for k, s in newest.items()}
+
+    def test_rows_are_valid_and_fresh(self) -> None:
+        rows = fixtures.ticket_segments(self.now)
+        self.assertTrue(rows)
+        for row in rows:
+            ticket_history.parse_segment(row)  # raises on a bad row
+            # Alloy drops lines older than 167 h by emitted_at.
+            self.assertEqual(row["emitted_at"], int(self.now))
+
+    def test_every_panel_case_is_covered(self) -> None:
+        """An open segment older than 7 days, a gap, a corrected agent, an
+        unverified Claude agent and a retired segment."""
+        rows = fixtures.ticket_segments(self.now)
+        newest = self.newest()
+        week = self.now - 7 * ticket_history.DAY
+        self.assertTrue(any(s.end is None and s.start < week for s in newest.values()))
+        [gap] = [s for s in newest.values() if s.status == "gap"]
+        self.assertEqual(gap.issue, 308)
+        [corrected] = [
+            r["segment_id"] for r in rows if r["rev"] == 2 and r["status"] != "retired"
+        ]
+        first = [r for r in rows if r["segment_id"] == corrected and r["rev"] == 1]
+        self.assertEqual(first[0]["agent"], "Codex")
+        self.assertEqual(newest[corrected].agent, "Claude")
+        self.assertTrue(
+            any(
+                s.agent == "Claude" and s.verified == 0 and s.end is None
+                for s in newest.values()
+            )
+        )
+        # The retired segment's older revision is a real status.
+        [retired] = [s for s in newest.values() if s.status == ticket_history.RETIRED]
+        older = [
+            r for r in rows if r["segment_id"] == retired.segment_id and r["rev"] == 1
+        ]
+        self.assertEqual(older[0]["status"], "Refinement")
+
+    def test_segments_touch_and_end_in_the_current_status(self) -> None:
+        state = monitor.epic_view(fixtures.ticket_state(self.now))
+        summary = fixtures.ticket_summary(state, self.now)
+        by_issue: dict[int, list[ticket_history.Segment]] = {}
+        for s in self.newest().values():
+            if s.status != ticket_history.RETIRED:
+                by_issue.setdefault(s.issue, []).append(s)
+        self.assertEqual(set(by_issue), set(summary.tickets))
+        for issue, segments in by_issue.items():
+            with self.subTest(issue=issue):
+                segments.sort(key=lambda s: s.start)
+                for before, after in zip(segments, segments[1:]):
+                    self.assertEqual(before.end, after.start)
+                last = segments[-1]
+                self.assertIsNone(last.end)
+                time_ = summary.tickets[issue]
+                self.assertEqual(
+                    (last.status, last.start), (time_.status, time_.entered)
+                )
+
+    def test_preview_writes_the_file_for_alloy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / "runtime-preview"
+            fixtures.main(
+                [
+                    "normal",
+                    "--state-dir",
+                    str(Path(directory) / "state"),
+                    "--output",
+                    str(runtime / "metrics"),
+                    "--once",
+                ]
+            )
+            lines = (runtime / ticket_history.SEGMENTS).read_text().splitlines()
+            self.assertTrue(lines)
+            targets = (runtime / "alloy/targets.json").read_text()
+            self.assertIn('"stream": "ticket_segments"', targets)
+
+
 class DockerSkipTest(unittest.TestCase):
     """The promtool test skips when the daemon is unreachable (sandboxes)."""
 
@@ -223,6 +359,26 @@ class DockerSkipTest(unittest.TestCase):
                 HistoryTest("test_promtool_accepts_the_history").run(result)
         self.assertEqual(result.errors + result.failures, [])
         self.assertEqual(len(result.skipped), 1)
+
+    def test_query_tests_skip_and_config_tests_run_without_a_daemon(self) -> None:
+        """Codex review of https://github.com/phaabe/live.moafunk.de/pull/668:
+        the guard sat on the config tests, not on the promtool tests."""
+        queries_test = test_dashboards.QuerySemanticsTest("test_tile_severity_colors")
+        config_test = test_dashboards.SegmentShippingConfigTest(
+            "test_loki_allows_a_series_per_segment"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.sock"
+            with patch.dict("os.environ", {"DOCKER_HOST": f"unix://{missing}"}):
+                queries = unittest.TestResult()
+                unittest.TestSuite([queries_test]).run(queries)
+                config = unittest.TestResult()
+                unittest.TestSuite([config_test]).run(config)
+        self.assertEqual(queries.errors + queries.failures, [])
+        self.assertEqual(len(queries.skipped), 1)
+        self.assertEqual(queries.testsRun, 0)
+        self.assertEqual(config.errors + config.failures + config.skipped, [])
+        self.assertEqual(config.testsRun, 1)
 
 
 class PreviewRuntimeTest(unittest.TestCase):

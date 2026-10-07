@@ -56,6 +56,29 @@
         "options": [],
         "includeAll": false,
         "multi": false
+      },
+      {
+        "name": "issues",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "agent-prometheus"
+        },
+        "query": {
+          "query": "query_result(label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\"))",
+          "refId": "issues"
+        },
+        "regex": "/issue=\"(\\d+)\"/",
+        "refresh": 2,
+        "sort": 3,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "hide": 2
       }
     ]
   },
@@ -63,7 +86,7 @@
     {
       "type": "stat",
       "title": "Ready · dep. not declared",
-      "description": "Ready, and an open blocked-by issue is not named in a Start after line of a readiness comment. The runner could claim it too early. Click to show these tickets in the table.",
+      "description": "Ready, and an open blocked-by issue is not named in a Start after line of a readiness comment. The runner could claim it too early. Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -72,6 +95,13 @@
         {
           "refId": "A",
           "expr": "((epic_ticket_check_count{check=\"ready_undeclared\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        },
+        {
+          "refId": "B",
+          "expr": "(label_replace((epic_ticket_check_severity{check=\"ready_undeclared\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 3, \"color\", \"#C8342E\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"ready_undeclared\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 2, \"color\", \"#E0A526\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"ready_undeclared\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 1, \"color\", \"text\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"ready_undeclared\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 0, \"color\", \"text\", \"\", \"\"))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -134,6 +164,42 @@
         "orientation": "horizontal",
         "wideLayout": true
       },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "configFromData",
+          "options": {
+            "configRefId": "B",
+            "applyTo": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "mappings": [
+              {
+                "fieldName": "color",
+                "handlerKey": "color"
+              },
+              {
+                "fieldName": "epic_ticket_check_severity",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "Time",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "check",
+                "handlerKey": "__ignore"
+              }
+            ]
+          }
+        }
+      ],
       "id": 1,
       "gridPos": {
         "x": 0,
@@ -145,7 +211,7 @@
     {
       "type": "stat",
       "title": "Ready · may be claimed",
-      "description": "Ready, and the runner selector would offer it as a claim now. Click to show these tickets in the table.",
+      "description": "Ready, and the runner selector would offer it as a claim now. Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -154,6 +220,13 @@
         {
           "refId": "A",
           "expr": "((epic_ticket_check_count{check=\"ready_claimable\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        },
+        {
+          "refId": "B",
+          "expr": "(label_replace((epic_ticket_check_severity{check=\"ready_claimable\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 3, \"color\", \"#C8342E\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"ready_claimable\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 2, \"color\", \"#E0A526\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"ready_claimable\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 1, \"color\", \"text\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"ready_claimable\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 0, \"color\", \"text\", \"\", \"\"))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -216,6 +289,42 @@
         "orientation": "horizontal",
         "wideLayout": true
       },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "configFromData",
+          "options": {
+            "configRefId": "B",
+            "applyTo": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "mappings": [
+              {
+                "fieldName": "color",
+                "handlerKey": "color"
+              },
+              {
+                "fieldName": "epic_ticket_check_severity",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "Time",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "check",
+                "handlerKey": "__ignore"
+              }
+            ]
+          }
+        }
+      ],
       "id": 2,
       "gridPos": {
         "x": 4,
@@ -227,7 +336,7 @@
     {
       "type": "stat",
       "title": "In progress > 1 day",
-      "description": "In progress for more than 24 h (since the collector saw it enter; at least that long for tickets it found there). Click to show these tickets in the table.",
+      "description": "In progress for more than 24 h (since the collector saw it enter; at least that long for tickets it found there). Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -236,6 +345,13 @@
         {
           "refId": "A",
           "expr": "((epic_ticket_check_count{check=\"in_progress_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        },
+        {
+          "refId": "B",
+          "expr": "(label_replace((epic_ticket_check_severity{check=\"in_progress_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 3, \"color\", \"#C8342E\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"in_progress_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 2, \"color\", \"#E0A526\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"in_progress_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 1, \"color\", \"text\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"in_progress_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 0, \"color\", \"text\", \"\", \"\"))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -298,6 +414,42 @@
         "orientation": "horizontal",
         "wideLayout": true
       },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "configFromData",
+          "options": {
+            "configRefId": "B",
+            "applyTo": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "mappings": [
+              {
+                "fieldName": "color",
+                "handlerKey": "color"
+              },
+              {
+                "fieldName": "epic_ticket_check_severity",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "Time",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "check",
+                "handlerKey": "__ignore"
+              }
+            ]
+          }
+        }
+      ],
       "id": 3,
       "gridPos": {
         "x": 8,
@@ -309,7 +461,7 @@
     {
       "type": "stat",
       "title": "In review > 1 day",
-      "description": "In review for more than 24 h (since the collector saw it enter; at least that long for tickets it found there). Click to show these tickets in the table.",
+      "description": "In review for more than 24 h (since the collector saw it enter; at least that long for tickets it found there). Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -318,6 +470,13 @@
         {
           "refId": "A",
           "expr": "((epic_ticket_check_count{check=\"in_review_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        },
+        {
+          "refId": "B",
+          "expr": "(label_replace((epic_ticket_check_severity{check=\"in_review_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 3, \"color\", \"#C8342E\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"in_review_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 2, \"color\", \"#E0A526\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"in_review_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 1, \"color\", \"text\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"in_review_long\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 0, \"color\", \"text\", \"\", \"\"))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -380,6 +539,42 @@
         "orientation": "horizontal",
         "wideLayout": true
       },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "configFromData",
+          "options": {
+            "configRefId": "B",
+            "applyTo": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "mappings": [
+              {
+                "fieldName": "color",
+                "handlerKey": "color"
+              },
+              {
+                "fieldName": "epic_ticket_check_severity",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "Time",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "check",
+                "handlerKey": "__ignore"
+              }
+            ]
+          }
+        }
+      ],
       "id": 4,
       "gridPos": {
         "x": 12,
@@ -391,7 +586,7 @@
     {
       "type": "stat",
       "title": "Refinement · not reviewed",
-      "description": "Refinement, and no approved body review matches the current body. Click to show these tickets in the table.",
+      "description": "Refinement, and no approved body review matches the current body. Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -400,6 +595,13 @@
         {
           "refId": "A",
           "expr": "((epic_ticket_check_count{check=\"refinement_unreviewed\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        },
+        {
+          "refId": "B",
+          "expr": "(label_replace((epic_ticket_check_severity{check=\"refinement_unreviewed\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 3, \"color\", \"#C8342E\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"refinement_unreviewed\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 2, \"color\", \"#E0A526\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"refinement_unreviewed\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 1, \"color\", \"text\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"refinement_unreviewed\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 0, \"color\", \"text\", \"\", \"\"))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -462,6 +664,42 @@
         "orientation": "horizontal",
         "wideLayout": true
       },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "configFromData",
+          "options": {
+            "configRefId": "B",
+            "applyTo": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "mappings": [
+              {
+                "fieldName": "color",
+                "handlerKey": "color"
+              },
+              {
+                "fieldName": "epic_ticket_check_severity",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "Time",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "check",
+                "handlerKey": "__ignore"
+              }
+            ]
+          }
+        }
+      ],
       "id": 5,
       "gridPos": {
         "x": 16,
@@ -473,7 +711,7 @@
     {
       "type": "stat",
       "title": "Board Done · issue open",
-      "description": "Board Status is Done but the issue is still open. Click to show these tickets in the table.",
+      "description": "Board Status is Done but the issue is still open. Color: amber or red when a ticket waits too long. Click to show these tickets in the table.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -482,6 +720,13 @@
         {
           "refId": "A",
           "expr": "((epic_ticket_check_count{check=\"done_open\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) or on() vector(-1))",
+          "instant": true,
+          "range": false,
+          "legendFormat": ""
+        },
+        {
+          "refId": "B",
+          "expr": "(label_replace((epic_ticket_check_severity{check=\"done_open\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 3, \"color\", \"#C8342E\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"done_open\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 2, \"color\", \"#E0A526\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"done_open\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 1, \"color\", \"text\", \"\", \"\")) or (label_replace((epic_ticket_check_severity{check=\"done_open\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) == 0, \"color\", \"text\", \"\", \"\"))",
           "instant": true,
           "range": false,
           "legendFormat": ""
@@ -544,6 +789,42 @@
         "orientation": "horizontal",
         "wideLayout": true
       },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "configFromData",
+          "options": {
+            "configRefId": "B",
+            "applyTo": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "mappings": [
+              {
+                "fieldName": "color",
+                "handlerKey": "color"
+              },
+              {
+                "fieldName": "epic_ticket_check_severity",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "Time",
+                "handlerKey": "__ignore"
+              },
+              {
+                "fieldName": "check",
+                "handlerKey": "__ignore"
+              }
+            ]
+          }
+        }
+      ],
       "id": 6,
       "gridPos": {
         "x": 20,
@@ -1124,7 +1405,7 @@
     {
       "type": "table",
       "title": "Tickets · $check",
-      "description": "Choose a check with a tile or the Check picker; All shows every ticket: not Done, plus Done in the last 7 days or still open.",
+      "description": "Choose a check with a tile or the Check picker; All shows every ticket: not Done, plus Done in the last 7 days or still open. In status: since the collector saw the ticket enter its status; ≥ is a lower bound (found there, or the entry is unsure), ? crosses a gap in the collector's data. Since Ready: the last entry into Ready. (unverified): the agent comes from a run event, not from GitHub.",
       "datasource": {
         "type": "prometheus",
         "uid": "agent-prometheus"
@@ -1137,9 +1418,47 @@
           "range": false,
           "legendFormat": "",
           "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "(time() - epic_ticket_status_entered_seconds and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) and on(issue) label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\")",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "expr": "(max by (issue) (epic_ticket_status_entered_seconds) * 1000 and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)) and on(issue) label_replace(((epic_ticket_info and on(issue) (epic_ticket_check_member and on(check) label_replace(vector(1), \"check\", \"$check\", \"\", \"\"))) or (epic_ticket_info and on() (label_replace(vector(1), \"check\", \"$check\", \"\", \"\") and on(check) label_replace(vector(1), \"check\", \"all\", \"\", \"\")))) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1), \"pr_url\", \"https://github.com/phaabe/live.moafunk.de/pull/$1\", \"pr\", \"(.+)\")",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "format": "table"
         }
       ],
       "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "issue",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              {
+                "fieldName": "title",
+                "config": {
+                  "id": "isNotNull"
+                }
+              }
+            ],
+            "type": "include",
+            "match": "all"
+          }
+        },
         {
           "id": "convertFieldType",
           "options": {
@@ -1151,6 +1470,11 @@
               {
                 "targetField": "done_sort",
                 "destinationType": "number"
+              },
+              {
+                "targetField": "ready_entered",
+                "destinationType": "time",
+                "dateFormat": "X"
               }
             ],
             "fields": {}
@@ -1165,6 +1489,11 @@
                 "title",
                 "status",
                 "executor",
+                "last_agent",
+                "Value #C",
+                "exact",
+                "Value #B",
+                "ready_entered",
                 "pr_url",
                 "note",
                 "url"
@@ -1181,15 +1510,25 @@
               "title": 1,
               "status": 2,
               "executor": 3,
-              "pr_url": 4,
-              "note": 5,
-              "url": 6
+              "last_agent": 4,
+              "Value #C": 5,
+              "exact": 6,
+              "Value #B": 7,
+              "ready_entered": 8,
+              "pr_url": 9,
+              "note": 10,
+              "url": 11
             },
             "renameByName": {
               "issue": "Ticket",
               "title": "Title",
               "status": "Status",
               "executor": "Executor",
+              "last_agent": "Last agent",
+              "Value #C": "Entered",
+              "exact": "≥/?",
+              "Value #B": "In status",
+              "ready_entered": "Since Ready",
               "pr_url": "PR",
               "note": "Note"
             }
@@ -1411,6 +1750,151 @@
           },
           {
             "matcher": {
+              "id": "byName",
+              "options": "Last agent"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^Claude( .*)?$",
+                      "result": {
+                        "index": 0,
+                        "color": "#E0875A"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^Codex( .*)?$",
+                      "result": {
+                        "index": 1,
+                        "color": "#35C2C2"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Entered"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 140
+              },
+              {
+                "id": "unit",
+                "value": "time:YYYY-MM-DD HH:mm"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "≥/?"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 50
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "index": 0,
+                        "text": " "
+                      },
+                      "0": {
+                        "index": 1,
+                        "text": "≥",
+                        "color": "#9A9BA6"
+                      },
+                      "gap": {
+                        "index": 2,
+                        "text": "?",
+                        "color": "#E0A526"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Since Ready"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
               "id": "byRegexp",
               "options": ".*"
             },
@@ -1439,13 +1923,222 @@
       }
     },
     {
-      "type": "row",
-      "title": "Board",
-      "collapsed": true,
+      "type": "state-timeline",
+      "title": "Status history · $check",
+      "description": "One row per ticket over 7 days, in the order the rows start. In progress and In review show the agent. Empty parts: the collector did not see the board then. A check filter keeps the full history of its tickets.",
+      "datasource": {
+        "type": "loki",
+        "uid": "agent-loki"
+      },
+      "timeFrom": "7d",
+      "hideTimeOverride": true,
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk by (segment_id) (1, max_over_time({stream=\"ticket_segments\"} | json | issue=~\"$issues\" | keep segment_id, issue, status, agent, start, rev | label_format text=\"{{.status}}{{if .agent}} · {{.agent}}{{end}}\", start_ms=\"{{.start}}000\" | unwrap rev [7d]) by (segment_id, issue, text, start_ms))",
+          "queryType": "instant"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "start_ms",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "start_ms",
+                "destinationType": "time"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              {
+                "fieldName": "text",
+                "config": {
+                  "id": "regex",
+                  "options": {
+                    "value": "^retired( · .*)?$"
+                  }
+                }
+              }
+            ],
+            "type": "exclude",
+            "match": "any"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "issue",
+                "text",
+                "start_ms"
+              ]
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "start_ms"
+              }
+            ]
+          }
+        },
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "issue"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "displayName": "#${__field.labels.issue}",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#6E717A"
+          },
+          "mappings": [
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^Backlog( · .*)?$",
+                "result": {
+                  "index": 0,
+                  "color": "#A57BE0"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^Refinement( · .*)?$",
+                "result": {
+                  "index": 1,
+                  "color": "#5B8DEF"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^Ready( · .*)?$",
+                "result": {
+                  "index": 2,
+                  "color": "#E8B530"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^In progress( · .*)?$",
+                "result": {
+                  "index": 3,
+                  "color": "#D96BB0"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^In review( · .*)?$",
+                "result": {
+                  "index": 4,
+                  "color": "#4FC3E8"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^Done( · .*)?$",
+                "result": {
+                  "index": 5,
+                  "color": "#5AB45F"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "gap": {
+                  "index": 6,
+                  "text": " ",
+                  "color": "transparent"
+                }
+              }
+            }
+          ],
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          },
+          "noValue": "No history"
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.9,
+        "alignValue": "left",
+        "legend": {
+          "showLegend": false
+        }
+      },
       "id": 15,
       "gridPos": {
         "x": 0,
         "y": 24,
+        "w": 24,
+        "h": 14
+      }
+    },
+    {
+      "type": "row",
+      "title": "Board",
+      "collapsed": true,
+      "id": 16,
+      "gridPos": {
+        "x": 0,
+        "y": 38,
         "w": 24,
         "h": 1
       },
@@ -1480,229 +2173,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
-                  }
-                ],
-                "fields": {}
-              }
-            },
-            {
-              "id": "filterFieldsByName",
-              "options": {
-                "include": {
-                  "names": [
-                    "issue",
-                    "title",
-                    "executor",
-                    "url",
-                    "done_sort"
-                  ]
-                }
-              }
-            },
-            {
-              "id": "organize",
-              "options": {
-                "excludeByName": {},
-                "indexByName": {
-                  "issue": 0,
-                  "title": 1,
-                  "executor": 2,
-                  "url": 3,
-                  "done_sort": 4
-                },
-                "renameByName": {
-                  "issue": "Ticket",
-                  "title": "Title",
-                  "executor": "Executor"
-                }
-              }
-            },
-            {
-              "id": "sortBy",
-              "options": {
-                "sort": [
-                  {
-                    "field": "Ticket"
-                  }
-                ]
-              }
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "noValue": "–",
-              "custom": {
-                "filterable": false,
-                "align": "auto",
-                "inspect": false
-              },
-              "color": {
-                "mode": "thresholds"
-              },
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "value": null,
-                    "color": "text"
-                  }
-                ]
-              }
-            },
-            "overrides": [
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "Ticket"
-                },
-                "properties": [
-                  {
-                    "id": "custom.width",
-                    "value": 80
                   },
                   {
-                    "id": "links",
-                    "value": [
-                      {
-                        "title": "Open on GitHub",
-                        "url": "${__data.fields.url}",
-                        "targetBlank": false
-                      }
-                    ]
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "url"
-                },
-                "properties": [
-                  {
-                    "id": "custom.hidden",
-                    "value": true
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "done_sort"
-                },
-                "properties": [
-                  {
-                    "id": "custom.hidden",
-                    "value": true
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "Executor"
-                },
-                "properties": [
-                  {
-                    "id": "custom.width",
-                    "value": 100
-                  },
-                  {
-                    "id": "custom.cellOptions",
-                    "value": {
-                      "type": "color-text"
-                    }
-                  },
-                  {
-                    "id": "mappings",
-                    "value": [
-                      {
-                        "type": "value",
-                        "options": {
-                          "Claude": {
-                            "index": 0,
-                            "color": "#E0875A"
-                          },
-                          "Codex": {
-                            "index": 1,
-                            "color": "#35C2C2"
-                          },
-                          "Anton": {
-                            "index": 2,
-                            "color": "#9A9BA6"
-                          },
-                          "Unassigned": {
-                            "index": 3,
-                            "color": "#9A9BA6"
-                          },
-                          "Unknown": {
-                            "index": 4,
-                            "color": "#9A9BA6"
-                          }
-                        }
-                      }
-                    ]
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byRegexp",
-                  "options": ".*"
-                },
-                "properties": [
-                  {
-                    "id": "filterable",
-                    "value": false
-                  }
-                ]
-              }
-            ]
-          },
-          "options": {
-            "showHeader": true,
-            "cellHeight": "sm",
-            "footer": {
-              "show": false
-            }
-          },
-          "id": 16,
-          "gridPos": {
-            "x": 0,
-            "y": 25,
-            "w": 4,
-            "h": 15
-          }
-        },
-        {
-          "type": "table",
-          "title": "Refinement",
-          "description": "",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "agent-prometheus"
-          },
-          "targets": [
-            {
-              "refId": "A",
-              "expr": "epic_ticket_info{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
-              "instant": true,
-              "range": false,
-              "legendFormat": "",
-              "format": "table"
-            }
-          ],
-          "transformations": [
-            {
-              "id": "convertFieldType",
-              "options": {
-                "conversions": [
-                  {
-                    "targetField": "issue",
-                    "destinationType": "number"
-                  },
-                  {
-                    "targetField": "done_sort",
-                    "destinationType": "number"
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -1890,15 +2365,15 @@
           },
           "id": 17,
           "gridPos": {
-            "x": 4,
-            "y": 25,
+            "x": 0,
+            "y": 39,
             "w": 4,
             "h": 15
           }
         },
         {
           "type": "table",
-          "title": "Ready",
+          "title": "Refinement",
           "description": "",
           "datasource": {
             "type": "prometheus",
@@ -1907,7 +2382,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "expr": "epic_ticket_info{status=\"Refinement\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -1926,6 +2401,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -2113,15 +2593,15 @@
           },
           "id": 18,
           "gridPos": {
-            "x": 8,
-            "y": 25,
+            "x": 4,
+            "y": 39,
             "w": 4,
             "h": 15
           }
         },
         {
           "type": "table",
-          "title": "In progress",
+          "title": "Ready",
           "description": "",
           "datasource": {
             "type": "prometheus",
@@ -2130,7 +2610,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "expr": "epic_ticket_info{status=\"Ready\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -2149,6 +2629,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -2336,15 +2821,15 @@
           },
           "id": 19,
           "gridPos": {
-            "x": 12,
-            "y": 25,
+            "x": 8,
+            "y": 39,
             "w": 4,
             "h": 15
           }
         },
         {
           "type": "table",
-          "title": "In review",
+          "title": "In progress",
           "description": "",
           "datasource": {
             "type": "prometheus",
@@ -2353,7 +2838,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "epic_ticket_info{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "expr": "epic_ticket_info{status=\"In progress\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
               "instant": true,
               "range": false,
               "legendFormat": "",
@@ -2372,6 +2857,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -2559,8 +3049,236 @@
           },
           "id": 20,
           "gridPos": {
+            "x": 12,
+            "y": 39,
+            "w": 4,
+            "h": 15
+          }
+        },
+        {
+          "type": "table",
+          "title": "In review",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_info{status=\"In review\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "executor",
+                    "url",
+                    "done_sort"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "executor": 2,
+                  "url": 3,
+                  "done_sort": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "executor": "Executor"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Ticket"
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "done_sort"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 21,
+          "gridPos": {
             "x": 16,
-            "y": 25,
+            "y": 39,
             "w": 4,
             "h": 15
           }
@@ -2595,6 +3313,11 @@
                   {
                     "targetField": "done_sort",
                     "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
                   }
                 ],
                 "fields": {}
@@ -2781,12 +3504,1038 @@
               "show": false
             }
           },
-          "id": 21,
+          "id": 22,
           "gridPos": {
             "x": 20,
-            "y": 25,
+            "y": 39,
             "w": 4,
             "h": 15
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Flow times",
+      "collapsed": true,
+      "id": 23,
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "type": "table",
+          "title": "Aging · 20 longest in status",
+          "description": "Open tickets (not Done) by time in their current status. ≥ is a lower bound, ? crosses a gap in the collector's data.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(20, (time() - epic_ticket_status_entered_seconds) * on(issue) group_left(title, status, url) max by (issue, title, status, url) (epic_ticket_info{status!=\"Done\"}) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1))",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "title",
+                    "status",
+                    "exact",
+                    "Value",
+                    "url"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "title": 1,
+                  "status": 2,
+                  "exact": 3,
+                  "Value": 4,
+                  "url": 5
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "title": "Title",
+                  "status": "Status",
+                  "exact": "≥/?",
+                  "Value": "In status"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "In status",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "${__data.fields.url}",
+                        "targetBlank": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "url"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hidden",
+                    "value": true
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Status"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 110
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Backlog": {
+                            "index": 0,
+                            "color": "#A57BE0"
+                          },
+                          "Refinement": {
+                            "index": 1,
+                            "color": "#5B8DEF"
+                          },
+                          "Ready": {
+                            "index": 2,
+                            "color": "#E8B530"
+                          },
+                          "In progress": {
+                            "index": 3,
+                            "color": "#D96BB0"
+                          },
+                          "In review": {
+                            "index": 4,
+                            "color": "#4FC3E8"
+                          },
+                          "Done": {
+                            "index": 5,
+                            "color": "#5AB45F"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "≥/?"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 50
+                  },
+                  {
+                    "id": "custom.align",
+                    "value": "right"
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "noValue",
+                    "value": " "
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "1": {
+                            "index": 0,
+                            "text": " "
+                          },
+                          "0": {
+                            "index": 1,
+                            "text": "≥",
+                            "color": "#9A9BA6"
+                          },
+                          "gap": {
+                            "index": 2,
+                            "text": "?",
+                            "color": "#E0A526"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "In status"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 24,
+          "gridPos": {
+            "x": 0,
+            "y": 55,
+            "w": 12,
+            "h": 12
+          }
+        },
+        {
+          "type": "barchart",
+          "title": "Done per day · by executor",
+          "description": "Tickets that entered Done per day (Berlin time), last 14 days, by the Executor at that time.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_tickets_done_day and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "groupingToMatrix",
+              "filter": {
+                "id": "byRefId",
+                "options": "A"
+              },
+              "options": {
+                "columnField": "executor",
+                "rowField": "day",
+                "valueField": "Value"
+              }
+            },
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^day\\\\executor$",
+                "renamePattern": "day"
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "day",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "min": 0,
+              "decimals": 0,
+              "noValue": "–",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#6E717A"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Claude"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#E0875A"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Codex"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#35C2C2"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Anton"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#9A9BA6"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Unassigned"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#9A9BA6"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Unknown"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#9A9BA6"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "stacking": "normal",
+            "showValue": "never",
+            "xField": "day",
+            "xTickLabelRotation": -45,
+            "legend": {
+              "showLegend": true,
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "id": 25,
+          "gridPos": {
+            "x": 12,
+            "y": 55,
+            "w": 12,
+            "h": 12
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Cycle time",
+          "description": "First In progress to Done, tickets done in the last 14 days.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_cycle_quantile_seconds{quantile=\"0.5\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "expr": "epic_ticket_cycle_quantile_seconds{quantile=\"0.85\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "p85"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "–",
+              "mappings": [],
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              },
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false,
+              "fields": ""
+            },
+            "textMode": "value_and_name",
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "wideLayout": true,
+            "text": {
+              "titleSize": 14,
+              "valueSize": 20
+            }
+          },
+          "id": 26,
+          "gridPos": {
+            "x": 0,
+            "y": 67,
+            "w": 6,
+            "h": 6
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Lead time · median",
+          "description": "First Ready to Done, tickets done in the last 14 days.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "epic_ticket_lead_median_seconds and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "median"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "–",
+              "mappings": [],
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              },
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false,
+              "fields": ""
+            },
+            "textMode": "value_and_name",
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "wideLayout": true,
+            "text": {
+              "titleSize": 14,
+              "valueSize": 20
+            }
+          },
+          "id": 27,
+          "gridPos": {
+            "x": 0,
+            "y": 73,
+            "w": 6,
+            "h": 6
+          }
+        },
+        {
+          "type": "barchart",
+          "title": "Time in status · p50 and p85",
+          "description": "Summed time in each status per done ticket, last 14 days. A status without clean samples has no bar.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_replace(label_replace(label_replace(label_replace(epic_ticket_time_in_status_seconds{quantile=\"0.5\"}, \"order\", \"0\", \"status\", \"Refinement\"), \"order\", \"1\", \"status\", \"Ready\"), \"order\", \"2\", \"status\", \"In progress\"), \"order\", \"3\", \"status\", \"In review\") and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "expr": "epic_ticket_time_in_status_seconds{quantile=\"0.85\"} and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "status",
+                "mode": "outer"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "order",
+                    "destinationType": "number"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "order"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "status",
+                    "Value #A",
+                    "Value #B"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "status": 0,
+                  "Value #A": 1,
+                  "Value #B": 2
+                },
+                "renameByName": {
+                  "Value #A": "p50",
+                  "Value #B": "p85"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "noValue": "–"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "p50"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#9A9BA6"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "p85"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#6E717A"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "orientation": "horizontal",
+            "showValue": "never",
+            "xField": "status",
+            "legend": {
+              "showLegend": true,
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "id": 28,
+          "gridPos": {
+            "x": 6,
+            "y": 67,
+            "w": 8,
+            "h": 12
+          }
+        },
+        {
+          "type": "table",
+          "title": "Done tickets · cycle and lead time",
+          "description": "Tickets that entered Done in the last 14 days, newest first. Cycle: first In progress to Done. Lead: first Ready to Done. –: not measured (the ticket skipped the status, or the time crosses a gap in the collector's data).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agent-prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_join(epic_ticket_done_seconds * 1000, \"key\", \"/\", \"issue\", \"episode\") and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "expr": "sum by (key) (label_join(epic_ticket_cycle_seconds, \"key\", \"/\", \"issue\", \"episode\")) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            },
+            {
+              "refId": "C",
+              "expr": "sum by (key) (label_join(epic_ticket_lead_seconds, \"key\", \"/\", \"issue\", \"episode\")) and on() (time() - epic_ticket_snapshot_timestamp_seconds < 300) and on() (epic_ticket_source_ok{source=\"board\"} == 1)",
+              "instant": true,
+              "range": false,
+              "legendFormat": "",
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "key",
+                "mode": "outer"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "issue",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "done_sort",
+                    "destinationType": "number"
+                  },
+                  {
+                    "targetField": "ready_entered",
+                    "destinationType": "time",
+                    "dateFormat": "X"
+                  }
+                ],
+                "fields": {}
+              }
+            },
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "issue",
+                    "executor",
+                    "Value #A",
+                    "Value #B",
+                    "Value #C"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {},
+                "indexByName": {
+                  "issue": 0,
+                  "executor": 1,
+                  "Value #A": 2,
+                  "Value #B": 3,
+                  "Value #C": 4
+                },
+                "renameByName": {
+                  "issue": "Ticket",
+                  "executor": "Executor",
+                  "Value #A": "Done",
+                  "Value #B": "Cycle",
+                  "Value #C": "Lead"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Done",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "–",
+              "custom": {
+                "filterable": false,
+                "align": "auto",
+                "inspect": false
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "text"
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Ticket"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 80
+                  },
+                  {
+                    "id": "links",
+                    "value": [
+                      {
+                        "title": "Open on GitHub",
+                        "url": "https://github.com/phaabe/live.moafunk.de/issues/${__value.raw}",
+                        "targetBlank": true
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Executor"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 100
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "Claude": {
+                            "index": 0,
+                            "color": "#E0875A"
+                          },
+                          "Codex": {
+                            "index": 1,
+                            "color": "#35C2C2"
+                          },
+                          "Anton": {
+                            "index": 2,
+                            "color": "#9A9BA6"
+                          },
+                          "Unassigned": {
+                            "index": 3,
+                            "color": "#9A9BA6"
+                          },
+                          "Unknown": {
+                            "index": 4,
+                            "color": "#9A9BA6"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Done"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 110
+                  },
+                  {
+                    "id": "unit",
+                    "value": "dateTimeFromNow"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Cycle"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 90
+                  },
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 1
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Lead"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 90
+                  },
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 1
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*"
+                },
+                "properties": [
+                  {
+                    "id": "filterable",
+                    "value": false
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "id": 29,
+          "gridPos": {
+            "x": 14,
+            "y": 67,
+            "w": 10,
+            "h": 12
           }
         }
       ]
