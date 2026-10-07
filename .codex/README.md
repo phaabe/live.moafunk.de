@@ -1,5 +1,49 @@
 # Codex epic guard
 
+## Process evidence provider (draft, ownership inactive)
+
+The opt-in provider in `epic_lock.py` implements the lease-core loader interface
+(`provider()`, `name`, `live`, `admission_blocked(owner)`, `stop(evidence)`).
+Loading it creates no state and does not initialize a lease store. Existing
+`epic_lock.py LOCK PID MAX_AGE` callers retain their existing behavior and
+standalone operation. Neither runner invokes the new provider automatically.
+
+Both integrations must check `provider().compatibility()` before activation.
+Schema 1 names `epic-process-v1`, uses the shared `runtime.process_table()` start
+identities (libproc on macOS), and currently reports **activation_ready=false**
+and **lossless_descendants=false**. Do not enable ownership on this draft.
+
+The provider journal lives at `<parent of EPIC_LOCK_DIR>/process-evidence/v1`,
+independently of per-instance state. The future wrapper calls
+`register(owner, wrapper_pid)` before admission, then `launch(owner, argv)` for
+each process group. Launch is callable only by the registered wrapper. It
+holds `admission.lock`, persists a pending registration, creates a new session
+behind a pipe gate, records the group start identity, then persists the release
+before allowing exec. If the wrapper dies before opening the gate, EOF prevents
+payload execution. A pending record after a crash remains uncertain.
+The caller owns and reaps the returned `Popen`; this API does not supervise it.
+
+`block(owner)` persists an admission block under that same lock. There is no
+automatic unblock, journal replacement, or takeover. A pre-existing owner
+journal requires an explicit handoff; handoff support is still pending.
+`stop` rechecks admission and exact evidence under the lock, so stale snapshots
+cannot omit a newer group. Missing, corrupt, legacy and pending records refuse.
+The journal retains identities, and probes report `gone` only on kernel ESRCH;
+EPERM, missing table entries and reused IDs never establish shutdown.
+
+**Remaining prerequisite for #503:** a lossless process containment/tracking
+backend and an identity-safe signaling mechanism. A process-table scan cannot
+find every double-forked child after it becomes reparented, and a PID start-time
+check cannot fence reuse between the check and a terminating signal. Accordingly
+this draft sends no terminating signals and never produces takeover approval,
+even when all visible PIDs are gone. `live=true` means it reads real processes,
+not that activation is ready. Released payloads permanently make their journal
+insufficient. Free target locks, pause files, elapsed time and an empty process
+snapshot do not change that result. Complete this backend and the remaining
+parent rollout gates before either runner integrates ownership.
+
+Focused validation: `python3 .codex/tests/test_process_provider.py -v`.
+
 The tracked `hooks.json` loads the guard from the current Git root, including
 linked worktrees and sessions started in subdirectories. It requires Bash 3.2
 and Python 3.10+. Existing machine-global hooks still load separately.
