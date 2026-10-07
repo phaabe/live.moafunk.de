@@ -206,6 +206,9 @@ else:
             "    if remote['labels']:\n"
             "        print(json.dumps({'action': 'idle'}))\n"
             "        sys.exit(0)\n"
+            "if os.environ.get('TEST_PUBLICATION_FILE') and pathlib.Path(os.environ['TEST_PUBLICATION_FILE']).exists():\n"
+            "    print(os.environ['TEST_PR_ACTION'])\n"
+            "    sys.exit(0)\n"
             "print(os.environ['TEST_DECISION'])\n"
         )
         selector.write_text(
@@ -303,7 +306,8 @@ else:
             "    with open(os.environ['TEST_PR_QUERIES'], 'a') as f:\n"
             "        f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
             "    if os.environ.get('TEST_PR_FAILURE'): sys.exit(7)\n"
-            "    print(os.environ['TEST_PR_METADATA'])\n"
+            "    publication = os.environ.get('TEST_PUBLICATION_FILE')\n"
+            "    print(pathlib.Path(publication).read_text() if publication else os.environ['TEST_PR_METADATA'])\n"
             "    sys.exit(0)\n"
             "assert sys.argv[1] == 'api'\n"
             "if os.environ.get('TEST_GH_READS_STDIN'):\n"
@@ -386,6 +390,9 @@ else:
             "    record(pathlib.Path(os.environ['EPIC_QUOTA_DIR']), time.time(), os.environ['TEST_RESET'])\n"
             "if os.environ.get('TEST_REMOVE_GATE_SNAPSHOT'):\n"
             "    (pathlib.Path(os.environ['EPIC_STATE_DIR']) / 'codex-gate-seen.json').unlink()\n"
+            # Simulate confirmed draft publication, independently of prompt text.
+            "if os.environ.get('TEST_PUBLICATION_FILE'):\n"
+            "    pathlib.Path(os.environ['TEST_PUBLICATION_FILE']).write_text(os.environ['TEST_PR_METADATA'])\n"
             "if not os.environ.get('TEST_RESULT_MISSING'):\n"
             "    result = pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1])\n"
             "    result.write_text(os.environ.get('TEST_RESULT', "
@@ -846,6 +853,101 @@ else:
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(self.gh_calls.read_bytes(), queries)
         self.assertFalse(self.calls.exists())
+
+    def publication_handoff(self, kind: str = "continue") -> dict[str, object]:
+        """Fake model publishes a draft; the next selector call returns that PR."""
+        issue = "https://github.com/phaabe/live.moafunk.de/issues/381"
+        action = {"action": kind, "issue": issue}
+        self.env.update(
+            TEST_DECISION=json.dumps(action),
+            TEST_PUBLICATION_FILE=str(self.root / "published-pr.json"),
+            TEST_PR_ACTION=json.dumps(
+                {"action": "continue", "pr": 417, "sha": "a" * 40}
+            ),
+            TEST_PR_METADATA=json.dumps(
+                {
+                    "body": f"Executor: Codex\nIssue: {issue}\n",
+                    "headRefOid": "a" * 40,
+                    "isDraft": True,
+                    "url": "https://github.com/phaabe/live.moafunk.de/pull/417",
+                }
+            ),
+            TEST_RESULT=json.dumps(
+                {
+                    "status": "completed",
+                    "summary": "Published draft https://github.com/phaabe/live.moafunk.de/pull/417.",
+                    "reason_code": None,
+                    "retry_at": None,
+                }
+            ),
+        )
+        return action
+
+    def assert_publication_handoff(self, kind: str) -> None:
+        action = self.publication_handoff(kind)
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertTrue(Path(self.env["TEST_PUBLICATION_FILE"]).is_file())
+        self.assertEqual(json.loads(self.record.read_text())["action"], action)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["action"], action)
+        self.assertEqual(
+            json.loads((self.state / "codex-backoff.json").read_text()), {}
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertEqual(
+            [call["action"] for call in calls],
+            [action, json.loads(self.env["TEST_PR_ACTION"])],
+        )
+        self.assertEqual(
+            json.loads((self.state / "codex-backoff.json").read_text()), {}
+        )
+        self.assertEqual(
+            [
+                event["outcome"]
+                for event in self.tick_events()
+                if event["event"] == "finish"
+            ],
+            ["ok", "ok"],
+        )
+        queries = [json.loads(line) for line in self.gh_calls.read_text().splitlines()]
+        self.assertTrue(
+            all(query[0] == "api" and "--method" not in query for query in queries)
+        )
+
+    def test_completed_claim_publication_starts_pr_on_next_tick(self) -> None:
+        self.assert_publication_handoff("claim")
+
+    def test_completed_continue_publication_starts_pr_on_next_tick(self) -> None:
+        self.assert_publication_handoff("continue")
+
+    def assert_failed_publication_handoff(self, code: int, reason: str) -> None:
+        action = json.loads(self.env["TEST_DECISION"])
+        self.assertEqual(self.run_tick().returncode, code)
+        self.assertTrue(Path(self.env["TEST_PUBLICATION_FILE"]).is_file())
+        entries = json.loads((self.state / "codex-backoff.json").read_text())
+        entry = entries[f"issue:{action['issue']}"]
+        self.assertIn(reason, entry["reason"])
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        entries = json.loads((self.state / "codex-backoff.json").read_text())
+        self.assertNotIn(f"issue:{action['issue']}", entries)
+        self.assertEqual(entries[f"pr:417:{'a' * 40}"]["reason"], entry["reason"])
+        self.assertEqual(entries[f"pr:417:{'a' * 40}"]["until"], entry["until"])
+
+    def test_required_test_failure_still_blocks_after_publication(self) -> None:
+        self.publication_handoff()
+        # The model reports a required-suite failure; this is not an LLM test.
+        self.env["TEST_RESULT"] = json.dumps(
+            {"status": "blocked", "summary": "Required test suite failed."}
+        )
+        self.assert_failed_publication_handoff(75, "Required test suite failed.")
+
+    def test_nonzero_model_exit_still_blocks_after_publication(self) -> None:
+        self.publication_handoff()
+        self.env["TEST_CODEX_EXIT"] = "17"
+        self.assert_failed_publication_handoff(17, "model exited 17")
 
     def block_issue_then_select_draft_pr(self) -> dict[str, object]:
         issue = "https://github.com/phaabe/live.moafunk.de/issues/381"

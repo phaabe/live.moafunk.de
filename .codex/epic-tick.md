@@ -55,14 +55,35 @@ Use `EPIC_REVIEW_ATTEMPT_DIR` for this attempt's scratch files.
 | `fix-checks` | Read the failing check logs first. For a failed `epic-guard` status, read its description in `gh pr checks <pr> --repo phaabe/live.moafunk.de` for the reason (lane, PR body lines, base). Fix the cause in the PR's worktree, test, commit and push. |
 | `resolve-conflict` | Use the installed helper to rebase onto the pinned target tip with the selected `sha`. Resume only its recorded rebase, resolve and stage conflicts, then continue. Run the appended shared proof command and publish with the same pinned remote SHA. Follow the exact commands below. A new head needs a new Claude review. |
 | `review` | Review Claude's exact `sha` in the prepared detached checkout, using the shared review scope below. Run tests and probe edge cases. Save the complete review bundle below. The runner publishes its findings and standalone Codex verdict after this session ends. Do not post review comments yourself. |
-| `continue` | Resume the claimed issue or draft PR, in its own worktree. Finish the work and tests, commit, push, and mark the PR ready. Update the issue's project status only from recorded leaf evidence; use Done only when every leaf is done. |
+| Issue `continue` (no `pr`) | Resume the claimed issue in its prepared worktree. Test, commit and push completed work. Prepare the complete PR body, then create a draft and end this tick as described below. Update project status only from recorded leaf evidence; use Done only when every leaf is done. |
+| PR `continue` (`pr` selected) | Resume that draft PR in its prepared worktree. Finish the work and required tests, commit, push, and mark that PR ready. Update the issue's project status only from recorded leaf evidence; use Done only when every leaf is done. |
 | `adopt` | Recheck the head equals `sha`, the PR is open and its body has no `Executor:`, `Author:` or `Reviewer:` line, with any value. Otherwise stop. Confirm its routed owner is Codex and determine a valid lane if the board Executor supplied ownership without `lane`. Find the issue it implements and its leaf IDs (or `setup`); if unclear, return blocked. Write a body file with the six metadata lines below at line start, preserving the original body text. Put it directly in the PR body directory named below the action (`$EPIC_BODY_DIR`); the hook accepts no other file. Move existing metadata lines instead of duplicating them. Apply only `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<pr> -F body=@<absolute-file-path>`, using a literal path. Comment that Codex adopted the PR. Change nothing else. The runner verifies the body before accepting completion. |
-| `claim` | Read the issue and readiness comment. Pick only Ready leaves assigned to Codex. Check ownership, record leaf IDs/files/the prepared branch and set Status to In progress. Use the prepared worktree. Run GitNexus impact before editing. Open a draft PR early. |
+| `claim` | Read the issue and readiness comment. Pick only Ready leaves assigned to Codex. Check ownership, record leaf IDs/files/the prepared branch and set Status to In progress. Use the prepared worktree. Run GitNexus impact before editing. Prepare the complete PR body, then open a draft early and end this tick as described below. |
 | `escalate` | Label the PR `needs-anton`, comment with the disagreement and open question, and stop. |
 
 For PR actions, recheck the expected head before editing or publishing. Retry
 transient read-only GitHub errors up to three times, except quota errors. Before retrying a write,
 check whether it succeeded so comments, PRs and merges are not duplicated.
+
+### Issue-to-PR publication handoff
+
+An issue `claim` or `continue` authorizes creating a draft, not continuing the
+new PR in the same tick. Before `gh pr create --draft --body-file <path>`, write
+the complete body file: all six metadata lines below, the issue link, current
+test evidence and implementation detail in a collapsed block. Do not plan a
+follow-up body edit to finish publication.
+
+Once draft publication is confirmed, end the issue tick with `status: "completed"`
+and a summary naming the draft URL and useful progress. Do not edit, mark ready
+or comment on the new PR in this tick. Preserve `EPIC_ACTION_FILE` unchanged;
+the next tick must select the PR before PR work continues.
+
+If the create response is uncertain, read GitHub state before retrying. Confirm
+the draft belongs to the prepared branch and selected issue. A confirmed draft
+needs no duplicate create. If publication cannot be confirmed, return blocked.
+Publication does not erase a real blocker: failed required tests, denied writes,
+missing prerequisites and other action failures still require a blocked result,
+even when a PR exists. A nonzero model exit remains a failure.
 
 Before each GitHub read or write, check the shared wait with
 `python3 <code-root>/scripts/epic/github_quota.py check --state-dir <EPIC_QUOTA_DIR>`.
