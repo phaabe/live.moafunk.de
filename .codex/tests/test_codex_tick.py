@@ -1297,13 +1297,14 @@ else:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_delivery_timeout_preserves_pending_state_without_cooldown(self) -> None:
+        self.env["EPIC_PULL_TIMEOUT_SECONDS"] = "47"
         for command in ("resume", "publish"):
             with self.subTest(command=command):
                 timeout_pid = self.timeout_command("review_delivery.py", command)
                 self.env["TEST_DELIVERY_SLEEP"] = command
                 self.assertEqual(self.run_tick().returncode, 75)
                 self.assertEqual(
-                    timeout_pid.with_suffix(".duration").read_text(), "30s"
+                    timeout_pid.with_suffix(".duration").read_text(), "47s"
                 )
                 self.assertFalse(self.record.exists())
                 self.assertFalse((self.state / "codex-backoff.json").exists())
@@ -1403,10 +1404,11 @@ else:
         self.assertIn("fake Codex stderr", log)
 
     def test_review_cleanup_timeout_keeps_result_and_releases_lock(self) -> None:
+        self.env["EPIC_PULL_TIMEOUT_SECONDS"] = "47"
         self.env["TEST_REVIEW_CLEANUP_SLEEP"] = "1"
         timeout_pid = self.timeout_command("review_worktree.py", "cleanup")
         self.assertEqual(self.run_tick().returncode, 0)
-        self.assertEqual(timeout_pid.with_suffix(".duration").read_text(), "30s")
+        self.assertEqual(timeout_pid.with_suffix(".duration").read_text(), "47s")
         [prepared] = self.review_lifecycle()
         self.assertTrue(self.record.exists())
         self.assertTrue(Path(prepared["worktree"]).exists())
