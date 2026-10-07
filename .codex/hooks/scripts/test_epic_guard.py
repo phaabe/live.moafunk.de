@@ -1059,6 +1059,31 @@ class FreshWriteCheckTest(unittest.TestCase):
                 self.run_hook(command, 2)
         self.assertEqual(self.reads, [])
 
+    def test_helper_stage_on_issue_actions_is_local(self) -> None:
+        prefix = [
+            "python3",
+            "-I",
+            str(self.hook.FEATURE_HELPER),
+            "--worktree",
+            str(self.directory),
+        ]
+        for action in ("claim", "continue"):
+            self.action(action, None)
+            for shared in ("0", "1"):
+                with (
+                    self.subTest(action=action, shared=shared),
+                    patch.dict(os.environ, {"EPIC_SHARED_READER": shared}),
+                ):
+                    self.run_hook(
+                        shlex.join(prefix + ["stage", "--", "a.txt", "with space.txt"])
+                    )
+                    for tail in (["stage"], ["stage", "--"], ["stage", "a.txt"]):
+                        self.run_hook(shlex.join(prefix + tail), 2)
+                    self.run_hook(
+                        shlex.join(prefix + ["stage", "--", "a.txt"]) + "; echo done", 2
+                    )
+        self.assertEqual(self.reads, [])
+
     def test_helper_local_commit_and_help_do_not_need_fresh_reads(self) -> None:
         helper = str(self.hook.FEATURE_HELPER)
         prefix = f"python3 -I {helper}"

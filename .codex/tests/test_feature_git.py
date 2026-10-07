@@ -44,7 +44,7 @@ class FeatureGitTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="feature-git-")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.home = self.root / "home"
         self.home.mkdir()
         self.env = {
@@ -136,6 +136,104 @@ class FeatureGitTests(unittest.TestCase):
         self.assertEqual(
             self.git("log", "-1", "--format=%s"), self.message.read_text().strip()
         )
+
+    def test_stage_commit_push_from_unstaged_linked_worktree(self) -> None:
+        linked = self.root / "linked"
+        self.git("worktree", "add", "-b", "fix/661-stage", str(linked), "HEAD")
+        (linked / "tracked.txt").write_text("linked change\n")
+        (linked / "new file.txt").write_text("new\n")
+        self.assertEqual(self.git("diff", "--cached", "--name-only", cwd=linked), "")
+        result = self.run_helper(
+            "stage", "--", "tracked.txt", "new file.txt", worktree=linked
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.commit(worktree=linked)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("push", worktree=linked)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.git("show", "refs/heads/fix/661-stage:tracked.txt", cwd=self.remote),
+            "linked change",
+        )
+
+    def test_stage_deletion_and_preserve_other_index_entries(self) -> None:
+        deleted = self.repo / "delete.txt"
+        deleted.write_text("delete me\n")
+        self.git("add", "delete.txt")
+        self.git("commit", "-m", "test: deletion fixture")
+        deleted.unlink()
+        self.file.write_text("separate staged edit\n")
+        self.git("add", "tracked.txt")
+        result = self.run_helper("stage", "--", "delete.txt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.git("diff", "--cached", "--name-status"),
+            "D\tdelete.txt\nM\ttracked.txt",
+        )
+
+    def test_stage_literal_filename_does_not_expand_glob(self) -> None:
+        (self.repo / "item*.txt").write_text("literal\n")
+        (self.repo / "item-other.txt").write_text("unselected\n")
+        result = self.run_helper("stage", "--", "item*.txt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.git("diff", "--cached", "--name-only"), "item*.txt\ntracked.txt"
+        )
+
+    def test_stage_rejects_unsafe_paths_without_changing_index(self) -> None:
+        (self.repo / "folder").mkdir()
+        (self.repo / "link").symlink_to(self.file)
+        (self.repo / "directory-link").symlink_to(self.root, target_is_directory=True)
+        os.mkfifo(self.repo / "pipe")
+        (self.repo / "valid.txt").write_text("valid\n")
+        before = self.git("write-tree")
+        for name in (
+            "",
+            ".",
+            "folder",
+            "folder/",
+            "../outside",
+            "folder/../tracked.txt",
+            str(self.file),
+            ".git/config",
+            ".GIT/config",
+            "link",
+            "pipe",
+            "directory-link/outside",
+            ":(top)**",
+            "--all",
+            "./tracked.txt",
+        ):
+            with self.subTest(name=name):
+                result = self.run_helper("stage", "--", "valid.txt", name)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(self.git("write-tree"), before)
+
+    def test_stage_reuses_repository_branch_and_remote_checks(self) -> None:
+        self.git("checkout", "-b", "main")
+        self.assert_refused(self.run_helper("stage", "--", "tracked.txt"))
+        self.git("checkout", "feat/381-integration-ci")
+        self.git("remote", "set-url", "origin", "https://example.invalid/repo.git")
+        self.assert_refused(self.run_helper("stage", "--", "tracked.txt"))
+
+    def test_stage_refuses_subdirectory_and_worktree_alias(self) -> None:
+        folder = self.repo / "folder"
+        folder.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+        for worktree in (folder, alias):
+            with self.subTest(worktree=worktree):
+                self.assert_refused(
+                    self.run_helper("stage", "--", "tracked.txt", worktree=worktree)
+                )
+
+    def test_failure_reports_stdout_when_stderr_is_empty(self) -> None:
+        hook = self.repo / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\nprintf 'fixture hook refusal\\n'\nexit 17\n")
+        hook.chmod(0o755)
+        result = self.commit()
+        self.assert_refused(result)
+        self.assertIn("fixture hook refusal", result.stderr)
 
     def test_linked_worktree_is_accepted(self) -> None:
         worktree = self.root / "linked worktree"

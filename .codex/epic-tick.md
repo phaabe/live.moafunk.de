@@ -73,6 +73,23 @@ stop the action without retries or more GitHub calls. Preserve unfinished work
 and return a blocked quota result as described below. Do not write the wait file
 yourself; the runner records it outside the model sandbox.
 
+## Stage and publish
+
+Use the installed feature Git helper named in this prompt for staging,
+committing and pushing. Stage explicit repository-relative file paths:
+
+```text
+python3 -I <helper> --worktree <prepared-worktree> stage -- <file> <file>
+python3 -I <helper> --worktree <prepared-worktree> commit --message-file <message-file>
+python3 -I <helper> --worktree <prepared-worktree> push
+```
+
+Do not stage a directory, use pathspecs or stage Git metadata. Inspect the
+staged diff before committing. If the installed helper lacks `stage`, preserve
+the changes and report the deployment mismatch; do not fall back to raw Git
+writes or change permissions. An active rebase still follows the separate
+resolve-conflict procedure below.
+
 ## PR metadata
 
 Use the PR template, full GitHub URLs, and these lines at line start:

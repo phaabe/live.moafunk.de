@@ -1,4 +1,4 @@
-"""Commit and publish only the current issue branch in a configured repository."""
+"""Stage, commit and publish the current issue branch in a configured repository."""
 
 from __future__ import annotations
 
@@ -45,7 +45,9 @@ def git(worktree: Path, *args: str) -> str:
         check=False,
     )
     if result.returncode:
-        raise Refused(result.stderr.strip() or f"git {args[0]} failed")
+        raise Refused(
+            result.stderr.strip() or result.stdout.strip() or f"git {args[0]} failed"
+        )
     return result.stdout.strip()
 
 
@@ -535,10 +537,37 @@ def rebase_operation(
         return output
 
 
+def stage(worktree: Path, config_path: Path, paths: list[str]) -> str:
+    """Stage explicit files without interpreting options or Git pathspecs."""
+    validate(worktree, config_path)
+    if Path(git(worktree, "rev-parse", "--show-toplevel")).resolve() != worktree:
+        raise Refused("worktree must be the repository root")
+    for name in paths:
+        parts = name.split("/")
+        if (
+            not name
+            or name.startswith(("/", "-", ":"))
+            or any(part in {"", ".", ".."} or part.lower() == ".git" for part in parts)
+        ):
+            raise Refused("stage requires explicit repository-relative file paths")
+        current = worktree
+        for part in parts:
+            current = current / part
+            if current.is_symlink():
+                raise Refused("stage paths must not contain symlinks")
+        if current.exists() and not current.is_file():
+            raise Refused("stage accepts files, not directories or special files")
+        if not current.resolve().is_relative_to(worktree):
+            raise Refused("stage path leaves the worktree")
+    return git(worktree, "--literal-pathspecs", "add", "--", *paths)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--worktree", required=True, type=Path)
     commands = parser.add_subparsers(dest="command", required=True)
+    staging = commands.add_parser("stage", allow_abbrev=False)
+    staging.add_argument("paths", nargs="+")
     commit = commands.add_parser("commit", allow_abbrev=False)
     commit.add_argument("--message-file", required=True, type=Path)
     commands.add_parser("push", allow_abbrev=False)
@@ -554,7 +583,11 @@ def main() -> int:
     try:
         worktree = args.worktree.resolve(strict=True)
         config_path = Path(__file__).resolve().with_suffix(".json")
-        if args.command not in {"commit", "push"}:
+        if args.command == "stage":
+            if args.worktree.absolute() != worktree:
+                raise Refused("worktree must be an exact path without symlinks")
+            output = stage(worktree, config_path, args.paths)
+        elif args.command not in {"commit", "push"}:
             if args.worktree.absolute() != worktree:
                 raise Refused("worktree must be an exact path without symlinks")
             output = rebase_operation(worktree, config_path, args)
