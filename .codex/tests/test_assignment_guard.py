@@ -10,6 +10,7 @@ import isolated_env  # noqa: E402, F401 (before production modules or fixtures)
 
 import importlib
 import importlib.util
+from functools import partial
 import json
 import os
 import unittest
@@ -121,6 +122,35 @@ class AssignmentGuardTests(fixtures.Env):
                     ):
                         self.check("gh issue comment 21 --body working", shared)
 
+    def test_issue_publication_does_not_authorize_new_pr_writes(self) -> None:
+        for shared in ("0", "1"):
+            for kind in ("claim", "continue"):
+                with self.subTest(shared=shared, kind=kind):
+                    self.repo = fixtures.GitHubRepo(self.gh)
+                    self.item("In progress")
+                    self.action(kind)
+                    selected = self.action_file.read_bytes()
+                    self.check("gh pr create --draft -t title -b body", shared)
+                    self.repo.add_pr(
+                        fixtures.pull(
+                            5,
+                            fixtures.A,
+                            f"Executor: Codex\nIssue: {fixtures.ISSUES}/21\n",
+                            draft=True,
+                        )
+                    )
+                    for command in (
+                        "gh pr edit 5 --body complete",
+                        "gh pr ready 5",
+                        "gh pr comment 5 --body published",
+                    ):
+                        with self.subTest(command=command):
+                            with self.assertRaisesRegex(
+                                ValueError, "not this tick's (PR|target)"
+                            ):
+                                self.check(command, shared)
+                    self.assertEqual(self.action_file.read_bytes(), selected)
+
     def test_failed_read_blocks_without_using_selected_evidence(self) -> None:
         self.item("Ready")
         for shared in ("0", "1"):
@@ -171,6 +201,80 @@ class AssignmentGuardTests(fixtures.Env):
 
 class AssignmentClientIntegrationTests(fixtures.Env):
     """Only HTTP is fake: the hook, reader and write checker run together."""
+
+    def test_shared_checker_requires_selected_pr_after_publication(self) -> None:
+        repo = fixtures.GitHubRepo(self.gh)
+        repo.add_item(21, "In progress", "Codex")
+        self.gh.set(
+            f"{fixtures.na.PROJECT_API}/fields?per_page=100",
+            [
+                {"id": FIELD_IDS[name], "name": name}
+                for name in fixtures.na.PROJECT_FIELDS
+            ],
+        )
+        items = f"{fixtures.na.PROJECT_API}/items?per_page=100&" + "&".join(
+            f"fields[]={FIELD_IDS[name]}" for name in fixtures.na.PROJECT_FIELDS
+        )
+        self.gh.set(items, [rest_row(21, status="In progress", executor="Codex")])
+        action_file = self.root / "action.json"
+        action_file.write_text(
+            json.dumps({"action": "continue", "issue": f"{fixtures.ISSUES}/21"})
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "EPIC_ACTION_FILE": str(action_file),
+                    "EPIC_TRUSTED_ROOT": str(ROOT),
+                    "EPIC_SHARED_READER": "1",
+                    "EPIC_FOCUS_ACTIONS": "",
+                },
+            ),
+            patch.object(fixtures.gs, "gh_http", self.gh),
+            patch.object(
+                fixtures.gs,
+                "FreshReader",
+                partial(fixtures.gs.FreshReader, http=self.gh),
+            ),
+        ):
+            guard.runner_write_check(
+                "exec_command",
+                {"cmd": "gh pr create --draft -t title -b body"},
+                self.root,
+            )
+            repo.add_pr(
+                fixtures.pull(
+                    5,
+                    fixtures.A,
+                    f"Executor: Codex\nIssue: {fixtures.ISSUES}/21\n",
+                    draft=True,
+                )
+            )
+            commands = (
+                "gh pr edit 5 --body complete",
+                "gh pr ready 5",
+                "gh pr comment 5 --body published",
+            )
+            for command in commands:
+                with self.subTest(action="issue", command=command):
+                    with self.assertRaisesRegex(
+                        ValueError, "not this tick's (PR|target)"
+                    ):
+                        guard.runner_write_check(
+                            "exec_command", {"cmd": command}, self.root
+                        )
+            action_file.write_text(
+                json.dumps({"action": "continue", "pr": 5, "sha": fixtures.A})
+            )
+            for command in commands:
+                with self.subTest(action="pr", command=command):
+                    guard.runner_write_check(
+                        "exec_command", {"cmd": command}, self.root
+                    )
+            self.assertIn(
+                (fixtures.gs.full_url(f"{fixtures.REPO}/pulls/5"), None),
+                self.gh.calls,
+            )
 
     def test_real_reader_rechecks_assignment_before_claim_writes_in_both_modes(
         self,
