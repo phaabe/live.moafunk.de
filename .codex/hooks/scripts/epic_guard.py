@@ -367,6 +367,8 @@ def helper_push_command(command: str, cwd: Path) -> tuple[str, Path]:
         return "", cwd
     if len(tail) == 5 and tail[2:4] == ["commit", "--message-file"]:
         return "", cwd
+    if len(tail) >= 5 and tail[2:4] == ["stage", "--"]:
+        return "", cwd
     if tail[2:] != ["push"]:
         raise ValueError("The feature-git push command cannot be checked.")
     worktree = (cwd / tail[1]).resolve(strict=True)
