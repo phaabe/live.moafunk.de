@@ -20,6 +20,8 @@ import tempfile
 import time
 import unittest
 
+from fixture_readiness import STARTUP_SECONDS, accept_ready, stop_fixture
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REAL_GIT = shutil.which("git")
@@ -416,9 +418,11 @@ else:
             "TEST_DECISION": json.dumps(
                 {"action": "review", "pr": 406, "sha": "a" * 40}
             ),
-            "EPIC_TICK_TIMEOUT_SECONDS": "10",
-            "EPIC_SELECT_TIMEOUT_SECONDS": "10",
-            "EPIC_PULL_TIMEOUT_SECONDS": "10",
+            # Ordinary phases include interpreter/fixture startup. Tests of
+            # a deadline override only the deadline they actually exercise.
+            "EPIC_TICK_TIMEOUT_SECONDS": "30",
+            "EPIC_SELECT_TIMEOUT_SECONDS": "30",
+            "EPIC_PULL_TIMEOUT_SECONDS": "30",
             "EPIC_STATE_DIR": str(self.state),
             "EPIC_LOCK_DIR": str(self.target_locks),
             "EPIC_REPEAT_TTL_SECONDS": "10800",
@@ -432,15 +436,68 @@ else:
     def run_tick(self) -> subprocess.CompletedProcess[str]:
         # stdin is /dev/null: a fake that reads stdin must never wait on the
         # test process's own stdin.
-        return subprocess.run(
+        process = subprocess.Popen(
             ["/bin/bash", str(self.runner)],
             env=self.env,
             cwd=self.home,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=30,
+            start_new_session=True,
         )
+        # Keep leaked children visible to the test's lock/cleanup assertions.
+        # Dispose of them afterwards, even when one of those assertions fails.
+        self.addCleanup(stop_fixture, process)
+        try:
+            stdout, stderr = process.communicate(timeout=STARTUP_SECONDS)
+            return subprocess.CompletedProcess(
+                process.args, process.returncode, stdout, stderr
+            )
+        except BaseException:
+            stop_fixture(process)
+            raise
+
+    def test_run_tick_keeps_leaked_target_lock_visible(self) -> None:
+        # Inject a bug only in the disposable runner: a child inherits fd 8
+        # and outlives the tick. Its output goes to codex.log, so communicate
+        # still returns and the lock assertion must see the leak.
+        source = self.runner.read_text()
+        anchor = (
+            '        "$python_bin" "${code_root}/scripts/epic/target_lock.py" '
+            "acquire --fd 8 || result=$?\n"
+        )
+        self.assertEqual(source.count(anchor), 1)
+        self.runner.write_text(
+            source.replace(anchor, anchor + "        /bin/sleep 300 &\n")
+        )
+
+        self.assertEqual(self.run_tick().returncode, 0)
+        with (self.target_locks / "406.lock").open("a") as lock:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def timeout_command(self, name: str, command: str = "") -> Path:
+        """Record the requested duration before controlling the real timeout."""
+        real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+        self.assertIsNotNone(real_timeout)
+        timeout_pid = self.root / "timeout.pid"
+        duration = timeout_pid.with_suffix(".duration")
+        duration.unlink(missing_ok=True)
+        timeout = self.bin / "timeout"
+        timeout.write_text(
+            f"#!{sys.executable}\n"
+            "import os, pathlib, sys\n"
+            f"if {name!r} == 'codex' and sys.argv[3] == 'codex':\n"
+            f"    pathlib.Path({str(duration)!r}).write_text(sys.argv[2])\n"
+            f"    pathlib.Path({str(timeout_pid)!r}).write_text(str(os.getpid()))\n"
+            f"elif any(pathlib.Path(arg).name == {name!r} for arg in sys.argv[3:]) and {command!r} in sys.argv[3:]:\n"
+            f"    pathlib.Path({str(duration)!r}).write_text(sys.argv[2])\n"
+            "    sys.argv[2] = '1s'\n"
+            f"os.execv({real_timeout!r}, [{real_timeout!r}, *sys.argv[1:]])\n"
+        )
+        timeout.chmod(0o755)
+        return timeout_pid
 
     def expire_cooldown(self) -> None:
         path = self.state / "codex-backoff.json"
@@ -491,7 +548,7 @@ else:
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=STARTUP_SECONDS,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads((self.state / "github-quota-wait.json").read_text())
@@ -1240,11 +1297,15 @@ else:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_delivery_timeout_preserves_pending_state_without_cooldown(self) -> None:
-        self.env["EPIC_PULL_TIMEOUT_SECONDS"] = "1"
+        self.env["EPIC_PULL_TIMEOUT_SECONDS"] = "47"
         for command in ("resume", "publish"):
             with self.subTest(command=command):
+                timeout_pid = self.timeout_command("review_delivery.py", command)
                 self.env["TEST_DELIVERY_SLEEP"] = command
                 self.assertEqual(self.run_tick().returncode, 75)
+                self.assertEqual(
+                    timeout_pid.with_suffix(".duration").read_text(), "47s"
+                )
                 self.assertFalse(self.record.exists())
                 self.assertFalse((self.state / "codex-backoff.json").exists())
                 self.assertFalse(self.lock.exists())
@@ -1343,8 +1404,11 @@ else:
         self.assertIn("fake Codex stderr", log)
 
     def test_review_cleanup_timeout_keeps_result_and_releases_lock(self) -> None:
-        self.env.update(TEST_REVIEW_CLEANUP_SLEEP="1", EPIC_PULL_TIMEOUT_SECONDS="1")
+        self.env["EPIC_PULL_TIMEOUT_SECONDS"] = "47"
+        self.env["TEST_REVIEW_CLEANUP_SLEEP"] = "1"
+        timeout_pid = self.timeout_command("review_worktree.py", "cleanup")
         self.assertEqual(self.run_tick().returncode, 0)
+        self.assertEqual(timeout_pid.with_suffix(".duration").read_text(), "47s")
         [prepared] = self.review_lifecycle()
         self.assertTrue(self.record.exists())
         self.assertTrue(Path(prepared["worktree"]).exists())
@@ -1589,7 +1653,7 @@ else:
         home = self.state / "agents/codex-2"
         agent = json.loads((home / "agent.json").read_text())
         self.assertEqual(
-            (agent["interval_seconds"], agent["budget_seconds"]), (180, 140)
+            (agent["interval_seconds"], agent["budget_seconds"]), (180, 260)
         )
         self.assertIn("tick: finished exit=75", (home / "codex.log").read_text())
         self.assertTrue((home / "codex-backoff.json").exists())
@@ -2366,6 +2430,8 @@ else:
 
     def test_shared_reader_validates_all_deadlines_before_work(self) -> None:
         self.env["EPIC_SHARED_READER"] = "1"
+        # The invalid lock/refresh values below are relative to this budget.
+        self.env["EPIC_SELECT_TIMEOUT_SECONDS"] = "10"
         for key, value in (
             ("EPIC_RECHECK_TIMEOUT_SECONDS", "0"),
             ("EPIC_RECHECK_TIMEOUT_SECONDS", "1.5"),
@@ -2395,8 +2461,8 @@ else:
         state = self.state / "agents/codex-2"
         owner = json.loads((state / "codex.lock/owner.json").read_text())
         agent = json.loads((state / "agent.json").read_text())
-        self.assertEqual(owner["max_age"], 154)
-        self.assertEqual(agent["budget_seconds"], 154)
+        self.assertEqual(owner["max_age"], 274)
+        self.assertEqual(agent["budget_seconds"], 274)
         connection.sendall(b"x")
         self.assertEqual(process.wait(timeout=10), 0)
 
@@ -2406,21 +2472,19 @@ else:
         address = str(self.root / "ready.sock")
         listener.bind(address)
         listener.listen(1)
-        listener.settimeout(10)
         self.env["TEST_SOCKET"] = address
-        process = subprocess.Popen(["/bin/bash", str(self.runner)], env=self.env)
+        process = subprocess.Popen(
+            ["/bin/bash", str(self.runner)], env=self.env, start_new_session=True
+        )
         self.addCleanup(self.stop_process, process)
-        connection, _ = listener.accept()
+        connection = accept_ready(listener, process, self.state / "codex.log")
         self.addCleanup(connection.close)
         connection.settimeout(10)
-        self.assertEqual(connection.recv(5), b"ready")
         return process, connection
 
     @staticmethod
     def stop_process(process: subprocess.Popen[bytes]) -> None:
-        if process.poll() is None:
-            process.terminate()
-            process.wait(timeout=15)
+        stop_fixture(process)
 
     def test_concurrent_invocation_cannot_start_a_second_session(self) -> None:
         process, connection = self.blocked_tick()
@@ -2428,7 +2492,7 @@ else:
         owner = json.loads((self.lock / "owner.json").read_text())
         self.assertEqual(owner["pid"], process.pid)
         self.assertGreater(owner["started_at"], 0)
-        self.assertEqual(owner["max_age"], 140)
+        self.assertEqual(owner["max_age"], 260)
         self.assertEqual(self.run_tick().returncode, 0)
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertTrue(self.lock.is_dir())
@@ -2505,9 +2569,12 @@ else:
         self.assertFalse(self.lock.exists())
 
     def test_timeout_stops_child_and_releases_lock(self) -> None:
-        self.env["EPIC_TICK_TIMEOUT_SECONDS"] = "1"
+        self.env["EPIC_TICK_TIMEOUT_SECONDS"] = "60"
+        timeout_pid = self.timeout_command("codex")
         process, connection = self.blocked_tick()
+        os.kill(int(timeout_pid.read_text()), signal.SIGALRM)
         self.assertEqual(process.wait(timeout=15), 124)
+        self.assertEqual(timeout_pid.with_suffix(".duration").read_text(), "60s")
         self.assertEqual(connection.recv(1), b"")
         self.assertFalse(self.lock.exists())
         self.assertFalse(self.record.exists())
@@ -2561,18 +2628,7 @@ else:
 
     def test_timeout_writes_a_timeout_event(self) -> None:
         self.env["EPIC_TICK_TIMEOUT_SECONDS"] = "60"
-        real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
-        self.assertIsNotNone(real_timeout)
-        timeout_pid = self.root / "timeout.pid"
-        timeout = self.bin / "timeout"
-        timeout.write_text(
-            f"#!{sys.executable}\n"
-            "import os, pathlib, sys\n"
-            "if sys.argv[3] == 'codex':\n"
-            f"    pathlib.Path({str(timeout_pid)!r}).write_text(str(os.getpid()))\n"
-            f"os.execv({real_timeout!r}, [{real_timeout!r}, *sys.argv[1:]])\n"
-        )
-        timeout.chmod(0o755)
+        timeout_pid = self.timeout_command("codex")
         process, _ = self.blocked_tick()
         # The model is ready: expire GNU timeout without a startup-time race.
         os.kill(int(timeout_pid.read_text()), signal.SIGALRM)
