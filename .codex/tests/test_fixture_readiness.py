@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/epic"))
 import isolated_env  # noqa: E402, F401
 
+import errno
 import os
 import signal
 import socket
@@ -15,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from fixture_readiness import accept_ready, stop_fixture
 
@@ -42,6 +44,33 @@ class ReadinessTests(unittest.TestCase):
         )
         self.addCleanup(stop_fixture, process)
         return process
+
+    def test_unreaped_exited_group_is_cleaned_up(self) -> None:
+        process = self.start("raise SystemExit(0)")
+        # Observe exit without reaping: macOS killpg can return EPERM here.
+        observed = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+        self.assertEqual(observed.si_pid, process.pid)
+        self.assertIsNone(process.returncode)
+        stop_fixture(process)
+        self.assertEqual(process.returncode, 0)
+
+    def test_permission_error_on_final_group_signal_is_tolerated(self) -> None:
+        process = self.start("raise SystemExit(0)")
+        self.assertEqual(process.wait(timeout=5), 0)
+        original = os.killpg
+
+        def exited_group(pid: int, sig: int) -> None:
+            if sig == signal.SIGKILL:
+                raise PermissionError(errno.EPERM, "exited fixture group")
+            original(pid, sig)
+
+        with patch("fixture_readiness.os.killpg", side_effect=exited_group) as killpg:
+            stop_fixture(process)
+        self.assertEqual(
+            [call.args[1] for call in killpg.call_args_list],
+            [signal.SIGTERM, signal.SIGKILL],
+        )
+        self.assertEqual(process.returncode, 0)
 
     def test_delayed_and_fragmented_readiness(self) -> None:
         process = self.start(
@@ -115,7 +144,7 @@ class ReadinessTests(unittest.TestCase):
             # Also clean up when running this regression against the broken helper.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
 
 

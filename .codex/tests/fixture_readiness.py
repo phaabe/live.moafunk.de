@@ -14,9 +14,10 @@ STARTUP_SECONDS = 60.0
 
 def stop_fixture(process: subprocess.Popen) -> None:
     """Stop a disposable fixture started with start_new_session=True."""
+    # macOS may report EPERM for an owned group containing only zombies.
     try:
         os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
     try:
         process.wait(timeout=15)
@@ -26,7 +27,7 @@ def stop_fixture(process: subprocess.Popen) -> None:
     # Kill any remaining group members, including children that ignore SIGTERM.
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
     process.wait(timeout=5)
 
