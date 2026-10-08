@@ -13,6 +13,12 @@ file opened for appending, so lines of two writers never interleave.
                         [--action-file A] [--log L --since OFFSET]
                         [--claude-session ID --launch-dir D [--model-exit N]]
                         [--timings M]
+  tick_events.py activity --file V --tick T --event model-start|model-end
+                          [--action-file A]
+
+`activity` writes one activity record (activity.py) to its own file, not to
+the ticks file: the tick ledger (ticks.py) rejects event kinds it does not
+know. A model-end has no outcome; the finish event names it.
 
 Only enums, numbers, timestamps and the selector's action/PR/issue are
 written: no model text, prompts or commands. The one exception is the
@@ -124,6 +130,8 @@ USAGE_SECONDS = 5
 INTERRUPTED = (124, 129, 130, 137, 143)
 SUBAGENT_TOOLS = ("Agent", "Task")
 MAX_COUNT = 10**15
+# Events of the `activity` command.
+ACTIVITY_EVENTS = ("model-start", "model-end")
 
 
 def open_regular(path: Path, flags: int) -> int:
@@ -453,6 +461,24 @@ def env_block(
     )
 
 
+def activity_event(path: Path, tick: str, kind: str, action_file: Path | None) -> None:
+    """One activity record of a model boundary; the model ran for both."""
+    import activity  # only this command needs the contract
+
+    found = activity.record(
+        {
+            "event": kind,
+            "tick": tick,
+            "at": now_iso(),
+            "model_started": True,
+            **action_fields(action_file),
+        }
+    )
+    if found is None:
+        raise ValueError("invalid activity event")
+    append(path, found)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -461,6 +487,11 @@ def main(argv: list[str] | None = None) -> int:
     marker = commands.add_parser("mark")
     marker.add_argument("--file", type=Path, required=True)
     marker.add_argument("--phase", choices=STEPS, required=True)
+    boundary = commands.add_parser("activity")
+    boundary.add_argument("--file", type=Path, required=True)
+    boundary.add_argument("--tick", required=True)
+    boundary.add_argument("--event", choices=ACTIVITY_EVENTS, required=True)
+    boundary.add_argument("--action-file", type=Path)
     for command in (start, finish):
         command.add_argument("--file", type=Path, required=True)
         command.add_argument("--tick", required=True)
@@ -500,6 +531,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def write(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     try:
+        if args.command == "activity":
+            activity_event(args.file, args.tick, args.event, args.action_file)
+            return 0
         if args.command == "start":
             append(
                 args.file,

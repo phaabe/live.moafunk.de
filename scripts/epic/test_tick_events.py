@@ -580,6 +580,92 @@ class RuntimeRevisionTest(unittest.TestCase):
         self.assertNotIn("runtime", json.dumps(saved))
 
 
+class ActivityEventTest(unittest.TestCase):
+    """https://github.com/phaabe/live.moafunk.de/issues/694: model boundaries
+    go to their own file as allowlisted activity records."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.file = self.root / "claude-activity.jsonl"
+        self.action = self.root / "action.json"
+
+    def run_helper(self, *args: str) -> subprocess.CompletedProcess[str]:
+        # As the runner calls it: `activity` is found next to the script.
+        return subprocess.run(
+            [sys.executable, str(Path(tick_events.__file__)), "activity", *args],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=self.root,
+        )
+
+    def boundary(self, kind: str) -> subprocess.CompletedProcess[str]:
+        return self.run_helper(
+            "--file", str(self.file), "--tick", TICK, "--event", kind,
+            "--action-file", str(self.action),
+        )  # fmt: skip
+
+    def records(self) -> list[dict[str, object]]:
+        return [json.loads(line) for line in self.file.read_text().splitlines()]
+
+    def test_model_start_and_end_are_model_work(self) -> None:
+        self.action.write_text(
+            json.dumps({"action": "fix", "pr": 699, "reason": "free model text"})
+        )
+        for kind in ("model-start", "model-end"):
+            self.assertEqual(self.boundary(kind).returncode, 0)
+        start, end = self.records()
+        self.assertEqual(
+            [(r["event"], r["activity"], r["action"], r["target"]) for r in (start, end)],
+            [("model-start", "code", "fix", "pr:699"), ("model-end", "code", "fix", "pr:699")],
+        )  # fmt: skip
+        import activity
+
+        for found in (start, end):
+            self.assertEqual(tuple(found), activity.RECORD_KEYS)
+            self.assertEqual((found["v"], found["tick"]), (1, TICK))
+            # The finish event names the tick's outcome, not the model end.
+            self.assertIsNone(found["outcome"])
+        self.assertNotIn("free model text", self.file.read_text())
+
+    def test_review_and_refinement_actions_map_to_their_activity(self) -> None:
+        for action, expected in (
+            ("review", "review"),
+            ("refine", "refine"),
+            ("review-refinement", "review-refinement"),
+            ("set-ready", "runner"),
+            ("brand-new", "other"),
+        ):
+            with self.subTest(action=action):
+                self.file.unlink(missing_ok=True)
+                self.action.write_text(json.dumps({"action": action}))
+                self.assertEqual(self.boundary("model-start").returncode, 0)
+                [found] = self.records()
+                self.assertEqual(found["activity"], expected)
+
+    def test_missing_action_file_still_writes_a_record(self) -> None:
+        self.assertEqual(self.boundary("model-start").returncode, 0)
+        [found] = self.records()
+        self.assertEqual((found["action"], found["activity"]), (None, "other"))
+
+    def test_bad_input_is_refused_without_a_line(self) -> None:
+        for args in (
+            ["--file", str(self.file), "--tick", "now", "--event", "model-start"],
+            ["--file", str(self.file), "--tick", TICK, "--event", "finish"],
+        ):
+            with self.subTest(args=args):
+                self.assertNotEqual(self.run_helper(*args).returncode, 0)
+        self.assertFalse(self.file.exists())
+
+    def test_tick_ledger_never_reads_the_activity_file(self) -> None:
+        # The runner's events file stays free of event kinds it rejects.
+        self.action.write_text(json.dumps({"action": "fix", "pr": 1}))
+        self.assertEqual(self.boundary("model-start").returncode, 0)
+        self.assertFalse((self.root / "claude-ticks.jsonl").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
 

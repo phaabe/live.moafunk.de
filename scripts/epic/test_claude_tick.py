@@ -78,6 +78,7 @@ class RunnerHarness(unittest.TestCase):
             "scripts/epic/github_quota.py",
             "scripts/epic/agents.py",
             "scripts/epic/tick_events.py",
+            "scripts/epic/activity.py",
             "scripts/epic/target_lock.py",
             "scripts/epic/tick_cooldown.py",
             "scripts/epic/claude_usage.py",
@@ -806,6 +807,32 @@ class ClaudeTickTest(RunnerHarness):
         finish = self.tick_events()[-1]
         self.assertEqual((finish["action"], finish["pr"]), ("fix", 1))
         self.assertIsNone(finish["tokens"])
+
+    def test_activity_file_records_the_model_boundaries(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/694
+        path = self.state / "claude-activity.jsonl"
+        for env, expected in (
+            ({}, [("model-start", "code"), ("model-end", "code")]),
+            # A selected action alone is not model work: no record.
+            ({"TEST_SELECT_EXIT": "3"}, None),
+        ):
+            with self.subTest(env=env):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.run_tick(**env).wait(timeout=30)
+                if expected is None:
+                    self.assertFalse(path.exists())
+                    continue
+                records = [json.loads(x) for x in path.read_text().splitlines()]
+                self.assertEqual(
+                    [(r["event"], r["activity"]) for r in records], expected
+                )
+                tick = self.tick_events()[-1]["tick"]
+                self.assertTrue(all(r["tick"] == tick for r in records))
+                self.assertTrue(all(r["target"] == "pr:1" for r in records))
+                # The tick ledger's file holds only its own events.
+                self.assertEqual(
+                    [e["event"] for e in self.tick_events()], ["start", "finish"]
+                )
 
     def test_finish_event_measures_each_step(self) -> None:
         # https://github.com/phaabe/live.moafunk.de/issues/655

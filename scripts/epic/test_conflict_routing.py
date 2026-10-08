@@ -42,6 +42,7 @@ COMMON = (
     "scripts/epic/github_state.py",
     "scripts/epic/agents.py",
     "scripts/epic/tick_events.py",
+    "scripts/epic/activity.py",
     "scripts/epic/target_lock.py",
     "scripts/epic/tick_gate.py",
     "scripts/epic/routing.py",

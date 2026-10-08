@@ -256,6 +256,8 @@ export EPIC_STATE_DIR="$state_dir"
 export EPIC_QUOTA_DIR="$registry_dir"
 log_file="${state_dir}/claude.log"
 events_file="${state_dir}/claude-ticks.jsonl"
+# Model start and end (activity.py); the tick ledger rejects these events.
+activity_file="${state_dir}/claude-activity.jsonl"
 
 mkdir -p "$state_dir"
 exec >> "$log_file" 2>&1
@@ -920,6 +922,9 @@ fi
 session_id=$usage_id
 step_mark model
 model_started=1
+# Activity telemetry must never stop the tick.
+"$py" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-start --action-file "${lock_dir}/action.json" || true
 # 18>&- 19>&-: the usage locks stay with this shell, never with the model.
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
@@ -935,6 +940,8 @@ run_bounded "${tick_timeout}s" \
     > "${lock_dir}/result.json" 18>&- 19>&- || model_exit=$?
 receipt=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 model_done=1
+"$py" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-end --action-file "${lock_dir}/action.json" || true
 step_mark validation
 cat "${lock_dir}/result.json" || true
 printf '\ntick: model exit=%s\n' "$model_exit"
