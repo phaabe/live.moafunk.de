@@ -231,8 +231,37 @@ Priority, first match wins:
    lines and keeps the rest of the body. A PR with any owner line is never
    adopted.
 9. `claim`: a Ready issue with Executor set to this agent. Not while the agent
-   has work to continue or two open PRs.
+   has work to continue, and only with free claim capacity (see Claim
+   capacity below).
 10. `idle`.
+
+Claim capacity (`capacity()` in `scripts/epic/next_action.py`), per agent and
+across focus:
+
+- Work items: each own open PR, and each own In progress issue without an
+  open linked PR. An issue and its PR count once. Closed work never counts.
+- Parked: any item with `needs-anton`, a ready PR too. Also a draft PR or In
+  progress issue whose Waiting records are all valid and not yet resolved, but
+  only with `EPIC_SHARED_READER=1` (see Waiting work). Escalation parks with
+  the switch off too: the label comes from the snapshot.
+- Active: every other item. Ready PRs are always active, also while they wait
+  for review or carry a `waiting` label. So is work with a missing, edited,
+  malformed or wrong-author Waiting record (it does not continue, but it does
+  not hold claims by itself), and work whose record was not read (it still
+  holds all claims).
+- A claim needs fewer than 2 active and fewer than 2 parked items. So a claim
+  raises the total to at most 3. `adopt` and work added by hand are outside
+  this bound.
+- When parked work resumes (a wait resolves, Anton removes `needs-anton` after
+  a grant), it is active again, also above the limit. Nothing is dropped,
+  reset or stopped to meet it; there are just no new claims until active work
+  is below 2 again. Fix, review, merge and conflict actions never wait for
+  capacity.
+- Parked work keeps its Status, owner, branch, worktree, reservations and
+  review history. A ticket that starts after it stays blocked.
+- `--status` prints each agent's capacity line, and a Ready leaf without
+  capacity as `wait` with the counted items. The fresh recheck before the
+  model counts again on fresh data.
 
 New actions: `adopt` (and later actions of
 https://github.com/phaabe/live.moafunk.de/issues/487) are emitted only when
@@ -255,19 +284,21 @@ the highest priority of its own labels and its `Issue:` tickets. `continue` is
 one queue for draft PRs and In progress issues. Claims sort by priority, then
 lowest wave, then number. Priority only orders work: it never skips a step and
 never bypasses pause, escalation, focus, "Start after", the batch order, lanes
-or the two-open-PR limit. `--status` shows each item's priority.
+or the claim capacity. `--status` shows each item's priority.
 
 Focus: Anton can limit both loops to some labels by writing them into
 `~/.epic-focus`, one per line (for example `project::Stream`). Then only issues
 with one of these labels, and PRs whose own labels or `Issue:` ticket have one,
 get actions. A PR with a focus label of its own is in focus without an `Issue:`
-line. All other PRs are frozen: no review, fix or merge. They still count
-toward the two-open-PR limit. No file or an empty file means all work, and no
+line. All other PRs are frozen: no review, fix or merge. They and own In
+progress issues outside the focus still count for the claim capacity, as
+active unless parked; a focus change never frees capacity. No file or an
+empty file means all work, and no
 `adopt`. Focus issues that are not on the project board are found by a REST
 search per label (`search/issues`, all pages, no duplicates; a stored quota
 wait stops it). `--status` lists every focus item without an action and why:
 no owner (with the routing result), draft of the other agent, not on board,
-blocked (status, other work, two open PRs), `needs-anton`.
+blocked (status, other work to continue, held claims), `needs-anton`.
 
 Per-target lock: every runner on this machine takes an `flock` on one file per
 issue or PR number in `~/.local/state/epic-loop/target-locks/` (override:
@@ -357,12 +388,15 @@ resolve before it continues.
 - A `Resume: Anton` wait ends only when Anton removes the label from its
   source. A PR label does not clear a label on its issue.
 - A label with a missing, edited or malformed comment, or a comment by someone
-  other than the owner or Anton, parks that work and shows the problem.
+  other than the owner or Anton, stops that work (no `continue`) and shows the
+  problem. It is not parked: it stays active for the claim capacity.
 - Removing the label by hand ends any wait. Nothing removes it automatically.
 - A ready (non-draft) PR ignores the label: it keeps review, fix, checks,
   conflict and merge actions, with a warning.
-- Waiting work keeps its Status, PR slot, worktree and reservations. Capacity,
-  focus, pause, quota, lanes and priority still apply.
+- Waiting work keeps its Status, worktree and reservations. With a valid
+  record and `EPIC_SHARED_READER=1` it is parked for the claim capacity;
+  otherwise it stays active. Focus, pause, quota, lanes and priority still
+  apply.
 
 Waiting work frees claims only with `EPIC_SHARED_READER=1`, because only then
 does each runner recheck the claim fresh before the model. The recheck reads

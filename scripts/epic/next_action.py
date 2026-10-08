@@ -24,7 +24,9 @@ one, get actions. Everything else is frozen. No file or an empty file: all.
   adopt     a focus PR with no owner line whose files route to me (routing.py);
             only when EPIC_FOCUS_ACTIONS lists `adopt`
   claim     a Ready leaf with Executor = me, after its "Start after" leaves
-            or tickets and the leaves before it in the epic's batch order
+            or tickets and the leaves before it in the epic's batch order;
+            needs no `continue`, fewer than MAX_ACTIVE active and fewer than
+            MAX_PARKED parked work items (capacity())
   idle      nothing to do
 
 Inside each action the order is priority, then age: `priority::high`, then
@@ -103,7 +105,9 @@ MAX_ROUNDS = 3
 # A PR's `mergeable` as decide() reads it. UNKNOWN only means GitHub is still
 # computing it; a failed or malformed read never becomes UNKNOWN.
 MERGEABLE_STATES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
-MAX_OPEN_PRS = 2
+# Claim capacity per agent (see capacity()): active and parked work items.
+MAX_ACTIVE = 2
+MAX_PARKED = 2
 PAUSE_FILE = Path.home() / ".epic-pause"
 FOCUS_FILE = Path.home() / ".epic-focus"
 ESCALATION_LABEL = "needs-anton"
@@ -715,6 +719,14 @@ class Waiting:
     satisfied: list[str]
     # A record was not read: claims stay held, as without waiting support.
     unread: bool
+    # A missing, edited, malformed or wrong-author record: the work does not
+    # continue, but it is not parked either and keeps its active capacity.
+    invalid: bool = False
+
+    @property
+    def parked(self) -> bool:
+        """Every source has a valid record and at least one is unresolved."""
+        return bool(self.blocking) and not self.unread and not self.invalid
 
 
 def waiting_of(
@@ -740,21 +752,25 @@ def waiting_of(
             result.blocking.append(f"{url}: Waiting comment not read")
             continue
         if not record.get("found"):
+            result.invalid = True
             result.blocking.append(
                 f"{url}: label {WAITING_LABEL} without a Waiting comment"
             )
             continue
         where = record.get("url") or url
         if record.get("edited"):
+            result.invalid = True
             result.blocking.append(
                 f"{where}: Waiting comment was edited; post a new one"
             )
             continue
         parsed, problem = parse_waiting(record.get("body") or "")
         if parsed is None:
+            result.invalid = True
             result.blocking.append(f"{where}: invalid Waiting comment ({problem})")
             continue
         if parsed["actor"] not in (agent, "Anton"):
+            result.invalid = True
             result.blocking.append(
                 f"{where}: Waiting comment by {parsed['actor']}, not {agent} or Anton"
             )
@@ -781,6 +797,80 @@ def waiting_of(
                 f"{url}: Waiting comment is satisfied; label {WAITING_LABEL} still present"
             )
     return result
+
+
+@dataclass
+class Capacity:
+    """One agent's work items for the claim limit."""
+
+    active: list[str]
+    parked: list[str]
+
+    def full(self) -> bool:
+        return len(self.active) >= MAX_ACTIVE or len(self.parked) >= MAX_PARKED
+
+    def describe(self) -> str:
+        parts = []
+        for name, found, limit in (
+            ("active", self.active, MAX_ACTIVE),
+            ("parked", self.parked, MAX_PARKED),
+        ):
+            listed = f" ({', '.join(found)})" if found else ""
+            parts.append(f"{name} {len(found)} of {limit}{listed}")
+        return "; ".join(parts)
+
+
+def capacity(
+    agent: str,
+    state: dict[str, Any],
+    done: set[str],
+    completed_tickets: bool = False,
+    free_claims: bool = False,
+) -> Capacity:
+    """The agent's work across focus: each own open PR, and each own In
+    progress issue without an open linked PR (an issue/PR pair counts once).
+
+    `needs-anton` parks an item, a ready PR too. A draft PR or In progress
+    issue with valid, unresolved Waiting records is parked only with
+    `free_claims` (a fresh recheck runs before the model). Everything else is
+    active: ready PRs (also waiting for review, or with a `waiting` label),
+    and work whose Waiting record is missing, invalid or unread.
+    """
+    issue_labels = all_issue_labels(state)
+    prs = sorted(
+        (p for p in state.get("prs", []) if p.get("baseRefName") in BASES),
+        key=lambda p: p["number"],
+    )
+    linked = {n for p in prs for n in issue_numbers(p.get("body") or "")}
+    found = Capacity([], [])
+
+    def count(target: str, names: set[str], sources: list[tuple[int, str]]) -> None:
+        if ESCALATION_LABEL in names:
+            found.parked.append(f"{target} {ESCALATION_LABEL}")
+            return
+        wait = waiting_of(agent, sources, state, done, completed_tickets)
+        if free_claims and wait is not None and wait.parked:
+            found.parked.append(f"{target} {WAITING_LABEL}")
+        else:
+            found.active.append(target)
+
+    for p in prs:
+        if pr_author(p) == agent:
+            draft = bool(p.get("isDraft"))
+            sources = pr_wait_sources(p, issue_labels) if draft else []
+            count(f"PR {p['number']}", labels(p), sources)
+    for n, i in sorted(board_issues(state).items()):
+        if (
+            i.get("executor") != agent
+            or i.get("status") != "In progress"
+            or is_closed(i)
+            or n in linked
+        ):
+            continue
+        names = labels(i)
+        sources = [(n, issue_url(n))] if WAITING_LABEL in names else []
+        count(issue_url(n), names, sources)
+    return found
 
 
 def read_focus(path: Path) -> frozenset[str]:
@@ -867,6 +957,8 @@ def decide(
     A draft PR or In progress issue with an open `waiting` label becomes a
     status-only `wait`. `free_claims` (only where a fresh recheck runs before
     the model) lets such waits leave claims free; otherwise they hold claims.
+    A claim also needs room in capacity(); without it, the Ready leaf gets a
+    status-only `wait` that names the counted work.
     """
     if paused:
         return [Action("stop", f"pause file {PAUSE_FILE} exists")]
@@ -878,8 +970,9 @@ def decide(
     hold_claims = False
     held = "" if free_claims else "; claims stay held without a fresh recheck"
     all_prs = [p for p in state.get("prs", []) if p.get("baseRefName") in BASES]
-    # Escalated PRs get no PR action, but still link their issue and count as open.
-    # So do PRs outside the focus: they are frozen, not forgotten.
+    # Escalated PRs get no PR action, but still link their issue (capacity()
+    # counts them as parked). PRs outside the focus are frozen, not forgotten:
+    # they link their issue and count as active.
     prs = [
         p
         for p in all_prs
@@ -1012,7 +1105,7 @@ def decide(
     linked = set()
     for p in all_prs:
         linked |= issue_numbers(p.get("body") or "")
-    open_mine = len([p for p in all_prs if pr_author(p) == agent])
+    room = capacity(agent, state, done, completed_tickets, free_claims)
     items = [
         i
         for i in state.get("items", [])
@@ -1061,7 +1154,7 @@ def decide(
                 ),
                 number,
             )
-        elif i.get("status") == "Ready" and open_mine < MAX_OPEN_PRS:
+        elif i.get("status") == "Ready":
             wanted = start_after(i) | batch.get(number, set())
             warnings: list[str] = []
             if completed_tickets:
@@ -1082,6 +1175,19 @@ def decide(
                     Action(
                         "wait",
                         f"starts after {', '.join(blockers)}",
+                        issue=url,
+                        priority=rank,
+                        warnings=warnings,
+                    ),
+                    wave,
+                    number,
+                )
+            elif room.full():
+                add(
+                    "wait",
+                    Action(
+                        "wait",
+                        f"no claim capacity: {room.describe()}",
                         issue=url,
                         priority=rank,
                         warnings=warnings,
@@ -1484,7 +1590,7 @@ def issue_reason(
         return f"Executor is {item.get('executor') or 'not set'}"
     if item.get("status") not in ("Ready", "In progress"):
         return f"blocked: status {item.get('status') or 'not set'}"
-    return "blocked: other work to continue or two open PRs"
+    return "blocked: other work to continue, or waiting work holds claims"
 
 
 def no_action(
@@ -1543,8 +1649,11 @@ def status(
         + ("on" if completed_tickets else "off"),
     ]
     by_url = {(i.get("content") or {}).get("url"): i for i in state.get("items", [])}
+    done = done_leaves(state, tickets=not completed_tickets)
     for agent in AGENTS:
         lines.append(f"\n{agent}:")
+        room = capacity(agent, state, done, completed_tickets, free_claims)
+        lines.append(f"  {'capacity':<17} {'':<6} {'':<55} {room.describe()}")
         acted = decide(
             agent,
             state,
