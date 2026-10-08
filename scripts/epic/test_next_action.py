@@ -1025,7 +1025,8 @@ class OperatorGrantTest(unittest.TestCase):
         self.cid = 0
 
     def row(self, body: str, login: str = "anneoneone", edited: bool = False) -> dict:
-        """A REST comment row on PR 1, one second after the previous one."""
+        """A REST comment row on PR 1, one second after the previous one, with
+        GraphQL edit evidence (`last_edited_at`) as every reader adds it."""
         self.cid += 1
         at = f"2026-10-08T00:00:{self.cid:02d}Z"
         return {
@@ -1035,6 +1036,7 @@ class OperatorGrantTest(unittest.TestCase):
             "updated_at": "2026-10-08T01:00:00Z" if edited else at,
             "html_url": f"{PULL}/1#issuecomment-{self.cid}",
             "user": {"login": login},
+            "last_edited_at": "2026-10-08T01:00:00Z" if edited else None,
         }
 
     def rejections(self, n: int = MAX_ROUNDS) -> list[dict]:
@@ -1145,6 +1147,17 @@ class OperatorGrantTest(unittest.TestCase):
                 grant_body(sha, f"{PULL}/1#issuecomment-1")
             ),
             "upper case": lambda url: self.row(grant_body(sha.upper(), url)),
+            # Equal REST timestamps; only GraphQL lastEditedAt shows the edit.
+            "same-second edit": lambda url: {
+                **self.row(grant_body(sha, url)),
+                "last_edited_at": f"2026-10-08T00:00:{self.cid:02d}Z",
+            },
+            # No GraphQL edit evidence read: REST alone never authorizes it.
+            "no edit evidence": lambda url: {
+                k: v
+                for k, v in self.row(grant_body(sha, url)).items()
+                if k != "last_edited_at"
+            },
         }
         for name, make in cases.items():
             with self.subTest(name):
@@ -1189,6 +1202,118 @@ class OperatorGrantTest(unittest.TestCase):
         rows = [self.row("x")]
         c = comments_from_rest(rows, 1)[0]
         self.assertEqual((c["id"], c["author"]), (1, "anneoneone"))
+        self.assertTrue(c["editEvidence"])
+        rows[0].pop("last_edited_at")
+        self.assertFalse(comments_from_rest(rows, 1)[0]["editEvidence"])
+
+    def test_grant_rows_finds_only_operator_grant_candidates(self) -> None:
+        rows = self.granted_rows()
+        self.assertTrue(next_action.grant_rows(rows))
+        self.assertFalse(next_action.grant_rows(rows[:-1]))
+        rows[-1]["user"] = {"login": "phaabe"}
+        self.assertFalse(next_action.grant_rows(rows))
+
+
+class LegacyGrantEvidenceTest(unittest.TestCase):
+    """fetch_state() without the shared reader reads GraphQL edit evidence
+    for a PR with a grant candidate before decide() may honor the grant."""
+
+    def setUp(self) -> None:
+        self.graphql_calls = 0
+        self.edited: set[int] = set()
+        self.fail = False
+        sha = SHAS[MAX_ROUNDS - 1]
+        self.rows = []
+        for i, s in enumerate(SHAS[:MAX_ROUNDS], start=1):
+            self.rows.append(self.rest(i, f"Review: CHANGES REQUESTED by Codex at {s}"))
+        url = f"{PULL}/1#issuecomment-{MAX_ROUNDS}"
+        self.rows.append(self.rest(MAX_ROUNDS + 1, grant_body(sha, url)))
+        self.pr = pr(1, "Claude", head=sha)
+        self.pr.pop("comments")
+
+    @staticmethod
+    def rest(cid: int, body: str) -> dict:
+        at = f"2026-10-08T00:00:{cid:02d}Z"
+        return {
+            "id": cid,
+            "body": body,
+            "created_at": at,
+            "updated_at": at,
+            "html_url": f"{PULL}/1#issuecomment-{cid}",
+            "user": {"login": "anneoneone"},
+        }
+
+    def run_gh(self, args: list[str], timeout: int = 120) -> str:
+        if args[:2] == ["api", "graphql"]:
+            self.graphql_calls += 1
+            if self.fail:
+                return json.dumps({"errors": [{"message": "boom"}]})
+            nodes = [
+                {
+                    "databaseId": r["id"],
+                    "lastEditedAt": r["created_at"] if r["id"] in self.edited else None,
+                    "body": r["body"],
+                    "createdAt": r["created_at"],
+                    "updatedAt": r["updated_at"],
+                }
+                for r in self.rows
+            ]
+            connection = {
+                "totalCount": len(nodes),
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+            data = {"repository": {"pullRequest": {"comments": connection}}}
+            return json.dumps({"data": data})
+        if args[:2] == ["pr", "list"]:
+            open_prs = "--state" in args and args[args.index("--state") + 1] == "open"
+            first_base = args[args.index("--base") + 1] == "dev/312-interim"
+            return json.dumps([self.pr] if open_prs and first_base else [])
+        if args[-2:] == ["--jq", "{comments}"]:
+            return json.dumps({"comments": len(self.rows)})
+        endpoint = args[-1]
+        if endpoint.endswith("/issues/1/comments?per_page=100"):
+            # Fresh copies: the guard adds last_edited_at to the rows.
+            return json.dumps([self.rows])
+        if endpoint.endswith("/comments?per_page=100"):
+            return json.dumps([[]])
+        if endpoint.endswith(f"/issues/{901}"):
+            return json.dumps({"labels": []})
+        raise AssertionError(f"unexpected gh call {args}")
+
+    def action(self) -> str:
+        with (
+            patch.object(next_action, "run_gh", self.run_gh),
+            patch.object(next_action, "project_items", lambda: []),
+            patch.dict("os.environ", {"EPIC_SHARED_READER": "0"}),
+        ):
+            state = next_action.fetch_state()
+        return decide("Claude", state)[0].action
+
+    def test_unedited_grant_selects_fix_after_one_evidence_read(self) -> None:
+        self.assertEqual(self.action(), "fix")
+        self.assertEqual(self.graphql_calls, 1)
+
+    def test_same_second_edit_escalates(self) -> None:
+        # REST created_at == updated_at; only lastEditedAt shows the edit.
+        self.edited = {MAX_ROUNDS + 1}
+        self.assertEqual(self.action(), "escalate")
+        self.assertEqual(self.graphql_calls, 1)
+
+    def test_conflicted_pr_with_edited_grant_escalates(self) -> None:
+        self.pr["mergeable"] = "CONFLICTING"
+        self.edited = {MAX_ROUNDS + 1}
+        self.assertEqual(self.action(), "escalate")
+
+    def test_failed_evidence_read_selects_nothing(self) -> None:
+        self.fail = True
+        with self.assertRaises(ValueError):
+            self.action()
+
+    def test_no_grant_reads_no_evidence(self) -> None:
+        self.rows.pop()
+        self.assertEqual(self.action(), "escalate")
+        self.assertEqual(self.graphql_calls, 0)
 
 
 if __name__ == "__main__":
