@@ -186,6 +186,28 @@ Priority, first match wins:
 2. `escalate`: the other agent requested changes for the current head for the
    third time on this PR. Add label `needs-anton`, summarise the open question,
    and stop working on that PR. The loop skips PRs and issues with that label.
+   Removing the label alone selects `escalate` again. For one more fix and
+   review round, Anton posts an operator grant on the PR (below), then
+   removes the label.
+   - The grant is a standalone PR comment whose whole body is exactly one line:
+     `Operator grant: one more fix round for <40-char head SHA> after <verdict URL>`.
+     `<verdict URL>` is the full URL of the other agent's `CHANGES REQUESTED`
+     verdict comment on this PR (`https://github.com/phaabe/live.moafunk.de/pull/<n>#issuecomment-<id>`),
+     and the SHA is the head that verdict names.
+   - It counts only when it is unedited, posted after that verdict by a
+     trusted operator login (`OPERATOR_LOGINS` in `scripts/epic/next_action.py`),
+     and the named verdict is still the newest valid verdict of the other agent.
+     Anything else (quoted, prose, edited, other PR, other head, other verdict,
+     unknown author) leaves `escalate` in place.
+   - One grant allows one round. The next valid `CHANGES REQUESTED` verdict,
+     also at the same head, consumes it. More grant comments for the same
+     verdict add nothing. A further round needs a new grant naming the new
+     verdict.
+   - Both agents use the same GitHub account as Anton, so the login cannot
+     tell them apart. An agent posts a grant only when Anton tells it to, never
+     as part of `escalate` or any other automatic step.
+   - A grant is never an approval: merge still needs the other agent's
+     `APPROVED` for the current head and green checks.
 3. `merge`: the other agent approved the current head and checks are green.
 4. `fix`: the other agent requested changes for the current head.
 5. `fix-checks`, then `resolve-conflict`, for the agent's own PRs. The

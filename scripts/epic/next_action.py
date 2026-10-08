@@ -11,7 +11,8 @@ Priority (first match wins), see docs/implementation/epic-rules.md section 8:
 Focus: when ~/.epic-focus lists labels (one per line, e.g. project::Stream),
 only issues with one of them, and PRs whose own labels or `Issue:` ticket have
 one, get actions. Everything else is frozen. No file or an empty file: all.
-  escalate  my PR reached MAX_ROUNDS changes-requested verdicts
+  escalate  my PR reached MAX_ROUNDS changes-requested verdicts, and no
+            operator grant names the newest one (granted())
   merge     my PR is approved for its head, checks green, no conflict
   fix       my PR has a changes-requested verdict for its head
   fix-checks  my PR has failing checks on its head
@@ -76,7 +77,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
 from github_quota import (
     DEFERRED,
@@ -129,6 +130,15 @@ PRIORITY_NAMES = {rank: name.split("::")[1] for name, rank in PRIORITIES.items()
 VERDICT = re.compile(
     r"^Review: (APPROVED|CHANGES REQUESTED) by (Claude|Codex) at ([0-9a-f]{40})$"
 )
+# One more fix/review round after MAX_ROUNDS, for one rejection. The whole
+# comment body is this line; see docs/implementation/epic-rules.md section 8.
+GRANT = re.compile(
+    r"Operator grant: one more fix round for ([0-9a-f]{40}) after "
+    rf"(https://github\.com/{re.escape(REPO)}/pull/(\d+)#issuecomment-\d+)"
+)
+# Logins whose grants count. Both agents use this account too: agents post a
+# grant only when Anton tells them to, never as part of an escalation.
+OPERATOR_LOGINS = frozenset({"anneoneone"})
 EXECUTOR_LINE = re.compile(
     r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t]*$", re.MULTILINE
 )
@@ -266,6 +276,45 @@ def verdicts(pr: dict[str, Any], by: str) -> list[dict[str, Any]]:
                 }
             )
     return sorted(found, key=lambda v: v["at"])
+
+
+def granted(pr: dict[str, Any], latest: dict[str, Any] | None) -> bool:
+    """An operator grant names `latest`, the peer's newest valid verdict.
+
+    The grant must be unedited, from OPERATOR_LOGINS, posted after the verdict,
+    and name this PR, the verdict's head and its exact URL. Any later peer
+    verdict becomes `latest`, so it consumes the grant. REST timestamps miss a
+    same-second edit: without GraphQL edit evidence (`editEvidence`, see
+    grant_rows()) a grant never counts.
+    """
+    if not latest or latest["state"] != "CHANGES REQUESTED" or not latest.get("url"):
+        return False
+    for c in pr.get("comments") or []:
+        if c.get("includesCreatedEdit") or c.get("author") not in OPERATOR_LOGINS:
+            continue
+        if c.get("editEvidence") is not True:
+            continue
+        m = GRANT.fullmatch((c.get("body") or "").strip())
+        if (
+            m
+            and m.group(1) == latest["sha"]
+            and m.group(2) == latest["url"]
+            and int(m.group(3)) == pr.get("number")
+            and isinstance(c.get("createdAt"), str)
+            and c["createdAt"] > latest["at"]
+        ):
+            return True
+    return False
+
+
+def grant_rows(rows: list[dict[str, Any]]) -> bool:
+    """True when REST comment rows hold a grant candidate. Every reader then
+    adds GraphQL edit evidence (`last_edited_at`) to the rows; granted() needs it."""
+    return any(
+        (r.get("user") or {}).get("login") in OPERATOR_LOGINS
+        and GRANT.fullmatch((r.get("body") or "").strip())
+        for r in rows
+    )
 
 
 def checks_state(pr: dict[str, Any]) -> str:
@@ -895,7 +944,7 @@ def decide(
         changes = (
             latest and latest["sha"] == head and latest["state"] == "CHANGES REQUESTED"
         )
-        if changes and rounds >= MAX_ROUNDS:
+        if changes and rounds >= MAX_ROUNDS and not granted(p, latest):
             pr_action(
                 p,
                 "escalate",
@@ -1098,7 +1147,13 @@ def comments_from_rest(
             "body": r.get("body") or "",
             "createdAt": r["created_at"],
             "url": r.get("html_url"),
-            "includesCreatedEdit": r.get("updated_at") != r["created_at"],
+            "includesCreatedEdit": r.get("updated_at") != r["created_at"]
+            or bool(r.get("last_edited_at")),
+            # Operator grants need the author, the comment identity and
+            # GraphQL edit evidence (the guard sets the key, null or a time).
+            "id": r.get("id"),
+            "author": (r.get("user") or {}).get("login"),
+            "editEvidence": "last_edited_at" in r,
         }
         for r in rows
     ]
@@ -1106,6 +1161,22 @@ def comments_from_rest(
 
 def gh_json(args: list[str]) -> Any:
     return json.loads(run_gh(args))
+
+
+def gh_graphql(endpoint: str) -> Any:
+    """The merge guard's `graphql?query=...` read, through gh."""
+    query = parse_qs(endpoint.partition("?")[2], strict_parsing=True)["query"][0]
+    return gh_json(["api", "graphql", "-f", f"query={query}"])
+
+
+def legacy_edit_evidence(number: int, rows: list[dict[str, Any]]) -> None:
+    """Adds GraphQL `last_edited_at` to the rows with the merge guard's code.
+    Raises on a failed or partial read: no grant from missing evidence."""
+    # Imported here: the Codex runner tests copy this file alone.
+    import github_state
+
+    guard = github_state.load_guard()
+    guard.comment_edit_markers(gh_graphql, REPO, number, rows)
 
 
 def rest_rows(endpoint: str) -> list[dict[str, Any]]:
@@ -1294,9 +1365,10 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
         count = gh_json(["api", f"repos/{REPO}/issues/{n}", "--jq", "{comments}"])[
             "comments"
         ]
-        pr["comments"] = comments_from_rest(
-            [row for page in pages for row in page], count
-        )
+        rows = [row for page in pages for row in page]
+        if grant_rows(rows):
+            legacy_edit_evidence(n, rows)
+        pr["comments"] = comments_from_rest(rows, count)
         # Routing of a PR without an owner line needs its files.
         if pr.get("baseRefName") in BASES and ownerless(pr):
             rows = rest_rows(f"repos/{REPO}/pulls/{n}/files?per_page=100")

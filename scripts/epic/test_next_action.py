@@ -1010,5 +1010,311 @@ class CommentsFromRestTest(unittest.TestCase):
         self.assertEqual(first("Claude", [p]).action, "idle")
 
 
+PULL = "https://github.com/phaabe/live.moafunk.de/pull"
+SHAS = [c * 40 for c in "abcdef"]
+
+
+def grant_body(sha: str, url: str) -> str:
+    return f"Operator grant: one more fix round for {sha} after {url}"
+
+
+class OperatorGrantTest(unittest.TestCase):
+    """One operator grant allows one more fix round after MAX_ROUNDS."""
+
+    def setUp(self) -> None:
+        self.cid = 0
+
+    def row(self, body: str, login: str = "anneoneone", edited: bool = False) -> dict:
+        """A REST comment row on PR 1, one second after the previous one, with
+        GraphQL edit evidence (`last_edited_at`) as every reader adds it."""
+        self.cid += 1
+        at = f"2026-10-08T00:00:{self.cid:02d}Z"
+        return {
+            "id": self.cid,
+            "body": body,
+            "created_at": at,
+            "updated_at": "2026-10-08T01:00:00Z" if edited else at,
+            "html_url": f"{PULL}/1#issuecomment-{self.cid}",
+            "user": {"login": login},
+            "last_edited_at": "2026-10-08T01:00:00Z" if edited else None,
+        }
+
+    def rejections(self, n: int = MAX_ROUNDS) -> list[dict]:
+        return [
+            self.row(f"Review: CHANGES REQUESTED by Codex at {s}") for s in SHAS[:n]
+        ]
+
+    def action(self, rows: list[dict], number: int = 1, **kw) -> next_action.Action:
+        head = kw.pop("head", SHAS[MAX_ROUNDS - 1])
+        p = pr(
+            number,
+            "Claude",
+            head=head,
+            comments=comments_from_rest(rows, len(rows)),
+            **kw,
+        )
+        return first("Claude", [p])
+
+    def granted_rows(self) -> list[dict]:
+        rows = self.rejections()
+        last = rows[-1]
+        rows.append(self.row(grant_body(SHAS[MAX_ROUNDS - 1], last["html_url"])))
+        return rows
+
+    def test_three_rejections_then_grant_selects_fix(self) -> None:
+        rows = self.rejections()
+        self.assertEqual(self.action(rows).action, "escalate")
+        a = self.action(self.granted_rows())
+        self.assertEqual((a.action, a.sha), ("fix", SHAS[MAX_ROUNDS - 1]))
+        # The grant is no finding.
+        self.assertNotIn(f"{PULL}/1#issuecomment-{self.cid}", a.comments)
+
+    def test_grant_for_another_pr_does_not_count(self) -> None:
+        rows = self.granted_rows()
+        # Same comments seen on PR 2: the grant names PR 1.
+        self.assertEqual(self.action(rows, number=2).action, "escalate")
+
+    def test_other_pr_still_escalates(self) -> None:
+        mine = pr(
+            1,
+            "Claude",
+            head=SHAS[MAX_ROUNDS - 1],
+            comments=comments_from_rest(self.granted_rows(), self.cid),
+        )
+        self.cid = 0
+        rows = self.rejections()
+        other = pr(
+            2,
+            "Claude",
+            head=SHAS[MAX_ROUNDS - 1],
+            comments=comments_from_rest(rows, len(rows)),
+        )
+        acts = decide("Claude", {"prs": [mine, other], "items": []})
+        self.assertEqual(
+            [(a.action, a.pr) for a in acts[:2]], [("escalate", 2), ("fix", 1)]
+        )
+
+    def test_later_rejection_consumes_the_grant(self) -> None:
+        rows = self.granted_rows()
+        rows.append(
+            self.row(f"Review: CHANGES REQUESTED by Codex at {SHAS[MAX_ROUNDS]}")
+        )
+        self.assertEqual(self.action(rows, head=SHAS[MAX_ROUNDS]).action, "escalate")
+
+    def test_rejection_at_the_same_head_consumes_the_grant(self) -> None:
+        rows = self.granted_rows()
+        rows.append(
+            self.row(f"Review: CHANGES REQUESTED by Codex at {SHAS[MAX_ROUNDS - 1]}")
+        )
+        self.assertEqual(self.action(rows).action, "escalate")
+
+    def test_new_commit_without_verdict_needs_a_review_not_a_grant(self) -> None:
+        # Ordinary commits create no grant: the head moves, the peer reviews.
+        a = self.action(self.granted_rows(), head=SHAS[MAX_ROUNDS])
+        self.assertEqual(a.action, "idle")
+
+    def test_duplicate_and_stale_grants_do_not_extend_it(self) -> None:
+        rows = self.granted_rows()
+        old = rows[MAX_ROUNDS - 1]
+        rows.append(self.row(grant_body(SHAS[MAX_ROUNDS - 1], old["html_url"])))
+        rows.append(
+            self.row(f"Review: CHANGES REQUESTED by Codex at {SHAS[MAX_ROUNDS]}")
+        )
+        # Re-posting a grant for the consumed rejection does not count.
+        rows.append(self.row(grant_body(SHAS[MAX_ROUNDS - 1], old["html_url"])))
+        self.assertEqual(self.action(rows, head=SHAS[MAX_ROUNDS]).action, "escalate")
+        # A grant naming the new rejection allows one more round.
+        rows.append(self.row(grant_body(SHAS[MAX_ROUNDS], rows[-2]["html_url"])))
+        self.assertEqual(self.action(rows, head=SHAS[MAX_ROUNDS]).action, "fix")
+
+    def test_needs_anton_still_parks_the_pr(self) -> None:
+        a = self.action(self.granted_rows(), labels=[{"name": "needs-anton"}])
+        self.assertEqual(a.action, "idle")
+
+    def test_bad_grants_fail_closed(self) -> None:
+        sha = SHAS[MAX_ROUNDS - 1]
+        cases = {
+            "edited": lambda url: self.row(grant_body(sha, url), edited=True),
+            "untrusted": lambda url: self.row(grant_body(sha, url), login="phaabe"),
+            "no author": lambda url: {**self.row(grant_body(sha, url)), "user": None},
+            "quoted": lambda url: self.row("> " + grant_body(sha, url)),
+            "prose": lambda url: self.row(f"Please retry. {grant_body(sha, url)}"),
+            "wrong head": lambda url: self.row(grant_body(SHAS[0], url)),
+            "wrong pr": lambda url: self.row(
+                grant_body(sha, url.replace("/1#", "/2#"))
+            ),
+            "wrong verdict": lambda url: self.row(
+                grant_body(sha, f"{PULL}/1#issuecomment-1")
+            ),
+            "upper case": lambda url: self.row(grant_body(sha.upper(), url)),
+            # Equal REST timestamps; only GraphQL lastEditedAt shows the edit.
+            "same-second edit": lambda url: {
+                **self.row(grant_body(sha, url)),
+                "last_edited_at": f"2026-10-08T00:00:{self.cid:02d}Z",
+            },
+            # No GraphQL edit evidence read: REST alone never authorizes it.
+            "no edit evidence": lambda url: {
+                k: v
+                for k, v in self.row(grant_body(sha, url)).items()
+                if k != "last_edited_at"
+            },
+        }
+        for name, make in cases.items():
+            with self.subTest(name):
+                self.cid = 0
+                rows = self.rejections()
+                rows.append(make(rows[-1]["html_url"]))
+                self.assertEqual(self.action(rows).action, "escalate")
+
+    def test_grant_before_the_verdict_does_not_count(self) -> None:
+        rows = self.rejections(MAX_ROUNDS - 1)
+        url = f"{PULL}/1#issuecomment-{self.cid + 2}"
+        rows.append(self.row(grant_body(SHAS[MAX_ROUNDS - 1], url)))
+        rows.append(
+            self.row(f"Review: CHANGES REQUESTED by Codex at {SHAS[MAX_ROUNDS - 1]}")
+        )
+        self.assertEqual(rows[-1]["html_url"], url)
+        self.assertEqual(self.action(rows).action, "escalate")
+
+    def test_edited_named_verdict_fails_closed(self) -> None:
+        rows = self.granted_rows()
+        rows[MAX_ROUNDS - 1]["updated_at"] = "2026-10-08T02:00:00Z"
+        # The edited verdict does not count; the PR sits at two valid rounds.
+        self.assertNotEqual(self.action(rows).action, "fix")
+
+    def test_approval_still_needs_the_current_head_and_green_checks(self) -> None:
+        rows = self.granted_rows()
+        rows.append(self.row(f"Review: APPROVED by Codex at {SHAS[MAX_ROUNDS]}"))
+        head = SHAS[MAX_ROUNDS]
+        self.assertEqual(self.action(rows, head=head).action, "merge")
+        self.assertEqual(self.action(rows, head=SHAS[MAX_ROUNDS + 1]).action, "idle")
+        failed = [{"conclusion": "FAILURE"}]
+        a = self.action(rows, head=head, statusCheckRollup=failed)
+        self.assertEqual(a.action, "fix-checks")
+
+    def test_below_the_limit_nothing_changes(self) -> None:
+        rows = self.rejections(1)
+        rows.append(self.row(grant_body(SHAS[0], rows[-1]["html_url"])))
+        self.assertEqual(self.action(rows, head=SHAS[0]).action, "fix")
+        self.assertEqual(next_action.MAX_ROUNDS, 3)
+
+    def test_reader_keeps_author_and_identity(self) -> None:
+        rows = [self.row("x")]
+        c = comments_from_rest(rows, 1)[0]
+        self.assertEqual((c["id"], c["author"]), (1, "anneoneone"))
+        self.assertTrue(c["editEvidence"])
+        rows[0].pop("last_edited_at")
+        self.assertFalse(comments_from_rest(rows, 1)[0]["editEvidence"])
+
+    def test_grant_rows_finds_only_operator_grant_candidates(self) -> None:
+        rows = self.granted_rows()
+        self.assertTrue(next_action.grant_rows(rows))
+        self.assertFalse(next_action.grant_rows(rows[:-1]))
+        rows[-1]["user"] = {"login": "phaabe"}
+        self.assertFalse(next_action.grant_rows(rows))
+
+
+class LegacyGrantEvidenceTest(unittest.TestCase):
+    """fetch_state() without the shared reader reads GraphQL edit evidence
+    for a PR with a grant candidate before decide() may honor the grant."""
+
+    def setUp(self) -> None:
+        self.graphql_calls = 0
+        self.edited: set[int] = set()
+        self.fail = False
+        sha = SHAS[MAX_ROUNDS - 1]
+        self.rows = []
+        for i, s in enumerate(SHAS[:MAX_ROUNDS], start=1):
+            self.rows.append(self.rest(i, f"Review: CHANGES REQUESTED by Codex at {s}"))
+        url = f"{PULL}/1#issuecomment-{MAX_ROUNDS}"
+        self.rows.append(self.rest(MAX_ROUNDS + 1, grant_body(sha, url)))
+        self.pr = pr(1, "Claude", head=sha)
+        self.pr.pop("comments")
+
+    @staticmethod
+    def rest(cid: int, body: str) -> dict:
+        at = f"2026-10-08T00:00:{cid:02d}Z"
+        return {
+            "id": cid,
+            "body": body,
+            "created_at": at,
+            "updated_at": at,
+            "html_url": f"{PULL}/1#issuecomment-{cid}",
+            "user": {"login": "anneoneone"},
+        }
+
+    def run_gh(self, args: list[str], timeout: int = 120) -> str:
+        if args[:2] == ["api", "graphql"]:
+            self.graphql_calls += 1
+            if self.fail:
+                return json.dumps({"errors": [{"message": "boom"}]})
+            nodes = [
+                {
+                    "databaseId": r["id"],
+                    "lastEditedAt": r["created_at"] if r["id"] in self.edited else None,
+                    "body": r["body"],
+                    "createdAt": r["created_at"],
+                    "updatedAt": r["updated_at"],
+                }
+                for r in self.rows
+            ]
+            connection = {
+                "totalCount": len(nodes),
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+            data = {"repository": {"pullRequest": {"comments": connection}}}
+            return json.dumps({"data": data})
+        if args[:2] == ["pr", "list"]:
+            open_prs = "--state" in args and args[args.index("--state") + 1] == "open"
+            first_base = args[args.index("--base") + 1] == "dev/312-interim"
+            return json.dumps([self.pr] if open_prs and first_base else [])
+        if args[-2:] == ["--jq", "{comments}"]:
+            return json.dumps({"comments": len(self.rows)})
+        endpoint = args[-1]
+        if endpoint.endswith("/issues/1/comments?per_page=100"):
+            # Fresh copies: the guard adds last_edited_at to the rows.
+            return json.dumps([self.rows])
+        if endpoint.endswith("/comments?per_page=100"):
+            return json.dumps([[]])
+        if endpoint.endswith(f"/issues/{901}"):
+            return json.dumps({"labels": []})
+        raise AssertionError(f"unexpected gh call {args}")
+
+    def action(self) -> str:
+        with (
+            patch.object(next_action, "run_gh", self.run_gh),
+            patch.object(next_action, "project_items", lambda: []),
+            patch.dict("os.environ", {"EPIC_SHARED_READER": "0"}),
+        ):
+            state = next_action.fetch_state()
+        return decide("Claude", state)[0].action
+
+    def test_unedited_grant_selects_fix_after_one_evidence_read(self) -> None:
+        self.assertEqual(self.action(), "fix")
+        self.assertEqual(self.graphql_calls, 1)
+
+    def test_same_second_edit_escalates(self) -> None:
+        # REST created_at == updated_at; only lastEditedAt shows the edit.
+        self.edited = {MAX_ROUNDS + 1}
+        self.assertEqual(self.action(), "escalate")
+        self.assertEqual(self.graphql_calls, 1)
+
+    def test_conflicted_pr_with_edited_grant_escalates(self) -> None:
+        self.pr["mergeable"] = "CONFLICTING"
+        self.edited = {MAX_ROUNDS + 1}
+        self.assertEqual(self.action(), "escalate")
+
+    def test_failed_evidence_read_selects_nothing(self) -> None:
+        self.fail = True
+        with self.assertRaises(ValueError):
+            self.action()
+
+    def test_no_grant_reads_no_evidence(self) -> None:
+        self.rows.pop()
+        self.assertEqual(self.action(), "escalate")
+        self.assertEqual(self.graphql_calls, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -797,9 +797,13 @@ def build_state(
     """
     try:
         prs: list[dict[str, Any]] = []
+        # Fresh GraphQL edit evidence, only for PRs with a grant candidate.
+        evidence = grant_evidence(
+            lambda n, rows: edit_evidence(lambda e: graphql(client, e), n, rows)
+        )
         for row in open_pulls(client):
             if pr_details:
-                prs.append(read_pr(client, row["number"])[0])
+                prs.append(read_pr(client, row["number"], evidence)[0])
             else:
                 pr = pr_from_pull(row)
                 pr.update({"comments": [], "statusCheckRollup": []})
@@ -1069,6 +1073,68 @@ def load_guard(root: Path | None = None) -> ModuleType:
     return module
 
 
+def graphql(client: Client, endpoint: str) -> Any:
+    """GraphQL for the merge guard's edit evidence only. Logged by purpose."""
+    if not endpoint.startswith("graphql?"):
+        raise ValueError("fresh GraphQL reads take graphql?query=... only")
+    query = parse_qs(endpoint.partition("?")[2], strict_parsing=True)["query"][0]
+    if not re.match(r"query(?:\s|\{)", query):
+        raise ValueError("only GraphQL queries are allowed")
+    started = time.monotonic()
+    try:
+        out = run_gh(
+            ["api", "graphql", "-f", f"query={query}"],
+            timeout=int(max(1, client.remaining())),
+        )
+    except subprocess.CalledProcessError as error:
+        client.ns.log_call(
+            log_record(
+                f"{client.purpose}:graphql",
+                "graphql",
+                "error",
+                "error",
+                started,
+                None,
+            )
+        )
+        raise ReadBlocked("GraphQL edit evidence read failed") from error
+    except subprocess.TimeoutExpired as error:
+        raise ReadBlocked("GraphQL edit evidence read timed out") from error
+    client.ns.log_call(
+        log_record(
+            f"{client.purpose}:graphql", "graphql", 200, "graphql", started, None
+        )
+    )
+    return json.loads(out)
+
+
+def edit_evidence(
+    api: Callable[[str], Any],
+    number: int,
+    rows: list[dict[str, Any]],
+    root: Path | None = None,
+) -> None:
+    """Adds `last_edited_at` to each row with the merge guard's own code."""
+    guard = load_guard(root)
+    try:
+        guard.comment_edit_markers(api, na.REPO, number, rows)
+    except ValueError as error:
+        raise ReadBlocked(f"edit evidence for PR {number}: {error}") from error
+
+
+def grant_evidence(
+    collect: Callable[[int, list[dict[str, Any]]], None],
+) -> Callable[[int, list[dict[str, Any]]], None]:
+    """`collect` only for PRs with an operator grant candidate: a grant counts
+    only with edit evidence (next_action.granted())."""
+
+    def run(number: int, rows: list[dict[str, Any]]) -> None:
+        if na.grant_rows(rows):
+            collect(number, rows)
+
+    return run
+
+
 class FreshReader:
     """Reads for one check right before a write or a model start.
 
@@ -1124,38 +1190,8 @@ class FreshReader:
         return board_items(self.client, rest_ids=True)
 
     def graphql(self, endpoint: str) -> Any:
-        """GraphQL for the merge guard's edit evidence only. Logged by purpose."""
-        if not endpoint.startswith("graphql?"):
-            raise ValueError("fresh GraphQL reads take graphql?query=... only")
-        query = parse_qs(endpoint.partition("?")[2], strict_parsing=True)["query"][0]
-        if not re.match(r"query(?:\s|\{)", query):
-            raise ValueError("only GraphQL queries are allowed")
-        started = time.monotonic()
-        try:
-            out = run_gh(
-                ["api", "graphql", "-f", f"query={query}"],
-                timeout=int(max(1, self.client.remaining())),
-            )
-        except subprocess.CalledProcessError as error:
-            self.ns.log_call(
-                log_record(
-                    f"{self.purpose}:graphql",
-                    "graphql",
-                    "error",
-                    "error",
-                    started,
-                    None,
-                )
-            )
-            raise ReadBlocked("GraphQL edit evidence read failed") from error
-        except subprocess.TimeoutExpired as error:
-            raise ReadBlocked("GraphQL edit evidence read timed out") from error
-        self.ns.log_call(
-            log_record(
-                f"{self.purpose}:graphql", "graphql", 200, "graphql", started, None
-            )
-        )
-        return json.loads(out)
+        """GraphQL for the merge guard's edit evidence only, see graphql()."""
+        return graphql(self.client, endpoint)
 
     def rest_for_guard(self, endpoint: str) -> Any:
         if endpoint.startswith("graphql?"):
@@ -1165,11 +1201,7 @@ class FreshReader:
     def edit_evidence(self, number: int, rows: list[dict[str, Any]]) -> None:
         """Adds `last_edited_at` to each row with the merge guard's own code.
         Catches same-second edits that REST timestamps miss."""
-        guard = load_guard(self.root)
-        try:
-            guard.comment_edit_markers(self.graphql, na.REPO, number, rows)
-        except ValueError as error:
-            raise ReadBlocked(f"edit evidence for PR {number}: {error}") from error
+        edit_evidence(self.graphql, number, rows, self.root)
 
     def merge_errors(self, number: int, head: str) -> list[str]:
         """The full merge-guard result for this head: verdict, checks, files."""
@@ -1215,7 +1247,13 @@ def recheck(
     try:
         if action.get("pr"):
             number = int(action["pr"])
-            evidence = reader.edit_evidence if kind in VERDICT_ACTIONS else None
+            # Every action on a PR with a grant candidate needs edit evidence:
+            # a grant can turn escalate into fix or resolve-conflict.
+            evidence = (
+                reader.edit_evidence
+                if kind in VERDICT_ACTIONS
+                else grant_evidence(reader.edit_evidence)
+            )
             pull = reader.pull(number)
             if pull.get("state") != "open":
                 return f"PR {number} is {pull.get('state')}"

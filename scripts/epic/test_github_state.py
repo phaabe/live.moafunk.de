@@ -1194,6 +1194,111 @@ class Recheck(Env):
                     self.recheck(action)
 
 
+class OperatorGrant(Env):
+    """An operator grant read by the snapshot reader and the fresh recheck."""
+
+    SHAS = [c * 40 for c in "abcd"]
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = GitHubRepo(self.gh)
+
+    def row(self, cid: int, body: str) -> dict[str, Any]:
+        at = f"2026-10-08T00:00:{cid:02d}Z"
+        url = f"https://github.com/{na.REPO}/pull/5#issuecomment-{cid}"
+        return {**comment(cid, body, at), "html_url": url}
+
+    def add(
+        self,
+        grant: bool = True,
+        extra: list[str] = (),  # type: ignore[assignment]
+        **kw: Any,
+    ) -> None:
+        bodies = [
+            f"Review: CHANGES REQUESTED by Codex at {s}"
+            for s in self.SHAS[: na.MAX_ROUNDS]
+        ]
+        head = self.SHAS[na.MAX_ROUNDS - 1]
+        url = f"https://github.com/{na.REPO}/pull/5#issuecomment-{na.MAX_ROUNDS}"
+        if grant:
+            bodies.append(f"Operator grant: one more fix round for {head} after {url}")
+        bodies += extra
+        rows = [self.row(i + 1, b) for i, b in enumerate(bodies)]
+        self.repo.add_pr(pull(5, head, "Executor: Claude", **kw), rows)
+
+    def selected(self, edited: set[int] = frozenset()) -> str:  # type: ignore[assignment]
+        """The snapshot reader's action; GraphQL comes from a FakeReader."""
+        self.snapshot_reader = FakeReader(self.gh, edited)
+        with patch.object(
+            gs, "graphql", lambda client, e: self.snapshot_reader.graphql(e)
+        ):
+            state = gs.build_state(self.client(), set())
+        gs.validate_state(state)
+        return na.decide("Claude", state)[0].action
+
+    def recheck(self, action: str, edited: set[int] = frozenset()) -> str | None:  # type: ignore[assignment]
+        head = self.SHAS[na.MAX_ROUNDS - 1]
+        act = {"action": action, "reason": "r", "pr": 5, "sha": head}
+        self.reader = FakeReader(self.gh, edited)
+        return gs.recheck("Claude", act, frozenset(), frozenset(), False, self.reader)
+
+    def test_snapshot_reader_selects_fix_after_a_grant(self) -> None:
+        self.add()
+        self.assertEqual(self.selected(), "fix")
+
+    def test_snapshot_reader_escalates_without_a_grant(self) -> None:
+        self.add(grant=False)
+        self.assertEqual(self.selected(), "escalate")
+        # No grant candidate: no GraphQL read.
+        self.assertEqual(self.snapshot_reader.graphql_calls, 0)
+
+    def test_snapshot_reader_sees_a_same_second_grant_edit(self) -> None:
+        self.add()
+        self.assertEqual(self.selected(edited={4}), "escalate")
+        self.assertEqual(self.snapshot_reader.graphql_calls, 1)
+
+    def test_snapshot_reader_conflicted_pr_with_edited_grant_escalates(self) -> None:
+        self.add(mergeable=False)
+        self.assertEqual(self.selected(), "resolve-conflict")
+        self.assertEqual(self.selected(edited={4}), "escalate")
+
+    def test_recheck_of_resolve_conflict_reads_edit_evidence(self) -> None:
+        self.add(mergeable=False)
+        self.assertIsNone(self.recheck("resolve-conflict"))
+        self.assertEqual(self.reader.graphql_calls, 1)
+        reason = self.recheck("resolve-conflict", edited={4}) or ""
+        self.assertIn("gives escalate", reason)
+
+    def test_recheck_without_a_grant_reads_no_evidence(self) -> None:
+        self.add(grant=False, mergeable=False)
+        self.assertIn("gives escalate", self.recheck("resolve-conflict") or "")
+        self.assertEqual(self.reader.graphql_calls, 0)
+
+    def test_failed_evidence_read_blocks_the_snapshot(self) -> None:
+        self.add()
+
+        def broken(client: gs.Client, endpoint: str) -> Any:
+            raise gs.ReadBlocked("GraphQL edit evidence read failed")
+
+        with patch.object(gs, "graphql", broken), self.assertRaises(gs.ReadBlocked):
+            gs.build_state(self.client(), set())
+
+    def test_recheck_keeps_fix_and_refuses_escalate(self) -> None:
+        self.add()
+        self.assertIsNone(self.recheck("fix"))
+        self.assertIn("gives fix", self.recheck("escalate") or "")
+
+    def test_recheck_sees_a_same_second_grant_edit(self) -> None:
+        # REST timestamps are equal; only lastEditedAt shows the edit.
+        self.add()
+        self.assertIn("gives escalate", self.recheck("fix", edited={4}) or "")
+
+    def test_recheck_sees_a_consuming_rejection(self) -> None:
+        head = self.SHAS[na.MAX_ROUNDS - 1]
+        self.add(extra=[f"Review: CHANGES REQUESTED by Codex at {head}"])
+        self.assertIn("gives escalate", self.recheck("fix") or "")
+
+
 class SharedReaderSwitch(Env):
     """One resolver (enabled), explicit child values (child_enabled), and the
     runner's `github_state.py resolve`. Both defaults, no runner touched."""
