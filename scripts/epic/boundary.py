@@ -398,6 +398,17 @@ class Publication:
     ledger_complete: bool
     operations: tuple[Operation, ...]
 
+    def __post_init__(self) -> None:
+        # One durable operation has one result. A repeated ID is contradictory
+        # or ambiguous evidence, whatever the ledger claims.
+        seen: set[str] = set()
+        for op in self.operations:
+            if op.operation_id in seen:
+                raise ValueError(
+                    f"publication.operations repeats operation_id {op.operation_id!r}"
+                )
+            seen.add(op.operation_id)
+
     @classmethod
     def from_json(cls, data: Any) -> Publication:
         keys = {"state", "ledger_revision", "ledger_complete", "operations"}
@@ -625,11 +636,13 @@ def retirement_blockers(
     report: Any,
     lease: LeaseIdentity,
     binding: BindingRef,
+    compat: Compatibility,
     accepted: Mapping[str, bool] = ACCEPTED_PROFILES,
-    controller_id: str | None = None,
 ) -> list[str]:
     """Why `report` does not prove this generation retired; empty when it
-    does. `controller_id`, when given, must match the report's authority."""
+    does. `compat` is what `preflight` returned for the provider asked for the
+    proof: the report must come from that provider, profile and controller,
+    and the profile's rules come from `compat`, never from the report."""
     if not isinstance(report, BoundaryStopReportV2):
         from leases import ProcessEvidence, StopReport
 
@@ -640,11 +653,17 @@ def retirement_blockers(
     problems = []
     if report.schema_version != SCHEMA_VERSION:
         problems.append(f"unsupported_schema:{report.schema_version}")
-    offline_ok = accepted.get(report.capability_profile)
-    if offline_ok is None:
-        problems.append(f"profile_not_accepted:{report.capability_profile}")
-    if controller_id is not None and report.controller_id != controller_id:
+    if compat.schema_version != SCHEMA_VERSION:
+        problems.append(f"compat_unsupported_schema:{compat.schema_version}")
+    if report.provider != compat.provider:
+        problems.append("provider_mismatch")
+    if report.capability_profile != compat.capability_profile:
+        problems.append("profile_mismatch")
+    if report.controller_id != compat.controller_id:
         problems.append("controller_mismatch")
+    offline_ok = accepted.get(compat.capability_profile)
+    if offline_ok is None:
+        problems.append(f"profile_not_accepted:{compat.capability_profile}")
 
     held, seen = lease.to_json(), report.lease_identity.to_json()
     problems.extend(f"lease_mismatch:{k}" for k in held if held[k] != seen[k])

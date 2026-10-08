@@ -5,6 +5,7 @@ from __future__ import annotations
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import copy
+from dataclasses import replace
 import hashlib
 from typing import Any
 import unittest
@@ -117,11 +118,26 @@ LEASE = LeaseIdentity.from_json(lease_json())
 BINDING = BindingRef("bnd-1", BINDING_DIGEST)
 
 
+def compat_json(profile: str = TEST_PROFILE) -> dict[str, Any]:
+    return {
+        "schema_version": 2,
+        "provider": "fake-boundary",
+        "capability_profile": profile,
+        "controller_id": "ctl-1",
+    }
+
+
+COMPAT = Compatibility.from_json(compat_json())
+ONLINE_COMPAT = Compatibility.from_json(compat_json(ONLINE_PROFILE))
+
+
 def blockers(
-    data: dict[str, Any], table: dict[str, bool] = TEST_TABLE, **kw: Any
+    data: dict[str, Any],
+    table: dict[str, bool] = TEST_TABLE,
+    compat: Compatibility = COMPAT,
 ) -> list[str]:
     return retirement_blockers(
-        BoundaryStopReportV2.from_json(data), LEASE, BINDING, table, **kw
+        BoundaryStopReportV2.from_json(data), LEASE, BINDING, compat, table
     )
 
 
@@ -318,12 +334,7 @@ class FakeProvider:
     ) -> None:
         self.name = name
         self.live = live
-        self.compat = compat or {
-            "schema_version": 2,
-            "provider": "fake-boundary",
-            "capability_profile": TEST_PROFILE,
-            "controller_id": "ctl-1",
-        }
+        self.compat = compat or compat_json()
         self.prep: Any = "none"
 
     def compatibility(self) -> Any:
@@ -413,10 +424,11 @@ class PreflightTest(unittest.TestCase):
 class RetirementTest(unittest.TestCase):
     def test_complete_offline_proof_passes(self) -> None:
         self.assertEqual(blockers(report_json()), [])
-        self.assertEqual(blockers(report_json(), controller_id="ctl-1"), [])
 
     def test_complete_reconciled_proof_passes(self) -> None:
-        self.assertEqual(blockers(reconciled(report_json()), table=ONLINE_TABLE), [])
+        self.assertEqual(
+            blockers(reconciled(report_json()), ONLINE_TABLE, ONLINE_COMPAT), []
+        )
         offline_profile = reconciled(report_json(), profile=TEST_PROFILE)
         self.assertEqual(blockers(offline_profile, table=TEST_TABLE), [])
 
@@ -545,8 +557,10 @@ class RetirementTest(unittest.TestCase):
             (
                 "profile",
                 set_((), "capability_profile", "unknown-profile"),
-                "profile_not_accepted:unknown-profile",
+                "profile_mismatch",
             ),
+            ("provider", set_((), "provider", "other-boundary"), "provider_mismatch"),
+            ("controller", set_((), "controller_id", "ctl-2"), "controller_mismatch"),
         ]
         for name, mutate, reason in cases:
             data = report_json()
@@ -568,21 +582,37 @@ class RetirementTest(unittest.TestCase):
             data = reconciled(report_json())
             data["publication"][key] = value
             with self.subTest(key):
-                self.assertEqual(blockers(data, table=ONLINE_TABLE), [reason])
+                self.assertEqual(blockers(data, ONLINE_TABLE, ONLINE_COMPAT), [reason])
 
     def test_empty_operation_list_needs_a_complete_ledger(self) -> None:
         data = reconciled(report_json())
         data["publication"].update(operations=[], ledger_complete=False)
         self.assertEqual(
-            blockers(data, table=ONLINE_TABLE), ["publication_ledger_incomplete"]
+            blockers(data, ONLINE_TABLE, ONLINE_COMPAT),
+            ["publication_ledger_incomplete"],
         )
 
     def test_disabled_offline_needs_a_profile_that_allows_it(self) -> None:
         data = report_json()
-        data["capability_profile"] = "test-online-v1"
+        data["capability_profile"] = ONLINE_PROFILE
         self.assertEqual(
-            blockers(data, table=ONLINE_TABLE), ["disabled_offline_not_allowed"]
+            blockers(data, ONLINE_TABLE, ONLINE_COMPAT),
+            ["disabled_offline_not_allowed"],
         )
+
+    def test_conflicting_or_repeated_operation_ids_are_refused(self) -> None:
+        for second in ("failed", "succeeded"):
+            data = reconciled(report_json())
+            data["publication"]["operations"] = [
+                {"operation_id": "same-operation", "result": "succeeded"},
+                {"operation_id": "same-operation", "result": second},
+            ]
+            with self.subTest(second), self.assertRaises(ValueError):
+                BoundaryStopReportV2.from_json(data)
+        report = BoundaryStopReportV2.from_json(reconciled(report_json()))
+        op = report.publication.operations[0]
+        with self.assertRaises(ValueError):
+            replace(report.publication, operations=(op, replace(op, result="failed")))
 
     def test_production_table_refuses_a_complete_proof(self) -> None:
         self.assertEqual(
@@ -591,13 +621,39 @@ class RetirementTest(unittest.TestCase):
         )
         report = BoundaryStopReportV2.from_json(report_json())
         self.assertEqual(
-            retirement_blockers(report, LEASE, BINDING),
+            retirement_blockers(report, LEASE, BINDING, COMPAT),
             [f"profile_not_accepted:{TEST_PROFILE}"],
         )
 
-    def test_foreign_controller_refuses(self) -> None:
+    def test_report_must_match_the_preflight_compatibility(self) -> None:
+        both = {ONLINE_PROFILE: False, TEST_PROFILE: True}
+        online = preflight(FakeProvider(compat=compat_json(ONLINE_PROFILE)), both)
+        offline = preflight(FakeProvider(), both)
+        # An online provider's proof can not be an offline report.
         self.assertEqual(
-            blockers(report_json(), controller_id="ctl-2"), ["controller_mismatch"]
+            blockers(report_json(), both, online),
+            ["profile_mismatch", "disabled_offline_not_allowed"],
+        )
+        # Nor the other way round, though both profiles are accepted.
+        self.assertEqual(
+            blockers(reconciled(report_json()), both, offline), ["profile_mismatch"]
+        )
+        foreign = report_json()
+        foreign["provider"] = "other-boundary"
+        self.assertEqual(blockers(foreign, both, offline), ["provider_mismatch"])
+        foreign["controller_id"] = "ctl-2"
+        self.assertEqual(
+            blockers(foreign, both, online),
+            [
+                "provider_mismatch",
+                "profile_mismatch",
+                "controller_mismatch",
+                "disabled_offline_not_allowed",
+            ],
+        )
+        stale = replace(COMPAT, schema_version=1)
+        self.assertEqual(
+            blockers(report_json(), compat=stale), ["compat_unsupported_schema:1"]
         )
 
     def test_v1_evidence_is_legacy(self) -> None:
@@ -605,16 +661,16 @@ class RetirementTest(unittest.TestCase):
             "claude-1", "epic-process-v1", ProcessIdentity(100, "s"), (), (), 1.0
         )
         self.assertEqual(
-            retirement_blockers(v1, LEASE, BINDING, TEST_TABLE), [LEGACY_V1]
+            retirement_blockers(v1, LEASE, BINDING, COMPAT, TEST_TABLE), [LEGACY_V1]
         )
         stop = StopReport("gone", {}, {})
         self.assertEqual(
-            retirement_blockers(stop, LEASE, BINDING, TEST_TABLE), [LEGACY_V1]
+            retirement_blockers(stop, LEASE, BINDING, COMPAT, TEST_TABLE), [LEGACY_V1]
         )
 
     def test_raw_json_is_not_a_report(self) -> None:
         self.assertEqual(
-            retirement_blockers(report_json(), LEASE, BINDING, TEST_TABLE),
+            retirement_blockers(report_json(), LEASE, BINDING, COMPAT, TEST_TABLE),
             ["not_v2_report:dict"],
         )
 
