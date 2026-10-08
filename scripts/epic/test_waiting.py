@@ -168,7 +168,7 @@ class Selector(unittest.TestCase):
         self.assertEqual(kinds(actions), [("wait", f"{R}/500")])
         self.assertIn("claims stay held", actions[0].reason)
 
-    def test_draft_inherits_the_wait_and_keeps_its_pr_slot(self) -> None:
+    def test_draft_inherits_the_wait_and_is_parked(self) -> None:
         state: dict[str, Any] = {
             "prs": [draft(7, 500)],
             "items": [
@@ -180,9 +180,18 @@ class Selector(unittest.TestCase):
         self.assertEqual(
             kinds(self.decide(state)), [("claim", f"{R}/521"), ("wait", "PR 7")]
         )
-        # A second open PR fills both slots: the claim stays blocked by capacity.
+        # The parked draft uses no active slot: one ready PR leaves room.
         state["prs"].append(draft(8, None, is_draft=False))
-        self.assertNotIn("claim", [a.action for a in self.decide(state)])
+        self.assertIn("claim", [a.action for a in self.decide(state)])
+        # A second ready PR fills active capacity.
+        state["prs"].append(draft(9, None, is_draft=False))
+        actions = self.decide(state)
+        self.assertNotIn("claim", [a.action for a in actions])
+        held = [a for a in actions if a.issue == f"{R}/521"]
+        self.assertEqual(
+            held[0].reason,
+            "no claim capacity: active 2 of 2 (PR 8, PR 9); parked 1 of 2 (PR 7 waiting)",
+        )
 
     def test_direct_pr_label_and_off_board_linked_issue(self) -> None:
         records = {"7": found(operator_record()), "600": found(dep_record(521))}
@@ -201,7 +210,7 @@ class Selector(unittest.TestCase):
                 self.assertEqual(
                     kinds(self.decide(state)), [("claim", f"{R}/521"), ("wait", "PR 7")]
                 )
-        # Two waiting drafts use both PR slots: waiting is no capacity bypass.
+        # Two waiting drafts fill the parked limit: waiting is no capacity bypass.
         state = {
             "prs": [cases["direct"], draft(8, 600)],
             "linked_labels": {"600": ["waiting"]},
@@ -209,8 +218,71 @@ class Selector(unittest.TestCase):
             "waiting": records,
         }
         self.assertEqual(
-            kinds(self.decide(state)), [("wait", "PR 7"), ("wait", "PR 8")]
+            kinds(self.decide(state)),
+            [("wait", "PR 7"), ("wait", "PR 8"), ("wait", f"{R}/521")],
         )
+
+    def test_invalid_record_uses_active_capacity(self) -> None:
+        # Not parked: with one ready PR, active capacity is full.
+        state = {
+            "prs": [draft(8, None, is_draft=False)],
+            "items": [
+                item(500, "In progress", labels=["waiting"]),
+                item(521, "Ready"),
+            ],
+            "waiting": {"500": found("Waiting: Claude\nReason: x")},
+        }
+        actions = self.decide(state)
+        self.assertEqual(kinds(actions), [("wait", f"{R}/500"), ("wait", f"{R}/521")])
+        self.assertEqual(
+            actions[1].reason,
+            f"no claim capacity: active 2 of 2 (PR 8, {R}/500); parked 0 of 2",
+        )
+
+    def test_ready_pr_with_waiting_label_stays_active(self) -> None:
+        state = {
+            "prs": [
+                draft(7, None, labels=["waiting"], is_draft=False),
+                draft(8, None, is_draft=False),
+            ],
+            "items": [item(521, "Ready")],
+            "waiting": {"7": found(operator_record())},
+        }
+        room = na.capacity("Claude", state, set(), free_claims=True)
+        self.assertEqual((room.active, room.parked), (["PR 7", "PR 8"], []))
+        self.assertNotIn("claim", [a.action for a in self.decide(state)])
+
+    def test_a_wait_parks_only_with_a_fresh_recheck(self) -> None:
+        state: dict[str, Any] = {
+            "prs": [draft(7, None, labels=["waiting"])],
+            "items": [],
+            "waiting": {"7": found(operator_record())},
+        }
+        off = na.capacity("Claude", state, set(), free_claims=False)
+        on = na.capacity("Claude", state, set(), free_claims=True)
+        self.assertEqual((off.active, off.parked), (["PR 7"], []))
+        self.assertEqual((on.active, on.parked), ([], ["PR 7 waiting"]))
+        # An unread record is active and still holds claims.
+        state["waiting"] = {}
+        state["items"] = [item(521, "Ready")]
+        unread = na.capacity("Claude", state, set(), free_claims=True)
+        self.assertEqual((unread.active, unread.parked), (["PR 7"], []))
+        self.assertEqual(kinds(self.decide(state)), [("wait", "PR 7")])
+
+    def test_resumed_draft_over_capacity_continues_without_claims(self) -> None:
+        state = {
+            "prs": [
+                draft(7, None, labels=["waiting"]),
+                draft(8, None, is_draft=False),
+                draft(9, None, is_draft=False),
+            ],
+            "items": [item(530, "Ready")],
+            "waiting": {"7": found(dep_record(521))},
+            "merged_prs": [merged(521)],
+        }
+        actions = self.decide(state)
+        self.assertEqual(kinds(actions), [("continue", "PR 7"), ("wait", f"{R}/530")])
+        self.assertIn("active 3 of 2", actions[1].reason)
 
     def test_every_source_must_resolve(self) -> None:
         state = {

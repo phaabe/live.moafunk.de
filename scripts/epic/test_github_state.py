@@ -1153,6 +1153,26 @@ class Recheck(Env):
         action = {"action": "claim", "reason": "r", "issue": f"{ISSUES}/21"}
         self.assertIsNotNone(self.recheck(action))
 
+    def test_claim_is_stale_when_an_escalation_ends_before_admission(self) -> None:
+        self.repo.add_item(21, "Ready", "Claude")
+        escalated = [{"name": "needs-anton"}]
+        self.repo.add_pr(pull(5, A, "Executor: Claude", labels=escalated))
+        self.repo.add_pr(pull(6, A, "Executor: Claude"))
+        action = {"action": "claim", "reason": "r", "issue": f"{ISSUES}/21"}
+        self.assertIsNone(self.recheck(action))  # the escalated PR is parked
+        # Anton removes the label: PR 5 is active again and fills capacity.
+        self.repo.open["dev/312-interim"][0]["labels"] = []
+        self.repo.publish()
+        self.assertIn("GitHub changed", self.recheck(action) or "")
+
+    def test_claim_is_stale_when_escalated_issues_fill_the_parked_limit(self) -> None:
+        self.repo.add_item(21, "Ready", "Claude")
+        self.repo.add_item(30, "In progress", "Claude", labels=("needs-anton",))
+        action = {"action": "claim", "reason": "r", "issue": f"{ISSUES}/21"}
+        self.assertIsNone(self.recheck(action))
+        self.repo.add_item(31, "In progress", "Claude", labels=("needs-anton",))
+        self.assertIn("GitHub changed", self.recheck(action) or "")
+
     def test_failed_read_blocks(self) -> None:
         action = self.merge_pr()
         self.gh.fail(f"{REPO}/pulls/5", "502")

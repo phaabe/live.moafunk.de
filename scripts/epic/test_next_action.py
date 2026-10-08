@@ -349,11 +349,104 @@ class DecideTest(unittest.TestCase):
         self.assertNotIn("continue", actions)
         self.assertEqual(actions, ["claim"])
 
-    def test_escalated_pr_counts_toward_open_limit(self) -> None:
-        prs = [pr(1, "Claude", labels=[{"name": "needs-anton"}]), pr(2, "Claude")]
+    def test_escalated_pr_is_parked_and_frees_an_active_slot(self) -> None:
+        # No fresh recheck needed: the label comes from the snapshot.
+        escalated = [{"name": "needs-anton"}]
+        prs = [pr(1, "Claude", labels=escalated), pr(2, "Claude")]
+        self.assertEqual(
+            first("Claude", prs, [item(10, "Claude", "Ready")]).action, "claim"
+        )
+        # Two escalated PRs fill the parked limit.
+        prs = [pr(1, "Claude", labels=escalated), pr(2, "Claude", labels=escalated)]
         self.assertEqual(
             first("Claude", prs, [item(10, "Claude", "Ready")]).action, "idle"
         )
+
+    def test_two_ready_prs_fill_active_capacity(self) -> None:
+        # Ready PRs waiting for review count as active.
+        prs = [pr(1, "Claude"), pr(2, "Claude")]
+        self.assertEqual(
+            first("Claude", prs, [item(10, "Claude", "Ready")]).action, "idle"
+        )
+
+    def test_full_capacity_names_the_counted_work_in_status(self) -> None:
+        escalated = [{"name": "needs-anton"}]
+        prs = [pr(1, "Claude"), pr(2, "Claude"), pr(3, "Claude", labels=escalated)]
+        actions = decide(
+            "Claude",
+            {"prs": prs, "items": [item(10, "Claude", "Ready")]},
+            include_waiting=True,
+        )
+        self.assertEqual([(a.action, a.issue) for a in actions], [("wait", f"{R}/10")])
+        self.assertEqual(
+            actions[0].reason,
+            "no claim capacity: active 2 of 2 (PR 1, PR 2); "
+            "parked 1 of 2 (PR 3 needs-anton)",
+        )
+        text = status({"prs": prs, "items": [item(10, "Claude", "Ready")]}, False)
+        self.assertIn("capacity", text)
+        self.assertIn("active 2 of 2 (PR 1, PR 2)", text)
+
+    def test_capacity_over_the_limit_keeps_other_actions(self) -> None:
+        # Resumed work may exceed the limit: no claim, but merge still runs.
+        approved = pr(1, "Claude", comments=[verdict("APPROVED", "Codex", A, "t1")])
+        prs = [approved, pr(2, "Claude"), pr(3, "Claude")]
+        actions = decide(
+            "Claude",
+            {"prs": prs, "items": [item(10, "Claude", "Ready")]},
+            include_waiting=True,
+        )
+        self.assertEqual([a.action for a in actions], ["merge", "wait"])
+        self.assertIn("active 3 of 2", actions[1].reason)
+
+    def test_out_of_focus_work_uses_capacity(self) -> None:
+        # Neither PR 1 nor issue 905 has the focus label: both still count.
+        stream = "project::Stream"
+        items = [
+            item(905, "Claude", "In progress"),
+            item(10, "Claude", "Ready", labels=[stream]),
+        ]
+        actions = decide(
+            "Claude",
+            {"prs": [pr(1, "Claude")], "items": items},
+            include_waiting=True,
+            focus=frozenset({stream}),
+        )
+        self.assertEqual([(a.action, a.issue) for a in actions], [("wait", f"{R}/10")])
+        self.assertIn(f"active 2 of 2 (PR 1, {R}/905)", actions[0].reason)
+
+
+class CapacityTest(unittest.TestCase):
+    def count(self, prs: list, items: list) -> next_action.Capacity:
+        state = {"prs": prs, "items": items}
+        return next_action.capacity("Claude", state, set())
+
+    def test_issue_and_pr_pair_counts_once(self) -> None:
+        # PR 1 names issue 901 in its Issue line.
+        items = [item(901, "Claude", "In progress"), item(905, "Claude", "In progress")]
+        room = self.count([pr(1, "Claude")], items)
+        self.assertEqual((room.active, room.parked), (["PR 1", f"{R}/905"], []))
+
+    def test_escalation_parks_ready_prs_and_issues(self) -> None:
+        escalated = item(905, "Claude", "In progress", labels=["needs-anton"])
+        room = self.count(
+            [pr(1, "Claude", labels=[{"name": "needs-anton"}])], [escalated]
+        )
+        self.assertEqual(room.active, [])
+        self.assertEqual(room.parked, ["PR 1 needs-anton", f"{R}/905 needs-anton"])
+
+    def test_only_own_open_in_progress_work_counts(self) -> None:
+        closed = item(906, "Claude", "In progress")
+        closed["content"]["state"] = "closed"
+        items = [
+            closed,
+            item(907, "Claude", "Ready"),
+            item(908, "Codex", "In progress"),
+            item(909, "Claude", "In review"),
+        ]
+        other_base = pr(2, "Claude", baseRefName="main")
+        room = self.count([pr(1, "Codex"), other_base], items)
+        self.assertEqual((room.active, room.parked), ([], []))
 
     def test_dependency_link_does_not_block_claim(self) -> None:
         body = f"Issue: {R}/901\nDepends on: {R}/350\nExecutor: Codex"
@@ -973,6 +1066,40 @@ class FetchLinkedLabelsTest(unittest.TestCase):
         self.assertEqual(
             issue_reads, [["api", "repos/phaabe/live.moafunk.de/issues/907"]]
         )
+
+
+class FetchCapacityTest(unittest.TestCase):
+    def test_legacy_reader_keeps_the_escalation_label_for_capacity(self) -> None:
+        prs = [pr(1, "Claude", labels=[{"name": "needs-anton"}]), pr(2, "Claude")]
+        for p in prs:
+            p.pop("comments")
+        board = [item(10, "Claude", "Ready")]
+        issues = "repos/phaabe/live.moafunk.de/issues/"
+
+        def run(args: list[str], timeout: int = 120) -> str:
+            if args[:2] == ["pr", "list"]:
+                open_prs = (
+                    "--state" in args and args[args.index("--state") + 1] == "open"
+                )
+                first_base = args[args.index("--base") + 1] == "dev/312-interim"
+                return json.dumps(prs if open_prs and first_base else [])
+            endpoint = args[-1] if args[-2:-1] != ["--jq"] else args[-3]
+            if endpoint.endswith("/comments?per_page=100"):
+                return json.dumps([[]])
+            if args[-2:] == ["--jq", "{comments}"]:
+                return json.dumps({"comments": 0})
+            if endpoint.startswith(issues) and endpoint[len(issues) :].isdigit():
+                return json.dumps({"labels": []})
+            raise AssertionError(f"unexpected gh call {args}")
+
+        with (
+            patch.object(next_action, "run_gh", run),
+            patch.object(next_action, "project_items", lambda: board),
+        ):
+            state = next_action.fetch_state()
+        room = next_action.capacity("Claude", state, set())
+        self.assertEqual((room.active, room.parked), (["PR 2"], ["PR 1 needs-anton"]))
+        self.assertEqual(decide("Claude", state)[0].action, "claim")
 
 
 def rest(i: int, body: str, edited: bool = False) -> dict:
