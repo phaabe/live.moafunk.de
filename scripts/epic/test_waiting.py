@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
+import subprocess
 import unittest
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import github_state as gs
 import next_action as na
@@ -715,7 +716,13 @@ class ClaudeRunner(unittest.TestCase):
         if changes_after_selection:
             self.next_map.write_text(self.json.dumps(self.github(True)))
             env["TEST_GH_MAP_NEXT"] = str(self.next_map)
-        return self.helper.run_tick(**env).wait(timeout=120)
+        proc = self.helper.run_tick(**env)
+        try:
+            return proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            self.fail(f"tick did not finish in 120 s\n{self.log()}")
 
     def calls(self) -> list[list[str]]:
         return self.helper.calls_made()
@@ -726,7 +733,7 @@ class ClaudeRunner(unittest.TestCase):
 
     def test_waiting_work_frees_the_claim_and_the_model_starts(self) -> None:
         self.assertEqual(self.tick(changes_after_selection=False), 0, self.log())
-        self.assertEqual(len(self.helper.model_targets()), 1)
+        self.assertEqual(len(self.helper.model_targets()), 1, self.log())
         prompt = (self.helper.root / "calls.jsonl.prompt").read_text()
         self.assertIn('"action": "claim"', prompt)
         self.assertIn(f"{R}/521", prompt)
@@ -739,6 +746,16 @@ class ClaudeRunner(unittest.TestCase):
         self.assertNotIn(["gate", "record"], self.calls())
         self.assertFalse((self.helper.state / "claude-gate-seen.json").exists())
         self.assertFalse((self.helper.root / "calls.jsonl.worktree").exists())
+
+    def test_a_tick_timeout_fails_with_the_runner_log(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/599
+        (self.helper.state / "claude.log").write_text("tick: stuck in select\n")
+        proc = MagicMock()
+        proc.wait.side_effect = [subprocess.TimeoutExpired("claude-tick.sh", 120), 0]
+        with patch.object(self.helper, "run_tick", return_value=proc):
+            with self.assertRaisesRegex(AssertionError, "(?s)120 s.*stuck in select"):
+                self.tick(changes_after_selection=False)
+        proc.kill.assert_called_once_with()
 
 
 class CodexRunner(unittest.TestCase):
