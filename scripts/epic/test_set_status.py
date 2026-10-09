@@ -429,6 +429,27 @@ class SetStatusTest(unittest.TestCase):
             code, _, _ = self.run_main(argv, FakeGh("Ready", []))
             self.assertEqual(code, ss.USAGE, argv)
 
+    def test_a_stop_from_the_transport_is_never_swallowed(self) -> None:
+        # close_merged.py runs the helper over its guarded gh (issue 686).
+        for error in (ss.Stop("pause file"), ss.QuotaExhausted("RATE_LIMITED")):
+
+            def gh(args: list[str], stdin: str | None, error=error) -> str:
+                raise error
+
+            board = ss.Board(gh)
+            for call in (
+                lambda: board.item(7),
+                lambda: board.labels(7),
+                lambda: ss.try_write(lambda: board.add_label(7, "status::done")),
+            ):
+                with self.subTest(error=error), self.assertRaises(type(error)):
+                    call()
+        # Any other error is still a failed read or write.
+        board = ss.Board(mock.Mock(side_effect=RuntimeError("HTTP 502")))
+        with self.assertRaises(ss.ReadFailed):
+            board.labels(7)
+        ss.try_write(lambda: board.add_label(7, "status::done"))
+
 
 if __name__ == "__main__":
     unittest.main()

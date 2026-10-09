@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import next_action  # noqa: E402
 import target_lock  # noqa: E402
+from github_quota import QuotaExhausted  # noqa: E402
 
 REPO = "phaabe/live.moafunk.de"
 PROJECT_API = "users/anneoneone/projectsV2/2"
@@ -84,6 +85,15 @@ class ReadFailed(Exception):
 
 class Usage(Exception):
     """The call itself is wrong (exit 2)."""
+
+
+class Stop(Exception):
+    """The caller's transport ended the run (close_merged.py: pause file or
+    quota wait). Never swallowed or turned into ReadFailed."""
+
+
+# Errors that end the call as they are: never a failed write or read.
+PASS_THROUGH = (Usage, Stop, QuotaExhausted)
 
 
 Gh = Callable[[list[str], "str | None"], str]
@@ -130,7 +140,7 @@ class Board:
         try:
             field = self.status_field()
             rows = self.rows(f"{PROJECT_API}/items?per_page=100&fields[]={field['id']}")
-        except (ReadFailed, Usage):
+        except (ReadFailed, *PASS_THROUGH):
             raise
         except Exception as err:
             raise ReadFailed(f"board read failed: {err}") from err
@@ -154,6 +164,8 @@ class Board:
     def labels(self, issue: int) -> list[str]:
         try:
             rows = self.rows(f"repos/{REPO}/issues/{issue}/labels?per_page=100")
+        except PASS_THROUGH:
+            raise
         except Exception as err:
             raise ReadFailed(f"label read failed: {err}") from err
         return sorted(str(row.get("name")) for row in rows)
@@ -213,7 +225,7 @@ def try_write(write: Callable[[], None]) -> None:
     """Run a write and swallow its error: the read after it decides the result."""
     try:
         write()
-    except Usage:
+    except PASS_THROUGH:
         raise
     except Exception:
         pass

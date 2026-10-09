@@ -13,12 +13,18 @@ what it would do.
      (`- [ ] **X1.2.3**`) that no merged PR (of any age, for any ticket)
      lists in `Leaf IDs:` stays open and gets one note.
   4. Otherwise post one evidence comment and close it as completed.
-  5. Set board Status Done for every ticket of step 2 that is closed as
-     completed and on the board with another Status. Under the ticket's lock
-     the ticket is read again first: it may have been reopened and claimed
-     since the board read. This also retries a board write that failed
-     before, until the PR leaves the window. A board error is logged; it
-     never reopens a ticket.
+  5. Set Status Done for every ticket of step 2 that is closed as completed
+     and on the board with another Status or without the one label
+     status::done. Under the ticket's lock the ticket is read again first: it
+     may have been reopened and claimed since the board read. Then, under the
+     status helper's lock too, the board is read again (that read chooses
+     set or repair) and the helper's `set` (set_status.py, in this
+     process) writes board Done and swaps the status label: a recorded change
+     time. A ticket that is not clean is repaired first, and a failed repair
+     stops it. A board already Done with a stale label (a half-done set) is
+     only repaired: no change time. This also retries a change that failed
+     before, until the PR leaves the window. A failed, conflict or unknown
+     result is logged with the helper's JSON line; it never reopens a ticket.
 
 Every comment ends with a hidden marker naming the PR. The ticket's comments
 are searched for it first, so a rerun never posts twice; a run that posted
@@ -32,8 +38,8 @@ open PRs are read again: another runner may have added a leaf, a sub-issue or
 a PR, or closed the ticket, before it let go. A busy lock skips the ticket;
 the next tick tries again.
 
-The pause file and a stored quota wait are read before every GitHub call;
-either one ends the run with no call.
+The pause file and a stored quota wait are read before every GitHub call,
+the status helper's calls included; either one ends the run with no call.
 
 Exit 0 done, 1 a GitHub call failed (logged; the next tick tries again),
 2 bad usage, 3 deferred by the pause file or a quota wait.
@@ -44,8 +50,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -53,6 +61,7 @@ from typing import Any
 
 import github_quota
 import next_action
+import set_status
 import target_lock
 from github_quota import QuotaExhausted, parse_iso, run_gh
 from next_action import BASES, EPIC, LEAF, PROJECT_API, REPO, issue_url
@@ -97,8 +106,10 @@ BOARD_JQ = (
     '.[] | select(.content_type == "Issue") | {id, number: .content.number,'
     " repo: .content.repository_url, state: .content.state,"
     " reason: .content.state_reason,"
-    ' status: ([.fields[]? | select(.name == "Status") | .value.id] | first)}'
+    ' status: ([.fields[]? | select(.name == "Status") | .value.id] | first),'
+    " labels: [.content.labels[]?.name]}"
 )
+DONE_LABEL = set_status.label_for(DONE)
 MARKERS_JQ = (
     '.[] | .body // "" | [scan("<!-- epic-close-merged (?:close|note) pr=[0-9]+ -->")]'
     " | .[] | tojson"
@@ -107,7 +118,7 @@ MARKERS_JQ = (
 Gh = Callable[[list[str]], str]
 
 
-class Deferred(Exception):
+class Deferred(set_status.Stop):
     """The pause file or a stored quota wait: no GitHub call now."""
 
 
@@ -361,11 +372,125 @@ def close(gh: Gh, number: int) -> None:
     )
 
 
+def helper_gh(gh: Gh) -> set_status.Gh:
+    """The status helper's transport over this run's guarded `gh`.
+
+    The helper sends write bodies on stdin (`--input -`); here they go through
+    a temporary file, so every call keeps the guard and the quota check.
+    """
+
+    def call(args: list[str], stdin: str | None) -> str:
+        if stdin is None:
+            return gh(args)
+        handle, path = tempfile.mkstemp(prefix="close-status-", suffix=".json")
+        try:
+            with os.fdopen(handle, "w") as body:
+                body.write(stdin)
+            at = args.index("--input") + 1
+            return gh([*args[:at], path, *args[at + 1 :]])
+        finally:
+            os.unlink(path)
+
+    return call
+
+
+class SeededBoard(set_status.Board):
+    """The helper's Board, but the next item() read may come from a read
+    already made under the same locks (`seed`). Never seed it from the run's
+    board list: that read is made before the locks."""
+
+    def __init__(self, gh: set_status.Gh) -> None:
+        super().__init__(gh)
+        self.seed: tuple[int, str | None] | None = None
+        self.last: tuple[int, str | None] | None = None
+
+    def item(self, issue: int) -> tuple[int, str | None]:
+        if self.seed is not None:
+            found, self.seed = self.seed, None
+        else:
+            found = super().item(issue)
+        self.last = found
+        return found
+
+
+def clean_done(item: dict[str, Any], done: str) -> bool:
+    labels = item.get("labels") or []
+    return (
+        item["status"] == done
+        and set_status.status_labels(labels) == [DONE_LABEL]
+        and set_status.MARKER not in labels
+    )
+
+
+def shown(result: dict[str, Any]) -> str:
+    """The helper's JSON line."""
+    return json.dumps(result, sort_keys=True)
+
+
+def done_from_empty(
+    board: SeededBoard, number: int, item_id: int
+) -> tuple[int, dict[str, Any]]:
+    """No Status yet, so no change to record: write Done, confirm it, then
+    repair copies it to the label. Another Status after the write is a
+    conflict, as in the helper's `set`; the labels stay as they are."""
+    set_status.try_write(lambda: board.write_status(item_id, DONE))
+    try:
+        now = board.status(number)
+    except set_status.ReadFailed:
+        return set_status.UNKNOWN, set_status.report(
+            number, "set", None, DONE, "unknown", "failed"
+        )
+    if now != DONE:
+        code = set_status.FAILED if now is None else set_status.CONFLICT
+        return code, set_status.report(number, "set", None, DONE, "failed", "failed")
+    board.seed = board.last
+    return set_status.do_sync(board, number, "repair")
+
+
+def set_done(
+    board: SeededBoard, item: dict[str, Any], log: Callable[[str], None]
+) -> bool:
+    """Board Done and label status::done with the helper's rules, under the
+    ticket's and the helper's locks. False when it did not end clean (logged).
+
+    The run's board list may be old: another holder can write board Done and
+    stop before the labels, then let go. So the board is read again here,
+    under both locks, and that read chooses set or repair. It is also the
+    first read of that call; a repair's last read is the first read of the
+    `set` after it.
+    """
+    number, url = item["number"], issue_url(item["number"])
+    board.seed = None
+    try:
+        item_id, status = board.item(number)
+        if status is None:
+            code, result = done_from_empty(board, number, item_id)
+        else:
+            board.seed = (item_id, status)
+            code, result = set_status.do_set(board, number, DONE)
+        if code == set_status.NOT_CLEAN:
+            code, result = set_status.do_sync(board, number, "repair")
+            if code == set_status.OK and result["to"] != DONE_LABEL:
+                board.seed = board.last
+                code, result = set_status.do_set(board, number, DONE)
+            elif code != set_status.OK:
+                log(f"close: {url}: repair exit {code}, no set: {shown(result)}")
+                return False
+    except (set_status.ReadFailed, set_status.Usage) as error:
+        log(f"close: {url}: status helper failed: {error}")
+        return False
+    if code != set_status.OK:
+        log(f"close: {url}: status helper exit {code}: {shown(result)}")
+        return False
+    log(f"close: {url}: board Status {DONE}: {shown(result)}")
+    return True
+
+
 def board_done(
     gh: Gh, numbers: set[int], dry_run: bool, log: Callable[[str], None]
 ) -> bool:
-    """Set Status Done on the board items of these tickets that are closed as
-    completed. False when a board call failed (logged)."""
+    """Set Status Done and the status::done label on these tickets that are
+    closed as completed. False when a call failed (logged)."""
     try:
         found = lines(
             gh, ["api", f"{PROJECT_API}/fields?per_page=100", "--jq", STATUS_JQ]
@@ -389,13 +514,14 @@ def board_done(
         log(f"close: board read failed: {str(detail).strip()}")
         return False
     ok = True
+    board = SeededBoard(helper_gh(gh))
     for item in items:
         if (
             item["number"] not in numbers
             or not str(item.get("repo") or "").endswith(f"/repos/{REPO}")
             or item["state"] != "closed"
             or item["reason"] != "completed"
-            or item["status"] == done
+            or clean_done(item, done)
         ):
             continue
         url = issue_url(item["number"])
@@ -408,21 +534,21 @@ def board_done(
                 if not closed_completed(gh, item["number"]):
                     log(f"close: {url} is no longer closed as completed; board left")
                     continue
-                log(f"close: {url} is closed; board Status to {DONE}")
+                log(f"close: {url} is closed; board Status to {DONE} with its label")
                 if dry_run:
                     continue
-                gh(
-                    [
-                        "api",
-                        "-X",
-                        "PATCH",
-                        f"{PROJECT_API}/items/{item['id']}",
-                        "-F",
-                        f"fields[][id]={field}",
-                        "-f",
-                        f"fields[][value]={done}",
-                    ]
+                # A helper call by hand holds this lock; never wait for it.
+                fd = set_status.lock(
+                    target_lock.lock_dir() / f"status-{item['number']}.lock"
                 )
+                if fd is None:
+                    log(f"close: {url} is locked by the status helper; next tick")
+                    continue
+                try:
+                    if not set_done(board, item, log):
+                        ok = False
+                finally:
+                    os.close(fd)
         except subprocess.SubprocessError as error:
             ok = False
             detail = getattr(error, "stderr", "") or error
