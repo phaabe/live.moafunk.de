@@ -13,8 +13,8 @@ file opened for appending, so lines of two writers never interleave.
                         [--action-file A] [--log L --since OFFSET]
                         [--claude-session ID --launch-dir D [--model-exit N]]
                         [--timings M]
-  tick_events.py activity --file V --tick T --event model-start|model-end
-                          [--action-file A]
+  tick_events.py activity --file V --tick T --event model-start|model-end|wait
+                          [--action-file A] [--reason-code C --scope agent|target]
 
 `activity` writes one activity record (activity.py) to its own file, not to
 the ticks file: the tick ledger (ticks.py) rejects event kinds it does not
@@ -131,7 +131,7 @@ INTERRUPTED = (124, 129, 130, 137, 143)
 SUBAGENT_TOOLS = ("Agent", "Task")
 MAX_COUNT = 10**15
 # Events of the `activity` command.
-ACTIVITY_EVENTS = ("model-start", "model-end")
+ACTIVITY_EVENTS = ("model-start", "model-end", "wait")
 
 
 def open_regular(path: Path, flags: int) -> int:
@@ -461,19 +461,31 @@ def env_block(
     )
 
 
-def activity_event(path: Path, tick: str, kind: str, action_file: Path | None) -> None:
-    """One activity record of a model boundary; the model ran for both."""
+def activity_event(
+    path: Path,
+    tick: str,
+    kind: str,
+    action_file: Path | None,
+    reason_code: str | None = None,
+    scope: str | None = None,
+) -> None:
+    """One activity record: a model boundary, or a wait without a model.
+
+    The model ran for model-start and model-end. A wait carries the reason
+    code and scope the runner branch that refused the work names.
+    """
     import activity  # only this command needs the contract
 
-    found = activity.record(
-        {
-            "event": kind,
-            "tick": tick,
-            "at": now_iso(),
-            "model_started": True,
-            **action_fields(action_file),
-        }
-    )
+    event: dict[str, Any] = {
+        "event": kind,
+        "tick": tick,
+        "at": now_iso(),
+        "model_started": kind != "wait",
+        **action_fields(action_file),
+    }
+    if kind == "wait":
+        event.update(reason_code=reason_code, scope=scope)
+    found = activity.record(event)
     if found is None:
         raise ValueError("invalid activity event")
     append(path, found)
@@ -492,6 +504,9 @@ def main(argv: list[str] | None = None) -> int:
     boundary.add_argument("--tick", required=True)
     boundary.add_argument("--event", choices=ACTIVITY_EVENTS, required=True)
     boundary.add_argument("--action-file", type=Path)
+    # wait only; activity.record() turns an unknown code into `unknown`.
+    boundary.add_argument("--reason-code")
+    boundary.add_argument("--scope", choices=("agent", "target"))
     for command in (start, finish):
         command.add_argument("--file", type=Path, required=True)
         command.add_argument("--tick", required=True)
@@ -532,7 +547,14 @@ def main(argv: list[str] | None = None) -> int:
 def write(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     try:
         if args.command == "activity":
-            activity_event(args.file, args.tick, args.event, args.action_file)
+            activity_event(
+                args.file,
+                args.tick,
+                args.event,
+                args.action_file,
+                args.reason_code,
+                args.scope,
+            )
             return 0
         if args.command == "start":
             append(

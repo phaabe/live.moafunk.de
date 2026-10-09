@@ -659,6 +659,33 @@ class ActivityEventTest(unittest.TestCase):
                 self.assertNotEqual(self.run_helper(*args).returncode, 0)
         self.assertFalse(self.file.exists())
 
+    def wait(self, code: str, scope: str) -> subprocess.CompletedProcess[str]:
+        return self.run_helper(
+            "--file", str(self.file), "--tick", TICK, "--event", "wait",
+            "--action-file", str(self.action), "--reason-code", code,
+            "--scope", scope,
+        )  # fmt: skip
+
+    def test_wait_is_no_model_work_and_keeps_its_reason(self) -> None:
+        # A refused code action before the model: waiting, never `code`.
+        self.action.write_text(json.dumps({"action": "fix", "pr": 699}))
+        self.assertEqual(self.wait("retry_backoff", "target").returncode, 0)
+        self.assertEqual(self.wait("made up by a model", "agent").returncode, 0)
+        self.assertEqual(
+            [
+                (r["event"], r["activity"], r["target"], r["reason_code"], r["scope"])
+                for r in self.records()
+            ],
+            [
+                ("wait", "waiting", "pr:699", "retry_backoff", "target"),
+                ("wait", "waiting", "pr:699", "unknown", "agent"),
+            ],
+        )
+
+    def test_wait_scope_is_bounded(self) -> None:
+        self.assertNotEqual(self.wait("github_quota", "everyone").returncode, 0)
+        self.assertFalse(self.file.exists())
+
     def test_tick_ledger_never_reads_the_activity_file(self) -> None:
         # The runner's events file stays free of event kinds it rejects.
         self.action.write_text(json.dumps({"action": "fix", "pr": 1}))

@@ -382,7 +382,19 @@ quota_open() {
     fi
     exit "$result"
 }
+# A wait activity record (activity.py): this branch refused the work before a
+# model. $1 reason code, $2 scope (agent or target). Only after the tick
+# started; activity telemetry must never stop the tick.
+activity_wait() {
+    if [[ -z "${tick_started:-}" ]]; then
+        return 0
+    fi
+    "$py" "$events" activity --file "$activity_file" --tick "$tick_started" \
+        --event wait --reason-code "$1" --scope "$2" \
+        --action-file "${lock_dir}/action.json" || true
+}
 quota_stop() {
+    activity_wait github_quota agent
     printf 'tick: stopped on the GitHub GraphQL quota; wait stored\n' >&2
     tick_outcome=blocked
     tick_phase=quota
@@ -390,6 +402,7 @@ quota_stop() {
 }
 # A blocked or timed-out GitHub read (shared reader): no action from it.
 read_blocked() {
+    activity_wait connection_failure agent
     printf 'tick: GitHub read blocked in %s; no action\n' "$1" >&2
     tick_outcome=blocked
     tick_phase=$1
@@ -406,6 +419,7 @@ usage_check() {
     fi
     tick_phase=usage
     if [[ "$result" == 3 ]]; then
+        activity_wait model_usage_limit agent
         exit 0
     fi
     exit "$result"
@@ -505,6 +519,7 @@ printf '%s\n' "$candidates"
 # The other runner may have stored a quota wait while the selector ran.
 if ! quota_open; then
     tick_phase=quota
+    activity_wait github_quota agent
     exit 0
 fi
 
@@ -529,6 +544,7 @@ stop_if_held() {
         printf 'tick: %s held by the environment hold; no model\n' "$action"
         tick_outcome=blocked
         tick_phase=backoff
+        activity_wait environment_failure agent
         exit 0
     fi
     exit "$result"
@@ -595,6 +611,7 @@ while IFS= read -r -u 3 candidate; do
     stop_if_held
     tick_phase=lock
     if ! lock_target; then
+        activity_wait target_lock target
         printf 'tick: %s target locked by another runner; next candidate\n' "$action"
         continue
     fi
@@ -602,6 +619,7 @@ while IFS= read -r -u 3 candidate; do
     # wait: no further GitHub read then.
     if ! quota_open; then
         tick_phase=quota
+        activity_wait github_quota agent
         exit 0
     fi
     # A resolve-conflict key at its attempt limit starts no model; the check
@@ -616,6 +634,8 @@ while IFS= read -r -u 3 candidate; do
             0) ;;
             3)
                 release_target
+                # The check posted the escalation label: Anton decides.
+                activity_wait operator_wait target
                 printf 'tick: %s reached its attempt limit; next candidate\n' "$action"
                 continue
                 ;;
@@ -633,6 +653,7 @@ while IFS= read -r -u 3 candidate; do
         0) ;;
         3)
             release_target
+            activity_wait retry_backoff target
             printf 'tick: %s target cools down; next candidate\n' "$action"
             continue
             ;;

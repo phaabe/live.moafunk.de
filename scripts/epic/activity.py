@@ -190,6 +190,9 @@ def record(event: Any) -> dict[str, Any] | None:
     if kind == "start" and raw is None:
         # A tick starts before the selector runs: the runner is selecting.
         out["activity"] = "runner"
+    if kind == "wait":
+        # The runner refused the selected work before a model: a wait.
+        out["activity"] = "waiting"
     if kind == "env-block":
         out.update(reason("environment_failure", "agent"))
         out["activity"] = "waiting"

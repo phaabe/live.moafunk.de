@@ -834,6 +834,51 @@ class ClaudeTickTest(RunnerHarness):
                     [e["event"] for e in self.tick_events()], ["start", "finish"]
                 )
 
+    def activity_records(self) -> list[dict[str, object]]:
+        path = self.state / "claude-activity.jsonl"
+        return [json.loads(x) for x in path.read_text().splitlines()]
+
+    def test_quota_stop_records_an_agent_wait(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/694
+        self.assertEqual(self.run_tick(TEST_SELECT_EXIT="4").wait(timeout=30), 75)
+        self.assertEqual(
+            [
+                (r["event"], r["activity"], r["reason_code"], r["scope"])
+                for r in self.activity_records()
+            ],
+            [("wait", "waiting", "github_quota", "agent")],
+        )
+
+    def test_locked_target_records_a_target_wait(self) -> None:
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        locks = self.root / "locks"
+        locks.mkdir()
+        holder = subprocess.Popen(
+            [
+                "/bin/bash",
+                "-c",
+                'exec 8>> "$1"; python3 "$2" acquire --fd 8 && exec sleep 30',
+                "_",
+                str(locks / "1.lock"),
+                str(ROOT / "scripts/epic/target_lock.py"),
+            ]
+        )
+        self.addCleanup(holder.kill)
+        time.sleep(0.5)
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        self.assertEqual(self.run_tick(TEST_CANDIDATES=candidates).wait(timeout=30), 0)
+        self.assertEqual(
+            [
+                (r["event"], r["activity"], r["target"], r["reason_code"], r["scope"])
+                for r in self.activity_records()
+            ],
+            [
+                ("wait", "waiting", "pr:1", "target_lock", "target"),
+                ("model-start", "review", "pr:2", None, None),
+                ("model-end", "review", "pr:2", None, None),
+            ],
+        )
+
     def test_finish_event_measures_each_step(self) -> None:
         # https://github.com/phaabe/live.moafunk.de/issues/655
         for env, steps in (
