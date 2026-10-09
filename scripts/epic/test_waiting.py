@@ -156,6 +156,34 @@ class Selector(unittest.TestCase):
         self.assertEqual(kinds(actions), [("claim", f"{R}/521"), ("wait", f"{R}/500")])
         self.assertIn(f"resume after {R}/521", actions[1].reason)
 
+    def test_wait_reason_codes_follow_the_record(self) -> None:
+        # Producer-side codes (issue 681): never parsed from the reason text.
+        for record, code in (
+            (found(dep_record(521)), "dependency_wait"),
+            (found(operator_record()), "operator_wait"),
+            (found(dep_record(521), edited=True), "invalid_wait"),
+            ({"found": False}, "invalid_wait"),
+            (None, "unknown"),  # record not read
+        ):
+            with self.subTest(code=code):
+                wait = self.issue_only(record)[-1]
+                self.assertEqual(
+                    (wait.action, wait.reason_code, wait.scope),
+                    ("wait", code, "target"),
+                )
+
+    def test_draft_wait_carries_the_reason_code(self) -> None:
+        state: dict[str, Any] = {
+            "prs": [draft(7, 500)],
+            "items": [item(500, "In progress", labels=["waiting"])],
+            "waiting": {"500": found(operator_record())},
+        }
+        wait = self.decide(state)[0]
+        self.assertEqual(
+            (wait.action, wait.pr, wait.reason_code, wait.scope),
+            ("wait", 7, "operator_wait", "target"),
+        )
+
     def test_without_fresh_recheck_waits_hold_claims(self) -> None:
         state = {
             "items": [

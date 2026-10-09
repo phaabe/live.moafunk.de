@@ -1,0 +1,90 @@
+{
+  "about": "Shared activity contract cases (issue 681, leaf A681.1.1). Each event must give exactly its record through activity.record(); a null record means the event is dropped. Both runners' tests read this file.",
+  "cases": [
+    {
+      "name": "v1 start before selection",
+      "event": {"v": 1, "event": "start", "tick": "2026-10-08T01:00:00Z", "pid": 4242, "runtime": "abc123"},
+      "record": {"v": 1, "event": "start", "tick": "2026-10-08T01:00:00Z", "at": null, "action": null, "activity": "runner", "target": null, "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "v1 finish of a code action has no model boundary",
+      "event": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:09:00Z", "action": "fix", "pr": 12, "issue": null, "outcome": "ok", "exit": 0, "phase": "done", "model_exit": 0, "tokens": 1234},
+      "record": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:09:00Z", "action": "fix", "activity": "runner", "target": "pr:12", "outcome": "ok", "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "v1 finish of idle",
+      "event": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:00:05Z", "action": "idle", "outcome": "ok", "exit": 0, "phase": "done"},
+      "record": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:00:05Z", "action": "idle", "activity": "idle", "target": null, "outcome": "ok", "reason_code": "no_eligible_work", "scope": "agent", "retry_at": null}
+    },
+    {
+      "name": "v1 finish of stop",
+      "event": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:00:01Z", "action": "stop", "outcome": "ok", "exit": 0, "phase": "done"},
+      "record": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:00:01Z", "action": "stop", "activity": "paused", "target": null, "outcome": "ok", "reason_code": "pause_requested", "scope": "agent", "retry_at": null}
+    },
+    {
+      "name": "v1 env-block drops the model text",
+      "event": {"v": 1, "event": "env-block", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:05:00Z", "action": "fix", "pr": 12, "reason": "sandbox refused: cat /Users/someone/.ssh/id_ed25519", "hold": true},
+      "record": {"v": 1, "event": "env-block", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:05:00Z", "action": "fix", "activity": "waiting", "target": "pr:12", "outcome": null, "reason_code": "environment_failure", "scope": "agent", "retry_at": null}
+    },
+    {
+      "name": "model start of a refinement",
+      "event": {"event": "model-start", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:01:00Z", "model_started": true, "action": "refine", "pr": null, "issue": "https://github.com/phaabe/live.moafunk.de/issues/681"},
+      "record": {"v": 1, "event": "model-start", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:01:00Z", "action": "refine", "activity": "refine", "target": "issue:681", "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "model end of a refinement review",
+      "event": {"event": "model-end", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:20:00Z", "model_started": true, "action": "review-refinement", "pr": null, "issue": "https://github.com/phaabe/live.moafunk.de/issues/685"},
+      "record": {"v": 1, "event": "model-end", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:20:00Z", "action": "review-refinement", "activity": "review-refinement", "target": "issue:685", "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "set-ready stays runner work with a model",
+      "event": {"event": "model-start", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:01:00Z", "model_started": true, "action": "set-ready", "issue": "https://github.com/phaabe/live.moafunk.de/issues/694"},
+      "record": {"v": 1, "event": "model-start", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:01:00Z", "action": "set-ready", "activity": "runner", "target": "issue:694", "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "model start of a review",
+      "event": {"event": "model-start", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:00:30Z", "model_started": true, "action": "review", "pr": 699, "issue": null},
+      "record": {"v": 1, "event": "model-start", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:00:30Z", "action": "review", "activity": "review", "target": "pr:699", "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "agent-wide quota wait with a retry time",
+      "event": {"event": "wait", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:00:02Z", "action": "wait", "reason_code": "github_quota", "scope": "agent", "retry_at": "2026-10-08T02:00:00Z", "reason": "GraphQL quota 0 of 5000"},
+      "record": {"v": 1, "event": "wait", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:00:02Z", "action": "wait", "activity": "waiting", "target": null, "outcome": null, "reason_code": "github_quota", "scope": "agent", "retry_at": "2026-10-08T02:00:00Z"}
+    },
+    {
+      "name": "unknown reason code and scope fall back",
+      "event": {"event": "wait", "tick": "2026-10-08T01:00:00Z", "action": "wait", "pr": 7, "reason_code": "because the model said so", "scope": "all", "retry_at": "tomorrow"},
+      "record": {"v": 1, "event": "wait", "tick": "2026-10-08T01:00:00Z", "at": null, "action": "wait", "activity": "waiting", "target": "pr:7", "outcome": null, "reason_code": "unknown", "scope": "target", "retry_at": null}
+    },
+    {
+      "name": "reason text alone is never classified",
+      "event": {"event": "finish", "tick": "2026-10-08T01:00:00Z", "action": "claim", "outcome": "blocked", "reason": "permission denied by the gate"},
+      "record": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": null, "action": "claim", "activity": "runner", "target": null, "outcome": "blocked", "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "newer fields are dropped, known ones kept",
+      "event": {"v": 2, "event": "finish", "tick": "2026-10-08T01:00:00Z", "action": "merge", "pr": 5, "outcome": "ok", "lane": "setup", "prompt": "secret prompt"},
+      "record": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": null, "action": "merge", "activity": "runner", "target": "pr:5", "outcome": "ok", "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "unknown action is other",
+      "event": {"event": "finish", "tick": "2026-10-08T01:00:00Z", "action": "deploy", "outcome": "ok"},
+      "record": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": null, "action": "deploy", "activity": "other", "target": null, "outcome": "ok", "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "invalid outcome is no result",
+      "event": {"event": "finish", "tick": "2026-10-08T01:00:00Z", "action": "fix", "outcome": "success"},
+      "record": {"v": 1, "event": "finish", "tick": "2026-10-08T01:00:00Z", "at": null, "action": "fix", "activity": "runner", "target": null, "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
+      "name": "event without a tick is dropped",
+      "event": {"event": "finish", "action": "fix", "outcome": "ok"},
+      "record": null
+    },
+    {
+      "name": "impossible tick time is dropped",
+      "event": {"event": "start", "tick": "2026-02-30T00:00:00Z"},
+      "record": null
+    }
+  ]
+}

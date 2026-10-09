@@ -1443,5 +1443,92 @@ class LegacyGrantEvidenceTest(unittest.TestCase):
         self.assertEqual(self.graphql_calls, 0)
 
 
+class ActivityReasonTest(unittest.TestCase):
+    """stop, idle and wait carry a reason code from the producer (issue 681)."""
+
+    def reason(self, act: next_action.Action) -> tuple:
+        return (act.action, act.reason_code, act.scope, act.retry_at)
+
+    def test_stop_and_idle(self) -> None:
+        self.assertEqual(
+            self.reason(first("Claude", paused=True)),
+            ("stop", "pause_requested", "agent", None),
+        )
+        self.assertEqual(
+            self.reason(first("Claude")), ("idle", "no_eligible_work", "agent", None)
+        )
+        focus = decide("Claude", {}, focus=frozenset({"project::Stream"}))[0]
+        self.assertEqual(
+            self.reason(focus), ("idle", "no_eligible_work", "agent", None)
+        )
+
+    def test_peer_pr_waits(self) -> None:
+        failed = [{"conclusion": "FAILURE"}]
+        for p, code in (
+            (pr(2, "Codex", mergeable="CONFLICTING"), "conflict_wait"),
+            (pr(2, "Codex", statusCheckRollup=failed), "checks_wait"),
+        ):
+            with self.subTest(code=code):
+                acts = decide("Claude", {"prs": [p]}, include_waiting=True)
+                self.assertEqual(self.reason(acts[0]), ("wait", code, "target", None))
+
+    def test_ready_leaf_waits(self) -> None:
+        blocked = item(358, "Claude", "Ready")
+        blocked["readiness"] = "Start after B1.1.6."
+        acts = decide("Claude", {"items": [blocked]}, include_waiting=True)
+        self.assertEqual(
+            self.reason(acts[0]), ("wait", "dependency_wait", "target", None)
+        )
+        busy = [pr(n, "Claude") for n in range(1, next_action.MAX_ACTIVE + 1)]
+        state = {"prs": busy, "items": [item(359, "Claude", "Ready")]}
+        acts = decide("Claude", state, include_waiting=True)
+        waits = [a for a in acts if a.action == "wait"]
+        self.assertEqual(
+            [self.reason(a) for a in waits],
+            [("wait", "capacity_wait", "target", None)],
+        )
+
+    def test_codes_are_in_the_contract(self) -> None:
+        import activity
+
+        codes = {
+            "pause_requested",
+            "no_eligible_work",
+            "conflict_wait",
+            "checks_wait",
+            "dependency_wait",
+            "operator_wait",
+            "invalid_wait",
+            "capacity_wait",
+            "unknown",
+        }
+        self.assertLessEqual(codes, set(activity.REASON_CODES))
+
+    def test_work_actions_carry_no_reason_fields(self) -> None:
+        # Unchanged JSON for executed work keeps tick_gate fingerprints stable.
+        act = first("Claude", items=[item(338, "Claude", "Ready")])
+        self.assertEqual(act.action, "claim")
+        data = json.loads(act.to_json())
+        for key in ("reason_code", "scope", "retry_at"):
+            self.assertNotIn(key, data)
+
+    def test_old_readers_ignore_the_new_fields(self) -> None:
+        import monitor
+        import tick_events
+
+        act = first("Claude")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "action.json"
+            path.write_text(act.to_json())
+            self.assertEqual(
+                tick_events.action_fields(path),
+                {"action": "idle", "pr": None, "issue": None},
+            )
+        self.assertEqual(
+            monitor.action_labels(json.loads(act.to_json())),
+            {"action": "idle", "target": ""},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,6 +61,8 @@ REASON_CODES = (
     "checks_wait",
     "conflict_wait",
     "operator_wait",
+    # A Ready leaf waits for claim capacity (next_action.py capacity()).
+    "capacity_wait",
     "invalid_wait",
     "model_usage_limit",
     "github_quota",
@@ -185,6 +187,9 @@ def record(event: Any) -> dict[str, Any] | None:
         "scope": None,
         "retry_at": None,
     }
+    if kind == "start" and raw is None:
+        # A tick starts before the selector runs: the runner is selecting.
+        out["activity"] = "runner"
     if kind == "env-block":
         out.update(reason("environment_failure", "agent"))
         out["activity"] = "waiting"

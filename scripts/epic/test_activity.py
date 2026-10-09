@@ -5,12 +5,16 @@ from __future__ import annotations
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from typing import Any
 
 import activity
 import tick_events
 
 TICK = "2026-10-08T01:00:00Z"
+ISSUES = "https://github.com/phaabe/live.moafunk.de/issues"
 
 
 def rec(event: object) -> dict[str, object]:
@@ -169,9 +173,7 @@ class RecordTest(unittest.TestCase):
         )
 
     def test_model_start_marks_model_work(self) -> None:
-        out = rec(
-            {"event": "model-start", "tick": TICK, "action": "fix", "pr": 3}
-        )
+        out = rec({"event": "model-start", "tick": TICK, "action": "fix", "pr": 3})
         self.assertEqual(out["activity"], "code")
 
     def test_unknown_outcome_is_not_success(self) -> None:
@@ -192,6 +194,46 @@ class RecordTest(unittest.TestCase):
 
     def test_outcomes_match_the_wire_names(self) -> None:
         self.assertEqual(activity.OUTCOMES, tick_events.OUTCOMES)
+
+
+class SharedFixtureTest(unittest.TestCase):
+    """fixtures/activity-contract.json: the cases both runners must meet."""
+
+    def cases(self) -> list[dict[str, Any]]:
+        path = Path(__file__).with_name("fixtures") / "activity-contract.json"
+        return json.loads(path.read_text(encoding="utf-8"))["cases"]
+
+    def test_every_case(self) -> None:
+        for case in self.cases():
+            with self.subTest(case=case["name"]):
+                self.assertEqual(activity.record(case["event"]), case["record"])
+
+    def test_cases_cover_the_contract(self) -> None:
+        records = [c["record"] for c in self.cases() if c["record"]]
+        actions = {r["action"] for r in records}
+        for action in ("refine", "review-refinement", "set-ready"):
+            self.assertIn(action, actions)
+        events = {r["event"] for r in records}
+        self.assertLessEqual(
+            {"start", "finish", "env-block", "model-start", "model-end"}, events
+        )
+        for record in records:
+            self.assertEqual(tuple(record), activity.RECORD_KEYS)
+
+    def test_tick_events_writes_fixture_shaped_records(self) -> None:
+        # The runner's own writer gives the same record as the fixture reader.
+        with tempfile.TemporaryDirectory() as tmp:
+            action = Path(tmp) / "action.json"
+            action.write_text(
+                json.dumps({"action": "refine", "issue": f"{ISSUES}/681"})
+            )
+            out = Path(tmp) / "activity.jsonl"
+            tick_events.activity_event(out, TICK, "model-start", action)
+            written = json.loads(out.read_text())
+        self.assertEqual(
+            (written["activity"], written["target"]), ("refine", "issue:681")
+        )
+        self.assertEqual(tuple(written), activity.RECORD_KEYS)
 
 
 if __name__ == "__main__":
