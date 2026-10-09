@@ -22,6 +22,11 @@ const SEGMENT_SECONDS: u32 = 10;
 /// WebM/Opus fragments ≈ tens of seconds of slack.
 const RECORDING_CHANNEL_CAP: usize = 1024;
 
+/// Max time one audio chunk may wait on the live producer's stdin. The caller
+/// holds the stream lock during the write, so a stalled ffmpeg must end the
+/// stream instead of blocking status, stop and go-live forever.
+const PRODUCER_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Where the live producer ffmpeg pushes the encoded audio.
 ///
 /// This selects only the **output** leg of the live-stream ffmpeg (encoder +
@@ -128,6 +133,38 @@ fn redact_icecast_password(url: &str) -> String {
     match creds.split_once(':') {
         Some((user, _pass)) => format!("{scheme}://{user}:***@{host}"),
         None => url.to_string(),
+    }
+}
+
+/// Log an ffmpeg child's stderr line by line. Every piped stderr must be read:
+/// once the pipe buffer (about 64 KB) is full, ffmpeg blocks and stops reading
+/// its input.
+fn log_ffmpeg_stderr(child: &mut Child, label: String) {
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            // Split on raw bytes so a non-UTF-8 line can't end the loop early.
+            let mut lines = BufReader::new(stderr).split(b'\n');
+            while let Ok(Some(line)) = lines.next_segment().await {
+                tracing::warn!("ffmpeg ({}): {}", label, String::from_utf8_lossy(&line));
+            }
+        });
+    }
+}
+
+/// Write to an ffmpeg stdin, failing after `limit` instead of waiting forever.
+async fn write_stdin_with_timeout(
+    stdin: &mut ChildStdin,
+    data: &[u8],
+    limit: std::time::Duration,
+) -> Result<(), StreamError> {
+    match tokio::time::timeout(limit, stdin.write_all(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(StreamError::WriteFailed(e.to_string())),
+        Err(_) => Err(StreamError::WriteFailed(format!(
+            "ffmpeg did not accept audio for {}s",
+            limit.as_secs()
+        ))),
     }
 }
 
@@ -249,6 +286,7 @@ impl StreamState {
             .spawn()
             .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
 
+        log_ffmpeg_stderr(&mut child, format!("live, user '{}'", user));
         let stdin = child.stdin.take().ok_or(StreamError::NoStdin)?;
 
         self.current_user = Some(user);
@@ -310,10 +348,9 @@ impl StreamState {
     pub async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StreamError> {
         // Write to FFmpeg (required for streaming)
         if let Some(ref mut stdin) = self.ffmpeg_stdin {
-            stdin.write_all(data).await.map_err(|e| {
-                tracing::error!("Failed to write to FFmpeg stdin: {}", e);
-                StreamError::WriteFailed(e.to_string())
-            })?;
+            write_stdin_with_timeout(stdin, data, PRODUCER_WRITE_TIMEOUT)
+                .await
+                .inspect_err(|e| tracing::error!("Failed to write to FFmpeg stdin: {}", e))?;
         } else {
             return Err(StreamError::NotStreaming);
         }
@@ -411,6 +448,7 @@ impl StreamState {
             .spawn()
             .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
 
+        log_ffmpeg_stderr(&mut child, "recorder".to_string());
         let mut stdin = child.stdin.take().ok_or(StreamError::NoStdin)?;
 
         // Dedicated writer task owns the recorder stdin and drains the bounded
@@ -572,16 +610,7 @@ pub async fn start_prerecorded_stream(
         // Surface FFmpeg's warnings/errors (bad URL, unreachable Icecast, bad
         // codec, ...) to the logs instead of silently discarding them — a failed
         // prerecorded stream previously exited with no visible reason.
-        if let Some(stderr) = child.stderr.take() {
-            let log_user = user.clone();
-            tokio::spawn(async move {
-                use tokio::io::{AsyncBufReadExt, BufReader};
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::warn!("ffmpeg (prerecorded, user '{}'): {}", log_user, line);
-                }
-            });
-        }
+        log_ffmpeg_stderr(&mut child, format!("prerecorded, user '{}'", user));
 
         state.current_user = Some(user.clone());
         state.ffmpeg_handle = Some(child);
@@ -933,5 +962,44 @@ mod tests {
         let err = concat_segments(dir.path(), &out).await.unwrap_err();
         assert!(matches!(err, StreamError::RecordingError(_)));
         assert!(!out.exists());
+    }
+
+    #[tokio::test]
+    async fn logged_stderr_never_blocks_the_child() {
+        // Writes far more than one pipe buffer to stderr. Without the reader the
+        // child blocks on the full pipe, like the producer ffmpeg did.
+        let mut child = Command::new("sh")
+            .args(["-c", "yes 'ffmpeg warning line' | head -n 20000 >&2"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        log_ffmpeg_stderr(&mut child, "test".to_string());
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .expect("child blocked on a full stderr pipe")
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn stdin_write_fails_when_the_reader_stalls() {
+        // A child that never reads stdin stands in for a stalled producer.
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let data = vec![0u8; 1024 * 1024];
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            write_stdin_with_timeout(&mut stdin, &data, std::time::Duration::from_millis(200)),
+        )
+        .await
+        .expect("write waited past its own timeout");
+        assert!(matches!(result, Err(StreamError::WriteFailed(_))));
     }
 }
