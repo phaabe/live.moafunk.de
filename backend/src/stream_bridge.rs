@@ -22,6 +22,11 @@ const SEGMENT_SECONDS: u32 = 10;
 /// WebM/Opus fragments ≈ tens of seconds of slack.
 const RECORDING_CHANNEL_CAP: usize = 1024;
 
+/// Max time one audio chunk may wait on the live producer's stdin. The caller
+/// holds the stream lock during the write, so a stalled ffmpeg must end the
+/// stream instead of blocking status, stop and go-live forever.
+const PRODUCER_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Where the live producer ffmpeg pushes the encoded audio.
 ///
 /// This selects only the **output** leg of the live-stream ffmpeg (encoder +
@@ -114,20 +119,100 @@ impl PushTarget {
             PushTarget::Icecast { url } => redact_icecast_password(url),
         }
     }
+
+    /// The password in the destination URL, so ffmpeg's log lines can hide it
+    /// whatever characters it contains.
+    fn password(&self) -> Option<String> {
+        match self {
+            PushTarget::Rtmp { .. } => None,
+            PushTarget::Icecast { url } => {
+                let (_, rest) = url.split_once("://")?;
+                // The mount never contains '@', so the last '@' ends the userinfo.
+                let (userinfo, _) = rest.rsplit_once('@')?;
+                let (_, pass) = userinfo.split_once(':')?;
+                (!pass.is_empty()).then(|| pass.to_string())
+            }
+        }
+    }
 }
 
 /// Redact the password in an `icecast://user:pass@host:port/mount` URL for logs.
-/// Returns the input unchanged if it doesn't match that shape.
+/// Returns the input unchanged if it doesn't match that shape. The last '@'
+/// ends the userinfo, so the password may contain '@'.
 fn redact_icecast_password(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return url.to_string();
     };
-    let Some((creds, host)) = rest.split_once('@') else {
+    let Some((creds, host)) = rest.rsplit_once('@') else {
         return url.to_string();
     };
     match creds.split_once(':') {
         Some((user, _pass)) => format!("{scheme}://{user}:***@{host}"),
         None => url.to_string(),
+    }
+}
+
+/// Hide the password of a `scheme://user:pass@host/...` URL. Like ffmpeg, the
+/// userinfo ends at the last '@' before the path.
+fn redact_url_token(token: &str) -> String {
+    let Some((scheme, rest)) = token.split_once("://") else {
+        return token.to_string();
+    };
+    let authority_end = rest.find(&['/', '?', '#'][..]).unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    match authority.rsplit_once('@') {
+        Some((userinfo, host)) => match userinfo.split_once(':') {
+            Some((user, _pass)) => format!("{scheme}://{user}:***@{host}{path}"),
+            None => token.to_string(),
+        },
+        None => token.to_string(),
+    }
+}
+
+/// Make an ffmpeg stderr line safe to log: hide the known `secret` wherever it
+/// appears, then the password of any other URL in the line. ffmpeg prints its
+/// full output URL on errors, and the Icecast URL holds the harbor password.
+fn clean_ffmpeg_line(line: &[u8], secret: Option<&str>) -> String {
+    let mut text = String::from_utf8_lossy(line).into_owned();
+    if let Some(secret) = secret.filter(|s| !s.is_empty()) {
+        text = text.replace(secret, "***");
+    }
+    text.split(' ')
+        .map(redact_url_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Log an ffmpeg child's stderr line by line. Every piped stderr must be read:
+/// once the pipe buffer (about 64 KB) is full, ffmpeg blocks and stops reading
+/// its input. `secret` is the password in the ffmpeg command line, if any.
+fn log_ffmpeg_stderr(child: &mut Child, label: String, secret: Option<String>) {
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            // Split on raw bytes so a non-UTF-8 line can't end the loop early.
+            let mut lines = BufReader::new(stderr).split(b'\n');
+            while let Ok(Some(line)) = lines.next_segment().await {
+                let line = clean_ffmpeg_line(&line, secret.as_deref());
+                tracing::warn!("ffmpeg ({}): {}", label, line);
+            }
+        });
+    }
+}
+
+/// Write to an ffmpeg stdin, failing after `limit` instead of waiting forever.
+async fn write_stdin_with_timeout(
+    stdin: &mut ChildStdin,
+    data: &[u8],
+    limit: std::time::Duration,
+) -> Result<(), StreamError> {
+    match tokio::time::timeout(limit, stdin.write_all(data)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(StreamError::WriteFailed(e.to_string())),
+        Err(_) => Err(StreamError::WriteFailed(format!(
+            "ffmpeg did not accept audio for {}s",
+            limit.as_secs()
+        ))),
     }
 }
 
@@ -249,6 +334,11 @@ impl StreamState {
             .spawn()
             .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
 
+        log_ffmpeg_stderr(
+            &mut child,
+            format!("live, user '{}'", user),
+            target.password(),
+        );
         let stdin = child.stdin.take().ok_or(StreamError::NoStdin)?;
 
         self.current_user = Some(user);
@@ -310,10 +400,9 @@ impl StreamState {
     pub async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StreamError> {
         // Write to FFmpeg (required for streaming)
         if let Some(ref mut stdin) = self.ffmpeg_stdin {
-            stdin.write_all(data).await.map_err(|e| {
-                tracing::error!("Failed to write to FFmpeg stdin: {}", e);
-                StreamError::WriteFailed(e.to_string())
-            })?;
+            write_stdin_with_timeout(stdin, data, PRODUCER_WRITE_TIMEOUT)
+                .await
+                .inspect_err(|e| tracing::error!("Failed to write to FFmpeg stdin: {}", e))?;
         } else {
             return Err(StreamError::NotStreaming);
         }
@@ -411,6 +500,7 @@ impl StreamState {
             .spawn()
             .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
 
+        log_ffmpeg_stderr(&mut child, "recorder".to_string(), None);
         let mut stdin = child.stdin.take().ok_or(StreamError::NoStdin)?;
 
         // Dedicated writer task owns the recorder stdin and drains the bounded
@@ -572,16 +662,11 @@ pub async fn start_prerecorded_stream(
         // Surface FFmpeg's warnings/errors (bad URL, unreachable Icecast, bad
         // codec, ...) to the logs instead of silently discarding them — a failed
         // prerecorded stream previously exited with no visible reason.
-        if let Some(stderr) = child.stderr.take() {
-            let log_user = user.clone();
-            tokio::spawn(async move {
-                use tokio::io::{AsyncBufReadExt, BufReader};
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::warn!("ffmpeg (prerecorded, user '{}'): {}", log_user, line);
-                }
-            });
-        }
+        log_ffmpeg_stderr(
+            &mut child,
+            format!("prerecorded, user '{}'", user),
+            target.password(),
+        );
 
         state.current_user = Some(user.clone());
         state.ffmpeg_handle = Some(child);
@@ -933,5 +1018,89 @@ mod tests {
         let err = concat_segments(dir.path(), &out).await.unwrap_err();
         assert!(matches!(err, StreamError::RecordingError(_)));
         assert!(!out.exists());
+    }
+
+    #[test]
+    fn ffmpeg_log_lines_hide_url_passwords() {
+        let clean = |line: &str, secret: Option<&str>| clean_ffmpeg_line(line.as_bytes(), secret);
+        // Any URL: the userinfo ends at the last '@' before the path, like in ffmpeg.
+        assert_eq!(
+            clean(
+                "Error opening output icecast://source:s3cret@127.0.0.1:8005/live: Connection refused",
+                None
+            ),
+            "Error opening output icecast://source:***@127.0.0.1:8005/live: Connection refused"
+        );
+        assert_eq!(
+            clean("'icecast://source:pa@ss@127.0.0.1:1/live'", None),
+            "'icecast://source:***@127.0.0.1:1/live'"
+        );
+        // The configured password is hidden even where URL parsing can't find it.
+        let cleaned = clean(
+            "Error opening output icecast://source:a/b@c@127.0.0.1:1/live",
+            Some("a/b@c"),
+        );
+        assert_eq!(
+            cleaned,
+            "Error opening output icecast://source:***@127.0.0.1:1/live"
+        );
+        // Lines without credentials stay as they are.
+        let plain = "Opening 'icecast://127.0.0.1:8005/live' and http://host:8000/a@b";
+        assert_eq!(clean(plain, None), plain);
+    }
+
+    #[test]
+    fn icecast_password_may_contain_at_and_slash() {
+        let t = PushTarget::Icecast {
+            url: "icecast://source:a/b@c@127.0.0.1:8005/live".to_string(),
+        };
+        assert_eq!(t.password().as_deref(), Some("a/b@c"));
+        assert_eq!(t.redacted(), "icecast://source:***@127.0.0.1:8005/live");
+        assert_eq!(
+            PushTarget::Rtmp {
+                destination: "rtmp://host/live/key".to_string()
+            }
+            .password(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn logged_stderr_never_blocks_the_child() {
+        // Writes far more than one pipe buffer to stderr. Without the reader the
+        // child blocks on the full pipe, like the producer ffmpeg did.
+        let mut child = Command::new("sh")
+            .args(["-c", "yes 'ffmpeg warning line' | head -n 20000 >&2"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        log_ffmpeg_stderr(&mut child, "test".to_string(), None);
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .expect("child blocked on a full stderr pipe")
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn stdin_write_fails_when_the_reader_stalls() {
+        // A child that never reads stdin stands in for a stalled producer.
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let data = vec![0u8; 1024 * 1024];
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            write_stdin_with_timeout(&mut stdin, &data, std::time::Duration::from_millis(200)),
+        )
+        .await
+        .expect("write waited past its own timeout");
+        assert!(matches!(result, Err(StreamError::WriteFailed(_))));
     }
 }
