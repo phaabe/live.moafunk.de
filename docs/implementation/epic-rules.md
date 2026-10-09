@@ -155,6 +155,11 @@ the evidence the plan requires. A merged PR is never activation evidence.
   names, a ticket reopened after the merge (until a newer PR merges), and
   unchecked leaves that no merged PR lists in `Leaf IDs:` (one note instead).
   Do not close these tickets by hand in the merge session.
+- For each closed ticket, the same step sets Status Done with the status
+  helper's rules: board Done and label `status::done` together, a recorded
+  change time. A ticket that is not clean is repaired first. A board already
+  Done with another label is only repaired (no change time). A failed result
+  is retried every tick until the PR is older than 14 days.
 
 ## 7. Enforcement
 
