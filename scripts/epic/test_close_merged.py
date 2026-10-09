@@ -313,7 +313,6 @@ class FakeGh:
                     if n in self.not_planned
                     else "completed",
                     "status": status,
-                    "status_name": OPTIONS[status],
                     "labels": list(self.labels.get(n, [])),
                 }
                 for n, status in self.board.items()
@@ -830,21 +829,67 @@ class StatusLabelTest(unittest.TestCase):
         self.gh.put(521, "In review", [])
         self.gh.board.pop(521)
         self.gh.board[521] = None  # on the board, Status empty
-        OPTIONS[None] = None
-        self.addCleanup(OPTIONS.pop, None)
         self.assertEqual(self.run_once(), 0)
         self.assert_done()
         self.assertEqual(self.changes(), [])
+
+    def test_board_without_a_status_confirms_done_before_the_repair(self) -> None:
+        # Another Status lands right after the Done write, or the read after
+        # it fails: no repair, no success line, labels untouched.
+        cases = {
+            "moved": ({"status": "moved"}, "status helper exit 3"),
+            "unread": ({"status": "error"}, "status helper exit 4"),
+        }
+        for name, (fail, text) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                self.gh.put(521, "In review", [])
+                self.gh.board[521] = None
+                self.gh.fail.update(fail)
+                if name == "unread":
+                    self.gh.after = self.fail_scan_after_the_write
+                self.assertEqual(self.run_once(), 1)
+                self.assertTrue(any(text in x for x in self.log), self.log)
+                self.assertFalse(any("board Status Done:" in x for x in self.log))
+                self.assertEqual(self.gh.labels[521], [])
+                self.assertEqual(self.gh.events, {})
+                self.assertNotIn(521, self.gh.tickets)  # never reopened
+        self.assertEqual(self.gh.board[521], None)
+        self.gh.after = None
+        self.gh.fail.clear()
+        self.assertEqual(self.run_once(), 0)  # the next tick finishes it
+        self.assert_done()
+        self.assertEqual(self.changes(), [])
+
+    def fail_scan_after_the_write(self, args: list[str]) -> None:
+        if "--method" in args and f"{BOARD}/items/70521" in args:
+            self.gh.fail["scan"] = "error"
+
+    def test_board_done_after_the_list_read_is_only_repaired(self) -> None:
+        # Another holder writes board Done and stops before the labels, then
+        # lets go, between the run's board list and this run's locks.
+        self.gh.put(521, "In review")
+        pending = [True]
+
+        def done_elsewhere(args: list[str]) -> None:
+            if "--jq" in args and any(f"{BOARD}/items?" in a for a in args):
+                if pending and pending.pop():
+                    with close_merged.ticket_lock(521) as locked:
+                        self.assertTrue(locked)
+                        self.gh.board[521] = DONE
+
+        self.gh.after = done_elsewhere
+        self.assertEqual(self.run_once(), 0)
+        self.assert_done()
+        self.assertNotIn(("done", 521), self.gh.writes)  # no second Done write
+        self.assertEqual(self.gh.status_events(521)[0], "+status::sync")
+        self.assertEqual(self.changes(), [])  # no Done time
 
     def test_conflict_unknown_and_timeout_results(self) -> None:
         cases = {
             # op -> mode, close step exit, log text
             "moved": ({"status": "moved"}, 1, "status helper exit 3"),
-            "unknown": (
-                {"status": "error", "scan": "error"},
-                1,
-                "status helper exit 4",
-            ),
+            "unknown": ({"status": "error"}, 1, "status helper exit 4"),
             "timeout": ({"status": "timeout"}, 0, '"board": "ok"'),
             "unreadable labels": ({"labels": "error"}, 1, "status helper failed"),
         }
@@ -853,6 +898,8 @@ class StatusLabelTest(unittest.TestCase):
                 self.setUp()
                 self.gh.put(521, "In review")
                 self.gh.fail.update(fail)
+                if name == "unknown":
+                    self.gh.after = self.fail_scan_after_the_write
                 self.assertEqual(self.run_once(), code)
                 self.assertTrue(any(text in x for x in self.log), self.log)
                 self.assertNotIn(521, self.gh.tickets)  # never reopened
@@ -941,7 +988,9 @@ class StatusLabelTest(unittest.TestCase):
         self.assertFalse(any("graphql" in c for c in joined))
         scans = [c for c in joined if f"{BOARD}/items?" in c]
         self.assertEqual(sum("--slurp" not in c for c in scans), 1)  # the run's list
-        self.assertEqual(sum("--slurp" in c for c in scans), 2 + 4 + 2)
+        # Per ticket: the read under the locks, then set 2 (its check, end);
+        # repair 2 and set 2; repair 2.
+        self.assertEqual(sum("--slurp" in c for c in scans), 3 + 5 + 3)
         self.assertEqual(sum(f"{BOARD}/fields" in c for c in joined), 2)
         # Reads + writes: set 2+2; repair 4+4 (marker, its check, swap, end).
         self.assertEqual(self.gh.label_calls, {521: 4, 522: 4 + 4 + 4, 523: 8})
@@ -996,6 +1045,25 @@ class StatusHistoryTest(unittest.TestCase):
         history = self.merged()
         self.assertEqual(self.done_times(history), [(added, True)])
         self.assertEqual(self.gh.labels[521], ["status::done"])
+
+    def test_board_done_after_the_list_read_keeps_the_snapshot_time(self) -> None:
+        # Another holder writes board Done (the collector sees it) and stops
+        # before the labels, after this run read the board list.
+        seen = self.t0 + 600
+        pending = [True]
+
+        def done_elsewhere(args: list[str]) -> None:
+            if "--jq" in args and any(f"{BOARD}/items?" in a for a in args):
+                if pending and pending.pop():
+                    self.gh.board[521] = DONE
+                    self.history.observe({521: ("Done", "Claude")}, seen)
+
+        self.gh.after = done_elsewhere
+        self.gh.clock = self.t0 + 900
+        self.close()
+        self.assertEqual(self.gh.labels[521], ["status::done"])
+        history = self.merged()
+        self.assertEqual(self.done_times(history), [(seen, False)])
 
     def test_failed_label_writes_leave_the_snapshot_time(self) -> None:
         for op in ("add:status::done", "remove:status::in-review"):
@@ -1098,10 +1166,9 @@ class JqFilterTest(unittest.TestCase):
             self.jq(close_merged.BOARD_JQ, rows),
             [{"id": 5, "number": 521, "repo": f"https://api.github.com/repos/{REPO}",
               "state": "closed", "reason": "completed", "status": "3a81da46",
-              "status_name": "In progress",
               "labels": ["type::ci", "status::in-progress"]},
              {"id": 8, "number": 9, "repo": "u", "state": "open", "reason": None,
-              "status": None, "status_name": None, "labels": []}],
+              "status": None, "labels": []}],
         )  # fmt: skip
         comments = [
             {"body": "Closed.\n\n<!-- epic-close-merged close pr=612 -->"},

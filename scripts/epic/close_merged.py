@@ -17,7 +17,8 @@ what it would do.
      and on the board with another Status or without the one label
      status::done. Under the ticket's lock the ticket is read again first: it
      may have been reopened and claimed since the board read. Then, under the
-     status helper's lock too, the helper's `set` (set_status.py, in this
+     status helper's lock too, the board is read again (that read chooses
+     set or repair) and the helper's `set` (set_status.py, in this
      process) writes board Done and swaps the status label: a recorded change
      time. A ticket that is not clean is repaired first, and a failed repair
      stops it. A board already Done with a stale label (a half-done set) is
@@ -106,8 +107,7 @@ BOARD_JQ = (
     " repo: .content.repository_url, state: .content.state,"
     " reason: .content.state_reason,"
     ' status: ([.fields[]? | select(.name == "Status") | .value.id] | first),'
-    ' status_name: ([.fields[]? | select(.name == "Status") | .value.name.raw]'
-    " | first), labels: [.content.labels[]?.name]}"
+    " labels: [.content.labels[]?.name]}"
 )
 DONE_LABEL = set_status.label_for(DONE)
 MARKERS_JQ = (
@@ -396,7 +396,8 @@ def helper_gh(gh: Gh) -> set_status.Gh:
 
 class SeededBoard(set_status.Board):
     """The helper's Board, but the next item() read may come from a read
-    already made under the same locks (`seed`)."""
+    already made under the same locks (`seed`). Never seed it from the run's
+    board list: that read is made before the locks."""
 
     def __init__(self, gh: set_status.Gh) -> None:
         super().__init__(gh)
@@ -426,26 +427,46 @@ def shown(result: dict[str, Any]) -> str:
     return json.dumps(result, sort_keys=True)
 
 
+def done_from_empty(
+    board: SeededBoard, number: int, item_id: int
+) -> tuple[int, dict[str, Any]]:
+    """No Status yet, so no change to record: write Done, confirm it, then
+    repair copies it to the label. Another Status after the write is a
+    conflict, as in the helper's `set`; the labels stay as they are."""
+    set_status.try_write(lambda: board.write_status(item_id, DONE))
+    try:
+        now = board.status(number)
+    except set_status.ReadFailed:
+        return set_status.UNKNOWN, set_status.report(
+            number, "set", None, DONE, "unknown", "failed"
+        )
+    if now != DONE:
+        code = set_status.FAILED if now is None else set_status.CONFLICT
+        return code, set_status.report(number, "set", None, DONE, "failed", "failed")
+    board.seed = board.last
+    return set_status.do_sync(board, number, "repair")
+
+
 def set_done(
     board: SeededBoard, item: dict[str, Any], log: Callable[[str], None]
 ) -> bool:
     """Board Done and label status::done with the helper's rules, under the
     ticket's and the helper's locks. False when it did not end clean (logged).
 
-    The run's board list is the first read of `set`: if it is old, the clean
-    check, the conflict check or the final read catches it. A repair reads
-    fresh; its last read is the first read of the `set` after it.
+    The run's board list may be old: another holder can write board Done and
+    stop before the labels, then let go. So the board is read again here,
+    under both locks, and that read chooses set or repair. It is also the
+    first read of that call; a repair's last read is the first read of the
+    `set` after it.
     """
     number, url = item["number"], issue_url(item["number"])
-    board.seed = (item["id"], item.get("status_name"))
+    board.seed = None
     try:
-        if item.get("status_name") is None:
-            # No Status yet, so no change to record: write Done, then repair
-            # copies it to the label.
-            set_status.try_write(lambda: board.write_status(item["id"], DONE))
-            board.seed = None
-            code, result = set_status.do_sync(board, number, "repair")
+        item_id, status = board.item(number)
+        if status is None:
+            code, result = done_from_empty(board, number, item_id)
         else:
+            board.seed = (item_id, status)
             code, result = set_status.do_set(board, number, DONE)
         if code == set_status.NOT_CLEAN:
             code, result = set_status.do_sync(board, number, "repair")
