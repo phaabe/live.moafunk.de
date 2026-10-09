@@ -46,8 +46,9 @@ SEVERITY = {
 FAILURES = ("timeout", "killed", "interrupted", "error")
 START = re.compile(r"tick: started (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) repo=\S.*")
 FINISH = re.compile(r"tick: finished exit=(\d{1,3})")
-# Written by .codex/tick_backoff.py only for a valid "blocked" result.
-BLOCKED = "backoff: model reported blocked: "
+# Written by .codex/tick_backoff.py only for a valid "blocked" result, and by
+# claude-tick.sh when worktree preparation stopped every candidate.
+BLOCKED = ("backoff: model reported blocked: ", "tick: preparation blocked: ")
 # The selector (next_action.py) failed on a gh call before any model ran.
 GH_FAILED = re.compile(r"subprocess\.CalledProcessError: Command '\['gh', ")
 # At most 15 digits: int() of a huge string raises, and no session is that big.

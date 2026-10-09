@@ -612,13 +612,41 @@ a feature branch, an epic base, `Executor: Claude`; for an issue its one
 `<type>/<issue>-...` branch or a new `feat/<issue>-<slug>` from
 `origin/dev/312-interim`). Then it resumes the matching checkout unchanged or
 runs `git worktree add`. The model gets the path and may edit only there.
-When Git refuses a branch checked out elsewhere (for example a human session),
-no model starts and the log says `handoff needed: <branch> in <path>`. The
-same stop for the same action is reported once
-(`<agent>-handoff.json`, repeat TTL). Handoff is manual: Anton releases that
-checkout, and a later tick finds the branch free and creates the runner
-checkout. Nobody uses `--force` or `--ignore-other-worktrees`, or switches,
-resets, stashes or removes another session's checkout.
+When the branch is checked out in another existing worktree of this
+repository (for example a human session), no model starts and the log says
+`handoff needed: <branch> in <path>`. The same stop for the same action is
+reported once (`<agent>-handoff.json`, repeat TTL). Handoff is manual: Anton
+releases that checkout, or parks the work with the `waiting` label and a
+valid `Waiting:` comment (usually `Resume: Anton`); that is the only parking
+input. A later tick finds the branch free and creates the runner checkout.
+Nobody uses `--force` or `--ignore-other-worktrees`, or switches, resets,
+stashes or removes another session's checkout.
+
+Preparation contract (both runners): exit `0` prepared; `75` confirmed
+handoff (above; the held path is a readable checkout of this repository that
+holds the branch); `7` unsafe refusal (a symlink at or below the branch path,
+looping links too, the wrong repository, a registered but missing, replaced or
+unreadable checkout, an unreadable path, any other stop); `3` repeated notice, which keeps the underlying cause in its structured
+evidence. An unsafe refusal is never a handoff. A stop never changes
+ownership, parks work or frees claims: an unparked draft whose branch is held
+elsewhere stays a runnable `continue` and keeps holding claims. After a `7`
+the Claude runner skips that target for 900 seconds
+(`claude-prep-cooldown.json`, keyed by target and action version, apart from
+the model-blocked cooldown); a changed target is checked again. A refusal
+before the model is never a model attempt.
+
+Reporting: each skipped candidate is logged with its reason. When no candidate
+ran and preparation stopped at least one (handoff, refusal, repeated notice
+or refusal cooldown), the tick ends with outcome `blocked`, exit 75 and one
+`tick: preparation blocked: <n> candidate(s), cause: <causes>` line, also
+during the cooldown, so the outcome does not switch to `ok`. A later candidate
+that runs reports its own result; earlier skips stay in the log. A truly empty
+queue stays exit 0, outcome `ok`, action `idle`. Read and configuration errors
+keep their exit codes. Existing Claude holds (environment hold) keep exit 0
+with outcome `blocked`: the outcome in the tick event (`*-ticks.jsonl`) is
+authoritative, not the exit code. Blocked ticks neither add to nor reset
+`epic_tick_consecutive_failures`; only `ok` resets it, so
+`AgentFailingRepeatedly` can stay active during a long hold.
 
 GitHub GraphQL quota: both runners share one wait file,
 `github-quota-wait.json` in the state directory (`scripts/epic/github_quota.py`).

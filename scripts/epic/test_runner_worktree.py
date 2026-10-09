@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -238,8 +239,31 @@ class RealGitTest(unittest.TestCase):
         run(
             self.repo, "git", "remote", "set-url", "origin", "git@github.com:x/fork.git"
         )
-        with self.assertRaisesRegex(RuntimeError, "not phaabe/live.moafunk.de"):
+        with self.assertRaisesRegex(rw.Stop, "not phaabe/live.moafunk.de") as stop:
             self.prepare(self.fix())
+        self.assertEqual(stop.exception.kind, "refusal")
+
+    def test_handoff_only_for_an_existing_worktree_of_this_repository(self) -> None:
+        human = self.human_checkout()
+        with self.assertRaises(rw.Handoff):
+            self.prepare(self.fix())
+        # Registered, but the checkout is gone: an unsafe refusal, no handoff.
+        subprocess.run(["rm", "-rf", str(human)], check=True)
+        with self.assertRaisesRegex(rw.Stop, "checkout is missing") as stop:
+            self.prepare(self.fix())
+        self.assertNotIsInstance(stop.exception, rw.Handoff)
+        self.assertEqual(stop.exception.kind, "refusal")
+
+    def test_unreadable_branch_path_is_a_refusal(self) -> None:
+        parent = (self.root / BRANCH).parent
+        parent.mkdir(parents=True)
+        parent.chmod(0)
+        self.addCleanup(parent.chmod, 0o700)
+        if os.access(parent, os.X_OK):
+            self.skipTest("running as a user that ignores file modes")
+        with self.assertRaisesRegex(rw.Stop, "unreadable") as stop:
+            self.prepare(self.fix())
+        self.assertEqual(stop.exception.kind, "refusal")
 
     def test_foreign_path_in_the_directory_is_not_touched(self) -> None:
         (self.root / BRANCH).mkdir(parents=True)
@@ -255,8 +279,62 @@ class RealGitTest(unittest.TestCase):
         outside = self.tmp / "outside"
         run(self.repo, "git", "worktree", "move", str(path), str(outside))
         path.symlink_to(outside)
-        with self.assertRaisesRegex(rw.Stop, "resolves outside"):
+        with self.assertRaisesRegex(rw.Stop, "is a symlink"):
             self.prepare(self.fix())
+
+    def test_looping_or_parent_symlink_is_a_refusal(self) -> None:
+        # Codex review on https://github.com/phaabe/live.moafunk.de/pull/703:
+        # a self-referential link resolved back to the branch path, so
+        # `git worktree add` failed and the CLI exited 1.
+        path = self.root / BRANCH
+        path.parent.mkdir(parents=True)
+        path.symlink_to(path)
+        with self.assertRaisesRegex(rw.Stop, "is a symlink") as stop:
+            self.prepare(self.fix())
+        self.assertEqual(stop.exception.kind, "refusal")
+        self.assertTrue(path.is_symlink())
+        # A link on a component below the fixed dir is refused the same way.
+        path.unlink()
+        path.parent.rmdir()
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        path.parent.symlink_to(elsewhere)
+        with self.assertRaisesRegex(rw.Stop, f"{path.parent} is a symlink"):
+            self.prepare(self.fix())
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_stale_registration_is_a_refusal_not_a_handoff(self) -> None:
+        # Codex review on https://github.com/phaabe/live.moafunk.de/pull/703:
+        # the human checkout was moved away and an empty dir took its place.
+        human = self.human_checkout()
+        os.rename(human, self.tmp / "moved")
+        human.mkdir()
+        with self.assertRaisesRegex(rw.Stop, "is not a checkout of it") as stop:
+            self.prepare(self.fix())
+        self.assertNotIsInstance(stop.exception, rw.Handoff)
+        self.assertEqual(list(human.iterdir()), [])
+        self.assertFalse((self.root / BRANCH).exists())
+
+    def test_unreadable_held_checkout_is_a_refusal(self) -> None:
+        human = self.human_checkout()
+        before = self.snapshot(human)
+        human.chmod(0)
+        self.addCleanup(human.chmod, 0o755)
+        if os.access(human, os.X_OK):
+            self.skipTest("running as a user that ignores file modes")
+        with self.assertRaisesRegex(rw.Stop, "unreadable") as stop:
+            self.prepare(self.fix())
+        self.assertNotIsInstance(stop.exception, rw.Handoff)
+        human.chmod(0o755)
+        self.assertEqual(self.snapshot(human), before)
+
+    def test_git_refusal_with_a_stale_registration_is_a_refusal(self) -> None:
+        human = self.human_checkout()
+        os.rename(human, self.tmp / "moved")
+        human.mkdir()
+        with self.assertRaises(rw.Stop) as stop:
+            rw.add(self.repo, BRANCH, self.root / BRANCH, new=False)
+        self.assertNotIsInstance(stop.exception, rw.Handoff)
 
     def test_prepare_reports_the_runner_context(self) -> None:
         info: dict[str, Any] = {}
@@ -283,17 +361,142 @@ class RealGitTest(unittest.TestCase):
             },
         )
 
-    def cli(self, action: dict[str, Any], context: Path) -> int:
+    def cli(
+        self, action: dict[str, Any], context: Path, evidence: Path | None = None
+    ) -> int:
         action_file = self.tmp / "action.json"
         action_file.write_text(json.dumps(action))
         script = Path(__file__).with_name("runner_worktree.py")
+        extra = ["--evidence-file", str(evidence)] if evidence else []
         return subprocess.run(
             ["python3", str(script), "prepare", "--agent", "claude",
              "--action-file", str(action_file), "--dir", str(self.root),
-             "--repo", str(self.repo), "--context-file", str(context)],
+             "--repo", str(self.repo), "--context-file", str(context), *extra],
             capture_output=True, text=True, timeout=60,
             env={**os.environ, "EPIC_STATE_DIR": str(self.tmp / "state")},
         ).returncode  # fmt: skip
+
+    def test_cli_handoff_exits_75_and_a_repeat_3_with_its_cause(self) -> None:
+        human = self.human_checkout()
+        before = self.snapshot(human)
+        context, evidence = self.tmp / "context.json", self.tmp / "prepare.json"
+        cont = {
+            "action": "continue",
+            "reason": "t",
+            "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+        }
+        self.assertEqual(self.cli(cont, context, evidence), 75)
+        reason = f"handoff needed: {BRANCH} in {human}"
+        self.assertEqual(
+            json.loads(evidence.read_text()),
+            {"kind": "handoff", "cause": "handoff", "reason": reason, "target": "77"},
+        )
+        self.assertEqual(self.cli(cont, context, evidence), 3)
+        self.assertEqual(
+            json.loads(evidence.read_text()),
+            {"kind": "repeat", "cause": "handoff", "reason": reason, "target": "77"},
+        )
+        # A handoff has no cooldown: Git is asked again on every tick.
+        self.assertFalse((self.tmp / "state/claude-prep-cooldown.json").exists())
+        self.assertEqual(self.snapshot(human), before)
+        self.assertFalse(context.exists())
+
+    def test_cli_refusal_exits_7_then_cools_down_per_version(self) -> None:
+        path = self.prepare(self.fix())
+        assert path is not None
+        outside = self.tmp / "outside"
+        run(self.repo, "git", "worktree", "move", str(path), str(outside))
+        path.symlink_to(outside)
+        context, evidence = self.tmp / "context.json", self.tmp / "prepare.json"
+        cont = {
+            "action": "continue",
+            "reason": "t",
+            "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+            "updated_at": "2026-10-08T00:00:00Z",
+        }
+        self.assertEqual(self.cli(cont, context, evidence), 7)
+        first = json.loads(evidence.read_text())
+        self.assertEqual((first["kind"], first["cause"]), ("refusal", "refusal"))
+        self.assertIn("is a symlink", first["reason"])
+        # Same version: skipped by the cooldown, the cause kept.
+        self.assertEqual(self.cli(cont, context, evidence), 3)
+        cooled = json.loads(evidence.read_text())
+        self.assertEqual(
+            (cooled["kind"], cooled["cause"], cooled["reason"]),
+            ("cooldown", "refusal", first["reason"]),
+        )
+        state = self.tmp / "state/claude-prep-cooldown.json"
+        record = json.loads(state.read_text())["77"]
+        self.assertEqual(record["until"] - record["at"], rw.REFUSAL_COOLDOWN)
+        # A changed target is checked again; the model-blocked cooldown is apart.
+        changed = {**cont, "updated_at": "2026-10-08T01:00:00Z"}
+        self.assertEqual(self.cli(changed, context, evidence), 7)
+        self.assertFalse((self.tmp / "state/claude-cooldowns.json").exists())
+        # Fixed by a human: ready, and the cooldown record is gone.
+        path.unlink()
+        run(self.repo, "git", "worktree", "move", str(outside), str(path))
+        self.assertEqual(
+            self.cli({**cont, "updated_at": "2026-10-08T02:00:00Z"}, context, evidence),
+            0,
+        )
+        self.assertFalse(evidence.exists())
+        self.assertEqual(json.loads(state.read_text()), {})
+
+    def test_cli_stale_and_looping_paths_exit_7_with_evidence(self) -> None:
+        # Codex review on https://github.com/phaabe/live.moafunk.de/pull/703:
+        # these returned 75 (stale) and 1 (looping link) before.
+        context, evidence = self.tmp / "context.json", self.tmp / "prepare.json"
+        human = self.human_checkout()
+        os.rename(human, self.tmp / "moved")
+        human.mkdir()
+        cont = {
+            "action": "continue",
+            "reason": "t",
+            "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+            "updated_at": "2026-10-08T00:00:00Z",
+        }
+        self.assertEqual(self.cli(cont, context, evidence), 7)
+        first = json.loads(evidence.read_text())
+        self.assertEqual((first["kind"], first["cause"]), ("refusal", "refusal"))
+        self.assertIn("is not a checkout of it", first["reason"])
+        self.assertEqual(list(human.iterdir()), [])
+        path = self.root / BRANCH
+        path.parent.mkdir(parents=True)
+        path.symlink_to(path)
+        changed = {**cont, "updated_at": "2026-10-08T01:00:00Z"}
+        self.assertEqual(self.cli(changed, context, evidence), 7)
+        loop = json.loads(evidence.read_text())
+        self.assertEqual(loop["kind"], "refusal")
+        self.assertIn("is a symlink", loop["reason"])
+        self.assertFalse(context.exists())
+
+    def test_cooldown_expires_and_the_repeat_keeps_the_cause(self) -> None:
+        state = self.tmp / "state"
+        action = {"action": "fix", "reason": "t", "pr": 5, "sha": SHA}
+        rw.cool("claude", action, "why", state, now=1000)
+        self.assertIsNotNone(rw.cooling("claude", action, state, now=1899))
+        self.assertIsNone(rw.cooling("claude", action, state, now=1900))
+        self.assertIsNone(
+            rw.cooling("claude", {**action, "sha": "b" * 40}, state, 1001)
+        )
+        # After expiry the same refusal is a repeat notice (3), not a new report.
+        (self.root / BRANCH).mkdir(parents=True)
+        cont = {
+            "action": "continue",
+            "reason": "t",
+            "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+        }
+        context, evidence = self.tmp / "context.json", self.tmp / "prepare.json"
+        self.assertEqual(self.cli(cont, context, evidence), 7)
+        records = json.loads((state / "claude-prep-cooldown.json").read_text())
+        records["77"]["until"] = 0
+        (state / "claude-prep-cooldown.json").write_text(json.dumps(records))
+        self.assertEqual(self.cli(cont, context, evidence), 3)
+        repeat = json.loads(evidence.read_text())
+        self.assertEqual((repeat["kind"], repeat["cause"]), ("repeat", "refusal"))
+        self.assertIn("does not hold", repeat["reason"])
+        # The repeat renews the cooldown.
+        self.assertIsNotNone(rw.cooling("claude", cont, state, now=time.time()))
 
     def test_cli_writes_the_context_only_for_a_ready_worktree(self) -> None:
         context = self.tmp / "context.json"
@@ -315,7 +518,7 @@ class RealGitTest(unittest.TestCase):
             },
         )
         # A stop, or an action without a worktree, leaves no old context.
-        self.assertEqual(self.cli({"action": "claim", "reason": "t"}, context), 3)
+        self.assertEqual(self.cli({"action": "claim", "reason": "t"}, context), 7)
         self.assertFalse(context.exists())
         context.write_text("{}")
         self.assertEqual(
