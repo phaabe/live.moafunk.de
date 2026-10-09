@@ -530,6 +530,19 @@ class LedgerTest(unittest.TestCase):
         samples = self.run_cycle(self.ledger(), NOON + 300)
         self.assertEqual(samples['epic_tick_consecutive_failures{agent="codex"}'], 2)
 
+    def test_preparation_blocked_line_makes_exit_75_blocked(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/690
+        blocked = "tick: preparation blocked: 1 candidate(s), cause: handoff; no model"
+        self.log.write_text(
+            tick(NOON, 1) + tick(NOON + 60, 75, body=blocked) + tick(NOON + 120, 75)
+        )
+        ledger = self.ledger()
+        samples = self.run_cycle(ledger, NOON + 300)
+        self.assertEqual(
+            [t["outcome"] for t in ledger.ticks], ["error", "blocked", "error"]
+        )
+        self.assertEqual(samples['epic_tick_consecutive_failures{agent="codex"}'], 2)
+
     def test_today_uses_berlin_local_day(self) -> None:
         # 22:30 UTC on Sep 28 is 00:30 on Sep 29 in Berlin.
         late = datetime(2026, 9, 28, 22, 30, tzinfo=timezone.utc).timestamp()
@@ -704,6 +717,31 @@ class EventLedgerTest(unittest.TestCase):
         self.assertEqual(ledger.state["totals"]["blocked"], 1)
         self.assertEqual(ledger.rejected, 0)
         self.assertTrue(ledger.active)
+
+    def test_blocked_events_keep_the_failure_streak_and_ok_resets_it(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/690: blocked ticks
+        # neither add to nor reset the streak; only ok resets it.
+        ledger = self.events()
+        ledger.update(NOON)
+        finishes = (
+            dict(exit=1, outcome="error", phase="verify"),
+            dict(exit=75, outcome="blocked", phase="gate"),
+            dict(exit=1, outcome="error", phase="verify"),
+            dict(exit=75, outcome="blocked", phase="gate"),
+        )
+        for i, fields in enumerate(finishes):
+            start = NOON + i * 600
+            self.append(event("start", start), event("finish", start, **fields))
+        ledger.update(NOON + 3000)
+        metrics = Metrics()
+        ticks.export(metrics, ledger, NOON + 3000)
+        key = 'epic_tick_consecutive_failures{agent="codex"}'
+        self.assertEqual(metrics.samples()[key], 2)
+        self.append(event("start", NOON + 3000), event("finish", NOON + 3000))
+        ledger.update(NOON + 3600)
+        metrics = Metrics()
+        ticks.export(metrics, ledger, NOON + 3600)
+        self.assertEqual(metrics.samples()[key], 0)
 
     def test_invalid_events_are_rejected_and_counted(self) -> None:
         ledger = self.events()

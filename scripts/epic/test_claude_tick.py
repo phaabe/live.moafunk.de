@@ -171,6 +171,8 @@ class RunnerHarness(unittest.TestCase):
             "sys.exit(int(os.environ.get('TEST_CLOSE_EXIT', '0')))\n"
         )
         # Worktree step: its own call file, so the call indexes above stay.
+        # A stop writes its evidence: kind from the exit (3 repeat, 7 refusal,
+        # 75 handoff), cause from TEST_WORKTREE_CAUSE.
         (self.repo / "scripts/epic/runner_worktree.py").write_text(
             "import json, os, sys\n"
             "with open(os.environ['TEST_CALLS'] + '.worktree', 'a') as f:\n"
@@ -180,7 +182,13 @@ class RunnerHarness(unittest.TestCase):
             "code = int(os.environ.get('TEST_WORKTREE_EXIT', '0'))\n"
             "only = os.environ.get('TEST_WORKTREE_PR')\n"
             "action = json.load(open(sys.argv[sys.argv.index('--action-file') + 1]))\n"
-            "sys.exit(0 if only and str(action.get('pr')) != only else code)\n"
+            "code = 0 if only and str(action.get('pr')) != only else code\n"
+            "kind = {3: 'repeat', 7: 'refusal', 75: 'handoff'}.get(code)\n"
+            "if kind and '--evidence-file' in sys.argv:\n"
+            "    cause = os.environ.get('TEST_WORKTREE_CAUSE', 'handoff')\n"
+            "    evidence = sys.argv[sys.argv.index('--evidence-file') + 1]\n"
+            "    open(evidence, 'w').write(json.dumps({'kind': kind, 'cause': cause}))\n"
+            "sys.exit(code)\n"
         )
         (self.repo / "scripts/epic/tick_verify.py").write_text(
             "import json, os, sys\n"
@@ -1354,24 +1362,157 @@ class ClaudeTickTest(RunnerHarness):
         )
 
     def test_worktree_stop_starts_no_model_and_tries_the_next_candidate(self) -> None:
+        # A later candidate that runs reports its own result.
         second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
         candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
-        runner = self.run_tick(
-            TEST_CANDIDATES=candidates, TEST_WORKTREE_EXIT="3", TEST_WORKTREE_PR="1"
-        )
-        self.assertEqual(runner.wait(timeout=30), 0)
-        self.assertEqual(len(self.model_targets()), 1)
-        self.assertIn('"pr": 2', Path(str(self.calls) + ".prompt").read_text())
-        self.assertIn(
-            "fix stopped before the model", (self.state / "claude.log").read_text()
-        )
+        for code in ("3", "7", "75"):
+            with self.subTest(code=code):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.calls.unlink(missing_ok=True)
+                runner = self.run_tick(
+                    TEST_CANDIDATES=candidates,
+                    TEST_WORKTREE_EXIT=code,
+                    TEST_WORKTREE_PR="1",
+                )
+                self.assertEqual(runner.wait(timeout=30), 0)
+                self.assertEqual(len(self.model_targets()), 1)
+                self.assertIn('"pr": 2', Path(str(self.calls) + ".prompt").read_text())
+                log = (self.state / "claude.log").read_text()
+                self.assertIn("fix stopped before the model", log)
+                self.assertNotIn("preparation blocked", log)
+                self.assertEqual(self.finish(), (0, "ok", "record"))
 
     def test_only_stopped_candidates_start_no_model_and_record_nothing(self) -> None:
-        self.assertEqual(self.run_tick(TEST_WORKTREE_EXIT="3").wait(timeout=30), 0)
+        self.assertEqual(self.run_tick(TEST_WORKTREE_EXIT="3").wait(timeout=30), 75)
         self.assertEqual(self.model_targets(), [])
         self.assertNotIn(["gate", "record"], self.calls_made())
         self.assertFalse((self.state / "claude-gate-seen.json").exists())
         self.assertFalse((self.state / "claude.lock").exists())
+
+    def test_all_candidates_stopped_by_preparation_end_blocked(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/690
+        second = {"action": "fix-checks", "reason": "t", "pr": 2, "sha": "b" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        for code, cause, kind in (
+            ("75", "handoff", "handoff"),
+            ("7", "refusal", "refusal"),
+            ("3", "handoff", "repeat"),
+        ):
+            with self.subTest(code=code):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.calls.unlink(missing_ok=True)
+                runner = self.run_tick(
+                    TEST_CANDIDATES=candidates,
+                    TEST_WORKTREE_EXIT=code,
+                    TEST_WORKTREE_CAUSE=cause,
+                )
+                self.assertEqual(runner.wait(timeout=30), 75)
+                self.assertEqual(self.model_targets(), [])
+                self.assertEqual(self.finish(), (75, "blocked", "gate"))
+                log = (self.state / "claude.log").read_text()
+                self.assertIn(f"fix stopped before the model ({kind}, {cause})", log)
+                self.assertIn(
+                    "tick: preparation blocked: 2 candidate(s), "
+                    f"cause: {cause}; no model",
+                    log,
+                )
+                self.assertNotIn(["gate", "record"], self.calls_made())
+                self.assertFalse((self.state / "claude-gate-seen.json").exists())
+                self.assertFalse((self.state / "claude.lock").exists())
+                # Preparation never counts as a model attempt or a cooldown.
+                self.assertFalse((self.state / "claude-cooldowns.json").exists())
+                waits = [a for a in activity_of(self.state) if a[0] == "wait"]
+                self.assertEqual(len(waits), 2)
+
+    def test_mixed_causes_are_named_once_each(self) -> None:
+        second = {"action": "fix-checks", "reason": "t", "pr": 2, "sha": "b" * 40}
+        third = {"action": "fix-checks", "reason": "t", "pr": 3, "sha": "c" * 40}
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second, third))
+        # A stub that refuses PR 2 and hands off the others.
+        stub = self.repo / "scripts/epic/runner_worktree.py"
+        stub.write_text(
+            stub.read_text().replace(
+                "cause = os.environ.get('TEST_WORKTREE_CAUSE', 'handoff')",
+                "cause = 'refusal' if action.get('pr') == 2 else 'handoff'",
+            )
+        )
+        self.assertEqual(
+            self.run_tick(TEST_CANDIDATES=candidates, TEST_WORKTREE_EXIT="3").wait(
+                timeout=30
+            ),
+            75,
+        )
+        self.assertIn(
+            "tick: preparation blocked: 3 candidate(s), cause: handoff refusal;",
+            (self.state / "claude.log").read_text(),
+        )
+
+    def test_preparation_cooldown_stays_blocked_and_empty_queue_stays_ok(self) -> None:
+        # The first tick reports the refusal, later ticks skip it (cooldown or
+        # repeat): the outcome never switches to ok in between.
+        for code in ("7", "3", "3"):
+            self.run_tick(TEST_WORKTREE_EXIT=code, TEST_WORKTREE_CAUSE="refusal").wait(
+                timeout=30
+            )
+        idle = json.dumps({"action": "idle", "reason": "nothing to do"})
+        self.assertEqual(self.run_tick(TEST_CANDIDATES=idle).wait(timeout=30), 0)
+        finishes = [e for e in self.tick_events() if e["event"] == "finish"]
+        self.assertEqual(
+            [(e["exit"], e["outcome"]) for e in finishes],
+            [(75, "blocked")] * 3 + [(0, "ok")],
+        )
+
+    def test_blocked_ticks_keep_the_failure_streak_in_both_readers(self) -> None:
+        # Errors separated by blocked ticks keep the streak; ok resets it.
+        # The real event ledger and the real runner log, read by ticks.py.
+        import monitor
+        import ticks
+
+        for env in (
+            {"TEST_VERIFY_EXIT": "1"},
+            {"TEST_WORKTREE_EXIT": "75"},
+            {"TEST_VERIFY_EXIT": "1"},
+            {"TEST_WORKTREE_EXIT": "3"},
+        ):
+            self.run_tick(**env).wait(timeout=30)
+
+        def streaks() -> tuple[float, float]:
+            now = time.time() + 5
+            runtime = self.root / "runtime"
+            shutil.rmtree(runtime, ignore_errors=True)
+            events = ticks.EventLedger(
+                "claude",
+                self.state / "claude-ticks.jsonl",
+                runtime / "events-claude.json",
+                monitor.action_labels,
+                source="events",
+            )
+            log = ticks.LogLedger(
+                "claude",
+                self.state / "claude.log",
+                runtime / "ticks-claude.json",
+                monitor.action_labels,
+            )
+            found = []
+            for ledger in (events, log):
+                # A fresh checkpoint starts at the end; read the whole file.
+                ledger.state = ledger.fresh(now, 0)
+                ledger.update(now)
+                metrics = monitor.Metrics()
+                ticks.export(metrics, ledger, now)
+                key = 'epic_tick_consecutive_failures{agent="claude"}'
+                found.append(
+                    next(
+                        float(line.rsplit(" ", 1)[1])
+                        for line in metrics.render().splitlines()
+                        if line.startswith(key)
+                    )
+                )
+            return found[0], found[1]
+
+        self.assertEqual(streaks(), (2, 2))
+        self.run_tick().wait(timeout=30)
+        self.assertEqual(streaks(), (0, 0))
 
     def test_worktree_quota_error_stops_the_tick(self) -> None:
         self.assertEqual(self.run_tick(TEST_WORKTREE_EXIT="4").wait(timeout=30), 75)
@@ -1460,8 +1601,9 @@ class ClaudeTickTest(RunnerHarness):
         log = self.state / "claude.log"
         handoff = f"handoff needed: {branch} in {human}"
 
+        # Handoff (75), then a repeated notice (3): both ticks end blocked.
         for _ in range(2):
-            self.assertEqual(self.run_tick(**env).wait(timeout=60), 0)
+            self.assertEqual(self.run_tick(**env).wait(timeout=60), 75)
             self.assertEqual(self.model_targets(), [])
             self.assertEqual(human_state(), before)
             self.assertFalse((wt / branch).exists())

@@ -34,10 +34,16 @@
 # Feature worktrees (runner_worktree.py): an action that edits a branch runs
 # only in <dir>/<branch> under one fixed directory (EPIC_WORKTREE_DIR, default
 # live.moafunk.de-<agent>-wt next to this checkout). The runner creates or
-# resumes it after the gate check. When Git refuses the branch because another
-# checkout holds it, the log says `handoff needed: <branch> in <path>`, no model
-# starts and that checkout stays untouched; the candidate is skipped like a
-# suppressed repeat. The model gets the path as EPIC_WORKTREE and --add-dir.
+# resumes it after the gate check. When another checkout of this repository
+# holds the branch (exit 75), the log says `handoff needed: <branch> in
+# <path>`, no model starts and that checkout stays untouched. An unsafe
+# refusal (7) also starts a 900 s preparation cooldown for that target version;
+# a repeated notice or that cooldown exits 3. Each stop skips the candidate
+# with its kind and cause in the log. When no candidate ran and at least one
+# was stopped this way, the tick ends blocked with exit 75 and one
+# `tick: preparation blocked:` line; a later candidate that runs reports its
+# own result. A stop never parks work or frees claims. The model gets the path
+# as EPIC_WORKTREE and --add-dir.
 # The worktree step also writes the runner context (context.json in the lock
 # dir): the branch, base and PR the permission gate checks git writes against.
 #
@@ -167,6 +173,7 @@ cleanup() {
         # the finish event: its inputs (action.json, timings.txt), owner.json
         # (the lock owner) and the lock itself.
         rm -f "${lock_dir}/prompt.txt" "${lock_dir}/context.json" \
+            "${lock_dir}/prepare.json" \
             "${lock_dir}/result.json" "${lock_dir}/cooldown.json" \
             "${lock_dir}/attempt.json" "${lock_dir}/scope.json" || true
         if [[ -n "$body_dir" ]]; then
@@ -597,6 +604,9 @@ lock_target() {
 # Candidates come on fd 3, so a loop command that reads stdin cannot eat them.
 selected=0
 worktree=""
+# Candidates stopped by worktree preparation, and their distinct causes.
+prep_stops=0
+prep_causes=""
 while IFS= read -r -u 3 candidate; do
     if [[ -z "$candidate" ]]; then
         continue
@@ -710,18 +720,39 @@ while IFS= read -r -u 3 candidate; do
                 ;;
         esac
     fi
-    # Last step before the model: the feature worktree, or a handoff stop.
+    # Last step before the model: the feature worktree, or a preparation stop:
+    # 75 handoff, 7 unsafe refusal, 3 repeated notice or refusal cooldown.
     tick_phase=gate
     prepared=0
+    rm -f "${lock_dir}/prepare.json"
     worktree=$("$py" "${code_root}/scripts/epic/runner_worktree.py" prepare --agent claude \
         --action-file "${lock_dir}/action.json" --dir "$worktree_dir" \
-        --repo "$repo_root" --context-file "${lock_dir}/context.json") || prepared=$?
+        --repo "$repo_root" --context-file "${lock_dir}/context.json" \
+        --evidence-file "${lock_dir}/prepare.json") || prepared=$?
     case "$prepared" in
         0) ;;
-        3)
+        3|7|75)
             discard_seen
             release_target
-            printf 'tick: %s stopped before the model; next candidate\n' "$action"
+            # kind (handoff, refusal, repeat, cooldown) and the underlying cause.
+            stop_kind=$("${py_snippet[@]}" -c '
+import json, sys
+data = json.load(open(sys.argv[1]))
+print(data["kind"], data["cause"])
+' "${lock_dir}/prepare.json" 2>/dev/null) || stop_kind="unknown unknown"
+            read -r stop_kind stop_cause <<< "$stop_kind"
+            if [[ "$stop_kind" == cooldown ]]; then
+                activity_wait retry_backoff target
+            else
+                activity_wait operator_wait target
+            fi
+            case " $prep_causes " in
+                *" $stop_cause "*) ;;
+                *) prep_causes="${prep_causes:+$prep_causes }$stop_cause" ;;
+            esac
+            prep_stops=$((prep_stops + 1))
+            printf 'tick: %s stopped before the model (%s, %s); next candidate\n' \
+                "$action" "$stop_kind" "$stop_cause"
             continue
             ;;
         4)
@@ -737,6 +768,16 @@ while IFS= read -r -u 3 candidate; do
     break
 done 3<<< "$candidates"
 if [[ "$selected" != 1 ]]; then
+    # No candidate ran and preparation stopped at least one: blocked, also
+    # for a repeated notice or a refusal cooldown, so the outcome does not
+    # switch to ok while the cause stays. ticks.py reads this line.
+    if [[ "$prep_stops" -gt 0 ]]; then
+        printf 'tick: preparation blocked: %s candidate(s), cause: %s; no model\n' \
+            "$prep_stops" "$prep_causes"
+        tick_outcome=blocked
+        tick_phase=gate
+        exit 75
+    fi
     printf 'tick: no candidate to run\n'
     exit 0
 fi
