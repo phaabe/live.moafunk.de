@@ -50,6 +50,7 @@ COPIED = (
     "scripts/epic/github_state.py",
     "scripts/epic/agents.py",
     "scripts/epic/tick_events.py",
+    "scripts/epic/activity.py",
     "scripts/epic/target_lock.py",
     "scripts/epic/tick_cooldown.py",
     "scripts/epic/claude_usage.py",

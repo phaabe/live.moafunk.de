@@ -39,6 +39,20 @@ TRANSCRIPT_STUB = (
     "fi\n"
 )
 ACTION = {"action": "fix", "reason": "test", "pr": 1, "sha": "a" * 40}
+
+
+def activity_of(state: Path) -> list[tuple[object, ...]]:
+    """(event, activity, target, reason_code, scope, retry_at) per record."""
+    path = state / "claude-activity.jsonl"
+    if not path.exists():
+        return []
+    keys = ("event", "activity", "target", "reason_code", "scope", "retry_at")
+    return [
+        tuple(json.loads(line)[k] for k in keys)
+        for line in path.read_text().splitlines()
+    ]
+
+
 # Python line for a stub: the other runner stores a quota wait now.
 WAIT_WRITE = (
     "open(os.path.join(os.environ['EPIC_STATE_DIR'], 'github-quota-wait.json'), 'w')"
@@ -78,6 +92,7 @@ class RunnerHarness(unittest.TestCase):
             "scripts/epic/github_quota.py",
             "scripts/epic/agents.py",
             "scripts/epic/tick_events.py",
+            "scripts/epic/activity.py",
             "scripts/epic/target_lock.py",
             "scripts/epic/tick_cooldown.py",
             "scripts/epic/claude_usage.py",
@@ -614,6 +629,20 @@ class ClaudeTickTest(RunnerHarness):
         self.assertFalse(self.calls.exists())  # no git, gh, selector or model
         self.assertIn("retry at 2099-01-01", (self.state / "claude.log").read_text())
         self.assertFalse((self.state / "claude.lock").exists())
+        # Codex review on PR 699: the hold has its record, before any tick.
+        self.assertEqual(
+            activity_of(self.state),
+            [
+                (
+                    "wait",
+                    "waiting",
+                    None,
+                    "github_quota",
+                    "agent",
+                    "2099-01-01T00:00:00Z",
+                )
+            ],
+        )
 
     def test_expired_quota_wait_runs_normally(self) -> None:
         self.store_wait("2000-01-01T00:00:00Z")
@@ -692,12 +721,64 @@ class ClaudeTickTest(RunnerHarness):
         self.assertEqual(self.run_tick(TEST_SELECT_WAIT="1").wait(timeout=30), 0)
         self.assertEqual(self.calls_made(), [["git", "pull -q --ff-only"], ["select"]])
         self.assertFalse((self.state / "claude.lock").exists())
+        # Codex review on PR 699: the stored expiry reaches the record.
+        self.assertEqual(
+            activity_of(self.state),
+            [
+                (
+                    "wait",
+                    "waiting",
+                    None,
+                    "github_quota",
+                    "agent",
+                    "2099-01-01T00:00:00Z",
+                )
+            ],
+        )
 
     def test_wait_stored_during_the_gate_check_starts_no_model(self) -> None:
         self.assertEqual(self.run_tick(TEST_GATE_WAIT="1").wait(timeout=30), 0)
         self.assertEqual(
             self.calls_made(),
             [["git", "pull -q --ff-only"], ["select"], ["gate", "check"]],
+        )
+        # Codex review on PR 699: the last check before the model has a record.
+        self.assertEqual(
+            activity_of(self.state),
+            [
+                (
+                    "wait",
+                    "waiting",
+                    "pr:1",
+                    "github_quota",
+                    "agent",
+                    "2099-01-01T00:00:00Z",
+                )
+            ],
+        )
+
+    def test_cooling_target_records_its_cooldown_end(self) -> None:
+        # Codex review on PR 699: a backoff wait names its stored end.
+        self.state.mkdir(parents=True)
+        key = f"claude:fix:pr:1:{ACTION['sha']}"
+        until = 4102444800.0  # 2100-01-01T00:00:00Z
+        (self.state / "claude-cooldown.json").write_text(
+            json.dumps({key: {"at": 1.0, "until": until, "reason": "blocked"}})
+        )
+        self.assertEqual(self.run_tick().wait(timeout=30), 0)
+        self.assertNotIn("claude", [c[0] for c in self.calls_made()])
+        self.assertEqual(
+            activity_of(self.state),
+            [
+                (
+                    "wait",
+                    "waiting",
+                    "pr:1",
+                    "retry_backoff",
+                    "target",
+                    "2100-01-01T00:00:00Z",
+                )
+            ],
         )
 
     def test_relative_state_dir_is_resolved_before_changing_directory(self) -> None:
@@ -806,6 +887,77 @@ class ClaudeTickTest(RunnerHarness):
         finish = self.tick_events()[-1]
         self.assertEqual((finish["action"], finish["pr"]), ("fix", 1))
         self.assertIsNone(finish["tokens"])
+
+    def test_activity_file_records_the_model_boundaries(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/694
+        path = self.state / "claude-activity.jsonl"
+        for env, expected in (
+            ({}, [("model-start", "code"), ("model-end", "code")]),
+            # A selected action alone is not model work: no record.
+            ({"TEST_SELECT_EXIT": "3"}, None),
+        ):
+            with self.subTest(env=env):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.run_tick(**env).wait(timeout=30)
+                if expected is None:
+                    self.assertFalse(path.exists())
+                    continue
+                records = [json.loads(x) for x in path.read_text().splitlines()]
+                self.assertEqual(
+                    [(r["event"], r["activity"]) for r in records], expected
+                )
+                tick = self.tick_events()[-1]["tick"]
+                self.assertTrue(all(r["tick"] == tick for r in records))
+                self.assertTrue(all(r["target"] == "pr:1" for r in records))
+                # The tick ledger's file holds only its own events.
+                self.assertEqual(
+                    [e["event"] for e in self.tick_events()], ["start", "finish"]
+                )
+
+    def activity_records(self) -> list[dict[str, object]]:
+        path = self.state / "claude-activity.jsonl"
+        return [json.loads(x) for x in path.read_text().splitlines()]
+
+    def test_quota_stop_records_an_agent_wait(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/694
+        self.assertEqual(self.run_tick(TEST_SELECT_EXIT="4").wait(timeout=30), 75)
+        self.assertEqual(
+            [
+                (r["event"], r["activity"], r["reason_code"], r["scope"])
+                for r in self.activity_records()
+            ],
+            [("wait", "waiting", "github_quota", "agent")],
+        )
+
+    def test_locked_target_records_a_target_wait(self) -> None:
+        second = {"action": "review", "reason": "t", "pr": 2, "sha": "b" * 40}
+        locks = self.root / "locks"
+        locks.mkdir()
+        holder = subprocess.Popen(
+            [
+                "/bin/bash",
+                "-c",
+                'exec 8>> "$1"; python3 "$2" acquire --fd 8 && exec sleep 30',
+                "_",
+                str(locks / "1.lock"),
+                str(ROOT / "scripts/epic/target_lock.py"),
+            ]
+        )
+        self.addCleanup(holder.kill)
+        time.sleep(0.5)
+        candidates = "\n".join(json.dumps(a) for a in (ACTION, second))
+        self.assertEqual(self.run_tick(TEST_CANDIDATES=candidates).wait(timeout=30), 0)
+        self.assertEqual(
+            [
+                (r["event"], r["activity"], r["target"], r["reason_code"], r["scope"])
+                for r in self.activity_records()
+            ],
+            [
+                ("wait", "waiting", "pr:1", "target_lock", "target"),
+                ("model-start", "review", "pr:2", None, None),
+                ("model-end", "review", "pr:2", None, None),
+            ],
+        )
 
     def test_finish_event_measures_each_step(self) -> None:
         # https://github.com/phaabe/live.moafunk.de/issues/655
@@ -1431,6 +1583,20 @@ class UsageWaitTickTest(RunnerHarness):
         self.assertEqual(self.last_finish(), (0, "ok", "usage"))
         self.assertEqual(
             list((self.state / "claude-usage/default/admissions").iterdir()), []
+        )
+        # Codex review on PR 699: the late refusal has its record, no model-start.
+        self.assertEqual(
+            activity_of(self.state),
+            [
+                (
+                    "wait",
+                    "waiting",
+                    "pr:1",
+                    "model_usage_limit",
+                    "agent",
+                    "2099-01-01T00:00:00Z",
+                )
+            ],
         )
 
     def test_other_api_errors_keep_the_next_tick_running(self) -> None:

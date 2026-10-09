@@ -524,6 +524,22 @@ def blocker(store: Store, data: dict[str, Any], now: datetime) -> str | None:
     return None
 
 
+def retry_at(store: Store, data: dict[str, Any], now: datetime) -> str | None:
+    """When the wait `blocker` names ends, or None: no wait, or no known time
+    (an unresolved admission or a running probe)."""
+    if any(not store.alive(other) for other in data["admissions"]):
+        return None
+    wait = data["wait"]
+    if wait is None:
+        return None
+    if now < parse_stamp(wait["retry_at"]):
+        return str(wait["retry_at"])
+    probe = data["probe_retry_at"]
+    if data["probe"] is None and probe is not None and now < parse_stamp(probe):
+        return str(probe)
+    return None
+
+
 def check(store: Store, now: datetime) -> tuple[int, str | None]:
     """Read only: (WAIT, why) or (OPEN, None)."""
     reason = blocker(store, store.load(), now)

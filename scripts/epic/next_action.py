@@ -197,6 +197,12 @@ class Action:
     # adopt only: the lane to write, and the hash of the body it must keep.
     lane: str | None = None
     body_sha: str | None = None
+    # stop, idle and wait only: the activity reason (activity.py REASON_CODES),
+    # its scope (agent or target) and an optional retry time. Set here, where
+    # the cause is known; `reason` stays free text for people.
+    reason_code: str | None = None
+    scope: str | None = None
+    retry_at: str | None = None
     # For --status only. Kept out of the JSON so runner fingerprints stay stable.
     priority: int = DEFAULT_PRIORITY
     # Board/issue mismatches of the tickets a claim waits for. Never a blocker.
@@ -722,11 +728,22 @@ class Waiting:
     # A missing, edited, malformed or wrong-author record: the work does not
     # continue, but it is not parked either and keeps its active capacity.
     invalid: bool = False
+    # A valid record waits for Anton (`Resume: Anton`).
+    operator: bool = False
 
     @property
     def parked(self) -> bool:
         """Every source has a valid record and at least one is unresolved."""
         return bool(self.blocking) and not self.unread and not self.invalid
+
+    @property
+    def reason_code(self) -> str:
+        """The activity reason of a blocking wait: a record problem first."""
+        if self.invalid:
+            return "invalid_wait"
+        if self.unread:
+            return "unknown"
+        return "operator_wait" if self.operator else "dependency_wait"
 
 
 def waiting_of(
@@ -776,6 +793,7 @@ def waiting_of(
             )
             continue
         if parsed["resume"] == "Anton":
+            result.operator = True
             result.blocking.append(
                 f"{url}: {parsed['reason']}; resumes when Anton removes the label"
             )
@@ -961,7 +979,14 @@ def decide(
     status-only `wait` that names the counted work.
     """
     if paused:
-        return [Action("stop", f"pause file {PAUSE_FILE} exists")]
+        return [
+            Action(
+                "stop",
+                f"pause file {PAUSE_FILE} exists",
+                reason_code="pause_requested",
+                scope="agent",
+            )
+        ]
     peer = other(agent)
     # Linked tickets that are not on the board; fetch_state() reads their labels.
     issue_labels = all_issue_labels(state)
@@ -990,6 +1015,8 @@ def decide(
     def pr_action(p: dict[str, Any], kind: str, reason: str, **kw: Any) -> None:
         rank = priority_rank(pr_labels(p, issue_labels))
         n = p["number"]
+        if kind == "wait":
+            kw.setdefault("scope", "target")
         if not p.get("isDraft"):
             kw.setdefault(
                 "warnings",
@@ -1026,7 +1053,7 @@ def decide(
             if wait and wait.blocking:
                 hold_claims |= wait.unread or not free_claims
                 reason = "waiting: " + "; ".join(wait.blocking)
-                pr_action(p, "wait", reason + held)
+                pr_action(p, "wait", reason + held, reason_code=wait.reason_code)
             else:
                 satisfied = wait.satisfied if wait else []
                 pr_action(p, "continue", "my draft PR", warnings=satisfied)
@@ -1078,10 +1105,20 @@ def decide(
             continue
         # A conflicted head changes again when it is resolved: no review yet.
         if p.get("mergeable") == "CONFLICTING":
-            pr_action(p, "wait", f"waiting: {peer} resolves the conflict first")
+            pr_action(
+                p,
+                "wait",
+                f"waiting: {peer} resolves the conflict first",
+                reason_code="conflict_wait",
+            )
         # So does a head with failed checks: its owner gets fix-checks.
         elif checks_state(p) == "failed":
-            pr_action(p, "wait", f"waiting: {peer} fixes the failed checks first")
+            pr_action(
+                p,
+                "wait",
+                f"waiting: {peer} fixes the failed checks first",
+                reason_code="checks_wait",
+            )
         else:
             pr_action(
                 p, "review", f"{peer}'s PR has no verdict from {agent} for its head"
@@ -1136,6 +1173,8 @@ def decide(
                         "waiting: " + "; ".join(wait.blocking) + held,
                         issue=url,
                         priority=rank,
+                        reason_code=wait.reason_code,
+                        scope="target",
                     ),
                     wave,
                     number,
@@ -1178,6 +1217,8 @@ def decide(
                         issue=url,
                         priority=rank,
                         warnings=warnings,
+                        reason_code="dependency_wait",
+                        scope="target",
                     ),
                     wave,
                     number,
@@ -1191,6 +1232,8 @@ def decide(
                         issue=url,
                         priority=rank,
                         warnings=warnings,
+                        reason_code="capacity_wait",
+                        scope="target",
                     ),
                     wave,
                     number,
@@ -1232,9 +1275,14 @@ def decide(
         actions = [
             a for a in actions if a.action != "claim"
         ]  # one implementation at a time
-    if not actions and focus:
-        return [Action("idle", f"nothing to do in focus {', '.join(sorted(focus))}")]
-    return actions or [Action("idle", "nothing to do")]
+    if actions:
+        return actions
+    idle = (
+        f"nothing to do in focus {', '.join(sorted(focus))}"
+        if focus
+        else "nothing to do"
+    )
+    return [Action("idle", idle, reason_code="no_eligible_work", scope="agent")]
 
 
 def comments_from_rest(

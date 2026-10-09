@@ -235,6 +235,20 @@ def when(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def retry_at(action: Any, state_dir: Path, now: float) -> str | None:
+    """When the cooldown of `action` ends, or None. Read only, no GitHub read:
+    a `resolve-conflict` key matches every base, and the latest end counts."""
+    if not isinstance(action, dict):
+        return None
+    found = base_key(action)
+    ends = [
+        entry["until"]
+        for name, entry in active(load(state_dir), now).items()
+        if name == found or name.startswith(f"{found}:base:")
+    ]
+    return when(max(ends)) if ends else None
+
+
 def check(action: dict[str, Any], state_dir: Path, seen_file: Path, now: float) -> int:
     """SKIP while the action's key cools down. Saves the key for `record`."""
     seen_file.unlink(missing_ok=True)

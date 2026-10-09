@@ -256,6 +256,10 @@ export EPIC_STATE_DIR="$state_dir"
 export EPIC_QUOTA_DIR="$registry_dir"
 log_file="${state_dir}/claude.log"
 events_file="${state_dir}/claude-ticks.jsonl"
+# Model start and end (activity.py); the tick ledger rejects these events.
+activity_file="${state_dir}/claude-activity.jsonl"
+# The action a wait record names: none until the loop writes one candidate.
+activity_action=""
 
 mkdir -p "$state_dir"
 exec >> "$log_file" 2>&1
@@ -380,7 +384,23 @@ quota_open() {
     fi
     exit "$result"
 }
+# A wait activity record (activity.py): this branch refused the work before a
+# model. $1 reason code, $2 scope (agent or target), optional $3 the producer
+# of the stored retry time (quota, usage or cooldown). Before the tick starts
+# the record has its own time. Activity telemetry must never stop the tick.
+activity_wait() {
+    local args=(--file "$activity_file" --event wait --reason-code "$1" --scope "$2")
+    args+=(--tick "${tick_started:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}")
+    if [[ -n "$activity_action" ]]; then
+        args+=(--action-file "$activity_action")
+    fi
+    if [[ -n "${3:-}" ]]; then
+        args+=(--retry-from "$3" --state-dir "$registry_dir")
+    fi
+    "$py" "$events" activity "${args[@]}" || true
+}
 quota_stop() {
+    activity_wait github_quota agent quota
     printf 'tick: stopped on the GitHub GraphQL quota; wait stored\n' >&2
     tick_outcome=blocked
     tick_phase=quota
@@ -388,6 +408,7 @@ quota_stop() {
 }
 # A blocked or timed-out GitHub read (shared reader): no action from it.
 read_blocked() {
+    activity_wait connection_failure agent
     printf 'tick: GitHub read blocked in %s; no action\n' "$1" >&2
     tick_outcome=blocked
     tick_phase=$1
@@ -404,12 +425,14 @@ usage_check() {
     fi
     tick_phase=usage
     if [[ "$result" == 3 ]]; then
+        activity_wait model_usage_limit agent usage
         exit 0
     fi
     exit "$result"
 }
 
 if ! quota_open; then
+    activity_wait github_quota agent quota
     exit 0
 fi
 
@@ -503,6 +526,7 @@ printf '%s\n' "$candidates"
 # The other runner may have stored a quota wait while the selector ran.
 if ! quota_open; then
     tick_phase=quota
+    activity_wait github_quota agent quota
     exit 0
 fi
 
@@ -527,6 +551,7 @@ stop_if_held() {
         printf 'tick: %s held by the environment hold; no model\n' "$action"
         tick_outcome=blocked
         tick_phase=backoff
+        activity_wait environment_failure agent
         exit 0
     fi
     exit "$result"
@@ -577,6 +602,7 @@ while IFS= read -r -u 3 candidate; do
         continue
     fi
     printf '%s\n' "$candidate" > "${lock_dir}/action.json"
+    activity_action="${lock_dir}/action.json"
     action=$("${py_snippet[@]}" -c 'import json, sys; print(json.load(sys.stdin)["action"])' \
         < "${lock_dir}/action.json")
     case "$action" in
@@ -593,6 +619,7 @@ while IFS= read -r -u 3 candidate; do
     stop_if_held
     tick_phase=lock
     if ! lock_target; then
+        activity_wait target_lock target
         printf 'tick: %s target locked by another runner; next candidate\n' "$action"
         continue
     fi
@@ -600,6 +627,7 @@ while IFS= read -r -u 3 candidate; do
     # wait: no further GitHub read then.
     if ! quota_open; then
         tick_phase=quota
+        activity_wait github_quota agent quota
         exit 0
     fi
     # A resolve-conflict key at its attempt limit starts no model; the check
@@ -614,6 +642,8 @@ while IFS= read -r -u 3 candidate; do
             0) ;;
             3)
                 release_target
+                # The check posted the escalation label: Anton decides.
+                activity_wait operator_wait target
                 printf 'tick: %s reached its attempt limit; next candidate\n' "$action"
                 continue
                 ;;
@@ -631,6 +661,7 @@ while IFS= read -r -u 3 candidate; do
         0) ;;
         3)
             release_target
+            activity_wait retry_backoff target cooldown
             printf 'tick: %s target cools down; next candidate\n' "$action"
             continue
             ;;
@@ -769,6 +800,7 @@ fi
 stop_if_held
 if ! quota_open; then
     tick_phase=quota
+    activity_wait github_quota agent quota
     exit 0
 fi
 # The Claude usage admission, under the account lock: another runner may
@@ -796,6 +828,7 @@ case "$admit" in
     3)
         discard_seen
         tick_phase=usage
+        activity_wait model_usage_limit agent usage
         exit 0
         ;;
     *)
@@ -814,6 +847,7 @@ if [[ "$action" == resolve-conflict ]]; then
     case "$started" in
         0) attempt_open=1 ;;
         3)
+            activity_wait operator_wait target
             printf 'tick: %s reached its attempt limit before the model\n' "$action"
             exit 0
             ;;
@@ -920,6 +954,9 @@ fi
 session_id=$usage_id
 step_mark model
 model_started=1
+# Activity telemetry must never stop the tick.
+"$py" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-start --action-file "${lock_dir}/action.json" || true
 # 18>&- 19>&-: the usage locks stay with this shell, never with the model.
 run_bounded "${tick_timeout}s" \
     env EPIC_ACTION_FILE="${lock_dir}/action.json" EPIC_TRUSTED_ROOT="$repo_root" \
@@ -935,6 +972,8 @@ run_bounded "${tick_timeout}s" \
     > "${lock_dir}/result.json" 18>&- 19>&- || model_exit=$?
 receipt=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 model_done=1
+"$py" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-end --action-file "${lock_dir}/action.json" || true
 step_mark validation
 cat "${lock_dir}/result.json" || true
 printf '\ntick: model exit=%s\n' "$model_exit"
