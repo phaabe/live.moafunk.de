@@ -279,8 +279,62 @@ class RealGitTest(unittest.TestCase):
         outside = self.tmp / "outside"
         run(self.repo, "git", "worktree", "move", str(path), str(outside))
         path.symlink_to(outside)
-        with self.assertRaisesRegex(rw.Stop, "resolves outside"):
+        with self.assertRaisesRegex(rw.Stop, "is a symlink"):
             self.prepare(self.fix())
+
+    def test_looping_or_parent_symlink_is_a_refusal(self) -> None:
+        # Codex review on https://github.com/phaabe/live.moafunk.de/pull/703:
+        # a self-referential link resolved back to the branch path, so
+        # `git worktree add` failed and the CLI exited 1.
+        path = self.root / BRANCH
+        path.parent.mkdir(parents=True)
+        path.symlink_to(path)
+        with self.assertRaisesRegex(rw.Stop, "is a symlink") as stop:
+            self.prepare(self.fix())
+        self.assertEqual(stop.exception.kind, "refusal")
+        self.assertTrue(path.is_symlink())
+        # A link on a component below the fixed dir is refused the same way.
+        path.unlink()
+        path.parent.rmdir()
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        path.parent.symlink_to(elsewhere)
+        with self.assertRaisesRegex(rw.Stop, f"{path.parent} is a symlink"):
+            self.prepare(self.fix())
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_stale_registration_is_a_refusal_not_a_handoff(self) -> None:
+        # Codex review on https://github.com/phaabe/live.moafunk.de/pull/703:
+        # the human checkout was moved away and an empty dir took its place.
+        human = self.human_checkout()
+        os.rename(human, self.tmp / "moved")
+        human.mkdir()
+        with self.assertRaisesRegex(rw.Stop, "is not a checkout of it") as stop:
+            self.prepare(self.fix())
+        self.assertNotIsInstance(stop.exception, rw.Handoff)
+        self.assertEqual(list(human.iterdir()), [])
+        self.assertFalse((self.root / BRANCH).exists())
+
+    def test_unreadable_held_checkout_is_a_refusal(self) -> None:
+        human = self.human_checkout()
+        before = self.snapshot(human)
+        human.chmod(0)
+        self.addCleanup(human.chmod, 0o755)
+        if os.access(human, os.X_OK):
+            self.skipTest("running as a user that ignores file modes")
+        with self.assertRaisesRegex(rw.Stop, "unreadable") as stop:
+            self.prepare(self.fix())
+        self.assertNotIsInstance(stop.exception, rw.Handoff)
+        human.chmod(0o755)
+        self.assertEqual(self.snapshot(human), before)
+
+    def test_git_refusal_with_a_stale_registration_is_a_refusal(self) -> None:
+        human = self.human_checkout()
+        os.rename(human, self.tmp / "moved")
+        human.mkdir()
+        with self.assertRaises(rw.Stop) as stop:
+            rw.add(self.repo, BRANCH, self.root / BRANCH, new=False)
+        self.assertNotIsInstance(stop.exception, rw.Handoff)
 
     def test_prepare_reports_the_runner_context(self) -> None:
         info: dict[str, Any] = {}
@@ -363,7 +417,7 @@ class RealGitTest(unittest.TestCase):
         self.assertEqual(self.cli(cont, context, evidence), 7)
         first = json.loads(evidence.read_text())
         self.assertEqual((first["kind"], first["cause"]), ("refusal", "refusal"))
-        self.assertIn("resolves outside", first["reason"])
+        self.assertIn("is a symlink", first["reason"])
         # Same version: skipped by the cooldown, the cause kept.
         self.assertEqual(self.cli(cont, context, evidence), 3)
         cooled = json.loads(evidence.read_text())
@@ -387,6 +441,34 @@ class RealGitTest(unittest.TestCase):
         )
         self.assertFalse(evidence.exists())
         self.assertEqual(json.loads(state.read_text()), {})
+
+    def test_cli_stale_and_looping_paths_exit_7_with_evidence(self) -> None:
+        # Codex review on https://github.com/phaabe/live.moafunk.de/pull/703:
+        # these returned 75 (stale) and 1 (looping link) before.
+        context, evidence = self.tmp / "context.json", self.tmp / "prepare.json"
+        human = self.human_checkout()
+        os.rename(human, self.tmp / "moved")
+        human.mkdir()
+        cont = {
+            "action": "continue",
+            "reason": "t",
+            "issue": "https://github.com/phaabe/live.moafunk.de/issues/77",
+            "updated_at": "2026-10-08T00:00:00Z",
+        }
+        self.assertEqual(self.cli(cont, context, evidence), 7)
+        first = json.loads(evidence.read_text())
+        self.assertEqual((first["kind"], first["cause"]), ("refusal", "refusal"))
+        self.assertIn("is not a checkout of it", first["reason"])
+        self.assertEqual(list(human.iterdir()), [])
+        path = self.root / BRANCH
+        path.parent.mkdir(parents=True)
+        path.symlink_to(path)
+        changed = {**cont, "updated_at": "2026-10-08T01:00:00Z"}
+        self.assertEqual(self.cli(changed, context, evidence), 7)
+        loop = json.loads(evidence.read_text())
+        self.assertEqual(loop["kind"], "refusal")
+        self.assertIn("is a symlink", loop["reason"])
+        self.assertFalse(context.exists())
 
     def test_cooldown_expires_and_the_repeat_keeps_the_cause(self) -> None:
         state = self.tmp / "state"

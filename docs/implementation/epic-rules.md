@@ -623,9 +623,10 @@ Nobody uses `--force` or `--ignore-other-worktrees`, or switches, resets,
 stashes or removes another session's checkout.
 
 Preparation contract (both runners): exit `0` prepared; `75` confirmed
-handoff (above); `7` unsafe refusal (a symlink at the branch path, the wrong
-repository, a registered but missing checkout, an unreadable path, any other
-stop); `3` repeated notice, which keeps the underlying cause in its structured
+handoff (above; the held path is a readable checkout of this repository that
+holds the branch); `7` unsafe refusal (a symlink at or below the branch path,
+looping links too, the wrong repository, a registered but missing, replaced or
+unreadable checkout, an unreadable path, any other stop); `3` repeated notice, which keeps the underlying cause in its structured
 evidence. An unsafe refusal is never a handoff. A stop never changes
 ownership, parks work or frees claims: an unparked draft whose branch is held
 elsewhere stays a runnable `continue` and keeps holding claims. After a `7`

@@ -22,10 +22,11 @@ Never `--force`, `--ignore-other-worktrees`, or any change to another checkout.
 A stop never changes ownership, parks work or frees claims.
 
 Stops: a handoff (75) is confirmed only when the branch is checked out in
-another existing worktree of this repository. Every other stop is an unsafe
-refusal (7): a symlink at the branch path, the wrong repository, a registered
-but missing checkout, an unreadable path, a foreign path, or a failed PR or
-issue check. A refusal starts a preparation cooldown (`<agent>-prep-
+another existing, readable worktree of this repository (Git's registration
+alone can be stale). Every other stop is an unsafe refusal (7): a symlink at
+or below the branch path (also a looping one), the wrong repository, a
+registered but missing, replaced or unreadable checkout, an unreadable path,
+a foreign path, or a failed PR or issue check. A refusal starts a preparation cooldown (`<agent>-prep-
 cooldown.json`, REFUSAL_COOLDOWN seconds) for that target and action version
 (tick_gate.py fingerprint): the next ticks skip it without a Git or GitHub
 read (exit 3); a changed target is checked again. It is apart from the
@@ -63,6 +64,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -240,17 +242,57 @@ def add(repo: Path, branch: str, path: Path, new: bool) -> None:
     held = HELD.search(out.stderr)
     where = worktrees(repo).get(branch)
     if where is not None:
-        handoff(branch, where)
+        handoff(repo, branch, where)
     if held:
         raise Stop(f"{branch} held at {held.group(1)}, not a worktree of {REPO}")
     raise RuntimeError(f"git worktree add failed: {out.stderr.strip()}")
 
 
-def handoff(branch: str, where: Path) -> None:
-    """Raise the handoff, or a refusal when that checkout no longer exists."""
+def common_dir(path: Path) -> Path | None:
+    out = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return Path(out.stdout.strip()).resolve() if out.returncode == 0 else None
+
+
+def holds(repo: Path, where: Path, branch: str) -> bool:
+    """True when `where` is a readable checkout of this repository that holds
+    the branch (checked out, or in an unfinished rebase). Read-only."""
+    top = git(where, "rev-parse", "--show-toplevel")
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != where.resolve():
+        return False
+    mine = common_dir(where)
+    if mine is None or mine != common_dir(repo):
+        return False
+    head = git(where, "symbolic-ref", "-q", "HEAD")
+    if head.returncode == 0:
+        return head.stdout.strip() == f"refs/heads/{branch}"
+    return rebasing(where) == branch
+
+
+def handoff(repo: Path, branch: str, where: Path) -> None:
+    """Raise the handoff, or a refusal when Git's registration is stale: the
+    checkout is missing, unreadable or replaced, or does not hold the branch."""
     if not where.is_dir():
         raise Stop(f"{branch} is registered in {where} but that checkout is missing")
+    if not holds(repo, where, branch):
+        raise Stop(
+            f"{branch} is registered in {where} but that path is unreadable "
+            "or is not a checkout of it"
+        )
     raise Handoff(f"handoff needed: {branch} in {where}")
+
+
+def symlink_below(root: Path, branch: str) -> Path | None:
+    """The first symlink from `root` down to the branch path, found with lstat
+    so a looping link is never followed."""
+    path = root
+    for part in Path(branch).parts:
+        path = path / part
+        try:
+            if stat.S_ISLNK(os.lstat(path).st_mode):
+                return path
+        except FileNotFoundError:
+            return None
+    return None
 
 
 def prepare(
@@ -281,6 +323,9 @@ def prepare(
     try:
         # The real checkout must sit in the real fixed dir: a symlink at the
         # branch path (or below the dir) may point at a human's checkout.
+        link = symlink_below(root, branch)
+        if link is not None:
+            raise Stop(f"{link} is a symlink, it may resolve outside {root}")
         expected = root.resolve() / branch
         if path.resolve() != expected:
             raise Stop(f"{path} resolves outside {root}")
@@ -295,7 +340,7 @@ def prepare(
             raise Stop(f"{path} exists but does not hold {branch}")
         if where is not None:
             # Git would refuse it too; say where, and leave that checkout alone.
-            handoff(branch, where)
+            handoff(repo, branch, where)
     except OSError as error:
         raise Stop(f"{path} is unreadable: {error}") from error
     add(repo, branch, path, new)
