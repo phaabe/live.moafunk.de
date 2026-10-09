@@ -51,6 +51,8 @@ MODEL_ACTIVITY = {
     "review-refinement": "review-refinement",
 }
 RUNNER_ACTIONS = frozenset({"merge", "adopt", "set-ready", "escalate"})
+# Contract events written at the model boundaries: the model ran.
+MODEL_EVENTS = ("model-start", "model-end")
 FIXED_ACTIVITY = {"stop": "paused", "idle": "idle", "wait": "waiting"}
 
 REASON_CODES = (
@@ -158,7 +160,8 @@ def target_of(event: dict[str, Any]) -> str | None:
 def record(event: Any) -> dict[str, Any] | None:
     """The allowlisted activity record of one tick event, or None.
 
-    Reads v1 tick events (start, finish, env-block) and contract events.
+    Reads v1 tick events (start, finish, env-block) and contract events,
+    including its own output: record(record(e)) == record(e).
     Free text never passes: an `env-block` keeps only `environment_failure`
     with agent scope, and a reason code comes only from a known code field,
     never from a `reason` text.
@@ -173,7 +176,15 @@ def record(event: Any) -> dict[str, Any] | None:
         return None
     raw = event.get("action")
     action = raw if isinstance(raw, str) and ACTION.fullmatch(raw) else None
-    model = event.get("model_started") is True or kind == "model-start"
+    model = (
+        event.get("model_started") is True
+        or kind in MODEL_EVENTS
+        # A written record keeps the model activity of its action: reading
+        # it again must not turn model work into runner work.
+        or (
+            action in MODEL_ACTIVITY and event.get("activity") == MODEL_ACTIVITY[action]
+        )
+    )
     out: dict[str, Any] = {
         "v": VERSION,
         "event": kind,
@@ -196,7 +207,8 @@ def record(event: Any) -> dict[str, Any] | None:
     if kind == "env-block":
         out.update(reason("environment_failure", "agent"))
         out["activity"] = "waiting"
-    elif "reason_code" in event:
+    # A null code is no reason: a written record without one stays so.
+    elif event.get("reason_code") is not None:
         out.update(
             reason(event.get("reason_code"), event.get("scope"), event.get("retry_at"))
         )

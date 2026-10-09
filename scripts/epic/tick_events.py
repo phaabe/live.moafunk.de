@@ -15,10 +15,13 @@ file opened for appending, so lines of two writers never interleave.
                         [--timings M]
   tick_events.py activity --file V --tick T --event model-start|model-end|wait
                           [--action-file A] [--reason-code C --scope agent|target]
+                          [--retry-from quota|usage|cooldown --state-dir D]
 
 `activity` writes one activity record (activity.py) to its own file, not to
 the ticks file: the tick ledger (ticks.py) rejects event kinds it does not
-know. A model-end has no outcome; the finish event names it.
+know. A model-end has no outcome; the finish event names it. A wait with
+--retry-from carries the expiry its producer stored (github_quota.py,
+claude_usage.py, tick_cooldown.py), read only; none when it has none.
 
 Only enums, numbers, timestamps and the selector's action/PR/issue are
 written: no model text, prompts or commands. The one exception is the
@@ -132,6 +135,8 @@ SUBAGENT_TOOLS = ("Agent", "Task")
 MAX_COUNT = 10**15
 # Events of the `activity` command.
 ACTIVITY_EVENTS = ("model-start", "model-end", "wait")
+# Producers of a stored wait expiry (`activity --retry-from`).
+RETRY_SOURCES = ("quota", "usage", "cooldown")
 
 
 def open_regular(path: Path, flags: int) -> int:
@@ -461,6 +466,41 @@ def env_block(
     )
 
 
+def known_retry(
+    source: str, state_dir: Path | None, action_file: Path | None
+) -> str | None:
+    """The expiry `source` stored for its wait, or None when it knows none.
+
+    Read only. Telemetry never stops the tick: an unreadable store gives no
+    time, and the wait record is still written.
+    """
+    now = time.time()
+    try:
+        if source == "quota":
+            import github_quota
+
+            if state_dir is None:
+                return None
+            return github_quota.check(state_dir, now)[1]
+        if source == "usage":
+            import claude_usage
+
+            store = claude_usage.Store.from_env(os.environ)
+            return claude_usage.retry_at(
+                store, store.load(), datetime.fromtimestamp(now, timezone.utc)
+            )
+        import tick_cooldown
+
+        if state_dir is None or action_file is None:
+            return None
+        with read_regular(action_file) as stream:
+            action = json.loads(stream.read(MAX_ACTION_FILE).decode("utf-8"))
+        return tick_cooldown.retry_at(action, state_dir, now)
+    except Exception as error:  # noqa: BLE001 - any store error: no time
+        print(f"tick_events: no {source} retry time: {error}", file=sys.stderr)
+        return None
+
+
 def activity_event(
     path: Path,
     tick: str,
@@ -468,11 +508,13 @@ def activity_event(
     action_file: Path | None,
     reason_code: str | None = None,
     scope: str | None = None,
+    retry_at: str | None = None,
 ) -> None:
     """One activity record: a model boundary, or a wait without a model.
 
     The model ran for model-start and model-end. A wait carries the reason
-    code and scope the runner branch that refused the work names.
+    code and scope the runner branch that refused the work names, and the
+    retry time its producer stored (activity.py drops an invalid one).
     """
     import activity  # only this command needs the contract
 
@@ -484,7 +526,7 @@ def activity_event(
         **action_fields(action_file),
     }
     if kind == "wait":
-        event.update(reason_code=reason_code, scope=scope)
+        event.update(reason_code=reason_code, scope=scope, retry_at=retry_at)
     found = activity.record(event)
     if found is None:
         raise ValueError("invalid activity event")
@@ -507,6 +549,8 @@ def main(argv: list[str] | None = None) -> int:
     # wait only; activity.record() turns an unknown code into `unknown`.
     boundary.add_argument("--reason-code")
     boundary.add_argument("--scope", choices=("agent", "target"))
+    boundary.add_argument("--retry-from", choices=RETRY_SOURCES)
+    boundary.add_argument("--state-dir", type=Path)
     for command in (start, finish):
         command.add_argument("--file", type=Path, required=True)
         command.add_argument("--tick", required=True)
@@ -547,6 +591,11 @@ def main(argv: list[str] | None = None) -> int:
 def write(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     try:
         if args.command == "activity":
+            retry_at = None
+            if args.event == "wait" and args.retry_from is not None:
+                retry_at = known_retry(
+                    args.retry_from, args.state_dir, args.action_file
+                )
             activity_event(
                 args.file,
                 args.tick,
@@ -554,6 +603,7 @@ def write(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                 args.action_file,
                 args.reason_code,
                 args.scope,
+                retry_at,
             )
             return 0
         if args.command == "start":

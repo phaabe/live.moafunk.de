@@ -591,7 +591,9 @@ class ActivityEventTest(unittest.TestCase):
         self.file = self.root / "claude-activity.jsonl"
         self.action = self.root / "action.json"
 
-    def run_helper(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_helper(
+        self, *args: str, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         # As the runner calls it: `activity` is found next to the script.
         return subprocess.run(
             [sys.executable, str(Path(tick_events.__file__)), "activity", *args],
@@ -599,6 +601,7 @@ class ActivityEventTest(unittest.TestCase):
             text=True,
             timeout=15,
             cwd=self.root,
+            env={**os.environ, **(env or {})},
         )
 
     def boundary(self, kind: str) -> subprocess.CompletedProcess[str]:
@@ -685,6 +688,83 @@ class ActivityEventTest(unittest.TestCase):
     def test_wait_scope_is_bounded(self) -> None:
         self.assertNotEqual(self.wait("github_quota", "everyone").returncode, 0)
         self.assertFalse(self.file.exists())
+
+    def wait_from(
+        self, source: str, env: dict[str, str] | None = None
+    ) -> dict[str, object]:
+        state = self.root / "state"
+        state.mkdir(exist_ok=True)
+        self.file.unlink(missing_ok=True)
+        done = self.run_helper(
+            "--file", str(self.file), "--tick", TICK, "--event", "wait",
+            "--action-file", str(self.action), "--reason-code", "github_quota",
+            "--scope", "agent", "--retry-from", source, "--state-dir", str(state),
+            env=env,
+        )  # fmt: skip
+        self.assertEqual(done.returncode, 0, done.stderr)
+        [found] = self.records()
+        return found
+
+    def test_wait_carries_the_stored_quota_retry_time(self) -> None:
+        # Codex review on PR 699: the known expiry reaches the record.
+        self.action.write_text(json.dumps({"action": "fix", "pr": 699}))
+        self.assertIsNone(self.wait_from("quota")["retry_at"])
+        (self.root / "state/github-quota-wait.json").write_text(
+            json.dumps({"retry_at": "2099-01-01T00:00:00Z"})
+        )
+        self.assertEqual(self.wait_from("quota")["retry_at"], "2099-01-01T00:00:00Z")
+        # An expired wait is no retry time.
+        (self.root / "state/github-quota-wait.json").write_text(
+            json.dumps({"retry_at": "2000-01-01T00:00:00Z"})
+        )
+        self.assertIsNone(self.wait_from("quota")["retry_at"])
+
+    def test_wait_carries_the_stored_usage_retry_time(self) -> None:
+        import claude_usage as cu
+
+        quota_dir = self.root / "quota"
+        quota_dir.mkdir(mode=0o700)
+        env = {"EPIC_QUOTA_DIR": str(quota_dir)}
+        self.assertIsNone(self.wait_from("usage", env)["retry_at"])
+        store = cu.Store.from_env(env)
+        store.create()
+        data = cu.empty()
+        data["generation"] = 1
+        data["wait"] = {
+            "reason": "session_limit", "observed_at": "2026-01-01T00:00:00Z",
+            "reset_at": None, "retry_at": "2099-01-01T00:00:00Z",
+            "source": "fallback", "fallback_count": 1, "detail": "past_reset",
+        }  # fmt: skip
+        store.save(data)
+        self.assertEqual(
+            self.wait_from("usage", env)["retry_at"], "2099-01-01T00:00:00Z"
+        )
+
+    def test_wait_carries_the_target_cooldown_end(self) -> None:
+        sha = "a" * 40
+        self.action.write_text(json.dumps({"action": "fix", "pr": 699, "sha": sha}))
+        self.assertIsNone(self.wait_from("cooldown")["retry_at"])
+        until = 4102444800.0  # 2100-01-01T00:00:00Z
+        (self.root / "state/claude-cooldown.json").write_text(
+            json.dumps(
+                {
+                    f"claude:fix:pr:699:{sha}": {"at": 1.0, "until": until, "reason": "x"},
+                    f"claude:fix:pr:700:{sha}": {"at": 1.0, "until": until + 60, "reason": "x"},
+                }
+            )
+        )  # fmt: skip
+        self.assertEqual(self.wait_from("cooldown")["retry_at"], "2100-01-01T00:00:00Z")
+
+    def test_an_unreadable_store_still_writes_the_wait(self) -> None:
+        self.action.write_text(json.dumps({"action": "fix", "pr": 699}))
+        (self.root / "state").mkdir()
+        (self.root / "state/github-quota-wait.json").write_text("not json")
+        found = self.wait_from("quota")
+        self.assertEqual(
+            (found["reason_code"], found["retry_at"]), ("github_quota", None)
+        )
+        # A cooldown needs the action's head: without it, no time either.
+        self.assertIsNone(self.wait_from("cooldown")["retry_at"])
 
     def test_tick_ledger_never_reads_the_activity_file(self) -> None:
         # The runner's events file stays free of event kinds it rejects.

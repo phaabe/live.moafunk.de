@@ -235,6 +235,81 @@ class SharedFixtureTest(unittest.TestCase):
         )
         self.assertEqual(tuple(written), activity.RECORD_KEYS)
 
+    def test_every_record_reads_back_unchanged(self) -> None:
+        # Codex review on PR 699: a collector reads written records again.
+        for case in self.cases():
+            if case["record"] is None:
+                continue
+            with self.subTest(case=case["name"]):
+                serialized = json.loads(json.dumps(case["record"]))
+                self.assertEqual(activity.record(serialized), case["record"])
+
+
+class RoundTripTest(unittest.TestCase):
+    """Codex review on PR 699: records the runner's writer serialized read
+    back unchanged, model boundaries and null reasons included."""
+
+    def written(self, kind: str, action: str, **wait: Any) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            action_file = Path(tmp) / "action.json"
+            action_file.write_text(json.dumps({"action": action, "pr": 699}))
+            out = Path(tmp) / "activity.jsonl"
+            tick_events.activity_event(out, TICK, kind, action_file, **wait)
+            found: dict[str, Any] = json.loads(out.read_text())
+        return found
+
+    def test_model_boundaries_keep_their_activity_and_null_reason(self) -> None:
+        for action, expected in (
+            ("review-refinement", "review-refinement"),
+            ("refine", "refine"),
+            ("review", "review"),
+            ("fix", "code"),
+            ("merge", "runner"),
+        ):
+            for kind in ("model-start", "model-end"):
+                with self.subTest(action=action, kind=kind):
+                    written = self.written(kind, action)
+                    self.assertEqual(written["activity"], expected)
+                    self.assertIsNone(written["reason_code"])
+                    read = rec(written)
+                    self.assertEqual(read, written)
+                    self.assertEqual(
+                        (read["activity"], read["reason_code"], read["scope"]),
+                        (expected, None, None),
+                    )
+
+    def test_wait_keeps_reason_scope_and_retry(self) -> None:
+        written = self.written(
+            "wait",
+            "fix",
+            reason_code="github_quota",
+            scope="agent",
+            retry_at="2099-01-01T00:00:00Z",
+        )
+        self.assertEqual(
+            (written["reason_code"], written["scope"], written["retry_at"]),
+            ("github_quota", "agent", "2099-01-01T00:00:00Z"),
+        )
+        self.assertEqual(rec(written), written)
+
+    def test_finish_of_model_work_reads_back_as_model_work(self) -> None:
+        first = rec(
+            {"event": "finish", "tick": TICK, "action": "review", "pr": 1,
+             "model_started": True, "outcome": "ok"}
+        )  # fmt: skip
+        self.assertEqual(first["activity"], "review")
+        self.assertEqual(rec(json.loads(json.dumps(first))), first)
+
+    def test_a_claimed_activity_never_makes_runner_work_model_work(self) -> None:
+        # Only the action's own model activity is kept, never another one.
+        for claimed in ("review", "refine", "paused"):
+            with self.subTest(claimed=claimed):
+                found = rec(
+                    {"event": "finish", "tick": TICK, "action": "fix",
+                     "activity": claimed}
+                )  # fmt: skip
+                self.assertEqual(found["activity"], "runner")
+
 
 if __name__ == "__main__":
     unittest.main()

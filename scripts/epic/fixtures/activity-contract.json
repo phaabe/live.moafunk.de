@@ -37,6 +37,11 @@
       "record": {"v": 1, "event": "model-end", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:20:00Z", "action": "review-refinement", "activity": "review-refinement", "target": "issue:685", "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
     },
     {
+      "name": "a written model-end record reads back unchanged",
+      "event": {"v": 1, "event": "model-end", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:20:00Z", "action": "review-refinement", "activity": "review-refinement", "target": "issue:685", "outcome": null, "reason_code": null, "scope": null, "retry_at": null},
+      "record": {"v": 1, "event": "model-end", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:20:00Z", "action": "review-refinement", "activity": "review-refinement", "target": "issue:685", "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
+    },
+    {
       "name": "set-ready stays runner work with a model",
       "event": {"event": "model-start", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:01:00Z", "model_started": true, "action": "set-ready", "issue": "https://github.com/phaabe/live.moafunk.de/issues/694"},
       "record": {"v": 1, "event": "model-start", "tick": "2026-10-08T01:00:00Z", "at": "2026-10-08T01:01:00Z", "action": "set-ready", "activity": "runner", "target": "issue:694", "outcome": null, "reason_code": null, "scope": null, "retry_at": null}
