@@ -136,6 +136,27 @@ fn redact_icecast_password(url: &str) -> String {
     }
 }
 
+/// Replace the password of every `scheme://user:pass@host` URL in a log line.
+/// ffmpeg prints its full output URL on errors, and the Icecast URL holds the
+/// harbor password.
+fn redact_url_credentials(line: &str) -> String {
+    line.split(' ')
+        .map(|token| {
+            let Some((scheme, rest)) = token.split_once("://") else {
+                return token.to_string();
+            };
+            match rest.split_once('@') {
+                Some((creds, host)) if !creds.contains('/') => match creds.split_once(':') {
+                    Some((user, _pass)) => format!("{scheme}://{user}:***@{host}"),
+                    None => token.to_string(),
+                },
+                _ => token.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Log an ffmpeg child's stderr line by line. Every piped stderr must be read:
 /// once the pipe buffer (about 64 KB) is full, ffmpeg blocks and stops reading
 /// its input.
@@ -146,7 +167,8 @@ fn log_ffmpeg_stderr(child: &mut Child, label: String) {
             // Split on raw bytes so a non-UTF-8 line can't end the loop early.
             let mut lines = BufReader::new(stderr).split(b'\n');
             while let Ok(Some(line)) = lines.next_segment().await {
-                tracing::warn!("ffmpeg ({}): {}", label, String::from_utf8_lossy(&line));
+                let line = redact_url_credentials(&String::from_utf8_lossy(&line));
+                tracing::warn!("ffmpeg ({}): {}", label, line);
             }
         });
     }
@@ -962,6 +984,20 @@ mod tests {
         let err = concat_segments(dir.path(), &out).await.unwrap_err();
         assert!(matches!(err, StreamError::RecordingError(_)));
         assert!(!out.exists());
+    }
+
+    #[test]
+    fn ffmpeg_log_lines_hide_url_passwords() {
+        let line =
+            "Error opening output icecast://source:s3cret@127.0.0.1:8005/live: Connection refused";
+        let redacted = redact_url_credentials(line);
+        assert_eq!(
+            redacted,
+            "Error opening output icecast://source:***@127.0.0.1:8005/live: Connection refused"
+        );
+        // Lines without credentials stay as they are.
+        let plain = "Opening 'icecast://127.0.0.1:8005/live' and http://host:8000/a@b";
+        assert_eq!(redact_url_credentials(plain), plain);
     }
 
     #[tokio::test]
