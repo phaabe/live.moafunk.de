@@ -147,14 +147,15 @@ GRANT = re.compile(
 # grant only when Anton tells them to, never as part of an escalation.
 OPERATOR_LOGINS = frozenset({"anneoneone"})
 EXECUTOR_LINE = re.compile(
-    r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t]*$", re.MULTILINE
+    r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t\r]*$", re.MULTILINE
 )
 REVIEWER_LINE = re.compile(r"\bReviewer:\s*(Claude|Codex)\b")
 # Owner lines with any value, for the check that a PR's label agrees with them.
+# `\r` before `$`: a body with Windows line endings reads the same.
 BODY_EXECUTOR = re.compile(
-    r"^[ \t]*(?:Executor|Author):[ \t]*(.*?)[ \t]*$", re.MULTILINE
+    r"^[ \t]*(?:Executor|Author):[ \t]*(.*?)[ \t\r]*$", re.MULTILINE
 )
-BODY_REVIEWER = re.compile(r"^[ \t]*Reviewer:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+BODY_REVIEWER = re.compile(r"^[ \t]*Reviewer:[ \t]*(.*?)[ \t\r]*$", re.MULTILINE)
 # Executor labels name the owner of an issue or PR. A valid one wins over the
 # board Executor field and the PR body lines (Assignment, epic-rules.md 1).
 EXECUTOR_PREFIX = "executor::"

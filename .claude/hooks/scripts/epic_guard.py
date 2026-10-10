@@ -412,8 +412,9 @@ def runner_write_check(tool: str, tool_input: dict, cwd: str) -> None:
     write_checks = load_write_checks(code_root(), "Runner write checks")
     try:
         if os.environ.get("EPIC_SHARED_READER") == "0":
-            # Reader off: only the Status rules, which need no GitHub read.
-            refused = write_checks.status_refusal(tool, tool_input, cwd)
+            # Reader off: only the Status and executor-label rules, which need
+            # no GitHub read.
+            refused = write_checks.status_refusal(tool, tool_input, cwd, agent="Claude")
         else:
             refused = write_checks.guard(tool, tool_input, cwd, agent="Claude")
     except Exception as exc:  # exit 1 would let the write through

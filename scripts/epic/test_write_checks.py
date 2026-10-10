@@ -662,6 +662,50 @@ class ExecutorLabels(Base):
         )
         self.assertIn("no executor:: label edits", reason or "")
 
+    def test_graphql_requests_from_files_are_read(self) -> None:
+        # Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/721
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
+        mutation = (
+            'mutation { addLabelsToLabelable(input: {labelableId: "I", '
+            'labelIds: ["L"]}) { clientMutationId } }'
+        )
+        request = json.dumps({"query": mutation})
+        (self.root / "labels.graphql").write_text(mutation)
+        (self.root / "labels.json").write_text(request)
+        (self.root / "read.graphql").write_text("query { viewer { login } }")
+        (self.root / "board.graphql").write_text(
+            'mutation { clearProjectV2ItemFieldValue(input: {itemId: "PVTI_1"}) '
+            "{ clientMutationId } }"
+        )
+        refused = {
+            "gh api graphql -F query=@labels.graphql": "no executor:: label edits",
+            "gh api graphql --field query=@labels.graphql": "no executor:: label",
+            "gh api graphql --input labels.json": "no executor:: label edits",
+            f"gh api graphql --input - <<'EOF'\n{request}\nEOF": "no executor::",
+            f"gh api graphql -F query=@- <<'EOF'\n{mutation}\nEOF": "no executor::",
+            "gh api graphql -F query=@board.graphql": "no raw board writes",
+            # Parts that cannot be read may hold a mutation.
+            "gh api graphql -F query=@missing.graphql": "cannot read the GraphQL",
+            "cat labels.json | gh api graphql --input -": "cannot read the GraphQL",
+            "gh api graphql --input - < labels.json": "cannot read the GraphQL",
+        }
+        for reader in ("1", "0"):
+            with patch.dict(os.environ, {"EPIC_SHARED_READER": reader}):
+
+                def check(command: str) -> str | None:
+                    if reader == "1":
+                        return self.bash(command)
+                    return wc.status_refusal(
+                        "Bash", {"command": command}, str(self.root), "Claude"
+                    )
+
+                for command, expected in refused.items():
+                    with self.subTest(reader=reader, command=command):
+                        self.assertIn(expected, check(command) or "")
+                # A read from a file stays allowed.
+                self.assertIsNone(check("gh api graphql -F query=@read.graphql"))
+
     def test_a_new_pr_may_carry_only_its_own_label(self) -> None:
         self.action(action="claim", issue=f"{ISSUES}/21")
         self.reader.items = [item(21, "In progress")]
@@ -863,10 +907,12 @@ class Callers(Base):
                 done = self.hook(trusted, EPIC_ACTION_FILE="", EPIC_SHARED_READER=value)
                 self.assertEqual(done.returncode, 0, done.stderr)
 
-    def hook(self, root: Path, **env: str) -> subprocess.CompletedProcess[str]:
+    def hook(
+        self, root: Path, command: str = "git push origin feat/5-x", **env: str
+    ) -> subprocess.CompletedProcess[str]:
         payload = {
             "tool_name": "Bash",
-            "tool_input": {"command": "git push origin feat/5-x"},
+            "tool_input": {"command": command},
             "cwd": str(self.root),
         }
         return subprocess.run(
@@ -887,7 +933,8 @@ class Callers(Base):
             "def guard(tool, tool_input, cwd, agent=None):\n"
             "    assert agent == 'Claude', agent\n"
             "    return 'PR 5 is merged'\n"
-            "def status_refusal(tool, tool_input, cwd):\n"
+            "def status_refusal(tool, tool_input, cwd, agent=None):\n"
+            "    assert agent == 'Claude', agent\n"
             "    return os.environ.get('FAKE_STATUS_REFUSAL')\n"
         )
         blocked = self.hook(trusted)
@@ -901,6 +948,23 @@ class Callers(Base):
         self.assertEqual(off.returncode, 2, off.stderr)
         self.assertIn("no raw board", off.stderr)
         self.assertEqual(self.hook(trusted, EPIC_ACTION_FILE="").returncode, 0)
+
+    def test_hook_with_the_reader_off_allows_only_a_claude_pr_label(self) -> None:
+        # Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/721
+        self.action(action="claim", issue=f"{ISSUES}/21")
+        create = "gh pr create --draft --base dev/312-interim -t t --label {} -F {}"
+        codex, claude = self.root / "codex.md", self.root / "claude.md"
+        codex.write_text(f"Executor: Codex\nReviewer: Claude\nIssue: {ISSUES}/21\n")
+        claude.write_text(f"Executor: Claude\nReviewer: Codex\nIssue: {ISSUES}/21\n")
+        refused = self.hook(
+            ROOT, create.format("executor::codex", codex), EPIC_SHARED_READER="0"
+        )
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertIn("only the executor label executor::claude", refused.stderr)
+        allowed = self.hook(
+            ROOT, create.format("executor::claude", claude), EPIC_SHARED_READER="0"
+        )
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
 
     def test_hook_blocks_when_the_check_raises(self) -> None:
         # Exit 1 would not block in Claude Code; any error must exit 2.

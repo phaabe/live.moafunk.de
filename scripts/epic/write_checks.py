@@ -27,7 +27,9 @@ caller names the agent (Claude or Codex); "this agent" below means that one.
   REST, GraphQL label mutation,  The one exception: `gh pr create --label
   issue create with the label)   executor::<this agent>` with a body that
                                  names this agent (`Executor:` line)
-  push, PR create                PR open and not merged, branch is the PR's
+  GraphQL request from a file    read before the checks above; refused when
+  or stdin                       it cannot be read
+  push, PR create               PR open and not merged, branch is the PR's
                                  head, every issue of the PR In progress with
                                  Executor this agent; without a PR: the same
                                  for the tick's issue, branch names the issue,
@@ -132,7 +134,8 @@ class Unclear(Exception):
 
 
 class StatusUnclear(Unclear):
-    """A status helper call that is not the one allowed form."""
+    """A status helper call that is not the one allowed form, or a GraphQL
+    request that cannot be read. Refused also with the shared reader off."""
 
 
 @dataclass
@@ -221,6 +224,28 @@ def read_file(path: str, cwd: str, stdin: str) -> str:
         return (Path(cwd) / os.path.expanduser(path)).read_text()
     except (OSError, UnicodeDecodeError):
         return ""
+
+
+def graphql_text(flags: dict[str, list[str]], cwd: str, stdin: str) -> str:
+    """The whole GraphQL request, with the parts gh reads from a file or
+    stdin (`-F query=@file`, `--input file`). A part that cannot be read is
+    refused: it may hold a mutation."""
+    parts = flags.get("-f", []) + flags.get("--raw-field", [])
+    sources = list(flags.get("--input", []))
+    for field in flags.get("-F", []) + flags.get("--field", []):
+        parts.append(field)
+        value = field.partition("=")[2]
+        if value.startswith("@"):
+            sources.append(value[1:])
+    for source in sources:
+        text = read_file(source, cwd, stdin)
+        if not text:
+            raise StatusUnclear(
+                f"cannot read the GraphQL request from {source}; pass the query "
+                "inline (-f query=...) or in a heredoc"
+            )
+        parts.append(text)
+    return " ".join(parts)
 
 
 def attached_short(arg: str) -> bool:
@@ -346,7 +371,7 @@ def api_writes(args: list[str], cwd: str, stdin: str) -> list[Write]:
     if not method:
         method = "POST" if fields or "--input" in flags else "GET"
     if endpoint == "graphql":
-        text = " ".join(fields)
+        text = graphql_text(flags, cwd, stdin)
         if "mutation" in text and "ProjectV2" in text:
             m = ITEM_ID.search(text)
             return [Write("board", item=m.group(1) if m else None)]

@@ -1576,6 +1576,22 @@ class ExecutorLabelTest(unittest.TestCase):
                 )
                 self.assertEqual((got.state, got.executor), expected)
 
+    def test_windows_line_endings_read_the_same(self) -> None:
+        # Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/721
+        body = "Executor: Claude \r\nLane: setup\r\nReviewer: Codex\r\n"
+        for names, expected in (
+            (["executor::claude"], ("valid", "Claude")),
+            ([], ("absent", "Claude")),
+            (["executor::codex"], ("invalid", None)),
+        ):
+            with self.subTest(labels=names):
+                got = next_action.pr_assignment(
+                    {"body": body, "labels": labelled(*names)}
+                )
+                self.assertEqual((got.state, got.executor), expected)
+        # The Executor line alone, without the Reviewer fallback.
+        self.assertEqual(next_action.body_author("Executor: Codex\r\nX: y"), "Codex")
+
     def test_pr_author_names_only_agents(self) -> None:
         author = next_action.pr_author
         self.assertEqual(author({"labels": labelled("executor::codex")}), "Codex")
