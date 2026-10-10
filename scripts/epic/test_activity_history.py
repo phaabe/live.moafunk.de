@@ -1,0 +1,383 @@
+"""Activity history ledger tests. Run: python3 -m unittest discover -s scripts/epic."""
+
+from __future__ import annotations
+
+import isolated_env  # noqa: F401  (first: hides live runner state)
+
+from datetime import datetime, timezone
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+import activity_history as ah
+from activity_history import Interval, Wait
+
+T0 = 1_791_000_000 - 1_791_000_000 % 7200  # a 2 h-aligned UTC time
+
+
+def iso(at: int) -> str:
+    return datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def line(event: str, at: int, **extra: Any) -> str:
+    return json.dumps({"event": event, "tick": iso(at), "at": iso(at), **extra}) + "\n"
+
+
+class LedgerCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.db = ah.default_path(self.dir)
+        self.conn = ah.open_ledger(self.db)
+        self.file = self.dir / "claude-activity.jsonl"
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def write(self, *lines: str, mode: str = "a") -> None:
+        with self.file.open(mode) as handle:
+            handle.write("".join(lines))
+
+    def ingest(self) -> ah.IngestResult:
+        return ah.ingest(self.conn, "claude", self.file)
+
+    def count(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+
+
+class IngestTest(LedgerCase):
+    def test_replay_after_restart_stores_nothing_twice(self) -> None:
+        self.write(line("start", T0), line("finish", T0 + 30, outcome="ok"))
+        self.assertEqual(self.ingest().stored, 2)
+        self.conn.close()
+        self.conn = ah.open_ledger(self.db)
+        self.assertEqual(self.ingest().stored, 0)
+        self.conn.execute("DELETE FROM cursors")
+        again = self.ingest()
+        self.assertEqual((again.stored, again.duplicates), (0, 2))
+        self.assertEqual(self.count(), 2)
+
+    def test_partial_line_waits_for_its_newline(self) -> None:
+        self.write(line("start", T0), '{"event": "finish"')
+        self.assertEqual(self.ingest().stored, 1)
+        self.write(f', "tick": "{iso(T0)}", "at": "{iso(T0 + 5)}"}}\n')
+        self.assertEqual(self.ingest().stored, 1)
+        self.assertEqual(self.count(), 2)
+
+    def test_malformed_lines_are_counted_not_stored(self) -> None:
+        self.write(
+            "not json\n", '{"event": "start"}\n', "x" * 5000 + "\n", line("start", T0)
+        )
+        result = self.ingest()
+        self.assertEqual((result.stored, result.invalid), (1, 3))
+
+    def test_model_text_never_enters_the_ledger(self) -> None:
+        self.write(line("env-block", T0, reason="secret prompt text"))
+        self.ingest()
+        (text,) = self.conn.execute("SELECT record FROM events").fetchone()
+        self.assertNotIn("secret", text)
+        self.assertEqual(json.loads(text)["reason_code"], "environment_failure")
+
+    def test_replaced_or_truncated_file_is_read_from_the_start(self) -> None:
+        self.write(line("start", T0), line("finish", T0 + 30))
+        self.ingest()
+        self.write(line("start", T0 + 60), mode="w")
+        self.assertEqual(self.ingest().stored, 1)
+        self.assertEqual(self.count(), 3)
+
+    def test_missing_file_is_no_error(self) -> None:
+        self.assertEqual(self.ingest().stored, 0)
+
+    def test_corrupt_store_raises_and_keeps_the_file(self) -> None:
+        bad = self.dir / "bad.sqlite3"
+        bad.write_bytes(b"garbage" * 200)
+        with self.assertRaises(ah.LedgerError):
+            ah.open_ledger(bad)
+        self.assertEqual(bad.read_bytes(), b"garbage" * 200)
+
+
+class IntervalTest(LedgerCase):
+    def test_model_work_then_runner_then_idle(self) -> None:
+        self.write(
+            line("start", T0),
+            line("model-start", T0 + 10, action="claim"),
+            line("model-end", T0 + 70, action="claim"),
+            line("finish", T0 + 80, action="claim", outcome="ok"),
+        )
+        self.ingest()
+        ah.observe(self.conn, "claude", T0, T0 + 100)
+        got = [
+            (i.state, i.start - T0, i.end - T0)
+            for i in ah.intervals(self.conn, "claude", T0, T0 + 100)
+        ]
+        self.assertEqual(
+            got,
+            [
+                ("runner", 0, 10),
+                ("code", 10, 70),
+                ("runner", 70, 80),
+                ("idle", 80, 100),
+            ],
+        )
+
+    def test_outage_is_unknown_not_carried_work(self) -> None:
+        self.write(line("model-start", T0, action="review"))
+        self.ingest()
+        ah.observe(self.conn, "claude", T0, T0 + 60)
+        got = [
+            (i.state, i.start - T0, i.end - T0)
+            for i in ah.intervals(self.conn, "claude", T0, T0 + 600)
+        ]
+        self.assertEqual(got, [("review", 0, 60), ("unknown", 60, 600)])
+
+    def test_state_at_window_start_comes_from_earlier_event(self) -> None:
+        self.write(line("model-start", T0, action="fix"))
+        self.ingest()
+        ah.observe(self.conn, "claude", T0, T0 + 3600)
+        got = ah.intervals(self.conn, "claude", T0 + 600, T0 + 660)
+        self.assertEqual([(i.state, i.end - i.start) for i in got], [("code", 60)])
+
+    def test_wait_keeps_reason_and_scope(self) -> None:
+        self.write(line("wait", T0, reason_code="target_lock", scope="target"))
+        self.ingest()
+        ah.observe(self.conn, "claude", T0, T0 + 10)
+        (got,) = ah.intervals(self.conn, "claude", T0, T0 + 10)
+        self.assertEqual(
+            (got.state, got.reason_code, got.scope),
+            ("waiting", "target_lock", "target"),
+        )
+
+    def test_no_negative_or_overlapping_intervals_after_clock_step_back(self) -> None:
+        self.write(line("start", T0 + 50), line("finish", T0 + 20))
+        self.ingest()
+        ah.observe(self.conn, "claude", T0, T0 + 100)
+        got = ah.intervals(self.conn, "claude", T0, T0 + 100)
+        self.assertTrue(all(i.end > i.start for i in got))
+        self.assertEqual(sum(i.end - i.start for i in got), 100)
+        for a, b in zip(got, got[1:]):
+            self.assertLessEqual(a.end, b.start)
+
+
+class DominantTest(unittest.TestCase):
+    def test_eight_minutes_coding_beats_two_blocked(self) -> None:
+        state, share, _ = ah.dominant(
+            [Interval("code", 0, 480), Interval("waiting", 480, 600)], 0, 600
+        )
+        self.assertEqual((state, share), ("code", 0.8))
+
+    def test_winning_share_may_be_below_half(self) -> None:
+        items = [
+            Interval("code", 0, 40),
+            Interval("review", 40, 70),
+            Interval("idle", 70, 100),
+        ]
+        state, share, _ = ah.dominant(items, 0, 100)
+        self.assertEqual((state, share), ("code", 0.4))
+
+    def test_tie_goes_to_state_seen_latest(self) -> None:
+        state, _, _ = ah.dominant(
+            [Interval("idle", 0, 50), Interval("code", 50, 100)], 0, 100
+        )
+        self.assertEqual(state, "code")
+        state, _, _ = ah.dominant(
+            [Interval("code", 0, 50), Interval("idle", 50, 100)], 0, 100
+        )
+        self.assertEqual(state, "idle")
+
+    def test_unknown_time_takes_part(self) -> None:
+        state, share, breakdown = ah.dominant([Interval("code", 0, 20)], 0, 100)
+        self.assertEqual((state, share, breakdown["unknown"]), ("unknown", 0.8, 80))
+
+    def test_short_failure_does_not_override(self) -> None:
+        items = [Interval("code", 0, 590), Interval("waiting", 590, 600)]
+        state, _, breakdown = ah.dominant(items, 0, 600)
+        self.assertEqual((state, breakdown["waiting"]), ("code", 10))
+
+
+class ResolutionTest(unittest.TestCase):
+    def test_thresholds(self) -> None:
+        cases = {
+            600: "10s",
+            399 * 10: "10s",
+            399 * 10 + 1: "1m",
+            399 * 60: "1m",
+            399 * 60 + 1: "5m",
+            399 * 300 + 1: "30m",
+            399 * 1800 + 1: "2h",
+            30 * 86_400: "2h",
+        }
+        for range_s, name in cases.items():
+            with self.subTest(range_s=range_s):
+                self.assertEqual(ah.resolution(range_s), name)
+
+    def test_every_preset_fits_400_buckets(self) -> None:
+        for range_s in (600, 1800, 3600, 7200, 21600, 86400, 7 * 86400, 30 * 86400):
+            width = ah.RESOLUTIONS[ah.resolution(range_s)]
+            self.assertLessEqual(-(-range_s // width) + 1, ah.MAX_BUCKETS)
+
+    def test_invalid_ranges_raise(self) -> None:
+        for range_s in (0, -1, 30 * 86400 + 1):
+            with self.subTest(range_s=range_s), self.assertRaises(ValueError):
+                ah.resolution(range_s)
+
+    def test_unaligned_range_is_enclosed(self) -> None:
+        starts = list(ah.bucket_starts(T0 + 7, T0 + 7 + 60, 10))
+        self.assertEqual(starts[0], T0)
+        self.assertEqual(starts[-1] + 10, T0 + 70)
+
+
+class SealTest(LedgerCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.write(
+            line("model-start", T0, action="claim"),
+            line("finish", T0 + 48, action="claim", outcome="ok"),
+        )
+        self.ingest()
+        ah.observe(self.conn, "claude", T0, T0 + 3600)
+
+    def test_open_bucket_is_not_sealed(self) -> None:
+        self.assertIsNone(ah.seal(self.conn, "claude", "1m", T0, now=T0 + 65))
+
+    def test_sealed_bucket_is_immutable_and_replay_safe(self) -> None:
+        first = ah.seal(self.conn, "claude", "1m", T0, now=T0 + 80)
+        assert first is not None
+        self.assertEqual((first.state, first.results), ("code", {"ok": 1}))
+        self.write(line("wait", T0 + 50, reason_code="target_lock", scope="target"))
+        self.ingest()
+        again = ah.seal(self.conn, "claude", "1m", T0, now=T0 + 200)
+        self.assertEqual(again, first)
+        rows = self.conn.execute("SELECT id, ts, payload FROM outbox").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], T0 + 60)  # Loki timestamp: bucket end
+
+    def test_late_record_flags_the_next_rollup(self) -> None:
+        ah.seal(self.conn, "claude", "1m", T0, now=T0 + 80)
+        ah.mark_late(self.conn, "claude", T0 + 70, T0 + 200)
+        bucket = ah.build_bucket(
+            self.conn, "claude", "1m", T0 + 60, sealed_until=T0 + 300
+        )
+        self.assertTrue(bucket.late_correction)
+
+    def test_flags_carry_partial_edge_and_in_progress(self) -> None:
+        bucket = ah.build_bucket(
+            self.conn, "claude", "2h", T0, sealed_until=T0 + 100, view=(T0 + 5, T0 + 60)
+        )
+        flags = bucket.record()["flags"]
+        self.assertEqual(
+            flags,
+            {
+                "partial": True,  # coverage ends after 1 h of the 2 h
+                "late_correction": False,
+                "edge": True,
+                "in_progress": True,
+            },
+        )
+        outside = ah.build_bucket(
+            self.conn, "claude", "1m", T0 + 7200, sealed_until=T0 + 9999
+        )
+        self.assertTrue(outside.partial)
+
+
+class LateTest(unittest.TestCase):
+    BASE = dict(interval=300.0, budget=1800.0, registered=None)  # overdue 2400 s
+
+    def check(self, now: float, **kw: Any) -> bool:
+        return ah.late(
+            now=now, last_start=0.0, paused=kw.pop("paused", False), **self.BASE, **kw
+        )
+
+    def test_age_rule(self) -> None:
+        self.assertFalse(self.check(2400))
+        self.assertTrue(self.check(2401))
+
+    def test_agent_wait_suppresses_until_retry_then_recovers(self) -> None:
+        wait = Wait("agent", "github_quota", since=100, retry_at=4000)
+        self.assertFalse(self.check(3000, waits=[wait]))
+        self.assertTrue(self.check(4001, waits=[wait]))
+
+    def test_target_wait_does_not_suppress(self) -> None:
+        self.assertTrue(
+            self.check(3000, waits=[Wait("target", "target_lock", since=2900)])
+        )
+
+    def test_ended_wait_does_not_suppress(self) -> None:
+        wait = Wait("agent", "operator_wait", since=2500, ended_at=2600)
+        self.assertTrue(self.check(3000, waits=[wait]))
+
+    def test_stale_wait_without_expiry_stops_suppressing(self) -> None:
+        wait = Wait("agent", "connection_failure", since=1000)
+        self.assertFalse(self.check(3000, waits=[wait]))
+        self.assertTrue(self.check(3401, waits=[wait]))
+
+    def test_pause_is_never_late(self) -> None:
+        self.assertFalse(self.check(99999, paused=True))
+
+    def test_new_agent_counts_from_registration(self) -> None:
+        self.assertFalse(
+            ah.late(
+                now=100,
+                last_start=None,
+                registered=None,
+                interval=1,
+                budget=1,
+                paused=False,
+            )
+        )
+        self.assertTrue(
+            ah.late(
+                now=100,
+                last_start=None,
+                registered=0,
+                interval=1,
+                budget=1,
+                paused=False,
+            )
+        )
+
+
+class RetentionTest(LedgerCase):
+    def test_prune_keeps_the_boundary_state(self) -> None:
+        old = T0 - ah.RETENTION_S - 3600
+        self.write(
+            line("start", old),
+            line("model-start", old + 10, action="claim"),
+            line("finish", T0, outcome="ok"),
+        )
+        self.ingest()
+        self.conn.execute(
+            "INSERT INTO outbox VALUES ('x', 'agent_activity_events', ?, '{}', 'pending')",
+            (old,),
+        )
+        ah.prune(self.conn, now=T0 + 10)
+        states = [
+            json.loads(r)["event"]
+            for (r,) in self.conn.execute("SELECT record FROM events ORDER BY at")
+        ]
+        self.assertEqual(states, ["model-start", "finish"])
+        ah.observe(self.conn, "claude", T0 - ah.RETENTION_S + 10, T0)
+        (first, *_rest) = ah.intervals(
+            self.conn, "claude", T0 - ah.RETENTION_S + 10, T0
+        )
+        self.assertEqual(first.state, "code")
+        (state,) = self.conn.execute("SELECT state FROM outbox").fetchone()
+        self.assertEqual(state, "expired")
+
+    def test_prune_is_bounded(self) -> None:
+        old = T0 - ah.RETENTION_S - 10_000
+        self.write(*(line("start", old + i) for i in range(20)))
+        self.ingest()
+        ah.prune(self.conn, now=T0, batch=5)
+        self.assertEqual(self.count(), 15)
+
+    def test_disk_bytes_counts_wal(self) -> None:
+        self.assertGreater(ah.disk_bytes(self.db), 0)
+        self.assertTrue(os.path.exists(self.db))
+
+
+if __name__ == "__main__":
+    unittest.main()
