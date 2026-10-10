@@ -520,8 +520,6 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
         and bool(action.get("issue"))
         and action.get("pr") is None
     )
-    if action_error is None and not shared and not issue_action:
-        return
     root = root or operational_root()
     checks = load_checks(root)
 
@@ -535,16 +533,30 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
         command, cwd = helper_push_command(tool_input.get("command", ""), cwd)
         tool_input = {**tool_input, "command": command}
     try:
+        # Status rules apply to every tick, including PR ticks with the shared
+        # reader off. Reject raw writes before any fresh GitHub read.
+        refused = checks.status_refusal(tool, tool_input, str(cwd))
+        if refused:
+            raise ValueError(refused)
         writes = checks.tool_writes(tool, tool_input, str(cwd))
+    except checks.Unclear as error:
+        if action_error is None and not shared and not issue_action:
+            # status_refusal already rejected unclear Status commands. Keep
+            # the existing reader-off behavior for unrelated commands.
+            return
+        raise ValueError(f"Runner write check failed: {error}") from error
     except Exception as error:  # Unclear commands must block with the hook protocol.
         raise ValueError(f"Runner write check failed: {error}") from error
+    if action_error is None and not shared and not issue_action:
+        writes = [write for write in writes if write.kind == "status"]
     if not writes:
         return
     if action_error is not None:
         raise ValueError(
             f"Selected runner action is unavailable: {action_error}"
         ) from action_error
-    if issue_action:
+    assignment_check = issue_action or any(write.kind == "status" for write in writes)
+    if assignment_check:
         try:
             assignment_path = root / ".codex/assignment.py"
             if not assignment_path.is_file():
@@ -561,7 +573,7 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
             raise ValueError(f"Runner write checks are unavailable: {error}") from error
     try:
         if shared:
-            kwargs = {"reader": assignment.make_reader} if issue_action else {}
+            kwargs = {"reader": assignment.make_reader} if assignment_check else {}
             refused = checks.guard(tool, tool_input, str(cwd), agent="Codex", **kwargs)
         else:
             # The shared-reader switch must stay off for the rest of the runner.
