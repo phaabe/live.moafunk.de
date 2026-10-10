@@ -154,6 +154,7 @@ else:
             "github_state.py",
             "agents.py",
             "tick_events.py",
+            "activity.py",
             "target_lock.py",
             "routing.py",
             "tick_verify.py",
@@ -2721,6 +2722,64 @@ else:
     def tick_events(self, state: Path | None = None) -> list[dict[str, object]]:
         path = (state or self.state) / "codex-ticks.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_activity_model_boundaries_preserve_result_and_privacy(self) -> None:
+        import activity
+
+        for action, activity_name, model_exit in (
+            ("review", "review", 0),
+            ("fix", "code", 17),
+        ):
+            with self.subTest(action=action):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.env["TEST_DECISION"] = json.dumps(
+                    {"action": action, "pr": 406, "sha": "a" * 40,
+                     "reason": "private model text", "prompt": "private prompt"}
+                )
+                self.env["TEST_CODEX_EXIT"] = str(model_exit)
+                self.assertEqual(self.run_tick().returncode, model_exit)
+                path = self.state / "codex-activity.jsonl"
+                records = [json.loads(line) for line in path.read_text().splitlines()]
+                self.assertEqual([r["event"] for r in records], ["model-start", "model-end"])
+                for record in records:
+                    self.assertEqual(tuple(record), activity.RECORD_KEYS)
+                    self.assertEqual(record["activity"], activity_name)
+                    self.assertEqual(record["target"], "pr:406")
+                    self.assertEqual(record["tick"], self.tick_events()[0]["tick"])
+                    self.assertIsNone(record["outcome"])
+                    self.assertEqual(activity.record(record), record)
+                self.assertNotIn("private", path.read_text())
+                self.assertEqual([r["event"] for r in self.tick_events()], ["start", "finish"])
+
+    def test_no_model_paths_emit_no_model_boundaries(self) -> None:
+        for overrides in (
+            {"TEST_DECISION": json.dumps({"action": "idle"})},
+            {"TEST_DECISION": json.dumps({"action": "stop"})},
+            {"TEST_ASSIGNMENT_EXIT": "5"},
+        ):
+            with self.subTest(overrides=overrides):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.env.update(overrides)
+                self.run_tick()
+                for key in overrides:
+                    del self.env[key]
+                self.assertFalse((self.state / "codex-activity.jsonl").exists())
+                self.assertFalse(self.calls.exists())
+
+    def test_activity_write_failure_does_not_change_model_success(self) -> None:
+        self.state.mkdir(parents=True)
+        (self.state / "codex-activity.jsonl").mkdir()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertTrue(self.calls.exists())
+        self.assertEqual(self.tick_events()[-1]["outcome"], "ok")
+
+    def test_shared_activity_compatibility_and_privacy_fixtures(self) -> None:
+        import activity
+
+        path = ROOT.parent / "scripts/epic/fixtures/activity-contract.json"
+        for case in json.loads(path.read_text())["cases"]:
+            with self.subTest(case=case["name"]):
+                self.assertEqual(activity.record(case["event"]), case["record"])
 
     def last_finish(self) -> tuple[object, ...]:
         events = self.tick_events()

@@ -52,6 +52,7 @@ export EPIC_QUOTA_DIR="$registry_dir"
 lock_dir="${state_dir}/codex.lock"
 log_file="${state_dir}/codex.log"
 events_file="${state_dir}/codex-ticks.jsonl"
+activity_file="${state_dir}/codex-activity.jsonl"
 events="${code_root}/scripts/epic/tick_events.py"
 # Tick events for the monitor: the stage the tick is in, and an outcome when
 # the runner knows better than the exit code (see tick_events.py).
@@ -840,6 +841,10 @@ launch_model() {
         --output-last-message "$model_result" \
         - < "${lock_dir}/prompt.txt"
 }
+# Keep model boundaries separate from the legacy tick ledger. Telemetry
+# failure must not prevent the selected work or change its result.
+"$python_bin" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-start --action-file "${lock_dir}/action.json" || true
 if [[ -n "$review_log" ]]; then
     launch_model > "$review_log" 2>&1 || model_exit=$?
     archive_review_output
@@ -847,6 +852,8 @@ if [[ -n "$review_log" ]]; then
 else
     launch_model || model_exit=$?
 fi
+"$python_bin" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-end --action-file "${lock_dir}/action.json" || true
 attempt_finish() {
     "$python_bin" "${code_root}/scripts/epic/rebase_policy.py" attempt-finish --state-dir "$registry_dir" \
         --attempt-file "${state_dir}/rebase-attempt.json" --id "$attempt_id" --outcome "$1"
