@@ -25,6 +25,8 @@ Use the [maintenance runbook](../runbooks/bootstrap-maintenance.md).
 | Capture/finalization | Status can be idle during upload; grace task, merge, re-export and startup recovery exist | OPEN: per-show/version task ledger, artifact verification, residual files, detached jobs |
 | Shared deploy lock | Runbook names `/run/lock/moafunk-api-deploy.lock` | OPEN: every deploy actor honors it; legacy runs and remote children reconciled |
 | Window | Show-free interval includes drain, replacement and rollback | OPEN: operator, UTC start/deadline, announcements, bounded/outage choice |
+| Uploads and notifications | Admission closure blocks ongoing chunks; Telegram preview checks have bounded daily windows | OPEN: staged upload/conversion ledger, uploader decisions, affected previews and recovery |
+| Monitoring | Backend scrape outage raises `BackendMetricsDown` after ten minutes | OPEN: scoped silence ID/owner/deadline, retained media alerts and scrape recovery/removal |
 | Snapshot | SQLite plus persisted recordings/checkpoints/config required | OPEN: destination/capacity, integrity/hash results, permissions, restore drill and retention |
 | Media services | `docs/stream-rework/prod/` describes Liquidsoap and Icecast | `nginx`, `liquidsoap`, `icecast` units active; containers use `savonet/liquidsoap:v2.4.4` and `moafunk/icecast-kh:kh22`. Media digests/config hashes, output qualification and listener impact remain OPEN. |
 | Readiness profile | O1.2.3 defines staged output requirements | OPEN: approved active profile and playback evidence; do not assume fallback or HLS |
@@ -56,9 +58,9 @@ At `2026-10-10T21:46:03Z`, the running API matched the successful
   `7320f58385f515a003f899849196a806baece5675309518e4aa913e90ba5554b`.
 - Compose file SHA-256:
   `60d05653d8570927a43d8264bfcca8fad05d8c0ff310976dec2bfb25a66205fe`.
-- Harbor listens on `0.0.0.0:8005`; Icecast on IPv4/IPv6 port 8010.
-  UFW reports inactive. Cloud firewall and other packet-filter rules were not
-  inspected, so public reachability and direct-producer exclusion remain OPEN.
+- Host listener and packet-filter observations were recorded privately.
+  Public reachability, cloud firewall coverage and direct-producer exclusion
+  remain OPEN; do not publish host exposure details in this inventory.
 
 No configuration, service, database, media or admission state was changed.
 Secrets and full process arguments were not collected. The initially attempted
@@ -79,12 +81,15 @@ evidence of production behavior.
 | Completed integration push | https://github.com/phaabe/live.moafunk.de/actions/runs/38084785375: backend-ci/frontend-ci successful; those jobs have no deployment steps |
 | O1.2.4 rollout/negative PR checks | OPEN: target-branch rollout, live failing-test/format evidence and administrator protection verification; this run alone does not prove every workflow is safe |
 | O1.2.2 admission/lock rehearsal | 2026-10-10: exact Docker command in the runbook, exit 0; nginx 1.28.0, pinned digest `sha256:30f1c0d78e0ad60901648be663a710bdadf19e4c10ac6782c235200619158284`; 44 route assertions, a pre-reload response continuing while new requests receive 503, complete response drain, concurrent lock refusal and successful acquisition after release |
+| Interactive lock-owner regression | 2026-10-10: `python3 docs/stream-rework/local-test-harness/maintenance/rehearse-lock.py`, exit 0; pinned backend image supplies Bash/flock without starting the API. Six groups pass: old strict-shell failure reproduced; revised owner survives failed diagnostics; contender refuses; lost ownership rejected despite contention; replaced pathname rejected; explicit release detected. No mounts/network, owned container removed. Host tmux/reconnect verification remains OPEN. |
 | SQLite snapshot/restore rehearsal | 2026-10-10: `bash docs/stream-rework/local-test-harness/maintenance/rehearse-snapshot.sh`, exit 0; SQLite 3.51.0; backup/restore integrity, original data/schema and failed-candidate retention verified on scratch data |
 | Legacy backend drain, scheduler, replacement and rollback | 2026-10-10: both paths pass on the exact deployed image with synthetic storage; detailed record below. Candidate uses the same binary with a simulated schema change; future release compatibility remains OPEN. |
 | Production/device qualification | Not run |
 
 The first lock rehearsal exited 1 because the nginx user's login shell is
 disabled. The fixture now invokes `/bin/sh` explicitly; the full rerun passed.
+The separate PTY regression uses Bash 5.2.15 and util-linux flock 2.38.1.
+Its SHA-256 is `27688bb96c7b1aea4be709a6ce6df827b1ed6549f725beebbd8b4f7721988849`.
 Both shell syntax checks passed. The backend rehearsal uses the exact deployed
 image with synthetic data. No production database, audio or credentials were
 used locally; production access was read-only.
@@ -136,7 +141,9 @@ and deadline; new/old digests; workflow run reconciliation; lock owner and
 second-attempt refusal; ingress checks; scheduler eligible set and resolved
 times; task ledger and artifact results; snapshot identity, integrity and
 restore result; replacement/rollback result; active-output validation; reopen
-time and owner. Never include secret values or private programme media.
+time and owner; upload restart/abandonment decisions; notification recovery;
+monitoring silence ID, expiry and removal. Never include secret values or
+private programme media.
 
 Any failed or unknown gate stays open. A successful PR, `/health`, idle status
 or local nginx fixture cannot mark production activation complete.

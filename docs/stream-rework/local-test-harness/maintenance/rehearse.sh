@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs inside the pinned nginx Alpine fixture, with no external network.
+# Runs in pinned nginx Alpine BusyBox ash (not portable sh), with no external network.
 set -euo pipefail
 
 # Begin with admission open. A rate-limited synthetic response lets us observe

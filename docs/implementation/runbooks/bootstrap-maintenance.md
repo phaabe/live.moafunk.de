@@ -42,6 +42,26 @@ Before touching the host:
    Do not rely on `latest`, a mutable SHA tag or a registry remaining available.
 5. Agree the scheduler boundary in the next section **before** admitting a
    maintenance attempt. Freeze external schedule writers and direct producers.
+6. Reconcile chunked uploads before closing ingress: inspect pending submission,
+   recording-upload and nested file-upload sessions in `pending_submissions`,
+   `pending_recording_uploads` and `pending_file_uploads`. Let them finish, or
+   agree abandonment/restart with each uploader and record it. Include conversion
+   jobs that continue after a successful finalize response. Closing ingress
+   blocks subsequent chunks/finalize requests too; a 503 or an expiry value is
+   not proof of drain. Preserve staged data and recheck already-admitted work
+   after closure.
+7. Arrange a deadline-bounded Alertmanager silence for the affected backend
+   alert/instance, recording its ID and owner. `BackendMetricsDown` fires after
+   ten minutes of failed scraping. Keep stream and recording-failure alerts
+   active; never silence all monitoring for this window. Verify scrape recovery
+   and remove the silence at closeout. For a continued outage, assign monitoring
+   responsibility explicitly rather than letting it stay silently suppressed.
+8. Avoid API outages/restarts during the Telegram show-preview window,
+   19:00:00–19:04:59 Europe/Berlin, and the configured artist-preview window
+   (the first five minutes of its hour, default 16:00). Otherwise record affected
+   previews and an explicit recovery decision. There is no same-day catch-up
+   outside those windows. Before a manual resend, reconcile persisted send
+   timestamps; restarting inside a window may recheck work.
 
 Log every phase transition in UTC and keep evidence under a root-only host
 directory. Record booleans/counts, show/version IDs and artifact hashes, not
@@ -51,24 +71,66 @@ private logs where necessary; publish only redacted evidence links.
 ## One deployment at a time
 
 Every operator and the future O1.2.5 host script must hold the same host lock
-from before ingress closes until reopen or completed rollback. In a root
-Bash session on the approved host:
+from before ingress closes until reopen or completed rollback. Use a persistent
+root tmux session on the approved host so an SSH disconnect does not close the
+lock descriptor. Require tmux before the window; do not substitute a bare SSH
+shell. Start a dedicated shell, or attach to its recorded existing session:
 
 ```bash
-set -euo pipefail
-umask 077
-exec 9>/run/lock/moafunk-api-deploy.lock
-flock -n 9
+tmux new-session -s moafunk-maintenance 'bash --noprofile --norc -i'
 ```
 
-If `flock` fails, exit without changing anything. Keep descriptor 9 open in
-this session and its deployment child. Never unlink the lock file to bypass
-an owner. Record owner PID and operation ID. A second attempt must fail before
+Inside that shell, disable automatic exit on failed diagnostics. In particular,
+a search finding no process must not terminate the lock owner:
+
+```bash
+set +e
+set +u
+set +o pipefail
+umask 077
+exec 9>>/run/lock/moafunk-api-deploy.lock || { echo 'Cannot open deploy lock; stop'; exit 1; }
+flock -n 9 || { echo 'Cannot acquire deploy lock; stop'; exit 1; }
+printf 'Lock owner PID: %s\n' "$$"
+```
+
+Keep descriptor 9 open in this shell and its deployment child. Run strict
+diagnostic scripts as child processes; never source them into this shell or
+enable `errexit`, `nounset` or `pipefail` here. A failed gate still means stop
+the procedure, retain admission closure and keep the lock; it never means
+continue because the shell survived. Record tmux session, owner PID and
+operation ID. Never unlink the lock file or close/reassign descriptor 9.
+
+Before each phase, return to the recorded owner shell in that tmux session.
+Check descriptor 9 refers to the current lock pathname and has its own exclusive
+lock in Linux [fdinfo](https://www.kernel.org/doc/html/latest/filesystems/proc.html#proc-pid-fdinfo-fd-information-about-opened-file),
+then probe with a separate descriptor:
+
+```bash
+if [[ /proc/$$/fd/9 -ef /run/lock/moafunk-api-deploy.lock ]] &&
+   grep -Eq '^lock:[[:space:]]+[0-9]+:[[:space:]]+FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE[[:space:]]' \
+     "/proc/$$/fdinfo/9"; then
+  flock -n -E 75 /run/lock/moafunk-api-deploy.lock true
+  lock_probe=$?
+  case "$lock_probe" in
+    75) echo 'Owner lock and exclusion verified' ;;
+    0) echo 'LOCK LOST - stop; keep admission closed' ;;
+    *) echo 'Lock check failed - stop; keep admission closed' ;;
+  esac
+else
+  echo 'Owner lock missing or unverifiable - stop; keep admission closed'
+fi
+```
+
+The new descriptor conflicts even with our own lock. Success means exclusion
+was lost. Contention alone does not identify its owner: another operator could
+hold the file after our lock was released. The fdinfo and file-identity checks
+reject that case and a replaced lock pathname. Do not silently reacquire and
+continue after lost or uncertain ownership;
+reconcile the entire operation first. A second deployment must refuse before
 nginx, snapshot or replacement. The lock is advisory: legacy workflows do not
-take it, hence the explicit run/host reconciliation above. If the session
-dies, ingress remains closed; the next operator reconciles remote processes,
-snapshots and image state before continuing. Do not automate reopening in an
-EXIT trap.
+take it, hence the run/host reconciliation above. If the tmux shell dies,
+ingress remains closed; the next operator reconciles remote processes,
+snapshots and image state before continuing. Never reopen in an EXIT trap.
 
 ## Close admission and preserve drain access
 
@@ -233,7 +295,11 @@ If verification fails, keep ingress closed and choose rollback before deadline.
 Rollback sequence: drain any new startup/recovery work, stop the candidate API,
 preserve its data separately for investigation, restore the recovery set and
 old configuration/image, recheck the restart schedule boundary, then start only
-the old API. A migrated DB must not be handed to an older binary without proven
+the old API through the same reviewed API-only Compose path with the old digest.
+Preserve its container name, network, mounts and runtime configuration. The
+local `docker run` rehearsal does not qualify that production Compose path;
+O1.2.5 must verify it for both replacement and rollback.
+A migrated DB must not be handed to an older binary without proven
 compatibility. Never overwrite the only data copy, prune images, initialize a
 fresh DB, revert the build-only protection or restart media as a shortcut.
 Recheck the same health/drain/output gates after rollback.
@@ -241,8 +307,9 @@ Recheck the same health/drain/output gates after rollback.
 Reopen only after the operator records the accepted image, restored/retained
 data identity, scheduler state and output result. Restore only the temporary
 ingress admission change, run `nginx -t`, reload and verify normal admission
-in the approved window. Keep unrelated internal/metrics restrictions. Release
-descriptor 9 last. A failed rollout ends with either verified rollback or an
+in the approved window. Keep unrelated internal/metrics restrictions. Confirm
+scrape recovery and remove the maintenance silence. Release descriptor 9 last.
+A failed rollout ends with either verified rollback or an
 explicit continued outage and named owner, never an unlogged reopen.
 
 ## Rehearsal and evidence
@@ -272,6 +339,20 @@ It first admits a rate-limited response, reloads the admission rule, verifies
 that new starts receive 503 while the old response is still running, then
 checks the complete old response. This proves reload alone does not drain
 already-admitted work; it does not exercise an application mutation or upgrade.
+
+Rehearse interactive lock ownership with Python 3.11+ and local Docker Desktop:
+
+```bash
+python3 docs/stream-rework/local-test-harness/maintenance/rehearse-lock.py
+```
+
+This starts interactive Bash through a PTY in the pinned backend image without
+starting the API. It reproduces lock loss under the old strict-shell settings,
+then checks retention after failed diagnostics, contender refusal, ownership
+handoff, replaced-path rejection and explicit release. The container is
+non-root, network-disabled and removed afterward. No host files are mounted.
+This verifies the shell/descriptor behavior only; tmux reconnect and production
+deployment integration still need host verification.
 
 Rehearse SQLite backup and restore separately on scratch data:
 
@@ -304,7 +385,7 @@ Future release migrations, real storage and playback need separate validation.
 | Pending upload after recording status turns idle | Exact-image fixture holds upload while status is idle, withholds replacement, then verifies raw bytes, markers, archive and terminal completion. Manual decision rehearsed; O1.2.5 automation remains open. |
 | Disconnect and finalize race | Exact-image fixture drops a synthetic producer and observes the real grace period and finalization before replacement. Passed. |
 | Existing requests/old nginx workers | Local fixture verifies a delayed response survives closure and then drains. Reconcile actual admitted mutations/upgrades and old workers on the host before snapshot. Host gate open. |
-| Two simultaneous deployments | First owner retains host lock; second refuses before any mutation. Local lock primitive tested; actual deploy integration remains O1.2.5. |
+| Two simultaneous deployments | First owner retains host lock; second refuses before any mutation. Local primitive and interactive ownership regressions pass, including diagnostic failures and ownership loss. Host tmux and actual deploy integration remain open. |
 | Bounded scheduler path | Exact-image fixture passes with no candidates: drain, snapshot, container recreation, simulated schema change and old image/data restore. Future release migration compatibility remains open. |
 | Outage path | Exact-image fixture stops before a candidate becomes due, stays stopped across the boundary and identifies catch-up before restart. Diagnostic restart confirms the hazard; synthetic data rollback passes. |
 | First install without precheck | Refuse absent manual-window evidence; allow only after all manual gates pass. O1.2.5 integration open. |
