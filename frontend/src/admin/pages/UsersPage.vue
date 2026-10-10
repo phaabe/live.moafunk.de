@@ -4,6 +4,7 @@ import { usersApi, artistsApi, type AdminUser, type Artist } from '../api';
 import { BaseButton, BaseModal, FormInput } from '@shared/components';
 import { useAuthStore } from '../stores/auth';
 import { useFlash } from '../composables/useFlash';
+import { recoveryApi } from '../api/recovery';
 
 const authStore = useAuthStore();
 const flash = useFlash();
@@ -199,6 +200,21 @@ function closeCreateModal() {
   expiresAtError.value = null;
 }
 
+const clearingRecovery = ref<number | null>(null);
+async function clearRecovery(user: AdminUser) {
+  if (!window.confirm(`Clear recovery email and pending links for "${user.username}"?`)) return;
+  error.value = null;
+  clearingRecovery.value = user.id;
+  try {
+    await recoveryApi.clear(user.id);
+    flash.success(`Recovery email cleared for "${user.username}"`);
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : 'Failed to clear recovery email';
+  } finally {
+    clearingRecovery.value = null;
+  }
+}
+
 onMounted(loadUsers);
 </script>
 
@@ -256,6 +272,15 @@ onMounted(loadUsers);
                 Edit
               </router-link>
               <span v-else class="text-muted">-</span>
+              <BaseButton
+                v-if="canEditUser(user) && ['host', 'admin'].includes(user.role)"
+                variant="ghost"
+                size="sm"
+                :disabled="clearingRecovery !== null"
+                @click="clearRecovery(user)"
+              >
+                Clear Recovery Email
+              </BaseButton>
             </td>
           </tr>
         </tbody>

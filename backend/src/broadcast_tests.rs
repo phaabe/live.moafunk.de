@@ -14,6 +14,8 @@ async fn state() -> (Arc<AppState>, tempfile::TempDir) {
     .unwrap();
     let temp = tempfile::tempdir().unwrap();
     let state = Arc::new(AppState {
+        recovery_mail: crate::recovery_mail::RecoveryMailer::default(),
+        recovery_controls: crate::handlers::recovery::RecoveryControls::default(),
         db,
         s3_client: storage::build_s3_client(&config),
         config,

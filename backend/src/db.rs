@@ -599,6 +599,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Lets the API offer a download immediately, without a manual finalize.
     add_column_if_missing(pool, "recording_versions", "archive_key", "TEXT").await?;
 
+    crate::recovery::migrate(pool).await?;
+
     tracing::info!("Database migrations completed");
     Ok(())
 }
