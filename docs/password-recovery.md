@@ -15,8 +15,12 @@ created by this change.
 2. Store the provider API key in the existing Bitwarden Secrets Manager project.
    Do not put it in the repository, a ticket or a terminal command.
 3. Add the new secret's reference to the explicit Bitwarden mapping in
-   `.github/workflows/backend.yml`, and pass the settings below into its generated
-   backend environment. The current workflow does not export them automatically.
+   `.github/workflows/backend.yml`. Pass `RECOVERY_MAIL_API_KEY`,
+   `RECOVERY_MAIL_FROM` and `RECOVERY_PUBLIC_URL` into its generated backend
+   environment. For production behind nginx, also set `RECOVERY_TRUST_PROXY=true`
+   after confirming the proxy restrictions below. Otherwise all users share one
+   IP limit of 20 public recovery requests per 15 minutes.
+   The current workflow does not export these settings automatically.
    Local development uses `backend/scripts/dev-secrets.sh`; add the corresponding
    secret mapping there when setting up a live development sender. Do not edit
    generated environment files on the server.
