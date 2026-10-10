@@ -968,7 +968,9 @@ class ScrapeSizeTest(unittest.TestCase):
     def test_max_size_snapshot_and_full_ledgers_stay_under_budget(self) -> None:
         """Fetch limits: 500 project items; 100 open and 300 merged PRs per base
         (two bases). Full ledgers: 2 000 ticks for each of the 12 agents over the
-        7-day window, one of them running. Tickets at both caps."""
+        7-day window, one of them running. Tickets at both caps. The activity
+        ledger holds waits and sealed buckets for all 12 agents, and adds only
+        its health series: history never becomes Prometheus series."""
         body = "\n".join(f"- [ ] **B1.{i}.1** Leaf {i}." for i in range(5))
         items = [
             plan_issue(
@@ -1021,7 +1023,27 @@ class ScrapeSizeTest(unittest.TestCase):
                         for i in range(2000)
                     )
                 )
+                events = log.with_name(f"{log.stem}-ticks.jsonl")
+                with events.open("w") as handle:
+                    for i in range(1700, 2000):
+                        tick = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(i * 300))
+                        for event in (
+                            {"event": "start", "tick": tick, "at": tick},
+                            {
+                                "event": "wait",
+                                "tick": tick,
+                                "at": tick,
+                                "action": "claim",
+                                "reason_code": "github_quota",
+                                "scope": "agent",
+                                "retry_at": tick,
+                            },
+                            {"event": "finish", "tick": tick, "at": tick},
+                        ):
+                            handle.write(json.dumps(event) + "\n")
             ledgers = monitor.Ledgers(root / "runtime")
+            # An earlier cycle gives coverage, so this one seals buckets.
+            monitor.runner_metrics(root, False, 2000 * 300 - 600, ledgers=ledgers)
             # Every open PR waits for a review.
             handoff = delivery.HandoffClock(root / "handoff.json").observe(
                 snapshot(prs=prs), 2000 * 300
@@ -1029,6 +1051,15 @@ class ScrapeSizeTest(unittest.TestCase):
             runners = monitor.runner_metrics(
                 root, False, 2000 * 300, ledgers=ledgers, handoff=handoff
             )
+            conn = activity_history.open_ledger(
+                activity_history.default_path(root / "runtime")
+            )
+            agents_sealed = conn.execute(
+                "SELECT count(DISTINCT agent) FROM buckets"
+            ).fetchone()[0]
+            conn.close()
+            ledgers.activity.close()
+        self.assertEqual(agents_sealed, agents.MAX_AGENTS)
         data = {
             "v": 1,
             "fetched_at": NOW,
@@ -1114,6 +1145,10 @@ class ScrapeSizeTest(unittest.TestCase):
             if not line.startswith("#")
         ]
         self.assertTrue(any("handoff_wait_seconds" in line for line in samples))
+        self.assertEqual(
+            [line for line in samples if "activity" in line],
+            ["epic_activity_history_healthy 1"],
+        )
         for name, rows in (
             ("epic_ticket_status_code{", 150),
             ("epic_ticket_status_entered_seconds{", 150),

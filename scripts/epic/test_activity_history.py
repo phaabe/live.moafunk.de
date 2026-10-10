@@ -257,11 +257,67 @@ class SealTest(LedgerCase):
 
     def test_late_record_flags_the_next_rollup(self) -> None:
         ah.seal(self.conn, "claude", "1m", T0, now=T0 + 80)
-        ah.mark_late(self.conn, "claude", T0 + 70, T0 + 200)
-        bucket = ah.build_bucket(
-            self.conn, "claude", "1m", T0 + 60, sealed_until=T0 + 300
-        )
+        ah.mark_late(self.conn, "claude", T0 + 30, T0 + 200)
+        bucket = ah.build_bucket(self.conn, "claude", "2h", T0, sealed_until=T0 + 300)
         self.assertTrue(bucket.late_correction)
+
+    def late_rows(self) -> list[tuple[int, int]]:
+        return self.conn.execute(
+            "SELECT start, end FROM coverage WHERE kind = 'late' ORDER BY start"
+        ).fetchall()
+
+    def test_only_a_record_inside_a_sealed_bucket_is_late(self) -> None:
+        ah.seal(self.conn, "claude", "1m", T0, now=T0 + 80)
+        ah.mark_late(self.conn, "claude", T0 + 70, T0 + 200)  # after the bucket
+        self.assertEqual(self.late_rows(), [])
+
+    def test_ingest_marks_a_new_record_in_a_sealed_bucket(self) -> None:
+        ah.seal(self.conn, "claude", "1m", T0, now=T0 + 80)
+        self.write(
+            line("wait", T0 + 50, reason_code="target_lock", scope="target"),
+            line("start", T0 + 90),
+        )
+        self.assertEqual(ah.ingest(self.conn, "claude", self.file, T0 + 200).stored, 2)
+        self.assertEqual(self.late_rows(), [(T0 + 50, T0 + 200)])
+        # A replay stores nothing, so it marks nothing again.
+        self.conn.execute("DELETE FROM cursors")
+        ah.ingest(self.conn, "claude", self.file, T0 + 300)
+        self.assertEqual(self.late_rows(), [(T0 + 50, T0 + 200)])
+
+    def sealed(self, name: str) -> list[int]:
+        return [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT start FROM buckets WHERE resolution = ? ORDER BY start", (name,)
+            )
+        ]
+
+    def test_seal_due_starts_at_first_coverage_and_resumes(self) -> None:
+        self.assertEqual(ah.seal_due(self.conn, "claude", T0 + 75), 7)  # 6 x 10s, 1m
+        self.assertEqual(self.sealed("10s"), [T0 + i * 10 for i in range(6)])
+        self.assertEqual(self.sealed("1m"), [T0])
+        self.assertEqual(ah.seal_due(self.conn, "claude", T0 + 75), 0)  # replay
+        ah.seal_due(self.conn, "claude", T0 + 135)
+        self.assertEqual(self.sealed("1m"), [T0, T0 + 60])
+        self.assertEqual(self.sealed("5m"), [])  # still in progress
+        outbox = self.conn.execute("SELECT count(*) FROM outbox").fetchone()[0]
+        self.assertEqual(outbox, 12 + 2)
+
+    def test_seal_due_is_bounded_and_catches_up(self) -> None:
+        now = T0 + 3_600
+        self.assertEqual(
+            ah.seal_due(self.conn, "claude", now, limit=50), 50 + 50 + 11 + 1
+        )
+        self.assertEqual(self.sealed("10s")[-1], T0 + 490)
+        ah.seal_due(self.conn, "claude", now, limit=1_000)
+        self.assertEqual(len(self.sealed("10s")), 359)  # last one inside the grace
+        self.assertEqual(len(self.sealed("1m")), 59)
+
+    def test_seal_due_needs_coverage_and_respects_retention(self) -> None:
+        self.assertEqual(ah.seal_due(self.conn, "codex", T0 + 600), 0)
+        now = T0 + ah.RETENTION_S + 7_200
+        ah.seal_due(self.conn, "claude", now, limit=1)
+        self.assertEqual(self.sealed("2h"), [T0 + 7_200])
 
     def test_flags_carry_partial_edge_and_in_progress(self) -> None:
         bucket = ah.build_bucket(
@@ -416,6 +472,28 @@ class CollectorTest(LedgerCase):
         # The time the collector was down stays unknown.
         self.assertEqual(self.spans(), [(T0, T0 + 30), (T0 + 60, T0 + 90)])
         self.assertEqual(self.count(), 1)
+
+    def test_cycle_seals_finished_buckets(self) -> None:
+        self.write(
+            line("model-start", T0, action="claim"),
+            line("finish", T0 + 40, action="claim", outcome="ok"),
+        )
+        collector = self.collector()
+        for at in range(T0, T0 + 91, 30):
+            collector.cycle([("claude", self.file)], at)
+        rows = self.conn.execute(
+            "SELECT resolution, start, record FROM buckets ORDER BY resolution, start"
+        ).fetchall()
+        self.assertEqual(
+            [(name, start - T0) for name, start, _ in rows],
+            [("10s", 0), ("10s", 10), ("10s", 20), ("10s", 30), ("10s", 40)]
+            + [("10s", 50), ("10s", 60), ("10s", 70), ("1m", 0)],
+        )
+        minute = json.loads(rows[-1][2])
+        self.assertEqual(
+            (minute["state"], minute["breakdown"], minute["results"]),
+            ("code", {"code": 40, "idle": 20}, {"ok": 1}),
+        )
 
     def test_current_waits_reads_only_the_last_tick(self) -> None:
         quota = {"reason_code": "github_quota", "scope": "agent"}

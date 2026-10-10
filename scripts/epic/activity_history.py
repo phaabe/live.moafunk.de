@@ -8,6 +8,7 @@ stable event ID makes every replay a no-op.
 
   open_ledger(path)                     the ledger, schema created
   ingest(conn, agent, path, now)        new complete lines of a producer file
+  seal_due(conn, agent, now)            seal the finished buckets of an agent
   intervals(conn, agent, start, end)    the activity intervals of a window
   bucket(intervals, start, end, ...)    one overview bucket, summary by time
   resolution(range_s)                   the overview bucket width of a range
@@ -46,6 +47,9 @@ MAX_RANGE_S = RETENTION_S
 SEAL_GRACE_S = 10
 PRUNE_BATCH = 5_000
 PRUNE_EVERY_S = 3_600
+# Buckets sealed per agent and resolution in one cycle: an outage catches up
+# over several cycles instead of stalling one scrape.
+SEAL_PER_CYCLE = 100
 # A longer gap between two reads of a source is unknown time.
 FRESH_GAP_S = 120
 MAX_LINE = 4096
@@ -135,12 +139,15 @@ class IngestResult:
     missing: bool = False
 
 
-def ingest(conn: sqlite3.Connection, agent: str, path: Path) -> IngestResult:
+def ingest(
+    conn: sqlite3.Connection, agent: str, path: Path, now: int | None = None
+) -> IngestResult:
     """Store the new complete lines of `path`; one transaction with its cursor.
 
     A partial last line waits for the next call. A replaced or truncated file
     (other inode, or shorter than the cursor) is read from the start; event
-    IDs make that replay safe. Invalid lines are counted, never stored.
+    IDs make that replay safe. Invalid lines are counted, never stored. With
+    `now`, a new record inside a sealed bucket is marked as a late correction.
     """
     result = IngestResult()
     source = f"{agent}:{path}"
@@ -187,6 +194,8 @@ def ingest(conn: sqlite3.Connection, agent: str, path: Path) -> IngestResult:
             )
             if cursor.rowcount:
                 result.stored += 1
+                if now is not None and at is not None:
+                    mark_late(conn, agent, at, now)
             else:
                 result.duplicates += 1
         conn.execute(
@@ -488,15 +497,52 @@ def seal(
 
 
 def mark_late(conn: sqlite3.Connection, agent: str, at: int, now: int) -> None:
-    """A record arrived for time already sealed: keep it, flag the rollup."""
-    sealed = conn.execute(
-        "SELECT 1 FROM buckets WHERE agent = ? AND start <= ? LIMIT 1", (agent, at)
-    ).fetchone()
-    if sealed:
-        conn.execute(
-            "INSERT OR IGNORE INTO coverage (agent, start, end, kind) VALUES (?, ?, ?, 'late')",
-            (agent, at, now),
-        )
+    """A record arrived for time already sealed: keep it, flag the rollup.
+
+    Late only when a sealed bucket of some resolution contains `at`.
+    """
+    for name, width in RESOLUTIONS.items():
+        sealed = conn.execute(
+            "SELECT 1 FROM buckets WHERE agent = ? AND resolution = ? AND start = ?",
+            (agent, name, at - at % width),
+        ).fetchone()
+        if sealed:
+            conn.execute(
+                "INSERT OR IGNORE INTO coverage (agent, start, end, kind) VALUES (?, ?, ?, 'late')",
+                (agent, at, now),
+            )
+            return
+
+
+def seal_due(
+    conn: sqlite3.Connection, agent: str, now: int, limit: int = SEAL_PER_CYCLE
+) -> int:
+    """Seal the finished buckets of `agent` at every resolution, oldest first.
+
+    Starts after the last sealed bucket, else at the agent's first fresh
+    coverage, never before the retention boundary. Time without coverage
+    seals as unknown. At most `limit` per resolution. Returns buckets sealed.
+    """
+    first = conn.execute(
+        "SELECT min(start) FROM coverage WHERE agent = ? AND kind = 'fresh'", (agent,)
+    ).fetchone()[0]
+    if first is None:
+        return 0
+    floor = now - RETENTION_S
+    sealed = 0
+    for name, width in RESOLUTIONS.items():
+        last = conn.execute(
+            "SELECT max(start) FROM buckets WHERE agent = ? AND resolution = ?",
+            (agent, name),
+        ).fetchone()[0]
+        at = last + width if last is not None else first - first % width
+        at = max(at, floor - floor % width)
+        for _ in range(limit):
+            if seal(conn, agent, name, at, now=now) is None:
+                break
+            at += width
+            sealed += 1
+    return sealed
 
 
 def bucket_of(data: dict[str, Any]) -> Bucket:
@@ -619,13 +665,15 @@ class Collector:
                 self.conn = open_ledger(self.path)
             for agent, path in sources:
                 try:
-                    readable = not ingest(self.conn, agent, path).missing
+                    readable = not ingest(self.conn, agent, path, at).missing
                 except OSError:
                     readable = False
                 if readable:
                     self.observe(agent, at)
                 else:
                     self.spans.pop(agent, None)
+                # Sealed after the read: the bucket has every readable record.
+                seal_due(self.conn, agent, at)
                 waits[agent] = current_waits(self.conn, agent)
             if self.pruned_at is None or at - self.pruned_at >= PRUNE_EVERY_S:
                 prune(self.conn, at)
