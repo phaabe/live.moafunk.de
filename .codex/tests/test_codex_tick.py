@@ -2740,8 +2740,9 @@ else:
                 self.assertEqual(self.run_tick().returncode, model_exit)
                 path = self.state / "codex-activity.jsonl"
                 records = [json.loads(line) for line in path.read_text().splitlines()]
-                self.assertEqual([r["event"] for r in records], ["model-start", "model-end"])
-                for record in records:
+                boundaries = [r for r in records if r["event"] != "wait"]
+                self.assertEqual([r["event"] for r in boundaries], ["model-start", "model-end"])
+                for record in boundaries:
                     self.assertEqual(tuple(record), activity.RECORD_KEYS)
                     self.assertEqual(record["activity"], activity_name)
                     self.assertEqual(record["target"], "pr:406")
@@ -2750,6 +2751,110 @@ else:
                     self.assertEqual(activity.record(record), record)
                 self.assertNotIn("private", path.read_text())
                 self.assertEqual([r["event"] for r in self.tick_events()], ["start", "finish"])
+
+    def activity_records(self, state: Path | None = None) -> list[dict[str, object]]:
+        path = (state or self.state) / "codex-activity.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_activity_backoff_keeps_expiry_and_allows_other_work(self) -> None:
+        self.state.mkdir(parents=True)
+        until = int(time.time()) + 600
+        entry = {"at": until - 900, "until": until, "reason": "private prompt"}
+        path = self.state / "codex-backoff.json"
+        path.write_text(json.dumps({f"pr:406:{'a' * 40}": entry}))
+        self.candidates(self.review_action(406), self.review_action(407))
+        self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records()
+        self.assertEqual([r["event"] for r in records], ["wait", "model-start", "model-end"])
+        wait = records[0]
+        self.assertEqual((wait["reason_code"], wait["scope"], wait["target"]),
+                         ("retry_backoff", "target", "pr:406"))
+        self.assertEqual(wait["retry_at"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(until)))
+        self.assertEqual(records[1]["target"], "pr:407")
+        self.assertNotIn("private", json.dumps(records))
+        self.assertEqual(json.loads(path.read_text())[f"pr:406:{'a' * 40}"], entry)
+
+    def test_activity_target_lock_has_no_invented_expiry(self) -> None:
+        self.target_locks.mkdir()
+        self.candidates(self.review_action(406), self.review_action(407))
+        with (self.target_locks / "406.lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records()
+        self.assertEqual([r["event"] for r in records], ["wait", "model-start", "model-end"])
+        self.assertEqual((records[0]["reason_code"], records[0]["scope"], records[0]["target"], records[0]["retry_at"]),
+                         ("target_lock", "target", "pr:406", None))
+        self.assertEqual(records[1]["target"], "pr:407")
+
+    def test_activity_shared_quota_wait_is_agent_scoped(self) -> None:
+        self.quota_clock()
+        wait = self.store_quota_wait()
+        self.env["EPIC_AGENT_ID"] = "codex-2"
+        self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records(self.state / "agents/codex-2")
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]["event"], records[0]["reason_code"], records[0]["scope"], records[0]["retry_at"]),
+                         ("wait", "github_quota", "agent", wait["retry_at"]))
+        self.assertIsNone(records[0]["target"])
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.gh_calls.exists())
+
+    def test_activity_model_quota_uses_stored_reset(self) -> None:
+        self.quota_clock()
+        self.env["TEST_RESULT"] = json.dumps({
+            "status": "blocked", "summary": "private model text",
+            "reason_code": "github_rate_limit", "retry_at": self.env["TEST_RESET"],
+        })
+        self.assertEqual(self.run_tick().returncode, 75)
+        records = self.activity_records()
+        self.assertEqual([r["event"] for r in records], ["model-start", "model-end", "wait"])
+        stored = json.loads((self.state / "github-quota-wait.json").read_text())
+        self.assertEqual((records[-1]["reason_code"], records[-1]["scope"], records[-1]["retry_at"]),
+                         ("github_quota", "agent", stored["retry_at"]))
+        self.assertNotIn("private", json.dumps(records))
+
+    def test_activity_wait_write_failure_preserves_quota_refusal(self) -> None:
+        self.quota_clock()
+        self.store_quota_wait()
+        (self.state / "codex-activity.jsonl").mkdir()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.gh_calls.exists())
+        self.assertEqual(self.last_finish(), (0, "ok", "quota"))
+
+    def test_activity_changed_assignment_is_a_target_refusal(self) -> None:
+        self.env["TEST_ASSIGNMENT_EXIT"] = "6"
+        self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]["event"], records[0]["reason_code"], records[0]["scope"]),
+                         ("wait", "ticket_not_ready", "target"))
+        self.assertFalse(self.calls.exists())
+
+    def test_activity_timeout_preserves_end_and_timeout_result(self) -> None:
+        timeout_pid = self.timeout_command("codex")
+        process, _ = self.blocked_tick()
+        os.kill(int(timeout_pid.read_text()), signal.SIGALRM)
+        self.assertEqual(process.wait(timeout=15), 124)
+        boundaries = [r for r in self.activity_records() if r["event"] != "wait"]
+        self.assertEqual([r["event"] for r in boundaries], ["model-start", "model-end"])
+        self.assertTrue(all(r["outcome"] is None for r in boundaries))
+        self.assertEqual(self.last_finish(), (124, "timeout", "model"))
+
+    def test_activity_interruption_does_not_invent_model_end(self) -> None:
+        process, _ = self.blocked_tick()
+        process.send_signal(signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=15), 143)
+        self.assertEqual([r["event"] for r in self.activity_records()], ["model-start"])
+        self.assertEqual(self.last_finish(), (143, "killed", "model"))
+
+    def test_activity_registered_models_write_separate_files(self) -> None:
+        for agent in ("codex", "codex-2"):
+            self.env["EPIC_AGENT_ID"] = agent
+            self.assertEqual(self.run_tick().returncode, 0)
+            records = self.activity_records(self.state / "agents" / agent)
+            self.assertEqual([r["event"] for r in records], ["model-start", "model-end"])
+        self.assertFalse((self.state / "codex-activity.jsonl").exists())
 
     def test_no_model_paths_emit_no_model_boundaries(self) -> None:
         for overrides in (

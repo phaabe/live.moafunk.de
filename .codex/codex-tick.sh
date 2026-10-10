@@ -71,6 +71,12 @@ admission_dir="${EPIC_LOCK_DIR:-${HOME}/.local/state/epic-loop/target-locks}"
 child_pid=""
 review_log=""
 review_log_saved=0
+wait_activity() {
+    "$python_bin" "${code_root}/.codex/tick_backoff.py" activity \
+        --activity-file "$activity_file" --tick "$tick_started" --cause "$1" \
+        --action-file "${lock_dir}/action.json" --state-dir "$state_dir" \
+        --quota-dir "$registry_dir" --ttl "$blocked_retry" || true
+}
 archive_review_output() {
     if [[ -n "$review_log" && "$review_log_saved" == 0 && -f "$review_log" ]]; then
         if cat "$review_log"; then
@@ -111,6 +117,9 @@ cleanup() {
         fi
     fi
     if [[ "$tick_lock_owned" == 1 ]]; then
+        if [[ "$tick_phase" == quota && "$tick_outcome" == blocked ]]; then
+            wait_activity github_quota
+        fi
         archive_review_output
         # Child termination precedes this trap, including timeout and handled signals.
         # Evidence is already outside the checkout. Cleanup cannot change its result.
@@ -262,6 +271,7 @@ check_quota() {
     "$python_bin" "${code_root}/scripts/epic/github_quota.py" check \
         --state-dir "$registry_dir" || result=$?
     if [[ "$result" == 3 ]]; then
+        wait_activity github_quota
         exit 0
     elif [[ "$result" != 0 ]]; then
         exit "$result"
@@ -382,6 +392,7 @@ lock_target() {
     fi
     release_target
     if [[ "$result" == 75 ]]; then
+        wait_activity target_lock
         return 1
     fi
     exit "$result"
@@ -508,6 +519,7 @@ PY
             --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
     fi
     if [[ "$backoff" == 3 || "$backoff" == 6 ]]; then
+        if [[ "$backoff" == 3 ]]; then wait_activity retry_backoff; fi
         discard_seen
         release_target
         continue
@@ -603,6 +615,7 @@ PY
     case "$assignment_exit" in
         0) ;;
         6)
+            wait_activity ticket_not_ready
             discard_seen
             release_target
             printf 'tick: assignment changed; next candidate\n'
@@ -1022,6 +1035,9 @@ fi
 "$python_bin" "${code_root}/.codex/tick_backoff.py" record --action-file "${lock_dir}/action.json" \
     --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" \
     --result-file "${state_dir}/codex-result.json" --exit-code "$model_exit" || outcome=$?
+if [[ "$outcome" == 3 || "$outcome" == 75 ]]; then
+    wait_activity retry_backoff
+fi
 if [[ "$outcome" == 4 ]]; then
     tick_phase=quota
     tick_outcome=blocked

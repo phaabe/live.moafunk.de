@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -501,17 +502,65 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def activity_wait(
+    path: Path,
+    tick: str,
+    cause: str,
+    action_file: Path | None,
+    state_dir: Path,
+    quota_dir: Path,
+    ttl: int,
+    now: float,
+) -> None:
+    """Describe a confirmed refusal using its producer's stored evidence.
+
+    This is read-only telemetry, not another eligibility check. In particular,
+    it never queries GitHub or transfers a cooldown. Free-form reasons remain
+    in the diagnostic store and never enter the activity stream.
+    """
+    import tick_events
+
+    code, scope, retry_at = cause, "target", None
+    if cause == "github_quota":
+        scope = "agent"
+        retry_at = github_quota.check(quota_dir, now)[1]
+    elif cause == "retry_backoff":
+        if action_file is None:
+            raise ValueError("backoff activity requires an action")
+        with tick_events.read_regular(action_file) as stream:
+            action = json.loads(stream.read(tick_events.MAX_ACTION_FILE).decode("utf-8"))
+        if not isinstance(action, dict):
+            raise ValueError("invalid backoff activity action")
+        entry = load_entries(state_dir).get(target_key(action))
+        if entry is None:
+            return
+        if entry.get("blocked_count", 0) >= BLOCK_LIMIT:
+            code = "operator_wait"
+        elif now < expires(entry, ttl):
+            retry_at = github_quota.iso(expires(entry, ttl))
+        else:
+            return
+    tick_events.activity_event(
+        path, tick, "wait", action_file, code, scope, retry_at,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "record", "reconcile"))
+    parser.add_argument("command", choices=("check", "record", "reconcile", "activity"))
     parser.add_argument("--action-file", type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--quota-dir", type=Path)
     parser.add_argument("--ttl", required=True, type=positive_int)
     parser.add_argument("--result-file", type=Path)
     parser.add_argument("--exit-code", type=int)
+    parser.add_argument("--activity-file", type=Path)
+    parser.add_argument("--tick")
+    parser.add_argument("--cause", choices=(
+        "retry_backoff", "target_lock", "github_quota", "ticket_not_ready",
+    ))
     args = parser.parse_args()
-    if args.command != "reconcile" and args.action_file is None:
+    if args.command in ("check", "record") and args.action_file is None:
         parser.error("check and record require --action-file")
     quota_dir = args.quota_dir or Path(
         os.environ.get("EPIC_QUOTA_DIR") or args.state_dir
@@ -520,6 +569,27 @@ def main() -> int:
         args.result_file is None or args.exit_code is None
     ):
         parser.error("record requires --result-file and --exit-code")
+    if args.command == "activity":
+        import tick_events
+
+        if args.activity_file is None or args.tick is None or args.cause is None:
+            parser.error("activity requires --activity-file, --tick and --cause")
+        previous = signal.signal(
+            signal.SIGALRM, lambda *_: sys.exit("backoff: activity timed out")
+        )
+        signal.alarm(tick_events.DEADLINE)
+        try:
+            activity_wait(
+                args.activity_file, args.tick, args.cause, args.action_file,
+                args.state_dir, quota_dir, args.ttl, time.time(),
+            )
+        except (OSError, ValueError, OverflowError) as error:
+            logging.warning("backoff: activity unavailable: %s", error)
+            return 1
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        return 0
     try:
         if args.command == "reconcile":
             reconcile(args.state_dir, quota_dir)
