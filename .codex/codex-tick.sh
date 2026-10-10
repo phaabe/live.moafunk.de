@@ -679,8 +679,15 @@ if [[ "$action" == merge || "$action" == escalate || "$action" == adopt ]]; then
     model_root="$tick_tmp"
 fi
 permission_profile=$("$python_bin" -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("permission_profile") or "")' "$protected")
+execution_access=$("$python_bin" -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("execution_access", "sandboxed"))' "$protected")
 model_options=(--add-dir "$tick_tmp")
-if [[ "$permission_profile" == epic-source-edit ]]; then
+if [[ "$execution_access" == full-access && -z "$permission_profile" ]]; then
+    model_options+=(--sandbox danger-full-access -c 'approval_policy="never"')
+    printf 'tick: operator enabled full-access execution\n'
+elif [[ "$execution_access" != sandboxed ]]; then
+    printf 'tick: invalid operator execution access\n' >&2
+    exit 78
+elif [[ "$permission_profile" == epic-source-edit ]]; then
     # Old --sandbox settings override permission profiles in native Codex.
     model_options+=(-c 'default_permissions="epic-source-edit"')
 elif [[ -z "$permission_profile" ]]; then
@@ -798,9 +805,17 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 # Repeat the protected checks with every effective model-writable root.
-"$python_bin" -I "$source_root/.codex/protected_home.py" check \
+launch_protected=$("$python_bin" -I "$source_root/.codex/protected_home.py" check \
     --mode "$runtime_mode" --repo "$repo_root" --code-root "$code_root" \
-    "${protected_options[@]}" >/dev/null || exit 78
+    "${protected_options[@]}") || exit 78
+"$python_bin" -I -c '
+import json, sys
+initial, current = (json.loads(value) for value in sys.argv[1:])
+for key in ("execution_access", "permission_profile"):
+    if initial.get(key) != current.get(key):
+        print("tick: operator permissions changed during preparation", file=sys.stderr)
+        sys.exit(78)
+' "$protected" "$launch_protected" || exit 78
 # Never accept the previous session's final result if this session fails to write.
 check_quota
 attempt_id="${tick_started}:$$"
