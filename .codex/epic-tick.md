@@ -65,6 +65,30 @@ For PR actions, recheck the expected head before editing or publishing. Retry
 transient read-only GitHub errors up to three times, except quota errors. Before retrying a write,
 check whether it succeeded so comments, PRs and merges are not duplicated.
 
+### Board Status and status labels
+
+Change board Status only through the trusted status helper, using the validated
+code root appended below this prompt:
+
+```text
+python3 <code-root>/scripts/epic/set_status.py set <issue> '<status>'
+python3 <code-root>/scripts/epic/set_status.py repair <issue>
+```
+
+For a claim, set `In progress`. For a continue, choose Status only from recorded
+leaf evidence; use `Done` only when every leaf is done. The helper changes the
+board and its `status::*` label together. If it reports an unclean or half-done
+change, run `repair` for the same issue, confirm success, then retry `set`.
+If it reports an unknown result, read the current state before retrying.
+
+Use the helper only for this tick's issue, or the issue named by the selected
+PR's `Issue:` line, with Executor Codex. `repair` may fix that issue's labels
+in any Status. `sync` is Anton's backfill mode and is forbidden inside a tick.
+Do not write board Status or edit `status::*` labels directly through any GitHub
+CLI or API route. The pause and quota checks apply before helper calls too.
+If the trusted helper refuses an action or is unavailable, stop and report the
+blocker; do not substitute another write route.
+
 ### Issue-to-PR publication handoff
 
 An issue `claim` or `continue` authorizes creating a draft, not continuing the
