@@ -752,7 +752,7 @@ class FreshWriteCheckTest(unittest.TestCase):
     def test_claim_rechecks_ready_executor_blockers_and_slot(self) -> None:
         self.action("claim", None)
         command = (
-            "gh project item-edit --id PVTI_21 --field-id F --single-select-option-id O"
+            f"python3 {ROOT / 'scripts/epic/set_status.py'} set 21 'In progress'"
         )
         self.items = [self.item(21, "Ready")]
         state: dict[str, Any] = {"prs": [], "items": self.items, "merged_prs": []}
@@ -872,7 +872,10 @@ class FreshWriteCheckTest(unittest.TestCase):
 
     def test_failed_fresh_read_blocks_every_write_row(self) -> None:
         cases = [
-            ("claim", None, "gh project item-edit --id PVTI_21"),
+            (
+                "claim", None,
+                f"python3 {ROOT / 'scripts/epic/set_status.py'} set 21 'In progress'",
+            ),
             ("claim", None, "git push origin feat/21-work"),
             ("fix", 5, "git push origin feat/21-work"),
             (
@@ -960,10 +963,13 @@ class FreshWriteCheckTest(unittest.TestCase):
         helpers = trusted / "scripts/epic"
         helpers.mkdir(parents=True)
         (helpers / "write_checks.py").write_text(
+            "from types import SimpleNamespace\n"
             "AGENT = 'Claude'\n"
+            "class Unclear(ValueError): pass\n"
+            "def status_refusal(tool, tool_input, cwd): return None\n"
             "def check_push(ctx, write): return None\n"
             "original_push = check_push\n"
-            "def tool_writes(tool, tool_input, cwd): return [object()]\n"
+            "def tool_writes(tool, tool_input, cwd): return [SimpleNamespace(kind='push')]\n"
             "def guard(tool, tool_input, cwd, *, agent):\n"
             "    assert agent == 'Codex'\n"
             "    assert AGENT == 'Claude'\n"
