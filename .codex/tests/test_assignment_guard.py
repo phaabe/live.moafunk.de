@@ -82,8 +82,7 @@ class AssignmentGuardTests(fixtures.Env):
             for status, executor in (("Ready", "Claude"), ("Backlog", "Codex")):
                 for command in (
                     "gh issue comment 21 --body 'Claim by Codex'",
-                    "gh project item-edit --id PVTI_21 --field-id F "
-                    "--single-select-option-id O",
+                    f"python3 \"{write_checks.STATUS_HELPER}\" set 21 'In progress'",
                 ):
                     with self.subTest(shared=shared, status=status, command=command):
                         self.item(status, executor)
@@ -311,7 +310,7 @@ class AssignmentClientIntegrationTests(fixtures.Env):
                 with patch.dict(os.environ, {"EPIC_SHARED_READER": shared}):
                     for command in (
                         "gh issue comment 21 --body claim",
-                        "gh project item-edit --id PVTI_21 --field-id F --single-select-option-id O",
+                        f"python3 \"{write_checks.STATUS_HELPER}\" set 21 'In progress'",
                     ):
                         with self.subTest(shared=shared, command=command):
                             self.gh.set(
