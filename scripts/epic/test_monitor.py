@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -398,7 +399,14 @@ class AgentRowsTest(unittest.TestCase):
     ) -> str:
         agent = agents.load(self.root, "claude-w", now)
         row = monitor.agent_metrics(
-            monitor.Metrics(), agent, paused, now, lambda _: True, self.ledgers, None, waits
+            monitor.Metrics(),
+            agent,
+            paused,
+            now,
+            lambda _: True,
+            self.ledgers,
+            None,
+            waits,
         )
         return row.presence
 
@@ -418,6 +426,92 @@ class AgentRowsTest(unittest.TestCase):
         stale = Wait("agent", "connection_failure", since=1_100)
         self.assertEqual(self.presence_with(1_300, stale), "idle")  # fresh
         self.assertEqual(self.presence_with(1_321, stale), "late")  # stale
+
+    def tick_events(self, home: Path, *events: Mapping[str, object]) -> None:
+        with (home / "claude-ticks.jsonl").open("a") as handle:
+            for event in events:
+                handle.write(json.dumps(event) + "\n")
+
+    def test_collector_reads_agent_waits_from_the_activity_ledger(self) -> None:
+        # Overdue after 2 x 60 + 100 = 220 s: late from 1_221 without a wait.
+        home = self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        tick, stamp = "1970-01-01T00:16:40Z", "1970-01-01T00:16:41Z"
+        self.tick_events(
+            home,
+            {"event": "start", "tick": tick, "at": tick},
+            {
+                "event": "wait",
+                "tick": tick,
+                "at": stamp,
+                "action": "claim",
+                "reason_code": "github_quota",
+                "scope": "agent",
+                "retry_at": "1970-01-01T00:25:00Z",  # 1_500
+            },
+            {"event": "finish", "tick": tick, "at": stamp, "outcome": "blocked"},
+        )
+        idle, late = monitor.PRESENCE["idle"], monitor.PRESENCE["late"]
+        text = self.run_at(1_400)
+        self.assertIn("epic_activity_history_healthy 1\n", text)
+        self.assertIn(f'epic_agent_presence{{agent="claude-w"}} {idle}\n', text)
+        text = self.run_at(1_501)  # the wait expired
+        self.assertIn(f'epic_agent_presence{{agent="claude-w"}} {late}\n', text)
+        ledger = activity_history.default_path(self.root / "runtime")
+        conn = activity_history.open_ledger(ledger)
+        self.addCleanup(conn.close)
+        stored = conn.execute("SELECT count(*) FROM events").fetchone()[0]
+        self.assertEqual(stored, 3)  # replayed reads stored nothing twice
+        spans = activity_history.fresh_spans(conn, "claude-w", 0, 2_000)
+        self.assertEqual(spans, [(1_400, 1_501)])
+
+    def test_a_new_tick_ends_the_recorded_wait(self) -> None:
+        home = self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        wait = {
+            "event": "wait",
+            "tick": "1970-01-01T00:16:40Z",
+            "reason_code": "model_usage_limit",
+            "scope": "agent",
+            "retry_at": "1970-01-01T01:00:00Z",
+        }
+        self.tick_events(home, wait)
+        idle, late = monitor.PRESENCE["idle"], monitor.PRESENCE["late"]
+        self.assertIn(
+            f'epic_agent_presence{{agent="claude-w"}} {idle}\n', self.run_at(1_400)
+        )
+        later = "1970-01-01T00:20:00Z"  # 1_200: the wait was re-evaluated
+        self.tick_events(home, {"event": "start", "tick": later, "at": later})
+        self.assertIn(
+            f'epic_agent_presence{{agent="claude-w"}} {late}\n', self.run_at(1_421)
+        )
+
+    def test_target_wait_in_the_ledger_never_holds_lateness(self) -> None:
+        home = self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        self.tick_events(
+            home,
+            {
+                "event": "wait",
+                "tick": "1970-01-01T00:16:40Z",
+                "reason_code": "target_lock",
+                "scope": "target",
+                "retry_at": "1970-01-01T01:00:00Z",
+            },
+        )
+        late = monitor.PRESENCE["late"]
+        self.assertIn(
+            f'epic_agent_presence{{agent="claude-w"}} {late}\n', self.run_at(1_400)
+        )
+
+    def test_a_broken_activity_ledger_stops_history_not_the_scrape(self) -> None:
+        self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        ledger = activity_history.default_path(runtime)
+        ledger.write_bytes(b"not a database" * 100)
+        text = self.run_at(1_221)
+        self.assertIn("epic_activity_history_healthy 0\n", text)
+        late = monitor.PRESENCE["late"]
+        self.assertIn(f'epic_agent_presence{{agent="claude-w"}} {late}\n', text)
+        self.assertEqual(ledger.read_bytes(), b"not a database" * 100)
 
     def test_running_agent_row_and_collision(self) -> None:
         pr = '{"action": "review", "pr": 7}'

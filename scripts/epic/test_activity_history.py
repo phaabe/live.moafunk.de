@@ -381,3 +381,54 @@ class RetentionTest(LedgerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CollectorTest(LedgerCase):
+    def collector(self) -> ah.Collector:
+        collector = ah.Collector(self.dir)
+        self.addCleanup(collector.close)
+        return collector
+
+    def spans(self) -> list[tuple[int, int]]:
+        return ah.fresh_spans(self.conn, "claude", T0 - 3_600, T0 + 3_600)
+
+    def test_missing_source_and_long_gaps_stay_unknown(self) -> None:
+        collector = self.collector()
+        collector.cycle([("claude", self.file)], T0)  # no file yet: no coverage
+        self.write(line("start", T0))
+        collector.cycle([("claude", self.file)], T0 + 30)
+        collector.cycle([("claude", self.file)], T0 + 60)
+        gap = T0 + 60 + ah.FRESH_GAP_S + 1
+        collector.cycle([("claude", self.file)], gap)
+        collector.cycle([("claude", self.file)], gap + 30)
+        self.assertTrue(collector.healthy)
+        self.assertEqual(self.spans(), [(T0 + 30, T0 + 60), (gap, gap + 30)])
+
+    def test_restart_starts_a_new_span(self) -> None:
+        self.write(line("start", T0))
+        first = self.collector()
+        first.cycle([("claude", self.file)], T0)
+        first.cycle([("claude", self.file)], T0 + 30)
+        first.close()
+        second = self.collector()
+        second.cycle([("claude", self.file)], T0 + 60)
+        second.cycle([("claude", self.file)], T0 + 90)
+        # The time the collector was down stays unknown.
+        self.assertEqual(self.spans(), [(T0, T0 + 30), (T0 + 60, T0 + 90)])
+        self.assertEqual(self.count(), 1)
+
+    def test_current_waits_reads_only_the_last_tick(self) -> None:
+        quota = {"reason_code": "github_quota", "scope": "agent"}
+        self.write(
+            line("start", T0),
+            line("wait", T0 + 1, action="claim", retry_at=iso(T0 + 600), **quota),
+            line("finish", T0 + 2, outcome="blocked"),
+        )
+        self.ingest()
+        self.assertEqual(
+            ah.current_waits(self.conn, "claude"),
+            [Wait("agent", "github_quota", since=T0 + 1, retry_at=T0 + 600)],
+        )
+        self.write(line("start", T0 + 60))
+        self.ingest()
+        self.assertEqual(ah.current_waits(self.conn, "claude"), [])

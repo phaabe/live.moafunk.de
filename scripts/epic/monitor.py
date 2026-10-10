@@ -393,6 +393,7 @@ class Ledgers:
         self.runtime = runtime
         self.ledgers: dict[tuple[str, Path], ticks.LogLedger] = {}
         self.views: dict[str, ticks.TickView] = {}
+        self.activity = activity_history.Collector(runtime)
 
     def opener(self, agent: agents.Agent, name: str) -> Callable[[], BinaryIO]:
         def opener() -> BinaryIO:
@@ -785,10 +786,18 @@ def runner_metrics(
         metrics.add("agent_registry_rejected", registry.rejected[reason], reason=reason)
     for name in registry.conflicts:
         metrics.add("agent_conflict", 1, agent=name)
+    waits: dict[str, list[activity_history.Wait]] = {}
     if ledgers is not None:
         ledgers.prune(registry.agents)
+        waits = ledgers.activity.cycle(
+            [(agent.id, agent.home / agent.events_name) for agent in registry.agents],
+            now,
+        )
+        metrics.add("activity_history_healthy", int(ledgers.activity.healthy))
     rows = [
-        agent_metrics(metrics, agent, paused, now, alive, ledgers, heads)
+        agent_metrics(
+            metrics, agent, paused, now, alive, ledgers, heads, waits.get(agent.id, ())
+        )
         for agent in registry.agents
     ]
     rows.sort(

@@ -13,6 +13,8 @@ stable event ID makes every replay a no-op.
   resolution(range_s)                   the overview bucket width of a range
   late(...)                             the one wait-aware lateness decision
   prune(conn, now)                      30-day retention in bounded batches
+  current_waits(conn, agent)            the agent-wide wait of the last tick
+  Collector(runtime).cycle(sources, now) one collector cycle over the ledger
 
 Outbox states: `pending` (stored, not written), `staged` (written and
 flushed to a spool file; not delivered), `delivered` (confirmed by Loki
@@ -26,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -42,6 +45,9 @@ MAX_RANGE_S = RETENTION_S
 # A bucket seals this long after its end, once the producers are read.
 SEAL_GRACE_S = 10
 PRUNE_BATCH = 5_000
+PRUNE_EVERY_S = 3_600
+# A longer gap between two reads of a source is unknown time.
+FRESH_GAP_S = 120
 MAX_LINE = 4096
 OUTBOX_STATES = ("pending", "staged", "delivered", "expired")
 # Fixed tie order after "latest seen": the contract's state order.
@@ -126,6 +132,7 @@ class IngestResult:
     stored: int = 0
     duplicates: int = 0
     invalid: int = 0
+    missing: bool = False
 
 
 def ingest(conn: sqlite3.Connection, agent: str, path: Path) -> IngestResult:
@@ -140,6 +147,7 @@ def ingest(conn: sqlite3.Connection, agent: str, path: Path) -> IngestResult:
     try:
         info = path.stat()
     except FileNotFoundError:
+        result.missing = True
         return result
     row = conn.execute(
         "SELECT device, inode, offset FROM cursors WHERE source = ?", (source,)
@@ -557,6 +565,95 @@ def late(
         if now - wait.since <= limit:
             return False
     return True
+
+
+def current_waits(conn: sqlite3.Connection, agent: str) -> list[Wait]:
+    """The agent-wide wait recorded in the agent's last tick, if any.
+
+    Reads back only to the last `start` event: a new tick re-evaluates the
+    wait, so an older wait has ended. A target wait is never returned.
+    """
+    for at, text in conn.execute(
+        "SELECT at, record FROM events WHERE agent = ? ORDER BY at DESC, rowid DESC",
+        (agent,),
+    ):
+        record = json.loads(text)
+        if record["activity"] == "waiting" and record["scope"] == "agent":
+            return [
+                Wait(
+                    "agent",
+                    record["reason_code"] or "unknown",
+                    since=at,
+                    retry_at=epoch(record["retry_at"]),
+                )
+            ]
+        if record["event"] == "start":
+            break
+    return []
+
+
+class Collector:
+    """The collector's ledger: ingest, coverage, waits and retention per cycle.
+
+    A ledger failure stops history only (`healthy` is False): it never stops
+    the scrape and never deletes the store. An unreadable source gets no
+    fresh coverage, so its time stays unknown.
+    """
+
+    def __init__(self, runtime: Path) -> None:
+        self.path = default_path(runtime)
+        self.conn: sqlite3.Connection | None = None
+        # Open coverage span per agent: (start, last fresh read).
+        self.spans: dict[str, tuple[int, int]] = {}
+        self.pruned_at: int | None = None
+        self.healthy = True
+
+    def cycle(
+        self, sources: Iterable[tuple[str, Path]], now: float
+    ) -> dict[str, list[Wait]]:
+        at = int(now)
+        waits: dict[str, list[Wait]] = {}
+        try:
+            if self.conn is None:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.conn = open_ledger(self.path)
+            for agent, path in sources:
+                try:
+                    readable = not ingest(self.conn, agent, path).missing
+                except OSError:
+                    readable = False
+                if readable:
+                    self.observe(agent, at)
+                else:
+                    self.spans.pop(agent, None)
+                waits[agent] = current_waits(self.conn, agent)
+            if self.pruned_at is None or at - self.pruned_at >= PRUNE_EVERY_S:
+                prune(self.conn, at)
+                self.pruned_at = at
+        except (sqlite3.Error, LedgerError, OSError):
+            logging.warning("Activity history is unavailable", exc_info=True)
+            self.close()
+            self.healthy = False
+            return {}
+        self.healthy = True
+        return waits
+
+    def observe(self, agent: str, at: int) -> None:
+        assert self.conn is not None
+        start, last = self.spans.get(agent, (at, at))
+        if at - last > FRESH_GAP_S or at < last:
+            start = at
+        self.spans[agent] = (start, at)
+        observe(self.conn, agent, start, at)
+
+    def __del__(self) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self.conn is not None:
+            self.conn.close()
+        self.conn = None
+        self.spans.clear()
 
 
 def prune(conn: sqlite3.Connection, now: int, batch: int = PRUNE_BATCH) -> int:
