@@ -250,11 +250,18 @@ pub async fn api_change_password(
 
     // Hash and update password, clearing any forced-change flag
     let new_hash = auth::hash_password(&req.new_password)?;
-    sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
-        .bind(&new_hash)
+    let mut tx = crate::recovery::begin(&state.db).await?;
+    let current: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = ?")
         .bind(user.id)
-        .execute(&state.db)
+        .fetch_one(&mut *tx)
         .await?;
+    if current != user.password_hash {
+        return Err(AppError::Conflict(
+            "Your password changed. Please sign in again.".into(),
+        ));
+    }
+    crate::recovery::update_password(&mut tx, user.id, &new_hash, false).await?;
+    tx.commit().await.map_err(crate::recovery::database_error)?;
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -294,11 +301,18 @@ pub async fn api_set_initial_password(
 
     // Hash and update password, clearing the forced-change flag
     let new_hash = auth::hash_password(&req.new_password)?;
-    sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
-        .bind(&new_hash)
+    let mut tx = crate::recovery::begin(&state.db).await?;
+    let still_required: bool = sqlx::query_scalar("SELECT must_change_password FROM users WHERE id = ?")
         .bind(user.id)
-        .execute(&state.db)
+        .fetch_one(&mut *tx)
         .await?;
+    if !still_required {
+        return Err(AppError::Forbidden(
+            "Password change is not required for this account".into(),
+        ));
+    }
+    crate::recovery::update_password(&mut tx, user.id, &new_hash, false).await?;
+    tx.commit().await.map_err(crate::recovery::database_error)?;
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -4178,11 +4192,9 @@ pub async fn api_reset_password(
     let password = auth::generate_session_token()[..16].to_string();
     let password_hash = auth::hash_password(&password)?;
 
-    sqlx::query("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?")
-        .bind(&password_hash)
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = crate::recovery::begin(&state.db).await?;
+    crate::recovery::update_password(&mut tx, id, &password_hash, true).await?;
+    tx.commit().await.map_err(crate::recovery::database_error)?;
 
     Ok(Json(ResetPasswordResponse { password }))
 }

@@ -63,6 +63,18 @@ const router = createRouter({
       // Redirect handled by beforeEach guard (role-aware)
       redirect: '/dashboard',
     },
+    ...['forgot-password', 'reset-password', 'verify-email'].map((name) => ({
+      path: `/${name}`,
+      name,
+      component: () => import('./pages/RecoveryPage.vue'),
+      meta: { requiresAuth: false, recovery: true },
+    })),
+    {
+      path: '/recovery-email',
+      name: 'recovery-email',
+      component: () => import('./pages/RecoverySettingsPage.vue'),
+      meta: { requiresAuth: true, roles: ['host', 'admin'] },
+    },
     {
       path: '/dashboard',
       name: 'dashboard',
@@ -275,7 +287,8 @@ router.beforeEach(async (to, _from, next) => {
   if (
     authStore.isAuthenticated &&
     authStore.user?.must_change_password &&
-    to.name !== 'change-password'
+    to.name !== 'change-password' &&
+    !to.meta.recovery
   ) {
     next({ name: 'change-password' });
     return;

@@ -12,6 +12,8 @@ mod metrics;
 mod models;
 mod pdf;
 mod recording;
+mod recovery;
+mod recovery_mail;
 mod scheduler;
 mod soundcloud;
 mod storage;
@@ -23,6 +25,8 @@ mod video;
 
 #[cfg(test)]
 mod broadcast_tests;
+#[cfg(test)]
+mod recovery_tests;
 
 use axum::{
     extract::{DefaultBodyLimit, Query, State, WebSocketUpgrade},
@@ -60,6 +64,8 @@ pub type TelegramEditSessions = Arc<tokio::sync::Mutex<HashMap<i64, models::Tele
 pub type PendingFinalizer = Arc<tokio::sync::Mutex<Option<tokio::task::AbortHandle>>>;
 
 pub struct AppState {
+    pub recovery_mail: recovery_mail::RecoveryMailer,
+    pub recovery_controls: handlers::recovery::RecoveryControls,
     pub db: sqlx::SqlitePool,
     pub config: Config,
     pub s3_client: aws_sdk_s3::Client,
@@ -309,6 +315,8 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     let state = Arc::new(AppState {
+        recovery_mail: recovery_mail::RecoveryMailer::from_env()?,
+        recovery_controls: handlers::recovery::RecoveryControls::from_env()?,
         db,
         config: config.clone(),
         s3_client,
@@ -426,6 +434,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/auth/set-initial-password",
             post(handlers::api::api_set_initial_password),
         )
+        .merge(handlers::recovery::routes())
         // Artist flow — my show
         .route("/api/my-show", get(handlers::api::api_my_show))
         .route("/api/my-shows", get(handlers::api::api_my_shows_list))
@@ -963,7 +972,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

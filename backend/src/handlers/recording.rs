@@ -1965,6 +1965,8 @@ mod tests {
         gen_test_segments(&seg_dir).await;
 
         let state = Arc::new(AppState {
+            recovery_mail: crate::recovery_mail::RecoveryMailer::default(),
+            recovery_controls: crate::handlers::recovery::RecoveryControls::default(),
             db: db.clone(),
             config: config.clone(),
             s3_client: s3_client.clone(),
