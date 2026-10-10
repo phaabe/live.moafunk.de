@@ -196,6 +196,41 @@ class StatusGuardTests(fixtures.Env):
             self.check(command, "0")
         self.assertEqual(self.gh.calls, [])
 
+    def test_unclear_commands_cannot_hide_status_writes(self) -> None:
+        writes = (
+            "gh issue edit 21 --add-label status::done",
+            self.helper("set 22 Done"),
+            self.helper("repair 22"),
+        )
+        for shared in ("0", "1"):
+            for write in writes:
+                for separator in ("; ", "\n", " && ", " || ", " & ", " | "):
+                    for commands in (
+                        ("git push --all", write),
+                        (write, "git push --all"),
+                    ):
+                        command = separator.join(commands)
+                        with self.subTest(shared=shared, command=command):
+                            with self.assertRaises(ValueError):
+                                self.check(command, shared)
+                for command in (
+                    f"git push --all > >({write})",
+                    f"git push --all < <({write})",
+                ):
+                    with self.subTest(shared=shared, command=command):
+                        with self.assertRaises(ValueError):
+                            self.check(command, shared)
+        self.assertEqual(self.gh.calls, [])
+
+    def test_unclear_label_values_are_refused_without_reads(self) -> None:
+        for shared in ("0", "1"):
+            for flag in ("--add-label", "--remove-label"):
+                command = f'gh issue edit 21 {flag} "$(cat /tmp/label)"'
+                with self.subTest(shared=shared, flag=flag):
+                    with self.assertRaises(ValueError):
+                        self.check(command, shared)
+        self.assertEqual(self.gh.calls, [])
+
     def test_mcp_label_replacement_refused_in_both_modes(self) -> None:
         for shared in ("0", "1"):
             with patch.dict(os.environ, {"EPIC_SHARED_READER": shared}):

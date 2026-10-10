@@ -541,9 +541,20 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
         writes = checks.tool_writes(tool, tool_input, str(cwd))
     except checks.Unclear as error:
         if action_error is None and not shared and not issue_action:
-            # status_refusal already rejected unclear Status commands. Keep
-            # the existing reader-off behavior for unrelated commands.
-            return
+            # A parse error can hide a Status write elsewhere in a compound
+            # command. Preserve only standalone, unrelated commands here.
+            words = shell_words(join_continuations(tool_input.get("command", "")))
+            compound = any(
+                word
+                and set(word) <= SHELL_PUNCTUATION
+                and set(word) & set(";&|<>\n")
+                for word in words
+            )
+            label_edit = any(
+                re.search(r"--(?:add|remove)-label\b", word) for word in words
+            )
+            if not compound and not label_edit:
+                return
         raise ValueError(f"Runner write check failed: {error}") from error
     except Exception as error:  # Unclear commands must block with the hook protocol.
         raise ValueError(f"Runner write check failed: {error}") from error
