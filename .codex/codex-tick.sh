@@ -679,8 +679,15 @@ if [[ "$action" == merge || "$action" == escalate || "$action" == adopt ]]; then
     model_root="$tick_tmp"
 fi
 permission_profile=$("$python_bin" -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("permission_profile") or "")' "$protected")
+execution_access=$("$python_bin" -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("execution_access", "sandboxed"))' "$protected")
 model_options=(--add-dir "$tick_tmp")
-if [[ "$permission_profile" == epic-source-edit ]]; then
+if [[ "$execution_access" == full-access && -z "$permission_profile" ]]; then
+    model_options+=(--sandbox danger-full-access -c 'approval_policy="never"')
+    printf 'tick: operator enabled full-access execution\n'
+elif [[ "$execution_access" != sandboxed ]]; then
+    printf 'tick: invalid operator execution access\n' >&2
+    exit 78
+elif [[ "$permission_profile" == epic-source-edit ]]; then
     # Old --sandbox settings override permission profiles in native Codex.
     model_options+=(-c 'default_permissions="epic-source-edit"')
 elif [[ -z "$permission_profile" ]]; then

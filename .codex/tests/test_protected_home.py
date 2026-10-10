@@ -83,6 +83,39 @@ class ProtectedHomeTests(unittest.TestCase):
                 with self.assertRaisesRegex(module.ProtectedHomeError, "permission"):
                     self.check()
 
+    def test_full_access_requires_operator_binding_and_matching_config(self) -> None:
+        config = self.fixture.home / "config.toml"
+        original = config.read_text()
+        start = original.index("[sandbox_workspace_write]")
+        end = original.index("[projects.", start)
+        full = (original[:start] + original[end:]).replace(
+            'sandbox_mode = "workspace-write"', 'sandbox_mode = "danger-full-access"'
+        )
+        config.write_text(full)
+        self.fixture.reseal()
+        with self.assertRaises(module.ProtectedHomeError):
+            self.check()
+        self.fixture.data["execution_access"] = "full-access"
+        self.fixture.data["network_access"] = True
+        self.fixture.reseal()
+        self.assertEqual(self.check()["execution_access"], "full-access")
+        for changed in (
+            original,
+            full + '\n[permissions.extra]\nextends = ":workspace"\n',
+            full.replace('approval_policy = "never"', 'approval_policy = "on-request"'),
+        ):
+            with self.subTest(config=changed):
+                config.write_text(changed)
+                self.fixture.reseal()
+                with self.assertRaises(module.ProtectedHomeError):
+                    self.check()
+
+    def test_unknown_operator_access_is_rejected(self) -> None:
+        self.fixture.data["execution_access"] = "typo"
+        self.fixture.reseal()
+        with self.assertRaisesRegex(module.ProtectedHomeError, "execution_access"):
+            self.check()
+
     def test_source_profile_refuses_existing_symlink_and_hardlink_grants(self) -> None:
         enable_source_profile(self.fixture)
         temp = self.fixture.temporary_parent / "codex-tick-source"

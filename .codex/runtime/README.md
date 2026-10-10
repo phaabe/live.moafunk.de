@@ -7,7 +7,7 @@ Do not point `CODEX_HOME` at the checkout or at a personal Codex home.
 
 `EPIC_CODEX_PROTECTED_CONFIG` names a canonical absolute JSON file. It and the
 dedicated home, all configured hook code and every replacement-capable parent
-must be outside model-writable roots. The operator owns the files; shared
+must be outside the declared writable roots. The operator owns the files; shared
 write permissions are refused. The JSON object has these fields:
 
 - `schema`: `1`.
@@ -16,8 +16,8 @@ write permissions are refused. The JSON object has these fields:
 - `allowed_origin_urls`: approved effective fetch and push origin URLs.
   Multiple effective fetch or push URLs are refused. Git URL rewrites apply.
 - `writable_roots`: exactly `git_metadata` (the checkout's common Git directory)
-  and `gitnexus` (the approved state directory). These exact paths appear in
-  the protected `config.toml` too.
+  and `gitnexus` (the approved state directory). In sandboxed mode these exact
+  paths appear in the protected `config.toml` too.
 - `temporary_parent`: an allocation parent, never a writable grant. After
   admission, the tick creates `codex-tick-<unique>` directly below it and
   passes only that exact directory through `--add-dir`.
@@ -45,6 +45,21 @@ The config uses `workspace-write`, approval `never`, the bound network policy,
 both automatic temp grants disabled, and the main checkout untrusted. Every
 project trust entry must be untrusted. Native session directories remain
 host-writable without granting model tools access to `CODEX_HOME`.
+
+For operator-approved unsandboxed execution in the legacy runner, set `execution_access` to
+`"full-access"` in the binding and `sandbox_mode = "danger-full-access"` in
+the dedicated home's config. Keep `approval_policy = "never"` and set the
+binding's `network_access` to `true`. Remove `default_permissions`,
+`[permissions]` and `[sandbox_workspace_write]`, then update the config hash
+in the binding. The tick passes the full-access mode explicitly to Codex.
+An absent `execution_access` keeps the existing sandboxed behavior.
+
+Full access removes filesystem and process sandbox enforcement, including
+protection of the dedicated home and runner code during model execution.
+Preflight hashes, hook trust, target locks, assignments, lane ownership and
+PR review checks still run; hashes are checks, not write protection.
+Use this mode only when the operator has authorized that access. To restore
+the sandbox, restore both the prior config and binding together.
 
 Preflight scans the runner for untracked and ignored `.codex/config.toml`
 layers, including nested layers, and refuses aliases. It verifies protected

@@ -584,7 +584,20 @@ def validate(
     if type(network_access) is not bool:
         raise ProtectedHomeError("protected network_access policy is missing")
     permission_profile = config.get("default_permissions")
-    if "permissions" in config or "default_permissions" in config:
+    execution_access = data.get("execution_access", "sandboxed")
+    if execution_access not in ("sandboxed", "full-access"):
+        raise ProtectedHomeError("unknown operator execution_access")
+    if execution_access == "full-access":
+        if (
+            config.get("sandbox_mode") != "danger-full-access"
+            or set(config)
+            & {"permissions", "default_permissions", "sandbox_workspace_write"}
+            or network_access is not True
+        ):
+            raise ProtectedHomeError(
+                "full-access requires matching config and network access"
+            )
+    elif "permissions" in config or "default_permissions" in config:
         if (
             permission_profile != SOURCE_PROFILE
             or config.get("permissions")
@@ -721,6 +734,7 @@ def validate(
         "codex_home": str(home),
         "writable_roots": [str(path) for path in writable],
         "permission_profile": permission_profile,
+        "execution_access": execution_access,
         "test_slots": test_slots,
         "temporary_parent": str(temporary_parent),
         "review_parent": str(review_parent),

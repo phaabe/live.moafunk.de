@@ -404,7 +404,7 @@ else:
         # foundation/native suites exercise the real validator and config.
         (self.runner.parent / "protected_home.py").write_text(
             "import json, os\n"
-            "print(json.dumps({'temporary_parent': os.environ['TEST_TEMP_PARENT'], 'permission_profile': os.environ.get('TEST_PERMISSION_PROFILE')}))\n"
+            "print(json.dumps({'temporary_parent': os.environ['TEST_TEMP_PARENT'], 'permission_profile': os.environ.get('TEST_PERMISSION_PROFILE'), 'execution_access': os.environ.get('TEST_EXECUTION_ACCESS', 'sandboxed')}))\n"
         )
         self.env = {
             **os.environ,
@@ -1363,6 +1363,25 @@ else:
 
     def test_unknown_permission_profile_starts_no_model(self) -> None:
         self.env["TEST_PERMISSION_PROFILE"] = "unknown"
+        self.assertEqual(self.run_tick().returncode, 78)
+        self.assertFalse(self.calls.exists())
+
+    def test_operator_full_access_reaches_native_command(self) -> None:
+        self.env["TEST_EXECUTION_ACCESS"] = "full-access"
+        self.assertEqual(self.run_tick().returncode, 0)
+        args = json.loads(self.calls.read_text().splitlines()[0])["args"]
+        self.assertEqual(args[args.index("--sandbox") + 1], "danger-full-access")
+        self.assertIn('approval_policy="never"', args)
+        self.assertNotIn('default_permissions="epic-source-edit"', args)
+
+    def test_full_access_with_profile_starts_no_model(self) -> None:
+        self.env["TEST_EXECUTION_ACCESS"] = "full-access"
+        self.env["TEST_PERMISSION_PROFILE"] = "epic-source-edit"
+        self.assertEqual(self.run_tick().returncode, 78)
+        self.assertFalse(self.calls.exists())
+
+    def test_unknown_execution_access_starts_no_model(self) -> None:
+        self.env["TEST_EXECUTION_ACCESS"] = "typo"
         self.assertEqual(self.run_tick().returncode, 78)
         self.assertFalse(self.calls.exists())
 
