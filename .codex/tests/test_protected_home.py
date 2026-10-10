@@ -99,9 +99,16 @@ class ProtectedHomeTests(unittest.TestCase):
         self.fixture.data["network_access"] = True
         self.fixture.reseal()
         self.assertEqual(self.check()["execution_access"], "full-access")
+        self.fixture.data["network_access"] = False
+        self.fixture.reseal()
+        with self.assertRaisesRegex(module.ProtectedHomeError, "network access"):
+            self.check()
+        self.fixture.data["network_access"] = True
         for changed in (
             original,
             full + '\n[permissions.extra]\nextends = ":workspace"\n',
+            'default_permissions = "epic-source-edit"\n' + full,
+            full + "\n[sandbox_workspace_write]\nnetwork_access = true\n",
             full.replace('approval_policy = "never"', 'approval_policy = "on-request"'),
         ):
             with self.subTest(config=changed):

@@ -805,9 +805,17 @@ if [[ -e "${HOME}/.epic-pause" ]]; then
     exit 0
 fi
 # Repeat the protected checks with every effective model-writable root.
-"$python_bin" -I "$source_root/.codex/protected_home.py" check \
+launch_protected=$("$python_bin" -I "$source_root/.codex/protected_home.py" check \
     --mode "$runtime_mode" --repo "$repo_root" --code-root "$code_root" \
-    "${protected_options[@]}" >/dev/null || exit 78
+    "${protected_options[@]}") || exit 78
+"$python_bin" -I - "$protected" "$launch_protected" <<'PY' || exit 78
+import json, sys
+initial, current = (json.loads(value) for value in sys.argv[1:])
+for key in ("execution_access", "permission_profile"):
+    if initial.get(key) != current.get(key):
+        print("tick: operator permissions changed during preparation", file=sys.stderr)
+        sys.exit(78)
+PY
 # Never accept the previous session's final result if this session fails to write.
 check_quota
 attempt_id="${tick_started}:$$"
