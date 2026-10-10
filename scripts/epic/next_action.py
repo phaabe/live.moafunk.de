@@ -10,7 +10,8 @@ Priority (first match wins), see docs/implementation/epic-rules.md section 8:
 
 Focus: when ~/.epic-focus lists labels (one per line, e.g. project::Stream),
 only issues with one of them, and PRs whose own labels or `Issue:` ticket have
-one, get actions. Everything else is frozen. No file or an empty file: all.
+one, get actions and count for the claim capacity. Everything else is frozen.
+No file or an empty file: all.
   escalate  my PR reached MAX_ROUNDS changes-requested verdicts, and no
             operator grant names the newest one (granted())
   merge     my PR is approved for its head, checks green, no conflict
@@ -26,7 +27,7 @@ one, get actions. Everything else is frozen. No file or an empty file: all.
   claim     a Ready leaf with Executor = me, after its "Start after" leaves
             or tickets and the leaves before it in the epic's batch order;
             needs no `continue`, fewer than MAX_ACTIVE active and fewer than
-            MAX_PARKED parked work items (capacity())
+            MAX_PARKED parked work items in focus (capacity())
   idle      nothing to do
 
 Inside each action the order is priority, then age: `priority::high`, then
@@ -105,7 +106,7 @@ MAX_ROUNDS = 3
 # A PR's `mergeable` as decide() reads it. UNKNOWN only means GitHub is still
 # computing it; a failed or malformed read never becomes UNKNOWN.
 MERGEABLE_STATES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
-# Claim capacity per agent (see capacity()): active and parked work items.
+# Claim capacity per agent (see capacity()): active and parked work items in focus.
 MAX_ACTIVE = 2
 MAX_PARKED = 2
 PAUSE_FILE = Path.home() / ".epic-pause"
@@ -844,9 +845,14 @@ def capacity(
     done: set[str],
     completed_tickets: bool = False,
     free_claims: bool = False,
+    focus: frozenset[str] = frozenset(),
 ) -> Capacity:
-    """The agent's work across focus: each own open PR, and each own In
-    progress issue without an open linked PR (an issue/PR pair counts once).
+    """The agent's work in focus: each own open PR, and each own In progress
+    issue without an open linked PR (an issue/PR pair counts once).
+
+    With a `focus`, a PR counts only when in_focus() (its own labels or its
+    `Issue:` tickets' labels) and an issue only with a focus label, as for
+    actions in decide(). An empty focus counts all work.
 
     `needs-anton` parks an item, a ready PR too. A draft PR or In progress
     issue with valid, unresolved Waiting records is parked only with
@@ -859,6 +865,8 @@ def capacity(
         (p for p in state.get("prs", []) if p.get("baseRefName") in BASES),
         key=lambda p: p["number"],
     )
+    # Every open PR links its tickets, also a PR not counted here (the other
+    # agent's, or one outside the focus), so its ticket never counts alone.
     linked = {n for p in prs for n in issue_numbers(p.get("body") or "")}
     found = Capacity([], [])
 
@@ -873,19 +881,20 @@ def capacity(
             found.active.append(target)
 
     for p in prs:
-        if pr_author(p) == agent:
+        if pr_author(p) == agent and (not focus or in_focus(focus, p, issue_labels)):
             draft = bool(p.get("isDraft"))
             sources = pr_wait_sources(p, issue_labels) if draft else []
             count(f"PR {p['number']}", labels(p), sources)
     for n, i in sorted(board_issues(state).items()):
+        names = labels(i)
         if (
             i.get("executor") != agent
             or i.get("status") != "In progress"
             or is_closed(i)
             or n in linked
+            or (focus and not names & focus)
         ):
             continue
-        names = labels(i)
         sources = [(n, issue_url(n))] if WAITING_LABEL in names else []
         count(issue_url(n), names, sources)
     return found
@@ -975,8 +984,9 @@ def decide(
     A draft PR or In progress issue with an open `waiting` label becomes a
     status-only `wait`. `free_claims` (only where a fresh recheck runs before
     the model) lets such waits leave claims free; otherwise they hold claims.
-    A claim also needs room in capacity(); without it, the Ready leaf gets a
-    status-only `wait` that names the counted work.
+    A claim also needs room in capacity(), which counts only work in `focus`;
+    without it, the Ready leaf gets a status-only `wait` that names the
+    counted work.
     """
     if paused:
         return [
@@ -995,9 +1005,9 @@ def decide(
     hold_claims = False
     held = "" if free_claims else "; claims stay held without a fresh recheck"
     all_prs = [p for p in state.get("prs", []) if p.get("baseRefName") in BASES]
-    # Escalated PRs get no PR action, but still link their issue (capacity()
-    # counts them as parked). PRs outside the focus are frozen, not forgotten:
-    # they link their issue and count as active.
+    # Escalated PRs get no PR action, but still link their issue (in focus,
+    # capacity() counts them as parked). PRs outside the focus are frozen:
+    # they still link their issue, but capacity() does not count them.
     prs = [
         p
         for p in all_prs
@@ -1142,7 +1152,7 @@ def decide(
     linked = set()
     for p in all_prs:
         linked |= issue_numbers(p.get("body") or "")
-    room = capacity(agent, state, done, completed_tickets, free_claims)
+    room = capacity(agent, state, done, completed_tickets, free_claims, focus)
     items = [
         i
         for i in state.get("items", [])
@@ -1700,7 +1710,7 @@ def status(
     done = done_leaves(state, tickets=not completed_tickets)
     for agent in AGENTS:
         lines.append(f"\n{agent}:")
-        room = capacity(agent, state, done, completed_tickets, free_claims)
+        room = capacity(agent, state, done, completed_tickets, free_claims, focus)
         lines.append(f"  {'capacity':<17} {'':<6} {'':<55} {room.describe()}")
         acted = decide(
             agent,

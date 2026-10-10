@@ -399,21 +399,32 @@ class DecideTest(unittest.TestCase):
         self.assertEqual([a.action for a in actions], ["merge", "wait"])
         self.assertIn("active 3 of 2", actions[1].reason)
 
-    def test_out_of_focus_work_uses_capacity(self) -> None:
-        # Neither PR 1 nor issue 905 has the focus label: both still count.
-        stream = "project::Stream"
-        items = [
-            item(905, "Claude", "In progress"),
-            item(10, "Claude", "Ready", labels=[stream]),
-        ]
-        actions = decide(
-            "Claude",
-            {"prs": [pr(1, "Claude")], "items": items},
-            include_waiting=True,
-            focus=frozenset({stream}),
-        )
-        self.assertEqual([(a.action, a.issue) for a in actions], [("wait", f"{R}/10")])
-        self.assertIn(f"active 2 of 2 (PR 1, {R}/905)", actions[0].reason)
+    def test_out_of_focus_work_leaves_capacity_free(self) -> None:
+        # Issue 717: no PR or issue here has the focus label (issues 901 and
+        # 902 of the PRs are not on the board), so none holds a slot.
+        escalated = [{"name": "needs-anton"}]
+        for agent in ("Claude", "Codex"):
+            with self.subTest(agent=agent):
+                state = {
+                    "prs": [pr(1, agent), pr(2, agent, labels=escalated)],
+                    "items": [
+                        item(905, agent, "In progress"),
+                        item(906, agent, "In progress", labels=["needs-anton"]),
+                        item(10, agent, "Ready", labels=["project::Stream"]),
+                    ],
+                }
+                room = next_action.capacity(agent, state, set(), focus=STREAM)
+                self.assertEqual((room.active, room.parked), ([], []))
+                got = decide(agent, state, include_waiting=True, focus=STREAM)
+                self.assertEqual(
+                    [(a.action, a.issue) for a in got], [("claim", f"{R}/10")]
+                )
+                # An empty focus counts all of it: both limits are full.
+                room = next_action.capacity(agent, state, set())
+                self.assertEqual(room.active, ["PR 1", f"{R}/905"])
+                self.assertEqual(
+                    room.parked, ["PR 2 needs-anton", f"{R}/906 needs-anton"]
+                )
 
 
 class CapacityTest(unittest.TestCase):
@@ -655,13 +666,15 @@ class FocusTest(unittest.TestCase):
         got = decide("Claude", {"prs": [p]}, focus=STREAM)[0]
         self.assertEqual((got.action, got.pr), ("review", 3))
 
-    def test_frozen_pr_gets_no_action_but_still_counts(self) -> None:
-        # Out-of-focus PRs keep their issue linked and count toward the PR limit.
+    def test_frozen_pr_gets_no_action_and_holds_no_slot(self) -> None:
+        # Out-of-focus PRs get no action and do not count for capacity.
         frozen = [pr(n, "Claude") for n in (1, 2)]  # issues 901, 902: unlabelled
+        acts = decide("Claude", {"prs": frozen}, focus=STREAM)
+        self.assertEqual(acts[0].action, "idle")
+        self.assertIn("project::Stream", acts[0].reason)
         items = [item(7, "Claude", "Ready", labels=["project::Stream"])]
         got = decide("Claude", {"prs": frozen, "items": items}, focus=STREAM)[0]
-        self.assertEqual(got.action, "idle")
-        self.assertIn("project::Stream", got.reason)
+        self.assertEqual((got.action, got.issue), ("claim", f"{R}/7"))
 
     def test_read_focus(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -677,6 +690,90 @@ class FocusTest(unittest.TestCase):
     def test_status_names_the_focus(self) -> None:
         self.assertIn("Focus: project::Stream", status({}, False, STREAM))
         self.assertIn("Focus: all", status({}, False))
+
+
+class FocusCapacityTest(unittest.TestCase):
+    """Issue 717: capacity() counts only work in the current focus."""
+
+    BACKUP = frozenset({"project::Backup"})
+
+    def test_pr_matches_through_own_or_issue_labels(self) -> None:
+        state = {
+            "prs": [
+                pr(1, "Claude", labels=[{"name": "project::Stream"}]),  # own
+                pr(2, "Claude"),  # issue 902 on the board
+                pr(3, "Claude"),  # issue 903 off the board
+                pr(4, "Claude", labels=[{"name": "project::Backup"}]),
+            ],
+            "items": [item(902, "Claude", "In review", labels=["project::Stream"])],
+            "linked_labels": {"903": ["project::Stream"]},
+        }
+        # A focus switch changes the count; an empty focus counts all.
+        for focus, want in (
+            (STREAM, ["PR 1", "PR 2", "PR 3"]),
+            (self.BACKUP, ["PR 4"]),
+            (frozenset(), ["PR 1", "PR 2", "PR 3", "PR 4"]),
+        ):
+            with self.subTest(focus=sorted(focus)):
+                room = next_action.capacity("Claude", state, set(), focus=focus)
+                self.assertEqual((room.active, room.parked), (want, []))
+
+    def test_limits_and_pairs_still_apply_in_focus(self) -> None:
+        stream = ["project::Stream"]
+        reviewed = [verdict("APPROVED", "Claude", A, "t1")]
+        state = {
+            "prs": [
+                pr(1, "Claude"),  # issue 901: in focus, counts once
+                pr(2, "Claude", labels=lbl(*stream)),
+                # Codex's PR links Claude's issue 905: the issue never counts.
+                pr(5, "Codex", comments=reviewed),
+                pr(6, "Claude", labels=lbl("project::Backup", "needs-anton")),
+                pr(7, "Claude", labels=lbl(*stream, "needs-anton")),
+            ],
+            "items": [
+                item(901, "Claude", "In progress", labels=stream),
+                item(905, "Claude", "In progress", labels=stream),
+                item(10, "Claude", "Ready", labels=stream),
+            ],
+        }
+        acts = decide("Claude", state, include_waiting=True, focus=STREAM)
+        self.assertEqual([(a.action, a.issue) for a in acts], [("wait", f"{R}/10")])
+        self.assertEqual(
+            acts[0].reason,
+            "no claim capacity: active 2 of 2 (PR 1, PR 2); "
+            "parked 1 of 2 (PR 7 needs-anton)",
+        )
+        # The parked limit applies in focus too.
+        state["prs"][1] = pr(2, "Claude", labels=lbl(*stream, "needs-anton"))
+        room = next_action.capacity("Claude", state, set(), focus=STREAM)
+        self.assertEqual(room.active, ["PR 1"])
+        self.assertTrue(room.full())
+        state["prs"].pop()  # PR 7
+        got = decide("Claude", state, focus=STREAM)[0]
+        self.assertEqual((got.action, got.issue), ("claim", f"{R}/10"))
+
+    def test_status_counts_for_the_same_focus(self) -> None:
+        state = {
+            "prs": [pr(1, "Claude"), pr(2, "Claude"), pr(3, "Codex"), pr(4, "Codex")],
+            "items": [
+                item(10, "Claude", "Ready", labels=["project::Stream"]),
+                item(11, "Codex", "Ready", labels=["project::Stream"]),
+            ],
+        }
+        for focus, claims in ((STREAM, True), (frozenset(), False)):
+            text = status(state, False, focus)
+            for agent, issue in (("Claude", 10), ("Codex", 11)):
+                with self.subTest(focus=sorted(focus), agent=agent):
+                    room = next_action.capacity(agent, state, set(), focus=focus)
+                    self.assertEqual(room.full(), not claims)
+                    self.assertIn(room.describe(), text)
+                    acts = decide(agent, state, include_waiting=True, focus=focus)
+                    got = next(a for a in acts if a.issue == f"{R}/{issue}")
+                    self.assertEqual(got.action, "claim" if claims else "wait")
+                    line = (
+                        f"{got.action:<17} {'medium':<6} {got.issue:<55} {got.reason}"
+                    )
+                    self.assertIn(line, text)
 
 
 class StartAfterTest(unittest.TestCase):

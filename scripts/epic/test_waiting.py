@@ -27,6 +27,8 @@ from test_github_state import (
 
 R = ISSUES
 PULLS = f"https://github.com/{na.REPO}/pull"
+STREAM = "project::Stream"
+FOCUS = frozenset({STREAM})
 
 
 def dep_record(*numbers: int, actor: str = "Claude", reason: str = "needs 521") -> str:
@@ -129,12 +131,19 @@ class Parser(unittest.TestCase):
 class Selector(unittest.TestCase):
     """decide() with free claims (shared reader and fresh recheck on)."""
 
-    def decide(self, state: dict[str, Any], free: bool = True, completed=False):
+    def decide(
+        self,
+        state: dict[str, Any],
+        free: bool = True,
+        completed=False,
+        focus: frozenset[str] = frozenset(),
+    ):
         state = {"prs": [], "items": [], "merged_prs": [], **state}
         return na.decide(
             "Claude",
             state,
             include_waiting=True,
+            focus=focus,
             completed_tickets=completed,
             free_claims=free,
         )
@@ -296,6 +305,48 @@ class Selector(unittest.TestCase):
         unread = na.capacity("Claude", state, set(), free_claims=True)
         self.assertEqual((unread.active, unread.parked), (["PR 7"], []))
         self.assertEqual(kinds(self.decide(state)), [("wait", "PR 7")])
+
+    def test_focus_scopes_waiting_work_in_both_reader_modes(self) -> None:
+        # Issue 717: outside the focus, waiting work is neither parked nor
+        # active, with or without a fresh recheck.
+        state: dict[str, Any] = {
+            "prs": [draft(7, None, labels=["waiting"]), draft(8, 600)],
+            "linked_labels": {"600": ["waiting"]},
+            "items": [
+                item(500, "In progress", labels=["waiting"]),
+                item(521, "Ready", labels=[STREAM]),
+            ],
+            "waiting": {
+                "7": found(operator_record()),
+                "600": found(dep_record(530)),
+                "500": found(operator_record()),
+            },
+        }
+        for free in (True, False):
+            with self.subTest(free=free):
+                room = na.capacity(
+                    "Claude", state, set(), free_claims=free, focus=FOCUS
+                )
+                self.assertEqual((room.active, room.parked), ([], []))
+                self.assertIn(
+                    room.describe(), na.status(state, False, FOCUS, free_claims=free)
+                )
+                actions = self.decide(state, free, focus=FOCUS)
+                self.assertEqual(kinds(actions), [("claim", f"{R}/521")])
+        # In focus through the PR's own label, the off-board issue's label
+        # and the issue's label: parked with free claims, else active.
+        state["prs"][0]["labels"].append({"name": STREAM})
+        state["linked_labels"]["600"].append(STREAM)
+        state["items"][0]["labels"].append(STREAM)
+        on = na.capacity("Claude", state, set(), free_claims=True, focus=FOCUS)
+        self.assertEqual(
+            on.parked, ["PR 7 waiting", "PR 8 waiting", f"{R}/500 waiting"]
+        )
+        off = na.capacity("Claude", state, set(), free_claims=False, focus=FOCUS)
+        self.assertEqual(off.active, ["PR 7", "PR 8", f"{R}/500"])
+        for free in (True, False):
+            actions = self.decide(state, free, focus=FOCUS)
+            self.assertNotIn("claim", [a.action for a in actions])
 
     def test_resumed_draft_over_capacity_continues_without_claims(self) -> None:
         state = {
@@ -460,12 +511,17 @@ class Readers(Env):
         ]
         self.repo.publish()
 
-    def recheck(self, action: dict[str, Any], completed: bool = False) -> str | None:
+    def recheck(
+        self,
+        action: dict[str, Any],
+        completed: bool = False,
+        focus: frozenset[str] = frozenset(),
+    ) -> str | None:
         reader = FakeReader(self.gh)
         return gs.recheck(
             "Claude",
             action,
-            frozenset(),
+            focus,
             frozenset(),
             False,
             reader,
@@ -570,6 +626,17 @@ class Readers(Env):
         self.repo.items.clear()
         self.waiting_issue(500, operator_record())
         self.assertIsNotNone(self.recheck(action))
+
+    def test_claim_recheck_counts_capacity_in_focus(self) -> None:
+        # Issue 717: two ready PRs outside the focus leave the claim valid.
+        for n in (7, 8):
+            labels = [{"name": "project::Backup"}]
+            self.repo.add_pr(pull(n, A, "Executor: Claude", labels=labels))
+        self.repo.add_item(521, "Ready", "Claude", labels=(STREAM,))
+        action = {"action": "claim", "reason": "r", "issue": f"{R}/521"}
+        self.assertIsNone(self.recheck(action, focus=FOCUS))
+        # Without a focus they fill active capacity: the claim is stale.
+        self.assertIn("gives idle", self.recheck(action) or "")
 
     def test_failed_record_read_blocks_instead_of_counting_as_missing(self) -> None:
         self.waiting_issue(500, dep_record(521))
