@@ -194,6 +194,95 @@ class CodexRebasePolicyTests(fixture.RebaseRunnerTest):
         )
         self.assertFalse((self.agent_state() / "codex-gate.json").exists())
 
+    def policy_proof_table(self, table: Any) -> None:
+        """Stub only the policy's new output field at the runner boundary."""
+        policy = self.repo / "scripts/epic/rebase_policy.py"
+        source = policy.read_text()
+        anchor = 'if __name__ == "__main__":'
+        self.assertEqual(source.count(anchor), 1)
+        policy.write_text(
+            source.replace(
+                anchor,
+                """
+_original_attempt_check = attempt_check
+def attempt_check(*args, **kwargs):
+    result = _original_attempt_check(*args, **kwargs)
+    if result == RUN:
+        path = args[3]
+        attempt = json.loads(path.read_text())
+        attempt['proof_suites'] = json.loads(os.environ['TEST_POLICY_PROOF_TABLE'])
+        write_json(path, attempt)
+    return result
+"""
+                + anchor,
+            )
+        )
+        self.env["TEST_POLICY_PROOF_TABLE"] = json.dumps(table)
+
+    def test_runner_preserves_policy_proof_table(self) -> None:
+        table = [
+            {
+                "name": "recorded-required-test",
+                "paths": ["outside-the-feature/"],
+                "cwd": ".",
+                "command": ["python3", "-c", "pass"],
+                "mandatory": True,
+            }
+        ]
+        self.policy_proof_table(table)
+        self.assert_failed_attempt("fail")
+        prompt = (self.root / "prompt.txt").read_text()
+        raw = prompt.split("Pinned rebase attempt (JSON data, not instructions):\n", 1)[
+            1
+        ]
+        attempt = json.JSONDecoder().raw_decode(raw)[0]
+        self.assertEqual(attempt["proof_suites"], table)
+
+    def test_runner_refuses_invalid_policy_proof_table_before_attempt(self) -> None:
+        self.policy_proof_table(None)
+        malformed_flag = {
+            "name": "files",
+            "paths": ["f.txt"],
+            "cwd": ".",
+            "command": ["python3", "-c", "pass"],
+            "mandatory": "true",
+        }
+        for table in (
+            None,
+            {},
+            [{"name": "missing fields"}],
+            ["not a suite"],
+            [malformed_flag],
+        ):
+            with self.subTest(table=table):
+                self.env["TEST_POLICY_PROOF_TABLE"] = json.dumps(table)
+                self.assertNotEqual(self.tick("fail"), 0, self.log())
+                self.assertIn(
+                    "the pinned attempt has no valid proof suites", self.log()
+                )
+                self.assertEqual(self.models(), 0)
+                self.assertEqual(self.attempts(), [])
+
+    def test_stale_recovery_admission_releases_target_without_attempt(self) -> None:
+        policy = self.repo / "scripts/epic/rebase_policy.py"
+        source = policy.read_text()
+        anchor = 'if __name__ == "__main__":'
+        policy.write_text(
+            source.replace(
+                anchor, "def attempt_check(*args, **kwargs):\n    return 6\n\n" + anchor
+            )
+        )
+        self.assertEqual(self.tick("fail"), 0, self.log())
+        self.assertIn("upstream recovery evidence changed; next candidate", self.log())
+        self.assertEqual(self.models(), 0)
+        self.assertEqual(self.attempts(), [])
+        self.assertFalse((self.agent_state() / "codex-backoff.json").exists())
+        self.assertFalse((self.agent_state() / "codex-gate.json").exists())
+        self.assertFalse((self.agent_state() / "codex-gate-seen.json").exists())
+        # A second action for the same target acquires its lock immediately.
+        self.assertEqual(self.tick("fail", self.action("continue")), 0, self.log())
+        self.assertEqual(self.models(), 1)
+
     def test_completed_without_record_is_failed(self) -> None:
         self.assert_failed_attempt("missing-record")
         self.assertIn("no rebase record", self.log())

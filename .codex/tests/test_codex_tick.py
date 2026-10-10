@@ -469,6 +469,28 @@ else:
             stop_fixture(process)
             raise
 
+    def test_upstream_recovery_prompt_requires_explicit_opt_in(self) -> None:
+        self.env["TEST_DECISION"] = json.dumps(
+            {"action": "continue", "pr": 406, "sha": "a" * 40}
+        )
+        for reader in ("0", "1"):
+            self.env["EPIC_SHARED_READER"] = reader
+            for flag, enabled in (("adopt", False), ("adopt, upstream-recovery", True)):
+                with self.subTest(reader=reader, flag=flag):
+                    self.env["EPIC_FOCUS_ACTIONS"] = flag
+                    result = self.run_tick()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    call = json.loads(self.calls.read_text().splitlines()[-1])
+                    self.assertEqual(
+                        "\nUpstream test recovery: on\n" in call["prompt"], enabled
+                    )
+                    self.assertIn(
+                        "shell_environment_policy.set.EPIC_FOCUS_ACTIONS="
+                        + json.dumps(flag),
+                        call["args"],
+                    )
+                    self.record.unlink(missing_ok=True)
+
     def test_run_tick_keeps_leaked_target_lock_visible(self) -> None:
         # Inject a bug only in the disposable runner: a child inherits fd 8
         # and outlives the tick. Its output goes to codex.log, so communicate
