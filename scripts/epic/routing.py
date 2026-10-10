@@ -1,7 +1,8 @@
 """Route an epic item without an owner to Claude, Codex or Anton.
 
 Pure functions, no GitHub calls. Rules (issue 487, "Routing"):
-  1. An existing Executor (project field or PR line) always wins.
+  1. An existing Executor (executor label, else project field or PR line)
+     always wins.
   2. Otherwise each file's owner comes from `file_rules` in .github/epic-lanes.yml
      (first matching pattern, as in scripts/epic_guard/check.py).
   3. One agent owns every file -> that agent. Otherwise -> needs-anton.

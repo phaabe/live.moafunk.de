@@ -30,7 +30,8 @@ Read-only commands may also run in the runner checkout or another worktree
 under EPIC_WORKTREE_DIR.
 
 Rebase and lease push read the PR fresh from GitHub: open, head branch in this
-repository equals B, base is an epic base, `Executor: Claude`. The initial
+repository equals B, base is an epic base, owner Claude (executor label,
+else `Executor: Claude`). The initial
 rebase also needs the head to equal the action's SHA, which it pins as S in
 `claude-rebases.json` in the state dir, with the onto commit and the original
 local head. Continue and abort need Git's rebase state to match all three; an
@@ -313,7 +314,7 @@ def open_pr(number: int, branch: str) -> dict[str, Any]:
     base = (pr.get("base") or {}).get("ref")
     if base not in BASES:
         raise Refused(f"PR {number} base {base} is not an epic base")
-    if (pr_author({"body": pr.get("body")}) or "").lower() != "claude":
+    if (pr_author(pr) or "").lower() != "claude":
         raise Refused(f"PR {number} is not assigned to Claude")
     return pr
 

@@ -614,6 +614,147 @@ class Board(Base):
             self.assertIsNone(refuse(self.EDIT.format("PVTI_21")))
 
 
+class ExecutorLabels(Base):
+    """Only Anton changes executor::* labels; a runner adds one only to its new
+    PR. https://github.com/phaabe/live.moafunk.de/issues/715"""
+
+    CREATE = "gh pr create --draft --base dev/312-interim -t t --label {} {}"
+    BODY = "Executor: Claude\nLane: setup\nReviewer: Codex\nIssue: {}/21\n"
+
+    def body_file(self, text: str) -> str:
+        path = self.root / "body.md"
+        path.write_text(text)
+        return f"--body-file {path}"
+
+    def test_label_prefix_matches_the_parser(self) -> None:
+        # write_checks.py keeps its own copy for classifying commands.
+        self.assertEqual(wc.EXECUTOR_PREFIX, na.EXECUTOR_PREFIX)
+
+    def test_label_edits_are_refused_on_every_path(self) -> None:
+        self.action(action="continue", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
+        labels = f"repos/{na.REPO}/issues/21/labels"
+        mutation = (
+            "gh api graphql -f query='mutation { addLabelsToLabelable("
+            'input: {labelableId: "I", labelIds: ["L"]}) { clientMutationId } }\''
+        )
+        for command in (
+            "gh issue edit 21 --add-label executor::claude",
+            "gh issue edit 21 --remove-label bug,executor::codex",
+            "gh issue edit 21 --add-label Executor::Codex",
+            "gh pr edit 21 --remove-label executor::claude",
+            "gh issue create -t t -b b --label executor::claude",
+            f"gh api {labels} -f 'labels[]=executor::codex'",
+            f"gh api --method DELETE {labels}/executor%3A%3Aclaude",
+            mutation,
+        ):
+            with self.subTest(command=command):
+                reason = self.bash(command) or ""
+                self.assertIn("no executor:: label edits", reason)
+        # Other labels stay a normal write of the tick's issue.
+        self.assertIsNone(self.bash("gh issue edit 21 --add-label bug"))
+        self.assertIsNone(self.bash(f"gh api {labels} -f 'labels[]=bug'"))
+        reason = wc.guard(
+            "mcp__github__create_issue",
+            {"title": "t", "labels": ["bug", "executor::codex"]},
+            str(self.root),
+            lambda: self.reader,
+        )
+        self.assertIn("no executor:: label edits", reason or "")
+
+    def test_a_new_pr_may_carry_only_its_own_label(self) -> None:
+        self.action(action="claim", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
+        body = self.body_file(self.BODY.format(ISSUES))
+        self.assertIsNone(self.bash(self.CREATE.format("executor::claude", body)))
+        heredoc = (
+            self.CREATE.format("executor::claude", "--body-file -")
+            + " <<'EOF'\n"
+            + self.BODY.format(ISSUES)
+            + "EOF"
+        )
+        self.assertIsNone(self.bash(heredoc))
+        for label, flags, expected in (
+            ("executor::codex", body, "only the executor label executor::claude"),
+            ("executor::claude,executor::anton", body, "only the executor label"),
+            ("executor::claude", "-b 'Executor: Codex'", "needs a PR body"),
+            ("executor::claude", "-b 'no owner line'", "needs a PR body"),
+            ("executor::claude", "--fill", "needs a PR body"),
+        ):
+            with self.subTest(label=label, flags=flags):
+                reason = self.bash(self.CREATE.format(label, flags)) or ""
+                self.assertIn(expected, reason)
+        # The selected task must still be this agent's.
+        self.reader.items = [item(21, "In progress", "Codex")]
+        reason = self.bash(self.CREATE.format("executor::claude", body)) or ""
+        self.assertIn("not In progress for Claude", reason)
+
+    def test_reader_off_still_applies_the_label_rules(self) -> None:
+        self.action(action="claim", issue=f"{ISSUES}/21")
+        self.reader.fail = gs.ReadBlocked("no reads with the reader off")
+
+        def refuse(command: str, agent: str | None = None) -> str | None:
+            return wc.status_refusal(
+                "Bash", {"command": command}, str(self.root), agent
+            )
+
+        body = self.body_file(self.BODY.format(ISSUES))
+        mismatch = self.CREATE.format("executor::codex", body)
+        with patch.dict(os.environ, {"EPIC_SHARED_READER": "0"}):
+            edit = "gh pr edit 5 --add-label executor::claude"
+            self.assertIn("no executor:: label edits", refuse(edit) or "")
+            # Without a named agent, the label must match the body's Executor.
+            self.assertIn("needs a PR body", refuse(mismatch) or "")
+            several = self.CREATE.format("executor::claude,executor::codex", body)
+            self.assertIn("only the executor label", refuse(several) or "")
+            self.assertIsNone(refuse(self.CREATE.format("executor::claude", body)))
+            self.assertIsNone(refuse(self.CREATE.format("bug", "-b b")))
+            # A caller that names its agent gets the strict rule.
+            strict = refuse(mismatch, agent="Claude") or ""
+            self.assertIn("only the executor label executor::claude", strict)
+
+    def test_an_invalid_pr_owner_refuses_every_write(self) -> None:
+        conflict = pull(
+            5,
+            f"Executor: Codex\nIssue: {ISSUES}/21",
+            labels=[{"name": "executor::claude"}],
+        )
+        several = pull(
+            5,
+            f"Executor: Claude\nIssue: {ISSUES}/21",
+            labels=[{"name": "executor::claude"}, {"name": "executor::codex"}],
+        )
+        self.reader.items = [item(21, "In progress")]
+        for kind, command in (
+            ("fix", "git push origin feat/5-x"),
+            ("review", f"gh pr comment 5 --body 'Review: APPROVED by Claude at {A}'"),
+            ("adopt", "gh pr comment 5 --body adopted"),
+        ):
+            for pr_data, expected in (
+                (conflict, "disagrees with the PR body"),
+                (several, "several executor labels"),
+            ):
+                with self.subTest(kind=kind, expected=expected):
+                    self.action(action=kind, pr=5, sha=A)
+                    self.reader.pulls[5] = pr_data
+                    self.assertIn(expected, self.bash(command) or "")
+
+    def test_the_label_names_the_pr_owner(self) -> None:
+        self.action(action="fix", pr=5, sha=A)
+        self.reader.items = [item(21, "In progress")]
+        self.reader.pulls[5] = pull(
+            5, f"Issue: {ISSUES}/21", labels=[{"name": "executor::claude"}]
+        )
+        self.assertIsNone(self.bash("git push origin feat/5-x"))
+        self.reader.pulls[5]["labels"] = [{"name": "executor::codex"}]
+        reason = self.bash("git push origin feat/5-x") or ""
+        self.assertIn("Executor is Codex, not Claude", reason)
+        self.action(action="adopt", pr=5, sha=A)
+        self.reader.pulls[5]["labels"] = [{"name": "executor::anton"}]
+        reason = self.bash("gh pr comment 5 --body adopted") or ""
+        self.assertIn("Executor is Anton, not Claude", reason)
+
+
 class ClaimComments(Base):
     """Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/511."""
 

@@ -23,6 +23,10 @@ caller names the agent (Claude or Codex); "this agent" below means that one.
   status helper `sync`, raw      refused: Status changes go only through the
   board write, raw status::*     trusted helper (set_status.py), so every
   label edit                     change also gets its status label
+  executor::* label edit (CLI,   refused: only Anton changes executor labels.
+  REST, GraphQL label mutation,  The one exception: `gh pr create --label
+  issue create with the label)   executor::<this agent>` with a body that
+                                 names this agent (`Executor:` line)
   push, PR create                PR open and not merged, branch is the PR's
                                  head, every issue of the PR In progress with
                                  Executor this agent; without a PR: the same
@@ -35,8 +39,11 @@ caller names the agent (Claude or Codex); "this agent" below means that one.
                                  checkout (verdict with edit evidence, checks,
                                  files) for the head pinned in the command
 
-Common checks: pause file, focus, assignment (Executor line) and allowed
-target (the action's PR, issue or the PR's `Issue:` tickets).
+Common checks: pause file, focus, assignment (next_action.pr_assignment:
+executor label, else Executor line; an invalid one refuses) and allowed
+target (the action's PR, issue or the PR's `Issue:` tickets). The Status and
+executor-label rules that need no read also run with the shared reader off
+(status_refusal).
 
 Promotion barrier (promotion_refusal, also for interactive sessions): while a
 runtime promotion marker exists, a write is refused unless the caller runs
@@ -54,7 +61,7 @@ import os
 import re
 import shlex
 import subprocess
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -79,6 +86,9 @@ STATUS_HELPER = Path(__file__).resolve().parent / "set_status.py"
 # set_status.PREFIX; the helper is imported only to read a helper call, so a
 # runner checkout without it still loads this module.
 STATUS_PREFIX = "status::"
+# next_action.EXECUTOR_PREFIX. Classifying a command needs no next_action
+# attribute beyond REPO, so test fixtures with a stub selector still load it.
+EXECUTOR_PREFIX = "executor::"
 STATUS_HINT = f"change Status only with python3 {STATUS_HELPER} set <issue> <status>"
 # Text that may write through git or gh. Used only when a command cannot be
 # read word by word: then it is refused instead of guessed.
@@ -97,6 +107,8 @@ WRAPPERS = {"env", "command", "nohup", "time", "exec"}
 SHELLS = {"bash", "sh", "zsh", "eval", "xargs", "python", "python3"}
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 OPERATORS = set(";&|()<>")
+# GraphQL mutations that add, remove or replace labels.
+LABEL_MUTATION = re.compile(r"Labelable|labelIds")
 # The item of a GraphQL ProjectV2 mutation: `itemId: "PVTI_..."` or `itemId=...`.
 ITEM_ID = re.compile(r"\bitemId\b\W{0,4}([A-Za-z0-9_-]+)")
 REPO_PATH = re.escape(na.REPO)
@@ -126,7 +138,8 @@ class StatusUnclear(Unclear):
 @dataclass
 class Write:
     # push, pr-create, merge, verdict, comment, pr-write, issue-write, board,
-    # status (the helper), status-label (a raw status::* label edit)
+    # status (the helper), status-label (a raw status::* label edit),
+    # executor-label (adds, replaces or removes an executor::* label)
     kind: str
     number: int | None = None
     sha: str | None = None
@@ -134,6 +147,8 @@ class Write:
     delete: bool = False
     item: str | None = None  # board item: node ID or numeric REST id
     mode: str | None = None  # status helper: set, sync or repair
+    labels: tuple[str, ...] = ()  # pr-create with an executor label
+    body: str = ""  # pr-create with an executor label: the PR body
 
 
 def active(env: Mapping[str, str] | None = None) -> bool:
@@ -243,6 +258,22 @@ def first(flags: dict[str, list[str]], *names: str) -> str | None:
     return None
 
 
+def label_names(flags: dict[str, list[str]], *names: str) -> list[str]:
+    """Label names of these gh flags; one value may list several, comma-separated."""
+    return [
+        label.strip()
+        for name in names
+        for value in flags.get(name, [])
+        for label in value.split(",")
+        if label.strip()
+    ]
+
+
+def executor_names(names: Iterable[str]) -> list[str]:
+    """The executor::* labels among `names`, in any case."""
+    return [name for name in names if name.lower().startswith(EXECUTOR_PREFIX)]
+
+
 def number_of(value: str | None) -> int | None:
     """A PR or issue number, also from a full URL. None for a branch name."""
     if not value:
@@ -319,6 +350,10 @@ def api_writes(args: list[str], cwd: str, stdin: str) -> list[Write]:
         if "mutation" in text and "ProjectV2" in text:
             m = ITEM_ID.search(text)
             return [Write("board", item=m.group(1) if m else None)]
+        # Label IDs do not show which labels change: any label mutation may
+        # touch an executor label.
+        if "mutation" in text and LABEL_MUTATION.search(text):
+            return [Write("executor-label")]
         return []
     if method == "GET":
         return []
@@ -346,18 +381,23 @@ def api_writes(args: list[str], cwd: str, stdin: str) -> list[Write]:
     if m := re.fullmatch(rf"{repo}/issues/(\d+)(/labels(?:/.*)?)?", endpoint):
         source = first(flags, "--input")
         sent = " ".join(fields) + (read_file(source, cwd, stdin) if source else "")
+        found = []
         if m.group(2):
             # Adding or removing a status label, or replacing or clearing all
             # labels (which can drop one).
             touched = STATUS_PREFIX in unquote(endpoint) + sent or (
                 m.group(2) == "/labels" and method in ("PUT", "DELETE")
             )
+            if EXECUTOR_PREFIX in (unquote(endpoint) + sent).lower():
+                found.append(Write("executor-label", int(m.group(1))))
         else:
             touched = any(f.startswith("labels") for f in fields) or (
                 bool(source) and '"labels"' in sent
             )
         if touched:
-            return [Write("status-label", int(m.group(1)))]
+            found.insert(0, Write("status-label", int(m.group(1))))
+        if found:
+            return found
     if m := re.fullmatch(rf"{repo}/issues/(\d+)/comments", endpoint):
         return [comment_write(int(m.group(1)), body())]
     if re.fullmatch(rf"{repo}/issues/comments/\d+", endpoint):
@@ -409,17 +449,25 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
             return [Write("pr-write", number)]
         return [found]
     if sub == "edit":
-        labels = flags.get("--add-label", []) + flags.get("--remove-label", [])
-        if any(
-            name.strip().startswith(STATUS_PREFIX)
-            for value in labels
-            for name in value.split(",")
-        ):
-            return [Write("status-label", number)]
+        names = label_names(flags, "--add-label", "--remove-label")
+        found = []
+        if any(name.startswith(STATUS_PREFIX) for name in names):
+            found.append(Write("status-label", number))
+        if executor_names(names):
+            found.append(Write("executor-label", number))
+        if found:
+            return found
     if sub in ("ready", "edit", "close", "reopen", "lock", "unlock"):
         return [Write("pr-write" if group == "pr" else "issue-write", number)]
-    if group == "pr" and sub == "create":
-        return [Write("pr-create")]
+    if sub == "create":
+        names = label_names(flags, "-l", "--label")
+        if not executor_names(names):
+            return [Write("pr-create")] if group == "pr" else []
+        if group == "issue":
+            return [Write("executor-label")]
+        source = first(flags, "-F", "--body-file")
+        body = read_file(source, cwd, stdin) if source else first(flags, "-b", "--body")
+        return [Write("pr-create", labels=tuple(names), body=body or "")]
     return []
 
 
@@ -513,6 +561,11 @@ def tool_writes(tool_name: str, tool_input: dict[str, Any], cwd: str) -> list[Wr
         if "labels" in tool_input:
             return [Write("status-label", number)]
         return [Write("issue-write", number)]
+    if tool_name == "mcp__github__create_issue":
+        names = tool_input.get("labels")
+        if isinstance(names, list) and executor_names(map(str, names)):
+            return [Write("executor-label")]
+        return []
     if tool_name == "mcp__github__update_pull_request":
         return [Write("pr-write", number)]
     if tool_name == "mcp__github__create_pull_request":
@@ -587,15 +640,18 @@ def common(ctx: Context) -> str | None:
     focus = na.read_focus(na.FOCUS_FILE)
     if ctx.pr is not None:
         pull = ctx.pull(ctx.pr)
-        author = na.pr_author({"body": pull.get("body") or ""})
+        assigned = na.pr_assignment(pull)
+        if assigned.state == na.INVALID:
+            return f"PR {ctx.pr}: {assigned.reason}"
+        owner = assigned.executor
         if ctx.kind == "adopt":
             # Before the body edit the PR has no owner; after it, this agent.
-            if author not in (None, ctx.agent):
-                return f"PR {ctx.pr} Executor is {author}, not {ctx.agent}"
+            if owner not in (None, ctx.agent):
+                return f"PR {ctx.pr} Executor is {owner}, not {ctx.agent}"
         else:
             expected = na.other(ctx.agent) if ctx.kind == "review" else ctx.agent
-            if author != expected:
-                return f"PR {ctx.pr} Executor is {author or 'not set'}, not {expected}"
+            if na.pr_author(pull) != expected:
+                return f"PR {ctx.pr} Executor is {owner or 'not set'}, not {expected}"
         if focus:
             names = na.labels(pull)
             for n in na.issue_numbers(pull.get("body") or ""):
@@ -666,6 +722,30 @@ def status_rule(write: Write, kind: Any) -> str | None:
         return "sync is Anton's backfill; in a tick use repair for the tick's issue"
     if write.kind == "status" and write.mode == "set" and kind not in BOARD_ACTIONS:
         return f"a {kind} tick does not change the board"
+    return None
+
+
+def label_rule(write: Write, agent: str | None) -> str | None:
+    """The executor-label rules that need no GitHub read: no executor::* label
+    edit in a tick (only Anton assigns), and a new PR carries at most one
+    agent's label, with a body that names that agent as Executor. With
+    `agent` (the fresh checks always know it) the label must be this agent's;
+    status_refusal() callers that name no agent get the body check only."""
+    if write.kind == "executor-label":
+        return "no executor:: label edits in a tick: only Anton changes executor labels"
+    if write.kind != "pr-create" or not write.labels:
+        return None
+    found = [name.lower() for name in executor_names(write.labels)]
+    allowed = [f"{EXECUTOR_PREFIX}{a.lower()}" for a in ([agent] if agent else AGENTS)]
+    if len(found) != 1 or found[0] not in allowed:
+        return f"a new PR may carry only the executor label {' or '.join(allowed)}"
+    owner = na.EXECUTOR_LABELS[found[0]]
+    assigned = na.pr_assignment({"body": write.body, "labels": list(write.labels)})
+    if assigned.state != na.VALID or na.body_author(write.body) != owner:
+        return (
+            f"label {found[0]} needs a PR body with `Executor: {owner}` and "
+            f"`Reviewer: {na.other(owner)}` (pass it with --body or --body-file)"
+        )
     return None
 
 
@@ -740,7 +820,7 @@ def check_push(ctx: Context, write: Write) -> str | None:
 
 
 def check_write(ctx: Context, write: Write) -> str | None:
-    reason = common(ctx)
+    reason = label_rule(write, ctx.agent) or common(ctx)
     if reason:
         return reason
     if write.kind == "push":
@@ -823,11 +903,14 @@ def promotion_refusal(
     return runtime.write_barrier()
 
 
-def status_refusal(tool_name: str, tool_input: dict[str, Any], cwd: str) -> str | None:
-    """The Status rules without a GitHub read (status_rule), for a runner
-    child with the shared reader off (EPIC_SHARED_READER=0). With it on,
-    guard() applies them together with the fresh checks. The helper itself
-    refuses issues outside the tick's targets."""
+def status_refusal(
+    tool_name: str, tool_input: dict[str, Any], cwd: str, agent: str | None = None
+) -> str | None:
+    """The Status and executor-label rules without a GitHub read (status_rule,
+    label_rule), for a runner child with the shared reader off
+    (EPIC_SHARED_READER=0). With it on, guard() applies them together with
+    the fresh checks. The helper itself refuses issues outside the tick's
+    targets."""
     if not os.environ.get("EPIC_ACTION_FILE"):
         return None
     try:
@@ -837,6 +920,9 @@ def status_refusal(tool_name: str, tool_input: dict[str, Any], cwd: str) -> str 
     except Unclear:
         return None  # not about the Status: the other checks decide
     for write in writes:
+        reason = label_rule(write, agent)
+        if reason:
+            return reason
         if write.kind not in ("board", "status-label", "status"):
             continue
         try:

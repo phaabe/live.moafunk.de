@@ -384,5 +384,43 @@ class SelectorRunTest(unittest.TestCase):
                 self.assert_no_graphql_for_project(calls)
 
 
+class ExecutorLabelItemTest(unittest.TestCase):
+    """A board item's executor: the executor label, else the board field."""
+
+    def test_label_wins_over_the_board_field(self) -> None:
+        invalid = next_action.INVALID_EXECUTOR
+        cases = [
+            ([], "Codex", "Codex"),
+            ([], None, None),
+            (["executor::claude"], "Codex", "Claude"),
+            (["Executor::Codex"], None, "Codex"),
+            (["executor::anton"], "Claude", "Anton"),
+            (["executor::claude", "executor::codex"], "Claude", invalid),
+            (["executor::bot"], None, invalid),
+        ]
+        for names, field, expected in cases:
+            with self.subTest(labels=names, field=field):
+                row = rest_row(5, executor=field, labels=names)
+                self.assertEqual(item_from_rest(row)["executor"], expected)
+
+    def test_claims_follow_the_label(self) -> None:
+        def claims(agent: str, names: list[str], field: str | None = "Codex") -> int:
+            row = rest_row(7, status="Ready", wave="0", executor=field, labels=names)
+            got = decide(agent, {"prs": [], "items": [item_from_rest(row)]})
+            return sum(a.action == "claim" for a in got)
+
+        self.assertEqual(claims("Claude", ["executor::claude"]), 1)
+        self.assertEqual(claims("Codex", ["executor::claude"]), 0)
+        self.assertEqual(claims("Codex", []), 1)
+        for names in (
+            ["executor::anton"],
+            ["executor::claude", "executor::codex"],
+            ["executor::bot"],
+        ):
+            for agent in ("Claude", "Codex"):
+                with self.subTest(labels=names, agent=agent):
+                    self.assertEqual(claims(agent, names, field=agent), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

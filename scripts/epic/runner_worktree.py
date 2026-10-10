@@ -7,7 +7,8 @@ never in a checkout a human session holds. For the actions that edit a branch
 
   - It checks the repository (origin is phaabe/live.moafunk.de) and the branch.
     For a PR: the head is a branch of this repository, it is a feature branch,
-    the base is an epic base, and the PR's `Executor:` is this agent. For an
+    the base is an epic base, and the PR's owner (next_action.pr_author:
+    executor label, else `Executor:` line) is this agent. For an
     issue: the one existing feature branch `<type>/<issue>-...`, or a new
     `feat/<issue>-<slug>` from origin/dev/312-interim.
   - It resumes `<dir>/<branch>` when that checkout already holds the branch, and
@@ -174,7 +175,7 @@ def pr_branch(
     base = (pr.get("base") or {}).get("ref")
     if base not in BASES:
         raise Stop(f"PR {number} base {base} is not an epic base")
-    if (pr_author({"body": pr.get("body")}) or "").lower() != agent:
+    if (pr_author(pr) or "").lower() != agent:
         raise Stop(f"PR {number} is not assigned to {agent}")
     branch = str(head.get("ref") or "")
     if not feature_branch(branch):

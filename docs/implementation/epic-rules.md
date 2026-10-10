@@ -26,9 +26,10 @@ removed in a reviewed PR.
 
 ## 1. Before you start
 
-- Work only on leaves that are **Ready** and assigned to you (project field
-  Executor). Ready applies only to the leaves named in the issue's readiness
-  comment; the rest of the issue stays blocked.
+- Work only on leaves that are **Ready** and assigned to you (executor label,
+  else the project field Executor; see Executor labels below). Ready applies
+  only to the leaves named in the issue's readiness comment; the rest of the
+  issue stays blocked.
 - Claim the leaf on its issue: comment with the leaf IDs, the files you will
   edit and your branch, then set Status to In progress.
 - Change the board Status only with the trusted helper:
@@ -40,6 +41,29 @@ removed in a reviewed PR.
   runner tick.
 - Check the file owner first. One editor per shared file (see section 2). If a
   file you need belongs to the other lane, ask its owner; do not edit it.
+
+Executor labels (`executor::claude`, `executor::codex`, `executor::anton`)
+name the owner of an issue or PR. Readers use one parser,
+`scripts/epic/next_action.py` (`label_assignment`, `pr_assignment`,
+`Assignment`), which gives one of three results:
+
+- **absent**: no `executor::` label. The old source counts: the board
+  Executor field for an issue, the `Executor:` / `Author:` / `Reviewer:` body
+  lines for a PR.
+- **valid**: exactly one known label (any case). It wins over the board field
+  and the body lines. `executor::anton` is manual work: no runner claims it or
+  acts on it.
+- **invalid**: several or unknown `executor::` labels, or a PR label that
+  disagrees with an owner line in the PR body. The work is blocked for both
+  runners (no claim, continue, review, fix, merge or adopt) and never falls
+  back to an old owner. A board item then has executor `Invalid`.
+
+Only Anton adds, replaces or removes executor labels, and an open PR keeps
+its executor. In a tick, executor-label edits are refused on every path (CLI,
+REST, GraphQL label mutations, issue creation), also with the shared reader
+off. The one exception: a new PR may carry `--label executor::<you>` when its
+body names you in the `Executor:` line. A reviewer stays the other agent, and
+the PR body lines stay as they are.
 - Recheck the code anchors against the current branch and run GitNexus impact
   before editing code.
 
@@ -87,7 +111,9 @@ recorded on the epic before anyone edits.
   implements). Only the `Issue:` line links a PR to its work item; other issue
   links, such as dependencies, do not. Both
   agents use one GitHub account, so `Executor:` is how the loop (section 8) and
-  the `epic-guard` check tell whose PR it is.
+  the `epic-guard` check tell whose PR it is. Add your executor label at
+  creation (`--label executor::claude` or `executor::codex`); it must agree
+  with these lines.
 - Open the PR as a draft while working. Mark it ready (`gh pr ready`) only when
   it is ready for review; drafts are not reviewed.
 - Keep a feature and its tests in the same PR. Link evidence on the issue.
@@ -230,12 +256,14 @@ Priority, first match wins:
    or malformed read is an error, never `UNKNOWN`.
 7. `continue`: the agent's draft PR, or its In progress issue without a PR.
    Not while it is waiting (see Waiting work below).
-8. `adopt`: a focus PR with no owner line (`Executor:`, `Author:` or
-   `Reviewer:`, with any value) whose files route to this agent (see Routing below). The agent
+8. `adopt`: a focus PR with no executor label and no owner line (`Executor:`,
+   `Author:` or `Reviewer:`, with any value) whose files route to this agent
+   (see Routing below). The agent
    adds the `Epic:`, `Executor:`, `Lane:`, `Reviewer:`, `Leaf IDs:` and `Issue:`
    lines and keeps the rest of the body. A PR with any owner line is never
    adopted.
-9. `claim`: a Ready issue with Executor set to this agent. Not while the agent
+9. `claim`: a Ready issue whose executor (label, else board field) is this
+   agent. Not while the agent
    has work to continue, and only with free claim capacity (see Claim
    capacity below).
 10. `idle`.
@@ -275,7 +303,8 @@ is added to the list of both runners only after both its Claude and its Codex
 leaves are merged.
 
 Routing, for an item without an owner (`scripts/epic/routing.py`):
-an existing Executor (project field or PR line) always wins. Otherwise each
+an existing Executor (executor label, else project field or PR line) always
+wins; an invalid executor label blocks instead. Otherwise each
 file's owner comes from `file_rules` in `.github/epic-lanes.yml` (first
 matching pattern; a renamed file counts with its old and new path). A board
 Executor counts only for a PR of this repository. One agent owns all files: that agent. Owners differ, a file

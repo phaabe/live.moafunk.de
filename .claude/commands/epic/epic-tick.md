@@ -50,11 +50,13 @@ Board Status:
 
 - Base `dev/312-interim` (rules section 0). Draft until ready for review.
 - Body: follow `.github/PULL_REQUEST_TEMPLATE.md`. One line each at line start: `Epic: https://github.com/phaabe/live.moafunk.de/issues/312`, `Executor: Claude`, `Lane: <exactly one lane name from .github/epic-lanes.yml, e.g. setup>`, `Reviewer: Codex`, `Leaf IDs: …`, `Issue: <the issue this PR implements>`. Full URLs only, details in a collapsed block.
+- Label: create it with `--label executor::claude` and the body in `--body-file` (or `--body`). That is the only executor label you may write.
 
 ## 5. Never
 
 - Write a verdict in Codex's name, edit a verdict, or merge without Codex's approval for the current head.
 - Touch `main`, release PRs, production, secrets, the plan, or lane assignments. Those need Anton: escalate.
+- Add, change or remove an `executor::` label (only Anton assigns work), except the label on your new PR above. A missing or broken executor label is not yours to fix: report it.
 - Do a second action in the same tick.
 
 End with one line: `tick: <action> <target> -> <result>`.

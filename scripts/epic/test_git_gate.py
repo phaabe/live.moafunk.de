@@ -432,6 +432,14 @@ class RebaseRefusalTest(Fixture):
         self.pr["head"]["repo"]["full_name"] = "phaabe/live.moafunk.de"
         self.pr["body"] = "Executor: Codex\n"
         self.assertFalse(self.allowed(f"git -C {self.wt} rebase origin/{BASE}"))
+        # The executor label wins, and a label that disagrees with the body
+        # blocks the PR.
+        self.pr["body"] = ""
+        self.pr["labels"] = [{"name": "executor::codex"}]
+        self.assertFalse(self.allowed(f"git -C {self.wt} rebase origin/{BASE}"))
+        self.pr["body"] = "Executor: Codex\n"
+        self.pr["labels"] = [{"name": "executor::claude"}]
+        self.assertFalse(self.allowed(f"git -C {self.wt} rebase origin/{BASE}"))
 
     def test_moved_head_since_selection_is_denied(self) -> None:
         self.pr["head"]["sha"] = "b" * 40
