@@ -6,6 +6,14 @@ until O2 is activated. Source baseline: `06fe21c21256dfcf6bd29e2f0694852ceb1a092
 The [shared inventory](../evidence/runtime-inventory.md) records host evidence
 and unresolved gates. This procedure is not production qualification.
 
+The observed deployed source is `7093fe53488c21030c725f11370e96186a027836`,
+with its exact image digest in the inventory. Its scheduler still calls
+`start_prerecorded_show_stream`, without the integration branch's occurrence
+admission changes. Its boot-time cleanup may delete recording artifacts older
+than a day while recovery runs. Retain a separate complete data copy before
+every restart, including rollback. Do not assume the integration branch's
+artifact-retention fix is installed.
+
 ## Entry conditions and record
 
 The operator reserves a show-free window, including drain, failed-install
@@ -120,10 +128,13 @@ It can start an already-due show until its parsed end, or for six hours after
 start if end is absent/invalid. Overnight end dates matter. `show_start_utc`
 uses Europe/Berlin and rejects ambiguous/nonexistent local times. A future-only
 calendar view or a check for the next 30 minutes misses catch-up candidates.
+The deployed image resets `prerecorded_started_at` after a failed start, so
+that candidate can retry on the next tick. A previous failure is not exclusion.
 
 Under the admission freeze, inspect every selected row and any task already
 selected by the previous tick. Record IDs, resolved UTC times, confirmation,
-started state, uploaded media, host assignment and occurrence state. Use the
+started state, uploaded media, host assignment and occurrence state (not
+available in the observed deployed revision). Use the
 exact deployed implementation for time conversion and eligibility. Treat
 invalid/unknown data or a query failure as unresolved, never an empty schedule.
 The whole interval through rollback and reopen must be covered. Do not edit
@@ -257,6 +268,10 @@ docker --context desktop-linux run --rm --network none --read-only \
 The fixture publishes no ports, mounts no secrets/socket, uses only container
 loopback and removes only its own container. It uses 204 to indicate that a
 request passed nginx; this is not application authentication or media evidence.
+It first admits a rate-limited response, reloads the admission rule, verifies
+that new starts receive 503 while the old response is still running, then
+checks the complete old response. This proves reload alone does not drain
+already-admitted work; it does not exercise an application mutation or upgrade.
 
 Rehearse SQLite backup and restore separately on scratch data:
 
@@ -269,19 +284,34 @@ into a separate database. It checks integrity, original data/schema and retentio
 of the failed candidate. The script leaves its private `/tmp` evidence directory.
 It does not prove filesystem, image or secret-configuration restoration.
 
+The [exact backend rehearsal](../../stream-rework/local-test-harness/maintenance/backend/README.md)
+uses the observed production image with synthetic data and isolated local
+storage. Its README lists pinned image pulls, prerequisites and the command:
+
+```bash
+python3 docs/stream-rework/local-test-harness/maintenance/backend/rehearse.py
+```
+
+It exercises the real disconnect grace, pending upload, terminal recording
+artifacts, container replacement, data restoration and scheduler restart.
+The refusal decisions model this manual procedure; they are not an implemented
+O1.2.5 gate. The candidate uses the same binary with a simulated schema change.
+Future release migrations, real storage and playback need separate validation.
+
 | Required scenario | Evidence and expected result |
 | --- | --- |
 | Start/rehearsal/schedule edit immediately after closure | 503 at every ingress; stop and diagnostic paths still usable. Local route fixture covers policy; live vhost check remains open. |
-| Pending upload after recording status turns idle | Hold fixture storage response, attempt replacement: operator refuses; release upload and reconcile terminal artifact/DB evidence before continuing. Open. |
-| Disconnect and finalize race | Drop a synthetic producer; record grace task and finalization, with no replacement during either. Open. |
-| Existing requests/old nginx workers | Admit a delayed mutation/upgrade before reload; prove it settles before final snapshot. Open. |
+| Pending upload after recording status turns idle | Exact-image fixture holds upload while status is idle, withholds replacement, then verifies raw bytes, markers, archive and terminal completion. Manual decision rehearsed; O1.2.5 automation remains open. |
+| Disconnect and finalize race | Exact-image fixture drops a synthetic producer and observes the real grace period and finalization before replacement. Passed. |
+| Existing requests/old nginx workers | Local fixture verifies a delayed response survives closure and then drains. Reconcile actual admitted mutations/upgrades and old workers on the host before snapshot. Host gate open. |
 | Two simultaneous deployments | First owner retains host lock; second refuses before any mutation. Local lock primitive tested; actual deploy integration remains O1.2.5. |
-| Bounded scheduler path | Empty eligible window through rollback; drain, snapshot, replace and restore old image/data. Open against exact backend image. |
-| Outage path | Candidate becomes due after the short drain boundary; API stopped before then; no start while stopped; re-evaluate catch-up before restart/rollback. Open. |
+| Bounded scheduler path | Exact-image fixture passes with no candidates: drain, snapshot, container recreation, simulated schema change and old image/data restore. Future release migration compatibility remains open. |
+| Outage path | Exact-image fixture stops before a candidate becomes due, stays stopped across the boundary and identifies catch-up before restart. Diagnostic restart confirms the hazard; synthetic data rollback passes. |
 | First install without precheck | Refuse absent manual-window evidence; allow only after all manual gates pass. O1.2.5 integration open. |
 | Older workflow still active | Keep first manual run blocked until Actions and host evidence both reconcile. Host check open. |
 
 Record exact commands, fixture image/digest, source/config hashes, timings and
-results in the shared inventory and issue. Local policy success is partial
-evidence. O1.2.2 remains open until both backend paths and required host gates
-are verified or explicitly assigned as activation conditions by the operator.
+results in the shared inventory and issue. Local rehearsals verify this
+procedure with synthetic data. Every open host/operator gate in the inventory
+is an activation condition and must be resolved for the approved production
+window; local success does not authorize that window.

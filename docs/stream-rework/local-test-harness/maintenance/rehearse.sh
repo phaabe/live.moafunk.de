@@ -2,8 +2,40 @@
 # Runs inside the pinned nginx Alpine fixture, with no external network.
 set -euo pipefail
 
+# Begin with admission open. A rate-limited synthetic response lets us observe
+# a request still owned by the old worker after the admission reload.
+: > /tmp/admission-server.conf
+dd if=/dev/zero of=/tmp/pre-reload-body bs=512 count=1 2>/dev/null
 nginx -t -c /fixture/nginx.conf
 nginx -c /fixture/nginx.conf
+: > /tmp/early.headers
+: > /tmp/early.body
+curl --silent --show-error --max-time 20 --dump-header /tmp/early.headers \
+    --output /tmp/early.body http://127.0.0.1:8080/ws/stream &
+early_pid=$!
+attempt=0
+until grep -q '200 OK' /tmp/early.headers; do
+    attempt=$((attempt + 1))
+    [[ "$attempt" -lt 100 ]]
+    kill -0 "$early_pid"
+    sleep 0.05
+done
+cp /fixture/admission-server.conf /tmp/admission-server.conf
+nginx -t -c /fixture/nginx.conf
+nginx -s reload -c /fixture/nginx.conf
+attempt=0
+until [[ "$(curl --silent --show-error --max-time 3 --request POST \
+    --output /dev/null --write-out '%{http_code}' \
+    http://127.0.0.1:8080/api/recording/start)" == "503" ]]; do
+    attempt=$((attempt + 1))
+    [[ "$attempt" -lt 100 ]]
+    sleep 0.05
+done
+kill -0 "$early_pid"
+[[ "$(wc -c < /tmp/early.body)" -lt "$(wc -c < /tmp/pre-reload-body)" ]]
+wait "$early_pid"
+cmp /tmp/pre-reload-body /tmp/early.body
+echo 'PASS: new admission refused while old request continued; old response drained'
 
 checks=0
 check() {
