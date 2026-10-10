@@ -27,8 +27,8 @@ permission to kill a recording.
 Before touching the host:
 
 1. Complete O1.2.1 rollout: the release push must build only. Retain its run
-   URL and image digest. Do not use the legacy backend workflow for this
-   procedure: it still performs automatic replacement and media setup.
+   URL and image digest. Do not run or rerun pre-O1.2.1 backend workflow
+   revisions: they perform automatic replacement and media setup.
 2. List queued/running legacy workflow runs for **all refs**, including manual
    runs. Drain them, or cancel and reconcile their remote processes. A cancelled
    Actions run does not prove its SSH child stopped. Check host processes and
