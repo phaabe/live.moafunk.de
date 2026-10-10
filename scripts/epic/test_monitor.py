@@ -14,6 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+import activity_history
 import agents
 import delivery
 import monitor
@@ -391,6 +392,32 @@ class AgentRowsTest(unittest.TestCase):
             'epic_agent_presence_info{agent="codex-b",presence="new"} 1', text
         )
         self.assertNotIn("epic_agent_next_tick_seconds", text)
+
+    def presence_with(
+        self, now: float, *waits: activity_history.Wait, paused: bool = False
+    ) -> str:
+        agent = agents.load(self.root, "claude-w", now)
+        row = monitor.agent_metrics(
+            monitor.Metrics(), agent, paused, now, lambda _: True, self.ledgers, None, waits
+        )
+        return row.presence
+
+    def test_presence_uses_the_wait_aware_late_rule(self) -> None:
+        # Overdue after 2 x 60 + 100 = 220 s: late from 1_221 without a wait.
+        Wait = activity_history.Wait
+        self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        self.assertEqual(self.presence_with(1_221), "late")
+        quota = Wait("agent", "github_quota", since=1_100, retry_at=1_500)
+        self.assertEqual(self.presence_with(1_400, quota), "idle")  # wait holds
+        self.assertEqual(self.presence_with(1_501, quota), "late")  # expired
+        ended = Wait("agent", "operator_wait", since=1_100, ended_at=1_300)
+        self.assertEqual(self.presence_with(1_400, ended), "late")  # recovered
+        target = Wait("target", "target_lock", since=1_390)
+        self.assertEqual(self.presence_with(1_400, target), "late")  # target only
+        self.assertEqual(self.presence_with(1_400, paused=True), "idle")  # pause
+        stale = Wait("agent", "connection_failure", since=1_100)
+        self.assertEqual(self.presence_with(1_300, stale), "idle")  # fresh
+        self.assertEqual(self.presence_with(1_321, stale), "late")  # stale
 
     def test_running_agent_row_and_collision(self) -> None:
         pr = '{"action": "review", "pr": 7}'

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
@@ -27,6 +27,7 @@ import threading
 import time
 from typing import Any, BinaryIO
 
+import activity_history
 import agents
 import delivery
 import next_action as epic
@@ -678,6 +679,7 @@ def agent_metrics(
     alive: Callable[[int], bool],
     ledgers: Ledgers | None,
     heads: dict[str, str] | None = None,
+    waits: Iterable[activity_history.Wait] = (),
 ) -> Row:
     name = agent.id
     metrics.add(
@@ -705,19 +707,26 @@ def agent_metrics(
         (t for t in (runner.started, last_start(view)) if t is not None),
         default=None,
     )
-    # No tick starts during a pause, so a pause never makes an agent late.
-    overdue = 2 * agent.interval + budget
+    # One wait-aware rule (activity_history.late) for presence and AgentLate:
+    # a pause or a fresh agent-wide wait never makes an agent late.
+    late = activity_history.late(
+        now=now,
+        last_start=started,
+        registered=agent.registered_at,
+        interval=agent.interval,
+        budget=budget,
+        paused=paused,
+        waits=waits,
+    )
     if runner.state in (None, "unknown"):
         # A failed read or a lock without owner never looks idle or late.
         presence = "unknown"
     elif runner.state in ("running", "overdue"):
         presence = "running"
     elif started is None:
-        since = agent.registered_at
-        late = since is not None and now - since > overdue and not paused
         presence = "late" if late else "new"
     else:
-        presence = "late" if now - started > overdue and not paused else "idle"
+        presence = "late" if late else "idle"
     if started is not None:
         metrics.add("agent_last_start_timestamp_seconds", started, agent=name)
         if presence in ("idle", "late") and not paused:
