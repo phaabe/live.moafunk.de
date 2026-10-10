@@ -241,10 +241,15 @@ Priority, first match wins:
 10. `idle`.
 
 Claim capacity (`capacity()` in `scripts/epic/next_action.py`), per agent and
-across focus:
+only for work in the current focus:
 
 - Work items: each own open PR, and each own In progress issue without an
   open linked PR. An issue and its PR count once. Closed work never counts.
+- Focus: with a focus (see Focus below), a PR counts only when its own labels
+  or the labels of its `Issue:` tickets have a focus label, and an issue only
+  when it has one. This is the same match as for actions. It applies to
+  active and parked items. A PR outside the focus still links its tickets, so
+  they do not count on their own. An empty focus counts all work.
 - Parked: any item with `needs-anton`, a ready PR too. Also a draft PR or In
   progress issue whose Waiting records are all valid and not yet resolved, but
   only with `EPIC_SHARED_READER=1` (see Waiting work). Escalation parks with
@@ -258,15 +263,15 @@ across focus:
   raises the total to at most 3. `adopt` and work added by hand are outside
   this bound.
 - When parked work resumes (a wait resolves, Anton removes `needs-anton` after
-  a grant), it is active again, also above the limit. Nothing is dropped,
-  reset or stopped to meet it; there are just no new claims until active work
-  is below 2 again. Fix, review, merge and conflict actions never wait for
-  capacity.
+  a grant), it is active again, also above the limit. Work that comes back
+  into focus counts again in the same way. Nothing is dropped, reset or
+  stopped to meet it; there are just no new claims until active work is below
+  2 again. Fix, review, merge and conflict actions never wait for capacity.
 - Parked work keeps its Status, owner, branch, worktree, reservations and
   review history. A ticket that starts after it stays blocked.
-- `--status` prints each agent's capacity line, and a Ready leaf without
-  capacity as `wait` with the counted items. The fresh recheck before the
-  model counts again on fresh data.
+- `--status` prints each agent's capacity line for the same focus, and a Ready
+  leaf without capacity as `wait` with the counted items. The fresh recheck
+  before the model counts again on fresh data.
 
 New actions: `adopt` (and later actions of
 https://github.com/phaabe/live.moafunk.de/issues/487) are emitted only when
@@ -295,11 +300,11 @@ Focus: Anton can limit both loops to some labels by writing them into
 `~/.epic-focus`, one per line (for example `project::Stream`). Then only issues
 with one of these labels, and PRs whose own labels or `Issue:` ticket have one,
 get actions. A PR with a focus label of its own is in focus without an `Issue:`
-line. All other PRs are frozen: no review, fix or merge. They and own In
-progress issues outside the focus still count for the claim capacity, as
-active unless parked; a focus change never frees capacity. No file or an
-empty file means all work, and no
-`adopt`. Focus issues that are not on the project board are found by a REST
+line. All other PRs are frozen: no review, fix or merge. Own PRs and In
+progress issues outside the focus do not count for the claim capacity, active
+or parked; a focus change changes the count (see Claim capacity). No file or
+an empty file means all work, and no `adopt`. Focus issues that are not on
+the project board are found by a REST
 search per label (`search/issues`, all pages, no duplicates; a stored quota
 wait stops it). `--status` lists every focus item without an action and why:
 no owner (with the routing result), draft of the other agent, not on board,
