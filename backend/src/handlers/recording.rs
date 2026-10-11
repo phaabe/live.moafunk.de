@@ -6,7 +6,8 @@
 
 use crate::auth;
 use crate::models;
-use crate::recording::{RecordingError, SharedRecordingManager, TrackMarker};
+use crate::recording::{RecordingError, RecordingSession, SharedRecordingManager, TrackMarker};
+use crate::recording_finalizer::FinalizeOps;
 use crate::stream_bridge::SharedStreamState;
 use crate::{audio, storage, AppError, AppState, Result};
 use axum::{
@@ -16,6 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -223,7 +225,9 @@ pub async fn add_marker(
 /// Also stops the stream from tee-ing audio chunks.
 ///
 /// Recording is normally finalized automatically by the stream lifecycle (see
-/// [`finalize_and_upload`]); this endpoint remains for explicit/manual stops.
+/// [`crate::recording_finalizer`]); this endpoint remains for explicit/manual
+/// stops. It goes through the same finalizer, so it never aborts or repeats a
+/// running finalize.
 pub async fn stop_recording(
     State(state): State<Arc<AppState>>,
     State(_recording_manager): State<SharedRecordingManager>,
@@ -233,7 +237,12 @@ pub async fn stop_recording(
     // Require admin authentication
     let _user = require_admin(&state, &headers).await?;
 
-    match finalize_and_upload(&state).await? {
+    let finalized = state
+        .recording_finalizer
+        .finalize_now(LiveFinalize::new(&state))
+        .await
+        .map_err(AppError::Internal)?;
+    match finalized {
         Some(result) => Ok((
             StatusCode::OK,
             Json(StopRecordingResponse {
@@ -253,6 +262,7 @@ pub async fn stop_recording(
 }
 
 /// Outcome of finalizing a recording session.
+#[derive(Clone, Debug)]
 pub struct FinalizedRecording {
     pub show_id: i64,
     pub version: String,
@@ -302,14 +312,66 @@ fn detect_short_recording(show_id: i64, local_duration_ms: Option<u64>) -> Optio
     }
 }
 
-/// Stop the active recording (if any), upload the raw recording + markers to R2,
-/// and record a `recording_versions` row.
-///
-/// This is the single source of truth for ending a recording. It is invoked both
-/// by the explicit stop endpoint and by the stream lifecycle (auto-record on
-/// go-live, grace-period finalize on disconnect). Returns `Ok(None)` when no
-/// session was active, so callers can treat a no-op as success.
-pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<FinalizedRecording>> {
+/// A recording session taken off the stream tee, ready to upload.
+pub struct DetachedSession {
+    session: RecordingSession,
+    write_failure: Option<String>,
+}
+
+/// The real recording steps behind [`crate::recording_finalizer::Finalizer`],
+/// the single path that ends a recording: explicit stop, admin stop, the stop
+/// endpoint and the grace finalize after a drop.
+pub struct LiveFinalize(Arc<AppState>);
+
+impl LiveFinalize {
+    pub fn new(state: &Arc<AppState>) -> Arc<Self> {
+        Arc::new(Self(Arc::clone(state)))
+    }
+}
+
+impl FinalizeOps for LiveFinalize {
+    type Session = DetachedSession;
+
+    fn detach(
+        &self,
+        show: Option<i64>,
+    ) -> BoxFuture<'_, std::result::Result<Option<DetachedSession>, String>> {
+        Box::pin(async move {
+            detach_session(&self.0, show)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn upload(
+        &self,
+        session: DetachedSession,
+    ) -> BoxFuture<'_, std::result::Result<FinalizedRecording, String>> {
+        Box::pin(async move {
+            upload_session(&self.0, session)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn stream_active(&self) -> BoxFuture<'_, bool> {
+        Box::pin(async move { self.0.stream_state.lock().await.is_active() })
+    }
+}
+
+/// Stop the stream tee and take the active recording session, if any. With
+/// `show`, a session of another show is left running.
+async fn detach_session(
+    state: &Arc<AppState>,
+    show: Option<i64>,
+) -> Result<Option<DetachedSession>> {
+    if let Some(expected) = show {
+        let current = state.recording_manager.lock().await.current_show_id();
+        if current != Some(expected) {
+            return Ok(None);
+        }
+    }
+
     // Stop the stream tee first (flushes + closes the file) and capture whether
     // a write failure had already abandoned the recording.
     let write_failure = {
@@ -331,11 +393,22 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
             .map_err(|e| AppError::Internal(e.to_string()))?
     };
 
-    let session = match session {
-        Some(s) => s,
-        None => return Ok(None),
-    };
+    Ok(session.map(|session| DetachedSession {
+        session,
+        write_failure,
+    }))
+}
 
+/// Upload a detached session's raw recording + markers to R2 and record a
+/// `recording_versions` row.
+async fn upload_session(
+    state: &Arc<AppState>,
+    detached: DetachedSession,
+) -> Result<FinalizedRecording> {
+    let DetachedSession {
+        session,
+        write_failure,
+    } = detached;
     let show_id = session.show_id;
     let version = session.version_timestamp.clone();
     let marker_count = session.markers.len();
@@ -366,14 +439,14 @@ pub async fn finalize_and_upload(state: &Arc<AppState>) -> Result<Option<Finaliz
         });
     }
 
-    Ok(Some(finalized))
+    Ok(finalized)
 }
 
 /// Upload a finished raw recording artifact to R2, verify it, persist the markers
 /// JSON + a `recording_versions` row, and delete the local artifact once R2 has
 /// confirmed it.
 ///
-/// This is the back half of [`finalize_and_upload`], factored out so startup
+/// This is the back half of [`upload_session`], factored out so startup
 /// orphan recovery ([`recover_orphaned_recordings`]) can reuse the exact same
 /// upload + verify + record path. `write_failure`, when set, marks the resulting
 /// DB row `failed` (the archive is known incomplete); recovery passes `None` and
@@ -1974,7 +2047,7 @@ mod tests {
             stream_state: crate::stream_bridge::new_shared_state(),
             stream_metrics: crate::stream_metrics::new_shared(),
             recording_manager: crate::recording::new_shared_manager(temp_dir.clone()),
-            recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
+            recording_finalizer: Arc::default(),
             cover_debounce: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             default_cover: tokio::sync::OnceCell::new(),
             telegram_bot: None,

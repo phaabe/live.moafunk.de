@@ -1,6 +1,8 @@
 //! WebSocket handler for audio streaming.
 
 use crate::auth::get_current_user;
+use crate::handlers::recording::LiveFinalize;
+use crate::recording_finalizer::FINALIZE_GRACE;
 use crate::stream_bridge::SharedStreamState;
 use crate::{AppState, Result};
 use axum::extract::ws::{Message, WebSocket};
@@ -28,11 +30,6 @@ pub struct StreamQuery {
     #[serde(default)]
     pub test: bool,
 }
-
-/// Grace period after a live WS drops before the recording is finalized.
-/// A reconnect within this window resumes the same archive instead of starting
-/// a new one — so a flaky connection doesn't fragment the recording.
-const FINALIZE_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Inter-chunk cadence gap above which a chunk counts as "late" (#277).
 /// The browser's MediaRecorder emits every 250 ms. Note this measures the
@@ -108,58 +105,20 @@ pub async fn stream_ws_handler(
     }))
 }
 
-/// Cancel a pending grace-period finalize, if one is scheduled.
-///
-/// Called on (re)connect and before an explicit finalize so a transient drop
-/// followed by a reconnect keeps appending to the same archive.
-async fn cancel_pending_finalize(state: &Arc<AppState>) {
-    let mut guard = state.recording_finalizer.lock().await;
-    if let Some(handle) = guard.take() {
-        handle.abort();
-        tracing::debug!("Cancelled pending recording finalize (reconnect or explicit stop)");
-    }
-}
-
-/// Schedule a deferred finalize after [`FINALIZE_GRACE`]. If the stream becomes
-/// active again (reconnect) before it fires — or the cancel handle is aborted —
-/// the recording is left running and continues into the same archive.
-async fn schedule_grace_finalize(state: Arc<AppState>, show_id: i64) {
-    let task_state = state.clone();
-    let task = tokio::spawn(async move {
-        tokio::time::sleep(FINALIZE_GRACE).await;
-
-        // A reconnect would have made the stream active again.
-        if task_state.stream_state.lock().await.is_active() {
-            tracing::info!(
-                "Grace finalize skipped for show {}: stream is live again",
-                show_id
-            );
-            return;
-        }
-        // Only finalize if we're still recording the same show.
-        if task_state.recording_manager.lock().await.current_show_id() != Some(show_id) {
-            return;
-        }
-
+/// A live producer dropped: finalize its show's recording after
+/// [`FINALIZE_GRACE`] unless a producer goes live first, so a reconnect
+/// resumes the same archive.
+async fn defer_finalize(state: &Arc<AppState>) {
+    let active_show = state.recording_manager.lock().await.current_show_id();
+    if let Some(sid) = active_show {
         tracing::info!(
-            "Grace period elapsed with no reconnect; finalizing recording for show {}",
-            show_id
+            "Stream for show {} dropped; deferring finalize for {}s in case of reconnect",
+            sid,
+            FINALIZE_GRACE.as_secs()
         );
-        match crate::handlers::recording::finalize_and_upload(&task_state).await {
-            Ok(Some(r)) => tracing::info!(
-                "Auto-finalized recording for show {} (version {}, incomplete={})",
-                r.show_id,
-                r.version,
-                r.incomplete
-            ),
-            Ok(None) => {}
-            Err(e) => tracing::error!("Grace finalize failed for show {}: {}", show_id, e),
-        }
-    });
-
-    let mut guard = state.recording_finalizer.lock().await;
-    if let Some(old) = guard.replace(task.abort_handle()) {
-        old.abort();
+        state
+            .recording_finalizer
+            .schedule(LiveFinalize::new(state), sid);
     }
 }
 
@@ -216,12 +175,17 @@ async fn handle_stream_socket(
         }
     }
 
-    // Auto-record on go-live. A reconnect cancels any pending finalize and
-    // resumes the existing recording (ensure_recording_started is a no-op when
-    // already recording this show). A recording failure here must not kill the
-    // live broadcast.
+    // Auto-record on go-live. A reconnect of the same show ends the grace wait
+    // and resumes the existing recording (ensure_recording_started is a no-op
+    // when already recording this show). A wait of another show, or a rehearsal
+    // during it, finalizes that show first, so this producer's audio never
+    // reaches its file. A finalize that has started is never aborted. A
+    // recording failure here must not kill the live broadcast.
+    state
+        .recording_finalizer
+        .go_live(LiveFinalize::new(&state), show_id)
+        .await;
     if let Some(sid) = show_id {
-        cancel_pending_finalize(&state).await;
         if let Err(e) = crate::handlers::recording::ensure_recording_started(&state, sid).await {
             tracing::error!("Failed to auto-start recording for show {}: {}", sid, e);
         }
@@ -230,8 +194,8 @@ async fn handle_stream_socket(
     // Send confirmation
     if let Err(e) = sender.send(Message::Text("connected".into())).await {
         tracing::error!("Failed to send connected message: {}", e);
-        let mut stream = stream_state.lock().await;
-        let _ = stream.stop_stream().await;
+        let _ = stream_state.lock().await.stop_stream().await;
+        defer_finalize(&state).await;
         return;
     }
 
@@ -341,8 +305,11 @@ async fn handle_stream_socket(
     // - explicit stop  → finalize + upload now.
     // - network drop    → defer finalize so a reconnect can resume the archive.
     if explicit_stop {
-        cancel_pending_finalize(&state).await;
-        match crate::handlers::recording::finalize_and_upload(&state).await {
+        let finalized = state
+            .recording_finalizer
+            .finalize_now(LiveFinalize::new(&state))
+            .await;
+        match finalized {
             Ok(Some(r)) => tracing::info!(
                 "Finalized recording for show {} on explicit stop (version {}, incomplete={})",
                 r.show_id,
@@ -353,15 +320,7 @@ async fn handle_stream_socket(
             Err(e) => tracing::error!("Finalize on explicit stop failed: {}", e),
         }
     } else {
-        let active_show = state.recording_manager.lock().await.current_show_id();
-        if let Some(sid) = active_show {
-            tracing::info!(
-                "Stream for show {} dropped; deferring finalize for {}s in case of reconnect",
-                sid,
-                FINALIZE_GRACE.as_secs()
-            );
-            schedule_grace_finalize(state.clone(), sid).await;
-        }
+        defer_finalize(&state).await;
     }
 
     tracing::info!(
@@ -438,8 +397,11 @@ pub async fn stream_stop(
     if was_active {
         // Admin stop is a deliberate end: finalize the recording immediately
         // rather than waiting for the grace period.
-        cancel_pending_finalize(&state).await;
-        if let Err(e) = crate::handlers::recording::finalize_and_upload(&state).await {
+        let finalized = state
+            .recording_finalizer
+            .finalize_now(LiveFinalize::new(&state))
+            .await;
+        if let Err(e) = finalized {
             tracing::error!("Finalize on admin stop failed: {}", e);
         }
         Ok(

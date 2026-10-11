@@ -26,7 +26,7 @@ async fn state() -> (Arc<AppState>, tempfile::TempDir) {
         stream_state: stream_bridge::new_shared_state(),
         stream_metrics: stream_metrics::new_shared(),
         recording_manager: recording::new_shared_manager(temp.path().to_path_buf()),
-        recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
+        recording_finalizer: Arc::default(),
         cover_debounce: Arc::new(RwLock::new(HashMap::new())),
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot: None,
@@ -452,4 +452,22 @@ async fn losing_the_show_claim_never_records_playback_transient_failure() {
     assert_eq!(occurrence(&state).await.unwrap().0, "started");
     assert_eq!(on_air(&state).await.as_deref(), Some("host"));
     producer_ends(&state).await;
+}
+
+// ── Recording finalize ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn finalize_detach_takes_only_the_expected_show() {
+    use crate::recording_finalizer::FinalizeOps;
+    let (state, _temp) = state().await;
+    state.recording_manager.lock().await.start(1).await.unwrap();
+    let ops = handlers::recording::LiveFinalize::new(&state);
+    // A grace finalize of show 2 must not end show 1's recording.
+    assert!(ops.detach(Some(2)).await.unwrap().is_none());
+    let current = state.recording_manager.lock().await.current_show_id();
+    assert_eq!(current, Some(1));
+    assert!(ops.detach(Some(1)).await.unwrap().is_some());
+    let current = state.recording_manager.lock().await.current_show_id();
+    assert_eq!(current, None);
+    assert!(ops.detach(None).await.unwrap().is_none());
 }

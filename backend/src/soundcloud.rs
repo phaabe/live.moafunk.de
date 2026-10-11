@@ -464,7 +464,7 @@ pub(crate) fn should_auto_upload(enabled: bool, configured: bool) -> bool {
 }
 
 /// Best-effort automatic SoundCloud upload, fired when a recording finishes
-/// finalizing (streamed shows via `finalize_and_upload`, UNHEARD via
+/// finalizing (streamed shows via `upload_session`, UNHEARD via
 /// `handle_finalize_socket`). Uploads as a private track with the show's title +
 /// description via [`upload_track`] — which, if the show already has a track,
 /// replaces that track's audio in place so a re-recording updates the same

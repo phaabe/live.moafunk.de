@@ -12,6 +12,7 @@ mod metrics;
 mod models;
 mod pdf;
 mod recording;
+mod recording_finalizer;
 mod recovery;
 mod recovery_mail;
 mod scheduler;
@@ -60,9 +61,6 @@ pub type PendingShowNotifications =
 /// Active Telegram edit sessions keyed by chat_id (only one edit at a time per chat)
 pub type TelegramEditSessions = Arc<tokio::sync::Mutex<HashMap<i64, models::TelegramEditSession>>>;
 
-/// Handle to a pending grace-period recording-finalize task, if one is scheduled.
-pub type PendingFinalizer = Arc<tokio::sync::Mutex<Option<tokio::task::AbortHandle>>>;
-
 pub struct AppState {
     pub recovery_mail: recovery_mail::RecoveryMailer,
     pub recovery_controls: handlers::recovery::RecoveryControls,
@@ -75,10 +73,9 @@ pub struct AppState {
     pub stream_metrics: stream_metrics::SharedStreamMetrics,
     /// Recording session manager for show recordings
     pub recording_manager: SharedRecordingManager,
-    /// Handle to a pending grace-period finalize task (set when a live stream
-    /// drops without an explicit stop). A reconnect aborts it so a flaky
-    /// connection doesn't fragment the archive. See `stream_ws`.
-    pub recording_finalizer: PendingFinalizer,
+    /// When live recordings are finalized: the grace wait after a dropped
+    /// stream and every running finalize. See `recording_finalizer`.
+    pub recording_finalizer: Arc<recording_finalizer::Finalizer>,
     /// Debounce tracker for show cover regeneration (show_id -> last_request_time)
     pub cover_debounce: CoverDebounceMap,
     /// Cached default cover image (4 black tiles with UN/HEARD branding)
@@ -323,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
         stream_state,
         stream_metrics: stream_metrics::new_shared(),
         recording_manager,
-        recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
+        recording_finalizer: Arc::default(),
         cover_debounce,
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot,
