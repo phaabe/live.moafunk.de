@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
+import contextlib
 from datetime import datetime, timezone
+import io
 import json
 import os
 import tempfile
@@ -510,3 +512,51 @@ class CollectorTest(LedgerCase):
         self.write(line("start", T0 + 60))
         self.ingest()
         self.assertEqual(ah.current_waits(self.conn, "claude"), [])
+
+
+class BenchSampleTest(unittest.TestCase):
+    """A small deterministic sample of the separate scale benchmark."""
+
+    def sample(self) -> dict[str, Any]:
+        import activity_bench
+
+        with tempfile.TemporaryDirectory() as tmp:
+            return activity_bench.run(Path(tmp), agents=3, days=1 / 24, seed=7)
+
+    def test_sample_is_deterministic_and_healthy(self) -> None:
+        first, second = self.sample(), self.sample()
+        for key in ("attempts", "events_written", "cycles", "rows"):
+            self.assertEqual(first[key], second[key], key)
+        self.assertEqual(first["unhealthy_cycles"], 0)
+        # Every written event is stored once, despite daily rotation replays.
+        self.assertEqual(first["rows"]["events"], first["events_written"])
+        # The collector outage (300 s) skips 10 of 121 cycle times.
+        self.assertEqual(first["cycles"], 111)
+        self.assertEqual(first["queries_s"]["resolution"], "10s")
+        self.assertGreater(first["queries_s"]["overview_buckets"], 0)
+        for key in ("runtime_s", "peak_rss_bytes", "disk_bytes"):
+            self.assertGreater(first[key], 0, key)
+
+    def test_retired_agent_is_replaced(self) -> None:
+        import activity_bench
+
+        with tempfile.TemporaryDirectory() as tmp:
+            activity_bench.run(Path(tmp), agents=2, days=1 / 24, seed=7)
+            conn = ah.open_ledger(ah.default_path(Path(tmp)))
+            self.addCleanup(conn.close)
+            spans = {
+                agent: (lo, hi)
+                for agent, lo, hi in conn.execute(
+                    "SELECT agent, min(at), max(at) FROM events GROUP BY agent"
+                )
+            }
+        retire = activity_bench.START + 3_600 // 3
+        self.assertLess(spans["a01"][1], retire)
+        self.assertGreaterEqual(spans["a99"][0], retire)
+        self.assertIn("a00", spans)
+
+    def test_rejects_invalid_arguments(self) -> None:
+        import activity_bench
+
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            activity_bench.main(["--agents", "1"])
