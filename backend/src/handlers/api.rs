@@ -302,10 +302,11 @@ pub async fn api_set_initial_password(
     // Hash and update password, clearing the forced-change flag
     let new_hash = auth::hash_password(&req.new_password)?;
     let mut tx = crate::recovery::begin(&state.db).await?;
-    let still_required: bool = sqlx::query_scalar("SELECT must_change_password FROM users WHERE id = ?")
-        .bind(user.id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let still_required: bool =
+        sqlx::query_scalar("SELECT must_change_password FROM users WHERE id = ?")
+            .bind(user.id)
+            .fetch_one(&mut *tx)
+            .await?;
     if !still_required {
         return Err(AppError::Forbidden(
             "Password change is not required for this account".into(),
