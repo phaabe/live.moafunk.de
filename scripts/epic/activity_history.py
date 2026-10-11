@@ -12,6 +12,8 @@ stable event ID makes every replay a no-op.
   intervals(conn, agent, start, end)    the activity intervals of a window
   bucket(intervals, start, end, ...)    one overview bucket, summary by time
   resolution(range_s)                   the overview bucket width of a range
+  overview_request(from_s, to_s)        the Loki overview query_range request
+  evaluate_overview(records, request)   reference evaluation of that query
   late(...)                             the one wait-aware lateness decision
   prune(conn, now)                      30-day retention in bounded batches
   current_waits(conn, agent)            the agent-wide wait of the last tick
@@ -54,6 +56,15 @@ SEAL_PER_CYCLE = 100
 FRESH_GAP_S = 120
 MAX_LINE = 4096
 OUTBOX_STATES = ("pending", "staged", "delivered", "expired")
+# Loki: queries may span up to 728 h (visible 720 h plus bucket extensions).
+MAX_QUERY_LENGTH_S = 728 * 3600
+# Overview query: one state series per agent. Only the state code is parsed
+# and unwrapped, so varying JSON fields never split a series.
+OVERVIEW_QUERY = (
+    'max by (agent) (max_over_time({stream="agent_activity_buckets",'
+    ' resolution="$resolution", agent=~"$agent"}'
+    ' | json state_code="state_code" | unwrap state_code [$resolution]))'
+)
 # Fixed tie order after "latest seen": the contract's state order.
 STATE_ORDER = {name: index for index, name in enumerate(activity.STATES)}
 
@@ -348,6 +359,8 @@ class Bucket:
             "start": self.start,
             "end": self.end,
             "state": self.state,
+            # Numeric state for the Loki overview query (`unwrap`).
+            "state_code": STATE_ORDER[self.state],
             "share": round(self.share, 4),
             "breakdown": dict(sorted(self.breakdown.items())),
             "results": dict(sorted(self.results.items())),
@@ -404,6 +417,48 @@ def resolution(range_s: float) -> str:
         if math.ceil(range_s / width) + 1 <= MAX_BUCKETS:
             return name
     raise ValueError(f"range {range_s}s needs more than {MAX_BUCKETS} buckets")
+
+
+def overview_request(from_s: int, to_s: int) -> dict[str, Any]:
+    """The Loki `query_range` request of the overview for `[from_s, to_s)`.
+
+    Step is the resolution width. Every evaluation point is a bucket end,
+    from the end of the bucket holding `from_s` to the end of the bucket
+    holding the last second before `to_s`. A bucket's Loki timestamp is its
+    end and Loki selects `(t - step, t]`, so each point reads exactly one
+    bucket. Raises ValueError like `resolution`.
+    """
+    name = resolution(to_s - from_s)
+    width = RESOLUTIONS[name]
+    start = from_s - from_s % width + width
+    end = -(-to_s // width) * width
+    return {
+        "query": OVERVIEW_QUERY.replace("$resolution", name),
+        "resolution": name,
+        "start": start,
+        "end": end,
+        "step": width,
+    }
+
+
+def evaluate_overview(
+    records: Iterable[tuple[int, dict[str, Any]]], request: dict[str, Any]
+) -> dict[str, dict[int, int]]:
+    """Reference evaluation of the overview query on `(ts, record)` pairs.
+
+    Loki semantics the query relies on: stream selector on resolution,
+    `max_over_time` over `(t - step, t]` at each point, `max by (agent)`.
+    Returns agent -> {point: state_code}. Points without a bucket are absent.
+    """
+    step = request["step"]
+    series: dict[str, dict[int, int]] = {}
+    rows = [(ts, r) for ts, r in records if r["resolution"] == request["resolution"]]
+    for point in range(request["start"], request["end"] + 1, step):
+        for ts, record in rows:
+            if point - step < ts <= point:
+                values = series.setdefault(record["agent"], {})
+                values[point] = max(values.get(point, -1), record["state_code"])
+    return series
 
 
 def bucket_starts(start: int, end: int, width: int) -> Iterator[int]:

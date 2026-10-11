@@ -232,6 +232,92 @@ class ResolutionTest(unittest.TestCase):
         self.assertEqual(starts[-1] + 10, T0 + 70)
 
 
+LOKI_FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "activity-loki-queries.json").read_text()
+)
+
+
+class LokiQueryTest(unittest.TestCase):
+    """fixtures/activity-loki-queries.json: step, alignment, one series per agent."""
+
+    def test_requests_step_on_bucket_ends(self) -> None:
+        for case in LOKI_FIXTURE["requests"]:
+            with self.subTest(case["name"]):
+                got = ah.overview_request(case["from"], case["to"])
+                self.assertEqual(
+                    {k: got[k] for k in ("resolution", "start", "end", "step")},
+                    {k: case[k] for k in ("resolution", "start", "end", "step")},
+                )
+                self.assertEqual(got["step"], ah.RESOLUTIONS[got["resolution"]])
+                for at in (got["start"], got["end"]):
+                    self.assertEqual(at % got["step"], 0)  # a bucket end
+                points = (got["end"] - got["start"]) // got["step"] + 1
+                self.assertEqual(points, case["points"])
+                self.assertLessEqual(points, ah.MAX_BUCKETS)
+                # The buckets enclose the selected range.
+                self.assertLessEqual(got["start"] - got["step"], case["from"])
+                self.assertGreaterEqual(got["end"], case["to"])
+
+    def test_query_parses_only_the_state_code_per_agent(self) -> None:
+        got = ah.overview_request(T0, T0 + 3600)
+        query = got["query"]
+        self.assertNotIn("$resolution", query)
+        self.assertIn('resolution="10s"', query)
+        self.assertIn("[10s]", query)
+        self.assertTrue(query.startswith("max by (agent) (max_over_time("))
+        self.assertIn('| json state_code="state_code" | unwrap state_code', query)
+
+    def test_request_fits_the_query_length_limit(self) -> None:
+        # Worst case: 30 days with both ends unaligned, plus the range lookback.
+        got = ah.overview_request(T0 + 1, T0 + 1 + ah.MAX_RANGE_S)
+        span = got["end"] - (got["start"] - got["step"]) + got["step"]
+        self.assertLessEqual(span, ah.MAX_QUERY_LENGTH_S)
+
+    def test_invalid_ranges_query_nothing(self) -> None:
+        for case in LOKI_FIXTURE["invalid"]:
+            with self.subTest(case["name"]), self.assertRaises(ValueError):
+                ah.overview_request(case["from"], case["to"])
+
+    def test_series_read_exactly_the_bucket_ending_at_each_point(self) -> None:
+        fixture = LOKI_FIXTURE["series"]
+        request = ah.overview_request(
+            fixture["request"]["from"], fixture["request"]["to"]
+        )
+        records = []
+        for push in fixture["push"]:
+            record = dict(push, state_code=ah.STATE_ORDER[push["state"]])
+            self.assertEqual(
+                push["ts"], push["start"] + ah.RESOLUTIONS[push["resolution"]]
+            )
+            records.append((push["ts"], record))
+        got = ah.evaluate_overview(records, request)
+        expected = {
+            agent: {int(at): ah.STATE_ORDER[state] for at, state in points.items()}
+            for agent, points in fixture["expected"].items()
+        }
+        self.assertEqual(got, expected)
+
+    def test_twelve_agents_give_twelve_series(self) -> None:
+        request = ah.overview_request(T0, T0 + 30 * 86_400)
+        records = [
+            (at + 7200, {"agent": f"a{n}", "resolution": "2h", "state_code": n % 13})
+            for n in range(12)
+            for at in range(T0, T0 + 30 * 86_400, 7200)
+        ]
+        got = ah.evaluate_overview(records, request)
+        self.assertEqual(len(got), 12)
+        loki = (
+            Path(__file__).parents[2] / "tools/agent-monitoring/loki.yaml"
+        ).read_text()
+        self.assertIn("max_query_series: 5000", loki)
+        self.assertLessEqual(len(got), 5000)
+        self.assertTrue(all(len(points) == 360 for points in got.values()))
+
+    def test_sealed_bucket_carries_its_state_code(self) -> None:
+        bucket = ah.Bucket("claude", "1m", T0, T0 + 60, "waiting", 1.0)
+        self.assertEqual(bucket.record()["state_code"], ah.STATE_ORDER["waiting"])
+
+
 class SealTest(LedgerCase):
     def setUp(self) -> None:
         super().setUp()
