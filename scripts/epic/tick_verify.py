@@ -199,7 +199,7 @@ def handoff(
     if parsed["owner"] != owner or parsed["head"] != sha:
         return False, f"the recovery request is not {owner}'s for {sha[:7]}"
     pull = fetch(["api", f"repos/{REPO}/pulls/{number}"])
-    if na.pr_author({"body": pull.get("body") or ""}) != owner:
+    if na.pr_author(pull) != owner:
         return False, f"PR {number} is not {owner}'s"
     if parsed["base"] != (pull.get("base") or {}).get("ref"):
         return False, "the recovery request names another base"

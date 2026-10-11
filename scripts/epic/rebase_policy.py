@@ -746,7 +746,7 @@ def read_json(endpoint: str, missing: frozenset[int] = frozenset()) -> Any:
 
 def fresh_pr(pr: int) -> dict[str, Any]:
     """The PR in the selector's shape, read fresh: state, head, base, body,
-    draft, mergeable, all comments (with GraphQL edit evidence when a
+    labels, draft, mergeable, all comments (with GraphQL edit evidence when a
     recovery request candidate exists) and, for a request naming its head,
     the base tip and ancestry (next_action.recovery_read()). Any failed read
     raises ReadFailed."""
@@ -759,6 +759,8 @@ def fresh_pr(pr: int) -> dict[str, Any]:
         "number": pr,
         "state": pull.get("state"),
         "body": pull.get("body") or "",
+        # Executor labels name the owner first (next_action.pr_author()).
+        "labels": pull.get("labels") or [],
         "baseRefName": (pull.get("base") or {}).get("ref"),
         "headRefOid": (pull.get("head") or {}).get("sha"),
         "isDraft": bool(pull.get("draft")),

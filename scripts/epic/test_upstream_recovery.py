@@ -158,6 +158,29 @@ class SelectorTest(unittest.TestCase):
         self.assertEqual(draft[0].action, "continue")
         self.assertEqual(draft[0].warnings, [])
 
+    def test_label_only_owner_gets_its_recovery(self) -> None:
+        for owner in ("Claude", "Codex"):
+            with self.subTest(owner=owner):
+                only = pr(7, owner, labels=[{"name": f"executor::{owner.lower()}"}])
+                only["body"] = "No owner lines here."
+                act = decide(owner, only)[0]
+                self.assertEqual(
+                    (act.action, act.recovery),
+                    ("resolve-conflict", evidence(7, owner)),
+                )
+        labeled = pr(7, "Claude", body=None, labels=[{"name": "executor::claude"}])
+        labeled["body"] = "No owner lines here."
+        for name, names in (
+            ("conflicting", ["executor::codex"]),
+            ("several", ["executor::claude", "executor::codex"]),
+            ("unknown", ["executor::bob"]),
+            ("Anton", ["executor::anton"]),
+        ):
+            with self.subTest(name):
+                case = dict(labeled, labels=[{"name": n} for n in names])
+                acts = decide("Claude", case)
+                self.assertNotIn("resolve-conflict", [a.action for a in acts])
+
     def test_draft_recovers_and_holds_back_claims(self) -> None:
         item = {
             "content": {"type": "Issue", "number": 30, "url": f"{ISSUES}/30"},
@@ -995,6 +1018,42 @@ class AttemptCheckTest(unittest.TestCase):
         act = decide("Claude", pr(7, "Claude", isDraft=False, recoveryRead=read))[0]
         self.assertEqual((act.action, act.refresh["base_tip"]), ("fix-checks", NEW_TIP))
 
+    def test_label_owner_is_read_fresh_at_admission(self) -> None:
+        self.pull["body"] = "No owner lines here."
+        self.pull["labels"] = [{"name": "executor::claude"}]
+        self.assertEqual(self.check(), rp.RUN)
+        # Codex's label-only PR, admitted for the Codex runner only.
+        self.setUp()
+        self.pull["body"] = "No owner lines here."
+        self.pull["labels"] = [{"name": "executor::codex"}]
+        self.rows = [LegacyReaderTest.rest(7, 1, request("Codex"))]
+        codex = self.action(recovery=evidence(7, "Codex"))
+        pin = self.root / "codex-attempt.json"
+        found = rp.attempt_check(
+            self.state, "codex", codex, pin, post=self.labels.append
+        )
+        self.assertEqual(found, rp.RUN)
+        with self.assertRaises(rp.Stale):  # not Claude's PR
+            self.check(codex)
+        for name, names in (
+            ("conflicting", ["executor::codex"]),
+            ("several", ["executor::claude", "executor::codex"]),
+            ("unknown", ["executor::bob"]),
+            ("Anton", ["executor::anton"]),
+        ):
+            with self.subTest(name):
+                self.setUp()
+                self.pull["body"] = "No owner lines here."
+                self.pull["labels"] = [{"name": n} for n in names]
+                with self.assertRaises(rp.Stale):
+                    self.check()
+                self.assertFalse((self.state / rp.ATTEMPTS).exists())
+        # A label that disagrees with the body owner lines blocks too.
+        self.setUp()
+        self.pull["labels"] = [{"name": "executor::codex"}]
+        with self.assertRaises(rp.Stale):
+            self.check()
+
     def test_failed_reads_defer(self) -> None:
         self.compare = rp.ReadFailed("compare read failed")
         with self.assertRaises(rp.ReadFailed):
@@ -1044,6 +1103,8 @@ class VerifyTest(unittest.TestCase):
         self.rows: list[dict[str, Any]] = []
         self.calls: list[list[str]] = []
         self.owner = "Claude"
+        self.owner_line = ""
+        self.labels: list[dict[str, str]] = []
         self.head = HEAD
         self.graphql_edited: set[int] = set()
         self.compare: Any = {"status": "behind"}
@@ -1077,7 +1138,8 @@ class VerifyTest(unittest.TestCase):
         if endpoint.startswith(f"{REPO}/issues/7/comments?since="):
             return [r for r in self.rows if r["updated_at"] >= self.SINCE]
         if endpoint == f"{REPO}/pulls/7":
-            return {"body": f"Executor: {self.owner}", "base": {"ref": BASE}}
+            body = self.owner_line or f"Executor: {self.owner}"
+            return {"body": body, "base": {"ref": BASE}, "labels": self.labels}
         if endpoint == f"{REPO}/compare/{TIP}...{HEAD}?per_page=1":
             if self.compare is None:
                 raise subprocess.CalledProcessError(
@@ -1109,6 +1171,30 @@ class VerifyTest(unittest.TestCase):
         self.post(request(owner="Codex"))
         self.assertTrue(self.landed(agent="codex")[0])
         self.assertFalse(self.landed(agent="claude")[0])
+
+    def test_label_owner_counts_for_the_handoff(self) -> None:
+        self.post(request(owner="Claude"))
+        self.labels = [{"name": "executor::claude"}]
+        self.owner_line = "No owner lines here."
+        self.assertTrue(self.landed(agent="claude")[0])
+        self.setUp()
+        self.post(request(owner="Codex"))
+        self.labels = [{"name": "executor::codex"}]
+        self.owner_line = "No owner lines here."
+        self.assertTrue(self.landed(agent="codex")[0])
+        for names in (
+            ["executor::claude"],
+            ["executor::codex", "executor::claude"],
+            ["executor::bob"],
+            ["executor::anton"],
+        ):
+            with self.subTest(names=names):
+                self.labels = [{"name": n} for n in names]
+                self.assertFalse(self.landed(agent="codex")[0])
+        # Body says Codex, the label says Claude: invalid, no handoff.
+        self.owner_line = "Executor: Codex"
+        self.labels = [{"name": "executor::claude"}]
+        self.assertFalse(self.landed(agent="codex")[0])
 
     def test_invalid_or_old_requests_do_not_land(self) -> None:
         cases = {
@@ -1329,6 +1415,26 @@ class WriteHoldTest(twc.Base):
         self.github.post(request("Codex"))
         self.assertIn("holds merge and review", self.bash(self.VERDICT) or "")
         self.assertIn("holds merge and review", self.mode0(self.VERDICT) or "")
+
+    def test_label_only_owner_request_holds_in_both_modes(self) -> None:
+        self.action(action="review", pr=5, sha=HEAD)
+        self.reader.pulls[5]["body"] = "Executor: Codex"
+        self.github.pull["body"] = "No owner lines here."
+        self.github.pull["labels"] = [{"name": "executor::codex"}]
+        self.github.post(request("Codex"))
+        self.assertIn("holds merge and review", self.bash(self.VERDICT) or "")
+        self.assertIn("holds merge and review", self.mode0(self.VERDICT) or "")
+        # An invalid label leaves no owner: the request holds nothing.
+        self.github.pull["labels"] = [{"name": "executor::bob"}]
+        self.assertIsNone(rp.recovery_hold(5))
+
+    def test_label_only_owner_request_holds_the_merge_in_both_modes(self) -> None:
+        self.action(action="merge", pr=5, sha=HEAD)
+        self.github.pull["body"] = "No owner lines here."
+        self.github.pull["labels"] = [{"name": "executor::claude"}]
+        self.github.post(request("Claude"))
+        self.assertIn("holds merge and review", self.bash(self.MERGE) or "")
+        self.assertIn("holds merge and review", self.mode0(self.MERGE) or "")
 
     def test_foreign_or_old_requests_are_no_blockers(self) -> None:
         self.action(action="review", pr=5, sha=HEAD)
