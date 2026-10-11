@@ -694,6 +694,18 @@ def read_pr(
     if edit_evidence is not None:
         edit_evidence(number, rows)
     pr["comments"] = to_comments(rows, pull.get("comments"))
+
+    def get(endpoint: str, missing: frozenset[int]) -> Any:
+        try:
+            return client.json(endpoint, missing)
+        except Gone:
+            return None
+
+    # Base tip and ancestry, only for a recovery request naming this head.
+    try:
+        na.recovery_read(pr, get)
+    except ValueError as error:
+        raise ReadBlocked(f"recovery read for PR {number}: {error}") from error
     pr["statusCheckRollup"] = rollup(client, pr["headRefOid"])
     if pr["baseRefName"] in na.BASES and na.ownerless(pr):
         files = client.pages(
@@ -1125,11 +1137,12 @@ def edit_evidence(
 def grant_evidence(
     collect: Callable[[int, list[dict[str, Any]]], None],
 ) -> Callable[[int, list[dict[str, Any]]], None]:
-    """`collect` only for PRs with an operator grant candidate: a grant counts
-    only with edit evidence (next_action.granted())."""
+    """`collect` only for PRs with an operator grant or upstream recovery
+    request candidate: both count only with edit evidence
+    (next_action.granted(), next_action.recovery_of())."""
 
     def run(number: int, rows: list[dict[str, Any]]) -> None:
-        if na.grant_rows(rows):
+        if na.grant_rows(rows) or na.recovery_rows(rows):
             collect(number, rows)
 
     return run
@@ -1223,6 +1236,8 @@ def same_action(a: na.Action, action: dict[str, Any]) -> bool:
         and a.sha == action.get("sha")
         and a.lane == action.get("lane")
         and a.body_sha == action.get("body_sha")
+        and a.recovery == action.get("recovery")
+        and a.refresh == action.get("refresh")
     )
 
 

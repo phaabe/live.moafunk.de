@@ -40,6 +40,10 @@ caller names the agent (Claude or Codex); "this agent" below means that one.
   merge                          full merge-guard check from the trusted
                                  checkout (verdict with edit evidence, checks,
                                  files) for the head pinned in the command
+  merge, verdict (opt-in         no owner upstream test recovery request for
+  `upstream-recovery`)           the current head holds the PR (pending,
+                                 refresh or admitted), read fresh; also with
+                                 the reader off, through status_refusal()
 
 Common checks: pause file, focus, assignment (next_action.pr_assignment:
 executor label, else Executor line; an invalid one refuses) and allowed
@@ -78,6 +82,13 @@ AGENT = "Claude"  # default for callers that name no agent
 PROMOTION_MARKER = "runtime-promotion.json"  # runtime.MARKER
 AGENTS = ("Claude", "Codex")
 PUSH_ACTIONS = {"fix", "fix-checks", "resolve-conflict", "continue", "claim"}
+# Writes an owner's upstream test recovery request holds (recovery_refusal()).
+HELD_WRITES = {"merge", "verdict"}
+# Text that may be a held write (a merge, or a comment that may carry a
+# verdict). With the hold on, such a command must be readable word by word.
+HELD_HINT = re.compile(
+    r"\bgh\b.*(?:\bmerge\b|\bcomments?\b|\breview\b|Review:)", re.DOTALL
+)
 CREATE_ACTIONS = {"continue", "claim"}
 BOARD_ACTIONS = {"claim", "continue"}
 VERDICT_LINE = re.compile(
@@ -892,6 +903,9 @@ def check_write(ctx: Context, write: Write) -> str | None:
             return f"merge of PR {write.number} is not this tick's action"
         if not write.sha or write.sha != ctx.action.get("sha"):
             return "the merge must pin the selected head SHA"
+        held = recovery_refusal(write)
+        if held:
+            return held
         errors = ctx.reader.merge_errors(write.number, write.sha)
         return f"merge guard: {'; '.join(errors)}" if errors else None
     if write.kind == "verdict":
@@ -904,7 +918,7 @@ def check_write(ctx: Context, write: Write) -> str | None:
             return f"PR {write.number} is not an open, ready PR"
         if (pull.get("head") or {}).get("sha") != write.sha:
             return f"PR {write.number} head moved after the review"
-        return None
+        return recovery_refusal(write)
     if write.kind in ("comment", "pr-write", "issue-write"):
         if write.number is None:
             return "name the PR or issue number in the command"
@@ -920,6 +934,23 @@ def check_write(ctx: Context, write: Write) -> str | None:
     if write.kind in ("board", "status-label", "status"):
         return status_rule(write, ctx.kind) or check_status(ctx, write)
     return f"unknown write {write.kind}"
+
+
+def recovery_refusal(write: Write) -> str | None:
+    """With the `upstream-recovery` opt-in: a merge or a verdict waits while
+    the PR owner's recovery request for the current head holds the PR
+    (rebase_policy.recovery_hold(), fresh reads right before the write; a
+    request can arrive after selection). A failed read refuses the write."""
+    if write.kind not in HELD_WRITES or write.number is None:
+        return None
+    if na.RECOVERY not in na.read_actions(os.environ.get(na.ACTIONS_ENV)):
+        return None
+    import rebase_policy  # here: only with the opt-in
+
+    try:
+        return rebase_policy.recovery_hold(write.number)
+    except (rebase_policy.ReadFailed, rebase_policy.Problem, QuotaExhausted) as error:
+        return f"fresh recovery read failed, so the write is refused: {error}"
 
 
 def load_action() -> dict[str, Any]:
@@ -968,15 +999,28 @@ def status_refusal(
     label_rule), for a runner child with the shared reader off
     (EPIC_SHARED_READER=0). With it on, guard() applies them together with
     the fresh checks. The helper itself refuses issues outside the tick's
-    targets."""
+    targets. With the reader off (an explicit 0) this is also where the
+    upstream recovery hold of merge and verdict writes runs
+    (recovery_refusal(), fresh reads); with it on, guard() runs it."""
     if not os.environ.get("EPIC_ACTION_FILE"):
         return None
+    hold = os.environ.get("EPIC_SHARED_READER") == "0" and na.RECOVERY in (
+        na.read_actions(os.environ.get(na.ACTIONS_ENV))
+    )
     try:
         writes = tool_writes(tool_name, tool_input, cwd)
     except StatusUnclear as error:
         return str(error)
-    except Unclear:
+    except Unclear as error:
+        # A merge or a verdict the checks cannot read would skip the hold.
+        if hold and HELD_HINT.search(str(tool_input.get("command") or "")):
+            return f"{error} (upstream recovery hold: run it as one plain command)"
         return None  # not about the Status: the other checks decide
+    if hold:
+        for write in writes:
+            held = recovery_refusal(write)
+            if held:
+                return held
     for write in writes:
         reason = label_rule(write, agent)
         if reason:
