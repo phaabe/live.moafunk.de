@@ -23,6 +23,70 @@ backoff = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(backoff)
 
 
+class ActivityWaitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="backoff-activity-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.path = self.root / "activity.jsonl"
+        self.action = self.root / "action.json"
+        self.action.write_text(json.dumps({
+            "action": "continue", "pr": 406, "sha": "a" * 40,
+            "reason": "private prompt", "command": "private command",
+        }))
+        self.state = self.root / "agent"
+        self.quota = self.root / "shared"
+
+    def emit(self, cause: str) -> list[dict[str, object]]:
+        backoff.activity_wait(
+            self.path, "2026-10-10T23:00:00Z", cause, self.action,
+            self.state, self.quota, 900, 1000,
+        )
+        return [json.loads(line) for line in self.path.read_text().splitlines()] if self.path.exists() else []
+
+    def test_backoff_uses_legacy_expiry_without_copying_reason(self) -> None:
+        backoff.save_entries(self.state, {f"pr:406:{'a' * 40}": {
+            "at": 900, "reason": "private model output",
+        }})
+        record = self.emit("retry_backoff")[0]
+        self.assertEqual(record["retry_at"], backoff.github_quota.iso(1800))
+        self.assertEqual((record["reason_code"], record["scope"]), ("retry_backoff", "target"))
+        self.assertNotIn("private", self.path.read_text())
+
+    def test_expired_or_missing_backoff_emits_no_wait(self) -> None:
+        self.assertEqual(self.emit("retry_backoff"), [])
+        backoff.save_entries(self.state, {f"pr:406:{'a' * 40}": {
+            "at": 0, "until": 1000, "reason": "expired",
+        }})
+        self.assertEqual(self.emit("retry_backoff"), [])
+
+    def test_operator_wait_does_not_end_at_old_backoff_expiry(self) -> None:
+        action = json.loads(self.action.read_text())
+        backoff.save_entries(self.state, {backoff.target_key(action): {
+            "at": 0, "until": 900, "reason": "private reason", "blocked_count": 3,
+            "escalation": {"action": action, "id": "a" * 32,
+                           "label_added": True, "owns_label": True, "comment_posted": True},
+        }})
+        record = self.emit("retry_backoff")[0]
+        self.assertEqual((record["reason_code"], record["scope"], record["retry_at"]),
+                         ("operator_wait", "target", None))
+
+    def test_quota_reads_only_shared_state_and_preserves_bytes(self) -> None:
+        wait = backoff.github_quota.record(self.quota, 1000, backoff.github_quota.iso(1600))
+        path = self.quota / "github-quota-wait.json"
+        before = path.read_bytes()
+        record = self.emit("github_quota")[0]
+        self.assertEqual((record["reason_code"], record["scope"], record["retry_at"]),
+                         ("github_quota", "agent", wait["retry_at"]))
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(self.state.exists())
+
+    def test_lock_has_target_scope_and_no_expiry(self) -> None:
+        record = self.emit("target_lock")[0]
+        self.assertEqual((record["reason_code"], record["scope"], record["retry_at"], record["target"]),
+                         ("target_lock", "target", None, "pr:406"))
+
+
 class EscalationGitHub:
     """Stateful REST boundary, including a lost write response."""
 

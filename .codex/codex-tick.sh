@@ -52,6 +52,7 @@ export EPIC_QUOTA_DIR="$registry_dir"
 lock_dir="${state_dir}/codex.lock"
 log_file="${state_dir}/codex.log"
 events_file="${state_dir}/codex-ticks.jsonl"
+activity_file="${state_dir}/codex-activity.jsonl"
 events="${code_root}/scripts/epic/tick_events.py"
 # Tick events for the monitor: the stage the tick is in, and an outcome when
 # the runner knows better than the exit code (see tick_events.py).
@@ -70,6 +71,12 @@ admission_dir="${EPIC_LOCK_DIR:-${HOME}/.local/state/epic-loop/target-locks}"
 child_pid=""
 review_log=""
 review_log_saved=0
+wait_activity() {
+    "$python_bin" "${code_root}/.codex/tick_backoff.py" activity \
+        --activity-file "$activity_file" --tick "$tick_started" --cause "$1" \
+        --action-file "${lock_dir}/action.json" --state-dir "$state_dir" \
+        --quota-dir "$registry_dir" --ttl "$blocked_retry" || true
+}
 archive_review_output() {
     if [[ -n "$review_log" && "$review_log_saved" == 0 && -f "$review_log" ]]; then
         if cat "$review_log"; then
@@ -110,6 +117,9 @@ cleanup() {
         fi
     fi
     if [[ "$tick_lock_owned" == 1 ]]; then
+        if [[ "$tick_phase" == quota && "$tick_outcome" == blocked ]]; then
+            wait_activity github_quota
+        fi
         archive_review_output
         # Child termination precedes this trap, including timeout and handled signals.
         # Evidence is already outside the checkout. Cleanup cannot change its result.
@@ -261,6 +271,7 @@ check_quota() {
     "$python_bin" "${code_root}/scripts/epic/github_quota.py" check \
         --state-dir "$registry_dir" || result=$?
     if [[ "$result" == 3 ]]; then
+        wait_activity github_quota
         exit 0
     elif [[ "$result" != 0 ]]; then
         exit "$result"
@@ -381,6 +392,7 @@ lock_target() {
     fi
     release_target
     if [[ "$result" == 75 ]]; then
+        wait_activity target_lock
         return 1
     fi
     exit "$result"
@@ -398,9 +410,9 @@ while IFS= read -r -u 3 candidate; do
     if [[ -e "${HOME}/.epic-pause" ]]; then
         exit 0
     fi
+    printf '%s\n' "$candidate" > "${lock_dir}/action.json"
     check_quota
     tick_phase=select
-    printf '%s\n' "$candidate" > "${lock_dir}/action.json"
     action=$("$python_bin" -I -c '
 import json, sys
 value = json.load(sys.stdin)
@@ -507,6 +519,7 @@ PY
             --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
     fi
     if [[ "$backoff" == 3 || "$backoff" == 6 ]]; then
+        if [[ "$backoff" == 3 ]]; then wait_activity retry_backoff; fi
         discard_seen
         release_target
         continue
@@ -602,6 +615,7 @@ PY
     case "$assignment_exit" in
         0) ;;
         6)
+            wait_activity ticket_not_ready
             discard_seen
             release_target
             printf 'tick: assignment changed; next candidate\n'
@@ -840,6 +854,10 @@ launch_model() {
         --output-last-message "$model_result" \
         - < "${lock_dir}/prompt.txt"
 }
+# Keep model boundaries separate from the legacy tick ledger. Telemetry
+# failure must not prevent the selected work or change its result.
+"$python_bin" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-start --action-file "${lock_dir}/action.json" || true
 if [[ -n "$review_log" ]]; then
     launch_model > "$review_log" 2>&1 || model_exit=$?
     archive_review_output
@@ -847,6 +865,8 @@ if [[ -n "$review_log" ]]; then
 else
     launch_model || model_exit=$?
 fi
+"$python_bin" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-end --action-file "${lock_dir}/action.json" || true
 attempt_finish() {
     "$python_bin" "${code_root}/scripts/epic/rebase_policy.py" attempt-finish --state-dir "$registry_dir" \
         --attempt-file "${state_dir}/rebase-attempt.json" --id "$attempt_id" --outcome "$1"
@@ -1015,6 +1035,9 @@ fi
 "$python_bin" "${code_root}/.codex/tick_backoff.py" record --action-file "${lock_dir}/action.json" \
     --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" \
     --result-file "${state_dir}/codex-result.json" --exit-code "$model_exit" || outcome=$?
+if [[ "$outcome" == 3 || "$outcome" == 75 ]]; then
+    wait_activity retry_backoff
+fi
 if [[ "$outcome" == 4 ]]; then
     tick_phase=quota
     tick_outcome=blocked
