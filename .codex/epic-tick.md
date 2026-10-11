@@ -197,11 +197,15 @@ The runner stops the Codex session after `EPIC_TICK_TIMEOUT_SECONDS` (default
 Only when the runner appends the exact line `Upstream test recovery: on`,
 an owner `continue`, `fix` or `fix-checks` tick may request upstream recovery.
 Being behind the base, failed checks or requested changes alone never permit it.
-The worktree and index must be clean, with HEAD equal to the selected PR SHA,
-before recording test evidence. Preserve unfinished work if they differ.
+Test the selected PR SHA itself: use the clean worktree and index with HEAD
+equal to that SHA, or an isolated export of that SHA. Preserve dirty files and
+unpublished commits; never report their failure as a failure of the selected SHA.
 After both allowed reruns still fail on the selected head, fetch the actual PR
 base and record its full tip SHA. Run the identical failing test once in an
 isolated export of that commit under `TMPDIR`; preserve the feature checkout.
+Use `git archive --format=tar --output=<absolute TMPDIR archive> <pinned SHA>`,
+then extract the archive into a fresh directory under `TMPDIR` with `tar -xf`.
+Use the full recorded commit SHA, not a moving branch name, for each export.
 The base test must pass and the selected head must not contain that base tip.
 Otherwise retain the test blocker. Do not debug further or waive a required suite.
 
@@ -228,9 +232,14 @@ normal handoff above, then ends; a later PR tick can record recovery evidence.
 For an owner action selected to refresh stale recovery evidence, repeat the
 bounded failing-test/base comparison on the newly fetched tip and post a new
 request if it qualifies. Never edit the old request or invent a fix commit.
-After confirming the new request exists, return `completed`: requesting recovery
+After reading the posted request back, return `completed`: requesting recovery
 is this tick's result. The PR remains test-blocked until the later recovery tick
 rebases and passes the complete pinned proof table. Do not rebase in this tick.
+If refresh cannot produce valid evidence, either fix the test with a real change,
+test and push through the normal owner action, or comment the result on the
+selected PR, add `needs-anton` to that PR and return `blocked`. Never create an
+empty commit or edit the old request to remove the hold. If the guard refuses
+the label write, report that refusal and return `blocked`; do not widen permissions.
 
 ## Commands and final result
 
