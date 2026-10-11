@@ -212,8 +212,11 @@ else:
             "print(os.environ['TEST_DECISION'])\n"
         )
         selector.write_text(
-            "from selector_contract import BASES, EPIC, PROJECT_API, REPO, body_digest, issue_url, other\n"
-            "if __name__ == '__main__':\n"
+            "import sys\n"
+            "import selector_contract\n"
+            "if __name__ != '__main__':\n"
+            "    sys.modules[__name__] = selector_contract\n"
+            "else:\n"
             + "\n".join(f"    {line}" for line in selector_code.splitlines())
             + "\n"
         )

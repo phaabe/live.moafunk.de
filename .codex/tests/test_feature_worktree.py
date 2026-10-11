@@ -48,13 +48,6 @@ class FeatureWorktreeTests(unittest.TestCase):
             tick_fixture.ROOT.parent / "scripts/epic/rebase_policy.py",
             self.repo / "scripts/epic/rebase_policy.py",
         )
-        selector = self.repo / "scripts/epic/next_action.py"
-        selector.write_text(
-            selector.read_text().replace(
-                "from selector_contract import BASES, EPIC, PROJECT_API, REPO, body_digest, issue_url, other",
-                "from selector_contract import *",
-            )
-        )
         gh = self.fixture.bin / "gh"
         original = gh.read_text().split("\n", 1)[1]
         gh.write_text(
@@ -338,9 +331,22 @@ class FeatureWorktreeTests(unittest.TestCase):
                     self.assert_refused(5)
 
     def mark_upstream_recovery(self) -> None:
-        # Selection/admission is covered by the shared policy; these tests probe
-        # the real runner's worktree boundary after admission.
+        # Admission has its own shared/combined tests. Stub only that boundary
+        # here: exercise real preparation and attempt ordering after admission.
         self.action["recovery"] = {"kind": "upstream-test"}
+        policy = self.repo / "scripts/epic/rebase_policy.py"
+        source = policy.read_text()
+        entry = 'if __name__ == "__main__":'
+        self.assertEqual(source.count(entry), 1)
+        policy.write_text(
+            source.replace(
+                entry,
+                "def recovery_admission(agent, action):\n"
+                "    ref = base_ref(action['pr'])\n"
+                "    return {'base': ref, 'tip': base_tip(ref), 'suites': []}\n\n"
+                + entry,
+            )
+        )
 
     def test_clean_upstream_recovery_starts_model(self) -> None:
         self.use_pr("resolve-conflict")
