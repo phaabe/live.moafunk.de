@@ -20,9 +20,16 @@ No file or an empty file: all.
   fix       my PR has a changes-requested verdict for its head
   fix-checks  my PR has failing checks on its head
   resolve-conflict  my PR conflicts with its base; on that PR it comes
-            before fix and fix-checks (escalate still comes first)
+            before fix and fix-checks (escalate still comes first). With
+            `upstream-recovery` in EPIC_FOCUS_ACTIONS also my MERGEABLE draft
+            or ready PR with a valid upstream test recovery request
+            (recovery_of()); the action then carries `recovery`. A request
+            for the current head that needs new evidence (base moved, ...)
+            gives the owner fix-checks (fix, continue) with `refresh`, and
+            no merge
   review    the other agent's ready PR has no verdict from me for its head
-            and no conflict; a conflicted one is a status-only `wait`
+            and no conflict or owner recovery request for its head; else a
+            status-only `wait`
   continue  my draft PR, or my In progress leaf without a PR
   adopt     a focus PR with no executor label and no owner line whose files
             route to me (routing.py);
@@ -117,8 +124,29 @@ FOCUS_FILE = Path.home() / ".epic-focus"
 ESCALATION_LABEL = "needs-anton"
 # New actions are emitted only when listed in EPIC_FOCUS_ACTIONS (comma list).
 # One is added in both runners after both its Claude and Codex leaves merged.
-NEW_ACTIONS = frozenset({"adopt"})
+# `upstream-recovery`: resolve-conflict for an owner's recovery request.
+RECOVERY = "upstream-recovery"
+NEW_ACTIONS = frozenset({"adopt", RECOVERY})
 ACTIONS_ENV = "EPIC_FOCUS_ACTIONS"
+# Upstream test recovery request: the whole body of a PR comment by the PR
+# owner, no trailing newline (docs/implementation/epic-rules.md section 8).
+RECOVERY_PREFIX = "Upstream test recovery by "
+RECOVERY_REQUEST = re.compile(
+    r"Upstream test recovery by (Claude|Codex)\n"
+    r"Head: ([0-9a-f]{40})\n"
+    r"Base: (\S+)\n"
+    r"Base tip: ([0-9a-f]{40})\n"
+    r"Suites: ([a-z0-9][a-z0-9-]*(?:, [a-z0-9][a-z0-9-]*)*)"
+)
+# The action's typed evidence (`recovery.kind`); tick_gate.py keeps a copy.
+RECOVERY_KIND = "upstream-test"
+# An owner action's typed `refresh.kind`: the request needs new evidence.
+REFRESH_KIND = "upstream-test-refresh"
+# GitHub compare <tip>...<head>: the head lacks the tip only in these states.
+TIP_ABSENT = frozenset({"behind", "diverged"})
+# A compare of an unknown commit: no recovery, never a failed read.
+UNKNOWN_COMMIT = frozenset({404, 422})
+SHA = re.compile(r"[0-9a-f]{40}")
 # Ticket dependencies need a closed-as-completed issue (see completed_tickets()).
 COMPLETED_TICKETS_ENV = "EPIC_REQUIRE_COMPLETED_TICKETS"
 # A prerequisite read with this status blocks only its successors.
@@ -219,6 +247,12 @@ class Action:
     # adopt only: the lane to write, and the hash of the body it must keep.
     lane: str | None = None
     body_sha: str | None = None
+    # resolve-conflict of an upstream test recovery only: the request's typed
+    # evidence (recovery_of()). A plain conflict has none.
+    recovery: dict[str, Any] | None = None
+    # fix, fix-checks or continue of an owner whose recovery request needs
+    # new evidence: the request and the base tip now (recovery_of()).
+    refresh: dict[str, Any] | None = None
     # stop, idle and wait only: the activity reason (activity.py REASON_CODES),
     # its scope (agent or target) and an optional retry time. Set here, where
     # the cause is known; `reason` stays free text for people.
@@ -422,6 +456,182 @@ def grant_rows(rows: list[dict[str, Any]]) -> bool:
         and GRANT.fullmatch((r.get("body") or "").strip())
         for r in rows
     )
+
+
+def recovery_rows(rows: list[dict[str, Any]]) -> bool:
+    """True when REST comment rows hold an upstream recovery request
+    candidate. Readers then add GraphQL edit evidence, as for grants."""
+    return any((r.get("body") or "").startswith(RECOVERY_PREFIX) for r in rows)
+
+
+def newest_recovery(pr: dict[str, Any]) -> dict[str, Any] | None:
+    """The newest PR comment that starts like a recovery request. Only it
+    counts: an invalid newest request never falls back to an older one."""
+    found = [
+        c
+        for c in pr.get("comments") or []
+        if (c.get("body") or "").startswith(RECOVERY_PREFIX)
+    ]
+    return max(found, key=lambda c: (c["createdAt"], c.get("id") or 0), default=None)
+
+
+def parse_recovery(body: str) -> dict[str, Any] | None:
+    """The fields of an exact request body, or None."""
+    m = RECOVERY_REQUEST.fullmatch(body)
+    if not m:
+        return None
+    return {
+        "owner": m.group(1),
+        "head": m.group(2),
+        "base": m.group(3),
+        "tip": m.group(4),
+        "suites": m.group(5).split(", "),
+    }
+
+
+def recovery_target(pr: dict[str, Any]) -> tuple[str, str] | None:
+    """(tip, head) when the PR's newest request names its current head and
+    base. Only then do readers read the base tip and the ancestry."""
+    newest = newest_recovery(pr)
+    parsed = parse_recovery(newest.get("body") or "") if newest else None
+    if (
+        parsed
+        and parsed["head"] == pr.get("headRefOid")
+        and parsed["base"] == pr.get("baseRefName")
+        and parsed["base"] in BASES
+    ):
+        return parsed["tip"], parsed["head"]
+    return None
+
+
+def recovery_read(
+    pr: dict[str, Any], get: Callable[[str, frozenset[int]], Any]
+) -> None:
+    """Adds `recoveryRead` for a PR whose newest request names its current
+    head: the base's tip now and GitHub's compare status of the request's tip
+    and the head. No read for any other PR. `get(endpoint, missing)` returns
+    the JSON, or None for a status in `missing`. Malformed data raises."""
+    target = recovery_target(pr)
+    if target is None:
+        return
+    tip, head = target
+    ref = get(f"repos/{REPO}/git/ref/heads/{pr['baseRefName']}", frozenset())
+    base_tip = ((ref or {}).get("object") or {}).get("sha")
+    if not isinstance(base_tip, str) or not SHA.fullmatch(base_tip):
+        raise ValueError(f"base {pr['baseRefName']} has no tip SHA")
+    compare = get(f"repos/{REPO}/compare/{tip}...{head}?per_page=1", UNKNOWN_COMMIT)
+    status = compare.get("status") if isinstance(compare, dict) else None
+    pr["recoveryRead"] = {
+        "tip": tip,
+        "head": head,
+        "baseTip": base_tip,
+        "compare": status if isinstance(status, str) else None,
+    }
+
+
+@dataclass
+class Recovery:
+    """The PR's newest upstream test recovery request, when it is the PR
+    owner's exact, unedited request for the current head and base.
+
+    `state`:
+      valid    admitted: `evidence` is the resolve-conflict's `recovery`
+      refresh  the tested evidence no longer admits it (base moved, base tip
+               already in the head or unknown, bad suite list): the owner
+               refreshes it; `evidence` is the action's `refresh`
+      pending  GitHub has not computed mergeability, or the tip was not read
+    Any of these holds back merge and the other agent's review.
+    """
+
+    state: str
+    evidence: dict[str, Any] | None = None
+    problem: str | None = None
+
+
+def recovery_of(
+    pr: dict[str, Any], owner: str, known: frozenset[str]
+) -> tuple[Recovery | None, str | None]:
+    """(state, None) for the owner's request for this head and base, (None,
+    why) when the newest request is not one, (None, None) without a request.
+
+    Identity (else ignored): unedited with edit evidence, by OPERATOR_LOGINS,
+    the exact body, `owner` is the PR owner, it names the current head and
+    base. Admission (else refresh or pending): sorted unique `known` suites,
+    the tested base tip is still the base's tip and not in the head, and
+    GitHub reports the PR MERGEABLE.
+    """
+    newest = newest_recovery(pr)
+    if newest is None:
+        return None, None
+    where = newest.get("url") or f"PR {pr.get('number')}"
+
+    def bad(why: str) -> tuple[None, str]:
+        return None, f"{where}: upstream recovery request not used: {why}"
+
+    if newest.get("author") not in OPERATOR_LOGINS:
+        return bad("not posted by a trusted login")
+    if newest.get("includesCreatedEdit") or newest.get("editEvidence") is not True:
+        return bad("edited, or no edit evidence; post a new request")
+    parsed = parse_recovery(newest.get("body") or "")
+    if parsed is None or type(newest.get("id")) is not int:
+        return bad("not the exact request format")
+    if parsed["owner"] != owner or pr_author(pr) != owner:
+        return bad(f"by {parsed['owner']}; the PR owner is {pr_author(pr)}")
+    if parsed["head"] != pr.get("headRefOid"):
+        return bad("it names an older head")
+    if parsed["base"] != pr.get("baseRefName") or parsed["base"] not in BASES:
+        return bad("it names another base")
+    read = pr.get("recoveryRead") or {}
+    seen = read.get("tip") == parsed["tip"] and read.get("head") == parsed["head"]
+    identity = {
+        "comment_id": newest["id"],
+        "url": newest.get("url"),
+        "owner": owner,
+        "head": parsed["head"],
+        "base": parsed["base"],
+        "tip": parsed["tip"],
+    }
+
+    def refresh(why: str, text: str) -> tuple[Recovery, None]:
+        found = {
+            "kind": REFRESH_KIND,
+            **identity,
+            "base_tip": read.get("baseTip") if seen else None,
+            "why": why,
+        }
+        return Recovery("refresh", found, f"{where}: {text}; test again"), None
+
+    names = parsed["suites"]
+    unknown = [n for n in names if n not in known]
+    if names != sorted(set(names)) or unknown:
+        return refresh("bad_suites", "the suite list is not sorted, unique and known")
+    if not seen:
+        return Recovery("pending", None, f"{where}: base tip not read yet"), None
+    if read.get("baseTip") != parsed["tip"]:
+        return refresh(
+            "base_moved",
+            f"the base moved on to {str(read.get('baseTip'))[:7]} after the test",
+        )
+    if read.get("compare") is None:
+        return refresh("unknown_commit", "GitHub does not know the tested base tip")
+    if read.get("compare") not in TIP_ABSENT:
+        return refresh("tip_in_head", "the head already contains the tested base tip")
+    if pr.get("mergeable") != "MERGEABLE":
+        text = f"{where}: GitHub reports {pr.get('mergeable')}, not MERGEABLE yet"
+        return Recovery("pending", None, text), None
+    return Recovery("valid", {"kind": RECOVERY_KIND, **identity, "suites": names}), None
+
+
+def recovery_suites() -> frozenset[str]:
+    """Suite names a request may name: the runner's proof table. A bad table
+    gives none, so no request is valid."""
+    # Imported here: the Codex runner tests copy this file alone.
+    import rebase_policy
+
+    try:
+        return frozenset(s["name"] for s in rebase_policy.suites())
+    except (rebase_policy.Problem, OSError, ValueError, KeyError, TypeError):
+        return frozenset()
 
 
 def checks_state(pr: dict[str, Any]) -> str:
@@ -1120,6 +1330,21 @@ def decide(
     theirs = [p for p in prs if pr_author(p) == peer]
     # Each kind's list is sorted by this key: priority, then age (number).
     ranked: dict[str, list[tuple[tuple[Any, ...], Action]]] = {}
+    # Upstream test recovery (opt-in): the owner's request state by PR, and
+    # why a request is not admitted (a warning in --status).
+    recovery: dict[int, Recovery] = {}
+    unused: dict[int, list[str]] = {}
+    if RECOVERY in enabled and any(newest_recovery(p) for p in mine + theirs):
+        known = recovery_suites()
+        for p in mine + theirs:
+            found, problem = recovery_of(p, str(pr_author(p)), known)
+            if found:
+                recovery[p["number"]] = found
+                problem = found.problem
+            if problem:
+                unused[p["number"]] = [problem]
+    # A draft's recovery holds back claims, as its `continue` would.
+    draft_recovery = False
 
     def add(kind: str, act: Action, *order: Any) -> None:
         ranked.setdefault(kind, []).append(((act.priority, *order), act))
@@ -1137,6 +1362,7 @@ def decide(
                     for _, url in pr_wait_sources(p, issue_labels)
                 ],
             )
+        kw["warnings"] = [*kw.get("warnings", []), *unused.get(n, [])]
         add(
             kind,
             Action(
@@ -1154,6 +1380,9 @@ def decide(
 
     for p in mine:
         head = p["headRefOid"]
+        rec = recovery.get(p["number"])
+        refresh = rec.evidence if rec and rec.state == "refresh" else None
+        why = rec.problem if rec else None
         if p.get("isDraft"):
             wait = waiting_of(
                 agent,
@@ -1166,9 +1395,19 @@ def decide(
                 hold_claims |= wait.unread or not free_claims
                 reason = "waiting: " + "; ".join(wait.blocking)
                 pr_action(p, "wait", reason + held, reason_code=wait.reason_code)
+            elif rec and rec.state == "valid":
+                draft_recovery = True
+                pr_action(
+                    p,
+                    "resolve-conflict",
+                    f"upstream test recovery requested by {agent}",
+                    recovery=rec.evidence,
+                )
             else:
                 satisfied = wait.satisfied if wait else []
-                pr_action(p, "continue", "my draft PR", warnings=satisfied)
+                pr_action(
+                    p, "continue", "my draft PR", warnings=satisfied, refresh=refresh
+                )
             continue
         theirs_v = verdicts(p, peer)
         latest = theirs_v[-1] if theirs_v else None
@@ -1188,6 +1427,24 @@ def decide(
         if p.get("mergeable") == "CONFLICTING":
             pr_action(p, "resolve-conflict", "PR conflicts with its base")
             continue
+        # So is the owner's upstream test recovery: the rebase changes the head.
+        if rec and rec.state == "valid":
+            pr_action(
+                p,
+                "resolve-conflict",
+                f"upstream test recovery requested by {agent}",
+                recovery=rec.evidence,
+            )
+            continue
+        # A request GitHub has not settled: no merge, nothing to do yet.
+        if rec and rec.state == "pending":
+            pr_action(
+                p,
+                "wait",
+                f"waiting: upstream test recovery request ({rec.problem})",
+                reason_code="conflict_wait",
+            )
+            continue
         if changes:
             previous = theirs_v[-2]["at"] if len(theirs_v) > 1 else None
             pr_action(
@@ -1195,6 +1452,16 @@ def decide(
                 "fix",
                 f"{peer} requested changes for the current head",
                 comments=findings(p, latest, previous),
+                refresh=refresh,
+            )
+            continue
+        # The owner's failing test still blocks: new evidence, a fix or Anton.
+        if refresh:
+            pr_action(
+                p,
+                "fix-checks",
+                f"upstream test recovery request needs new evidence: {why}",
+                refresh=refresh,
             )
             continue
         checks = checks_state(p)
@@ -1221,6 +1488,16 @@ def decide(
                 p,
                 "wait",
                 f"waiting: {peer} resolves the conflict first",
+                reason_code="conflict_wait",
+            )
+        # So does a head its owner recovers onto a newer base, or whose
+        # failing test the owner still reports.
+        elif p["number"] in recovery:
+            pr_action(
+                p,
+                "wait",
+                f"waiting: {peer} recovers the PR onto a newer base, or "
+                "refreshes its test evidence, first",
                 reason_code="conflict_wait",
             )
         # So does a head with failed checks: its owner gets fix-checks.
@@ -1383,7 +1660,7 @@ def decide(
         for kind in order
         for _, a in sorted(ranked.get(kind, []), key=lambda entry: entry[0])
     ]
-    if hold_claims or any(a.action == "continue" for a in actions):
+    if hold_claims or draft_recovery or any(a.action == "continue" for a in actions):
         actions = [
             a for a in actions if a.action != "claim"
         ]  # one implementation at a time
@@ -1443,6 +1720,17 @@ def legacy_edit_evidence(number: int, rows: list[dict[str, Any]]) -> None:
 
     guard = github_state.load_guard()
     guard.comment_edit_markers(gh_graphql, REPO, number, rows)
+
+
+def legacy_get(endpoint: str, missing: frozenset[int] = frozenset()) -> Any:
+    """One REST read through gh; None for an HTTP status in `missing`."""
+    try:
+        return gh_json(["api", endpoint])
+    except subprocess.CalledProcessError as error:
+        found = HTTP_STATUS.search(error.stderr or "")
+        if found and int(found.group(1)) in missing:
+            return None
+        raise
 
 
 def rest_rows(endpoint: str) -> list[dict[str, Any]]:
@@ -1640,9 +1928,11 @@ def fetch_state(focus: frozenset[str] = frozenset()) -> dict[str, Any]:
             "comments"
         ]
         rows = [row for page in pages for row in page]
-        if grant_rows(rows):
+        if grant_rows(rows) or recovery_rows(rows):
             legacy_edit_evidence(n, rows)
         pr["comments"] = comments_from_rest(rows, count)
+        # Base tip and ancestry, only for a request that names this head.
+        recovery_read(pr, legacy_get)
         # Routing of a PR without an owner line needs its files.
         if pr.get("baseRefName") in BASES and ownerless(pr):
             rows = rest_rows(f"repos/{REPO}/pulls/{n}/files?per_page=100")

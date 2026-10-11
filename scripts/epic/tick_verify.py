@@ -6,7 +6,9 @@ a push or merge was denied. claude-tick.sh runs this after the session:
   merge                         the PR is merged
   review                        an unedited "Review: ... by <Agent> at <selected sha>"
                                 comment was created during the tick
-  fix-checks                    the PR head moved (a push arrived)
+  fix-checks                    the PR head moved (a push arrived), or (opt-in
+                                `upstream-recovery`) the owner posted a valid
+                                upstream test recovery request (handoff())
   resolve-conflict              the PR head moved, a valid test proof exists for
                                 the new head on the pinned target tip, and a valid
                                 rebase record for it was posted during the tick
@@ -14,7 +16,8 @@ a push or merge was denied. claude-tick.sh runs this after the session:
                                 --attempt-file). A moved head alone is no success.
   fix                           the PR head moved, or a comment whose first line
                                 is "Reply-only fix by <Agent> at <selected sha>"
-                                was created during the tick
+                                was created during the tick, or a recovery
+                                request as for fix-checks
   adopt                         the PR body has the owner lines for this agent
                                 at line start and still holds the original body
 
@@ -122,8 +125,11 @@ def landed(
         if reason:
             return False, f"PR {number} head moved, but {reason}"
     if kind == "resolve-conflict" and moved and agent in PROVEN_REBASES:
-        return resolution(agent, action, pr["headRefOid"], since, fetch, worktree, attempt)
-    if kind in PUSHES:
+        return resolution(
+            agent, action, pr["headRefOid"], since, fetch, worktree, attempt
+        )
+    # A fix-checks tick that only posted a recovery request reads the comments.
+    if kind in PUSHES and (moved or kind == "resolve-conflict" or not recovery_on()):
         return moved, f"PR {number} head {'moved' if moved else 'did not move'}"
     comments = fetch(
         [
@@ -145,9 +151,77 @@ def landed(
     if moved:
         return True, "head moved"
     marker = f"Reply-only fix by {name} at {sha}"
-    if any((c.get("body") or "").strip().splitlines()[:1] == [marker] for c in new):
+    if kind == "fix" and any(
+        (c.get("body") or "").strip().splitlines()[:1] == [marker] for c in new
+    ):
         return True, "reply-only fix posted"
-    return False, f"PR {number} head did not move and no reply-only fix was posted"
+    posted, why = handoff(agent, number, sha, new, fetch)
+    if posted:
+        return True, why
+    if kind == "fix":
+        return False, f"PR {number} head did not move and no reply-only fix was posted"
+    return False, f"PR {number} head did not move; {why}"
+
+
+def recovery_on() -> bool:
+    """The upstream-recovery opt-in (next_action.read_actions() of
+    EPIC_FOCUS_ACTIONS), without importing the selector."""
+    names = {p.strip() for p in os.environ.get("EPIC_FOCUS_ACTIONS", "").split(",")}
+    return "upstream-recovery" in names
+
+
+def handoff(
+    agent: str, number: int, sha: str, new: list[dict[str, Any]], fetch: Fetch
+) -> tuple[bool, str]:
+    """(True, why) when this fix or fix-checks tick posted the owner's upstream
+    test recovery request for the selected head: the newest request posted in
+    the tick, by a trusted login, unedited, the exact body for this owner, head
+    and PR base, known sorted suites, and a tested base tip the head does not
+    contain. That is a completed handoff without a push. Whether the tip is
+    still the base's tip is not checked here: a base that moves on right after
+    the post makes the next selection ask for a refresh, not a failed tick."""
+    if not recovery_on():
+        return False, "upstream recovery is off"
+    # Imported here: runners that copy this file without them keep working.
+    import next_action as na
+    import rebase_policy
+
+    found = [c for c in new if (c.get("body") or "").startswith(na.RECOVERY_PREFIX)]
+    if not found:
+        return False, "no upstream test recovery request was posted"
+    newest = max(found, key=lambda c: (c.get("created_at") or "", c.get("id") or 0))
+    parsed = na.parse_recovery(newest.get("body") or "")
+    owner = agent.capitalize()
+    if parsed is None:
+        return False, "the recovery request is not in the exact format"
+    if (newest.get("user") or {}).get("login") not in na.OPERATOR_LOGINS:
+        return False, "the recovery request is not by a trusted login"
+    if parsed["owner"] != owner or parsed["head"] != sha:
+        return False, f"the recovery request is not {owner}'s for {sha[:7]}"
+    pull = fetch(["api", f"repos/{REPO}/pulls/{number}"])
+    if na.pr_author({"body": pull.get("body") or ""}) != owner:
+        return False, f"PR {number} is not {owner}'s"
+    if parsed["base"] != (pull.get("base") or {}).get("ref"):
+        return False, "the recovery request names another base"
+    names = parsed["suites"]
+    try:
+        known = {s["name"] for s in rebase_policy.suites()}
+    except rebase_policy.Problem as error:
+        return False, f"the suite table is unreadable: {error}"
+    if names != sorted(set(names)) or not set(names) <= known:
+        return False, "the recovery request's suites are not sorted, unique and known"
+    if newest.get("updated_at") != newest.get("created_at") or edited(newest, fetch):
+        return False, "the recovery request was edited"
+    tip = parsed["tip"]
+    try:
+        compare = fetch(["api", f"repos/{REPO}/compare/{tip}...{sha}?per_page=1"])
+    except subprocess.CalledProcessError as error:
+        if re.search(r"\(HTTP (404|422)\)", error.stderr or ""):
+            return False, f"GitHub does not know the tested base tip {tip[:7]}"
+        raise
+    if (compare or {}).get("status") not in na.TIP_ABSENT:
+        return False, f"the head already contains the tested base tip {tip[:7]}"
+    return True, f"upstream test recovery request for {sha[:7]} on {tip[:7]} posted"
 
 
 def resolution(
@@ -166,14 +240,24 @@ def resolution(
 
     number = action["pr"]
     if not worktree or not attempt:
-        return False, f"PR {number} head moved, but the runner worktree or attempt pin is missing"
+        return (
+            False,
+            f"PR {number} head moved, but the runner worktree or attempt pin is missing",
+        )
     if attempt.get("pr") != number or attempt.get("head") != action["sha"]:
         return False, "the attempt pin is for another PR or head"
     rows = fetch(
-        ["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{number}/comments?per_page=100"]
+        [
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{REPO}/issues/{number}/comments?per_page=100",
+        ]
     )
     flat = [c for page in rows for c in (page if isinstance(page, list) else [page])]
-    state = Path(os.environ.get("EPIC_STATE_DIR") or Path.home() / ".local/state/epic-loop")
+    state = Path(
+        os.environ.get("EPIC_STATE_DIR") or Path.home() / ".local/state/epic-loop"
+    )
     try:
         problem = rebase_policy.verify_resolution(
             agent, attempt, head, Path(worktree), state, flat, since

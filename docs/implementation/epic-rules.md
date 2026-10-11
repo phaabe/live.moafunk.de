@@ -304,8 +304,9 @@ only for work in the current focus:
   before the model counts again on fresh data.
 
 New actions: `adopt` (and later actions of
-https://github.com/phaabe/live.moafunk.de/issues/487) are emitted only when
-the comma list `EPIC_FOCUS_ACTIONS` names them, for example `adopt`. An action
+https://github.com/phaabe/live.moafunk.de/issues/487) and `upstream-recovery`
+(upstream test recovery, see Rebase policy) are emitted only when the comma
+list `EPIC_FOCUS_ACTIONS` names them, for example `adopt`. An action
 is added to the list of both runners only after both its Claude and its Codex
 leaves are merged.
 
@@ -537,7 +538,9 @@ shows the queue for both agents.
 
 Rebase policy (`scripts/epic/rebase_policy.py`, shared by both runners). Only a
 PR that GitHub reports as `CONFLICTING` gets `resolve-conflict`; a PR that is
-only behind its base is not rebased. Three values of one attempt stay apart:
+only behind its base is not rebased. The one exception is an upstream test
+recovery (below), which the owner asks for. Three values of one attempt stay
+apart:
 
 - **Old head**: the PR head before the rebase. It is also the lease value,
   `--force-with-lease=refs/heads/<branch>:<old head>`, after local and remote
@@ -571,7 +574,11 @@ is still clean. A later commit or an uncommitted edit makes the proof invalid.
 | `frontend/**` | frontend | `npm test -- --run` in `frontend/` |
 
 Other paths need no suite. `EPIC_REBASE_SUITES` (runner environment) may name a
-JSON file with another table of the same shape.
+JSON file with another table of the same shape. Each attempt pins the table
+in its attempt file (`proof_suites`); proof, gate, record and verify use the
+pinned table. An upstream test recovery marks its failed suites
+`"mandatory": true`: they are required whatever the paths. A pin can only
+make suites mandatory, never drop or change one.
 
 `run_tests.py` runs a test directory in parallel parts (`-j`, default: CPU
 count). Each part runs under `isolated_env.py`, like a serial run. A module
@@ -637,6 +644,68 @@ post is retried, without a model. The Claude cooldown (`tick_cooldown.py`) is
 separate. The Codex runner uses the same store once
 https://github.com/phaabe/live.moafunk.de/issues/537 lands; until then a
 reviewer without a valid record simply does a full review.
+
+Upstream test recovery (https://github.com/phaabe/live.moafunk.de/issues/725,
+Codex side https://github.com/phaabe/live.moafunk.de/issues/726). Only with
+`upstream-recovery` in `EPIC_FOCUS_ACTIONS`; without it nothing below applies.
+When a required test fails on the owner's PR head `S`, passes on a newer base
+commit `T` and `S` does not contain `T`, the owner asks for a rebase onto `T`:
+
+- The evidence comes from `S` itself: a clean checkout with `HEAD` equal to
+  `S` and the PR head, or a read-only copy of `S` from
+  `<python> <runner code>/scripts/epic/rebase_policy.py export --sha <SHA>`
+  (only `S` or the base's current tip; one fixed `git archive` into a new
+  private directory under `TMPDIR`; the permission gate approves exactly
+  this call with an absolute path). A failure seen with local unpublished
+  work is not a failure of `S`; that work stays. After the rerun rule of the
+  tick prompt still fails on `S`, the test runs once on `T`, in such a copy.
+  A push makes a new `S`: test again.
+- The owner posts one PR comment, the whole body exactly these lines, no
+  trailing newline:
+
+  ```text
+  Upstream test recovery by <Owner>
+  Head: <S>
+  Base: <PR base branch>
+  Base tip: <T>
+  Suites: <failed suite names, sorted, ", "-separated>
+  ```
+
+  Suite names come from the table above, never commands. Test details go in
+  a second comment. Never edit a request; post a new one.
+- Only the newest comment that starts with `Upstream test recovery by` counts.
+  It is ignored (normal flow) unless it is unedited (REST and GraphQL edit
+  evidence), posted by a trusted login, by the PR's owner and names the
+  current head and base. For such a request the selector reads the base tip
+  and compares `T` with `S`; no other PR gets these reads.
+- Valid (suites known, `T` is the base tip now, not in `S`, GitHub reports
+  `MERGEABLE`): the owner gets `resolve-conflict` with a `recovery` object,
+  also on a draft. The attempt check reads all of it again before the model;
+  a change gives exit 6 (no attempt). The target tip is `T`, never a newer
+  one. Proof needs the normal suites plus the requested ones.
+- Needs new evidence (the base moved on, `T` is unknown or already in `S`,
+  bad suite list): the owner gets `fix-checks` (`fix` with changes
+  requested, `continue` on a draft) with a `refresh` object. The owner tests
+  again and posts a new request, fixes the test and pushes, or comments the
+  result, adds `needs-anton` and reports `blocked`.
+- While the request for the current head waits (mergeability not known yet,
+  needs new evidence, or valid), there is no merge and no review of that
+  head: the other agent waits. Right before a merge or a verdict comment the
+  write checks read the PR fresh and refuse the write while such a request
+  holds it (both reader modes; with the reader off, a merge or comment
+  command the checks cannot read word by word is refused too). An ignored
+  request holds nothing.
+- A `fix` or `fix-checks` tick that only posted a valid request is complete:
+  `tick_verify.py` accepts it without a push. It does not check that `T` is
+  still the base tip; a later base move gives a refresh, not a failed tick.
+  The failing test still blocks the PR: not ready, not fixed.
+- The cooldown key of a refresh includes its base tip, and it never takes
+  over an old issue cooldown. The repeat gate sees the new base tip too.
+- Before the model, the worktree must be clean at `S`, or hold the runner's
+  recorded rebase of this PR, base and head (in progress, or finished onto
+  `T` and not pushed). An old-tip rebase in progress is aborted and started
+  again, as above. A finished, unpushed rebase onto an older tip, and any
+  dirty or unpublished work, stay as they are and no model starts.
 
 Runner worktrees: the Claude runner edits feature branches only in
 `<dir>/<branch>`, where `<dir>` is one fixed directory per runner

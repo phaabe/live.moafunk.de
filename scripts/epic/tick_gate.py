@@ -27,6 +27,12 @@ PR conflict without changing its `updated_at`. GitHub's `mergeable: null`
 (still computing) is UNKNOWN and changes nothing; a malformed PR fails the
 check, like any other failed read.
 
+One narrow exception: a `resolve-conflict` with typed upstream recovery
+evidence (`recovery.kind` RECOVERY_KIND for the action's head) is for a PR
+that does not conflict. It runs only while GitHub reports MERGEABLE; UNKNOWN
+or CONFLICTING skip it (the selector gives a plain resolve-conflict then).
+rebase_policy.py attempt-check admits the request itself, from fresh reads.
+
 `check` exits 4 when its GitHub read hits the GraphQL quota. It then stores the
 shared quota wait (github_quota.py) and writes no gate state.
 
@@ -63,6 +69,8 @@ SHA = re.compile(r"[0-9a-f]{40}")
 # `resolve-conflict` (owner) or no review (peer) instead.
 NOT_ON_CONFLICT = {"fix", "fix-checks", "merge", "review"}
 MERGEABLE = {True: "MERGEABLE", False: "CONFLICTING", None: "UNKNOWN"}
+# next_action.RECOVERY_KIND: an upstream test recovery's typed evidence.
+RECOVERY_KIND = "upstream-test"
 
 
 def fingerprint(action: dict[str, Any]) -> str:
@@ -82,6 +90,20 @@ def target_key(action: dict[str, Any]) -> str:
     return "none" if number is None else str(number)
 
 
+def recovery(action: dict[str, Any]) -> bool:
+    """True for a resolve-conflict with typed upstream recovery evidence for
+    the action's head (next_action.recovery_of())."""
+    found = action.get("recovery")
+    return (
+        action.get("action") == "resolve-conflict"
+        and isinstance(found, dict)
+        and found.get("kind") == RECOVERY_KIND
+        and isinstance(action.get("sha"), str)
+        and found.get("head") == action["sha"]
+        and bool(SHA.fullmatch(str(found.get("tip"))))
+    )
+
+
 def stale(action: dict[str, Any], seen: dict[str, Any] | None) -> str | None:
     """Why the action no longer fits the target, or None when it still does."""
     if not seen:
@@ -96,7 +118,12 @@ def stale(action: dict[str, Any], seen: dict[str, Any] | None) -> str | None:
         return "the PR head changed after selection"
     if merge == "CONFLICTING" and kind in NOT_ON_CONFLICT:
         return f"the PR conflicts with its base; no {kind} on this head"
-    if merge == "MERGEABLE" and kind == "resolve-conflict":
+    if recovery(action):
+        if merge != "MERGEABLE":
+            return (
+                f"upstream test recovery needs a MERGEABLE PR, GitHub reports {merge}"
+            )
+    elif merge == "MERGEABLE" and kind == "resolve-conflict":
         return "the PR no longer conflicts with its base"
     return None
 
