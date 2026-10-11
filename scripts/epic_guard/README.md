@@ -13,8 +13,10 @@ intentionally unmapped until frontend issues have an executor. Record new
 assignments on the epic and review a policy PR before editing newly assigned paths.
 
 Use the PR template's `Executor`, `Lane`, `Reviewer` and `Leaf IDs` fields.
-The reviewer must be the other agent. Include the full epic URL. For assigned
-setup work use `Leaf IDs: setup`; otherwise name the claimed leaf IDs.
+The reviewer must be the other agent. Include the full epic URL. In the setup
+lane, use `Leaf IDs: setup` or concrete leaf IDs such as `R588.1.1, R588.1.2`.
+Other lanes require concrete leaf IDs. Each ID must match `[A-Z][0-9]+\.[0-9]+\.[0-9]+`;
+separate multiple IDs with commas. `setup` is invalid outside the setup lane.
 Readiness and claims still need the issue's current assignment and evidence.
 The checker validates declared metadata and file ownership. It does not
 read the project's Ready or Executor fields, prove assignment, or prove

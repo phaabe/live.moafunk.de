@@ -23,6 +23,8 @@
     {"pattern": ".github/workflows/epic-guard-tests.yml", "owners": ["Codex"], "lanes": ["setup"]},
     {"pattern": "scripts/epic_guard/**", "owners": ["Codex"], "lanes": ["setup"]},
     {"pattern": "scripts/epic/**", "owners": ["Claude"], "lanes": ["setup"]},
+    {"pattern": "tools/agent-monitoring/grafana/dashboards/*.json", "owners": ["Claude"], "lanes": ["setup"]},
+    {"pattern": "tools/agent-monitoring/**", "owners": ["Codex"], "lanes": ["setup"]},
     {"pattern": "scripts/gh_checks/**", "owners": ["Claude"], "lanes": ["setup"]},
     {"pattern": ".github/workflows/gh-checks-tests.yml", "owners": ["Claude"], "lanes": ["setup"]},
     {"pattern": ".github/workflows/**", "owners": ["Codex"], "lanes": ["ops"]},
