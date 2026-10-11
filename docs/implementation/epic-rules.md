@@ -676,8 +676,10 @@ commit `T` and `S` does not contain `T`, the owner asks for a rebase onto `T`:
 - Only the newest comment that starts with `Upstream test recovery by` counts.
   It is ignored (normal flow) unless it is unedited (REST and GraphQL edit
   evidence), posted by a trusted login, by the PR's owner and names the
-  current head and base. For such a request the selector reads the base tip
-  and compares `T` with `S`; no other PR gets these reads.
+  current head and base. The owner comes from the executor label, else the
+  body lines (section 1); an invalid or Anton label leaves no agent owner,
+  so the request is ignored. For such a request the selector reads the base
+  tip and compares `T` with `S`; no other PR gets these reads.
 - Valid (suites known, `T` is the base tip now, not in `S`, GitHub reports
   `MERGEABLE`): the owner gets `resolve-conflict` with a `recovery` object,
   also on a draft. The attempt check reads all of it again before the model;
