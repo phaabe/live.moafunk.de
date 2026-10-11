@@ -235,6 +235,14 @@ class RealGitTest(unittest.TestCase):
                 self.prepare(self.fix(), pr=pr)
         self.assertFalse(self.root.exists())
 
+    def test_pr_owner_comes_from_the_executor_label(self) -> None:
+        label = [{"name": "executor::claude"}]
+        with self.assertRaisesRegex(rw.Stop, "not assigned to claude"):
+            self.prepare(self.fix(), pr={"labels": label, "body": "Executor: Codex\n"})
+        self.assertFalse(self.root.exists())
+        path = self.prepare(self.fix(), pr={"labels": label, "body": ""})
+        self.assertEqual(path, self.root / BRANCH)
+
     def test_other_repository_is_refused(self) -> None:
         run(
             self.repo, "git", "remote", "set-url", "origin", "git@github.com:x/fork.git"

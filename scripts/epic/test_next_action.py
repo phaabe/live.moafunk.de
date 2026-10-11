@@ -1627,5 +1627,107 @@ class ActivityReasonTest(unittest.TestCase):
         )
 
 
+def labelled(*names: str) -> list[dict]:
+    return [{"name": n} for n in names]
+
+
+class ExecutorLabelTest(unittest.TestCase):
+    """Executor labels: absent, valid or invalid (next_action.Assignment)."""
+
+    def test_label_assignment_states(self) -> None:
+        got = next_action.label_assignment
+        self.assertEqual(got(["bug"]), next_action.Assignment("absent"))
+        self.assertEqual(got(["bug", "executor::claude"]).executor, "Claude")
+        self.assertEqual(got(["Executor::Codex"]).executor, "Codex")
+        self.assertEqual(got(["executor::anton"]).executor, "Anton")
+        several = got(["executor::claude", "executor::codex"])
+        self.assertEqual((several.state, several.executor), ("invalid", None))
+        self.assertIn("several executor labels", several.reason)
+        unknown = got(["executor::bot"])
+        self.assertEqual(unknown.state, "invalid")
+        self.assertIn("unknown executor label executor::bot", unknown.reason)
+
+    def test_pr_label_must_agree_with_the_body(self) -> None:
+        body = "Executor: Claude\nLane: setup\nReviewer: Codex"
+        cases = [
+            (body, ["executor::claude"], ("valid", "Claude")),
+            ("Author: Claude", ["executor::claude"], ("valid", "Claude")),
+            ("Issue: x", ["executor::claude"], ("valid", "Claude")),
+            ("Issue: x", ["executor::anton"], ("valid", "Anton")),
+            (body, [], ("absent", "Claude")),
+            ("no owner", [], ("absent", None)),
+            ("Executor: Codex", ["executor::claude"], ("invalid", None)),
+            (
+                "Executor: Claude\nReviewer: Claude",
+                ["executor::claude"],
+                ("invalid", None),
+            ),
+            ("Executor: REPLACE", ["executor::claude"], ("invalid", None)),
+            (body, ["executor::anton"], ("invalid", None)),
+            (body, ["executor::claude", "executor::codex"], ("invalid", None)),
+        ]
+        for text, names, expected in cases:
+            with self.subTest(body=text, labels=names):
+                got = next_action.pr_assignment(
+                    {"body": text, "labels": labelled(*names)}
+                )
+                self.assertEqual((got.state, got.executor), expected)
+
+    def test_windows_line_endings_read_the_same(self) -> None:
+        # Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/721
+        body = "Executor: Claude \r\nLane: setup\r\nReviewer: Codex\r\n"
+        for names, expected in (
+            (["executor::claude"], ("valid", "Claude")),
+            ([], ("absent", "Claude")),
+            (["executor::codex"], ("invalid", None)),
+        ):
+            with self.subTest(labels=names):
+                got = next_action.pr_assignment(
+                    {"body": body, "labels": labelled(*names)}
+                )
+                self.assertEqual((got.state, got.executor), expected)
+        # The Executor line alone, without the Reviewer fallback.
+        self.assertEqual(next_action.body_author("Executor: Codex\r\nX: y"), "Codex")
+
+    def test_pr_author_names_only_agents(self) -> None:
+        author = next_action.pr_author
+        self.assertEqual(author({"labels": labelled("executor::codex")}), "Codex")
+        self.assertIsNone(author({"labels": labelled("executor::anton")}))
+        conflict = {"body": "Executor: Codex", "labels": labelled("executor::claude")}
+        self.assertIsNone(author(conflict))
+        self.assertEqual(author({"body": "Executor: Codex"}), "Codex")
+
+    def test_the_label_owner_gets_the_pr_actions(self) -> None:
+        approved = [verdict("APPROVED", "Codex", A, "t1")]
+        mine = pr(1, "x", body="no owner line", labels=labelled("executor::claude"))
+        self.assertEqual(
+            first("Claude", [dict(mine, comments=approved)]).action, "merge"
+        )
+        self.assertEqual(first("Codex", [mine]).action, "review")
+
+    def test_a_conflict_blocks_every_pr_action(self) -> None:
+        body = f"Issue: {R}/901\nExecutor: Codex"
+        board = [item(901, "Claude", "Ready")]
+        for draft in (True, False):
+            p = pr(
+                1, "x", body=body, isDraft=draft, labels=labelled("executor::claude")
+            )
+            for agent in ("Claude", "Codex"):
+                with self.subTest(draft=draft, agent=agent):
+                    # No continue, review or fix, and no claim of its issue.
+                    self.assertEqual(first(agent, [p], board).action, "idle")
+
+    def test_status_names_invalid_and_anton_owners(self) -> None:
+        p = pr(1, "x", body="Executor: Codex", labels=labelled("executor::claude"))
+        reason = next_action.pr_reason("Claude", p, {"prs": [p]}, frozenset(), [])
+        self.assertIn("disagrees with the PR body", reason)
+        anton = pr(2, "x", body="", labels=labelled("executor::anton"))
+        reason = next_action.pr_reason("Claude", anton, {}, frozenset(), [])
+        self.assertEqual(reason, "Executor is Anton")
+        broken = item(7, next_action.INVALID_EXECUTOR, "Ready", labels=["executor::x"])
+        reason = next_action.issue_reason("Claude", 7, broken, set())
+        self.assertIn("unknown executor label executor::x", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

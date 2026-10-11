@@ -200,6 +200,22 @@ class AdoptDecideTest(unittest.TestCase):
         text = status({"prs": [moved]}, False, FOCUS, ADOPT, RULES)
         self.assertIn("needs-anton: files have different owners", text)
 
+    def test_any_executor_label_blocks_adoption(self) -> None:
+        # An invalid label blocks the PR; it never makes it ownerless.
+        for names in (
+            ["executor::claude", "executor::codex"],
+            ["executor::bot"],
+            ["executor::anton"],
+            ["executor::codex"],
+        ):
+            with self.subTest(labels=names):
+                labelled = ownerless(
+                    labels=[{"name": n} for n in ["project::AgentMonitoring", *names]]
+                )
+                self.assertFalse(next_action.ownerless(labelled))
+                got = actions("Claude", [labelled]) + actions("Codex", [labelled])
+                self.assertNotIn("adopt", [a.action for a in got])
+
     def test_adopt_only_when_listed(self) -> None:
         got = actions("Claude", [ownerless()], enabled=frozenset())
         self.assertNotIn("adopt", [a.action for a in got])

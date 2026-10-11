@@ -2,8 +2,10 @@
 
 Read-only: it reads GitHub through `gh` and prints one JSON action. The agent
 does the action; this script never writes to GitHub. All state comes from
-GitHub (verdict lines keyed by head SHA, project Status and Executor), so a
-restarted agent picks up where it stopped.
+GitHub (verdict lines keyed by head SHA, project Status, executor labels and
+the project Executor), so a restarted agent picks up where it stopped. Owners
+come from Assignment: an `executor::` label wins; without one the board
+Executor field (issues) or the body lines (PRs) count; an invalid label blocks.
 
 Priority (first match wins), see docs/implementation/epic-rules.md section 8:
   stop      pause file exists
@@ -22,7 +24,8 @@ No file or an empty file: all.
   review    the other agent's ready PR has no verdict from me for its head
             and no conflict; a conflicted one is a status-only `wait`
   continue  my draft PR, or my In progress leaf without a PR
-  adopt     a focus PR with no owner line whose files route to me (routing.py);
+  adopt     a focus PR with no executor label and no owner line whose files
+            route to me (routing.py);
             only when EPIC_FOCUS_ACTIONS lists `adopt`
   claim     a Ready leaf with Executor = me, after its "Start after" leaves
             or tickets and the leaves before it in the epic's batch order;
@@ -79,7 +82,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 from urllib.parse import parse_qs, quote
 
 from github_quota import (
@@ -145,9 +148,27 @@ GRANT = re.compile(
 # grant only when Anton tells them to, never as part of an escalation.
 OPERATOR_LOGINS = frozenset({"anneoneone"})
 EXECUTOR_LINE = re.compile(
-    r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t]*$", re.MULTILINE
+    r"^(?:Executor|Author):[ \t]*(Claude|Codex)[ \t\r]*$", re.MULTILINE
 )
 REVIEWER_LINE = re.compile(r"\bReviewer:\s*(Claude|Codex)\b")
+# Owner lines with any value, for the check that a PR's label agrees with them.
+# `\r` before `$`: a body with Windows line endings reads the same.
+BODY_EXECUTOR = re.compile(
+    r"^[ \t]*(?:Executor|Author):[ \t]*(.*?)[ \t\r]*$", re.MULTILINE
+)
+BODY_REVIEWER = re.compile(r"^[ \t]*Reviewer:[ \t]*(.*?)[ \t\r]*$", re.MULTILINE)
+# Executor labels name the owner of an issue or PR. A valid one wins over the
+# board Executor field and the PR body lines (Assignment, epic-rules.md 1).
+EXECUTOR_PREFIX = "executor::"
+EXECUTOR_LABELS = {
+    "executor::claude": "Claude",
+    "executor::codex": "Codex",
+    "executor::anton": "Anton",
+}
+ABSENT, VALID, INVALID = "absent", "valid", "invalid"
+# A board item's `executor` when its executor labels are invalid: no agent
+# claims it, and it never counts as unassigned.
+INVALID_EXECUTOR = "Invalid"
 ISSUE_LINE = re.compile(
     rf"^Issue:[ \t]*https://github\.com/{re.escape(REPO)}/issues/(\d+)[ \t]*$",
     re.MULTILINE,
@@ -223,18 +244,93 @@ def other(agent: str) -> str:
     return AGENTS[1] if agent == AGENTS[0] else AGENTS[0]
 
 
-def pr_author(pr: dict[str, Any]) -> str | None:
-    """Both agents share one GitHub account, so the PR body names the author.
+@dataclass(frozen=True)
+class Assignment:
+    """The owner that an issue's or PR's executor labels name.
 
-    Uses the `Executor:` line from the PR template (`Author:` is accepted too);
-    falls back to the opposite of `Reviewer:`.
+    `state` is one of:
+      absent   no `executor::` label. Only then may a reader use the old
+               source: the board Executor field or the PR body lines.
+      valid    exactly one known label; `executor` is Claude, Codex or Anton.
+      invalid  several or unknown `executor::` labels, or a PR label that
+               disagrees with the PR body; `reason` says why. The work is
+               blocked: no fallback to an old owner, no adoption.
+
+    pr_assignment() also resolves an absent label: then `executor` is the
+    body's owner (body_author()), or None.
     """
-    body = pr.get("body") or ""
+
+    state: str
+    executor: str | None = None
+    reason: str = ""
+
+
+def executor_labels(names: Iterable[str]) -> list[str]:
+    """The `executor::` labels among `names`, in any case, sorted."""
+    return sorted(n for n in names if n.lower().startswith(EXECUTOR_PREFIX))
+
+
+def label_assignment(names: Iterable[str]) -> Assignment:
+    """The owner the executor labels among `names` name (see Assignment)."""
+    found = executor_labels(names)
+    if not found:
+        return Assignment(ABSENT)
+    if len(found) > 1:
+        return Assignment(
+            INVALID, reason=f"several executor labels: {', '.join(found)}"
+        )
+    executor = EXECUTOR_LABELS.get(found[0].lower())
+    if executor is None:
+        return Assignment(INVALID, reason=f"unknown executor label {found[0]}")
+    return Assignment(VALID, executor)
+
+
+def body_author(body: str) -> str | None:
+    """The PR owner from body lines: the `Executor:` line of the PR template
+    (`Author:` is accepted too), else the opposite of `Reviewer:`."""
     m = EXECUTOR_LINE.search(body)
     if m:
         return m.group(1)
     m = REVIEWER_LINE.search(body)
     return other(m.group(1)) if m else None
+
+
+def pr_assignment(pr: dict[str, Any]) -> Assignment:
+    """The PR owner: its executor label, else its body lines (see Assignment).
+
+    A valid label must agree with every owner line in the body: each
+    `Executor:` or `Author:` line names the label's owner and, for an agent,
+    each `Reviewer:` line names the other agent. A body without owner lines
+    agrees with any label.
+    """
+    body = pr.get("body") or ""
+    found = label_assignment(labels(pr))
+    if found.state == ABSENT:
+        return Assignment(ABSENT, body_author(body))
+    if found.state == INVALID or found.executor is None:
+        return found
+    owner = found.executor
+    executors = BODY_EXECUTOR.findall(body)
+    reviewers = BODY_REVIEWER.findall(body) if owner in AGENTS else []
+    if any(e != owner for e in executors) or any(r != other(owner) for r in reviewers):
+        (label,) = executor_labels(labels(pr))
+        return Assignment(
+            INVALID, reason=f"label {label} disagrees with the PR body owner lines"
+        )
+    return found
+
+
+def pr_author(pr: dict[str, Any]) -> str | None:
+    """The agent that owns the PR: Claude, Codex or None.
+
+    Both agents share one GitHub account, so the PR names its owner: the
+    executor label first, else the body lines (pr_assignment()). None for an
+    invalid assignment, an Anton-owned PR and a PR without an owner.
+    """
+    found = pr_assignment(pr)
+    if found.state == INVALID or found.executor not in AGENTS:
+        return None
+    return found.executor
 
 
 def body_digest(body: str) -> str:
@@ -926,11 +1022,17 @@ def in_focus(
 
 
 def ownerless(pr: dict[str, Any]) -> bool:
-    """True when the PR body has no owner line at all, known agent or not.
+    """True when the PR has no executor label and its body no owner line at
+    all, known agent or not.
 
-    Only such a PR may be adopted: `adopt` must never overwrite an owner.
+    Only such a PR may be adopted: `adopt` must never overwrite an owner, and
+    an invalid executor label blocks the PR instead of making it adoptable.
     """
-    return pr_author(pr) is None and not ANY_OWNER_LINE.search(pr.get("body") or "")
+    return (
+        not executor_labels(labels(pr))
+        and pr_author(pr) is None
+        and not ANY_OWNER_LINE.search(pr.get("body") or "")
+    )
 
 
 def board_executors(state: dict[str, Any]) -> dict[int, str]:
@@ -1353,6 +1455,8 @@ def item_from_rest(row: dict[str, Any]) -> dict[str, Any]:
     """Map a Projects REST item to the `gh project item-list --format json` shape.
 
     Single-select values stay strings (wave "0" must not become 0); unset is None.
+    `executor` comes from the executor label; the board Executor field counts
+    only without one. Invalid executor labels give INVALID_EXECUTOR.
     """
     values = {f.get("name"): f.get("value") for f in row.get("fields") or []}
 
@@ -1360,6 +1464,12 @@ def item_from_rest(row: dict[str, Any]) -> dict[str, Any]:
         value = values.get(name)
         return None if value is None else str(value["name"]["raw"])
 
+    names = [lbl["name"] for lbl in values.get("Labels") or []]
+    assigned = label_assignment(names)
+    if assigned.state == ABSENT:
+        executor = single("Executor")
+    else:
+        executor = assigned.executor if assigned.state == VALID else INVALID_EXECUTOR
     source = row.get("content") or {}
     content: dict[str, Any] = {"type": row.get("content_type")}
     # state and state_reason: ticket completion (completed_tickets()).
@@ -1377,10 +1487,10 @@ def item_from_rest(row: dict[str, Any]) -> dict[str, Any]:
         "content": content,
         "status": single("Status"),
         "wave": single("Wave"),
-        "executor": single("Executor"),
+        "executor": executor,
         "area": single("Area"),
         "level": single("Level"),
-        "labels": [lbl["name"] for lbl in values.get("Labels") or []],
+        "labels": names,
     }
 
 
@@ -1609,6 +1719,11 @@ def pr_reason(
     """Why a focus PR gets no action from this agent."""
     if ESCALATION_LABEL in labels(p):
         return ESCALATION_LABEL
+    assigned = pr_assignment(p)
+    if assigned.state == INVALID:
+        return f"blocked: {assigned.reason}; fix it by hand"
+    if assigned.executor == "Anton":
+        return "Executor is Anton"
     author = pr_author(p)
     if author is None and not ownerless(p):
         return "owner line names no known agent; fix it by hand"
@@ -1644,6 +1759,8 @@ def issue_reason(
         return ESCALATION_LABEL
     if number in linked:
         return "has an open PR"
+    if item.get("executor") == INVALID_EXECUTOR:
+        return f"blocked: {label_assignment(labels(item)).reason}; fix it by hand"
     if item.get("executor") != agent:
         return f"Executor is {item.get('executor') or 'not set'}"
     if item.get("status") not in ("Ready", "In progress"):
@@ -1742,7 +1859,7 @@ def status(
     unknown = [
         p["number"]
         for p in state.get("prs", [])
-        if p.get("baseRefName") in BASES and not pr_author(p)
+        if p.get("baseRefName") in BASES and ownerless(p)
     ]
     if unknown and not focus:
         lines.append(f"\nPRs without an owner line (adopt needs a focus): {unknown}")
