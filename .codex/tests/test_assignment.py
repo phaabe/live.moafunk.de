@@ -106,6 +106,48 @@ class AssignmentTests(unittest.TestCase):
         self.assertFalse(self.cache.exists())
         self.assertEqual(self.gh.count("user"), 0)
 
+    def test_executor_labels_resolve_claims_and_continuations_in_both_modes(
+        self,
+    ) -> None:
+        for mode in ("0", "1"):
+            for kind, status in (("claim", "Ready"), ("continue", "In progress")):
+                for labels, board_owner, expected in (
+                    ([], "Codex", "Codex"),
+                    (["bug"], "Claude", "Claude"),
+                    (["executor::codex"], "Claude", "Codex"),
+                    (["Executor::CODEX"], None, "Codex"),
+                    (["executor::claude"], "Codex", "Claude"),
+                    (["executor::anton"], "Codex", "Anton"),
+                    (["executor::unknown"], "Codex", na.INVALID_EXECUTOR),
+                    (
+                        ["executor::codex", "executor::claude"],
+                        "Codex",
+                        na.INVALID_EXECUTOR,
+                    ),
+                    (
+                        ["executor::codex", "Executor::Codex"],
+                        "Codex",
+                        na.INVALID_EXECUTOR,
+                    ),
+                ):
+                    with self.subTest(mode=mode, action=kind, labels=labels):
+                        self.gh.set(
+                            ITEMS,
+                            [
+                                rest_row(
+                                    532,
+                                    status=status,
+                                    executor=board_owner,
+                                    labels=labels,
+                                )
+                            ],
+                        )
+                        result = self.read(mode, {**self.action, "action": kind})
+                        self.assertEqual(result["result"], "confirmed")
+                        self.assertEqual(result["executor"], expected)
+                        self.assertEqual(result["eligible"], expected == "Codex")
+        self.assertTrue(all(etag is None for _, etag in self.gh.calls))
+
     def test_assignment_on_second_page_is_found_in_both_modes(self) -> None:
         other = rest_row(531, status="Ready", executor="Claude")
         self.gh.set_pages(ITEMS, [[other], [self.row]])

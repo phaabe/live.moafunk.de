@@ -22,6 +22,7 @@ import feature_worktree
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/epic"))
 import github_quota  # noqa: E402
 import github_state  # noqa: E402
+import next_action  # noqa: E402
 import target_lock  # noqa: E402
 
 REPO = feature_worktree.REPO
@@ -63,12 +64,21 @@ def metadata(action: dict[str, Any]) -> dict[str, Any]:
         or type(pr.get("draft")) is not bool
     ):
         raise github_state.ReadBlocked("malformed PR body or draft state")
+    if not isinstance(pr.get("labels"), list) or any(
+        not isinstance(label, dict) or not isinstance(label.get("name"), str)
+        for label in pr["labels"]
+    ):
+        raise github_state.ReadBlocked("malformed PR review inputs")
+    ownership = next_action.pr_assignment(pr)
+    if ownership.state == next_action.INVALID:
+        raise Refused(ownership.reason)
     body = pr.get("body") or ""
     owners = re.findall(
         r"^Executor:[ \t]*(.*?)[ \t]*$", "\n".join(body.splitlines()), re.M
     )
     if (
         pr.get("state") != "open"
+        or (ownership.state == next_action.VALID and ownership.executor != "Claude")
         or owners != ["Claude"]
         or pr.get("draft") is not False
     ):
@@ -90,14 +100,7 @@ def metadata(action: dict[str, Any]) -> dict[str, Any]:
             raise Refused("review branches must belong to the expected repository")
     if pr["head"]["sha"] != sha or pr["base"]["ref"] not in feature_worktree.BASES:
         raise Refused("review head changed or base is forbidden")
-    if (
-        not isinstance(pr.get("title"), str)
-        or not isinstance(pr.get("labels"), list)
-        or any(
-            not isinstance(label, dict) or not isinstance(label.get("name"), str)
-            for label in pr["labels"]
-        )
-    ):
+    if not isinstance(pr.get("title"), str):
         raise github_state.ReadBlocked("malformed PR review inputs")
     return {
         "version": 1,

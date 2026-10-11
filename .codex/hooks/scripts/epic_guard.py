@@ -227,6 +227,8 @@ def check_api(args: list[str], cwd: Path) -> None:
     endpoints: list[str] = []
     method = None
     body_input = False
+    label_file = False
+    label_fields = False
     index = 0
     while index < len(args):
         arg = args[index]
@@ -239,9 +241,12 @@ def check_api(args: list[str], cwd: Path) -> None:
                 value = args[index]
             if flag in ("-f", "--raw-field", "-F", "--field"):
                 has_fields = True
+                field_name, _, field_value = value.partition("=")
+                is_label = field_name.split("[", 1)[0] == "labels"
+                label_fields |= is_label
                 if flag in ("-F", "--field"):
-                    _, _, field_value = value.partition("=")
                     if field_value.startswith("@"):
+                        label_file |= is_label
                         path = field_value[1:]
                         if path == "-":
                             raise ValueError("Use a readable API field file, not @-.")
@@ -267,6 +272,24 @@ def check_api(args: list[str], cwd: Path) -> None:
     endpoint = urlsplit(endpoints[0])
     path = unquote(endpoint.path).rstrip("/")
     method = method or ("POST" if has_fields or body_input else "GET")
+    if os.environ.get("EPIC_ACTION_FILE") and method != "GET":
+        issue_path = re.fullmatch(
+            r"/?repos/phaabe/live\.moafunk\.de/issues(?:/(\d+)(/labels(?:/.*)?)?)?",
+            path,
+        )
+        if issue_path:
+            if issue_path[1] is None:
+                raise ValueError(
+                    "Use gh issue create instead of REST issue creation in a tick."
+                )
+            if label_file:
+                raise ValueError(
+                    "Use literal API label values instead of label files in a tick."
+                )
+            if endpoint.query and (issue_path[2] or label_fields or body_input):
+                raise ValueError(
+                    "Use an API issue endpoint without query parameters for label or input-file writes in a tick."
+                )
     if re.search(r"/pulls(?:/|$)", path) and (method != "GET" or body_input):
         if selected_adopt_body_edit(args):
             return
@@ -535,7 +558,7 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
     try:
         # Status rules apply to every tick, including PR ticks with the shared
         # reader off. Reject raw writes before any fresh GitHub read.
-        refused = checks.status_refusal(tool, tool_input, str(cwd))
+        refused = checks.status_refusal(tool, tool_input, str(cwd), agent="Codex")
         if refused:
             raise ValueError(refused)
         writes = checks.tool_writes(tool, tool_input, str(cwd))
@@ -559,14 +582,38 @@ def runner_write_check(tool: str, tool_input: dict[str, Any], cwd: Path) -> None
     except Exception as error:  # Unclear commands must block with the hook protocol.
         raise ValueError(f"Runner write check failed: {error}") from error
     if action_error is None and not shared and not issue_action:
-        writes = [write for write in writes if write.kind == "status"]
+        # Shared writes carry labels only when creation sets an executor label.
+        writes = [
+            write
+            for write in writes
+            if write.kind == "status" or (write.kind == "pr-create" and write.labels)
+        ]
     if not writes:
         return
     if action_error is not None:
         raise ValueError(
             f"Selected runner action is unavailable: {action_error}"
         ) from action_error
-    assignment_check = issue_action or any(write.kind == "status" for write in writes)
+    labeled_create = any(write.kind == "pr-create" and write.labels for write in writes)
+    if labeled_create:
+        issue = checks.number_of(str(action.get("issue") or ""))
+        if not issue_action or issue is None:
+            raise ValueError("A labeled PR requires this tick's selected issue.")
+        for write in writes:
+            if write.kind != "pr-create" or not write.labels:
+                continue
+            issue_lines = [
+                line for line in write.body.splitlines() if line.startswith("Issue:")
+            ]
+            if len(issue_lines) != 1 or checks.na.issue_numbers(issue_lines[0]) != {
+                issue
+            }:
+                raise ValueError("The PR Issue line must name only this tick's issue.")
+    assignment_check = (
+        issue_action
+        or labeled_create
+        or any(write.kind == "status" for write in writes)
+    )
     if assignment_check:
         try:
             assignment_path = root / ".codex/assignment.py"

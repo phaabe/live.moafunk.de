@@ -137,6 +137,7 @@ class FeatureWorktreeTests(unittest.TestCase):
         self.env["TEST_BOARD"] = json.dumps(self.board)
         self.pr = {
             "state": "open",
+            "labels": [],
             "body": f"Executor: Codex\nIssue: {ISSUE}\n",
             "head": {"ref": BRANCH, "sha": self.head, "repo": {"full_name": REPO}},
             "base": {"ref": BASE, "repo": {"full_name": REPO}},
@@ -271,6 +272,70 @@ class FeatureWorktreeTests(unittest.TestCase):
         result = self.prepare()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), str(self.destination))
+
+    def test_executor_label_prepares_continue_in_both_reader_modes(self) -> None:
+        self.use_pr("continue")
+        cache = self.state / "github-cache"
+        cache.mkdir()
+        (cache / "auth-context").write_text("test")
+        self.pr["labels"] = [{"name": "EXECUTOR::CODEX"}]
+        self.pr["body"] = f"Executor: Codex\r\nReviewer: Claude\r\nIssue: {ISSUE}\r\n"
+        self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+        for mode in ("0", "1"):
+            with self.subTest(mode=mode):
+                self.env["EPIC_SHARED_READER"] = mode
+                result = self.prepare()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), str(self.destination))
+
+    def test_absent_label_keeps_strict_executor_line_as_owner(self) -> None:
+        self.use_pr("continue")
+        self.pr["body"] = f"Author: Claude\nExecutor: Codex\nIssue: {ISSUE}\n"
+        self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_executor_assignment_refuses_continue_in_both_reader_modes(self) -> None:
+        self.use_pr("continue")
+        cache = self.state / "github-cache"
+        cache.mkdir()
+        (cache / "auth-context").write_text("test")
+        body = str(self.pr["body"])
+        for mode in ("0", "1"):
+            self.env["EPIC_SHARED_READER"] = mode
+            for names, pr_body in (
+                (["executor::claude"], body),
+                (["executor::anton"], body),
+                (["executor::unknown"], body),
+                (["executor::codex", "executor::claude"], body),
+                (["executor::codex"], body + "Author: Claude\n"),
+                (["executor::codex"], body + "Reviewer: Codex\n"),
+                (["executor::codex"], body + "Executor: Codex\n"),
+                (["executor::codex"], f"Issue: {ISSUE}\n"),
+                (["executor::codex"], "Executor: Codex\n"),
+                ([], f"Author: Codex\nIssue: {ISSUE}\n"),
+                ([], f"Reviewer: Claude\nIssue: {ISSUE}\n"),
+                ([], body + "Executor: Codex\n"),
+            ):
+                with self.subTest(mode=mode, labels=names, body=pr_body):
+                    self.pr.update(
+                        labels=[{"name": name} for name in names], body=pr_body
+                    )
+                    self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+                    self.assert_refused()
+
+    def test_unreadable_pr_labels_block_both_reader_modes(self) -> None:
+        self.use_pr("continue")
+        cache = self.state / "github-cache"
+        cache.mkdir()
+        (cache / "auth-context").write_text("test")
+        for mode in ("0", "1"):
+            self.env["EPIC_SHARED_READER"] = mode
+            for labels in (None, "executor::codex", [None], [{}], ["executor::codex"]):
+                with self.subTest(mode=mode, labels=labels):
+                    self.pr["labels"] = labels
+                    self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
+                    self.assert_refused(5)
 
     def test_conflict_session_requires_current_installed_helper(self) -> None:
         self.use_pr("resolve-conflict")
@@ -655,7 +720,12 @@ class FeatureWorktreeTests(unittest.TestCase):
 
     def test_malformed_metadata_is_refused_without_traceback(self) -> None:
         self.use_pr()
-        for metadata in ([], None, {"head": None}, {**self.pr, "head": None}):
+        for metadata in (
+            [],
+            None,
+            {"labels": [], "head": None},
+            {**self.pr, "head": None},
+        ):
             with self.subTest(metadata=metadata):
                 self.env["TEST_WORKTREE_PR"] = json.dumps(metadata)
                 result = self.prepare()

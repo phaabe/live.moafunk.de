@@ -464,6 +464,56 @@ class ReviewWorktreeTests(unittest.TestCase):
         self.prepare()
         self.assertEqual(self.context()["inputs"]["body"], self.pr["body"])
 
+    def test_executor_label_prepares_review_in_both_reader_modes(self) -> None:
+        self.pr["labels"] = [{"name": "EXECUTOR::CLAUDE"}]
+        self.pr["body"] = "Executor: Claude\r\nReviewer: Codex\r\n"
+        for mode in ("0", "1"):
+            with (
+                self.subTest(mode=mode),
+                patch.dict(os.environ, {"EPIC_SHARED_READER": mode}),
+            ):
+                self.assertEqual(self.prepare(), self.path)
+                self.assertEqual(self.context()["inputs"]["body"], self.pr["body"])
+
+    def test_executor_assignment_refuses_review_in_both_reader_modes(self) -> None:
+        body = "Executor: Claude\n"
+        for mode in ("0", "1"):
+            for names, pr_body in (
+                (["executor::codex"], body),
+                (["executor::anton"], body),
+                (["executor::unknown"], body),
+                (["executor::claude", "executor::codex"], body),
+                (["executor::claude"], body + "Author: Codex\n"),
+                (["executor::claude"], body + "Reviewer: Claude\n"),
+                (["executor::claude"], body + body),
+                (["executor::claude"], ""),
+                ([], "Author: Claude\n"),
+                ([], "Reviewer: Codex\n"),
+                ([], body + body),
+            ):
+                with (
+                    self.subTest(mode=mode, labels=names, body=pr_body),
+                    patch.dict(os.environ, {"EPIC_SHARED_READER": mode}),
+                ):
+                    self.pr.update(
+                        labels=[{"name": name} for name in names], body=pr_body
+                    )
+                    with self.assertRaises(review.Refused):
+                        self.prepare()
+                    self.assertFalse(self.path.exists())
+
+    def test_absent_label_keeps_strict_executor_line_as_owner(self) -> None:
+        self.pr["body"] = "Author: Codex\nExecutor: Claude\n"
+        self.assertEqual(self.prepare(), self.path)
+
+    def test_unreadable_labels_block_review(self) -> None:
+        for labels in (None, "executor::claude", [None], [{}], ["executor::claude"]):
+            with self.subTest(labels=labels):
+                self.pr["labels"] = labels
+                with self.assertRaises(review.github_state.ReadBlocked):
+                    self.prepare()
+                self.assertFalse(self.path.exists())
+
     def test_conflicted_pr_cannot_start_or_resume_review(self) -> None:
         for fields in ({"mergeable": False}, {"mergeable_state": "dirty"}):
             with self.subTest(fields=fields):

@@ -20,6 +20,7 @@ import tick_backoff
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/epic"))
 import github_quota  # noqa: E402
 import github_state  # noqa: E402
+import next_action  # noqa: E402
 import tick_gate  # noqa: E402
 
 
@@ -87,11 +88,24 @@ def metadata(action: dict[str, Any]) -> tuple[str | None, str, int, str | None]:
         raw_body = pr.get("body") or ""
         if not isinstance(raw_body, str):
             raise Refused("malformed PR body")
+        if not isinstance(pr.get("labels"), list) or any(
+            not isinstance(label, dict) or not isinstance(label.get("name"), str)
+            for label in pr["labels"]
+        ):
+            raise github_state.ReadBlocked("malformed PR labels")
+        ownership = next_action.pr_assignment(pr)
+        if ownership.state == next_action.INVALID:
+            raise Refused(ownership.reason)
         body = "\n".join(raw_body.splitlines())
         owners = re.findall(r"^Executor:[ \t]*(.*?)[ \t]*$", body, re.M)
         issues = re.findall(r"^Issue:[ \t]*(.*?)[ \t]*$", body, re.M)
         match = ISSUE.fullmatch(issues[0]) if len(issues) == 1 else None
-        if pr.get("state") != "open" or owners != ["Codex"] or not match:
+        if (
+            pr.get("state") != "open"
+            or (ownership.state == next_action.VALID and ownership.executor != "Codex")
+            or owners != ["Codex"]
+            or not match
+        ):
             raise Refused(
                 "selected PR must be open, assigned to Codex and link one issue"
             )
