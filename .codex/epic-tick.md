@@ -26,6 +26,15 @@ stop; do not create another project item, change assignment fields or invent a
 blocker to reconcile the sources. Assignment does not confirm prerequisites:
 missing interface confirmation remains a separate reason to stop.
 
+Executor labels use the shared resolver. One known `executor::` label wins over
+the board Executor field; without one, use the existing assignment evidence.
+Unknown or multiple executor labels and PR label/body conflicts block work.
+Never claim or act on `executor::anton` work. Only Anton changes executor labels
+on existing issues and PRs. Do not add, replace or remove them through CLI or API.
+The sole exception is initial PR creation with your own label, as described below.
+Create issues through `gh issue create`. For other labels, use literal values;
+REST label files and label-write endpoints with query parameters are refused.
+
 For `claim`, `continue`, `fix`, `fix-checks` and `resolve-conflict`, the runner
 has already prepared your feature worktree and started this session there.
 Its path is appended below. Edit only that checkout, on its selected branch.
@@ -57,7 +66,7 @@ Use `EPIC_REVIEW_ATTEMPT_DIR` for this attempt's scratch files.
 | `review` | Review Claude's exact `sha` in the prepared detached checkout, using the shared review scope below. Run tests and probe edge cases. Save the complete review bundle below. The runner publishes its findings and standalone Codex verdict after this session ends. Do not post review comments yourself. |
 | Issue `continue` (no `pr`) | Resume the claimed issue in its prepared worktree. Test, commit and push completed work. Prepare the complete PR body, then create a draft and end this tick as described below. Update project status only from recorded leaf evidence; use Done only when every leaf is done. |
 | PR `continue` (`pr` selected) | Resume that draft PR in its prepared worktree. Finish the work and required tests, commit, push, and mark that PR ready. Update the issue's project status only from recorded leaf evidence; use Done only when every leaf is done. |
-| `adopt` | Recheck the head equals `sha`, the PR is open and its body has no `Executor:`, `Author:` or `Reviewer:` line, with any value. Otherwise stop. Confirm its routed owner is Codex and determine a valid lane if the board Executor supplied ownership without `lane`. Find the issue it implements and its leaf IDs (or `setup`); if unclear, return blocked. Write a body file with the six metadata lines below at line start, preserving the original body text. Put it directly in the PR body directory named below the action (`$EPIC_BODY_DIR`); the hook accepts no other file. Move existing metadata lines instead of duplicating them. Apply only `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<pr> -F body=@<absolute-file-path>`, using a literal path. Comment that Codex adopted the PR. Change nothing else. The runner verifies the body before accepting completion. |
+| `adopt` | Recheck the head equals `sha`, the PR is open, it has no `executor::` label and its body has no `Executor:`, `Author:` or `Reviewer:` line, with any value. Otherwise stop. Confirm its routed owner is Codex and determine a valid lane if the board Executor supplied ownership without `lane`. Find the issue it implements and its leaf IDs (or `setup`); if unclear, return blocked. Write a body file with the six metadata lines below at line start, preserving the original body text. Put it directly in the PR body directory named below the action (`$EPIC_BODY_DIR`); the hook accepts no other file. Move existing metadata lines instead of duplicating them. Apply only `gh api --method PATCH repos/phaabe/live.moafunk.de/pulls/<pr> -F body=@<absolute-file-path>`, using a literal path. Comment that Codex adopted the PR. Change nothing else. The runner verifies the body before accepting completion. |
 | `claim` | Read the issue and readiness comment. Pick only Ready leaves assigned to Codex. Check ownership, record leaf IDs/files/the prepared branch and set Status to In progress. Use the prepared worktree. Run GitNexus impact before editing. Prepare the complete PR body, then open a draft early and end this tick as described below. |
 | `escalate` | Label the PR `needs-anton`, comment with the disagreement and open question, and stop. |
 
@@ -92,7 +101,8 @@ blocker; do not substitute another write route.
 ### Issue-to-PR publication handoff
 
 An issue `claim` or `continue` authorizes creating a draft, not continuing the
-new PR in the same tick. Before `gh pr create --draft --body-file <path>`, write
+new PR in the same tick. Before
+`gh pr create --draft --label executor::codex --body-file <path>`, write
 the complete body file: all six metadata lines below, the issue link, current
 test evidence and implementation detail in a collapsed block. Do not plan a
 follow-up body edit to finish publication.
@@ -150,6 +160,9 @@ Issue: <full URL of the issue this PR implements>
 
 Target `dev/312-interim` under section 0. Keep PRs draft until tests pass and
 the work is ready for Claude. Put implementation detail in a collapsed block.
+At creation, add `--label executor::codex`; it must agree with `Executor: Codex`
+and the selected ticket's current assignment. Keep all six body lines. Reviewer
+routing stays unchanged: Claude reviews Codex's work; there is no reviewer label.
 
 Never write a verdict in Claude's name or edit a verdict. Never merge without
 current-head counterpart approval. Do not touch release PRs, production, secrets,

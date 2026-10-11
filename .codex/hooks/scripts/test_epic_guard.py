@@ -749,6 +749,60 @@ class FreshWriteCheckTest(unittest.TestCase):
                 self.assertNotIn("Traceback", stderr)
         self.assertEqual(self.reads, [])
 
+    def test_labeled_creation_hook_protocol_in_both_reader_modes(self) -> None:
+        self.action("continue", None)
+        for shared in ("0", "1"):
+            with patch.dict(os.environ, {"EPIC_SHARED_READER": shared}):
+                for owner, reviewer, result in (
+                    ("Codex", "Claude", 0),
+                    ("Claude", "Codex", 2),
+                ):
+                    body = (
+                        f"Executor: {owner}\nReviewer: {reviewer}\n"
+                        "Issue: https://github.com/phaabe/live.moafunk.de/issues/21\n"
+                    )
+                    command = (
+                        "gh pr create --draft --base dev/312-interim -t test "
+                        f"--label executor::{owner.lower()} --body '{body}'"
+                    )
+                    with self.subTest(shared=shared, owner=owner):
+                        stderr = self.run_hook(command, result)
+                        if result:
+                            self.assertIn(
+                                "only the executor label executor::codex", stderr
+                            )
+                            self.assertNotIn("Traceback", stderr)
+
+    def test_rest_issue_label_gaps_refuse_only_in_ticks(self) -> None:
+        self.action("continue", None)
+        labels = self.directory / "labels.txt"
+        labels.write_text("executor::codex")
+        issues = "repos/phaabe/live.moafunk.de/issues"
+        for shared in ("0", "1"):
+            for suffix in ("", "?test=1"):
+                for endpoint, fields in (
+                    (issues, "-f title=test -f 'labels[]=executor::codex'"),
+                    (issues + "/21/labels", f"-F 'labels[]=@{labels}'"),
+                    (issues + "/21", f"-F 'labels[]=@{labels}'"),
+                ):
+                    command = f"gh api '{endpoint}{suffix}' {fields}"
+                    with (
+                        self.subTest(shared=shared, command=command),
+                        patch.dict(os.environ, {"EPIC_SHARED_READER": shared}),
+                    ):
+                        self.run_hook(command, 2)
+                        with patch.dict(os.environ, {"EPIC_ACTION_FILE": ""}):
+                            self.run_hook(command)
+            with patch.dict(os.environ, {"EPIC_SHARED_READER": shared}):
+                self.run_hook(
+                    f"gh api '{issues}/21/labels?test=1' -f 'labels[]=executor::codex'",
+                    2,
+                )
+                self.run_hook(
+                    f"gh api '{issues}/21/labels?test=1' --method GET -F 'labels[]=@{labels}'"
+                )
+        self.assertEqual(self.reads, [])
+
     def test_claim_rechecks_ready_executor_blockers_and_slot(self) -> None:
         self.action("claim", None)
         command = (
@@ -966,7 +1020,9 @@ class FreshWriteCheckTest(unittest.TestCase):
             "from types import SimpleNamespace\n"
             "AGENT = 'Claude'\n"
             "class Unclear(ValueError): pass\n"
-            "def status_refusal(tool, tool_input, cwd): return None\n"
+            "def status_refusal(tool, tool_input, cwd, *, agent):\n"
+            "    assert agent == 'Codex'\n"
+            "    return None\n"
             "def check_push(ctx, write): return None\n"
             "original_push = check_push\n"
             "def tool_writes(tool, tool_input, cwd): return [SimpleNamespace(kind='push')]\n"

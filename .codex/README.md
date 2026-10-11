@@ -201,6 +201,19 @@ Existing worktrees retain local edits and unpublished commits; a local PR
 branch must contain the selected head.
 The helper never rebases or resets a checkout to make it match.
 
+Ownership uses the shared executor-label resolver. One known `executor::` label
+overrides the board Executor field; absent labels preserve the old source.
+Unknown or multiple labels, Anton ownership and PR label/body conflicts refuse
+worktree preparation, including draft continuation and review. Strict PR body,
+branch and head checks still apply.
+
+Ticks cannot add, replace or remove executor labels through CLI or API. Only
+initial PR creation may use `--label executor::codex`, agreeing with the acting
+agent, selected ticket and body. The hook enforces this with either shared-reader
+setting. Reviewer routing and the six PR body lines stay unchanged.
+In a tick, use `gh issue create` for new issues. REST label writes use literal
+values and an endpoint without query parameters; label files are refused.
+
 A target-specific refusal exits the helper with code 7, stores the normal
 blocked-target cooldown and tries the next candidate. This covers invalid PR
 metadata, missing refs, a local branch behind its PR and occupied destinations.

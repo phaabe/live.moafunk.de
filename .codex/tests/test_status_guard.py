@@ -11,6 +11,7 @@ import isolated_env  # noqa: E402, F401
 import importlib.util
 import json
 import os
+import shlex
 import unittest
 from unittest.mock import patch
 
@@ -243,6 +244,121 @@ class StatusGuardTests(fixtures.Env):
                         },
                         self.root,
                     )
+        self.assertEqual(self.gh.calls, [])
+
+    def test_executor_mutations_block_without_reads_in_both_modes(self) -> None:
+        labels = f"{fixtures.REPO}/issues/21/labels"
+        mutation = "mutation { addLabelsToLabelable(input: {}) { clientMutationId } }"
+        query = self.root / "labels.graphql"
+        query.write_text(mutation)
+        payload = self.root / "labels.json"
+        payload.write_text(json.dumps({"query": mutation}))
+        commands = (
+            "gh issue edit 21 --add-label executor::codex",
+            "gh pr edit 5 --remove-label bug,Executor::Claude",
+            "gh issue create -t test --label executor::codex",
+            f"gh api {labels} -f 'labels[]=executor::codex'",
+            f"gh api --method DELETE {labels}/executor%3A%3Acodex",
+            f"gh api --method PUT {labels} -f 'labels[]=bug'",
+            f"gh api --method DELETE {labels}",
+            f"gh api --method PATCH {fixtures.REPO}/issues/21 -f 'labels[]=bug'",
+            f"gh api graphql -f {shlex.quote('query=' + mutation)}",
+            f"gh api graphql -F query=@{query}",
+            f"gh api graphql --input {payload}",
+            "gh api graphql --input -",
+        )
+        for shared in ("0", "1"):
+            for pr in (False, True):
+                self.action(pr=pr)
+                for command in commands:
+                    with self.subTest(shared=shared, pr=pr, command=command):
+                        with self.assertRaises(ValueError):
+                            self.check(command, shared)
+        self.assertEqual(self.gh.calls, [])
+
+    def test_labeled_pr_creation_requires_codex_body_and_selected_issue(self) -> None:
+        body = f"Executor: Codex\nReviewer: Claude\nIssue: {fixtures.ISSUES}/21\n"
+        for shared in ("0", "1"):
+            self.action(pr=False)
+            for text, label, reason in (
+                (
+                    body.replace("Codex", "Claude").replace(
+                        "Reviewer: Claude", "Reviewer: Codex"
+                    ),
+                    "executor::claude",
+                    "only the executor label",
+                ),
+                (body, "executor::anton", "only the executor label"),
+                (body, "executor::unknown", "only the executor label"),
+                (body, "executor::codex,executor::claude", "only the executor label"),
+                (
+                    body.replace("Reviewer: Claude", "Reviewer: Codex"),
+                    "executor::codex",
+                    "needs a PR body",
+                ),
+                (body.replace("/21", "/22"), "executor::codex", "this tick's issue"),
+                (
+                    body + f"Issue: {fixtures.ISSUES}/22\n",
+                    "executor::codex",
+                    "this tick's issue",
+                ),
+                (
+                    body + f"Issue: {fixtures.ISSUES}/21\n",
+                    "executor::codex",
+                    "this tick's issue",
+                ),
+                (body.split("Issue:")[0], "executor::codex", "this tick's issue"),
+            ):
+                path = self.root / "body.md"
+                path.write_text(text)
+                for source in (f"--body {shlex.quote(text)}", f"--body-file {path}"):
+                    for args in (
+                        f"--label {label} {source}",
+                        f"{source} --label {label}",
+                    ):
+                        with self.subTest(shared=shared, args=args):
+                            with self.assertRaisesRegex(ValueError, reason):
+                                self.check(f"gh pr create --draft {args}", shared)
+        self.assertEqual(self.gh.calls, [])
+
+    def test_labeled_pr_creation_rechecks_task_and_preserves_legacy_creation(
+        self,
+    ) -> None:
+        body = f"Executor: Codex\nReviewer: Claude\nIssue: {fixtures.ISSUES}/21\n"
+        command = (
+            f"gh pr create --draft --label Executor::Codex --body {shlex.quote(body)}"
+        )
+        for shared in ("0", "1"):
+            self.action(pr=False)
+            self.item()
+            self.check(command, shared)
+            crlf = self.root / "body-crlf.md"
+            crlf.write_bytes(body.replace("\n", "\r\n").encode())
+            self.check(
+                f"gh pr create --draft --label executor::codex --body-file {crlf}",
+                shared,
+            )
+            # Missing labels keep the existing PR-creation behavior.
+            self.check("gh pr create --draft --body legacy", shared)
+            self.item(executor="Claude")
+            with self.assertRaisesRegex(ValueError, "not In progress for Codex"):
+                self.check(command, shared)
+            self.action(pr=True)
+            with self.assertRaisesRegex(ValueError, "selected issue"):
+                self.check(command, shared)
+
+    def test_unreadable_executor_commands_block_with_reader_off(self) -> None:
+        for shared in ("0", "1"):
+            for command in (
+                'gh pr create --label executor::codex --body "$(cat body.md)"',
+                "gh pr create --label executor::codex --body 'unterminated",
+                "git push --all; gh issue edit 21 --add-label executor::codex",
+                "gh api graphql -F query=@missing.graphql",
+                "gh api graphql --input missing.json",
+            ):
+                with self.subTest(shared=shared, command=command):
+                    with self.assertRaises(ValueError):
+                        self.check(command, shared)
         self.assertEqual(self.gh.calls, [])
 
 
