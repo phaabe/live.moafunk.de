@@ -226,15 +226,16 @@ every required suite containing a recorded failing test; never put commands in
 the request. Recheck the PR head and base tip immediately before publishing.
 If either moved, stop and let the next tick recheck; never substitute untested
 commit IDs. Never post a request in Claude's name or on another target.
+After reading any valid posted request back, including the first request, return
+`completed`: requesting recovery is this tick's result. The PR remains
+test-blocked until a later recovery tick rebases and passes the complete pinned
+proof table. Do not rebase in the request tick.
 An issue-only tick first publishes already committed work as a draft using the
 normal handoff above, then ends; a later PR tick can record recovery evidence.
 
 For an owner action selected to refresh stale recovery evidence, repeat the
 bounded failing-test/base comparison on the newly fetched tip and post a new
 request if it qualifies. Never edit the old request or invent a fix commit.
-After reading the posted request back, return `completed`: requesting recovery
-is this tick's result. The PR remains test-blocked until the later recovery tick
-rebases and passes the complete pinned proof table. Do not rebase in this tick.
 If refresh cannot produce valid evidence, either fix the test with a real change,
 test and push through the normal owner action, or comment the result on the
 selected PR, add `needs-anton` to that PR and return `blocked`. Never create an

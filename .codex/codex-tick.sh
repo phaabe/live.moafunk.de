@@ -186,20 +186,17 @@ for duration in "$tick_timeout" "$select_timeout" "$pull_timeout" "$blocked_retr
         exit 2
     fi
 done
-if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
-    # Validate the snapshot deadline before registration or any GitHub read.
-    recheck_timeout=$("$python_bin" -I - "${code_root}/scripts/epic" <<'PY'
-import sys
-sys.path.insert(0, sys.argv[1])
-import github_state
-try:
-    print(github_state.settings().recheck)
-except github_state.ConfigError as error:
-    print(f"tick: {error}", file=sys.stderr)
-    sys.exit(2)
-PY
-    )
+# Resolve once before registration or selection; children never apply defaults.
+if ! resolved=$("$python_bin" "${code_root}/scripts/epic/github_state.py" resolve); then
+    printf 'tick: bad shared-reader setting; no selection\n' >&2
+    exit 2
 fi
+read -r shared_reader recheck_timeout <<< "$resolved"
+export EPIC_SHARED_READER=$shared_reader
+if [[ "$shared_reader" == 1 ]]; then
+    export EPIC_RECHECK_TIMEOUT_SECONDS=$recheck_timeout
+fi
+printf 'tick: shared reader=%s recheck=%ss\n' "$shared_reader" "$recheck_timeout"
 # Fresh backoff lookup and action recheck each have a separate bounded read.
 # Preparation can run for several candidates. This budget estimates one;
 # the live runner PID keeps the lock even when candidate scanning takes longer.

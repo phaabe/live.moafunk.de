@@ -488,6 +488,10 @@ else:
                         "\nUpstream test recovery: on\n" in call["prompt"], enabled
                     )
                     self.assertIn(
+                        "including the first request, return\n`completed`",
+                        call["prompt"],
+                    )
+                    self.assertIn(
                         "shell_environment_policy.set.EPIC_FOCUS_ACTIONS="
                         + json.dumps(flag),
                         call["args"],
@@ -2410,6 +2414,92 @@ else:
             self.assertEqual(seen[name], self.env[name])
         self.assertEqual(seen["EPIC_TRUSTED_ROOT"], str(self.repo.resolve()))
         self.assertNotIn("EPIC_SNAPSHOT_MAX_AGE_SECONDS", seen)
+
+    def test_reader_defaults_and_overrides_reach_model_and_recheck(self) -> None:
+        reader = self.repo / "scripts/epic/github_state.py"
+        source = reader.read_text()
+        self.assertIn("DEFAULT_ENABLED = False", source)
+        for default in (False, True):
+            reader.write_text(
+                source.replace(
+                    "DEFAULT_ENABLED = False", f"DEFAULT_ENABLED = {default}"
+                )
+            )
+            for setting in (None, "", "0", "1"):
+                with self.subTest(default=default, setting=setting):
+                    self.env.pop("EPIC_SHARED_READER", None)
+                    if setting is not None:
+                        self.env["EPIC_SHARED_READER"] = setting
+                    expected = str(int(default)) if not setting else setting
+                    self.rechecks.unlink(missing_ok=True)
+                    result = self.run_tick()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    call = json.loads(self.calls.read_text().splitlines()[-1])
+                    self.assertEqual(call["tool_env"]["EPIC_SHARED_READER"], expected)
+                    self.assertEqual(self.rechecks.exists(), expected == "1")
+                    self.record.unlink(missing_ok=True)
+
+    def test_invalid_reader_stops_before_selection_or_model(self) -> None:
+        self.env["EPIC_SHARED_READER"] = "invalid"
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse(self.selections.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertIn(
+            "bad shared-reader setting", (self.state / "codex.log").read_text()
+        )
+
+    def test_reader_off_model_environment_holds_merge_and_verdict_in_hook(self) -> None:
+        # Real runner tool environment, hook and write checker. Only the fresh
+        # recovery policy result is stubbed; this tests whether the hook reaches it.
+        hooks = self.repo / ".codex/hooks/scripts"
+        hooks.mkdir(parents=True)
+        shutil.copyfile(ROOT / "hooks/scripts/epic_guard.py", hooks / "epic_guard.py")
+        probe = self.root / "recovery-hold-probe.py"
+        probe.write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "from unittest import mock\n"
+            f"sys.path.insert(0, {str(hooks)!r})\n"
+            f"sys.path.insert(0, {str(self.repo / 'scripts/epic')!r})\n"
+            "import epic_guard, rebase_policy\n"
+            "sha = 'a' * 40\n"
+            "commands = [\n"
+            "f'gh pr merge 406 --repo phaabe/live.moafunk.de --squash --match-head-commit {sha}',\n"
+            "f\"gh pr comment 406 --repo phaabe/live.moafunk.de --body 'Review: APPROVED by Codex at {sha}'\",\n"
+            "]\n"
+            "results = []\n"
+            "with mock.patch.object(rebase_policy, 'recovery_hold', return_value='HELD') as hold:\n"
+            "    for command in commands:\n"
+            "        try:\n"
+            "            epic_guard.runner_write_check('exec_command', {'cmd': command}, Path.cwd())\n"
+            "        except ValueError as error:\n"
+            "            results.append(str(error))\n"
+            "        else:\n"
+            "            results.append(None)\n"
+            "    print(json.dumps({'mode': os.environ.get('EPIC_SHARED_READER'),\n"
+            "        'results': results, 'targets': [c.args[0] for c in hold.call_args_list]}))\n"
+        )
+        output = self.root / "recovery-hold-result.json"
+        self.env.update(
+            EPIC_FOCUS_ACTIONS="upstream-recovery",
+            TEST_MODEL_ENV_PROBE=str(probe),
+            TEST_MODEL_ENV_RESULT=str(output),
+        )
+        for setting in (None, "", "0"):
+            with self.subTest(setting=setting):
+                self.env.pop("EPIC_SHARED_READER", None)
+                if setting is not None:
+                    self.env["EPIC_SHARED_READER"] = setting
+                result = self.run_tick()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                seen = json.loads(output.read_text())
+                self.assertEqual(seen["mode"], "0")
+                self.assertEqual(seen["targets"], [406, 406])
+                self.assertTrue(
+                    all("HELD" in (reason or "") for reason in seen["results"])
+                )
+                self.record.unlink(missing_ok=True)
 
     def test_adopt_quota_wait_during_model_leaves_target_state_untouched(self) -> None:
         self.quota_clock()
