@@ -47,6 +47,7 @@ async function handleSubmit() {
           Login
         </BaseButton>
       </form>
+      <p><router-link to="/forgot-password">Forgot password?</router-link></p>
     </div>
   </div>
 </template>

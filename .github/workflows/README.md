@@ -59,18 +59,26 @@ activate production to gather this evidence. Other O1.2 leaves stay open.
 
 ## Backend build-only workflow (O1.2.1)
 
-`backend.yml` builds and pushes images on matching `main` pushes and manual
-runs with `build: true` (the default). It cannot replace the API, provision
-nginx, initialize the database or restart Liquidsoap. The old API deploy job
-and its inputs are removed; O1.2.5 supplies the future manual API-only path.
-Do not restore the old job to roll back this change.
+`backend.yml` builds and publishes images on matching `main` pushes and manual
+runs with `build: true` (the default). It no longer deploys the API or restarts Liquidsoap.
+The workflow name stays unchanged because existing guards refer to it.
+Native amd64 builds, the BuildKit mirror and Dockerfile base mirrors are retained.
 
-Builds retain `latest` on the default branch and the short `sha-` tag, and add
-a full `sha-<commit>` tag. Job outputs expose `digest`, `image` (the exact
-`ghcr.io/...@sha256:...` reference) and `source-sha`. The run summary records
-the image reference and source commit. Tags can move; use the digest for the
-approved replacement. Docker documents its
+Images retain `latest` on the default branch and short `sha-` tags, and add
+a full `sha-<commit>` tag. The build
+outputs `digest`, `image` and `source-sha`; its summary records the exact image
+reference and source commit. Use the digest for any approved deployment.
+Tags can move; Docker documents the
 [digest output](https://github.com/docker/build-push-action#outputs).
+
+The removed job also generated and copied the production `.env`, synchronized
+Compose and host scripts, provisioned nginx, initialized the database and
+updated streaming configuration. Those tasks no longer run on push or manual
+backend builds. Existing host files are preserved. The removed behavior is in
+[the previous main workflow](https://github.com/phaabe/live.moafunk.de/blob/1bae514c6cfd87726cdb47a4281457ea75d1bbac/.github/workflows/backend.yml).
+Do not use the old deployment job as a rollback procedure. O1.2.5 in
+https://github.com/phaabe/live.moafunk.de/issues/381 supplies the future manual
+API deployment path and its configuration contract.
 
 | Event / manual inputs | Image build | Monitoring deploy | API deploy |
 | --- | --- | --- | --- |
@@ -81,29 +89,36 @@ approved replacement. Docker documents its
 | `build: true`, `deploy_monitoring: true` | Yes | Yes | No |
 | Integration push | Workflow does not run | No | No |
 
-The retained monitoring action is a separate, explicitly requested production
-action; it still needs operator approval. Build jobs alone have package-write
-permission. They need only `GITHUB_TOKEN`, never production secrets or SSH.
+`deploy_monitoring: true` still explicitly deploys monitoring and needs operator
+approval. It defaults to false and runs independently of `build`. Build
+cancellation uses a new ref-scoped job group. Monitoring uses a separate fixed
+group with cancellation disabled; GitHub may still replace older pending jobs.
+Builds cannot cancel running monitoring or legacy deployment runs.
+Build jobs alone have package-write permission. They need only `GITHUB_TOKEN`,
+never production secrets or SSH. This uses GitHub's
+[job concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
-Build cancellation uses a new ref-scoped job group. Monitoring has a fixed
-production group with `cancel-in-progress: false`, independent of builds.
-This uses GitHub's [job concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
-A new build cannot cancel a running monitoring job. GitHub may replace an
-older pending monitoring job; this does not promise a queue for every request.
+**Rollout evidence remains required.** Retain the first main build's run URL,
+source SHA and digest as rollout evidence.
+Queued, running and rerun workflows from old revisions can still deploy. Before
+any API replacement, list legacy runs across all refs, drain or cancel them,
+and reconcile their remote processes. Cancelling Actions does not prove that
+an SSH child exited. Until this is verified, deployment exclusion is unproven.
+Follow the [maintenance procedure](../../docs/implementation/runbooks/bootstrap-maintenance.md).
 
-The regression suite above checks event/input selection, removed deployment
-paths, permissions, cancellation separation, tags and digest output. It also
-executes the summary script with a synthetic digest and rejects a missing
-digest. These checks do not contact production.
+`backend-build-tests.yml` runs on every PR to and push on `main`. It has only
+`contents: read`, no production secrets and no image build or publish step.
+It checks job selection, permissions, deployment removal, independent
+concurrency, preserved mirrors and digest reporting. Run locally:
 
-**Rollout evidence remains required.** The first release push carrying this
-workflow must build only; retain its run URL, source SHA and image digest.
-An integration merge does not install this workflow on `main`. Existing runs
-and reruns of old workflow revisions can still deploy. Before the first
-O1.2.5 deployment, list queued/running legacy runs for all refs and drain them,
-or cancel and reconcile their remote processes. Actions cancellation does not
-prove an SSH child exited. Follow the
-[maintenance procedure](../../docs/implementation/runbooks/bootstrap-maintenance.md).
+```sh
+npm ci --ignore-scripts --prefix frontend
+node --test .github/workflows/tests/backend-build.test.cjs
+```
+
+The parser comes from the committed frontend lockfile. The tests exercise the
+summary script with a synthetic digest and reject a missing digest; they do
+not contact production or prove the first main build has run.
 
 ## Clippy baseline
 
