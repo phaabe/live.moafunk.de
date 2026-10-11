@@ -2799,6 +2799,35 @@ else:
         self.assertFalse(self.calls.exists())
         self.assertFalse(self.gh_calls.exists())
 
+    def test_activity_quota_between_candidates_names_current_candidate(self) -> None:
+        self.quota_clock()
+        wait = self.store_quota_wait()
+        wait_path = self.state / "github-quota-wait.json"
+        wait_path.unlink()
+        self.candidates(self.review_action(406), {
+            **self.review_action(407), "action": "fix",
+        })
+        # Simulate another agent recording a quota wait while 406 is refused.
+        (self.runner.parent / "assignment.py").write_text(
+            "import json, pathlib, sys\n"
+            "action_path = sys.argv[sys.argv.index('--action-file') + 1]\n"
+            "assert json.loads(pathlib.Path(action_path).read_text())['pr'] == 406\n"
+            f"pathlib.Path({str(wait_path)!r}).write_text({json.dumps(wait)!r})\n"
+            "raise SystemExit(6)\n"
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records()
+        self.assertEqual(
+            [(r["event"], r["reason_code"], r["scope"], r["target"], r["action"])
+             for r in records],
+            [("wait", "ticket_not_ready", "target", "pr:406", "review"),
+             ("wait", "github_quota", "agent", "pr:407", "fix")],
+        )
+        self.assertEqual(records[1]["retry_at"], wait["retry_at"])
+        self.assertEqual(json.loads(wait_path.read_text()), wait)
+        self.assert_quota_only()
+        self.assertEqual(self.last_finish(), (0, "ok", "quota"))
+
     def test_activity_model_quota_uses_stored_reset(self) -> None:
         self.quota_clock()
         self.env["TEST_RESULT"] = json.dumps({

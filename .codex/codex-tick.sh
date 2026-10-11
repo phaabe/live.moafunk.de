@@ -410,9 +410,9 @@ while IFS= read -r -u 3 candidate; do
     if [[ -e "${HOME}/.epic-pause" ]]; then
         exit 0
     fi
+    printf '%s\n' "$candidate" > "${lock_dir}/action.json"
     check_quota
     tick_phase=select
-    printf '%s\n' "$candidate" > "${lock_dir}/action.json"
     action=$("$python_bin" -I -c '
 import json, sys
 value = json.load(sys.stdin)
