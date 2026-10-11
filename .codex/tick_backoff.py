@@ -70,6 +70,21 @@ def target_key(action: dict[str, object]) -> str:
         sha = action.get("sha")
         if type(pr) is not int or pr <= 0 or not isinstance(sha, str) or not sha:
             raise ValueError("invalid PR target")
+        refresh = action.get("refresh")
+        if refresh is not None:
+            if (
+                action.get("action") not in {"continue", "fix", "fix-checks"}
+                or not isinstance(refresh, dict)
+                or refresh.get("kind") != "upstream-test-refresh"
+                or refresh.get("head") != sha
+                or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+                or not isinstance(refresh.get("base_tip"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", refresh["base_tip"]) is None
+            ):
+                raise ValueError(
+                    "upstream recovery refresh needs matching head and base tip"
+                )
+            return f"pr:{pr}:{sha}:refresh:{refresh['base_tip']}"
         if action.get("action") == "resolve-conflict":
             tip = action.get("target_tip")
             if not isinstance(tip, str) or re.fullmatch(r"[0-9a-f]{40}", tip) is None:
@@ -223,7 +238,11 @@ def check(action: dict[str, object], state_dir: Path, ttl: int, now: float) -> i
     if entry is not None and now < expires(entry, ttl):
         logging.info("backoff: skip blocked target until its retry delay expires")
         return SKIP
-    if action.get("action") == "continue" and action.get("pr"):
+    if (
+        action.get("action") == "continue"
+        and action.get("pr")
+        and action.get("refresh") is None
+    ):
         active_issues = {
             name: entry
             for name, entry in entries.items()

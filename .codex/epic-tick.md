@@ -192,6 +192,56 @@ The runner stops the Codex session after `EPIC_TICK_TIMEOUT_SECONDS` (default
   comment the failure. Continue only after a fix or a ticket Anton approved.
 - Commit and push as soon as a step works, well before the timeout.
 
+### Confirmed upstream test fixes
+
+Only when the runner appends the exact line `Upstream test recovery: on`,
+an owner `continue`, `fix` or `fix-checks` tick may request upstream recovery.
+Being behind the base, failed checks or requested changes alone never permit it.
+Test the selected PR SHA itself: use the clean worktree and index with HEAD
+equal to that SHA, or an isolated export of that SHA. Preserve dirty files and
+unpublished commits; never report their failure as a failure of the selected SHA.
+After both allowed reruns still fail on the selected head, fetch the actual PR
+base and record its full tip SHA. Run the identical failing test once in an
+isolated export of that commit under `TMPDIR`; preserve the feature checkout.
+Use `git archive --format=tar --output=<absolute TMPDIR archive> <pinned SHA>`,
+then extract the archive into a fresh directory under `TMPDIR` with `tar -xf`.
+Use the full recorded commit SHA, not a moving branch name, for each export.
+The base test must pass and the selected head must not contain that base tip.
+Otherwise retain the test blocker. Do not debug further or waive a required suite.
+
+On the selected PR only, post the failing test names, commands and results for
+both full commit SHAs in a separate evidence comment. Then post this exact new,
+unedited standalone comment, with LF line ends and no trailing newline:
+
+```text
+Upstream test recovery by Codex
+Head: <current 40-character PR head SHA>
+Base: <actual PR base branch>
+Base tip: <freshly fetched 40-character base SHA tested>
+Suites: <sorted unique suite names separated by comma and space>
+```
+
+Use only known names from the trusted `rebase_policy.suites()` table, including
+every required suite containing a recorded failing test; never put commands in
+the request. Recheck the PR head and base tip immediately before publishing.
+If either moved, stop and let the next tick recheck; never substitute untested
+commit IDs. Never post a request in Claude's name or on another target.
+After reading any valid posted request back, including the first request, return
+`completed`: requesting recovery is this tick's result. The PR remains
+test-blocked until a later recovery tick rebases and passes the complete pinned
+proof table. Do not rebase in the request tick.
+An issue-only tick first publishes already committed work as a draft using the
+normal handoff above, then ends; a later PR tick can record recovery evidence.
+
+For an owner action selected to refresh stale recovery evidence, repeat the
+bounded failing-test/base comparison on the newly fetched tip and post a new
+request if it qualifies. Never edit the old request or invent a fix commit.
+If refresh cannot produce valid evidence, either fix the test with a real change,
+test and push through the normal owner action, or comment the result on the
+selected PR, add `needs-anton` to that PR and return `blocked`. Never create an
+empty commit or edit the old request to remove the hold. If the guard refuses
+the label write, report that refusal and return `blocked`; do not widen permissions.
+
 ## Commands and final result
 
 Run Codex tests with `python3 -m unittest discover -s .codex/tests -v`, or an
@@ -212,6 +262,11 @@ the helper.
 
 For `resolve-conflict`, the runner validates the open Codex PR, its actual base,
 head and fixed worktree, then supplies protected context to the installed helper.
+An action with `recovery.kind: upstream-test` uses this same procedure after
+fresh confirmation of the owner's request. Its proof table includes the recorded
+failed suites even when the PR does not change their paths. Keep that table.
+New upstream recovery refuses dirty or unpublished work before starting a model;
+matching recorded rebases resume normally. Preserve any refused checkout.
 Use only these extra forms with the same literal helper prefix:
 
 ```text

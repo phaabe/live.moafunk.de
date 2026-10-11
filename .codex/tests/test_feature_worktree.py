@@ -48,13 +48,6 @@ class FeatureWorktreeTests(unittest.TestCase):
             tick_fixture.ROOT.parent / "scripts/epic/rebase_policy.py",
             self.repo / "scripts/epic/rebase_policy.py",
         )
-        selector = self.repo / "scripts/epic/next_action.py"
-        selector.write_text(
-            selector.read_text().replace(
-                "from selector_contract import BASES, EPIC, PROJECT_API, REPO, body_digest, issue_url, other",
-                "from selector_contract import *",
-            )
-        )
         gh = self.fixture.bin / "gh"
         original = gh.read_text().split("\n", 1)[1]
         gh.write_text(
@@ -337,6 +330,150 @@ class FeatureWorktreeTests(unittest.TestCase):
                     self.env["TEST_WORKTREE_PR"] = json.dumps(self.pr)
                     self.assert_refused(5)
 
+    def mark_upstream_recovery(self) -> None:
+        # Admission has its own shared/combined tests. Stub only that boundary
+        # here: exercise real preparation and attempt ordering after admission.
+        self.action["recovery"] = {"kind": "upstream-test"}
+        policy = self.repo / "scripts/epic/rebase_policy.py"
+        source = policy.read_text()
+        entry = 'if __name__ == "__main__":'
+        self.assertEqual(source.count(entry), 1)
+        policy.write_text(
+            source.replace(
+                entry,
+                "def recovery_admission(agent, action):\n"
+                "    ref = base_ref(action['pr'])\n"
+                "    return {'base': ref, 'tip': base_tip(ref), 'suites': []}\n\n"
+                + entry,
+            )
+        )
+
+    def test_clean_upstream_recovery_starts_model(self) -> None:
+        self.use_pr("resolve-conflict")
+        self.mark_upstream_recovery()
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 1, result.stderr)  # Stub has no proof.
+        self.assertTrue(self.fixture.calls.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), self.head)
+
+    def test_dirty_upstream_recovery_preserves_work_before_model(self) -> None:
+        self.use_pr("resolve-conflict")
+        self.assertEqual(self.prepare().returncode, 0)
+        self.mark_upstream_recovery()
+        (self.destination / "tracked.txt").write_text("staged work\n")
+        self.git("add", "tracked.txt", cwd=self.destination)
+        (self.destination / "tracked.txt").write_text("unstaged work\n")
+        (self.destination / "untracked.txt").write_text("untracked work\n")
+        before = self.git("status", "--porcelain", cwd=self.destination)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertFalse(self.context.exists())
+        self.assertEqual(
+            self.git("status", "--porcelain", cwd=self.destination), before
+        )
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), self.head)
+        self.assertEqual(
+            self.git("show", ":tracked.txt", cwd=self.destination), "staged work"
+        )
+        self.assertEqual(
+            (self.destination / "tracked.txt").read_text(), "unstaged work\n"
+        )
+        self.assertEqual(
+            (self.destination / "untracked.txt").read_text(), "untracked work\n"
+        )
+        log = (self.state / "codex.log").read_text()
+        self.assertIn("upstream recovery requires a clean worktree", log)
+        self.assertIn(str(self.destination), log)
+        self.assertIn(f"local head {self.head}; remote head {self.head}", log)
+        self.assertEqual(
+            json.loads((self.state / "rebase-attempts.json").read_text()), {}
+        )
+
+    def test_new_upstream_recovery_preserves_checkout_hook_output(self) -> None:
+        self.use_pr("resolve-conflict")
+        self.mark_upstream_recovery()
+        hook = self.repo / ".git/hooks/post-checkout"
+        hook.write_text("#!/bin/sh\nprintf 'hook work\\n' > hook-output.txt\n")
+        hook.chmod(0o755)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertFalse(self.context.exists())
+        self.assertEqual(
+            (self.destination / "hook-output.txt").read_text(), "hook work\n"
+        )
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), self.head)
+        self.assertEqual(
+            json.loads((self.state / "rebase-attempts.json").read_text()), {}
+        )
+
+    def test_unpublished_upstream_recovery_preserves_commit_before_model(self) -> None:
+        self.use_pr("resolve-conflict")
+        self.assertEqual(self.prepare().returncode, 0)
+        (self.destination / "tracked.txt").write_text("unpublished work\n")
+        self.git("add", "tracked.txt", cwd=self.destination)
+        self.git("commit", "-m", "test: unpublished work", cwd=self.destination)
+        local = self.git("rev-parse", "HEAD", cwd=self.destination)
+        self.mark_upstream_recovery()
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), local)
+        self.assertEqual(self.git("rev-parse", f"origin/{BRANCH}"), self.head)
+        self.assertEqual(
+            (self.destination / "tracked.txt").read_text(), "unpublished work\n"
+        )
+        log = (self.state / "codex.log").read_text()
+        self.assertIn("upstream recovery requires the published PR head", log)
+        self.assertIn(f"local head {local}; remote head {self.head}", log)
+        self.assertEqual(
+            json.loads((self.state / "rebase-attempts.json").read_text()), {}
+        )
+
+    def test_upstream_recovery_refuses_untracked_file_alone(self) -> None:
+        self.use_pr("resolve-conflict")
+        self.assertEqual(self.prepare().returncode, 0)
+        self.mark_upstream_recovery()
+        file = self.destination / "untracked.txt"
+        file.write_text("untracked work\n")
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertEqual(file.read_text(), "untracked work\n")
+        self.assertEqual(
+            self.git("status", "--porcelain", cwd=self.destination), "?? untracked.txt"
+        )
+
+    def test_upstream_recovery_refuses_staged_file_alone(self) -> None:
+        self.use_pr("resolve-conflict")
+        self.assertEqual(self.prepare().returncode, 0)
+        self.mark_upstream_recovery()
+        (self.destination / "tracked.txt").write_text("staged work\n")
+        self.git("add", "tracked.txt", cwd=self.destination)
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertEqual(
+            self.git("show", ":tracked.txt", cwd=self.destination), "staged work"
+        )
+        self.assertEqual(self.git("diff", cwd=self.destination), "")
+
+    def test_unpublished_recovery_refuses_before_creating_worktree(self) -> None:
+        self.use_pr("resolve-conflict")
+        (self.repo / "tracked.txt").write_text("unpublished commit\n")
+        self.git("add", "tracked.txt")
+        self.git("commit", "-m", "test: unpublished branch")
+        local = self.git("rev-parse", "HEAD")
+        self.git("branch", BRANCH, local)
+        self.mark_upstream_recovery()
+        result = self.prepare()
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertFalse(self.destination.exists())
+        self.assertFalse(self.context.exists())
+        self.assertEqual(self.git("rev-parse", BRANCH), local)
+        self.assertEqual(self.git("rev-parse", f"origin/{BRANCH}"), self.head)
+
     def test_conflict_session_requires_current_installed_helper(self) -> None:
         self.use_pr("resolve-conflict")
         for missing in (False, True):
@@ -470,6 +607,78 @@ class FeatureWorktreeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)  # Stub does not push.
         self.assertTrue(self.fixture.calls.exists())
         self.assertTrue(record.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), rewritten)
+
+    def test_recorded_upstream_recovery_resumes_active_rebase(self) -> None:
+        record = self.start_conflicting_rebase(recorded=True)
+        before = record.read_bytes()
+        status = self.git("status", "--porcelain", cwd=self.destination)
+        self.mark_upstream_recovery()
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(self.fixture.calls.exists())
+        self.assertEqual(record.read_bytes(), before)
+        self.assertEqual(
+            self.git("status", "--porcelain", cwd=self.destination), status
+        )
+
+    def test_recorded_upstream_recovery_resumes_completed_rebase(self) -> None:
+        record = self.start_conflicting_rebase(recorded=True)
+        (self.destination / "tracked.txt").write_text("resolved change\n")
+        self.git("add", "tracked.txt", cwd=self.destination)
+        self.git("-c", "core.editor=true", "rebase", "--continue", cwd=self.destination)
+        rewritten = self.git("rev-parse", "HEAD", cwd=self.destination)
+        before = record.read_bytes()
+        self.mark_upstream_recovery()
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(self.fixture.calls.exists())
+        self.assertEqual(record.read_bytes(), before)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), rewritten)
+
+    def test_active_upstream_recovery_on_older_tip_can_resume(self) -> None:
+        record = self.start_conflicting_rebase(recorded=True)
+        before = record.read_bytes()
+        status = self.git("status", "--porcelain", cwd=self.destination)
+        (self.repo / "new-base.txt").write_text("base moved\n")
+        self.git("add", "new-base.txt")
+        self.git("commit", "-m", "test: advance base")
+        self.git(
+            "update-ref", f"refs/remotes/origin/{BASE}", self.git("rev-parse", "HEAD")
+        )
+        self.mark_upstream_recovery()
+        result = self.run_tick()
+        self.assertEqual(
+            result.returncode, 1, result.stderr
+        )  # Stub leaves rebase active.
+        self.assertTrue(self.fixture.calls.exists())
+        self.assertEqual(record.read_bytes(), before)
+        self.assertEqual(
+            self.git("status", "--porcelain", cwd=self.destination), status
+        )
+
+    def test_completed_upstream_recovery_on_older_tip_preserves_state(self) -> None:
+        record = self.start_conflicting_rebase(recorded=True)
+        (self.destination / "tracked.txt").write_text("resolved change\n")
+        self.git("add", "tracked.txt", cwd=self.destination)
+        self.git("-c", "core.editor=true", "rebase", "--continue", cwd=self.destination)
+        rewritten = self.git("rev-parse", "HEAD", cwd=self.destination)
+        before = record.read_bytes()
+        (self.repo / "new-base.txt").write_text("base moved\n")
+        self.git("add", "new-base.txt")
+        self.git("commit", "-m", "test: advance base")
+        self.git(
+            "update-ref", f"refs/remotes/origin/{BASE}", self.git("rev-parse", "HEAD")
+        )
+        self.mark_upstream_recovery()
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(self.fixture.calls.exists())
+        self.assertIn(
+            "completed recovery rebase targets an older base",
+            (self.state / "codex.log").read_text(),
+        )
+        self.assertEqual(record.read_bytes(), before)
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.destination), rewritten)
 
     def test_recorded_rebase_rejects_a_changed_selected_head(self) -> None:
