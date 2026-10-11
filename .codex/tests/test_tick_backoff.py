@@ -300,6 +300,97 @@ class BackoffTests(unittest.TestCase):
                     }
                 )
 
+    def refresh_action(self, kind: str = "fix-checks") -> dict[str, object]:
+        return {
+            "action": kind,
+            "pr": 410,
+            "sha": "a" * 40,
+            "refresh": {
+                "kind": "upstream-test-refresh",
+                "head": "a" * 40,
+                "base": "dev/312-interim",
+                "base_tip": "b" * 40,
+                "tip": "c" * 40,
+                "owner": "Codex",
+                "comment_id": 123,
+                "url": "https://github.com/phaabe/live.moafunk.de/pull/410#issuecomment-123",
+                "why": "base_moved",
+            },
+        }
+
+    def test_refresh_ignores_ordinary_cooldown_and_retries_when_base_moves(
+        self,
+    ) -> None:
+        for kind in ("continue", "fix", "fix-checks"):
+            with self.subTest(kind=kind):
+                backoff.save_entries(self.state, {})
+                action = self.refresh_action(kind)
+                ordinary = {k: v for k, v in action.items() if k != "refresh"}
+                self.assertEqual(self.record(ordinary), 3)
+                self.assertEqual(backoff.check(action, self.state, 900, 1001), 0)
+                self.assertEqual(self.record(action), 3)
+                self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
+                moved = {
+                    **action,
+                    "refresh": {**action["refresh"], "base_tip": "d" * 40},
+                }
+                self.assertEqual(backoff.check(moved, self.state, 900, 1001), 0)
+                self.assertEqual(backoff.check(ordinary, self.state, 900, 1001), 3)
+
+    def test_refresh_continue_preserves_issue_cooldown_without_transferring(
+        self,
+    ) -> None:
+        self.record()
+        before = self.entries()
+        with patch.object(backoff, "pr_issue") as lookup:
+            self.assertEqual(
+                backoff.check(self.refresh_action("continue"), self.state, 900, 1001), 0
+            )
+            lookup.assert_not_called()
+        self.assertEqual(self.entries(), before)
+
+    def test_completed_refresh_clears_only_its_current_base_cooldown(self) -> None:
+        action = self.refresh_action()
+        ordinary = {k: v for k, v in action.items() if k != "refresh"}
+        moved = {**action, "refresh": {**action["refresh"], "base_tip": "d" * 40}}
+        for target in (ordinary, action, moved):
+            self.assertEqual(self.record(target), 3)
+        self.result.write_text(
+            json.dumps({"status": "completed", "summary": "Recovery requested"})
+        )
+        self.assertEqual(self.record(moved), 0)
+        self.assertEqual(backoff.check(moved, self.state, 900, 1001), 0)
+        self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
+        self.assertEqual(backoff.check(ordinary, self.state, 900, 1001), 3)
+
+    def test_invalid_refresh_fails_closed(self) -> None:
+        action = self.refresh_action()
+        invalid = [
+            False,
+            "refresh",
+            {},
+            {**action["refresh"], "kind": "other"},
+            {**action["refresh"], "head": "e" * 40},
+        ]
+        invalid.extend(
+            {**action["refresh"], "base_tip": tip} for tip in (None, "", "bad", True)
+        )
+        for refresh in invalid:
+            with self.subTest(refresh=refresh), self.assertRaises(ValueError):
+                backoff.check({**action, "refresh": refresh}, self.state, 900, 1001)
+        for kind in ("review", "merge", "resolve-conflict"):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                backoff.target_key({**action, "action": kind})
+
+    def test_refresh_three_block_escalation_still_applies(self) -> None:
+        action = self.refresh_action()
+        github = EscalationGitHub()
+        with patch.object(backoff.github_quota, "run_gh", side_effect=github):
+            for _ in range(3):
+                self.assertEqual(self.record(action), 3)
+        self.assertEqual(backoff.check(action, self.state, 900, 9999), 3)
+        self.assertEqual(github.labels, [{"name": "needs-anton"}])
+
     def test_issue_cooldown_transfers_once_without_extending_expiry(self) -> None:
         self.record()
         action = {"action": "continue", "pr": 410, "sha": "a" * 40}
