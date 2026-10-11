@@ -1262,8 +1262,9 @@ else:
         configure(writer)
         (writer / "scripts/epic/next_action.py").write_text(
             "import os\n"
-            "with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('new\\n')\n"
-            'print(\'{"action": "idle", "reason": "focused selector"}\')\n'
+            "if __name__ == '__main__':\n"
+            "    with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('new\\n')\n"
+            '    print(\'{"action": "idle", "reason": "focused selector"}\')\n'
         )
         git(writer, "add", ".")
         git(writer, "commit", "-m", "Update selector")
