@@ -62,7 +62,8 @@ Only Anton adds, replaces or removes executor labels, and an open PR keeps
 its executor. In a tick, executor-label edits are refused on every path (CLI,
 REST, GraphQL label mutations, issue creation), also with the shared reader
 off. A GraphQL request from a file or stdin is read first; one that cannot be
-read is refused. The one exception: a new PR may carry `--label executor::<you>` when its
+read is refused, and so is any command the check cannot read that names an
+executor label. The one exception: a new PR may carry `--label executor::<you>` when its
 body names you in the `Executor:` line. A reviewer stays the other agent, and
 the PR body lines stay as they are.
 - Recheck the code anchors against the current branch and run GitNexus impact

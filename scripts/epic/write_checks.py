@@ -105,6 +105,8 @@ WRITE_HINT = re.compile(
 )
 # Text that may change the board Status or a status label.
 STATUS_TEXT = re.compile(r"set_status|\bitem-|projectsV2|ProjectV2|status::|status%3A")
+# Text that may change an executor label.
+EXECUTOR_TEXT = re.compile(r"executor(?:::|%3A%3A)", re.IGNORECASE)
 WRAPPERS = {"env", "command", "nohup", "time", "exec"}
 SHELLS = {"bash", "sh", "zsh", "eval", "xargs", "python", "python3"}
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
@@ -171,13 +173,41 @@ def logical_lines(text: str) -> list[str]:
     return text.replace("\\\n", "").split("\n")
 
 
+def open_quote(line: str) -> bool:
+    """True when the line ends inside a quoted string (shell rules: no escapes
+    in '...', backslash escapes outside it, `#` starts a comment)."""
+    quote = None
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+        elif c == "\\":
+            i += 1
+        elif quote == '"':
+            if c == '"':
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (i == 0 or line[i - 1] in " \t;&|()"):
+            return False
+        i += 1
+    return quote is not None
+
+
 def segments(text: str) -> Iterator[tuple[str, str]]:
-    """(command line, heredoc body) pairs. Lines after a heredoc are read too."""
+    """(command line, heredoc body) pairs. Lines after a heredoc are read too.
+    A quoted string over several lines stays in one command line; heredoc
+    bodies are taken as they are."""
     lines = logical_lines(text)
     i = 0
     while i < len(lines):
         line = lines[i]
         i += 1
+        while open_quote(line) and i < len(lines):
+            line += "\n" + lines[i]
+            i += 1
         m = HEREDOC.search(line)
         if not m:
             yield line, ""
@@ -497,8 +527,11 @@ def gh_writes(words: list[str], cwd: str, stdin: str) -> list[Write]:
 
 
 def unclear(text: str) -> type[Unclear]:
-    """StatusUnclear for text that may change the Status or a status label."""
-    return StatusUnclear if STATUS_TEXT.search(text) else Unclear
+    """StatusUnclear for text that may change the Status, a status label or an
+    executor label: refused also with the shared reader off."""
+    if STATUS_TEXT.search(text) or EXECUTOR_TEXT.search(text):
+        return StatusUnclear
+    return Unclear
 
 
 def status_write(words: list[str], cwd: str) -> Write:

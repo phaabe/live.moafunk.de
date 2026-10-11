@@ -706,6 +706,40 @@ class ExecutorLabels(Base):
                 # A read from a file stays allowed.
                 self.assertIsNone(check("gh api graphql -F query=@read.graphql"))
 
+    def test_multiline_quoted_bodies_are_read(self) -> None:
+        # Codex review round 2 on https://github.com/phaabe/live.moafunk.de/pull/721
+        self.action(action="claim", issue=f"{ISSUES}/21")
+        self.reader.items = [item(21, "In progress")]
+        create = "gh pr create --draft --base dev/312-interim -t t "
+        codex = f"'Executor: Codex\nReviewer: Claude\nIssue: {ISSUES}/21\n'"
+        claude = f"'Executor: Claude\nReviewer: Codex\nIssue: {ISSUES}/21\n'"
+        substituted = "\"$(cat <<'EOF'\nExecutor: Codex\nEOF\n)\""
+        label = "gh issue edit 21 --add-label executor::codex"
+        refused = {
+            f"{create}--label executor::codex --body {codex}": "label executor::claude",
+            f"{create}--body {codex} --label executor::codex": "label executor::claude",
+            # A body the check cannot read, with an executor label.
+            f"{create}--label executor::codex --body {substituted}": "one plain command",
+            # Apostrophes in a heredoc body or a comment hide no later command.
+            f"cat > n.md <<'EOF'\nI don't know\nEOF\n{label}": "no executor:: label",
+            f"# it's a note\n{label}": "no executor:: label edits",
+        }
+        for reader in ("1", "0"):
+            with patch.dict(os.environ, {"EPIC_SHARED_READER": reader}):
+
+                def check(command: str) -> str | None:
+                    if reader == "1":
+                        return self.bash(command)
+                    return wc.status_refusal(
+                        "Bash", {"command": command}, str(self.root), "Claude"
+                    )
+
+                for command, expected in refused.items():
+                    with self.subTest(reader=reader, command=command):
+                        self.assertIn(expected, check(command) or "")
+                own = f"{create}--label executor::claude --body {claude}"
+                self.assertIsNone(check(own))
+
     def test_a_new_pr_may_carry_only_its_own_label(self) -> None:
         self.action(action="claim", issue=f"{ISSUES}/21")
         self.reader.items = [item(21, "In progress")]
@@ -952,19 +986,28 @@ class Callers(Base):
     def test_hook_with_the_reader_off_allows_only_a_claude_pr_label(self) -> None:
         # Codex review P2 on https://github.com/phaabe/live.moafunk.de/pull/721
         self.action(action="claim", issue=f"{ISSUES}/21")
-        create = "gh pr create --draft --base dev/312-interim -t t --label {} -F {}"
-        codex, claude = self.root / "codex.md", self.root / "claude.md"
-        codex.write_text(f"Executor: Codex\nReviewer: Claude\nIssue: {ISSUES}/21\n")
-        claude.write_text(f"Executor: Claude\nReviewer: Codex\nIssue: {ISSUES}/21\n")
-        refused = self.hook(
-            ROOT, create.format("executor::codex", codex), EPIC_SHARED_READER="0"
-        )
-        self.assertEqual(refused.returncode, 2, refused.stderr)
-        self.assertIn("only the executor label executor::claude", refused.stderr)
-        allowed = self.hook(
-            ROOT, create.format("executor::claude", claude), EPIC_SHARED_READER="0"
-        )
-        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        create = "gh pr create --draft --base dev/312-interim -t t --label {} {}"
+        codex = f"Executor: Codex\nReviewer: Claude\nIssue: {ISSUES}/21\n"
+        claude = f"Executor: Claude\nReviewer: Codex\nIssue: {ISSUES}/21\n"
+        (self.root / "codex.md").write_text(codex)
+        (self.root / "claude.md").write_text(claude)
+        for name, bad, good in (
+            ("file", f"-F {self.root / 'codex.md'}", f"-F {self.root / 'claude.md'}"),
+            # Codex review round 2: a quoted multiline body.
+            ("multiline", f"--body '{codex}'", f"--body '{claude}'"),
+        ):
+            with self.subTest(body=name):
+                refused = self.hook(
+                    ROOT, create.format("executor::codex", bad), EPIC_SHARED_READER="0"
+                )
+                self.assertEqual(refused.returncode, 2, refused.stderr)
+                self.assertIn("executor label executor::claude", refused.stderr)
+                allowed = self.hook(
+                    ROOT,
+                    create.format("executor::claude", good),
+                    EPIC_SHARED_READER="0",
+                )
+                self.assertEqual(allowed.returncode, 0, allowed.stderr)
 
     def test_hook_blocks_when_the_check_raises(self) -> None:
         # Exit 1 would not block in Claude Code; any error must exit 2.
