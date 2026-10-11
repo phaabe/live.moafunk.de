@@ -489,6 +489,11 @@ else:
                         + json.dumps(flag),
                         call["args"],
                     )
+                    self.assertIn(
+                        "shell_environment_policy.set.EPIC_SHARED_READER="
+                        + json.dumps(reader),
+                        call["args"],
+                    )
                     self.record.unlink(missing_ok=True)
 
     def test_run_tick_keeps_leaked_target_lock_visible(self) -> None:
