@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.98-slim-bookworm AS builder
+FROM public.ecr.aws/docker/library/rust:1.98-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ COPY backend/src ./src
 RUN touch src/main.rs && cargo build --release --locked
 
 # Frontend build stage for admin SPA
-FROM node:20-slim AS frontend-builder
+FROM public.ecr.aws/docker/library/node:20-slim AS frontend-builder
 
 WORKDIR /app
 
@@ -43,7 +43,7 @@ ENV VITE_STREAM_ICECAST_LIVE_URL=$VITE_STREAM_ICECAST_LIVE_URL \
 RUN npm run build
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM public.ecr.aws/docker/library/debian:bookworm-slim
 
 WORKDIR /app
 

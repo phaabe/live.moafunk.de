@@ -28,6 +28,12 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
+    #[error("Too many requests: {0}")]
+    TooManyRequests(String),
+
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
@@ -77,6 +83,8 @@ impl IntoResponse for AppError {
                 tracing::warn!("Conflict: {}", msg);
                 (StatusCode::CONFLICT, msg.clone())
             }
+            AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::FileTooLarge(max) => (

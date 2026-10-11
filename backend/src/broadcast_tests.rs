@@ -18,6 +18,8 @@ async fn state() -> (Arc<AppState>, tempfile::TempDir) {
     config.r2_endpoint = "http://127.0.0.1:1".to_string();
     let temp = tempfile::tempdir().unwrap();
     let state = Arc::new(AppState {
+        recovery_mail: crate::recovery_mail::RecoveryMailer::default(),
+        recovery_controls: crate::handlers::recovery::RecoveryControls::default(),
         db,
         s3_client: storage::build_s3_client(&config),
         config,

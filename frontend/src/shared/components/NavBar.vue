@@ -152,6 +152,13 @@ watch(
           <span class="username">{{ authStore.user?.username }}</span>
           <div class="user-dropdown-menu">
             <router-link to="/change-password" class="dropdown-link"> Change Password </router-link>
+            <router-link
+              v-if="['host', 'admin'].includes(authStore.user?.role ?? '')"
+              to="/recovery-email"
+              class="dropdown-link"
+            >
+              Recovery Email
+            </router-link>
             <button class="dropdown-logout" @click="authStore.logout()">Logout</button>
           </div>
         </div>
@@ -207,6 +214,14 @@ watch(
         <span class="mobile-username">{{ authStore.user?.username }}</span>
         <router-link to="/change-password" class="mobile-change-password" @click="closeMobileMenu">
           Change Password
+        </router-link>
+        <router-link
+          v-if="['host', 'admin'].includes(authStore.user?.role ?? '')"
+          to="/recovery-email"
+          class="mobile-change-password"
+          @click="closeMobileMenu"
+        >
+          Recovery Email
         </router-link>
         <button class="logout-button" @click="authStore.logout()">Logout</button>
       </div>
