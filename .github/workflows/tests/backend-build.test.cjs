@@ -78,7 +78,6 @@ test('build has only registry access and no host mutation path', () => {
     build.steps.filter((step) => step.uses).map((step) => step.uses),
     [
       'actions/checkout@v4',
-      'docker/setup-qemu-action@v3',
       'docker/setup-buildx-action@v3',
       'docker/login-action@v3',
       'docker/metadata-action@v5',
@@ -86,6 +85,8 @@ test('build has only registry access and no host mutation path', () => {
     ]
   );
   assert.equal(build.steps[0].with['persist-credentials'], false);
+  const buildx = build.steps.find((step) => step.uses === 'docker/setup-buildx-action@v3');
+  assert.equal(buildx.with['driver-opts'], 'image=mirror.gcr.io/moby/buildkit:buildx-stable-1');
   const text = JSON.stringify(build);
   assert.deepEqual(
     [...text.matchAll(/secrets\.([A-Z_]+)/g)].map((match) => match[1]),
@@ -168,4 +169,36 @@ test('image summary records the exact image and source without contacting a host
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('regression CI always checks main PRs and pushes without publishing or production access', () => {
+  const ci = yaml.load(readFileSync(path.resolve(__dirname, '../backend-build-tests.yml'), 'utf8'));
+  assert.deepEqual(ci.on, { pull_request: { branches: ['main'] }, push: { branches: ['main'] } });
+  assert.deepEqual(ci.permissions, { contents: 'read' });
+  assert.deepEqual(Object.keys(ci.jobs), ['backend-build-tests']);
+  const job = ci.jobs['backend-build-tests'];
+  assert.equal(job.if, undefined);
+  assert.equal(job.permissions, undefined);
+  assert.equal(job.environment, undefined);
+  assert.equal(job.uses, undefined);
+  assert.deepEqual(
+    job.steps.filter((step) => step.uses).map((step) => step.uses),
+    ['actions/checkout@v4', 'actions/setup-node@v4']
+  );
+  assert.equal(job.steps[0].with['persist-credentials'], false);
+  assert.deepEqual(
+    job.steps.filter((step) => step.run).map((step) => [step.run, step['working-directory']]),
+    [
+      ['npm ci --ignore-scripts', 'frontend'],
+      ['node --test .github/workflows/tests/backend-build.test.cjs', undefined],
+    ]
+  );
+  for (const step of job.steps) {
+    assert.equal(step.if, undefined);
+    assert.equal(step['continue-on-error'], undefined);
+  }
+  assert.doesNotMatch(
+    JSON.stringify(ci),
+    /secrets\.|bitwarden|docker\/|\bssh\b|\bscp\b|packages|id-token|upload-artifact/i
+  );
 });

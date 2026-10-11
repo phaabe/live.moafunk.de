@@ -24,11 +24,7 @@ LANES = {"setup", "ops", "backend", "frontend", "coordination"}
 
 
 class WaitingReason(str):
-    """A blocking result waiting for PR readiness, review or checks."""
-
-
-class RetryCollection(ValueError):
-    """Collection raced with an update; the next run must collect again."""
+    """A blocking check result that may pass once CI reports or completes."""
 
 
 def load_policy(path: str | Path) -> Json:
@@ -105,7 +101,7 @@ def pages(api: Api, endpoint: str, key: str | None = None) -> list[Json]:
                 raise ValueError(f"{endpoint}: missing total_count")
             total = response["total_count"]
             if expected is not None and expected != total:
-                raise RetryCollection(f"{endpoint}: changed during pagination; retry")
+                raise ValueError(f"{endpoint}: changed during pagination; retry")
             expected = total
             batch = response.get(key)
         else:
@@ -156,10 +152,8 @@ def comment_edit_markers(api: Api, repo: str, pr: int, comments: list[Json]) -> 
             )
         except (KeyError, TypeError) as exc:
             raise ValueError("comment edit evidence missing") from exc
-        if not isinstance(nodes, list):
-            raise ValueError("comment edit evidence nodes must be a list")
-        if count != len(comments):
-            raise RetryCollection("comment edit evidence count differs from REST")
+        if count != len(comments) or not isinstance(nodes, list):
+            raise ValueError("comment edit evidence count differs from REST")
         for node in nodes:
             if not isinstance(node, dict) or "lastEditedAt" not in node:
                 raise ValueError("comment has no explicit lastEditedAt marker")
@@ -190,9 +184,7 @@ def comment_edit_markers(api: Api, repo: str, pr: int, comments: list[Json]) -> 
             ("updated_at", "updatedAt"),
         )
         if any(comment.get(rest) != node.get(graphql) for rest, graphql in pairs):
-            raise RetryCollection(
-                "comment changed between REST and GraphQL reads; retry"
-            )
+            raise ValueError("comment changed between REST and GraphQL reads; retry")
         comment["last_edited_at"] = node["lastEditedAt"]
 
 
@@ -241,7 +233,7 @@ def collect(repo: str, pr: int, gh: Api = gh_api) -> Json:
         "comments",
     ):
         if current.get(key) != pull.get(key):
-            raise RetryCollection("PR changed during collection; retry")
+            raise ValueError("PR changed during collection; retry")
     return {
         "repository": repo,
         "pr": pull,
@@ -326,9 +318,7 @@ def verdict_errors(
         ):
             candidates.append((comment, match))
     if not candidates:
-        if edited_at:
-            return ["reviewer comment was edited; post a new verdict"]
-        return [WaitingReason(f"missing standalone verdict by {reviewer}")]
+        return [f"missing standalone verdict by {reviewer}"]
     latest, match = max(
         candidates,
         key=lambda item: (item[0].get("created_at", ""), item[0].get("id", 0)),
@@ -344,7 +334,7 @@ def verdict_errors(
     ):
         return ["latest counterpart verdict was edited; post a new verdict"]
     if match[3] != head:
-        return [WaitingReason("latest counterpart verdict is for a different head")]
+        return ["latest counterpart verdict is for a different head"]
     if match[1] != "APPROVED":
         return ["latest counterpart verdict requests changes"]
     return []
@@ -404,12 +394,8 @@ def evaluate(
         return ["invalid head SHA"]
     if expected_head is not None and head != expected_head:
         errors.append("head does not match expected head")
-    if pull.get("state") != "open":
-        errors.append("PR must be open")
-    elif pull.get("draft") is True:
-        errors.append(WaitingReason("PR is a draft"))
-    elif pull.get("draft") is not False:
-        errors.append("PR draft state is missing or invalid")
+    if pull.get("state") != "open" or pull.get("draft") is not False:
+        errors.append("PR must be open and not a draft")
     if snapshot.get("repository") != policy["repository"] or any(
         pull.get(side, {}).get("repo", {}).get("full_name") != policy["repository"]
         for side in ("head", "base")
@@ -430,7 +416,10 @@ def evaluate(
     if lane not in LANES:
         errors.append("unknown lane")
     leaves = meta.get("Leaf IDs", "")
-    if not (lane == "setup" and leaves == "setup") and not re.fullmatch(
+    if lane == "setup":
+        if leaves != "setup":
+            errors.append("setup lane must use Leaf IDs: setup")
+    elif not re.fullmatch(
         r"[A-Z][0-9]+\.[0-9]+\.[0-9]+(?:,\s*[A-Z][0-9]+\.[0-9]+\.[0-9]+)*", leaves
     ):
         errors.append("Leaf IDs must list concrete leaves separated by commas")
