@@ -22,6 +22,9 @@ EPIC = f"https://github.com/{REPO}/issues/312"
 BASES = {"main", "dev/312-interim", "dev/streaming-architecture"}
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 CONTEXT = "epic-guard"
+CHECKING = "Checking counterpart verdict, lanes and checks"
+MAX_DESCRIPTION = 140  # GitHub's limit for a status description
+ERRORS = (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError)
 Json = dict[str, Any]  # GitHub responses are validated at the API boundary.
 Api = Callable[[str], Any]
 Publish = Callable[[str, str, str], None]
@@ -29,6 +32,13 @@ Publish = Callable[[str, str, str], None]
 
 class GuardRefusal(ValueError):
     """A PR cannot pass the guard, but the refresh can continue."""
+
+
+def describe(exc: Exception) -> str:
+    """Keep gh's stderr: it holds the API's reason for a failed call."""
+    if isinstance(exc, subprocess.CalledProcessError) and isinstance(exc.stderr, str):
+        return f"{exc} {exc.stderr.strip()[-500:]}".strip()
+    return str(exc)
 
 
 def api(endpoint: str) -> Any:
@@ -57,7 +67,7 @@ def publish(head: str, state: str, description: str) -> None:
     payload = {
         "state": state,
         "context": CONTEXT,
-        "description": description[:140],
+        "description": description[:MAX_DESCRIPTION],
         "target_url": f"https://github.com/{REPO}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
     }
     subprocess.run(
@@ -124,8 +134,17 @@ def verify(
     head = pull.get("head", {}).get("sha", "")
     if not SHA.fullmatch(head):
         raise ValueError("invalid PR head SHA")
+    published = None
     if writer:
-        writer(head, "pending", "Checking counterpart verdict, lanes and checks")
+        try:
+            latest = latest_status(gh, head)
+        except ERRORS:
+            latest = None  # Unknown, so publish as for a new head.
+        if latest is None:
+            writer(head, "pending", CHECKING)
+            published = ("pending", CHECKING)
+        else:
+            published = (latest.get("state"), latest.get("description"))
     try:
         base = pull.get("base", {})
         if (
@@ -175,14 +194,8 @@ def verify(
         # Older trusted bases return only plain errors; keep them failing closed.
         waiting_type = getattr(checker, "WaitingReason", ())
         failures = [error for error in errors if not isinstance(error, waiting_type)]
-    except (
-        ValueError,
-        TypeError,
-        KeyError,
-        OSError,
-        subprocess.SubprocessError,
-    ) as exc:
-        errors = [str(exc)]
+    except ERRORS as exc:
+        errors = [describe(exc)]
         failures = errors
     if writer:
         if failures:
@@ -191,43 +204,59 @@ def verify(
             state, description = "pending", "waiting for checks: " + "; ".join(errors)
         else:
             state, description = "success", "Verdict, lanes and checks pass"
-        writer(
-            head,
-            state,
-            description,
-        )
+        description = description[:MAX_DESCRIPTION]
+        # GitHub caps the statuses per commit and context. Only this workflow
+        # writes the context, one run at a time, so skip an unchanged result.
+        if (state, description) != published:
+            writer(head, state, description)
     return errors
 
 
-def previously_checked(gh: Api, head: str) -> bool:
-    """Retargeting or removing metadata must not preserve an old green status."""
+def latest_status(gh: Api, head: str) -> Json | None:
+    """The newest guard status on a head; GitHub lists statuses newest first."""
     if not SHA.fullmatch(head):
         raise ValueError("invalid open PR head")
     for page in range(1, 1001):
         statuses = gh(f"repos/{REPO}/commits/{head}/statuses?per_page=100&page={page}")
-        if not isinstance(statuses, list):
+        if not isinstance(statuses, list) or any(
+            not isinstance(status, dict) for status in statuses
+        ):
             raise ValueError("invalid status page")
-        if any(status.get("context") == CONTEXT for status in statuses):
-            return True
+        ours = [status for status in statuses if status.get("context") == CONTEXT]
+        if ours:
+            return max(ours, key=lambda status: status.get("id", 0))
         if len(statuses) < 100:
-            return False
+            return None
     raise ValueError("status pagination limit reached")
 
 
-def event_numbers(event: Json, gh: Api) -> list[int]:
-    """Refresh all open epic PRs; an event's stale payload is never the policy."""
+def previously_checked(gh: Api, head: str) -> bool:
+    """Retargeting or removing metadata must not preserve an old green status."""
+    return latest_status(gh, head) is not None
+
+
+def event_numbers(event: Json, gh: Api) -> tuple[list[int], dict[str, list[str]]]:
+    """Refresh all open epic PRs; an event's stale payload is never the policy.
+
+    Returns the PRs to verify and the PRs whose scope could not be read.
+    """
     if event.get("repository", {}).get("full_name") != REPO:
         raise ValueError("event repository mismatch")
     explicit = event.get("inputs", {}).get("pr_number")
     if explicit:
         if not re.fullmatch(r"[1-9][0-9]*", str(explicit)):
             raise ValueError("invalid PR number")
-        return [int(explicit)]
-    return [
-        pull["number"]
-        for pull in open_pulls(gh)
-        if in_scope(pull) or previously_checked(gh, pull["head"]["sha"])
-    ]
+        return [int(explicit)], {}
+    numbers: list[int] = []
+    errors: dict[str, list[str]] = {}
+    # Listing open PRs stays fatal; one PR's status read must not stop the rest.
+    for pull in open_pulls(gh):
+        try:
+            if in_scope(pull) or previously_checked(gh, pull["head"]["sha"]):
+                numbers.append(pull["number"])
+        except ERRORS as exc:
+            errors[str(pull["number"])] = [describe(exc)]
+    return numbers, errors
 
 
 def main() -> int:
@@ -246,28 +275,29 @@ def main() -> int:
             raise ValueError("status publication is only supported in repository CI")
         if args.pr is not None and args.pr < 1:
             raise ValueError("invalid PR number")
-        numbers = (
-            [args.pr]
-            if args.pr is not None
-            else event_numbers(json.loads(args.event.read_text()), api)
-        )
-        result = {}
+        result: dict[str, list[str]] = {}
+        if args.pr is not None:
+            numbers = [args.pr]
+        else:
+            numbers, result = event_numbers(json.loads(args.event.read_text()), api)
+        failed = bool(result)
         for number in numbers:
-            result[str(number)] = verify(
-                number,
-                writer=publish if args.publish else None,
-                expected_head=args.expected_head,
-            )
+            # One PR's API or publication failure must not stop the others.
+            try:
+                result[str(number)] = verify(
+                    number,
+                    writer=publish if args.publish else None,
+                    expected_head=args.expected_head,
+                )
+            except ERRORS as exc:
+                result[str(number)] = [describe(exc)]
+                failed = True
         print(json.dumps(result, indent=2))
+        if failed:
+            return 1
         return 0 if args.publish else int(any(result.values()))
-    except (
-        ValueError,
-        TypeError,
-        KeyError,
-        OSError,
-        subprocess.SubprocessError,
-    ) as exc:
-        print(json.dumps({"errors": [str(exc)]}))
+    except ERRORS as exc:
+        print(json.dumps({"errors": [describe(exc)]}))
         return 1
 
 
