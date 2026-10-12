@@ -195,7 +195,7 @@ def verify(
         waiting_type = getattr(checker, "WaitingReason", ())
         failures = [error for error in errors if not isinstance(error, waiting_type)]
     except ERRORS as exc:
-        errors = [str(exc)]
+        errors = [describe(exc)]
         failures = errors
     if writer:
         if failures:
@@ -235,20 +235,28 @@ def previously_checked(gh: Api, head: str) -> bool:
     return latest_status(gh, head) is not None
 
 
-def event_numbers(event: Json, gh: Api) -> list[int]:
-    """Refresh all open epic PRs; an event's stale payload is never the policy."""
+def event_numbers(event: Json, gh: Api) -> tuple[list[int], dict[str, list[str]]]:
+    """Refresh all open epic PRs; an event's stale payload is never the policy.
+
+    Returns the PRs to verify and the PRs whose scope could not be read.
+    """
     if event.get("repository", {}).get("full_name") != REPO:
         raise ValueError("event repository mismatch")
     explicit = event.get("inputs", {}).get("pr_number")
     if explicit:
         if not re.fullmatch(r"[1-9][0-9]*", str(explicit)):
             raise ValueError("invalid PR number")
-        return [int(explicit)]
-    return [
-        pull["number"]
-        for pull in open_pulls(gh)
-        if in_scope(pull) or previously_checked(gh, pull["head"]["sha"])
-    ]
+        return [int(explicit)], {}
+    numbers: list[int] = []
+    errors: dict[str, list[str]] = {}
+    # Listing open PRs stays fatal; one PR's status read must not stop the rest.
+    for pull in open_pulls(gh):
+        try:
+            if in_scope(pull) or previously_checked(gh, pull["head"]["sha"]):
+                numbers.append(pull["number"])
+        except ERRORS as exc:
+            errors[str(pull["number"])] = [describe(exc)]
+    return numbers, errors
 
 
 def main() -> int:
@@ -267,13 +275,12 @@ def main() -> int:
             raise ValueError("status publication is only supported in repository CI")
         if args.pr is not None and args.pr < 1:
             raise ValueError("invalid PR number")
-        numbers = (
-            [args.pr]
-            if args.pr is not None
-            else event_numbers(json.loads(args.event.read_text()), api)
-        )
-        result = {}
-        failed = False
+        result: dict[str, list[str]] = {}
+        if args.pr is not None:
+            numbers = [args.pr]
+        else:
+            numbers, result = event_numbers(json.loads(args.event.read_text()), api)
+        failed = bool(result)
         for number in numbers:
             # One PR's API or publication failure must not stop the others.
             try:

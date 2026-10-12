@@ -581,17 +581,63 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(self.verify(gh))
         self.assertEqual([s[1] for s in self.statuses], ["pending", "failure"])
 
+    def test_read_failure_inside_verification_keeps_gh_stderr(self) -> None:
+        def gh(endpoint: str) -> dict | list:
+            if "/contents/" in endpoint:
+                raise subprocess.CalledProcessError(
+                    1, ["gh", "api"], stderr="gh: API rate limit exceeded (HTTP 403)\n"
+                )
+            return self.api(endpoint)
+
+        errors = self.verify(gh)
+        self.assertIn("HTTP 403", errors[0])
+        self.assertEqual(self.statuses[-1][1], "failure")
+        self.assertLessEqual(len(self.statuses[-1][2]), run.MAX_DESCRIPTION)
+
+    def test_scope_read_failure_does_not_stop_selection(self) -> None:
+        api = self.api
+        other = copy.deepcopy(api.data["pr"])
+        other.update(number=408, body="Ordinary fix")
+        other["base"]["ref"] = "main"
+        other["head"]["sha"] = "e" * 40
+        api.pulls.append(other)
+
+        def gh(endpoint: str) -> dict | list:
+            if f"/commits/{'e' * 40}/statuses" in endpoint:
+                raise subprocess.CalledProcessError(
+                    1, ["gh", "api"], stderr="gh: Not Found (HTTP 404)\n"
+                )
+            return api(endpoint)
+
+        event = json.dumps({"repository": {"full_name": run.REPO}})
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(self, "api", gh),
+            patch.object(
+                run, "publish", side_effect=lambda *s: self.statuses.append(s)
+            ),
+        ):
+            event_path = Path(directory) / "event.json"
+            event_path.write_text(event)
+            self.assertEqual(self.main("--event", str(event_path), "--publish"), 1)
+        self.assertEqual(
+            [s[:2] for s in self.statuses], [(HEAD, "pending"), (HEAD, "success")]
+        )
+        output = json.loads(self.stdout)
+        self.assertEqual(output["406"], [])
+        self.assertIn("HTTP 404", output["408"][0])
+
     def test_scope_and_manual_input_validation(self) -> None:
         event = {"repository": {"full_name": run.REPO}}
-        self.assertEqual(run.event_numbers(event, self.api), [406])
+        self.assertEqual(run.event_numbers(event, self.api), ([406], {}))
         self.api.data["pr"]["base"]["ref"] = "main"
         self.api.data["pr"]["body"] = "Ordinary fix"
-        self.assertEqual(run.event_numbers(event, self.api), [])
+        self.assertEqual(run.event_numbers(event, self.api), ([], {}))
         event["inputs"] = {"pr_number": "406; echo wrong"}
         with self.assertRaisesRegex(ValueError, "invalid PR"):
             run.event_numbers(event, self.api)
         event["inputs"] = {"pr_number": "406"}
-        self.assertEqual(run.event_numbers(event, self.api), [406])
+        self.assertEqual(run.event_numbers(event, self.api), ([406], {}))
         event["repository"]["full_name"] = "another/repo"
         with self.assertRaisesRegex(ValueError, "repository mismatch"):
             run.event_numbers(event, self.api)
@@ -603,7 +649,7 @@ class RunnerTests(unittest.TestCase):
             {"id": i, "context": f"other-{i}", "state": "success"} for i in range(100)
         ] + [{"id": 101, "context": "epic-guard", "state": "success"}]
         event = {"repository": {"full_name": run.REPO}}
-        self.assertEqual(run.event_numbers(event, self.api), [406])
+        self.assertEqual(run.event_numbers(event, self.api), ([406], {}))
         self.assertTrue(self.verify())
         self.assertEqual(self.statuses[-1][1], "failure")
 
