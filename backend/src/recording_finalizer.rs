@@ -59,7 +59,8 @@ struct Slot {
 struct Waiting {
     id: u64,
     show_id: i64,
-    /// The sleeping grace task. Aborted only while it is still waiting.
+    /// The grace task, which may have finished its live probe. Aborted when
+    /// the pending wait is cancelled or replaced.
     task: AbortHandle,
 }
 
@@ -150,15 +151,17 @@ impl Finalizer {
             if slot.waiting.as_ref().map(|w| w.id) != Some(id) {
                 return; // cancelled or replaced
             }
-            // Dropping the wait drops the only abort handle of this task.
-            slot.waiting = None;
             if live {
+                // Keep the show identity until go_live decides whether to
+                // resume its recording or detach it for another producer.
                 tracing::info!(
                     "Grace finalize skipped for show {}: stream is live again",
                     show_id
                 );
                 return;
             }
+            // Dropping the wait drops the only abort handle of this task.
+            slot.waiting = None;
             slot.start()
         };
         tracing::info!(
@@ -599,13 +602,60 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn live_stream_at_grace_expiry_skips_the_finalize() {
+    async fn same_show_after_live_grace_probe_resumes_the_recording() {
         let (f, ops) = (finalizer(), Fake::new(Some(1), true));
+        ops.probe.send_replace(false);
         f.schedule(ops.clone(), 1);
+        advance(FINALIZE_GRACE).await;
+        settle().await;
         ops.live.store(true, Ordering::SeqCst);
-        advance(FINALIZE_GRACE * 2).await;
+        ops.probe.send_replace(true);
         settle().await;
         assert!(ops.detached().is_empty());
+        assert_eq!(f.slot().waiting.as_ref().map(|w| w.show_id), Some(1));
+
+        f.go_live(ops.clone(), Some(1)).await;
         assert!(f.slot().waiting.is_none());
+        assert_eq!(ops.session(), Some(1));
+        assert!(ops.uploaded().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn other_show_after_live_grace_probe_detaches_the_old_session_first() {
+        let (f, ops) = (finalizer(), Fake::new(Some(1), false));
+        ops.probe.send_replace(false);
+        f.schedule(ops.clone(), 1);
+        advance(FINALIZE_GRACE).await;
+        settle().await;
+        ops.live.store(true, Ordering::SeqCst);
+        ops.probe.send_replace(true);
+        settle().await;
+
+        f.go_live(ops.clone(), Some(2)).await;
+        assert_eq!(ops.detached(), vec![1]);
+        ops.record(2);
+        ops.open_all();
+        settle().await;
+        assert_eq!(ops.uploaded(), vec![1]);
+        assert_eq!(ops.session(), Some(2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rehearsal_after_live_grace_probe_finalizes_the_waiting_show() {
+        let (f, ops) = (finalizer(), Fake::new(Some(1), false));
+        ops.probe.send_replace(false);
+        f.schedule(ops.clone(), 1);
+        advance(FINALIZE_GRACE).await;
+        settle().await;
+        ops.live.store(true, Ordering::SeqCst);
+        ops.probe.send_replace(true);
+        settle().await;
+
+        f.go_live(ops.clone(), None).await;
+        assert_eq!(ops.detached(), vec![1]);
+        assert_eq!(ops.session(), None);
+        ops.open_all();
+        settle().await;
+        assert_eq!(ops.uploaded(), vec![1]);
     }
 }

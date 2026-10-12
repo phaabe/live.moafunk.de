@@ -394,7 +394,7 @@ pub async fn stream_stop(
         }
     };
 
-    if was_active {
+    if was_active || user.role_enum().can_access_admin() {
         // Admin stop is a deliberate end: finalize the recording immediately
         // rather than waiting for the grace period.
         let finalized = state
