@@ -114,8 +114,12 @@ The per-PR `epic-guard` status is the verdict; `epic-guard-runner` succeeds
 once all statuses are published and fails only when the run itself fails
 (event selection or status publication errors).
 Verification errors for an individual PR publish a failure verdict and let
-the remaining PRs refresh; if its head cannot be read, no status can be
-published and the run fails.
+the remaining PRs refresh. If a PR's head cannot be read or its status cannot
+be published, the other PRs still refresh, and the run fails at the end. The
+JSON output keeps `gh`'s error text for that PR.
+GitHub limits the number of statuses per commit and context. The runner
+posts a status only when the state or description changes. A head with no
+`epic-guard` status first gets a pending status while the check runs.
 The workflow uses an explicit `workflow_run.workflows` list, including
 `EPIC - Integration checks`; update it when adding or renaming CI workflows.
 After installation on the default branch, finish a CI run and confirm it

@@ -63,10 +63,27 @@ class RunnerTests(unittest.TestCase):
             406, gh or self.api, lambda *args: self.statuses.append(args), HEAD
         )
 
+    def record(self, api: BaseAPI) -> run.Publish:
+        """Publish like GitHub: the newest status is listed first."""
+
+        def write(head: str, state: str, description: str) -> None:
+            self.statuses.append((head, state, description))
+            api.data["statuses"].insert(
+                0,
+                {
+                    "id": 1000 + len(self.statuses),
+                    "context": run.CONTEXT,
+                    "state": state,
+                    "description": description,
+                },
+            )
+
+        return write
+
     def main(self, *args: str) -> int:
         with (
             patch("sys.argv", ["run.py", *args]),
-            patch("sys.stdout", new_callable=io.StringIO),
+            patch("sys.stdout", new_callable=io.StringIO) as stdout,
             patch.dict(
                 run.os.environ,
                 {
@@ -78,7 +95,9 @@ class RunnerTests(unittest.TestCase):
             patch.object(run, "api", self.api),
             patch.object(run, "verify", partial(run.verify, gh=self.api)),
         ):
-            return run.main()
+            code = run.main()
+        self.stdout = stdout.getvalue()
+        return code
 
     def test_main_publish_returns_zero_for_guard_errors(self) -> None:
         self.api.data["comments"] = []
@@ -315,7 +334,9 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(self.main("--event", "event.json", "--publish"), 1)
         publish.assert_not_called()
 
-    def test_main_publish_returns_one_when_failure_status_cannot_be_published(self) -> None:
+    def test_main_publish_returns_one_when_failure_status_cannot_be_published(
+        self,
+    ) -> None:
         api = self.api
 
         def gh(endpoint: str) -> dict | list:
@@ -334,6 +355,115 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(self.main("--pr", "406", "--publish"), 1)
         self.assertEqual(publish.call_count, 2)
         self.assertEqual(publish.call_args.args[:2], (HEAD, "failure"))
+
+    def test_unchanged_result_publishes_no_new_status(self) -> None:
+        for result in ("success", "failure", "pending"):
+            with self.subTest(result=result):
+                self.statuses.clear()
+                api = BaseAPI()
+                if result == "failure":
+                    api.data["comments"] = []
+                    api.data["pr"]["comments"] = 0
+                elif result == "pending":
+                    api.data["check_runs"][0].update(
+                        status="in_progress", conclusion=None
+                    )
+                run.verify(406, api, self.record(api), HEAD)
+                self.assertEqual(self.statuses[0][1:], ("pending", run.CHECKING))
+                self.assertEqual(self.statuses[-1][1], result)
+                written = len(self.statuses)
+                run.verify(406, api, self.record(api), HEAD)
+                self.assertEqual(len(self.statuses), written)
+
+    def test_changed_result_publishes_only_the_new_state(self) -> None:
+        run.verify(406, self.api, self.record(self.api), HEAD)
+        self.assertEqual(self.statuses[-1][1], "success")
+        written = len(self.statuses)
+        self.api.data["comments"] = []
+        self.api.data["pr"]["comments"] = 0
+        run.verify(406, self.api, self.record(self.api), HEAD)
+        self.assertEqual([s[:2] for s in self.statuses[written:]], [(HEAD, "failure")])
+
+    def test_long_description_is_compared_after_truncation(self) -> None:
+        self.api.data["check_runs"][0].update(
+            name="x" * 200, status="in_progress", conclusion=None
+        )
+        run.verify(406, self.api, self.record(self.api), HEAD)
+        self.assertEqual(self.statuses[-1][1], "pending")
+        self.assertEqual(len(self.statuses[-1][2]), run.MAX_DESCRIPTION)
+        written = len(self.statuses)
+        run.verify(406, self.api, self.record(self.api), HEAD)
+        self.assertEqual(len(self.statuses), written)
+
+    def test_unreadable_status_history_publishes_like_a_new_head(self) -> None:
+        self.api.data["statuses"] = [
+            {
+                "id": 1,
+                "context": run.CONTEXT,
+                "state": "success",
+                "description": "Verdict, lanes and checks pass",
+            }
+        ]
+        reads = 0
+
+        def gh(endpoint: str) -> dict | list:
+            nonlocal reads
+            if "/statuses" in endpoint:
+                reads += 1
+                if reads == 1:
+                    raise subprocess.CalledProcessError(1, ["gh", "api"])
+            return self.api(endpoint)
+
+        self.assertEqual(self.verify(gh), [])
+        self.assertEqual(
+            [s[1:] for s in self.statuses],
+            [("pending", run.CHECKING), ("success", "Verdict, lanes and checks pass")],
+        )
+
+    def test_publication_failure_does_not_stop_other_prs(self) -> None:
+        first = BaseAPI()
+        second = BaseAPI()
+        second.data["pr"]["number"] = 407
+        second.data["pr"]["head"]["sha"] = "c" * 40
+        second.data["comments"][0]["body"] = second.data["comments"][0]["body"].replace(
+            HEAD, "c" * 40
+        )
+        second.data["check_runs"][0]["head_sha"] = "c" * 40
+        pulls = [first.data["pr"], second.data["pr"]]
+        active = first
+
+        def gh(endpoint: str) -> dict | list:
+            nonlocal active
+            if "/pulls?" in endpoint:
+                return copy.deepcopy(pulls)
+            if endpoint.endswith("/pulls/407"):
+                active = second
+                endpoint = endpoint.replace("/pulls/407", "/pulls/406")
+            return active(endpoint)
+
+        def write(head: str, state: str, description: str) -> None:
+            if head == HEAD:
+                raise subprocess.CalledProcessError(
+                    1, ["gh", "api"], stderr="gh: Validation Failed (HTTP 422)\n"
+                )
+            self.statuses.append((head, state, description))
+
+        event = json.dumps({"repository": {"full_name": run.REPO}})
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(self, "api", gh),
+            patch.object(run, "publish", side_effect=write),
+        ):
+            event_path = Path(directory) / "event.json"
+            event_path.write_text(event)
+            self.assertEqual(self.main("--event", str(event_path), "--publish"), 1)
+        self.assertEqual(
+            [s[:2] for s in self.statuses],
+            [("c" * 40, "pending"), ("c" * 40, "success")],
+        )
+        output = json.loads(self.stdout)
+        self.assertIn("HTTP 422", output["406"][0])
+        self.assertEqual(output["407"], [])
 
     def test_main_local_exit_code_reports_guard_errors(self) -> None:
         with patch.object(run, "publish") as publish:
