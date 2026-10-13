@@ -15,6 +15,10 @@ server as `--permission-prompt-tool`. It approves only:
       only while the selected action (EPIC_ACTION_FILE) is `adopt` of PR <n>,
       with <file> a regular file directly in the tick's body directory
       (EPIC_BODY_DIR, checked by its device and inode EPIC_BODY_DIR_ID)
+  <python> <this directory>/rebase_policy.py export --sha <40-hex SHA>
+      the read-only commit export for upstream test recovery evidence;
+      <python> is `python3` or this gate's own interpreter. The helper itself
+      allows only the selected PR head or the base's current tip.
 
 A feature branch starts with feat/, fix/, chore/, docs/, test/ or refactor/.
 Everything else is denied with a reason, including plain `git push` and
@@ -102,12 +106,35 @@ def rule(tool_name: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
         return merge(words[3:])
     if words[:2] == ["gh", "api"]:
         return body_edit(words[2:], selected_action())
+    if export_call(words):
+        return True, f"read-only export of {words[4][:7]} for test evidence"
     return (
         False,
         (
             "only the runner's git contract, head-pinned squash merges and the "
             "adopt PR-body edit are approved"
         ),
+    )
+
+
+# The trusted export helper: the rebase policy next to this gate.
+EXPORT_SCRIPT = Path(__file__).resolve().parent / "rebase_policy.py"
+
+
+def export_call(words: list[str]) -> bool:
+    """Exactly `<python> <trusted rebase_policy.py> export --sha <SHA>`."""
+    if len(words) != 5 or words[2:4] != ["export", "--sha"] or not SHA.match(words[4]):
+        return False
+    python = words[0] == "python3" or (
+        os.path.isabs(words[0])
+        and os.path.realpath(words[0]) == os.path.realpath(sys.executable)
+    )
+    # Absolute only: the gate's directory and the tool's can differ, so a
+    # relative path could name another file where the command runs.
+    return (
+        python
+        and os.path.isabs(words[1])
+        and os.path.realpath(words[1]) == str(EXPORT_SCRIPT)
     )
 
 

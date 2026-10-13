@@ -29,6 +29,21 @@ Values of one attempt (docs/implementation/epic-rules.md, section 8):
 Required suites (SUITES, by path prefix of the files the PR changes against
 the target tip). EPIC_REBASE_SUITES may name a JSON file with another list of
 the same shape; the gate and verify read it from the runner's environment.
+`attempt-check` pins the table in the attempt (`proof_suites`); proof, gate,
+publish and verify then use the pinned table (attempt_suites()). A suite with
+`"mandatory": true` is required whatever the paths.
+
+Upstream test recovery (next_action.recovery_of(), opt-in `upstream-recovery`
+in EPIC_FOCUS_ACTIONS): the PR owner's exact request makes a `resolve-conflict`
+action with a `recovery` object for a PR that does not conflict. attempt-check
+reads the PR, its comments with edit evidence, the base tip and the ancestry
+fresh, runs the selector's rule again and refuses a changed request (exit 6,
+no attempt counted). The target tip is the request's base tip, never a newer
+one. The pinned table makes every requested suite mandatory, so a proof needs
+the normal path suites plus the suites that failed on the old head.
+recovery_worktree_problem() keeps uncommitted or unpublished work: the model
+starts only from a clean worktree at the PR head or from this attempt's
+recorded rebase.
 
 Attempt limit: EPIC_REBASE_ATTEMPT_LIMIT, default 2. Each started attempt counts
 once, also when it fails or times out; only a landed one does not count. An
@@ -40,6 +55,7 @@ that post fails, the key stays suppressed and only the label post is retried.
 
 Usage:
   rebase_policy.py prove --worktree W --pr N --base BASE [--state-dir D]
+                         [--attempt-file ATTEMPT]
   rebase_policy.py attempt-check  --state-dir D --agent A --action-file F --out ATTEMPT
   rebase_policy.py attempt-start  --state-dir D --attempt-file ATTEMPT --id TICK
   rebase_policy.py attempt-finish --state-dir D --attempt-file ATTEMPT --id TICK
@@ -48,22 +64,34 @@ Usage:
   rebase_policy.py publish --agent A --attempt-file ATTEMPT --worktree W
                            --rebases-file R [--state-dir D]
   rebase_policy.py scope --agent A --action-file F --repo-dir D --out SCOPE
+  rebase_policy.py export --sha SHA
+
+`export` (upstream test recovery evidence) writes a read-only copy of one
+commit for tests: the selected PR head (the `sha` of EPIC_ACTION_FILE) or the
+current tip of the PR's base (read fresh). It runs one fixed `git archive` in
+the runner worktree (EPIC_WORKTREE), extracts it safely into a new private
+directory under TMPDIR and prints `export: <sha> <path>`. It writes no ref,
+index or worktree file and runs no test.
 
 Exit codes: 0 done (prove: valid proof; check/start: run), 1 not done (prove:
 a suite failed or was skipped; publish: nothing to publish), 2 bad input or
 state, 3 skip (attempt limit reached), 4 GitHub quota (wait stored), 5 GitHub
-read failed. `scope` always writes a scope; a failed read gives a full review.
+read failed, 6 stale (attempt-check: the recovery request, head, base or tip
+changed after selection; no attempt). `scope` always writes a scope; a failed
+read gives a full review.
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from contextlib import contextmanager
@@ -151,7 +179,10 @@ RECORD_FIELDS = (
 # Limits for the scope file the review prompt carries.
 MAX_DIFF = 60_000
 
-RUN, NOT_DONE, BAD, SKIP, QUOTA, READ_FAILED = 0, 1, 2, 3, 4, 5
+RUN, NOT_DONE, BAD, SKIP, QUOTA, READ_FAILED, STALE = 0, 1, 2, 3, 4, 5, 6
+# GitHub answers a compare of an unknown commit with these.
+UNKNOWN_COMMIT = frozenset({404, 422})
+HTTP_STATUS = re.compile(r"\(HTTP (\d{3})\)")
 
 
 class Problem(Exception):
@@ -160,6 +191,10 @@ class Problem(Exception):
 
 class ReadFailed(Exception):
     """A GitHub read failed."""
+
+
+class Stale(Exception):
+    """A recovery action no longer matches GitHub; no attempt starts."""
 
 
 # --- git --------------------------------------------------------------------
@@ -215,7 +250,16 @@ def changed_files(top: Path, *revisions: str) -> list[str]:
     """`git diff --name-only` as real paths: NUL-separated, so Git does not
     quote non-ASCII names (renames count twice)."""
     out = subprocess.run(
-        ["git", "-C", str(top), "diff", "--name-only", "-z", "--no-renames", *revisions],
+        [
+            "git",
+            "-C",
+            str(top),
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            *revisions,
+        ],
         capture_output=True,
         text=True,
         timeout=120,
@@ -228,6 +272,68 @@ def changed_files(top: Path, *revisions: str) -> list[str]:
 def touched(top: Path, onto: str, head: str) -> list[str]:
     """Files the PR changes on top of the target tip."""
     return changed_files(top, f"{onto}...{head}")
+
+
+def rebase_file(top: Path, name: str) -> str:
+    """One file of Git's rebase state (head-name, onto, orig-head), or ""."""
+    for folder in ("rebase-merge", "rebase-apply"):
+        path = git(
+            top, "rev-parse", "--path-format=absolute", "--git-path", f"{folder}/{name}"
+        )
+        if Path(path).is_file():
+            return Path(path).read_text().strip()
+    return ""
+
+
+def recovery_worktree_problem(
+    top: Path, branch: str, head: str, tip: str, record: dict[str, Any] | None
+) -> str | None:
+    """Why an upstream recovery model must not start in `top`, or None.
+
+    It starts from a clean worktree on `branch` at the PR head, or from the
+    runner's recorded rebase of this head (`record`: worktree, sha, onto,
+    orig, aborted): one in progress (onto this attempt's tip it resumes; onto
+    an older tip the model aborts it with the gate and starts again), or one
+    finished onto this attempt's tip and not pushed yet. A finished, unpushed
+    rebase onto an older tip cannot be aborted: it stays for Anton. Anything
+    else (uncommitted, untracked or unpublished work, another operation)
+    stays as it is too: no stash, reset or checkpoint commit."""
+    rec = record if isinstance(record, dict) else {}
+    ours = (
+        not rec.get("aborted")
+        and rec.get("worktree") == str(top)
+        and rec.get("sha") == head
+        and rec.get("orig") == head
+    )
+    if rebase_file(top, "head-name"):
+        if (
+            ours
+            and rebase_file(top, "head-name") == f"refs/heads/{branch}"
+            and rebase_file(top, "onto") == rec.get("onto")
+            and rebase_file(top, "orig-head") == head
+        ):
+            return None
+        return "a rebase is in progress that the runner did not record for this head; it stays"
+    problem = unclean(top)
+    if problem:
+        return f"{problem}; they stay, publish or park them first"
+    if git(top, "symbolic-ref", "-q", "HEAD", check=False) != f"refs/heads/{branch}":
+        return f"{top} is not on {branch}"
+    local = git(top, "rev-parse", "--verify", "HEAD^{commit}")
+    if local == head:
+        return None
+    onto = str(rec.get("onto"))
+    if ours and is_ancestor(top, onto, local):
+        if onto == tip:
+            return None
+        return (
+            f"a finished rebase onto the older tip {onto[:7]} is not pushed; "
+            "it stays for Anton (push it by hand after review, or drop it)"
+        )
+    return (
+        f"HEAD {local[:7]} is not the PR head {head[:7]}; unpublished or "
+        "older commits stay, publish them first"
+    )
 
 
 # --- suites and proof -------------------------------------------------------
@@ -254,12 +360,49 @@ def valid_suite(suite: Any) -> bool:
         and isinstance(suite.get("command"), list)
         and bool(suite["command"])
         and all(isinstance(c, str) for c in suite["command"])
+        and isinstance(suite.get("mandatory", False), bool)
     )
 
 
 def required(paths: list[str], table: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Suites whose path prefixes match any changed file, in table order."""
-    return [s for s in table if any(p.startswith(tuple(s["paths"])) for p in paths)]
+    """Suites whose path prefixes match any changed file, plus every mandatory
+    one (the failed suites of an upstream recovery), in table order."""
+    return [
+        s
+        for s in table
+        if s.get("mandatory") is True
+        or any(p.startswith(tuple(s["paths"])) for p in paths)
+    ]
+
+
+def without_flag(suite: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in suite.items() if k != "mandatory"}
+
+
+def pinned_table(mandatory: list[str]) -> list[dict[str, Any]]:
+    """The table an attempt pins: suites(), with each named suite mandatory."""
+    table = suites()
+    unknown = sorted(set(mandatory) - {s["name"] for s in table})
+    if unknown:
+        raise Problem(f"unknown suites: {', '.join(unknown)}")
+    return [{**s, "mandatory": True} if s["name"] in mandatory else s for s in table]
+
+
+def attempt_suites(attempt: dict[str, Any]) -> list[dict[str, Any]]:
+    """The proof table pinned in the attempt; suites() for an older attempt
+    without one. A pin may make suites mandatory, never drop or change one."""
+    if "proof_suites" not in attempt:
+        return suites()
+    table = attempt["proof_suites"]
+    if not isinstance(table, list) or not all(valid_suite(s) for s in table):
+        raise Problem("the attempt pins no valid proof suites")
+    normal = suites()
+    if [without_flag(s) for s in table] != [without_flag(s) for s in normal] or any(
+        s.get("mandatory") is True and pin.get("mandatory") is not True
+        for s, pin in zip(normal, table)
+    ):
+        raise Problem("the attempt's proof suites differ from the runner's suite table")
+    return table
 
 
 def proof_path(state_dir: Path, pr: int, commit: str) -> Path:
@@ -308,16 +451,23 @@ def run_suite(top: Path, suite: dict[str, Any]) -> dict[str, Any]:
     return {**entry, "exit": out.returncode, "result": result, "tail": tail}
 
 
-def prove(top: Path, pr: int, base: str, state_dir: Path) -> dict[str, Any]:
+def prove(
+    top: Path,
+    pr: int,
+    base: str,
+    state_dir: Path,
+    table: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Run the required suites on HEAD and write the proof. Raises Problem when
-    the tree is not clean before or after the tests."""
+    the tree is not clean before or after the tests. `table`: the attempt's
+    pinned table (attempt_suites()); None means suites()."""
     problem = unclean(top)
     if problem:
         raise Problem(f"no proof: {problem}")
     head = git(top, "rev-parse", "--verify", "HEAD^{commit}")
     tree = git(top, "rev-parse", "--verify", "HEAD^{tree}")
     onto = git(top, "merge-base", "HEAD", f"refs/remotes/origin/{base}")
-    table = required(touched(top, onto, head), suites())
+    table = required(touched(top, onto, head), suites() if table is None else table)
     results = [run_suite(top, suite) for suite in table]
     problem = unclean(top)
     if problem:
@@ -347,9 +497,15 @@ def load_proof(state_dir: Path, pr: int, commit: str) -> dict[str, Any] | None:
 
 
 def proof_problem(
-    proof: dict[str, Any] | None, top: Path, pr: int, commit: str, onto: str
+    proof: dict[str, Any] | None,
+    top: Path,
+    pr: int,
+    commit: str,
+    onto: str,
+    table: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Why the proof does not cover `commit` rebased onto `onto`, or None."""
+    """Why the proof does not cover `commit` rebased onto `onto`, or None.
+    `table`: the attempt's pinned table; None means suites()."""
     if proof is None:
         return f"no test proof for {commit[:7]}"
     if proof.get("version") != PROOF_VERSION or proof.get("repository") != REPO:
@@ -371,7 +527,8 @@ def proof_problem(
         if entry.get("exit") != 0:
             return f"suite {entry.get('name')} exited {entry.get('exit')}"
     have = {(e["name"], e.get("cwd"), tuple(e.get("command") or ())) for e in ran}
-    for suite in required(touched(top, onto, commit), suites()):
+    table = suites() if table is None else table
+    for suite in required(touched(top, onto, commit), table):
         if (suite["name"], suite["cwd"], tuple(suite["command"])) not in have:
             return f"required suite {suite['name']} did not run"
     return None
@@ -461,6 +618,85 @@ def record_problem(
     return None
 
 
+# --- export (test evidence) ------------------------------------------------
+
+ORIGIN = re.compile(rf"[:/]{re.escape(REPO)}(?:\.git)?/?$")
+
+
+def extract(data: bytes, out: Path) -> None:
+    """Unpack a `git archive` tar into `out`: regular files, directories and
+    links that stay inside only. Anything else raises Problem."""
+    # Without tarfile's data filter (older Python) chained links could
+    # leave the copy: no links at all then.
+    filtered = getattr(tarfile, "data_filter", None) is not None
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
+            members = tar.getmembers()
+            for m in members:
+                if os.path.isabs(m.name) or ".." in Path(m.name).parts:
+                    raise Problem(f"unsafe path in the archive: {m.name}")
+                if not (m.isfile() or m.isdir() or m.issym()):
+                    raise Problem(f"unsupported entry in the archive: {m.name}")
+                if m.issym() and not filtered:
+                    raise Problem(f"links need tarfile's data filter: {m.name}")
+                if m.issym():
+                    target = os.path.normpath(
+                        os.path.join(os.path.dirname(m.name), m.linkname)
+                    )
+                    if os.path.isabs(m.linkname) or target.split(os.sep)[0] == "..":
+                        raise Problem(f"unsafe link in the archive: {m.name}")
+            if filtered:
+                tar.extractall(out, members=members, filter="data")
+            else:  # the checks above are the filter
+                tar.extractall(out, members=members)
+    except tarfile.TarError as error:
+        raise Problem(f"cannot unpack the archive: {error}") from error
+
+
+def export(sha: str, action: dict[str, Any], worktree: Path) -> Path:
+    """A private copy of commit `sha` for tests. `sha` must be the selected
+    PR head or the current tip of the PR's base; the commit must be in the
+    runner worktree's repository (fetch first). Raises ValueError for a
+    commit or worktree that is not allowed, Problem for a failed export."""
+    pr, head = action.get("pr"), action.get("sha")
+    if type(pr) is not int or not isinstance(head, str) or not SHA.fullmatch(head):
+        raise ValueError("the selected action names no PR head")
+    if not SHA.fullmatch(sha):
+        raise ValueError("--sha needs a 40-char commit SHA")
+    if sha != head:
+        tip = base_tip(base_ref(pr))
+        if sha != tip:
+            raise ValueError(
+                f"{sha[:7]} is neither the PR head {head[:7]} nor the base tip {tip[:7]}"
+            )
+    real = Path(os.path.realpath(worktree))
+    if (
+        not worktree.is_absolute()
+        or Path(git(real, "rev-parse", "--show-toplevel")) != real
+    ):
+        raise ValueError(f"{worktree} is not a checkout")
+    if not ORIGIN.search(git(real, "remote", "get-url", "origin")):
+        raise ValueError(f"{worktree} is not a checkout of {REPO}")
+    if not has_commit(real, sha):
+        raise Problem(f"commit {sha[:7]} is not in the repository; fetch origin first")
+    archive = subprocess.run(
+        ["git", "-C", str(real), "archive", "--format=tar", sha],
+        capture_output=True,
+        timeout=300,
+    )
+    if archive.returncode != 0:
+        raise Problem(
+            f"git archive failed: {archive.stderr.decode(errors='replace').strip()}"
+        )
+    out = Path(
+        tempfile.mkdtemp(
+            prefix=f"epic-export-{sha[:12]}-", dir=os.environ.get("TMPDIR") or None
+        )
+    )
+    extract(archive.stdout, out)
+    return out
+
+
 # --- GitHub -----------------------------------------------------------------
 
 
@@ -493,6 +729,108 @@ def base_tip(ref: str) -> str:
     if not SHA.fullmatch(sha):
         raise ReadFailed(f"base {ref} has no commit SHA")
     return sha
+
+
+def read_json(endpoint: str, missing: frozenset[int] = frozenset()) -> Any:
+    """One REST read; None when GitHub answers a status in `missing`."""
+    try:
+        return json.loads(run_gh(["api", endpoint], timeout=60))
+    except subprocess.CalledProcessError as error:
+        found = HTTP_STATUS.search(error.stderr or "")
+        if found and int(found.group(1)) in missing:
+            return None
+        raise ReadFailed(f"gh api {endpoint.split('?')[0]} failed") from error
+    except (subprocess.SubprocessError, OSError, ValueError) as error:
+        raise ReadFailed(f"gh api {endpoint.split('?')[0]} failed") from error
+
+
+def fresh_pr(pr: int) -> dict[str, Any]:
+    """The PR in the selector's shape, read fresh: state, head, base, body,
+    labels, draft, mergeable, all comments (with GraphQL edit evidence when a
+    recovery request candidate exists) and, for a request naming its head,
+    the base tip and ancestry (next_action.recovery_read()). Any failed read
+    raises ReadFailed."""
+    # Imported here: the Codex helper copies this file without the selector.
+    import github_state
+    import next_action as na
+
+    pull = read_pr(pr)
+    shaped = {
+        "number": pr,
+        "state": pull.get("state"),
+        "body": pull.get("body") or "",
+        # Executor labels name the owner first (next_action.pr_author()).
+        "labels": pull.get("labels") or [],
+        "baseRefName": (pull.get("base") or {}).get("ref"),
+        "headRefOid": (pull.get("head") or {}).get("sha"),
+        "isDraft": bool(pull.get("draft")),
+        # null: GitHub is still computing it.
+        "mergeable": "MERGEABLE"
+        if pull.get("mergeable") is True
+        else "CONFLICTING"
+        if pull.get("mergeable") is False
+        else "UNKNOWN",
+    }
+    count = pull.get("comments")
+    if not isinstance(count, int):
+        raise ReadFailed(f"PR {pr} has no comment count")
+    rows = comments(pr)
+    try:
+        if na.recovery_rows(rows):
+            na.legacy_edit_evidence(pr, rows)
+        shaped["comments"] = na.comments_from_rest(rows, count)
+        na.recovery_read(shaped, read_json)
+    except (
+        subprocess.SubprocessError,
+        OSError,
+        ValueError,
+        github_state.ConfigError,
+    ) as error:
+        raise ReadFailed(f"recovery evidence of PR {pr}: {error}") from error
+    return shaped
+
+
+def recovery_admission(agent: str, action: dict[str, Any]) -> dict[str, Any]:
+    """The upstream recovery evidence the selector's own rule gives now, from
+    fresh reads (fresh_pr()). Raises Stale when it is not the action's
+    evidence any more, ReadFailed when a read failed: the runner then starts
+    no model and counts no attempt."""
+    import next_action as na
+
+    pr, head = action["pr"], action["sha"]
+    shaped = fresh_pr(pr)
+    if shaped["state"] != "open":
+        raise Stale(f"PR {pr} is {shaped['state']}")
+    if shaped["headRefOid"] != head:
+        raise Stale(f"the head of PR {pr} moved after selection")
+    known = frozenset(s["name"] for s in suites())
+    found, problem = na.recovery_of(shaped, agent.capitalize(), known)
+    if found is None or found.state != "valid" or found.evidence is None:
+        why = problem or (found.problem if found else None)
+        raise Stale(why or f"PR {pr} has no upstream test recovery request")
+    evidence = found.evidence
+    if evidence != action.get("recovery"):
+        raise Stale(f"the recovery request of PR {pr} changed after selection")
+    return evidence
+
+
+def recovery_hold(pr: int) -> str | None:
+    """Why a merge or a verdict on PR `pr` must wait, from fresh reads: its
+    owner's request for the current head is pending, needs new evidence or
+    is admitted (next_action.recovery_of()). An ignored request (edited,
+    foreign, malformed, older head) holds nothing. None: no hold."""
+    import next_action as na
+
+    shaped = fresh_pr(pr)
+    found, _ = na.recovery_of(shaped, str(na.pr_author(shaped)), na.recovery_suites())
+    if found is None:
+        return None
+    newest = na.newest_recovery(shaped) or {}
+    return (
+        f"PR {pr}: the owner's upstream test recovery request "
+        f"{newest.get('url')} ({found.state}) holds merge and review of "
+        f"{str(shaped['headRefOid'])[:7]}"
+    )
 
 
 def comments(pr: int) -> list[dict[str, Any]]:
@@ -618,15 +956,26 @@ def attempt_check(
     out: Path,
     post: Callable[[int], None] = post_label,
 ) -> int:
-    """SKIP at the limit (and post the label); else pin the attempt in `out`."""
+    """SKIP at the limit (and post the label); else pin the attempt in `out`.
+
+    An upstream recovery (`recovery` in the action) is admitted fresh first
+    (recovery_admission(): Stale or ReadFailed before the store is touched).
+    Its target tip is the request's base tip. The pin holds the proof table:
+    suites(), with the recovery's suites mandatory."""
     out.unlink(missing_ok=True)
     pr, head = action.get("pr"), action.get("sha")
     if action.get("action") != "resolve-conflict" or type(pr) is not int:
         raise ValueError("attempts count only resolve-conflict on a PR")
     if not isinstance(head, str) or not SHA.fullmatch(head):
         raise ValueError("invalid PR head")
-    ref = base_ref(pr)
-    tip = base_tip(ref)
+    recovery = None
+    if action.get("recovery") is not None:
+        recovery = recovery_admission(agent, action)
+        ref, tip = recovery["base"], recovery["tip"]
+    else:
+        ref = base_ref(pr)
+        tip = base_tip(ref)
+    table = pinned_table(recovery["suites"] if recovery else [])
     key = attempt_key(pr, head, tip)
     with locked(state_dir) as data:
         entry = data.setdefault(key, {"attempts": []})
@@ -641,10 +990,11 @@ def attempt_check(
             return SKIP
         if not entry["attempts"]:
             data.pop(key)
-    write_json(
-        out,
-        {"key": key, "agent": agent, "pr": pr, "head": head, "base": ref, "tip": tip},
-    )
+    pin = {"key": key, "agent": agent, "pr": pr, "head": head, "base": ref, "tip": tip}
+    pin["proof_suites"] = table
+    if recovery:
+        pin["recovery"] = recovery
+    write_json(out, pin)
     return RUN
 
 
@@ -750,7 +1100,14 @@ def publish(
     problem = unclean(top)
     if problem:
         return NOT_DONE, problem
-    problem = proof_problem(load_proof(state_dir, pr, new_head), top, pr, new_head, tip)
+    problem = proof_problem(
+        load_proof(state_dir, pr, new_head),
+        top,
+        pr,
+        new_head,
+        tip,
+        attempt_suites(attempt),
+    )
     if problem:
         return NOT_DONE, problem
     try:
@@ -812,7 +1169,7 @@ def verify_resolution(
     """Why a moved head is not a proven, recorded resolution, or None."""
     pr, old_head, tip = attempt["pr"], attempt["head"], attempt["tip"]
     proof = load_proof(state_dir, pr, new_head)
-    problem = proof_problem(proof, top, pr, new_head, tip)
+    problem = proof_problem(proof, top, pr, new_head, tip, attempt_suites(attempt))
     if problem:
         return problem
     fields = record_comment(rows, agent.capitalize(), new_head, since)
@@ -1030,6 +1387,7 @@ def main() -> int:
             "attempt-status",
             "publish",
             "scope",
+            "export",
         ],
     )
     parser.add_argument("--state-dir", type=Path)
@@ -1044,6 +1402,7 @@ def main() -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--id")
     parser.add_argument("--outcome")
+    parser.add_argument("--sha")
     args = parser.parse_args()
     quota_dir = args.state_dir
     try:
@@ -1054,7 +1413,14 @@ def main() -> int:
             if args.worktree is None or args.pr is None or not args.base:
                 parser.error("prove needs --worktree, --pr and --base")
             state = state_arg(args.state_dir)
-            proof = prove(args.worktree.resolve(), args.pr, args.base, state)
+            table = None
+            if args.attempt_file is not None:
+                # The runner's pin: its proof table, for this PR and base only.
+                pin = load_attempt(args.attempt_file)
+                if pin.get("pr") != args.pr or pin.get("base") != args.base:
+                    raise ValueError("the attempt pin is for another PR or base")
+                table = attempt_suites(pin)
+            proof = prove(args.worktree.resolve(), args.pr, args.base, state, table)
             bad = [s for s in proof["suites"] if s["result"] != "passed"]
             for s in proof["suites"]:
                 print(f"proof: {s['name']} {s['result']}: {' '.join(s['command'])}")
@@ -1066,6 +1432,20 @@ def main() -> int:
                 )
                 return NOT_DONE
             print(f"proof: valid for {proof['commit']}")
+            return RUN
+        if args.command == "export":
+            if not args.sha:
+                parser.error("export needs --sha")
+            action = json.loads(
+                Path(os.environ.get("EPIC_ACTION_FILE") or "").read_text()
+            )
+            worktree = Path(os.environ.get("EPIC_WORKTREE") or "")
+            if not isinstance(action, dict) or not str(worktree).startswith("/"):
+                raise ValueError(
+                    "export needs the runner's EPIC_ACTION_FILE and EPIC_WORKTREE"
+                )
+            path = export(args.sha, action, worktree)
+            print(f"export: {args.sha} {path}")
             return RUN
         if args.command == "scope":
             if None in (args.agent, args.action_file, args.repo_dir, args.out):
@@ -1110,6 +1490,9 @@ def main() -> int:
     except ReadFailed as error:
         print(f"rebase: GitHub read failed: {error}", file=sys.stderr)
         return READ_FAILED
+    except Stale as error:
+        print(f"rebase: stale upstream recovery: {error}", file=sys.stderr)
+        return STALE
     except subprocess.CalledProcessError as error:
         print(f"rebase: GitHub write failed: {error.stderr or error}", file=sys.stderr)
         return READ_FAILED

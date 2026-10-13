@@ -154,6 +154,7 @@ else:
             "github_state.py",
             "agents.py",
             "tick_events.py",
+            "activity.py",
             "target_lock.py",
             "routing.py",
             "tick_verify.py",
@@ -212,8 +213,11 @@ else:
             "print(os.environ['TEST_DECISION'])\n"
         )
         selector.write_text(
-            "from selector_contract import BASES, EPIC, PROJECT_API, REPO, body_digest, issue_url, other\n"
-            "if __name__ == '__main__':\n"
+            "import sys\n"
+            "import selector_contract\n"
+            "if __name__ != '__main__':\n"
+            "    sys.modules[__name__] = selector_contract\n"
+            "else:\n"
             + "\n".join(f"    {line}" for line in selector_code.splitlines())
             + "\n"
         )
@@ -468,6 +472,37 @@ else:
         except BaseException:
             stop_fixture(process)
             raise
+
+    def test_upstream_recovery_prompt_requires_explicit_opt_in(self) -> None:
+        self.env["TEST_DECISION"] = json.dumps(
+            {"action": "continue", "pr": 406, "sha": "a" * 40}
+        )
+        for reader in ("0", "1"):
+            self.env["EPIC_SHARED_READER"] = reader
+            for flag, enabled in (("adopt", False), ("adopt, upstream-recovery", True)):
+                with self.subTest(reader=reader, flag=flag):
+                    self.env["EPIC_FOCUS_ACTIONS"] = flag
+                    result = self.run_tick()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    call = json.loads(self.calls.read_text().splitlines()[-1])
+                    self.assertEqual(
+                        "\nUpstream test recovery: on\n" in call["prompt"], enabled
+                    )
+                    self.assertIn(
+                        "including the first request, return\n`completed`",
+                        call["prompt"],
+                    )
+                    self.assertIn(
+                        "shell_environment_policy.set.EPIC_FOCUS_ACTIONS="
+                        + json.dumps(flag),
+                        call["args"],
+                    )
+                    self.assertIn(
+                        "shell_environment_policy.set.EPIC_SHARED_READER="
+                        + json.dumps(reader),
+                        call["args"],
+                    )
+                    self.record.unlink(missing_ok=True)
 
     def test_run_tick_keeps_leaked_target_lock_visible(self) -> None:
         # Inject a bug only in the disposable runner: a child inherits fd 8
@@ -1228,8 +1263,9 @@ else:
         configure(writer)
         (writer / "scripts/epic/next_action.py").write_text(
             "import os\n"
-            "with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('new\\n')\n"
-            'print(\'{"action": "idle", "reason": "focused selector"}\')\n'
+            "if __name__ == '__main__':\n"
+            "    with open(os.environ['TEST_SELECTIONS'], 'a') as f: f.write('new\\n')\n"
+            '    print(\'{"action": "idle", "reason": "focused selector"}\')\n'
         )
         git(writer, "add", ".")
         git(writer, "commit", "-m", "Update selector")
@@ -2381,6 +2417,92 @@ else:
         self.assertEqual(seen["EPIC_TRUSTED_ROOT"], str(self.repo.resolve()))
         self.assertNotIn("EPIC_SNAPSHOT_MAX_AGE_SECONDS", seen)
 
+    def test_reader_defaults_and_overrides_reach_model_and_recheck(self) -> None:
+        reader = self.repo / "scripts/epic/github_state.py"
+        source = reader.read_text()
+        self.assertIn("DEFAULT_ENABLED = False", source)
+        for default in (False, True):
+            reader.write_text(
+                source.replace(
+                    "DEFAULT_ENABLED = False", f"DEFAULT_ENABLED = {default}"
+                )
+            )
+            for setting in (None, "", "0", "1"):
+                with self.subTest(default=default, setting=setting):
+                    self.env.pop("EPIC_SHARED_READER", None)
+                    if setting is not None:
+                        self.env["EPIC_SHARED_READER"] = setting
+                    expected = str(int(default)) if not setting else setting
+                    self.rechecks.unlink(missing_ok=True)
+                    result = self.run_tick()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    call = json.loads(self.calls.read_text().splitlines()[-1])
+                    self.assertEqual(call["tool_env"]["EPIC_SHARED_READER"], expected)
+                    self.assertEqual(self.rechecks.exists(), expected == "1")
+                    self.record.unlink(missing_ok=True)
+
+    def test_invalid_reader_stops_before_selection_or_model(self) -> None:
+        self.env["EPIC_SHARED_READER"] = "invalid"
+        result = self.run_tick()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse(self.selections.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertIn(
+            "bad shared-reader setting", (self.state / "codex.log").read_text()
+        )
+
+    def test_reader_off_model_environment_holds_merge_and_verdict_in_hook(self) -> None:
+        # Real runner tool environment, hook and write checker. Only the fresh
+        # recovery policy result is stubbed; this tests whether the hook reaches it.
+        hooks = self.repo / ".codex/hooks/scripts"
+        hooks.mkdir(parents=True)
+        shutil.copyfile(ROOT / "hooks/scripts/epic_guard.py", hooks / "epic_guard.py")
+        probe = self.root / "recovery-hold-probe.py"
+        probe.write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "from unittest import mock\n"
+            f"sys.path.insert(0, {str(hooks)!r})\n"
+            f"sys.path.insert(0, {str(self.repo / 'scripts/epic')!r})\n"
+            "import epic_guard, rebase_policy\n"
+            "sha = 'a' * 40\n"
+            "commands = [\n"
+            "f'gh pr merge 406 --repo phaabe/live.moafunk.de --squash --match-head-commit {sha}',\n"
+            "f\"gh pr comment 406 --repo phaabe/live.moafunk.de --body 'Review: APPROVED by Codex at {sha}'\",\n"
+            "]\n"
+            "results = []\n"
+            "with mock.patch.object(rebase_policy, 'recovery_hold', return_value='HELD') as hold:\n"
+            "    for command in commands:\n"
+            "        try:\n"
+            "            epic_guard.runner_write_check('exec_command', {'cmd': command}, Path.cwd())\n"
+            "        except ValueError as error:\n"
+            "            results.append(str(error))\n"
+            "        else:\n"
+            "            results.append(None)\n"
+            "    print(json.dumps({'mode': os.environ.get('EPIC_SHARED_READER'),\n"
+            "        'results': results, 'targets': [c.args[0] for c in hold.call_args_list]}))\n"
+        )
+        output = self.root / "recovery-hold-result.json"
+        self.env.update(
+            EPIC_FOCUS_ACTIONS="upstream-recovery",
+            TEST_MODEL_ENV_PROBE=str(probe),
+            TEST_MODEL_ENV_RESULT=str(output),
+        )
+        for setting in (None, "", "0"):
+            with self.subTest(setting=setting):
+                self.env.pop("EPIC_SHARED_READER", None)
+                if setting is not None:
+                    self.env["EPIC_SHARED_READER"] = setting
+                result = self.run_tick()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                seen = json.loads(output.read_text())
+                self.assertEqual(seen["mode"], "0")
+                self.assertEqual(seen["targets"], [406, 406])
+                self.assertTrue(
+                    all("HELD" in (reason or "") for reason in seen["results"])
+                )
+                self.record.unlink(missing_ok=True)
+
     def test_adopt_quota_wait_during_model_leaves_target_state_untouched(self) -> None:
         self.quota_clock()
         self.adopt_action()
@@ -2721,6 +2843,198 @@ else:
     def tick_events(self, state: Path | None = None) -> list[dict[str, object]]:
         path = (state or self.state) / "codex-ticks.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_activity_model_boundaries_preserve_result_and_privacy(self) -> None:
+        import activity
+
+        for action, activity_name, model_exit in (
+            ("review", "review", 0),
+            ("fix", "code", 17),
+        ):
+            with self.subTest(action=action):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.env["TEST_DECISION"] = json.dumps(
+                    {"action": action, "pr": 406, "sha": "a" * 40,
+                     "reason": "private model text", "prompt": "private prompt"}
+                )
+                self.env["TEST_CODEX_EXIT"] = str(model_exit)
+                self.assertEqual(self.run_tick().returncode, model_exit)
+                path = self.state / "codex-activity.jsonl"
+                records = [json.loads(line) for line in path.read_text().splitlines()]
+                boundaries = [r for r in records if r["event"] != "wait"]
+                self.assertEqual([r["event"] for r in boundaries], ["model-start", "model-end"])
+                for record in boundaries:
+                    self.assertEqual(tuple(record), activity.RECORD_KEYS)
+                    self.assertEqual(record["activity"], activity_name)
+                    self.assertEqual(record["target"], "pr:406")
+                    self.assertEqual(record["tick"], self.tick_events()[0]["tick"])
+                    self.assertIsNone(record["outcome"])
+                    self.assertEqual(activity.record(record), record)
+                self.assertNotIn("private", path.read_text())
+                self.assertEqual([r["event"] for r in self.tick_events()], ["start", "finish"])
+
+    def activity_records(self, state: Path | None = None) -> list[dict[str, object]]:
+        path = (state or self.state) / "codex-activity.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_activity_backoff_keeps_expiry_and_allows_other_work(self) -> None:
+        self.state.mkdir(parents=True)
+        until = int(time.time()) + 600
+        entry = {"at": until - 900, "until": until, "reason": "private prompt"}
+        path = self.state / "codex-backoff.json"
+        path.write_text(json.dumps({f"pr:406:{'a' * 40}": entry}))
+        self.candidates(self.review_action(406), self.review_action(407))
+        self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records()
+        self.assertEqual([r["event"] for r in records], ["wait", "model-start", "model-end"])
+        wait = records[0]
+        self.assertEqual((wait["reason_code"], wait["scope"], wait["target"]),
+                         ("retry_backoff", "target", "pr:406"))
+        self.assertEqual(wait["retry_at"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(until)))
+        self.assertEqual(records[1]["target"], "pr:407")
+        self.assertNotIn("private", json.dumps(records))
+        self.assertEqual(json.loads(path.read_text())[f"pr:406:{'a' * 40}"], entry)
+
+    def test_activity_target_lock_has_no_invented_expiry(self) -> None:
+        self.target_locks.mkdir()
+        self.candidates(self.review_action(406), self.review_action(407))
+        with (self.target_locks / "406.lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records()
+        self.assertEqual([r["event"] for r in records], ["wait", "model-start", "model-end"])
+        self.assertEqual((records[0]["reason_code"], records[0]["scope"], records[0]["target"], records[0]["retry_at"]),
+                         ("target_lock", "target", "pr:406", None))
+        self.assertEqual(records[1]["target"], "pr:407")
+
+    def test_activity_shared_quota_wait_is_agent_scoped(self) -> None:
+        self.quota_clock()
+        wait = self.store_quota_wait()
+        self.env["EPIC_AGENT_ID"] = "codex-2"
+        self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records(self.state / "agents/codex-2")
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]["event"], records[0]["reason_code"], records[0]["scope"], records[0]["retry_at"]),
+                         ("wait", "github_quota", "agent", wait["retry_at"]))
+        self.assertIsNone(records[0]["target"])
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.gh_calls.exists())
+
+    def test_activity_quota_between_candidates_names_current_candidate(self) -> None:
+        self.quota_clock()
+        wait = self.store_quota_wait()
+        wait_path = self.state / "github-quota-wait.json"
+        wait_path.unlink()
+        self.candidates(self.review_action(406), {
+            **self.review_action(407), "action": "fix",
+        })
+        # Simulate another agent recording a quota wait while 406 is refused.
+        (self.runner.parent / "assignment.py").write_text(
+            "import json, pathlib, sys\n"
+            "action_path = sys.argv[sys.argv.index('--action-file') + 1]\n"
+            "assert json.loads(pathlib.Path(action_path).read_text())['pr'] == 406\n"
+            f"pathlib.Path({str(wait_path)!r}).write_text({json.dumps(wait)!r})\n"
+            "raise SystemExit(6)\n"
+        )
+        self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records()
+        self.assertEqual(
+            [(r["event"], r["reason_code"], r["scope"], r["target"], r["action"])
+             for r in records],
+            [("wait", "ticket_not_ready", "target", "pr:406", "review"),
+             ("wait", "github_quota", "agent", "pr:407", "fix")],
+        )
+        self.assertEqual(records[1]["retry_at"], wait["retry_at"])
+        self.assertEqual(json.loads(wait_path.read_text()), wait)
+        self.assert_quota_only()
+        self.assertEqual(self.last_finish(), (0, "ok", "quota"))
+
+    def test_activity_model_quota_uses_stored_reset(self) -> None:
+        self.quota_clock()
+        self.env["TEST_RESULT"] = json.dumps({
+            "status": "blocked", "summary": "private model text",
+            "reason_code": "github_rate_limit", "retry_at": self.env["TEST_RESET"],
+        })
+        self.assertEqual(self.run_tick().returncode, 75)
+        records = self.activity_records()
+        self.assertEqual([r["event"] for r in records], ["model-start", "model-end", "wait"])
+        stored = json.loads((self.state / "github-quota-wait.json").read_text())
+        self.assertEqual((records[-1]["reason_code"], records[-1]["scope"], records[-1]["retry_at"]),
+                         ("github_quota", "agent", stored["retry_at"]))
+        self.assertNotIn("private", json.dumps(records))
+
+    def test_activity_wait_write_failure_preserves_quota_refusal(self) -> None:
+        self.quota_clock()
+        self.store_quota_wait()
+        (self.state / "codex-activity.jsonl").mkdir()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.gh_calls.exists())
+        self.assertEqual(self.last_finish(), (0, "ok", "quota"))
+
+    def test_activity_changed_assignment_is_a_target_refusal(self) -> None:
+        self.env["TEST_ASSIGNMENT_EXIT"] = "6"
+        self.assertEqual(self.run_tick().returncode, 0)
+        records = self.activity_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]["event"], records[0]["reason_code"], records[0]["scope"]),
+                         ("wait", "ticket_not_ready", "target"))
+        self.assertFalse(self.calls.exists())
+
+    def test_activity_timeout_preserves_end_and_timeout_result(self) -> None:
+        timeout_pid = self.timeout_command("codex")
+        process, _ = self.blocked_tick()
+        os.kill(int(timeout_pid.read_text()), signal.SIGALRM)
+        self.assertEqual(process.wait(timeout=15), 124)
+        boundaries = [r for r in self.activity_records() if r["event"] != "wait"]
+        self.assertEqual([r["event"] for r in boundaries], ["model-start", "model-end"])
+        self.assertTrue(all(r["outcome"] is None for r in boundaries))
+        self.assertEqual(self.last_finish(), (124, "timeout", "model"))
+
+    def test_activity_interruption_does_not_invent_model_end(self) -> None:
+        process, _ = self.blocked_tick()
+        process.send_signal(signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=15), 143)
+        self.assertEqual([r["event"] for r in self.activity_records()], ["model-start"])
+        self.assertEqual(self.last_finish(), (143, "killed", "model"))
+
+    def test_activity_registered_models_write_separate_files(self) -> None:
+        for agent in ("codex", "codex-2"):
+            self.env["EPIC_AGENT_ID"] = agent
+            self.assertEqual(self.run_tick().returncode, 0)
+            records = self.activity_records(self.state / "agents" / agent)
+            self.assertEqual([r["event"] for r in records], ["model-start", "model-end"])
+        self.assertFalse((self.state / "codex-activity.jsonl").exists())
+
+    def test_no_model_paths_emit_no_model_boundaries(self) -> None:
+        for overrides in (
+            {"TEST_DECISION": json.dumps({"action": "idle"})},
+            {"TEST_DECISION": json.dumps({"action": "stop"})},
+            {"TEST_ASSIGNMENT_EXIT": "5"},
+        ):
+            with self.subTest(overrides=overrides):
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.env.update(overrides)
+                self.run_tick()
+                for key in overrides:
+                    del self.env[key]
+                self.assertFalse((self.state / "codex-activity.jsonl").exists())
+                self.assertFalse(self.calls.exists())
+
+    def test_activity_write_failure_does_not_change_model_success(self) -> None:
+        self.state.mkdir(parents=True)
+        (self.state / "codex-activity.jsonl").mkdir()
+        self.assertEqual(self.run_tick().returncode, 0)
+        self.assertTrue(self.calls.exists())
+        self.assertEqual(self.tick_events()[-1]["outcome"], "ok")
+
+    def test_shared_activity_compatibility_and_privacy_fixtures(self) -> None:
+        import activity
+
+        path = ROOT.parent / "scripts/epic/fixtures/activity-contract.json"
+        for case in json.loads(path.read_text())["cases"]:
+            with self.subTest(case=case["name"]):
+                self.assertEqual(activity.record(case["event"]), case["record"])
 
     def last_finish(self) -> tuple[object, ...]:
         events = self.tick_events()

@@ -47,7 +47,9 @@ Rebase policy (rebase_policy.py): a `resolve-conflict` rebase must go onto the
 target tip the runner pinned for this attempt (EPIC_ATTEMPT_FILE). Paths added
 during the recorded rebase are its conflicted files; the runner puts them into
 the rebase record. Every lease push needs a valid test proof for the current
-HEAD on the recorded onto commit, and a clean worktree and index.
+HEAD on the recorded onto commit, and a clean worktree and index. In a
+resolve-conflict tick the proof must cover the attempt's pinned suite table
+(rebase_policy.attempt_suites()): an upstream recovery's failed suites too.
 """
 
 from __future__ import annotations
@@ -565,12 +567,23 @@ def lease_push(path: Path, rest: list[str]) -> str:
 
 
 def proven(top: Path, number: int, onto: str) -> None:
-    """A clean tree and a valid test proof for HEAD (rebase_policy.py)."""
+    """A clean tree and a valid test proof for HEAD (rebase_policy.py). In a
+    resolve-conflict tick the proof needs the attempt's pinned table, with an
+    upstream recovery's mandatory suites."""
+    pin = None
+    if action().get("action") == "resolve-conflict":
+        pin = load_json("EPIC_ATTEMPT_FILE")
     try:
+        table = None if pin is None else rebase_policy.attempt_suites(pin)
         problem = rebase_policy.unclean(top)
         head = git_out(top, "rev-parse", "--verify", "HEAD")
         problem = problem or rebase_policy.proof_problem(
-            rebase_policy.load_proof(state_dir(), number, head), top, number, head, onto
+            rebase_policy.load_proof(state_dir(), number, head),
+            top,
+            number,
+            head,
+            onto,
+            table,
         )
     except (rebase_policy.Problem, OSError, ValueError) as error:
         problem = str(error)

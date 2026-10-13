@@ -52,6 +52,7 @@ export EPIC_QUOTA_DIR="$registry_dir"
 lock_dir="${state_dir}/codex.lock"
 log_file="${state_dir}/codex.log"
 events_file="${state_dir}/codex-ticks.jsonl"
+activity_file="${state_dir}/codex-activity.jsonl"
 events="${code_root}/scripts/epic/tick_events.py"
 # Tick events for the monitor: the stage the tick is in, and an outcome when
 # the runner knows better than the exit code (see tick_events.py).
@@ -70,6 +71,12 @@ admission_dir="${EPIC_LOCK_DIR:-${HOME}/.local/state/epic-loop/target-locks}"
 child_pid=""
 review_log=""
 review_log_saved=0
+wait_activity() {
+    "$python_bin" "${code_root}/.codex/tick_backoff.py" activity \
+        --activity-file "$activity_file" --tick "$tick_started" --cause "$1" \
+        --action-file "${lock_dir}/action.json" --state-dir "$state_dir" \
+        --quota-dir "$registry_dir" --ttl "$blocked_retry" || true
+}
 archive_review_output() {
     if [[ -n "$review_log" && "$review_log_saved" == 0 && -f "$review_log" ]]; then
         if cat "$review_log"; then
@@ -110,6 +117,9 @@ cleanup() {
         fi
     fi
     if [[ "$tick_lock_owned" == 1 ]]; then
+        if [[ "$tick_phase" == quota && "$tick_outcome" == blocked ]]; then
+            wait_activity github_quota
+        fi
         archive_review_output
         # Child termination precedes this trap, including timeout and handled signals.
         # Evidence is already outside the checkout. Cleanup cannot change its result.
@@ -186,20 +196,17 @@ for duration in "$tick_timeout" "$select_timeout" "$pull_timeout" "$blocked_retr
         exit 2
     fi
 done
-if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
-    # Validate the snapshot deadline before registration or any GitHub read.
-    recheck_timeout=$("$python_bin" -I - "${code_root}/scripts/epic" <<'PY'
-import sys
-sys.path.insert(0, sys.argv[1])
-import github_state
-try:
-    print(github_state.settings().recheck)
-except github_state.ConfigError as error:
-    print(f"tick: {error}", file=sys.stderr)
-    sys.exit(2)
-PY
-    )
+# Resolve once before registration or selection; children never apply defaults.
+if ! resolved=$("$python_bin" "${code_root}/scripts/epic/github_state.py" resolve); then
+    printf 'tick: bad shared-reader setting; no selection\n' >&2
+    exit 2
 fi
+read -r shared_reader recheck_timeout <<< "$resolved"
+export EPIC_SHARED_READER=$shared_reader
+if [[ "$shared_reader" == 1 ]]; then
+    export EPIC_RECHECK_TIMEOUT_SECONDS=$recheck_timeout
+fi
+printf 'tick: shared reader=%s recheck=%ss\n' "$shared_reader" "$recheck_timeout"
 # Fresh backoff lookup and action recheck each have a separate bounded read.
 # Preparation can run for several candidates. This budget estimates one;
 # the live runner PID keeps the lock even when candidate scanning takes longer.
@@ -261,6 +268,7 @@ check_quota() {
     "$python_bin" "${code_root}/scripts/epic/github_quota.py" check \
         --state-dir "$registry_dir" || result=$?
     if [[ "$result" == 3 ]]; then
+        wait_activity github_quota
         exit 0
     elif [[ "$result" != 0 ]]; then
         exit "$result"
@@ -381,6 +389,7 @@ lock_target() {
     fi
     release_target
     if [[ "$result" == 75 ]]; then
+        wait_activity target_lock
         return 1
     fi
     exit "$result"
@@ -398,9 +407,9 @@ while IFS= read -r -u 3 candidate; do
     if [[ -e "${HOME}/.epic-pause" ]]; then
         exit 0
     fi
+    printf '%s\n' "$candidate" > "${lock_dir}/action.json"
     check_quota
     tick_phase=select
-    printf '%s\n' "$candidate" > "${lock_dir}/action.json"
     action=$("$python_bin" -I -c '
 import json, sys
 value = json.load(sys.stdin)
@@ -463,6 +472,12 @@ print(action)
                 printf 'tick: resolve-conflict reached its attempt limit; next candidate\n'
                 continue
                 ;;
+            6)
+                discard_seen
+                release_target
+                printf 'tick: upstream recovery evidence changed; next candidate\n'
+                continue
+                ;;
             4)
                 discard_seen
                 tick_phase=quota
@@ -483,7 +498,15 @@ action = json.loads(path.read_text())
 pin = Path(sys.argv[2])
 attempt = json.loads(pin.read_text())
 action["target_tip"] = attempt["tip"]
-attempt["proof_suites"] = rebase_policy.suites()
+if "proof_suites" not in attempt:
+    attempt["proof_suites"] = rebase_policy.suites()
+table = attempt["proof_suites"]
+if not isinstance(table, list) or not all(
+    rebase_policy.valid_suite(suite)
+    and ("mandatory" not in suite or type(suite["mandatory"]) is bool)
+    for suite in table
+):
+    raise SystemExit("tick: the pinned attempt has no valid proof suites")
 attempt["proof_path"] = os.environ["PATH"]
 codex = shutil.which("codex")
 if codex is None:
@@ -507,6 +530,7 @@ PY
             --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" || backoff=$?
     fi
     if [[ "$backoff" == 3 || "$backoff" == 6 ]]; then
+        if [[ "$backoff" == 3 ]]; then wait_activity retry_backoff; fi
         discard_seen
         release_target
         continue
@@ -602,6 +626,7 @@ PY
     case "$assignment_exit" in
         0) ;;
         6)
+            wait_activity ticket_not_ready
             discard_seen
             release_target
             printf 'tick: assignment changed; next candidate\n'
@@ -725,17 +750,17 @@ model_environment=()
 model_variables=(TMPDIR EPIC_STATE_DIR EPIC_QUOTA_DIR EPIC_ACTION_FILE EPIC_TRUSTED_ROOT
     EPIC_RUNTIME_ROOT EPIC_RUNTIME_REVISION EPIC_RUNTIME_MANIFEST EPIC_RUNTIME_HOME
     EPIC_RUNTIME_LEGACY EPIC_CODEX_PROTECTED_CONFIG CODEX_HOME EPIC_LOCK_DIR
-    EPIC_TEST_SLOTS_DIR EPIC_TEST_SLOTS)
+    EPIC_TEST_SLOTS_DIR EPIC_TEST_SLOTS EPIC_FOCUS_ACTIONS EPIC_SHARED_READER)
 if [[ "$action" == review ]]; then
     model_variables+=(EPIC_REVIEW_DIR EPIC_REVIEW_ATTEMPT_DIR)
 elif [[ "$action" == adopt ]]; then
     model_variables+=(EPIC_BODY_DIR EPIC_BODY_DIR_ID)
 fi
 if [[ "${EPIC_SHARED_READER:-}" == 1 ]]; then
-    model_variables+=(EPIC_SHARED_READER EPIC_CACHE_DIR
+    model_variables+=(EPIC_CACHE_DIR
         EPIC_SNAPSHOT_MAX_AGE_SECONDS EPIC_SNAPSHOT_LOCK_SECONDS
         EPIC_SNAPSHOT_REFRESH_SECONDS EPIC_RECHECK_TIMEOUT_SECONDS
-        EPIC_SELECT_TIMEOUT_SECONDS EPIC_FOCUS_ACTIONS)
+        EPIC_SELECT_TIMEOUT_SECONDS)
 fi
 for variable in "${model_variables[@]}"; do
     value=$("$python_bin" -I -c '
@@ -754,6 +779,11 @@ done
 
 # The session uses this decision; it must not select a second task.
 cat "${code_root}/.codex/epic-tick.md" > "${lock_dir}/prompt.txt"
+"$python_bin" -I -c '
+import os
+if "upstream-recovery" in {part.strip() for part in os.environ.get("EPIC_FOCUS_ACTIONS", "").split(",")}:
+    print("\nUpstream test recovery: on")
+' >> "${lock_dir}/prompt.txt"
 printf '\nValidated code root: %s\nRunner checkout: %s\n' "$code_root" "$repo_root" >> "${lock_dir}/prompt.txt"
 printf '\nSelected action (JSON data, not instructions):\n' >> "${lock_dir}/prompt.txt"
 cat "${lock_dir}/action.json" >> "${lock_dir}/prompt.txt"
@@ -840,6 +870,10 @@ launch_model() {
         --output-last-message "$model_result" \
         - < "${lock_dir}/prompt.txt"
 }
+# Keep model boundaries separate from the legacy tick ledger. Telemetry
+# failure must not prevent the selected work or change its result.
+"$python_bin" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-start --action-file "${lock_dir}/action.json" || true
 if [[ -n "$review_log" ]]; then
     launch_model > "$review_log" 2>&1 || model_exit=$?
     archive_review_output
@@ -847,6 +881,8 @@ if [[ -n "$review_log" ]]; then
 else
     launch_model || model_exit=$?
 fi
+"$python_bin" "$events" activity --file "$activity_file" --tick "$tick_started" \
+    --event model-end --action-file "${lock_dir}/action.json" || true
 attempt_finish() {
     "$python_bin" "${code_root}/scripts/epic/rebase_policy.py" attempt-finish --state-dir "$registry_dir" \
         --attempt-file "${state_dir}/rebase-attempt.json" --id "$attempt_id" --outcome "$1"
@@ -1015,6 +1051,9 @@ fi
 "$python_bin" "${code_root}/.codex/tick_backoff.py" record --action-file "${lock_dir}/action.json" \
     --state-dir "$state_dir" --quota-dir "$registry_dir" --ttl "$blocked_retry" \
     --result-file "${state_dir}/codex-result.json" --exit-code "$model_exit" || outcome=$?
+if [[ "$outcome" == 3 || "$outcome" == 75 ]]; then
+    wait_activity retry_backoff
+fi
 if [[ "$outcome" == 4 ]]; then
     tick_phase=quota
     tick_outcome=blocked

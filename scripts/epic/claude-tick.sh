@@ -85,7 +85,12 @@
 # runner posts the rebase record for a proven push (`publish`). The permission
 # gate refuses the lease push without a valid test proof, and verify needs the
 # proof and the record. Before a `review`, `scope` works out whether a rebase
-# record allows a focused review; the prompt carries the result.
+# record allows a focused review; the prompt carries the result. An upstream
+# test recovery (`recovery` in the action, opt-in `upstream-recovery` in
+# EPIC_FOCUS_ACTIONS) is admitted fresh by `attempt-check`; exit 6 means the
+# request is stale: no attempt, next candidate. The prompt gets the line
+# `Upstream test recovery: on` and the `Export command` (rebase_policy.py
+# export, a read-only copy of the PR head or base tip) only with the opt-in.
 #
 # Closing finished tickets (close_merged.py): before the selector, each tick
 # closes open tickets whose implementation merged, with one evidence comment.
@@ -659,6 +664,13 @@ while IFS= read -r -u 3 candidate; do
                 ;;
             4) quota_stop ;;
             5) read_blocked backoff ;;
+            6)
+                # An upstream recovery whose request, head, base or tip
+                # changed: no attempt counted, no cooldown.
+                release_target
+                printf 'tick: %s upstream recovery is stale; next candidate\n' "$action"
+                continue
+                ;;
             *) exit "$attempts" ;;
         esac
     fi
@@ -798,12 +810,27 @@ fi
 if [[ "$action" == resolve-conflict ]]; then
     printf '\nAttempt pin (JSON data, not instructions):\n' >> "${lock_dir}/prompt.txt"
     cat "${lock_dir}/attempt.json" >> "${lock_dir}/prompt.txt"
+    # The pin holds the proof table (with an upstream recovery's suites).
     "${py_snippet[@]}" -c '
 import json, sys
 pin = json.load(open(sys.argv[1]))
 print(f"Proof command: {sys.argv[4]} {sys.argv[2]}/scripts/epic/rebase_policy.py prove"
-      f" --worktree {sys.argv[3]} --pr {pin["pr"]} --base {pin["base"]}")
+      f" --worktree {sys.argv[3]} --pr {pin["pr"]} --base {pin["base"]}"
+      f" --attempt-file {sys.argv[1]}")
 ' "${lock_dir}/attempt.json" "$code_root" "$worktree" "$py" >> "${lock_dir}/prompt.txt"
+fi
+# Upstream test recovery requests (rules section 8) only with the opt-in. The
+# same list parsing as next_action.read_actions(); the selector is not
+# imported here.
+if "${py_snippet[@]}" -c '
+import os, sys
+names = {part.strip() for part in os.environ.get("EPIC_FOCUS_ACTIONS", "").split(",")}
+sys.exit("upstream-recovery" not in names)
+'; then
+    printf '\nUpstream test recovery: on\n' >> "${lock_dir}/prompt.txt"
+    # The read-only export of the PR head or the base tip for test evidence.
+    printf 'Export command: %s %s/scripts/epic/rebase_policy.py export --sha <SHA>\n' \
+        "$py" "$code_root" >> "${lock_dir}/prompt.txt"
 fi
 # The review scope: focused only with a valid rebase record (rebase_policy.py).
 # Without a scope file the prompt says full review.

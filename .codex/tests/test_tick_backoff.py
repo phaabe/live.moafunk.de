@@ -23,6 +23,70 @@ backoff = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(backoff)
 
 
+class ActivityWaitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="backoff-activity-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.path = self.root / "activity.jsonl"
+        self.action = self.root / "action.json"
+        self.action.write_text(json.dumps({
+            "action": "continue", "pr": 406, "sha": "a" * 40,
+            "reason": "private prompt", "command": "private command",
+        }))
+        self.state = self.root / "agent"
+        self.quota = self.root / "shared"
+
+    def emit(self, cause: str) -> list[dict[str, object]]:
+        backoff.activity_wait(
+            self.path, "2026-10-10T23:00:00Z", cause, self.action,
+            self.state, self.quota, 900, 1000,
+        )
+        return [json.loads(line) for line in self.path.read_text().splitlines()] if self.path.exists() else []
+
+    def test_backoff_uses_legacy_expiry_without_copying_reason(self) -> None:
+        backoff.save_entries(self.state, {f"pr:406:{'a' * 40}": {
+            "at": 900, "reason": "private model output",
+        }})
+        record = self.emit("retry_backoff")[0]
+        self.assertEqual(record["retry_at"], backoff.github_quota.iso(1800))
+        self.assertEqual((record["reason_code"], record["scope"]), ("retry_backoff", "target"))
+        self.assertNotIn("private", self.path.read_text())
+
+    def test_expired_or_missing_backoff_emits_no_wait(self) -> None:
+        self.assertEqual(self.emit("retry_backoff"), [])
+        backoff.save_entries(self.state, {f"pr:406:{'a' * 40}": {
+            "at": 0, "until": 1000, "reason": "expired",
+        }})
+        self.assertEqual(self.emit("retry_backoff"), [])
+
+    def test_operator_wait_does_not_end_at_old_backoff_expiry(self) -> None:
+        action = json.loads(self.action.read_text())
+        backoff.save_entries(self.state, {backoff.target_key(action): {
+            "at": 0, "until": 900, "reason": "private reason", "blocked_count": 3,
+            "escalation": {"action": action, "id": "a" * 32,
+                           "label_added": True, "owns_label": True, "comment_posted": True},
+        }})
+        record = self.emit("retry_backoff")[0]
+        self.assertEqual((record["reason_code"], record["scope"], record["retry_at"]),
+                         ("operator_wait", "target", None))
+
+    def test_quota_reads_only_shared_state_and_preserves_bytes(self) -> None:
+        wait = backoff.github_quota.record(self.quota, 1000, backoff.github_quota.iso(1600))
+        path = self.quota / "github-quota-wait.json"
+        before = path.read_bytes()
+        record = self.emit("github_quota")[0]
+        self.assertEqual((record["reason_code"], record["scope"], record["retry_at"]),
+                         ("github_quota", "agent", wait["retry_at"]))
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(self.state.exists())
+
+    def test_lock_has_target_scope_and_no_expiry(self) -> None:
+        record = self.emit("target_lock")[0]
+        self.assertEqual((record["reason_code"], record["scope"], record["retry_at"], record["target"]),
+                         ("target_lock", "target", None, "pr:406"))
+
+
 class EscalationGitHub:
     """Stateful REST boundary, including a lost write response."""
 
@@ -299,6 +363,97 @@ class BackoffTests(unittest.TestCase):
                         "target_tip": tip,
                     }
                 )
+
+    def refresh_action(self, kind: str = "fix-checks") -> dict[str, object]:
+        return {
+            "action": kind,
+            "pr": 410,
+            "sha": "a" * 40,
+            "refresh": {
+                "kind": "upstream-test-refresh",
+                "head": "a" * 40,
+                "base": "dev/312-interim",
+                "base_tip": "b" * 40,
+                "tip": "c" * 40,
+                "owner": "Codex",
+                "comment_id": 123,
+                "url": "https://github.com/phaabe/live.moafunk.de/pull/410#issuecomment-123",
+                "why": "base_moved",
+            },
+        }
+
+    def test_refresh_ignores_ordinary_cooldown_and_retries_when_base_moves(
+        self,
+    ) -> None:
+        for kind in ("continue", "fix", "fix-checks"):
+            with self.subTest(kind=kind):
+                backoff.save_entries(self.state, {})
+                action = self.refresh_action(kind)
+                ordinary = {k: v for k, v in action.items() if k != "refresh"}
+                self.assertEqual(self.record(ordinary), 3)
+                self.assertEqual(backoff.check(action, self.state, 900, 1001), 0)
+                self.assertEqual(self.record(action), 3)
+                self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
+                moved = {
+                    **action,
+                    "refresh": {**action["refresh"], "base_tip": "d" * 40},
+                }
+                self.assertEqual(backoff.check(moved, self.state, 900, 1001), 0)
+                self.assertEqual(backoff.check(ordinary, self.state, 900, 1001), 3)
+
+    def test_refresh_continue_preserves_issue_cooldown_without_transferring(
+        self,
+    ) -> None:
+        self.record()
+        before = self.entries()
+        with patch.object(backoff, "pr_issue") as lookup:
+            self.assertEqual(
+                backoff.check(self.refresh_action("continue"), self.state, 900, 1001), 0
+            )
+            lookup.assert_not_called()
+        self.assertEqual(self.entries(), before)
+
+    def test_completed_refresh_clears_only_its_current_base_cooldown(self) -> None:
+        action = self.refresh_action()
+        ordinary = {k: v for k, v in action.items() if k != "refresh"}
+        moved = {**action, "refresh": {**action["refresh"], "base_tip": "d" * 40}}
+        for target in (ordinary, action, moved):
+            self.assertEqual(self.record(target), 3)
+        self.result.write_text(
+            json.dumps({"status": "completed", "summary": "Recovery requested"})
+        )
+        self.assertEqual(self.record(moved), 0)
+        self.assertEqual(backoff.check(moved, self.state, 900, 1001), 0)
+        self.assertEqual(backoff.check(action, self.state, 900, 1001), 3)
+        self.assertEqual(backoff.check(ordinary, self.state, 900, 1001), 3)
+
+    def test_invalid_refresh_fails_closed(self) -> None:
+        action = self.refresh_action()
+        invalid = [
+            False,
+            "refresh",
+            {},
+            {**action["refresh"], "kind": "other"},
+            {**action["refresh"], "head": "e" * 40},
+        ]
+        invalid.extend(
+            {**action["refresh"], "base_tip": tip} for tip in (None, "", "bad", True)
+        )
+        for refresh in invalid:
+            with self.subTest(refresh=refresh), self.assertRaises(ValueError):
+                backoff.check({**action, "refresh": refresh}, self.state, 900, 1001)
+        for kind in ("review", "merge", "resolve-conflict"):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                backoff.target_key({**action, "action": kind})
+
+    def test_refresh_three_block_escalation_still_applies(self) -> None:
+        action = self.refresh_action()
+        github = EscalationGitHub()
+        with patch.object(backoff.github_quota, "run_gh", side_effect=github):
+            for _ in range(3):
+                self.assertEqual(self.record(action), 3)
+        self.assertEqual(backoff.check(action, self.state, 900, 9999), 3)
+        self.assertEqual(github.labels, [{"name": "needs-anton"}])
 
     def test_issue_cooldown_transfers_once_without_extending_expiry(self) -> None:
         self.record()

@@ -24,7 +24,9 @@ exit alone is no evidence: for an action verify does not check (`continue`,
 pause and lock contention never reach `record`, so they never set a cooldown.
 
 Key (agent kind, action, target): `claude:<action>:pr:<n>:<head sha>`, plus
-`:base:<base sha>` for `resolve-conflict`, or `claude:<action>:issue:<url>`.
+`:base:<base sha>` for `resolve-conflict` and for an action with a typed
+upstream recovery `refresh` (its base tip, read by the selector), or
+`claude:<action>:issue:<url>`.
 A new PR head or a new base tip gives a new key, so it clears the cooldown.
 Comments, reviews and verdicts change neither, so they never reset or extend
 it. The Codex key (.codex/tick_backoff.py) is a separate contract and a
@@ -45,7 +47,8 @@ actions stays. The cooldown applies to `continue` too, although the gate
 never skips it (tick_gate.NEVER_SKIP).
 
 Issue to PR: a `claim` or `continue` cooldown on an issue moves to the
-`continue` of a PR whose single `Issue:` line names that issue. All entries
+`continue` of a PR whose single `Issue:` line names that issue (not to a
+`continue` with an upstream recovery `refresh`). All entries
 of that issue move at once, as one entry with the latest end time, keyed to
 the PR head seen then; a later push clears it.
 
@@ -116,6 +119,8 @@ TIMEOUT_EXITS = {124, 137}
 ISSUE_URL = re.compile(rf"https://github\.com/{re.escape(REPO)}/issues/[1-9][0-9]*")
 ISSUE_LINE = re.compile(rf"Issue:[ \t]*({ISSUE_URL.pattern})[ \t]*")
 SHA = re.compile(r"[0-9a-f]{40}")
+# next_action.REFRESH_KIND, kept here like LANDING; a test keeps both equal.
+REFRESH_KIND = "upstream-test-refresh"
 
 RUN, SKIP, QUOTA, READ_FAILED, BAD = 0, 3, 4, 5, 2
 DONE, MISSED, BLOCKED, UNKNOWN = 0, 1, 3, 6
@@ -169,11 +174,28 @@ def base_sha(pr: int) -> str:
 
 
 def key(action: dict[str, Any]) -> str:
-    """The full key. Reads the base tip for `resolve-conflict`."""
+    """The full key. Reads the base tip for `resolve-conflict`. An owner
+    action that refreshes an upstream recovery request (`refresh`) carries the
+    base tip the selector read: a base advance is a new key."""
     found = base_key(action)
     if action["action"] == "resolve-conflict":
         found += f":base:{base_sha(action['pr'])}"
+    elif refresh_tip(action):
+        found += f":base:{refresh_tip(action)}"
     return found
+
+
+def refresh_tip(action: dict[str, Any]) -> str | None:
+    """The base tip in an action's typed `refresh` (next_action.REFRESH_KIND)."""
+    found = action.get("refresh")
+    if (
+        isinstance(found, dict)
+        and found.get("kind") == REFRESH_KIND
+        and found.get("head") == action.get("sha")
+    ):
+        tip = found.get("base_tip")
+        return tip if isinstance(tip, str) and SHA.fullmatch(tip) else "unknown"
+    return None
 
 
 def valid(entry: Any) -> bool:
@@ -256,7 +278,14 @@ def check(action: dict[str, Any], state_dir: Path, seen_file: Path, now: float) 
     with locked(state_dir):
         entries = load(state_dir)
         entry = active(entries, now).get(found)
-        if entry is None and action["action"] == "continue" and action.get("pr"):
+        # A refresh of an upstream recovery request is new work on a new key:
+        # it never takes over an old issue cooldown.
+        if (
+            entry is None
+            and action["action"] == "continue"
+            and action.get("pr")
+            and not refresh_tip(action)
+        ):
             # Issue cooldowns that move to this PR's `continue`.
             prefixes = tuple(f"{AGENT}:{kind}:issue:" for kind in TRANSFER)
             waiting = [k for k in active(entries, now) if k.startswith(prefixes)]

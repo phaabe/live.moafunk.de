@@ -307,6 +307,12 @@ def rebase_configuration(runner: Path, state: Path) -> tuple[Path, Path]:
 
 def prepare(runner: Path, action: dict[str, Any], state: Path | None = None) -> Path:
     policy = None
+    recovery = action.get("recovery")
+    upstream_recovery = (
+        action["action"] == "resolve-conflict"
+        and isinstance(recovery, dict)
+        and recovery.get("kind") == "upstream-test"
+    )
     if action["action"] == "resolve-conflict":
         if state is None:
             raise Refused("resolve-conflict requires the runner state directory")
@@ -381,6 +387,28 @@ def prepare(runner: Path, action: dict[str, Any], state: Path | None = None) -> 
     )
     if recorded and held_elsewhere:
         raise Refused("recorded rebase branch is held in another worktree")
+    if upstream_recovery and not held_elsewhere:
+        local_head = known.get(local_ref)
+        remote_head = known.get(remote_ref)
+        detail = f"{destination}; local head {local_head}; remote head {remote_head}"
+        if recorded:
+            if not active and record["onto"] != action.get("target_tip"):
+                raise Refused(
+                    "completed recovery rebase targets an older base; preserve it "
+                    f"for operator recovery: {detail}"
+                )
+        else:
+            if local_head is not None and local_head != sha:
+                raise Refused(
+                    f"upstream recovery requires the published PR head: {detail}"
+                )
+            if destination in registered and git(
+                destination, "status", "--porcelain", "--untracked-files=all"
+            ):
+                raise Refused(
+                    "upstream recovery requires a clean worktree; preserve "
+                    f"staged, unstaged and untracked work: {detail}"
+                )
     # Let Git report a held branch even when the human has unpublished history.
     if not held_elsewhere and not recorded:
         git(runner, "merge-base", start, base_ref)
@@ -425,6 +453,16 @@ def prepare(runner: Path, action: dict[str, Any], state: Path | None = None) -> 
     git(runner, "merge-base", local_ref, base_ref)
     if sha is not None:
         git(runner, "merge-base", "--is-ancestor", sha, local_ref)
+    if upstream_recovery:
+        # Checkout hooks can leave work behind even in a newly created tree.
+        local_head = git(destination, "rev-parse", "HEAD")
+        if local_head != sha or git(
+            destination, "status", "--porcelain", "--untracked-files=all"
+        ):
+            raise Refused(
+                "new upstream recovery worktree is not clean at the published head; "
+                f"preserve {destination}; local head {local_head}; remote head {sha}"
+            )
     if context is not None:
         feature_git.validate(destination, policy[0])
         feature_git.write_json(policy[1], context)

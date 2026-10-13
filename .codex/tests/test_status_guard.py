@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/epic"))
 import isolated_env  # noqa: E402, F401
 
 import importlib.util
+from functools import partial
 import json
 import os
 import shlex
@@ -89,6 +90,27 @@ class StatusGuardTests(fixtures.Env):
         with patch.dict(os.environ, {"EPIC_SHARED_READER": shared}):
             guard.runner_write_check(tool, {key: command}, self.root)
             self.assertEqual(os.environ["EPIC_SHARED_READER"], shared)
+
+    def test_owner_refresh_can_export_pinned_commit_and_label_selected_pr(self) -> None:
+        self.enterContext(
+            patch.object(
+                fixtures.gs,
+                "FreshReader",
+                partial(fixtures.gs.FreshReader, http=self.gh),
+            )
+        )
+        commands = (
+            f"git archive --format=tar --output={self.root}/baseline.tar {fixtures.A}",
+            f"tar -xf {self.root}/baseline.tar -C {self.root}/baseline",
+            "gh pr edit 5 --repo phaabe/live.moafunk.de --add-label needs-anton",
+        )
+        for kind in ("continue", "fix", "fix-checks"):
+            self.action(kind)
+            for shared in ("0", "1"):
+                for command in commands:
+                    with self.subTest(kind=kind, shared=shared, command=command):
+                        guard.check_command(command, self.root)
+                        self.check(command, shared)
 
     def test_raw_writes_block_before_reads_for_issue_and_pr_ticks(self) -> None:
         labels = f"{fixtures.REPO}/issues/21/labels"

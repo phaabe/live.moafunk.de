@@ -22,6 +22,11 @@ never in a checkout a human session holds. For the actions that edit a branch
 Never `--force`, `--ignore-other-worktrees`, or any change to another checkout.
 A stop never changes ownership, parks work or frees claims.
 
+An upstream test recovery (`resolve-conflict` with `recovery`, see
+rebase_policy.py) also needs the checkout clean at the PR head, or holding
+this attempt's recorded rebase (`<agent>-rebases.json`). Uncommitted,
+untracked or unpublished work is a refusal (7): it stays as it is.
+
 Stops: a handoff (75) is confirmed only when the branch is checked out in
 another existing, readable worktree of this repository (Git's registration
 alone can be stale). Every other stop is an unsafe refusal (7): a symlink at
@@ -336,7 +341,9 @@ def prepare(
             if not path.is_dir():
                 # Pruning is left to a human: `git worktree prune` acts on all checkouts.
                 raise Stop(f"{path} is registered for {branch} but missing")
-            return path  # resume: the checkout and its unfinished work stay as they are
+            # resume: the checkout and its unfinished work stay as they are
+            recovery_ready(agent, action, path, branch)
+            return path
         if path.exists():
             raise Stop(f"{path} exists but does not hold {branch}")
         if where is not None:
@@ -345,7 +352,43 @@ def prepare(
     except OSError as error:
         raise Stop(f"{path} is unreadable: {error}") from error
     add(repo, branch, path, new)
+    recovery_ready(agent, action, path, branch)
     return path
+
+
+def recovery_ready(agent: str, action: dict[str, Any], path: Path, branch: str) -> None:
+    """An upstream test recovery starts only from a clean checkout at the PR
+    head, or resumes this attempt's recorded rebase. Uncommitted, untracked
+    or unpublished work stays as it is: a refusal, never a stash or reset."""
+    found = action.get("recovery")
+    if action.get("action") != "resolve-conflict" or not isinstance(found, dict):
+        return
+    import rebase_policy  # here: only a recovery needs it
+
+    try:
+        records = json.loads((STATE_DIR / f"{agent}-rebases.json").read_text())
+    except FileNotFoundError:
+        records = {}
+    except (OSError, ValueError) as error:
+        raise Stop(f"rebase records unreadable: {error}") from error
+    record = records.get(branch) if isinstance(records, dict) else None
+    # Only a record of this PR and base: another one would start a model whose
+    # continue or push the gate then refuses, after an attempt was counted.
+    if not isinstance(record, dict) or (record.get("pr"), record.get("base")) != (
+        action.get("pr"),
+        found.get("base"),
+    ):
+        record = None
+    # The gate records the real path (git_gate.owned()).
+    real = Path(os.path.realpath(path))
+    try:
+        problem = rebase_policy.recovery_worktree_problem(
+            real, branch, str(action.get("sha")), str(found.get("tip")), record
+        )
+    except rebase_policy.Problem as error:
+        problem = str(error)
+    if problem:
+        raise Stop(f"upstream test recovery cannot start: {problem}")
 
 
 def cooling(
