@@ -24,6 +24,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import rebase_policy as rp
 
@@ -357,15 +358,19 @@ class RebaseRunnerTest(unittest.TestCase):
             "TEST_MODEL_MODE": mode,
             "TEST_CANDIDATES": json.dumps(action or self.action()),
         }
-        return subprocess.run(
-            ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")],
-            env=env,
-            cwd=self.root,
-            timeout=180,
-        ).returncode
+        try:
+            return subprocess.run(
+                ["/bin/bash", str(self.repo / "scripts/epic/claude-tick.sh")],
+                env=env,
+                cwd=self.root,
+                timeout=180,
+            ).returncode
+        except subprocess.TimeoutExpired:
+            self.fail(f"tick did not finish in 180 s\n{self.log()}")
 
     def log(self) -> str:
-        return (self.state / "claude.log").read_text()
+        path = self.state / "claude.log"
+        return path.read_text() if path.exists() else "(no runner log)"
 
     def models(self) -> int:
         return len(self.lines("models.jsonl"))
@@ -498,6 +503,16 @@ class RebaseRunnerTest(unittest.TestCase):
         self.assertEqual(scope["mode"], "full")
         self.assertIn("no earlier verdict", scope["reason"])
         self.assertEqual(self.attempts(), [])
+
+    def test_a_tick_timeout_fails_with_the_runner_log(self) -> None:
+        # https://github.com/phaabe/live.moafunk.de/issues/599
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "claude.log").write_text("tick: stuck in select\n")
+        action = self.action()
+        timeout = subprocess.TimeoutExpired("claude-tick.sh", 180)
+        with patch.object(subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(AssertionError, "(?s)180 s.*stuck in select"):
+                self.tick(action=action)
 
 
 if __name__ == "__main__":
