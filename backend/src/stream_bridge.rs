@@ -735,7 +735,7 @@ pub async fn start_prerecorded_stream(
 }
 
 /// True if `path` names a recording segment (`seg_*.ts`).
-fn is_segment_file(path: &Path) -> bool {
+pub(crate) fn is_segment_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(|n| n.starts_with("seg_") && n.ends_with(".ts"))
