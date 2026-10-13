@@ -3,6 +3,7 @@ mod audio;
 mod auth;
 mod chat_bridge;
 mod config;
+mod config_check;
 mod db;
 mod error;
 mod handlers;
@@ -229,8 +230,21 @@ async fn recording_finalize_ws_handler(
     handlers::recording::finalize_ws_handler(ws, State(state), query, headers).await
 }
 
+fn main() -> anyhow::Result<()> {
+    // Exit before even constructing Tokio: its environment errors may contain
+    // values, and configuration checking needs no worker threads.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("check-config")) {
+        anyhow::ensure!(
+            std::env::args_os().len() == 2,
+            "Usage: unheard-backend check-config"
+        );
+        return config_check::run();
+    }
+    run_backend()
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run_backend() -> anyhow::Result<()> {
     // Load environment variables
     dotenvy::dotenv().ok();
 
