@@ -793,7 +793,8 @@ fn parse_artifact_name(name: &str) -> Option<(i64, String)> {
 /// What a crashed or interrupted recording left in the temp dir.
 #[derive(Debug, Default)]
 struct Leftover {
-    /// `recording_{id}_{version}.segs/`: the recorder's segments, not yet joined.
+    /// `recording_{id}_{version}.segs/`: the recorder's segments. Some may be
+    /// gone when a crash hit the removal after the join.
     seg_dir: Option<PathBuf>,
     /// `recording_{id}_{version}.webm`: the joined file, or the empty file a
     /// session creates at start.
@@ -815,9 +816,10 @@ struct RecoveryCounts {
 /// `cleanup_stale_files` never deletes either, so they wait for this.
 ///
 /// Run once at startup. For each recording present at boot that has no
-/// `recording_versions` row, this joins the segments when they survived and runs
-/// the normal upload + verify + record path ([`upload_artifact_and_record`]) with
-/// recovered markers. A raw object already in R2 with the same size is reused.
+/// `recording_versions` row, this keeps the larger of the joined file and a new
+/// join of the surviving segments ([`choose_artifact`]), then runs the normal
+/// upload + verify + record path ([`upload_artifact_and_record`]) with recovered
+/// markers. A raw object already in R2 with the same size is reused.
 /// A recording that has a row is persisted; its leftovers are removed.
 /// Idempotent: a second run adds no row and uploads nothing. Failures are logged
 /// and the files stay for the next attempt and the dead-man's-switch. The live
@@ -917,29 +919,13 @@ async fn recover_leftovers(
             }
         }
 
-        // Surviving segments win: a joined file next to them may be partial,
-        // or the empty file the session created at start.
-        if let Some(seg_dir) = &leftover.seg_dir {
-            if let Err(e) = crate::stream_bridge::concat_segments(seg_dir, &artifact_path).await {
-                // Empty/garbage dir (e.g. crash before the first segment flushed):
-                // leave it for the dead-man's-switch; never create a 0-byte object.
-                tracing::warn!(
-                    "Recording recovery: cannot concat {:?} (show {} version {}): {} — leaving in place",
-                    seg_dir,
-                    show_id,
-                    version,
-                    e
-                );
-                counts.failed += 1;
-                continue;
-            }
-        } else if tokio::fs::metadata(&artifact_path)
-            .await
-            .map_or(true, |m| m.len() == 0)
-        {
+        if let Err(reason) = choose_artifact(leftover.seg_dir.as_deref(), &artifact_path).await {
+            // Leave it for the dead-man's-switch; never create a 0-byte object.
             tracing::warn!(
-                "Recording recovery: {:?} is empty and has no segments; nothing to upload — leaving in place",
-                artifact_path
+                "Recording recovery: nothing to upload for show {} version {}: {} — leaving in place",
+                show_id,
+                version,
+                reason
             );
             counts.failed += 1;
             continue;
@@ -993,6 +979,65 @@ async fn recover_leftovers(
     );
     counts
 }
+
+/// Leave the best copy of a recording without a row at `artifact_path`.
+///
+/// The live stop path joins the segments into that file, then removes the
+/// segment dir. A crash during the join leaves a cut-off file next to all
+/// segments. A crash during the removal leaves the complete file next to some
+/// segments. So the segments are joined into a candidate inside their dir, and
+/// the larger file wins: a cut-off write or a join of fewer segments is always
+/// smaller. Errors when both are empty or missing.
+async fn choose_artifact(
+    seg_dir: Option<&Path>,
+    artifact_path: &Path,
+) -> std::result::Result<(), String> {
+    let mut size = tokio::fs::metadata(artifact_path)
+        .await
+        .map_or(0, |m| m.len());
+    let mut join_error = None;
+    if let Some(seg_dir) = seg_dir {
+        let candidate = seg_dir.join(REJOINED_FILE);
+        match crate::stream_bridge::concat_segments(seg_dir, &candidate).await {
+            Ok(()) => {
+                let joined = tokio::fs::metadata(&candidate).await.map_or(0, |m| m.len());
+                if joined > size {
+                    tokio::fs::rename(&candidate, artifact_path)
+                        .await
+                        .map_err(|e| format!("move {:?} into place: {}", candidate, e))?;
+                    size = joined;
+                } else {
+                    tracing::info!(
+                        "Recording recovery: {:?} ({} bytes) is not shorter than the segments in {:?} ({} bytes), keeping it",
+                        artifact_path,
+                        size,
+                        seg_dir,
+                        joined
+                    );
+                }
+            }
+            // An empty dir, e.g. a crash before the first segment flushed.
+            Err(e) => join_error = Some(format!("cannot join {:?}: {}", seg_dir, e)),
+        }
+    }
+    match (size, join_error) {
+        (0, Some(e)) => Err(format!("{:?} is empty and {}", artifact_path, e)),
+        (0, None) => Err(format!("{:?} is empty and has no segments", artifact_path)),
+        (_, Some(e)) => {
+            tracing::warn!(
+                "Recording recovery: {}; uploading {:?} instead",
+                e,
+                artifact_path
+            );
+            Ok(())
+        }
+        (_, None) => Ok(()),
+    }
+}
+
+/// The candidate join inside a segment dir. It is not a segment, so a later
+/// join ignores it, and it goes with the dir.
+const REJOINED_FILE: &str = "rejoined.webm";
 
 /// The recording has a row, so it is persisted. Remove the segment dir, and
 /// the joined file only when R2 holds an object of the same size: a `failed`
@@ -2439,6 +2484,21 @@ mod tests {
         path
     }
 
+    /// Real segments for `show_id` (needs ffmpeg, as the recorder does) and the
+    /// bytes of their complete join.
+    async fn segments_and_join(temp: &Path, show_id: i64) -> (PathBuf, Vec<u8>) {
+        let seg_dir = temp.join(format!("recording_{show_id}_{VERSION}.segs"));
+        tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+        gen_test_segments(&seg_dir).await;
+        let joined = temp.join("earlier-join.webm.tmp");
+        crate::stream_bridge::concat_segments(&seg_dir, &joined)
+            .await
+            .unwrap();
+        let data = tokio::fs::read(&joined).await.unwrap();
+        tokio::fs::remove_file(&joined).await.unwrap();
+        (seg_dir, data)
+    }
+
     #[tokio::test]
     async fn failed_row_insert_keeps_the_file_and_recovery_writes_the_row() {
         let (state, temp) = offline_state().await;
@@ -2567,17 +2627,41 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_webm_without_segments_is_never_uploaded() {
+        for empty_seg_dir in [false, true] {
+            let (state, temp) = offline_state().await;
+            let store = FakeStore::default();
+            add_show(&state, 3).await;
+            let artifact = leftover_webm(temp.path(), 3, b"").await;
+            let seg_dir = temp.path().join(format!("recording_3_{VERSION}.segs"));
+            if empty_seg_dir {
+                tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+            }
+
+            let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+            assert_eq!(counts.failed, 1, "{empty_seg_dir}");
+            assert!(artifact.exists(), "{empty_seg_dir}");
+            assert_eq!(seg_dir.exists(), empty_seg_dir);
+            assert_eq!(store.writes(), (0, 0, 0), "never create a 0-byte object");
+            assert_eq!(row_count(&state, 3).await, 0, "{empty_seg_dir}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_complete_file_is_uploaded_next_to_an_empty_segment_dir() {
         let (state, temp) = offline_state().await;
         let store = FakeStore::default();
-        add_show(&state, 3).await;
-        let artifact = leftover_webm(temp.path(), 3, b"").await;
+        add_show(&state, 19).await;
+        let seg_dir = temp.path().join(format!("recording_19_{VERSION}.segs"));
+        tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+        let artifact = leftover_webm(temp.path(), 19, b"joined audio").await;
 
         let counts = recover_leftovers(&state, &store, temp.path()).await;
 
-        assert_eq!(counts.failed, 1);
-        assert!(artifact.exists());
-        assert_eq!(store.writes(), (0, 0, 0), "never create a 0-byte object");
-        assert_eq!(row_count(&state, 3).await, 0);
+        assert_eq!(counts.recovered, 1);
+        assert_eq!(store.object(&raw_key(19)).unwrap(), b"joined audio");
+        assert_eq!(store.writes(), (1, 1, 1));
+        assert!(!seg_dir.exists() && !artifact.exists());
     }
 
     #[tokio::test]
@@ -2614,15 +2698,8 @@ mod tests {
         let (state, temp) = offline_state().await;
         let store = FakeStore::default();
         add_show(&state, 13).await;
-        let seg_dir = temp.path().join(format!("recording_13_{VERSION}.segs"));
-        tokio::fs::create_dir_all(&seg_dir).await.unwrap();
-        gen_test_segments(&seg_dir).await;
-        let joined = temp.path().join("earlier-join.webm.tmp");
-        crate::stream_bridge::concat_segments(&seg_dir, &joined)
-            .await
-            .unwrap();
-        store.insert(&raw_key(13), &tokio::fs::read(&joined).await.unwrap());
-        tokio::fs::remove_file(&joined).await.unwrap();
+        let (seg_dir, joined) = segments_and_join(temp.path(), 13).await;
+        store.insert(&raw_key(13), &joined);
         let artifact = leftover_webm(temp.path(), 13, b"").await;
 
         let counts = recover_leftovers(&state, &store, temp.path()).await;
@@ -2640,6 +2717,49 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.status, "failed");
+        assert!(!seg_dir.exists() && !artifact.exists());
+    }
+
+    /// A crash while the stop path removed the segment dir, after the upload:
+    /// the complete join is next to some of its segments, and R2 has it.
+    #[tokio::test]
+    async fn a_complete_file_beats_a_partial_segment_dir() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 15).await;
+        let (seg_dir, joined) = segments_and_join(temp.path(), 15).await;
+        store.insert(&raw_key(15), &joined);
+        let artifact = leftover_webm(temp.path(), 15, &joined).await;
+        tokio::fs::remove_file(seg_dir.join("seg_00000.ts"))
+            .await
+            .unwrap();
+
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.recovered, 1);
+        assert_eq!(store.object(&raw_key(15)).unwrap(), joined);
+        assert_eq!(
+            store.writes(),
+            (0, 1, 0),
+            "the shorter join is not uploaded"
+        );
+        assert!(!seg_dir.exists() && !artifact.exists());
+    }
+
+    /// A crash during the stop path's join: a cut-off file next to all segments.
+    #[tokio::test]
+    async fn the_segments_beat_a_cut_off_file() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 17).await;
+        let (seg_dir, joined) = segments_and_join(temp.path(), 17).await;
+        let artifact = leftover_webm(temp.path(), 17, &joined[..joined.len() / 2]).await;
+
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.recovered, 1);
+        assert_eq!(store.object(&raw_key(17)).unwrap().len(), joined.len());
+        assert_eq!(store.writes(), (1, 1, 0));
         assert!(!seg_dir.exists() && !artifact.exists());
     }
 }
