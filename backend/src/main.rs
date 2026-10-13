@@ -783,10 +783,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Recover recordings orphaned by a restart mid-show: concat + upload any
-    // `*.segs/` segment dirs left on disk (the daily cleanup never deletes
-    // them). Idempotent; only touches dirs present at boot (a new live session
-    // uses a fresh timestamp), so it's safe to run concurrently with startup.
+    // Recover recordings that a restart or failed finalize left on disk: join
+    // and upload `*.segs/` segment dirs, and upload `recording_*.webm` files,
+    // when they have no `recording_versions` row (the daily cleanup never
+    // deletes them). Idempotent; only touches files present at boot, never the
+    // live session's, so it's safe to run concurrently with startup.
     {
         let state = state.clone();
         tokio::spawn(async move {

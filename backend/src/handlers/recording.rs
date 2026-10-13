@@ -411,18 +411,20 @@ async fn upload_session(
     } = detached;
     let show_id = session.show_id;
     let version = session.version_timestamp.clone();
-    let marker_count = session.markers.len();
-    let markers_json = session
-        .markers_json()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let markers = Markers::Session {
+        json: session
+            .markers_json()
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+        count: session.markers.len(),
+    };
 
     let finalized = upload_artifact_and_record(
         state,
+        &R2Store(state),
         show_id,
         &version,
         &session.temp_file_path,
-        markers_json,
-        marker_count,
+        markers,
         write_failure,
     )
     .await?;
@@ -442,30 +444,113 @@ async fn upload_session(
     Ok(finalized)
 }
 
-/// Upload a finished raw recording artifact to R2, verify it, persist the markers
-/// JSON + a `recording_versions` row, and delete the local artifact once R2 has
-/// confirmed it.
+/// Markers to store with a recording.
+enum Markers {
+    /// A finished session's own markers. They replace any stored copy.
+    Session { json: String, count: usize },
+    /// Recovery after a crash has no markers. It keeps a copy that an
+    /// interrupted finalize already stored, else it stores an empty list.
+    Recovered,
+}
+
+/// The R2 calls that persisting a recording makes. [`R2Store`] is the real
+/// bucket; tests use a fake, so the persist and recovery paths run offline.
+trait RecordingStore: Send + Sync {
+    /// Size of an object, or `None` when it does not exist.
+    fn size<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Option<u64>>>;
+    /// Integrity-checked multipart upload of a raw recording.
+    fn upload_raw<'a>(&'a self, key: &'a str, data: Vec<u8>) -> BoxFuture<'a, Result<()>>;
+    fn put_json<'a>(&'a self, key: &'a str, json: String) -> BoxFuture<'a, Result<()>>;
+    fn read<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Vec<u8>>>;
+    /// Publish the show to the curated shows archive; returns the archive key.
+    fn publish<'a>(&'a self, show_id: i64, artifact: &'a Path) -> BoxFuture<'a, Result<String>>;
+}
+
+/// The production [`RecordingStore`]: the recordings bucket of the app.
+struct R2Store<'s>(&'s Arc<AppState>);
+
+impl RecordingStore for R2Store<'_> {
+    fn size<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Option<u64>>> {
+        Box::pin(storage::object_size(
+            &self.0.s3_client,
+            &self.0.config.r2_bucket_name,
+            key,
+        ))
+    }
+
+    fn upload_raw<'a>(&'a self, key: &'a str, data: Vec<u8>) -> BoxFuture<'a, Result<()>> {
+        Box::pin(storage::upload_multipart(
+            &self.0.s3_client,
+            &self.0.config.r2_bucket_name,
+            key,
+            data,
+            "audio/webm",
+        ))
+    }
+
+    fn put_json<'a>(&'a self, key: &'a str, json: String) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.0
+                .s3_client
+                .put_object()
+                .bucket(&self.0.config.r2_bucket_name)
+                .key(key)
+                .body(aws_sdk_s3::primitives::ByteStream::from(json.into_bytes()))
+                .content_type("application/json")
+                .send()
+                .await
+                .map_err(|e| AppError::Storage(format!("Failed to upload {}: {}", key, e)))?;
+            Ok(())
+        })
+    }
+
+    fn read<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            let object = self
+                .0
+                .s3_client
+                .get_object()
+                .bucket(&self.0.config.r2_bucket_name)
+                .key(key)
+                .send()
+                .await
+                .map_err(|e| AppError::Storage(format!("Failed to download {}: {}", key, e)))?;
+            let data = object
+                .body
+                .collect()
+                .await
+                .map_err(|e| AppError::Storage(format!("Failed to read {}: {}", key, e)))?;
+            Ok(data.into_bytes().to_vec())
+        })
+    }
+
+    fn publish<'a>(&'a self, show_id: i64, artifact: &'a Path) -> BoxFuture<'a, Result<String>> {
+        Box::pin(publish_stream_to_shows_archive(self.0, show_id, artifact))
+    }
+}
+
+/// Upload a finished raw recording artifact to R2, verify it, persist the
+/// markers JSON + a `recording_versions` row, and delete the local artifact
+/// only after R2 has confirmed it and the row is written.
 ///
-/// This is the back half of [`upload_session`], factored out so startup
-/// orphan recovery ([`recover_orphaned_recordings`]) can reuse the exact same
-/// upload + verify + record path. `write_failure`, when set, marks the resulting
-/// DB row `failed` (the archive is known incomplete); recovery passes `None` and
-/// relies on the short-recording check for partial captures.
-///
-/// `markers_json` is the serialized markers array (recovery passes `"[]"` — a
-/// crashed session has no markers, but an empty array keeps the finalize/merge
-/// path working).
+/// The live stop path ([`upload_session`]) and startup recovery
+/// ([`recover_orphaned_recordings`]) share this path. A raw object that an
+/// interrupted finalize already uploaded with the same size is reused, not
+/// uploaded again. If the row cannot be written, this returns an error and
+/// keeps the local file, so the next recovery can finish the job.
+/// `write_failure`, when set, marks the row `failed` (the archive is known
+/// incomplete); recovery passes `None` and relies on the short-recording check.
 async fn upload_artifact_and_record(
     state: &Arc<AppState>,
+    store: &dyn RecordingStore,
     show_id: i64,
     version: &str,
     artifact_path: &Path,
-    markers_json: String,
-    marker_count: usize,
+    markers: Markers,
     write_failure: Option<String>,
 ) -> Result<FinalizedRecording> {
     // Read the local artifact and probe its duration BEFORE upload — we keep this
-    // file on disk until R2 has verified it (see cleanup below).
+    // file on disk until R2 has verified it and the row exists (see cleanup below).
     let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);
     let raw_data = tokio::fs::read(artifact_path)
         .await
@@ -473,28 +558,31 @@ async fn upload_artifact_and_record(
     let local_size = raw_data.len() as u64;
     let local_duration_ms = audio::get_duration(artifact_path).await.ok();
 
-    // Resumable, integrity-checked multipart upload (explicit CRC32C). On failure
-    // this returns Err and we keep the local file (never deleted unverified).
-    storage::upload_multipart(
-        &state.s3_client,
-        &state.config.r2_bucket_name,
-        &raw_key,
-        raw_data,
-        "audio/webm",
-    )
-    .await
-    .map_err(|e| {
-        crate::metrics::inc_recording_r2_upload_failure();
-        AppError::Storage(format!("Failed to upload raw recording: {}", e))
-    })?;
+    // An interrupted finalize may have uploaded this file already. A missing,
+    // different or unreadable object is uploaded (again).
+    let reused = local_size > 0 && store.size(&raw_key).await.ok().flatten() == Some(local_size);
+    if reused {
+        tracing::info!(
+            "Raw recording {} is already in R2 with the local size; not uploading again",
+            raw_key
+        );
+    } else {
+        // Resumable, integrity-checked multipart upload (explicit CRC32C). On
+        // failure this returns Err and we keep the local file.
+        store.upload_raw(&raw_key, raw_data).await.map_err(|e| {
+            crate::metrics::inc_recording_r2_upload_failure();
+            AppError::Storage(format!("Failed to upload raw recording: {}", e))
+        })?;
+    }
 
     // Verify before delete: HEAD the object and confirm the size matches, and
     // sanity-check the duration against the scheduled show length (a recorder
     // that died early still produces a valid-but-short object).
-    let remote_size =
-        storage::head_object_size(&state.s3_client, &state.config.r2_bucket_name, &raw_key)
-            .await
-            .unwrap_or(0);
+    let remote_size = if reused {
+        local_size
+    } else {
+        store.size(&raw_key).await.ok().flatten().unwrap_or(0)
+    };
     let size_verified = remote_size == local_size && local_size > 0;
 
     let mut failure_reason = write_failure;
@@ -517,33 +605,56 @@ async fn upload_artifact_and_record(
         crate::metrics::inc_recording_incomplete();
     }
     tracing::info!(
-        "Uploaded raw recording to {} ({} bytes, size_verified={}, duration_ms={:?})",
+        "Raw recording at {} ({} bytes, reused={}, size_verified={}, duration_ms={:?})",
         raw_key,
         local_size,
+        reused,
         size_verified,
         local_duration_ms
     );
 
-    // Upload markers JSON to R2
     let markers_key = format!("recordings/{}/{}/markers.json", show_id, version);
+    let marker_count = match markers {
+        Markers::Session { json, count } => {
+            store
+                .put_json(&markers_key, json)
+                .await
+                .map_err(|e| AppError::Storage(format!("Failed to upload markers: {}", e)))?;
+            count
+        }
+        Markers::Recovered => match store.size(&markers_key).await? {
+            Some(_) => {
+                // Best-effort count for the row; the stored markers stay as they are.
+                let count = match store.read(&markers_key).await {
+                    Ok(data) => serde_json::from_slice::<Vec<serde_json::Value>>(&data)
+                        .map(|markers| markers.len())
+                        .unwrap_or(0),
+                    Err(e) => {
+                        tracing::warn!("Cannot read stored markers {}: {}", markers_key, e);
+                        0
+                    }
+                };
+                tracing::info!(
+                    "Kept {} stored marker(s) at {} for the recovered recording",
+                    count,
+                    markers_key
+                );
+                count
+            }
+            None => {
+                store
+                    .put_json(&markers_key, "[]".to_string())
+                    .await
+                    .map_err(|e| AppError::Storage(format!("Failed to upload markers: {}", e)))?;
+                0
+            }
+        },
+    };
+    tracing::info!("Markers at {}", markers_key);
 
-    state
-        .s3_client
-        .put_object()
-        .bucket(&state.config.r2_bucket_name)
-        .key(&markers_key)
-        .body(aws_sdk_s3::primitives::ByteStream::from(
-            markers_json.into_bytes(),
-        ))
-        .content_type("application/json")
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("Failed to upload markers: {}", e)))?;
-
-    tracing::info!("Uploaded markers to {}", markers_key);
-
-    // Create recording version entry in database
-    let recording_id: Option<i64> = match crate::db::create_recording_version(
+    // The row comes before the local file may go. Without it, the dashboard
+    // shows no recording, so keep the file for the next recovery.
+    let recording = crate::db::create_recording_version(
         &state.db,
         show_id,
         version,
@@ -552,47 +663,52 @@ async fn upload_artifact_and_record(
         marker_count as i64,
     )
     .await
-    {
-        Ok(recording) => {
-            tracing::info!(
-                "Created recording version in database: show_id={}, version={}",
-                show_id,
-                version
-            );
-            // Mark incomplete recordings as failed so the operator sees the gap
-            // (write failure, R2 size mismatch, or a suspiciously short archive).
-            if let Some(ref reason) = failure_reason {
-                tracing::error!(
-                    "Marking recording version {} as failed: {}",
-                    recording.id,
-                    reason
-                );
-                if let Err(e) = crate::db::update_recording_version_status(
-                    &state.db,
-                    recording.id,
-                    "failed",
-                    Some(reason),
-                )
-                .await
-                {
-                    tracing::error!("Failed to mark recording version as failed: {}", e);
-                }
-            }
-            Some(recording.id)
+    .map_err(|e| {
+        tracing::error!(
+            "Failed to create recording version for show {} version {}: {} — keeping {:?} for recovery",
+            show_id,
+            version,
+            e,
+            artifact_path
+        );
+        AppError::Internal(format!("Failed to create recording version: {}", e))
+    })?;
+    tracing::info!(
+        "Created recording version in database: show_id={}, version={}",
+        show_id,
+        version
+    );
+    // Mark incomplete recordings as failed so the operator sees the gap
+    // (write failure, R2 size mismatch, or a suspiciously short archive).
+    if let Some(ref reason) = failure_reason {
+        tracing::error!(
+            "Marking recording version {} as failed: {}",
+            recording.id,
+            reason
+        );
+        if let Err(e) = crate::db::update_recording_version_status(
+            &state.db,
+            recording.id,
+            "failed",
+            Some(reason),
+        )
+        .await
+        {
+            tracing::error!("Failed to mark recording version as failed: {}", e);
         }
-        Err(e) => {
-            tracing::error!("Failed to create recording version in database: {}", e);
-            // Don't fail the finalize - the recording was uploaded successfully.
-            None
-        }
-    };
+    }
 
     // Persist the probed duration (best-effort) so the dashboard can show the
     // show length — including for `failed`/short captures, whose length is
     // exactly what the "essentially empty" alert is about.
-    if let (Some(rid), Some(ms)) = (recording_id, local_duration_ms) {
-        if let Err(e) = crate::db::set_recording_duration(&state.db, rid, ms as i64).await {
-            tracing::warn!("Failed to store duration for recording {}: {}", rid, e);
+    if let Some(ms) = local_duration_ms {
+        if let Err(e) = crate::db::set_recording_duration(&state.db, recording.id, ms as i64).await
+        {
+            tracing::warn!(
+                "Failed to store duration for recording {}: {}",
+                recording.id,
+                e
+            );
         }
     }
 
@@ -609,14 +725,17 @@ async fn upload_artifact_and_record(
             show_id
         );
     } else {
-        match publish_stream_to_shows_archive(state, show_id, artifact_path).await {
+        match store.publish(show_id, artifact_path).await {
             Ok(archive_key) => {
-                if let Some(rid) = recording_id {
-                    if let Err(e) =
-                        crate::db::set_recording_archive_key(&state.db, rid, &archive_key).await
-                    {
-                        tracing::error!("Failed to store archive key for recording {}: {}", rid, e);
-                    }
+                if let Err(e) =
+                    crate::db::set_recording_archive_key(&state.db, recording.id, &archive_key)
+                        .await
+                {
+                    tracing::error!(
+                        "Failed to store archive key for recording {}: {}",
+                        recording.id,
+                        e
+                    );
                 }
             }
             Err(e) => {
@@ -651,7 +770,6 @@ async fn upload_artifact_and_record(
         incomplete,
     })
 }
-
 /// Parse a segment directory name `recording_{show_id}_{version}.segs` into its
 /// `(show_id, version)` parts. `version` is a `%Y-%m-%dT%H-%M-%S` timestamp and
 /// therefore contains no `_`, so splitting on the first `_` after the prefix is
@@ -666,42 +784,54 @@ fn parse_seg_dir_name(name: &str) -> Option<(i64, String)> {
     Some((show_id, version.to_string()))
 }
 
-/// True if this recording was already persisted to R2 (and usually the DB), so
-/// recovery must skip it to avoid a duplicate `recording_versions` row or a
-/// re-upload to the same key. Checks the DB row first (created only after a
-/// successful upload), then falls back to a HEAD on the raw object (covers a
-/// crash between upload and DB-row creation).
-async fn recording_already_persisted(state: &Arc<AppState>, show_id: i64, version: &str) -> bool {
-    if let Ok(Some(_)) = crate::db::get_recording_version(&state.db, show_id, version).await {
-        return true;
-    }
-    let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);
-    matches!(
-        storage::head_object_size(&state.s3_client, &state.config.r2_bucket_name, &raw_key).await,
-        Ok(size) if size > 0
-    )
+/// Parse a joined artifact name `recording_{show_id}_{version}.webm`, the
+/// sibling of the segment dir, like [`parse_seg_dir_name`].
+fn parse_artifact_name(name: &str) -> Option<(i64, String)> {
+    parse_seg_dir_name(&format!("{}.segs", name.strip_suffix(".webm")?))
 }
 
-/// Recover recordings orphaned by a backend restart mid-show.
+/// What a crashed or interrupted recording left in the temp dir.
+#[derive(Debug, Default)]
+struct Leftover {
+    /// `recording_{id}_{version}.segs/`: the recorder's segments, not yet joined.
+    seg_dir: Option<PathBuf>,
+    /// `recording_{id}_{version}.webm`: the joined file, or the empty file a
+    /// session creates at start.
+    artifact: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct RecoveryCounts {
+    recovered: u32,
+    skipped: u32,
+    failed: u32,
+}
+
+/// Recover recordings that a crash or failed finalize left on disk.
 ///
-/// On a crash/restart the recorder FFmpeg is killed (`kill_on_drop`), leaving a
-/// `recording_{show_id}_{version}.segs/` directory of finalized MPEG-TS segments
-/// that nothing ever concatenates or uploads — the show would otherwise be
-/// silently lost (the dead-man's-switch alerts but can't recover it).
-/// `cleanup_stale_files` never deletes such dirs, so they wait for recovery.
+/// A restart mid-show kills the recorder FFmpeg (`kill_on_drop`) and leaves a
+/// `recording_{show_id}_{version}.segs/` dir of MPEG-TS segments. A crash or a
+/// failed row insert after the join leaves `recording_{show_id}_{version}.webm`.
+/// `cleanup_stale_files` never deletes either, so they wait for this.
 ///
-/// This scans `temp_dir` for such dirs at startup and, for each one not already
-/// persisted, concatenates the segments and runs the normal upload + verify +
-/// record path ([`upload_artifact_and_record`]) with an empty markers array,
-/// then removes the seg dir. Idempotent: running it twice (or after a normal
-/// finalize) is a no-op. Failures are logged and the dir is left in place for the
-/// next attempt / the dead-man's-switch.
-///
-/// Run once at startup. The daily temp cleanup may run at the same time but
-/// skips recording artifacts.
-/// Only dirs present at boot are considered; a new live session uses a fresh
-/// timestamp, so there is no collision with concurrent recording.
+/// Run once at startup. For each recording present at boot that has no
+/// `recording_versions` row, this joins the segments when they survived and runs
+/// the normal upload + verify + record path ([`upload_artifact_and_record`]) with
+/// recovered markers. A raw object already in R2 with the same size is reused.
+/// A recording that has a row is persisted; its leftovers are removed.
+/// Idempotent: a second run adds no row and uploads nothing. Failures are logged
+/// and the files stay for the next attempt and the dead-man's-switch. The live
+/// session's own files are never touched.
 pub async fn recover_orphaned_recordings(state: &Arc<AppState>, temp_dir: &Path) {
+    recover_leftovers(state, &R2Store(state), temp_dir).await;
+}
+
+async fn recover_leftovers(
+    state: &Arc<AppState>,
+    store: &dyn RecordingStore,
+    temp_dir: &Path,
+) -> RecoveryCounts {
+    let mut counts = RecoveryCounts::default();
     let mut read_dir = match tokio::fs::read_dir(temp_dir).await {
         Ok(rd) => rd,
         Err(e) => {
@@ -711,18 +841,30 @@ pub async fn recover_orphaned_recordings(state: &Arc<AppState>, temp_dir: &Path)
                 temp_dir,
                 e
             );
-            return;
+            return counts;
         }
     };
 
-    // Snapshot the orphaned segment dirs present at boot.
-    let mut seg_dirs: Vec<PathBuf> = Vec::new();
+    // Snapshot the leftovers present at boot, grouped by recording.
+    let mut leftovers: std::collections::BTreeMap<(i64, String), Leftover> =
+        std::collections::BTreeMap::new();
     loop {
         match read_dir.next_entry().await {
             Ok(Some(entry)) => {
                 let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("segs") && path.is_dir() {
-                    seg_dirs.push(path);
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".segs") && path.is_dir() {
+                    match parse_seg_dir_name(&name) {
+                        Some(id) => leftovers.entry(id).or_default().seg_dir = Some(path),
+                        None => tracing::warn!(
+                            "Recording recovery: unparseable segment dir {:?}, skipping",
+                            path
+                        ),
+                    }
+                } else if path.is_file() {
+                    if let Some(id) = parse_artifact_name(&name) {
+                        leftovers.entry(id).or_default().artifact = Some(path);
+                    }
                 }
             }
             Ok(None) => break,
@@ -733,110 +875,168 @@ pub async fn recover_orphaned_recordings(state: &Arc<AppState>, temp_dir: &Path)
         }
     }
 
-    if seg_dirs.is_empty() {
-        return;
+    if leftovers.is_empty() {
+        return counts;
     }
 
     tracing::info!(
-        "Recording recovery: found {} orphaned segment dir(s) to evaluate",
-        seg_dirs.len()
+        "Recording recovery: found {} leftover recording(s) to evaluate",
+        leftovers.len()
     );
 
-    let (mut recovered, mut skipped, mut failed) = (0u32, 0u32, 0u32);
-    for seg_dir in seg_dirs {
-        let name = seg_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-
-        let Some((show_id, version)) = parse_seg_dir_name(name) else {
-            tracing::warn!(
-                "Recording recovery: unparseable segment dir {:?}, skipping",
-                seg_dir
-            );
-            continue;
-        };
-
-        if recording_already_persisted(state, show_id, &version).await {
+    let active = state.recording_manager.lock().await.get_temp_file_path();
+    for ((show_id, version), leftover) in leftovers {
+        // The joined file's path, as the live stop path names it.
+        let artifact_path = temp_dir.join(format!("recording_{}_{}.webm", show_id, version));
+        if active.as_deref() == Some(artifact_path.as_path()) {
             tracing::info!(
-                "Recording recovery: show {} version {} already uploaded, removing stale seg dir",
+                "Recording recovery: show {} version {} is the live session, skipping",
                 show_id,
                 version
             );
-            if let Err(e) = tokio::fs::remove_dir_all(&seg_dir).await {
-                tracing::warn!(
-                    "Recording recovery: failed to remove stale seg dir {:?}: {}",
-                    seg_dir,
-                    e
-                );
-            }
-            skipped += 1;
+            counts.skipped += 1;
             continue;
         }
 
-        // Concat the surviving segments into the sibling artifact path
-        // (`recording_{id}_{version}.webm`), matching the normal stop path.
-        let artifact_path = seg_dir.with_extension("webm");
-        if let Err(e) = crate::stream_bridge::concat_segments(&seg_dir, &artifact_path).await {
-            // Empty/garbage dir (e.g. crash before the first segment flushed):
-            // leave it for the dead-man's-switch; never create a 0-byte object.
+        match crate::db::get_recording_version(&state.db, show_id, &version).await {
+            Ok(Some(_)) => {
+                remove_persisted_leftover(store, show_id, &version, &leftover).await;
+                counts.skipped += 1;
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(
+                    "Recording recovery: cannot read the row for show {} version {}: {} — leaving files in place",
+                    show_id,
+                    version,
+                    e
+                );
+                counts.failed += 1;
+                continue;
+            }
+        }
+
+        // Surviving segments win: a joined file next to them may be partial,
+        // or the empty file the session created at start.
+        if let Some(seg_dir) = &leftover.seg_dir {
+            if let Err(e) = crate::stream_bridge::concat_segments(seg_dir, &artifact_path).await {
+                // Empty/garbage dir (e.g. crash before the first segment flushed):
+                // leave it for the dead-man's-switch; never create a 0-byte object.
+                tracing::warn!(
+                    "Recording recovery: cannot concat {:?} (show {} version {}): {} — leaving in place",
+                    seg_dir,
+                    show_id,
+                    version,
+                    e
+                );
+                counts.failed += 1;
+                continue;
+            }
+        } else if tokio::fs::metadata(&artifact_path)
+            .await
+            .map_or(true, |m| m.len() == 0)
+        {
             tracing::warn!(
-                "Recording recovery: cannot concat {:?} (show {} version {}): {} — leaving in place",
-                seg_dir,
-                show_id,
-                version,
-                e
+                "Recording recovery: {:?} is empty and has no segments; nothing to upload — leaving in place",
+                artifact_path
             );
-            failed += 1;
+            counts.failed += 1;
             continue;
         }
 
         match upload_artifact_and_record(
             state,
+            store,
             show_id,
             &version,
             &artifact_path,
-            "[]".to_string(),
-            0,
+            Markers::Recovered,
             None,
         )
         .await
         {
             Ok(_) => {
                 tracing::info!(
-                    "Recording recovery: recovered show {} version {} from orphaned segments",
+                    "Recording recovery: recovered show {} version {}",
                     show_id,
                     version
                 );
-                if let Err(e) = tokio::fs::remove_dir_all(&seg_dir).await {
-                    tracing::warn!(
-                        "Recording recovery: failed to remove seg dir {:?} after upload: {}",
-                        seg_dir,
-                        e
-                    );
+                if let Some(seg_dir) = &leftover.seg_dir {
+                    if let Err(e) = tokio::fs::remove_dir_all(seg_dir).await {
+                        tracing::warn!(
+                            "Recording recovery: failed to remove seg dir {:?} after upload: {}",
+                            seg_dir,
+                            e
+                        );
+                    }
                 }
-                recovered += 1;
+                counts.recovered += 1;
             }
             Err(e) => {
                 tracing::error!(
-                    "Recording recovery: upload failed for show {} version {}: {} — leaving seg dir for retry",
+                    "Recording recovery: upload failed for show {} version {}: {} — leaving files for retry",
                     show_id,
                     version,
                     e
                 );
-                failed += 1;
+                counts.failed += 1;
             }
         }
     }
 
     tracing::info!(
         "Recording recovery complete: {} recovered, {} skipped, {} failed/left",
-        recovered,
-        skipped,
-        failed
+        counts.recovered,
+        counts.skipped,
+        counts.failed
     );
+    counts
 }
 
+/// The recording has a row, so it is persisted. Remove the segment dir, and
+/// the joined file only when R2 holds an object of the same size: a `failed`
+/// row can point at a short object, and then the local copy is the good one.
+async fn remove_persisted_leftover(
+    store: &dyn RecordingStore,
+    show_id: i64,
+    version: &str,
+    leftover: &Leftover,
+) {
+    tracing::info!(
+        "Recording recovery: show {} version {} already has a row, removing leftovers",
+        show_id,
+        version
+    );
+    if let Some(seg_dir) = &leftover.seg_dir {
+        if let Err(e) = tokio::fs::remove_dir_all(seg_dir).await {
+            tracing::warn!(
+                "Recording recovery: failed to remove stale seg dir {:?}: {}",
+                seg_dir,
+                e
+            );
+        }
+    }
+    let Some(artifact) = &leftover.artifact else {
+        return;
+    };
+    let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);
+    let local = tokio::fs::metadata(artifact).await.map(|m| m.len()).ok();
+    let remote = store.size(&raw_key).await.ok().flatten();
+    if local.is_some_and(|size| size > 0) && local == remote {
+        if let Err(e) = tokio::fs::remove_file(artifact).await {
+            tracing::warn!("Recording recovery: failed to remove {:?}: {}", artifact, e);
+        }
+    } else {
+        tracing::warn!(
+            "Recording recovery: keeping {:?}: its size {:?} does not match {} in R2 ({:?})",
+            artifact,
+            local,
+            raw_key,
+            remote
+        );
+    }
+}
 /// Ensure a recording session is running for `show_id`, idempotently.
 ///
 /// Called when a live stream connects (auto-record on go-live). Safe to call on
@@ -2062,8 +2262,9 @@ mod tests {
         // First run: recovers the orphaned segments.
         recover_orphaned_recordings(&state, &temp_dir).await;
 
-        let size = storage::head_object_size(&s3_client, &bucket, &raw_key)
+        let size = storage::object_size(&s3_client, &bucket, &raw_key)
             .await
+            .expect("head the raw object")
             .expect("raw object should exist in R2 after recovery");
         assert!(size > 0, "recovered object is empty");
         assert!(
@@ -2110,5 +2311,335 @@ mod tests {
             .key(&markers_key)
             .send()
             .await;
+    }
+
+    /// An in-memory [`RecordingStore`] that records every write.
+    #[derive(Default)]
+    struct FakeStore {
+        objects: std::sync::Mutex<HashMap<String, Vec<u8>>>,
+        raw_uploads: std::sync::Mutex<Vec<String>>,
+        json_puts: std::sync::Mutex<Vec<String>>,
+        publishes: std::sync::Mutex<Vec<i64>>,
+    }
+
+    impl FakeStore {
+        fn object(&self, key: &str) -> Option<Vec<u8>> {
+            self.objects.lock().unwrap().get(key).cloned()
+        }
+
+        fn insert(&self, key: &str, data: &[u8]) {
+            self.objects
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), data.to_vec());
+        }
+
+        /// Raw uploads, JSON puts and archive publishes so far.
+        fn writes(&self) -> (usize, usize, usize) {
+            (
+                self.raw_uploads.lock().unwrap().len(),
+                self.json_puts.lock().unwrap().len(),
+                self.publishes.lock().unwrap().len(),
+            )
+        }
+    }
+
+    impl RecordingStore for FakeStore {
+        fn size<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Option<u64>>> {
+            let size = self.object(key).map(|data| data.len() as u64);
+            Box::pin(async move { Ok(size) })
+        }
+
+        fn upload_raw<'a>(&'a self, key: &'a str, data: Vec<u8>) -> BoxFuture<'a, Result<()>> {
+            self.raw_uploads.lock().unwrap().push(key.to_string());
+            self.insert(key, &data);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn put_json<'a>(&'a self, key: &'a str, json: String) -> BoxFuture<'a, Result<()>> {
+            self.json_puts.lock().unwrap().push(key.to_string());
+            self.insert(key, json.as_bytes());
+            Box::pin(async { Ok(()) })
+        }
+
+        fn read<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Vec<u8>>> {
+            let data = self.object(key);
+            Box::pin(async move { data.ok_or_else(|| AppError::Storage("missing".into())) })
+        }
+
+        fn publish<'a>(&'a self, show_id: i64, _: &'a Path) -> BoxFuture<'a, Result<String>> {
+            self.publishes.lock().unwrap().push(show_id);
+            Box::pin(async { Ok("shows/fake.mp3".to_string()) })
+        }
+    }
+
+    const VERSION: &str = "2026-06-01T20-00-00";
+
+    /// An app state with in-memory SQLite and no reachable R2; the temp dir is
+    /// both the recording manager's dir and the recovery scan dir.
+    async fn offline_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        let mut config: crate::Config = serde_json::from_value(serde_json::json!({
+            "secret_key": "test-only", "superadmin_password_hash": "unused",
+            "r2_account_id": "unused", "r2_access_key_id": "unused",
+            "r2_secret_access_key": "unused", "rtmp_url": "rtmp://127.0.0.1:1/live"
+        }))
+        .unwrap();
+        config.r2_endpoint = "http://127.0.0.1:1".to_string();
+        let temp = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState {
+            recovery_mail: crate::recovery_mail::RecoveryMailer::default(),
+            recovery_controls: crate::handlers::recovery::RecoveryControls::default(),
+            db,
+            s3_client: storage::build_s3_client(&config),
+            config,
+            stream_state: crate::stream_bridge::new_shared_state(),
+            stream_metrics: crate::stream_metrics::new_shared(),
+            recording_manager: crate::recording::new_shared_manager(temp.path().to_path_buf()),
+            recording_finalizer: Arc::default(),
+            cover_debounce: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            default_cover: tokio::sync::OnceCell::new(),
+            telegram_bot: None,
+            pending_show_notifications: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            telegram_edit_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            chat_hub: Arc::new(crate::chat_bridge::ChatHub::new()),
+        });
+        (state, temp)
+    }
+
+    async fn add_show(state: &Arc<AppState>, show_id: i64) {
+        sqlx::query("INSERT INTO shows (id, title, date) VALUES (?, 'Recovery', '2026-06-01')")
+            .bind(show_id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+    }
+
+    async fn row_count(state: &Arc<AppState>, show_id: i64) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM recording_versions WHERE show_id = ?")
+            .bind(show_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap()
+    }
+
+    fn raw_key(show_id: i64) -> String {
+        format!("recordings/{show_id}/{VERSION}/raw.webm")
+    }
+
+    fn markers_key(show_id: i64) -> String {
+        format!("recordings/{show_id}/{VERSION}/markers.json")
+    }
+
+    /// Write the joined file a finalize leaves before its upload.
+    async fn leftover_webm(temp: &Path, show_id: i64, data: &[u8]) -> PathBuf {
+        let path = temp.join(format!("recording_{show_id}_{VERSION}.webm"));
+        tokio::fs::write(&path, data).await.unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn failed_row_insert_keeps_the_file_and_recovery_writes_the_row() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        // Show 41 has no `shows` row yet, so the foreign key refuses the insert.
+        let artifact = leftover_webm(temp.path(), 41, b"joined audio").await;
+        let markers = Markers::Session {
+            json: r#"[{"track":1},{"track":2}]"#.to_string(),
+            count: 2,
+        };
+
+        let result =
+            upload_artifact_and_record(&state, &store, 41, VERSION, &artifact, markers, None).await;
+
+        assert!(result.is_err(), "a failed insert must fail the persist");
+        assert!(artifact.exists(), "the file must stay for a retry");
+        assert_eq!(store.object(&raw_key(41)).unwrap(), b"joined audio");
+        assert_eq!(
+            store.writes(),
+            (1, 1, 0),
+            "no archive publish without a row"
+        );
+
+        add_show(&state, 41).await;
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.recovered, 1);
+        let row = crate::db::get_recording_version(&state.db, 41, VERSION)
+            .await
+            .unwrap()
+            .expect("recovery writes the row");
+        assert_eq!(row.marker_count, 2, "the stored session markers are kept");
+        assert_eq!(
+            store.object(&markers_key(41)).unwrap(),
+            br#"[{"track":1},{"track":2}]"#
+        );
+        assert_eq!(
+            store.writes(),
+            (1, 1, 1),
+            "no second upload, no markers overwrite"
+        );
+        assert!(!artifact.exists(), "the file goes once the row exists");
+    }
+
+    #[tokio::test]
+    async fn recovery_uploads_a_leftover_webm_unless_r2_has_the_same_size() {
+        for (case, stored, uploads) in [
+            ("no object", None, 1),
+            ("same size", Some(&b"joined audio"[..]), 0),
+            ("other size", Some(&b"short"[..]), 1),
+        ] {
+            let (state, temp) = offline_state().await;
+            let store = FakeStore::default();
+            add_show(&state, 7).await;
+            if let Some(data) = stored {
+                store.insert(&raw_key(7), data);
+            }
+            let artifact = leftover_webm(temp.path(), 7, b"joined audio").await;
+
+            let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+            assert_eq!(counts.recovered, 1, "{case}");
+            assert_eq!(store.writes(), (uploads, 1, 1), "{case}");
+            assert_eq!(
+                store.object(&raw_key(7)).unwrap(),
+                b"joined audio",
+                "{case}"
+            );
+            assert_eq!(store.object(&markers_key(7)).unwrap(), b"[]", "{case}");
+            assert_eq!(row_count(&state, 7).await, 1, "{case}");
+            assert!(!artifact.exists(), "{case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_recovery_run_changes_nothing() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 9).await;
+        leftover_webm(temp.path(), 9, b"joined audio").await;
+        assert_eq!(
+            recover_leftovers(&state, &store, temp.path())
+                .await
+                .recovered,
+            1
+        );
+        let writes = store.writes();
+
+        // A crash after the insert, before the delete, leaves the file again.
+        let artifact = leftover_webm(temp.path(), 9, b"joined audio").await;
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(
+            counts,
+            RecoveryCounts {
+                recovered: 0,
+                skipped: 1,
+                failed: 0
+            }
+        );
+        assert_eq!(store.writes(), writes, "no upload, put or publish");
+        assert_eq!(row_count(&state, 9).await, 1, "no duplicate row");
+        assert!(
+            !artifact.exists(),
+            "R2 holds the same size, so the copy goes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_keeps_a_local_file_that_differs_from_r2() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 5).await;
+        crate::db::create_recording_version(&state.db, 5, VERSION, &raw_key(5), &markers_key(5), 0)
+            .await
+            .unwrap();
+        store.insert(&raw_key(5), b"short");
+        let artifact = leftover_webm(temp.path(), 5, b"the full recording").await;
+
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.skipped, 1);
+        assert!(artifact.exists(), "the local copy is the good one");
+        assert_eq!(store.writes(), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn an_empty_webm_without_segments_is_never_uploaded() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 3).await;
+        let artifact = leftover_webm(temp.path(), 3, b"").await;
+
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.failed, 1);
+        assert!(artifact.exists());
+        assert_eq!(store.writes(), (0, 0, 0), "never create a 0-byte object");
+        assert_eq!(row_count(&state, 3).await, 0);
+    }
+
+    #[tokio::test]
+    async fn the_live_session_is_never_recovered() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 11).await;
+        let status = state
+            .recording_manager
+            .lock()
+            .await
+            .start(11)
+            .await
+            .unwrap();
+        let version = status.version.unwrap();
+        let artifact = temp.path().join(format!("recording_11_{version}.webm"));
+        let seg_dir = temp.path().join(format!("recording_11_{version}.segs"));
+        tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+        tokio::fs::write(&artifact, b"being written").await.unwrap();
+
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.skipped, 1);
+        assert!(artifact.exists() && seg_dir.exists());
+        assert_eq!(store.writes(), (0, 0, 0));
+        assert_eq!(row_count(&state, 11).await, 0);
+    }
+
+    /// The ticket's crash between upload and insert, on the segment path: the
+    /// segments survived next to the empty file of the session start, and R2
+    /// already has the joined upload. Needs ffmpeg, as the recorder does.
+    #[tokio::test]
+    async fn segments_are_joined_again_and_reuse_the_uploaded_object() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 13).await;
+        let seg_dir = temp.path().join(format!("recording_13_{VERSION}.segs"));
+        tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+        gen_test_segments(&seg_dir).await;
+        let joined = temp.path().join("earlier-join.webm.tmp");
+        crate::stream_bridge::concat_segments(&seg_dir, &joined)
+            .await
+            .unwrap();
+        store.insert(&raw_key(13), &tokio::fs::read(&joined).await.unwrap());
+        tokio::fs::remove_file(&joined).await.unwrap();
+        let artifact = leftover_webm(temp.path(), 13, b"").await;
+
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.recovered, 1);
+        // No second upload. The 4 s test audio counts as short, so the row is
+        // marked failed and nothing goes to the shows archive.
+        assert_eq!(
+            store.writes(),
+            (0, 1, 0),
+            "the same join is not uploaded again"
+        );
+        let row = crate::db::get_recording_version(&state.db, 13, VERSION)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, "failed");
+        assert!(!seg_dir.exists() && !artifact.exists());
     }
 }
