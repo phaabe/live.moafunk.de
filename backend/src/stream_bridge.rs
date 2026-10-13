@@ -457,9 +457,12 @@ impl StreamState {
     ///   backward compatibility with the existing R2 layout (FFmpeg probes
     ///   content, not the name).
     pub async fn start_recording(&mut self, path: PathBuf) -> Result<(), StreamError> {
-        // Close any existing recording first
+        // Close any existing recording first. A failed join keeps its segments
+        // for boot recovery and must not block this recording.
         if self.is_recording() {
-            self.stop_recording().await?;
+            if let Err(e) = self.stop_recording().await {
+                tracing::error!("Previous recording did not finish: {}", e);
+            }
         }
 
         // Per-session segment directory: ".../recording_<id>_<ts>.segs/"
@@ -546,6 +549,7 @@ impl StreamState {
     /// segment, then concat-demux all segments into the final artifact path.
     ///
     /// Returns the path to the concatenated artifact if a recording was active.
+    /// Errors when the join fails; the segment dir then stays on disk.
     pub async fn stop_recording(&mut self) -> Result<Option<PathBuf>, StreamError> {
         let path = self.recording_path.take();
         let seg_dir = self.recording_seg_dir.take();
@@ -577,15 +581,23 @@ impl StreamState {
             }
         }
 
-        // Concat the surviving segments into the final artifact.
+        // Concat the surviving segments into the final artifact. After a failed
+        // join the segments are the only full copy: keep them for boot recovery.
         if let (Some(ref dir), Some(ref out)) = (&seg_dir, &path) {
             if let Err(e) = concat_segments(dir, out).await {
-                tracing::error!("Failed to concat recording segments: {}", e);
+                tracing::error!(
+                    "Failed to concat recording segments: {} — keeping {:?} for recovery",
+                    e,
+                    dir
+                );
                 crate::metrics::inc_recording_segment_concat_failure();
                 self.recording_failed = Some(format!("Segment concat failed: {}", e));
-            } else {
-                tracing::info!("Concatenated recording segments into {:?}", out);
+                return Err(StreamError::RecordingError(format!(
+                    "segment join failed, segments kept in {:?}: {}",
+                    dir, e
+                )));
             }
+            tracing::info!("Concatenated recording segments into {:?}", out);
             // Best-effort cleanup of the segment directory.
             if let Err(e) = tokio::fs::remove_dir_all(dir).await {
                 tracing::warn!("Failed to clean up segment directory {:?}: {}", dir, e);
@@ -1171,5 +1183,60 @@ mod tests {
         .await
         .expect("write waited past its own timeout");
         assert!(matches!(result, Err(StreamError::WriteFailed(_))));
+    }
+
+    /// A stopped recording with its segment dir and joined file in `dir`.
+    fn stopped_recording(dir: &Path) -> (StreamState, PathBuf, PathBuf) {
+        let seg_dir = dir.join("recording_1_2026-06-01T20-00-00.segs");
+        let out = dir.join("recording_1_2026-06-01T20-00-00.webm");
+        std::fs::create_dir(&seg_dir).unwrap();
+        let mut state = StreamState::new();
+        state.recording_path = Some(out.clone());
+        state.recording_seg_dir = Some(seg_dir.clone());
+        (state, seg_dir, out)
+    }
+
+    #[tokio::test]
+    async fn a_failed_join_keeps_the_segments() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut state, seg_dir, out) = stopped_recording(temp.path());
+        std::fs::write(seg_dir.join("seg_00000.ts"), b"audio").unwrap();
+        // A dir at the output path makes the join fail.
+        std::fs::create_dir(&out).unwrap();
+
+        let result = state.stop_recording().await;
+
+        assert!(matches!(result, Err(StreamError::RecordingError(_))));
+        assert!(seg_dir.join("seg_00000.ts").exists());
+        assert!(state.recording_failure().is_some());
+    }
+
+    /// Needs ffmpeg, as the recorder does.
+    #[tokio::test]
+    async fn a_good_join_removes_the_segments() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut state, seg_dir, out) = stopped_recording(temp.path());
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args([
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:a",
+                "aac",
+                "-f",
+                "mpegts",
+            ])
+            .arg(seg_dir.join("seg_00000.ts"))
+            .status()
+            .await
+            .expect("spawn ffmpeg");
+        assert!(status.success());
+
+        let result = state.stop_recording().await;
+
+        assert_eq!(result.unwrap(), Some(out.clone()));
+        assert!(std::fs::metadata(&out).unwrap().len() > 0);
+        assert!(!seg_dir.exists());
+        assert!(state.recording_failure().is_none());
     }
 }

@@ -316,6 +316,8 @@ fn detect_short_recording(show_id: i64, local_duration_ms: Option<u64>) -> Optio
 pub struct DetachedSession {
     session: RecordingSession,
     write_failure: Option<String>,
+    /// The segments could not be joined; they stay on disk for boot recovery.
+    join_failure: Option<String>,
 }
 
 /// The real recording steps behind [`crate::recording_finalizer::Finalizer`],
@@ -373,15 +375,14 @@ async fn detach_session(
     }
 
     // Stop the stream tee first (flushes + closes the file) and capture whether
-    // a write failure had already abandoned the recording.
-    let write_failure = {
+    // a write failure had already abandoned the recording, and whether the
+    // segments could be joined.
+    let (write_failure, join_failure) = {
         let mut stream = state.stream_state.lock().await;
         let failure = stream.recording_failure().map(|s| s.to_string());
-        if let Err(e) = stream.stop_recording().await {
-            tracing::warn!("Error stopping stream recording: {}", e);
-            // Continue anyway - we still want to process the session.
-        }
-        failure
+        // Stop the session below anyway, so the next show can record.
+        let join_failure = stream.stop_recording().await.err().map(|e| e.to_string());
+        (failure, join_failure)
     };
 
     // Stop the recording session.
@@ -396,6 +397,7 @@ async fn detach_session(
     Ok(session.map(|session| DetachedSession {
         session,
         write_failure,
+        join_failure,
     }))
 }
 
@@ -405,29 +407,7 @@ async fn upload_session(
     state: &Arc<AppState>,
     detached: DetachedSession,
 ) -> Result<FinalizedRecording> {
-    let DetachedSession {
-        session,
-        write_failure,
-    } = detached;
-    let show_id = session.show_id;
-    let version = session.version_timestamp.clone();
-    let markers = Markers::Session {
-        json: session
-            .markers_json()
-            .map_err(|e| AppError::Internal(e.to_string()))?,
-        count: session.markers.len(),
-    };
-
-    let finalized = upload_artifact_and_record(
-        state,
-        &R2Store(state),
-        show_id,
-        &version,
-        &session.temp_file_path,
-        markers,
-        write_failure,
-    )
-    .await?;
+    let finalized = persist_session(state, &R2Store(state), detached).await?;
 
     // Auto-publish a completed streamed broadcast to SoundCloud (private, into the
     // show's playlist). Streamed shows finalize here — not via handle_finalize_socket
@@ -442,6 +422,106 @@ async fn upload_session(
     }
 
     Ok(finalized)
+}
+
+/// The persist half of [`upload_session`], against any [`RecordingStore`].
+///
+/// After a failed join the local file is empty or cut off, and the segments
+/// are the only full copy. Then nothing is uploaded and no row is written: boot
+/// recovery joins the segments again. Only the markers and a finalize note are
+/// stored, because recovery reads both from R2 and has no other copy of them.
+/// The note says whether audio was lost during the show (see
+/// [`recovered_failure`]).
+async fn persist_session(
+    state: &Arc<AppState>,
+    store: &dyn RecordingStore,
+    detached: DetachedSession,
+) -> Result<FinalizedRecording> {
+    let DetachedSession {
+        session,
+        write_failure,
+        join_failure,
+    } = detached;
+    let show_id = session.show_id;
+    let version = session.version_timestamp.clone();
+    let json = session
+        .markers_json()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    if let Some(e) = join_failure {
+        let markers_key = format!("recordings/{}/{}/markers.json", show_id, version);
+        if let Err(put) = store.put_json(&markers_key, json).await {
+            tracing::error!(
+                "Cannot store markers for show {} version {} after a failed join: {}",
+                show_id,
+                version,
+                put
+            );
+        }
+        let note = serde_json::json!({ "write_failure": write_failure }).to_string();
+        if let Err(put) = store
+            .put_json(&finalize_note_key(show_id, &version), note)
+            .await
+        {
+            tracing::error!(
+                "Cannot store the finalize note for show {} version {}: {} — recovery will mark it failed",
+                show_id,
+                version,
+                put
+            );
+        }
+        return Err(AppError::Internal(format!(
+            "recording for show {} version {} not saved, boot recovery will retry: {}",
+            show_id, version, e
+        )));
+    }
+
+    upload_artifact_and_record(
+        state,
+        store,
+        show_id,
+        &version,
+        &session.temp_file_path,
+        Markers::Session {
+            json,
+            count: session.markers.len(),
+        },
+        write_failure,
+    )
+    .await
+}
+
+/// Where a finalize that could not save a recording notes whether audio was
+/// lost during the show: `{"write_failure": null}` or the reason.
+fn finalize_note_key(show_id: i64, version: &str) -> String {
+    format!("recordings/{}/{}/finalize.json", show_id, version)
+}
+
+/// Why a recovered recording is incomplete, or `None` when it is complete.
+///
+/// Only the note of a failed join can tell that no audio was lost. Without it
+/// (a crash, a failed save, or a note that could not be stored) the recording
+/// may be incomplete. Then it is marked failed and never published.
+async fn recovered_failure(
+    store: &dyn RecordingStore,
+    show_id: i64,
+    version: &str,
+) -> Result<Option<String>> {
+    let key = finalize_note_key(show_id, version);
+    if store.size(&key).await?.is_none() {
+        return Ok(Some(
+            "recovered without a finalize note, so it may be incomplete".to_string(),
+        ));
+    }
+    let data = store.read(&key).await?;
+    let note = serde_json::from_slice::<serde_json::Value>(&data).ok();
+    Ok(
+        match note.as_ref().and_then(|note| note.get("write_failure")) {
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(reason)) => Some(reason.clone()),
+            _ => Some(format!("unreadable finalize note at {}", key)),
+        },
+    )
 }
 
 /// Markers to store with a recording.
@@ -819,7 +899,9 @@ struct RecoveryCounts {
 /// `recording_versions` row, this keeps the larger of the joined file and a new
 /// join of the surviving segments ([`choose_artifact`]), then runs the normal
 /// upload + verify + record path ([`upload_artifact_and_record`]) with recovered
-/// markers. A raw object already in R2 with the same size is reused.
+/// markers. A recording counts as complete only when a finalize note says so
+/// ([`recovered_failure`]); otherwise it is marked failed and not published.
+/// A raw object already in R2 with the same size is reused.
 /// A recording that has a row is persisted; its leftovers are removed.
 /// Idempotent: a second run adds no row and uploads nothing. Failures are logged
 /// and the files stay for the next attempt and the dead-man's-switch. The live
@@ -919,6 +1001,21 @@ async fn recover_leftovers(
             }
         }
 
+        // Only a finalize note can tell that the recording is complete.
+        let write_failure = match recovered_failure(store, show_id, &version).await {
+            Ok(failure) => failure,
+            Err(e) => {
+                tracing::error!(
+                    "Recording recovery: cannot read the finalize note for show {} version {}: {} — leaving files in place",
+                    show_id,
+                    version,
+                    e
+                );
+                counts.failed += 1;
+                continue;
+            }
+        };
+
         if let Err(reason) = choose_artifact(leftover.seg_dir.as_deref(), &artifact_path).await {
             // Leave it for the next boot and the dead-man's-switch; never
             // upload a 0-byte or possibly cut-off file.
@@ -939,7 +1036,7 @@ async fn recover_leftovers(
             &version,
             &artifact_path,
             Markers::Recovered,
-            None,
+            write_failure,
         )
         .await
         {
@@ -2226,6 +2323,11 @@ mod tests {
     /// synthetic sine tone, mirroring what the recorder FFmpeg produces.
     #[cfg(test)]
     async fn gen_test_segments(seg_dir: &Path) {
+        gen_test_segments_of(seg_dir, 4).await;
+    }
+
+    /// [`gen_test_segments`] with `secs` seconds of audio.
+    async fn gen_test_segments_of(seg_dir: &Path, secs: u64) {
         let pattern = seg_dir.join("seg_%05d.ts");
         let status = tokio::process::Command::new("ffmpeg")
             .args([
@@ -2235,7 +2337,7 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "sine=frequency=440:duration=4",
+                &format!("sine=frequency=440:duration={secs}"),
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -2379,6 +2481,7 @@ mod tests {
         raw_uploads: std::sync::Mutex<Vec<String>>,
         json_puts: std::sync::Mutex<Vec<String>>,
         publishes: std::sync::Mutex<Vec<i64>>,
+        rejected_put: std::sync::Mutex<Option<String>>,
     }
 
     impl FakeStore {
@@ -2391,6 +2494,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(key.to_string(), data.to_vec());
+        }
+
+        /// Make every JSON put to `key` fail.
+        fn reject_puts_to(&self, key: &str) {
+            *self.rejected_put.lock().unwrap() = Some(key.to_string());
         }
 
         /// Raw uploads, JSON puts and archive publishes so far.
@@ -2416,6 +2524,9 @@ mod tests {
         }
 
         fn put_json<'a>(&'a self, key: &'a str, json: String) -> BoxFuture<'a, Result<()>> {
+            if self.rejected_put.lock().unwrap().as_deref() == Some(key) {
+                return Box::pin(async { Err(AppError::Storage("rejected".into())) });
+            }
             self.json_puts.lock().unwrap().push(key.to_string());
             self.insert(key, json.as_bytes());
             Box::pin(async { Ok(()) })
@@ -2549,10 +2660,13 @@ mod tests {
             store.object(&markers_key(41)).unwrap(),
             br#"[{"track":1},{"track":2}]"#
         );
+        // No finalize note: the recording may be incomplete, so it is marked
+        // failed and not published.
+        assert_eq!(row.status, "failed");
         assert_eq!(
             store.writes(),
-            (1, 1, 1),
-            "no second upload, no markers overwrite"
+            (1, 1, 0),
+            "no second upload, no markers overwrite, no publish"
         );
         assert!(!artifact.exists(), "the file goes once the row exists");
     }
@@ -2575,7 +2689,7 @@ mod tests {
             let counts = recover_leftovers(&state, &store, temp.path()).await;
 
             assert_eq!(counts.recovered, 1, "{case}");
-            assert_eq!(store.writes(), (uploads, 1, 1), "{case}");
+            assert_eq!(store.writes(), (uploads, 1, 0), "{case}");
             assert_eq!(
                 store.object(&raw_key(7)).unwrap(),
                 b"joined audio",
@@ -2674,7 +2788,7 @@ mod tests {
 
         assert_eq!(counts.recovered, 1);
         assert_eq!(store.object(&raw_key(19)).unwrap(), b"joined audio");
-        assert_eq!(store.writes(), (1, 1, 1));
+        assert_eq!(store.writes(), (1, 1, 0));
         assert!(!seg_dir.exists() && !artifact.exists());
     }
 
@@ -2817,5 +2931,119 @@ mod tests {
         assert_eq!(row_count(&state, 21).await, 0);
         assert_eq!(tokio::fs::read(&artifact).await.unwrap(), cut_off);
         assert_eq!(segments(&seg_dir), before, "every segment stays");
+    }
+
+    /// The stop path's join failed: the finalize keeps the files and stores
+    /// only the markers. The next boot recovers the show with its markers.
+    #[tokio::test]
+    async fn a_failed_join_is_recovered_at_the_next_boot_with_its_markers() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 23).await;
+        let session = {
+            let mut manager = state.recording_manager.lock().await;
+            manager.start(23).await.unwrap();
+            manager
+                .add_marker(1, "track".to_string(), "key".to_string(), 1000, 100)
+                .unwrap();
+            manager.stop().await.unwrap().unwrap()
+        };
+        let artifact = session.temp_file_path.clone();
+        let version = session.version_timestamp.clone();
+        let seg_dir = artifact.with_extension("segs");
+        tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+        gen_test_segments(&seg_dir).await;
+        let detached = DetachedSession {
+            session,
+            write_failure: None,
+            join_failure: Some("segment join failed".to_string()),
+        };
+
+        let result = persist_session(&state, &store, detached).await;
+
+        assert!(result.is_err(), "a failed join fails the finalize");
+        assert_eq!(store.writes(), (0, 2, 0), "only the markers and the note");
+        assert_eq!(row_count(&state, 23).await, 0);
+        assert!(artifact.exists() && seg_dir.exists());
+
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.recovered, 1);
+        assert_eq!(store.writes(), (1, 2, 0), "one raw upload, markers kept");
+        let row = crate::db::get_recording_version(&state.db, 23, &version)
+            .await
+            .unwrap()
+            .expect("recovery writes the row");
+        assert_eq!(row.marker_count, 1);
+        assert!(!seg_dir.exists() && !artifact.exists());
+    }
+
+    /// A failed join with audio long enough to pass the duration check. The
+    /// recovered recording is published only when the finalize note says no
+    /// audio was lost. A lost note counts as a possible gap.
+    #[tokio::test]
+    async fn recovery_publishes_a_failed_join_only_with_a_clean_finalize_note() {
+        for (write_failure, note_saved, status, reason, publishes) in [
+            (None, true, "raw", None, 1),
+            (
+                Some("chunks dropped"),
+                true,
+                "failed",
+                Some("chunks dropped"),
+                0,
+            ),
+            (
+                Some("chunks dropped"),
+                false,
+                "failed",
+                Some("may be incomplete"),
+                0,
+            ),
+            (None, false, "failed", Some("may be incomplete"), 0),
+        ] {
+            let case = format!("{write_failure:?}, note saved: {note_saved}");
+            let (state, temp) = offline_state().await;
+            let store = FakeStore::default();
+            add_show(&state, 25).await;
+            let session = {
+                let mut manager = state.recording_manager.lock().await;
+                manager.start(25).await.unwrap();
+                manager.stop().await.unwrap().unwrap()
+            };
+            let version = session.version_timestamp.clone();
+            let seg_dir = session.temp_file_path.with_extension("segs");
+            tokio::fs::create_dir_all(&seg_dir).await.unwrap();
+            gen_test_segments_of(&seg_dir, MIN_RECORDING_SECS + 5).await;
+            let note_key = finalize_note_key(25, &version);
+            if !note_saved {
+                store.reject_puts_to(&note_key);
+            }
+            let detached = DetachedSession {
+                session,
+                write_failure: write_failure.map(str::to_string),
+                join_failure: Some("segment join failed".to_string()),
+            };
+            assert!(persist_session(&state, &store, detached).await.is_err());
+            assert_eq!(store.object(&note_key).is_some(), note_saved, "{case}");
+
+            let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+            assert_eq!(counts.recovered, 1, "{case}");
+            let row = crate::db::get_recording_version(&state.db, 25, &version)
+                .await
+                .unwrap()
+                .expect("recovery writes the row");
+            assert!(row.duration_ms.unwrap() > MIN_RECORDING_SECS as i64 * 1000);
+            assert_eq!(row.status, status, "{case}");
+            match reason {
+                Some(reason) => assert!(
+                    row.error_message.as_deref().unwrap().contains(reason),
+                    "{case}: {:?}",
+                    row.error_message
+                ),
+                None => assert_eq!(row.error_message, None, "{case}"),
+            }
+            assert_eq!(store.writes().2, publishes, "{case}");
+        }
     }
 }
