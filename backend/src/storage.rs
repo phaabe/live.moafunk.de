@@ -150,17 +150,20 @@ pub async fn upload_multipart(
     Ok(())
 }
 
-/// HEAD an object and return its size in bytes. Used to verify an upload landed
-/// intact before deleting the local copy.
-pub async fn head_object_size(client: &aws_sdk_s3::Client, bucket: &str, key: &str) -> Result<u64> {
-    let head = client
-        .head_object()
-        .bucket(bucket)
-        .key(key)
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("head_object {}: {}", key, e)))?;
-    Ok(head.content_length().unwrap_or(0).max(0) as u64)
+/// HEAD an object and return its size in bytes, or `None` when the object does
+/// not exist. Used to verify an upload landed intact before deleting the local
+/// copy. Any other error stays an error, so a transient failure is never read
+/// as "missing".
+pub async fn object_size(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+) -> Result<Option<u64>> {
+    match client.head_object().bucket(bucket).key(key).send().await {
+        Ok(head) => Ok(Some(head.content_length().unwrap_or(0).max(0) as u64)),
+        Err(e) if e.as_service_error().is_some_and(|e| e.is_not_found()) => Ok(None),
+        Err(e) => Err(AppError::Storage(format!("head_object {}: {}", key, e))),
+    }
 }
 
 /// Ensure the bucket has a lifecycle rule that auto-aborts incomplete multipart
@@ -1433,10 +1436,10 @@ mod tests {
         .await
         .expect("multipart upload to R2 failed");
 
-        let remote_size = head_object_size(&client, &bucket, &key)
+        let remote_size = object_size(&client, &bucket, &key)
             .await
             .expect("head_object failed");
-        assert_eq!(remote_size, data.len() as u64, "remote size mismatch");
+        assert_eq!(remote_size, Some(data.len() as u64), "remote size mismatch");
 
         // Round-trip the bytes to prove integrity.
         let resp = client
