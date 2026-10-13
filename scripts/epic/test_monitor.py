@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import isolated_env  # noqa: F401  (first: hides live runner state)
 
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+import activity_history
 import agents
 import delivery
 import monitor
@@ -391,6 +393,125 @@ class AgentRowsTest(unittest.TestCase):
             'epic_agent_presence_info{agent="codex-b",presence="new"} 1', text
         )
         self.assertNotIn("epic_agent_next_tick_seconds", text)
+
+    def presence_with(
+        self, now: float, *waits: activity_history.Wait, paused: bool = False
+    ) -> str:
+        agent = agents.load(self.root, "claude-w", now)
+        row = monitor.agent_metrics(
+            monitor.Metrics(),
+            agent,
+            paused,
+            now,
+            lambda _: True,
+            self.ledgers,
+            None,
+            waits,
+        )
+        return row.presence
+
+    def test_presence_uses_the_wait_aware_late_rule(self) -> None:
+        # Overdue after 2 x 60 + 100 = 220 s: late from 1_221 without a wait.
+        Wait = activity_history.Wait
+        self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        self.assertEqual(self.presence_with(1_221), "late")
+        quota = Wait("agent", "github_quota", since=1_100, retry_at=1_500)
+        self.assertEqual(self.presence_with(1_400, quota), "idle")  # wait holds
+        self.assertEqual(self.presence_with(1_501, quota), "late")  # expired
+        ended = Wait("agent", "operator_wait", since=1_100, ended_at=1_300)
+        self.assertEqual(self.presence_with(1_400, ended), "late")  # recovered
+        target = Wait("target", "target_lock", since=1_390)
+        self.assertEqual(self.presence_with(1_400, target), "late")  # target only
+        self.assertEqual(self.presence_with(1_400, paused=True), "idle")  # pause
+        stale = Wait("agent", "connection_failure", since=1_100)
+        self.assertEqual(self.presence_with(1_300, stale), "idle")  # fresh
+        self.assertEqual(self.presence_with(1_321, stale), "late")  # stale
+
+    def tick_events(self, home: Path, *events: Mapping[str, object]) -> None:
+        with (home / "claude-ticks.jsonl").open("a") as handle:
+            for event in events:
+                handle.write(json.dumps(event) + "\n")
+
+    def test_collector_reads_agent_waits_from_the_activity_ledger(self) -> None:
+        # Overdue after 2 x 60 + 100 = 220 s: late from 1_221 without a wait.
+        home = self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        tick, stamp = "1970-01-01T00:16:40Z", "1970-01-01T00:16:41Z"
+        self.tick_events(
+            home,
+            {"event": "start", "tick": tick, "at": tick},
+            {
+                "event": "wait",
+                "tick": tick,
+                "at": stamp,
+                "action": "claim",
+                "reason_code": "github_quota",
+                "scope": "agent",
+                "retry_at": "1970-01-01T00:25:00Z",  # 1_500
+            },
+            {"event": "finish", "tick": tick, "at": stamp, "outcome": "blocked"},
+        )
+        idle, late = monitor.PRESENCE["idle"], monitor.PRESENCE["late"]
+        text = self.run_at(1_400)
+        self.assertIn("epic_activity_history_healthy 1\n", text)
+        self.assertIn(f'epic_agent_presence{{agent="claude-w"}} {idle}\n', text)
+        text = self.run_at(1_501)  # the wait expired
+        self.assertIn(f'epic_agent_presence{{agent="claude-w"}} {late}\n', text)
+        ledger = activity_history.default_path(self.root / "runtime")
+        conn = activity_history.open_ledger(ledger)
+        self.addCleanup(conn.close)
+        stored = conn.execute("SELECT count(*) FROM events").fetchone()[0]
+        self.assertEqual(stored, 3)  # replayed reads stored nothing twice
+        spans = activity_history.fresh_spans(conn, "claude-w", 0, 2_000)
+        self.assertEqual(spans, [(1_400, 1_501)])
+
+    def test_a_new_tick_ends_the_recorded_wait(self) -> None:
+        home = self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        wait = {
+            "event": "wait",
+            "tick": "1970-01-01T00:16:40Z",
+            "reason_code": "model_usage_limit",
+            "scope": "agent",
+            "retry_at": "1970-01-01T01:00:00Z",
+        }
+        self.tick_events(home, wait)
+        idle, late = monitor.PRESENCE["idle"], monitor.PRESENCE["late"]
+        self.assertIn(
+            f'epic_agent_presence{{agent="claude-w"}} {idle}\n', self.run_at(1_400)
+        )
+        later = "1970-01-01T00:20:00Z"  # 1_200: the wait was re-evaluated
+        self.tick_events(home, {"event": "start", "tick": later, "at": later})
+        self.assertIn(
+            f'epic_agent_presence{{agent="claude-w"}} {late}\n', self.run_at(1_421)
+        )
+
+    def test_target_wait_in_the_ledger_never_holds_lateness(self) -> None:
+        home = self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        self.tick_events(
+            home,
+            {
+                "event": "wait",
+                "tick": "1970-01-01T00:16:40Z",
+                "reason_code": "target_lock",
+                "scope": "target",
+                "retry_at": "1970-01-01T01:00:00Z",
+            },
+        )
+        late = monitor.PRESENCE["late"]
+        self.assertIn(
+            f'epic_agent_presence{{agent="claude-w"}} {late}\n', self.run_at(1_400)
+        )
+
+    def test_a_broken_activity_ledger_stops_history_not_the_scrape(self) -> None:
+        self.agent("claude-w", (1_000, 0, "{}"), interval=60, budget=100)
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        ledger = activity_history.default_path(runtime)
+        ledger.write_bytes(b"not a database" * 100)
+        text = self.run_at(1_221)
+        self.assertIn("epic_activity_history_healthy 0\n", text)
+        late = monitor.PRESENCE["late"]
+        self.assertIn(f'epic_agent_presence{{agent="claude-w"}} {late}\n', text)
+        self.assertEqual(ledger.read_bytes(), b"not a database" * 100)
 
     def test_running_agent_row_and_collision(self) -> None:
         pr = '{"action": "review", "pr": 7}'
@@ -847,7 +968,9 @@ class ScrapeSizeTest(unittest.TestCase):
     def test_max_size_snapshot_and_full_ledgers_stay_under_budget(self) -> None:
         """Fetch limits: 500 project items; 100 open and 300 merged PRs per base
         (two bases). Full ledgers: 2 000 ticks for each of the 12 agents over the
-        7-day window, one of them running. Tickets at both caps."""
+        7-day window, one of them running. Tickets at both caps. The activity
+        ledger holds waits and sealed buckets for all 12 agents, and adds only
+        its health series: history never becomes Prometheus series."""
         body = "\n".join(f"- [ ] **B1.{i}.1** Leaf {i}." for i in range(5))
         items = [
             plan_issue(
@@ -900,7 +1023,27 @@ class ScrapeSizeTest(unittest.TestCase):
                         for i in range(2000)
                     )
                 )
+                events = log.with_name(f"{log.stem}-ticks.jsonl")
+                with events.open("w") as handle:
+                    for i in range(1700, 2000):
+                        tick = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(i * 300))
+                        for event in (
+                            {"event": "start", "tick": tick, "at": tick},
+                            {
+                                "event": "wait",
+                                "tick": tick,
+                                "at": tick,
+                                "action": "claim",
+                                "reason_code": "github_quota",
+                                "scope": "agent",
+                                "retry_at": tick,
+                            },
+                            {"event": "finish", "tick": tick, "at": tick},
+                        ):
+                            handle.write(json.dumps(event) + "\n")
             ledgers = monitor.Ledgers(root / "runtime")
+            # An earlier cycle gives coverage, so this one seals buckets.
+            monitor.runner_metrics(root, False, 2000 * 300 - 600, ledgers=ledgers)
             # Every open PR waits for a review.
             handoff = delivery.HandoffClock(root / "handoff.json").observe(
                 snapshot(prs=prs), 2000 * 300
@@ -908,6 +1051,15 @@ class ScrapeSizeTest(unittest.TestCase):
             runners = monitor.runner_metrics(
                 root, False, 2000 * 300, ledgers=ledgers, handoff=handoff
             )
+            conn = activity_history.open_ledger(
+                activity_history.default_path(root / "runtime")
+            )
+            agents_sealed = conn.execute(
+                "SELECT count(DISTINCT agent) FROM buckets"
+            ).fetchone()[0]
+            conn.close()
+            ledgers.activity.close()
+        self.assertEqual(agents_sealed, agents.MAX_AGENTS)
         data = {
             "v": 1,
             "fetched_at": NOW,
@@ -993,6 +1145,10 @@ class ScrapeSizeTest(unittest.TestCase):
             if not line.startswith("#")
         ]
         self.assertTrue(any("handoff_wait_seconds" in line for line in samples))
+        self.assertEqual(
+            [line for line in samples if "activity" in line],
+            ["epic_activity_history_healthy 1"],
+        )
         for name, rows in (
             ("epic_ticket_status_code{", 150),
             ("epic_ticket_status_entered_seconds{", 150),
