@@ -5740,6 +5740,15 @@ async fn start_claimed_prerecorded_stream(
         other => AppError::Internal(format!("Failed to start prerecorded stream: {}", other)),
     })?;
 
+    // A live recording may still wait in its grace period for a reconnect. The
+    // grace end sees this stream as live and would keep waiting, so finalize it
+    // now. No show, as for a rehearsal: with this show's id, a drop of the same
+    // show would resume a recording that no audio reaches.
+    state
+        .recording_finalizer
+        .go_live(crate::handlers::recording::LiveFinalize::new(state), None)
+        .await;
+
     // Notify via Telegram
     telegram_notify::notify_stream_start(state, username);
 

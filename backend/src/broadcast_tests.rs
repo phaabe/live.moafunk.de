@@ -626,3 +626,58 @@ async fn finalize_detach_takes_only_the_expected_show() {
     assert_eq!(current, None);
     assert!(ops.detach(None).await.unwrap().is_none());
 }
+
+/// A live recording waits in its grace period when a prerecorded show starts.
+/// The grace end would see the prerecorded stream as live and keep waiting, so
+/// the start finalizes the recording at once, for another show and the same one.
+#[tokio::test]
+async fn prerecorded_start_finalizes_a_recording_in_its_grace_period() {
+    for waiting in [2, 1] {
+        let (state, _temp) = state().await;
+        let host = add_user(&state, "host", "host").await;
+        prerecorded_show(&state, host).await;
+        let artifact = {
+            let mut manager = state.recording_manager.lock().await;
+            manager.start(waiting).await.unwrap();
+            manager.get_temp_file_path().unwrap()
+        };
+        // Exercise the real detach, but fail locally before any R2 operation.
+        tokio::fs::remove_file(artifact).await.unwrap();
+        state
+            .recording_finalizer
+            .schedule(handlers::recording::LiveFinalize::new(&state), waiting);
+
+        assert_eq!(
+            scheduler_tick(&state).await,
+            handlers::api::Admission::Started,
+            "show {waiting}"
+        );
+        assert_eq!(on_air(&state).await.as_deref(), Some("host"));
+        assert_eq!(
+            state.recording_manager.lock().await.current_show_id(),
+            None,
+            "the recording of show {waiting} is detached"
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_prerecorded_start_leaves_a_waiting_recording_alone() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+    state.recording_manager.lock().await.start(2).await.unwrap();
+    state
+        .recording_finalizer
+        .schedule(handlers::recording::LiveFinalize::new(&state), 2);
+    producer_busy(&state).await;
+
+    assert!(matches!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Missed(_)
+    ));
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(2)
+    );
+}
