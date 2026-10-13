@@ -41,7 +41,7 @@ async fn state() -> (
         stream_state: stream_bridge::new_shared_state(),
         stream_metrics: stream_metrics::new_shared(),
         recording_manager: recording::new_shared_manager(temp.path().to_path_buf()),
-        recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
+        recording_finalizer: Arc::default(),
         cover_debounce: Arc::new(RwLock::new(HashMap::new())),
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot: None,

@@ -26,7 +26,7 @@ async fn state() -> (Arc<AppState>, tempfile::TempDir) {
         stream_state: stream_bridge::new_shared_state(),
         stream_metrics: stream_metrics::new_shared(),
         recording_manager: recording::new_shared_manager(temp.path().to_path_buf()),
-        recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
+        recording_finalizer: Arc::default(),
         cover_debounce: Arc::new(RwLock::new(HashMap::new())),
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot: None,
@@ -452,4 +452,177 @@ async fn losing_the_show_claim_never_records_playback_transient_failure() {
     assert_eq!(occurrence(&state).await.unwrap().0, "started");
     assert_eq!(on_air(&state).await.as_deref(), Some("host"));
     producer_ends(&state).await;
+}
+
+// ── Recording finalize ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn inactive_admin_stop_finalizes_recording_during_grace() {
+    for role in ["admin", "superadmin"] {
+        let (state, _temp) = state().await;
+        let admin = add_user(&state, role, role).await;
+        let headers = headers(&state, admin).await;
+        let artifact = {
+            let mut manager = state.recording_manager.lock().await;
+            manager.start(1).await.unwrap();
+            manager.get_temp_file_path().unwrap()
+        };
+        // Exercise the real detach, but fail locally before any R2 operation.
+        tokio::fs::remove_file(artifact).await.unwrap();
+        state
+            .recording_finalizer
+            .schedule(handlers::recording::LiveFinalize::new(&state), 1);
+        assert!(!state.stream_state.lock().await.is_active());
+
+        let stopped = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handlers::stream_ws::stream_stop(
+                State(state.clone()),
+                State(state.stream_state.clone()),
+                headers,
+            ),
+        )
+        .await
+        .expect("admin stop must not wait for the 30-second grace period")
+        .unwrap();
+
+        assert_eq!(body(stopped).await["message"], "Stream stopped", "{role}");
+        assert_eq!(
+            state.recording_manager.lock().await.current_show_id(),
+            None,
+            "{role} must detach the recording even with no live producer"
+        );
+    }
+}
+
+/// A detached recording whose upload stays pending until the test releases it.
+struct PendingUpload {
+    session: std::sync::atomic::AtomicBool,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl crate::recording_finalizer::FinalizeOps for PendingUpload {
+    type Session = ();
+
+    fn detach(
+        &self,
+        _show: Option<i64>,
+    ) -> futures_util::future::BoxFuture<'_, std::result::Result<Option<()>, String>> {
+        let session = self
+            .session
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            .then_some(());
+        Box::pin(async move { Ok(session) })
+    }
+
+    fn upload(
+        &self,
+        _session: (),
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        std::result::Result<handlers::recording::FinalizedRecording, String>,
+    > {
+        Box::pin(async move {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(handlers::recording::FinalizedRecording {
+                show_id: 1,
+                version: "test".into(),
+                marker_count: 0,
+                raw_key: "raw".into(),
+                markers_key: "markers".into(),
+                incomplete: false,
+            })
+        })
+    }
+
+    fn stream_active(&self) -> futures_util::future::BoxFuture<'_, bool> {
+        Box::pin(async { false })
+    }
+}
+
+#[tokio::test]
+async fn inactive_admin_stop_waits_for_running_upload() {
+    let (state, _temp) = state().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    let headers = headers(&state, admin).await;
+    let upload = Arc::new(PendingUpload {
+        session: std::sync::atomic::AtomicBool::new(true),
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let running = tokio::spawn({
+        let finalizer = state.recording_finalizer.clone();
+        let upload = upload.clone();
+        async move { finalizer.finalize_now(upload).await }
+    });
+    upload.started.notified().await;
+    assert!(!state.stream_state.lock().await.is_active());
+
+    let stop = handlers::stream_ws::stream_stop(
+        State(state.clone()),
+        State(state.stream_state.clone()),
+        headers,
+    );
+    tokio::pin!(stop);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut stop)
+            .await
+            .is_err(),
+        "admin stop must wait for the running upload"
+    );
+    upload.release.notify_one();
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), stop)
+        .await
+        .expect("admin stop must finish after the upload")
+        .unwrap();
+    assert_eq!(body(stopped).await["message"], "Stream stopped");
+    assert_eq!(running.await.unwrap().unwrap().unwrap().show_id, 1);
+}
+
+#[tokio::test]
+async fn inactive_host_stop_leaves_another_hosts_recording_untouched() {
+    let (state, _temp) = state().await;
+    let owner = add_user(&state, "owner", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
+    )
+    .bind(owner)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    state.recording_manager.lock().await.start(1).await.unwrap();
+    assert!(!state.stream_state.lock().await.is_active());
+
+    let stopped = handlers::stream_ws::stream_stop(
+        State(state.clone()),
+        State(state.stream_state.clone()),
+        headers(&state, other).await,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(body(stopped).await["message"], "No active stream");
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn finalize_detach_takes_only_the_expected_show() {
+    use crate::recording_finalizer::FinalizeOps;
+    let (state, _temp) = state().await;
+    state.recording_manager.lock().await.start(1).await.unwrap();
+    let ops = handlers::recording::LiveFinalize::new(&state);
+    // A grace finalize of show 2 must not end show 1's recording.
+    assert!(ops.detach(Some(2)).await.unwrap().is_none());
+    let current = state.recording_manager.lock().await.current_show_id();
+    assert_eq!(current, Some(1));
+    assert!(ops.detach(Some(1)).await.unwrap().is_some());
+    let current = state.recording_manager.lock().await.current_show_id();
+    assert_eq!(current, None);
+    assert!(ops.detach(None).await.unwrap().is_none());
 }
