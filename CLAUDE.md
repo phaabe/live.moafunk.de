@@ -42,11 +42,14 @@ GitNexus clusters: Handlers (backend), Pages / Composables / Components (Vue adm
   - No level with one child: don't add a parent that holds a single ticket. Don't create goal issues; when no goal fits, create the ticket without a parent and tell Anton.
   - Goal issues are not work items: no `executor::` or focus label, not on board 2, never in a PR `Issue:`, `Start after` or `Resume after` line.
   - Don't set map-board fields. Anton's `github_tree.py sync` sets the Area.
-- **Milestones are releases**, not topics. Each one is a stable release with a fixed set of tickets, titled `M<n>: <what users get>`. The open milestone with the lowest `M` number is the active one; later ones are planned. A ticket without a milestone is backlog. List them with `gh api repos/{owner}/{repo}/milestones -X GET -f state=open --jq '.[] | [.title, .open_issues] | @tsv'`.
-  - The description holds one goal sentence and the exit criteria: merged, deployed to production, smoke check passed. The last ticket is the release itself: `Release M<n>: deploy, smoke check, tag m<n>`.
+- **Milestones are releases**, not topics. Each one is a stable release with a fixed set of tickets, in one of three tracks:
+  - `S<n>: <what users get>` for the station (epic 312) and `A<n>: <what changes for Anton>` for the agents. In S and A, the open milestone with the lowest number is active.
+  - `P<n>: …` for parked work (shows, website, infra). A P milestone is active only when its description says `Status: active`.
+  - A ticket without a milestone is backlog. List milestones with `gh api repos/{owner}/{repo}/milestones -X GET -f state=open --jq '.[] | [.title, .open_issues] | @tsv'`.
+  - The description holds one goal sentence and the exit criteria. The last ticket is the release itself. S and P: merged, deployed to production, smoke check passed, tag `s<n>` / `p<n>`. A: merged, both runners run it, and the milestone's own check held for 3 days; tag `a<n>`.
   - Only Anton creates milestones and moves tickets in or out. Never set or change a milestone (`--milestone`, the REST `milestone` field).
-  - The active milestone's scope is frozen. A finding during the work becomes a new ticket under its goal, without a milestone. If it blocks the exit criteria, tell Anton; he decides whether it joins.
-  - Work on the active milestone first. Anton marks only its tickets Ready. In interactive work, ask before you start a ticket outside it.
+  - The scope of an active milestone is frozen. A finding during the work becomes a new ticket under its goal, without a milestone. If it blocks the exit criteria, tell Anton; he decides whether it joins.
+  - Work on the active milestones first. Anton marks only their tickets Ready. In interactive work, ask before you start a ticket outside them.
 - **GitNexus-first**: before grepping, query the graph (see the managed block below). Impact-analyse before editing a symbol; `detect_changes` before committing.
 
 ## GitHub API budget
