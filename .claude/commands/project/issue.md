@@ -22,7 +22,7 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
    Apply **exactly one `type::*`** (backend vs admin_dashboard) and **the most specific `project::*`**:
    `project::Stream`, `project::recording`, `project::Instagram`, `project::Telegram`, `project::Soundcloud`,
    `project::ImgGen`, `project::Upload`, `project::Backup`, `project::Infrastructure`, `project::ExternalShows`,
-   `project::Ai`, `project::unheard-artist-form`, `project::UNHEARD`. Add `bug`/`enhancement`/`documentation`/`later` as fitting.
+   `project::Ai`, `project::unheard-artist-form`, `project::UNHEARD`. Add `bug`/`enhancement`/`documentation` as fitting. Never `later`: a decided "later" is a P milestone that Anton sets.
 3. **Parent** (see "Ticket tree" in `CLAUDE.md`): read the open goals over REST:
    `gh api repos/{owner}/{repo}/issues -X GET -f labels=goal -f state=open -f per_page=100 --jq '.[] | [.number, .title] | @tsv'`.
    Pick the goal the ticket belongs to. A follow-up of ticket N takes N's parent
@@ -56,6 +56,7 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
 - Only use labels returned by the label read in step 2 — if none fit a dimension, say so rather than guessing.
 - Always set `--parent`, unless no goal fits and the user agreed to create it without one.
 - Never set a milestone. Milestones are releases, and only Anton assigns them (see "Milestones" in `CLAUDE.md`).
+  The new issue is in the inbox until Anton's next triage; say so when you print its URL.
 - Keep it to ONE issue; if the task is clearly multi-part, recommend the decomposition workflow.
 
 Task: $ARGUMENTS

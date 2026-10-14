@@ -24,7 +24,7 @@ Apply EXACTLY ONE type:: label and the MOST SPECIFIC project:: label, only from 
 - type::admin_dashboard  → frontend/src/admin/** (Vue 3 + Pinia admin SPA: pages, composables, components)
 - project::Stream | recording | Instagram | Telegram | Soundcloud | ImgGen | Upload | Backup
   | Infrastructure | ExternalShows | Ai | unheard-artist-form | UNHEARD
-Add bug / enhancement / documentation / later when fitting. Never invent a label.`
+Add bug / enhancement / documentation when fitting. Never use later. Never invent a label.`
 
 const SUBTASK = {
   type: 'object',
@@ -96,6 +96,7 @@ log(`Refined ${subtasks.length}/${breakdown.subtasks.length} sub-issues`)
 //   2) create each child under the new parent: gh issue create ... --parent <parent number>.
 // Native sub-issues list the children on the parent; no checklist needed.
 // Never set a milestone: milestones are releases and only Anton assigns them.
+// The new tickets stay in the inbox until Anton's next triage.
 return {
   repo: REPO,
   goal: breakdown.goal,
