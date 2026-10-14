@@ -95,11 +95,12 @@ log(`Refined ${subtasks.length}/${breakdown.subtasks.length} sub-issues`)
 //   1) create the parent under its goal: gh issue create ... --parent <goal>,
 //   2) create each child under the new parent: gh issue create ... --parent <parent number>.
 // Native sub-issues list the children on the parent; no checklist needed.
+// Never set a milestone: milestones are releases and only Anton assigns them.
 return {
   repo: REPO,
   goal: breakdown.goal,
   parentTitle: breakdown.parentTitle,
   parentSummary: breakdown.parentSummary,
   subtasks,
-  next: 'Present these drafts to the user, with the goal. On confirmation, create the parent with `gh issue create --title ... --body-file <file> --label ... --parent <goal>` (no --parent when goal is 0; tell Anton), then each child the same way with `--parent <new parent number>`.',
+  next: 'Present these drafts to the user, with the goal. On confirmation, create the parent with `gh issue create --title ... --body-file <file> --label ... --parent <goal>` (no --parent when goal is 0; tell Anton), then each child the same way with `--parent <new parent number>`. Never set a milestone; Anton assigns releases.',
 }

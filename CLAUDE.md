@@ -33,7 +33,7 @@ GitNexus clusters: Handlers (backend), Pages / Composables / Components (Vue adm
 - **Commits**: Conventional Commits with scope — `feat(stream): …`, `fix(imgGen): …`. Subject ≤ 72 chars, imperative. Use `/git.commit`.
 - **Branches**: never commit on `main` — branch first (`/git.branch` or `git switch -c <type>/<slug>`). Enforced by `branch-guard.sh`.
 - **Merging is PR-only.** Never `git merge <ref>` locally — open a PR (`/git.pr`) and squash-merge the reviewed head (`gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`). Enforced by `merge-guard.sh` and `epic-guard.sh`.
-- **Issues**: one ticket → `/project.issue "<task>"`; a big task → the `decompose-issue` workflow. **Labels:** one or more `type::*` (layer) — `backend` / `frontend` / `ci` — plus the most specific `project::*` (area): `Stream`, `recording`, `Instagram`, `Telegram`, `Soundcloud`, `ImgGen`, `Upload`, `Backup`, `Infrastructure`, `ExternalShows`, `Ai`, `unheard-artist-form`, `UNHEARD`, `auth`, `calendar`, `public-pages`, `downloads`, `admin_dashboard`. Use `later` for deferred/backlog items. **Milestones** are the epics: *Webbased Streaming*, *Webbased Recording (UNHEARD)*, *UNHEARD User Story*, *External Shows User Story*, *Infrastructure & Secrets*, *Public Website*.
+- **Issues**: one ticket → `/project.issue "<task>"`; a big task → the `decompose-issue` workflow. **Labels:** one or more `type::*` (layer) — `backend` / `frontend` / `ci` — plus the most specific `project::*` (area): `Stream`, `recording`, `Instagram`, `Telegram`, `Soundcloud`, `ImgGen`, `Upload`, `Backup`, `Infrastructure`, `ExternalShows`, `Ai`, `unheard-artist-form`, `UNHEARD`, `auth`, `calendar`, `public-pages`, `downloads`, `admin_dashboard`. Use `later` for deferred/backlog items. Don't set milestones (see below).
 - **Ticket tree**: every new ticket gets a parent on GitHub. The map board https://github.com/users/anneoneone/projects/3 shows Area → goal → tickets.
   - Parent: the open goal issue it belongs to (label `goal`, title `Goal: …`). List them with `gh api repos/{owner}/{repo}/issues -X GET -f labels=goal -f state=open -f per_page=100 --jq '.[] | [.number, .title] | @tsv'`.
   - A follow-up or split-off ticket gets the parent of the ticket it came from (`gh api repos/{owner}/{repo}/issues/<n>/parent --jq .number`) and a `Follow-up of <full URL>` line in its body.
@@ -42,6 +42,11 @@ GitNexus clusters: Handlers (backend), Pages / Composables / Components (Vue adm
   - No level with one child: don't add a parent that holds a single ticket. Don't create goal issues; when no goal fits, create the ticket without a parent and tell Anton.
   - Goal issues are not work items: no `executor::` or focus label, not on board 2, never in a PR `Issue:`, `Start after` or `Resume after` line.
   - Don't set map-board fields. Anton's `github_tree.py sync` sets the Area.
+- **Milestones are releases**, not topics. Each one is a stable release with a fixed set of tickets, titled `M<n>: <what users get>`. The open milestone with the lowest `M` number is the active one; later ones are planned. A ticket without a milestone is backlog. List them with `gh api repos/{owner}/{repo}/milestones -X GET -f state=open --jq '.[] | [.title, .open_issues] | @tsv'`.
+  - The description holds one goal sentence and the exit criteria: merged, deployed to production, smoke check passed. The last ticket is the release itself: `Release M<n>: deploy, smoke check, tag m<n>`.
+  - Only Anton creates milestones and moves tickets in or out. Never set or change a milestone (`--milestone`, the REST `milestone` field).
+  - The active milestone's scope is frozen. A finding during the work becomes a new ticket under its goal, without a milestone. If it blocks the exit criteria, tell Anton; he decides whether it joins.
+  - Work on the active milestone first. Anton marks only its tickets Ready. In interactive work, ask before you start a ticket outside it.
 - **GitNexus-first**: before grepping, query the graph (see the managed block below). Impact-analyse before editing a symbol; `detect_changes` before committing.
 
 ## GitHub API budget

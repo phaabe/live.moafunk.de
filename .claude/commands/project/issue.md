@@ -55,6 +55,7 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
 - Never create the issue without explicit confirmation of the rendered draft.
 - Only use labels returned by the label read in step 2 — if none fit a dimension, say so rather than guessing.
 - Always set `--parent`, unless no goal fits and the user agreed to create it without one.
+- Never set a milestone. Milestones are releases, and only Anton assigns them (see "Milestones" in `CLAUDE.md`).
 - Keep it to ONE issue; if the task is clearly multi-part, recommend the decomposition workflow.
 
 Task: $ARGUMENTS
