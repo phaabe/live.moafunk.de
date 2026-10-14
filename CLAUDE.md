@@ -34,6 +34,14 @@ GitNexus clusters: Handlers (backend), Pages / Composables / Components (Vue adm
 - **Branches**: never commit on `main` — branch first (`/git.branch` or `git switch -c <type>/<slug>`). Enforced by `branch-guard.sh`.
 - **Merging is PR-only.** Never `git merge <ref>` locally — open a PR (`/git.pr`) and squash-merge the reviewed head (`gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`). Enforced by `merge-guard.sh` and `epic-guard.sh`.
 - **Issues**: one ticket → `/project.issue "<task>"`; a big task → the `decompose-issue` workflow. **Labels:** one or more `type::*` (layer) — `backend` / `frontend` / `ci` — plus the most specific `project::*` (area): `Stream`, `recording`, `Instagram`, `Telegram`, `Soundcloud`, `ImgGen`, `Upload`, `Backup`, `Infrastructure`, `ExternalShows`, `Ai`, `unheard-artist-form`, `UNHEARD`, `auth`, `calendar`, `public-pages`, `downloads`, `admin_dashboard`. Use `later` for deferred/backlog items. **Milestones** are the epics: *Webbased Streaming*, *Webbased Recording (UNHEARD)*, *UNHEARD User Story*, *External Shows User Story*, *Infrastructure & Secrets*, *Public Website*.
+- **Ticket tree**: every new ticket gets a parent on GitHub. The map board https://github.com/users/anneoneone/projects/3 shows Area → goal → tickets.
+  - Parent: the open goal issue it belongs to (label `goal`, title `Goal: …`). List them with `gh api repos/{owner}/{repo}/issues -X GET -f labels=goal -f state=open -f per_page=100 --jq '.[] | [.number, .title] | @tsv'`.
+  - A follow-up or split-off ticket gets the parent of the ticket it came from (`gh api repos/{owner}/{repo}/issues/<n>/parent --jq .number`) and a `Follow-up of <full URL>` line in its body.
+  - Create it with the parent set: `gh issue create --parent <number> …`. In a runner tick this is the only way; a REST `sub_issues` write is refused there.
+  - Put a ticket under a work ticket only when that ticket must wait for it: a ticket with sub-issues is never closed automatically after its PR merges.
+  - No level with one child: don't add a parent that holds a single ticket. Don't create goal issues; when no goal fits, create the ticket without a parent and tell Anton.
+  - Goal issues are not work items: no `executor::` or focus label, not on board 2, never in a PR `Issue:`, `Start after` or `Resume after` line.
+  - Don't set map-board fields. Anton's `github_tree.py sync` sets the Area.
 - **GitNexus-first**: before grepping, query the graph (see the managed block below). Impact-analyse before editing a symbol; `detect_changes` before committing.
 
 ## GitHub API budget
