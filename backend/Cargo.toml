@@ -81,3 +81,5 @@ ab_glyph = "0.2"
 tempfile = "3"
 # Paused clock (`start_paused`) for the recording finalizer tests.
 tokio = { version = "1", features = ["test-util"] }
+# WebSocket client for the stream handler tests (same version axum uses).
+tokio-tungstenite = "0.24"

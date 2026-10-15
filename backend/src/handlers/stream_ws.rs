@@ -122,6 +122,20 @@ async fn defer_finalize(state: &Arc<AppState>) {
     }
 }
 
+/// Stop the stream this connection started as `generation`, unless a
+/// reconnect or takeover has replaced it. Returns true when it was replaced:
+/// that stream and its recording then belong to the newer connection.
+async fn stop_own_stream(stream_state: &SharedStreamState, generation: u64) -> bool {
+    let mut stream = stream_state.lock().await;
+    if stream.is_superseded(generation) {
+        return true;
+    }
+    if let Err(e) = stream.stop_stream().await {
+        tracing::error!("Failed to stop stream: {}", e);
+    }
+    false
+}
+
 /// Handle the WebSocket connection for streaming.
 ///
 /// `show_id` (when present) drives automatic recording: it starts when the
@@ -159,21 +173,26 @@ async fn handle_stream_socket(
         state.config.producer_target()
     };
 
-    // Start the stream
-    {
+    // Start the stream. `generation` identifies this connection's stream, so a
+    // later reconnect or takeover can replace it without this connection
+    // stopping its successor on the way out.
+    let generation = {
         let mut stream = stream_state.lock().await;
-        if let Err(e) = stream
+        match stream
             .start_stream(username.clone(), &push_target, test)
             .await
         {
-            tracing::error!("Failed to start stream: {}", e);
-            let _ = sender
-                .send(Message::Text(format!("error: {}", e).into()))
-                .await;
-            let _ = sender.close().await;
-            return;
+            Ok(generation) => generation,
+            Err(e) => {
+                tracing::error!("Failed to start stream: {}", e);
+                let _ = sender
+                    .send(Message::Text(format!("error: {}", e).into()))
+                    .await;
+                let _ = sender.close().await;
+                return;
+            }
         }
-    }
+    };
 
     // Auto-record on go-live. A reconnect of the same show ends the grace wait
     // and resumes the existing recording (ensure_recording_started is a no-op
@@ -194,8 +213,9 @@ async fn handle_stream_socket(
     // Send confirmation
     if let Err(e) = sender.send(Message::Text("connected".into())).await {
         tracing::error!("Failed to send connected message: {}", e);
-        let _ = stream_state.lock().await.stop_stream().await;
-        defer_finalize(&state).await;
+        if !stop_own_stream(&stream_state, generation).await {
+            defer_finalize(&state).await;
+        }
         return;
     }
 
@@ -238,7 +258,7 @@ async fn handle_stream_socket(
                 bytes_received += data.len() as u64;
 
                 let mut stream = stream_state.lock().await;
-                if let Err(e) = stream.write_chunk(&data).await {
+                if let Err(e) = stream.write_chunk(generation, &data).await {
                     dropped_chunks += 1;
                     tracing::error!("Failed to write audio chunk: {}", e);
                     let _ = sender
@@ -293,18 +313,21 @@ async fn handle_stream_socket(
         }
     }
 
-    // Stop the FFmpeg stream on disconnect.
-    {
-        let mut stream = stream_state.lock().await;
-        if let Err(e) = stream.stop_stream().await {
-            tracing::error!("Failed to stop stream: {}", e);
-        }
-    }
+    // Stop the FFmpeg stream on disconnect, unless a reconnect or takeover has
+    // replaced it meanwhile. A stale socket can close long after its
+    // replacement went live (nginx drops idle upgrades after 300 s).
+    let superseded = stop_own_stream(&stream_state, generation).await;
 
     // Decide the recording's fate, decoupled from the browser tab:
+    // - replaced       → leave it to the connection that replaced this one.
     // - explicit stop  → finalize + upload now.
     // - network drop    → defer finalize so a reconnect can resume the archive.
-    if explicit_stop {
+    if superseded {
+        tracing::info!(
+            "Stream connection of '{}' was replaced; the current stream keeps running",
+            username
+        );
+    } else if explicit_stop {
         let finalized = state
             .recording_finalizer
             .finalize_now(LiveFinalize::new(&state))
@@ -332,8 +355,9 @@ async fn handle_stream_socket(
         dropped_chunks
     );
 
-    // Notify admin via Telegram (fire-and-forget). Suppressed for a test.
-    if !test {
+    // Notify admin via Telegram (fire-and-forget). Suppressed for a test, and
+    // for a replaced connection: the broadcast itself is still on air.
+    if !test && !superseded {
         crate::telegram_notify::notify_stream_stop(&state, &username);
     }
 }
