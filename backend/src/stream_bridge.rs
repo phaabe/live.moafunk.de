@@ -246,6 +246,10 @@ pub struct StreamState {
     /// mount, no recording). The public on-air signal ([`StreamStatus::active`])
     /// excludes it, so a rehearsal never flips listeners onto a silent `/live`.
     is_test: bool,
+    /// Identity of the current producer. Every start, live or prerecorded,
+    /// takes the next value, so a replaced producer can tell that the stream
+    /// is no longer its own (see [`StreamState::is_superseded`]).
+    generation: u64,
 }
 
 impl Default for StreamState {
@@ -267,6 +271,7 @@ impl StreamState {
             recording_path: None,
             recording_failed: None,
             is_test: false,
+            generation: 0,
         }
     }
 
@@ -274,6 +279,14 @@ impl StreamState {
     /// For live streams, `ffmpeg_stdin` is set. For prerecorded streams, only `ffmpeg_handle`.
     pub fn is_active(&self) -> bool {
         self.current_user.is_some() && (self.ffmpeg_stdin.is_some() || self.ffmpeg_handle.is_some())
+    }
+
+    /// True when another producer has replaced the one started as
+    /// `generation` (a reconnect, a forced takeover or a prerecorded start).
+    /// The replaced producer must then leave the stream and its recording
+    /// alone instead of stopping or finalizing them.
+    pub fn is_superseded(&self, generation: u64) -> bool {
+        self.is_active() && self.generation != generation
     }
 
     /// Returns true if recording to file is active.
@@ -294,12 +307,15 @@ impl StreamState {
     /// * `target` - Where to push the encoded audio (RTMP/FLV or Icecast/MP3)
     /// * `is_test` - True for a rehearsal to the private `/test` mount; kept out
     ///   of the public on-air signal (see [`StreamState::is_test`]).
+    ///
+    /// Returns the new stream's generation, which the producer passes to
+    /// [`StreamState::write_chunk`] and [`StreamState::is_superseded`].
     pub async fn start_stream(
         &mut self,
         user: String,
         target: &PushTarget,
         is_test: bool,
-    ) -> Result<(), StreamError> {
+    ) -> Result<u64, StreamError> {
         // Clean up any existing stream first
         if self.is_active() {
             self.stop_stream().await?;
@@ -345,8 +361,9 @@ impl StreamState {
         self.ffmpeg_stdin = Some(stdin);
         self.ffmpeg_handle = Some(child);
         self.is_test = is_test;
+        self.generation += 1;
 
-        Ok(())
+        Ok(self.generation)
     }
 
     /// Stop the current stream gracefully.
@@ -397,7 +414,15 @@ impl StreamState {
     ///
     /// If recording is active, chunks are tee'd to the recording file alongside FFmpeg.
     /// Recording file write errors are logged but don't fail the stream.
-    pub async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StreamError> {
+    ///
+    /// `generation` is the producer's own stream (from
+    /// [`StreamState::start_stream`]); a replaced producer gets
+    /// [`StreamError::Superseded`] instead of writing into its successor.
+    pub async fn write_chunk(&mut self, generation: u64, data: &[u8]) -> Result<(), StreamError> {
+        if self.is_superseded(generation) {
+            return Err(StreamError::Superseded);
+        }
+
         // Write to FFmpeg (required for streaming)
         if let Some(ref mut stdin) = self.ffmpeg_stdin {
             write_stdin_with_timeout(stdin, data, PRODUCER_WRITE_TIMEOUT)
@@ -624,7 +649,7 @@ pub async fn start_prerecorded_stream(
     input_url: &str,
     target: &PushTarget,
 ) -> Result<(), StreamError> {
-    {
+    let generation = {
         let mut state = stream_state.lock().await;
 
         // Clean up any existing stream first
@@ -674,7 +699,9 @@ pub async fn start_prerecorded_stream(
         // Not a test broadcast: make sure a stale `is_test = true` from an
         // earlier rehearsal never leaks in and flips the public status off.
         state.is_test = false;
-    }
+        state.generation += 1;
+        state.generation
+    };
 
     // Spawn a background task to monitor when FFmpeg exits
     let monitor_state = stream_state.clone();
@@ -683,7 +710,10 @@ pub async fn start_prerecorded_stream(
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let mut state = monitor_state.lock().await;
-            let should_break = if let Some(ref mut handle) = state.ffmpeg_handle {
+            let should_break = if state.generation != generation {
+                // A later start replaced this stream; its process is not ours.
+                true
+            } else if let Some(ref mut handle) = state.ffmpeg_handle {
                 match handle.try_wait() {
                     Ok(Some(status)) => {
                         tracing::info!(
@@ -860,6 +890,9 @@ pub enum StreamError {
 
     #[error("Not currently streaming")]
     NotStreaming,
+
+    #[error("Another connection took over the stream")]
+    Superseded,
 
     #[error("Failed to write audio data: {0}")]
     WriteFailed(String),
@@ -1082,6 +1115,30 @@ mod tests {
             .expect("child blocked on a full stderr pipe")
             .unwrap();
         assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn prerecorded_watcher_leaves_its_replacement_alone() {
+        let shared = new_shared_state();
+        let target = PushTarget::Rtmp {
+            destination: "pipe:1".to_string(),
+        };
+        // The prerecorded input is missing, so its ffmpeg exits at once.
+        start_prerecorded_stream(&shared, "auto".into(), "/nonexistent.mp3", &target)
+            .await
+            .unwrap();
+        let mut state = shared.lock().await;
+        state
+            .start_stream("host".into(), &target, false)
+            .await
+            .unwrap();
+        // The live producer exits too; handling that is its connection's job.
+        state.ffmpeg_handle.as_mut().unwrap().start_kill().unwrap();
+        drop(state);
+
+        // One watcher tick (2 s) later the live stream is still the host's.
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        assert_eq!(shared.lock().await.current_user.as_deref(), Some("host"));
     }
 
     #[tokio::test]

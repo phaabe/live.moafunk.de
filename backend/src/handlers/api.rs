@@ -302,10 +302,11 @@ pub async fn api_set_initial_password(
     // Hash and update password, clearing the forced-change flag
     let new_hash = auth::hash_password(&req.new_password)?;
     let mut tx = crate::recovery::begin(&state.db).await?;
-    let still_required: bool = sqlx::query_scalar("SELECT must_change_password FROM users WHERE id = ?")
-        .bind(user.id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let still_required: bool =
+        sqlx::query_scalar("SELECT must_change_password FROM users WHERE id = ?")
+            .bind(user.id)
+            .fetch_one(&mut *tx)
+            .await?;
     if !still_required {
         return Err(AppError::Forbidden(
             "Password change is not required for this account".into(),
@@ -5572,6 +5573,18 @@ async fn start_claimed_prerecorded_stream(
     )
     .await
     .map_err(|e| AppError::Internal(format!("Failed to start prerecorded stream: {}", e)))?;
+
+    // The live show's recording ends here. Its producer was just replaced, or
+    // dropped and is waiting out its reconnect grace, whose end would see this
+    // stream as live and keep waiting. No live audio reaches it any more.
+    crate::handlers::stream_ws::cancel_pending_finalize(state).await;
+    if let Err(e) = crate::handlers::recording::finalize_and_upload(state).await {
+        tracing::error!(
+            "Finalizing the live recording before prerecorded show {} failed: {}",
+            show.id,
+            e
+        );
+    }
 
     // Notify via Telegram
     telegram_notify::notify_stream_start(state, username);
