@@ -5574,6 +5574,18 @@ async fn start_claimed_prerecorded_stream(
     .await
     .map_err(|e| AppError::Internal(format!("Failed to start prerecorded stream: {}", e)))?;
 
+    // The live show's recording ends here. Its producer was just replaced, or
+    // dropped and is waiting out its reconnect grace, whose end would see this
+    // stream as live and keep waiting. No live audio reaches it any more.
+    crate::handlers::stream_ws::cancel_pending_finalize(state).await;
+    if let Err(e) = crate::handlers::recording::finalize_and_upload(state).await {
+        tracing::error!(
+            "Finalizing the live recording before prerecorded show {} failed: {}",
+            show.id,
+            e
+        );
+    }
+
     // Notify via Telegram
     telegram_notify::notify_stream_start(state, username);
 

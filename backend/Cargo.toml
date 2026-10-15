@@ -79,3 +79,5 @@ ab_glyph = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# WebSocket client for the stream handler tests (same version axum uses).
+tokio-tungstenite = "0.24"
