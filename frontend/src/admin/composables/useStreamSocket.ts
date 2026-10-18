@@ -17,6 +17,11 @@ const reconnectAttempts = ref(0);
 
 let socket: WebSocket | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+// True from an unexpected drop of a live stream until it is live again, the
+// server rejects an attempt with an `error:` frame, or we give up / the user
+// stops. A failed attempt never reaches 'live' (onerror leaves it at 'error'),
+// so this flag, not the state, keeps the backoff going past the first retry.
+let autoReconnecting = false;
 // Total binary payload bytes handed to socket.send() since (re)connect.
 // Together with bufferedAmount this is the browser-side upload-health signal
 // (#275): egress = Δqueued − Δbuffered, buffer-seconds = buffered / byte-rate.
@@ -181,6 +186,10 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
         const msg = event.data;
         if (msg === 'connected') {
           state.value = 'live';
+          // Live again (the producer is up, not just the socket): the next drop
+          // gets the full backoff budget.
+          reconnectAttempts.value = 0;
+          autoReconnecting = false;
           currentCallbacks.onLive?.();
         } else if (typeof msg === 'string' && msg.startsWith('pong:')) {
           const pong = parsePong(msg);
@@ -190,6 +199,10 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
           }
         } else if (typeof msg === 'string' && msg.startsWith('error:')) {
           const errMsg = msg.substring(7);
+          // The server ended this connection on purpose (e.g. "Another
+          // connection took over the stream") — the close that follows must
+          // not auto-reconnect, even mid-backoff.
+          autoReconnecting = false;
           error.value = errMsg;
           state.value = 'error';
           currentCallbacks.onError?.(errMsg);
@@ -207,9 +220,17 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
         console.log('[StreamSocket] Closed:', event.code, event.reason);
         stopPings();
         const wasLive = state.value === 'live';
+        // Consumed here; set again below only if another attempt is scheduled.
+        const wasReconnecting = autoReconnecting;
+        autoReconnecting = false;
 
-        if (event.code !== 1000 && reconnectAttempts.value < maxReconnectAttempts && wasLive) {
-          // Auto-reconnect on unexpected disconnect
+        if (
+          event.code !== 1000 &&
+          reconnectAttempts.value < maxReconnectAttempts &&
+          (wasLive || wasReconnecting)
+        ) {
+          // Auto-reconnect on unexpected disconnect, or after a failed attempt
+          autoReconnecting = true;
           reconnectAttempts.value++;
           const delay = Math.pow(2, reconnectAttempts.value - 1) * 1000;
           state.value = 'connecting';
@@ -264,6 +285,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
     currentShowId = null;
     currentTest = false;
+    autoReconnecting = false;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
     error.value = null;
@@ -288,6 +310,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
     currentShowId = null;
     currentTest = false;
+    autoReconnecting = false;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
     error.value = null;
