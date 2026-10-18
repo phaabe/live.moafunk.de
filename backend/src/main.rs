@@ -27,6 +27,8 @@ mod video;
 mod broadcast_tests;
 #[cfg(test)]
 mod recovery_tests;
+#[cfg(test)]
+mod stream_system_tests;
 
 use axum::{
     extract::{DefaultBodyLimit, Query, State, WebSocketUpgrade},

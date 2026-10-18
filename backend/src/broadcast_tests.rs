@@ -48,7 +48,7 @@ async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::TempDir) {
     (state, temp)
 }
 
-async fn add_user(state: &Arc<AppState>, username: &str, role: &str) -> i64 {
+pub(crate) async fn add_user(state: &Arc<AppState>, username: &str, role: &str) -> i64 {
     sqlx::query("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)")
         .bind(username)
         .bind(auth::hash_password("test-password").unwrap())
@@ -228,13 +228,21 @@ async fn stop_handler_allows_admins_and_owner_but_rejects_another_host() {
 /// First bytes of a WebM stream: the producer ffmpeg keeps waiting for more.
 const WEBM_MAGIC: [u8; 4] = [0x1a, 0x45, 0xdf, 0xa3];
 
-type Producer =
+pub(crate) type Producer =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Rehearsal producers run a real ffmpeg that muxes to its discarded stdout,
 /// so these tests need no Icecast, recording or Telegram.
 async fn serve_stream_socket() -> (Arc<AppState>, tempfile::TempDir, std::net::SocketAddr) {
-    let (state, temp) = state_with(json!({ "icecast_test_url": "pipe:1" })).await;
+    serve_stream_socket_with(json!({ "icecast_test_url": "pipe:1" })).await
+}
+
+/// Serves the real stream WebSocket handler at `/ws`, with `overrides`
+/// applied to the config (for example the producer targets).
+pub(crate) async fn serve_stream_socket_with(
+    overrides: Value,
+) -> (Arc<AppState>, tempfile::TempDir, std::net::SocketAddr) {
+    let (state, temp) = state_with(overrides).await;
     let router = Router::new()
         .route("/ws", get(stream_ws_handler))
         .with_state(state.clone());
@@ -244,7 +252,7 @@ async fn serve_stream_socket() -> (Arc<AppState>, tempfile::TempDir, std::net::S
     (state, temp, addr)
 }
 
-async fn go_live(
+pub(crate) async fn go_live(
     state: &Arc<AppState>,
     addr: std::net::SocketAddr,
     user_id: i64,
