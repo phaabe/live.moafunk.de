@@ -1,0 +1,141 @@
+name: STREAM - System test
+
+# Runs the live stream chain end to end: the backend's stream handler and
+# producer ffmpeg push a tone into Liquidsoap, and the tests decode what
+# listeners get from Icecast (backend/src/stream_system_tests.rs). Liquidsoap
+# and Icecast-KH run as in production: the same images, configs and host
+# networking (docs/stream-rework/prod/), with throwaway passwords.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - backend/src/**
+      - backend/Cargo.toml
+      - backend/Cargo.lock
+      - docs/stream-rework/prod/**
+      - .github/workflows/stream-system.yml
+  push:
+    branches: [main]
+    paths:
+      - backend/src/**
+      - backend/Cargo.toml
+      - backend/Cargo.lock
+      - docs/stream-rework/prod/**
+      - .github/workflows/stream-system.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stream-system-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Production runs savonet/liquidsoap:v2.4.4 from Docker Hub; this is its
+  # digest, pulled from mirrors because Docker Hub pulls fail on the runners.
+  LIQUIDSOAP_DIGEST: sha256:cfcd6e31e8c3d5f81d8f0e3dc148b9bec6356a86c14cb5dc19808779f55ae75e
+  HARBOR_LIVE_PASSWORD: ci-harbor-live
+  HARBOR_TEST_PASSWORD: ci-harbor-test
+  ICECAST_SOURCE_PASSWORD: ci-icecast-source
+
+jobs:
+  system:
+    name: stream-system
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install ffmpeg
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Pull the stream stack images
+        run: |
+          set -euo pipefail
+          # Anonymous pulls from shared runner addresses hit registry rate
+          # limits, so try each mirror a few times before the next one.
+          pull() {
+            local target=$1
+            shift
+            for source in "$@"; do
+              for attempt in 1 2 3; do
+                if docker pull "$source"; then
+                  docker tag "$source" "$target"
+                  return 0
+                fi
+                sleep $((attempt * 10))
+              done
+            done
+            echo "Could not pull $target from any mirror" >&2
+            return 1
+          }
+          # The Icecast-KH Dockerfile starts FROM debian:12-slim.
+          pull debian:12-slim \
+            mirror.gcr.io/library/debian:12-slim \
+            public.ecr.aws/docker/library/debian:12-slim
+          pull moafunk/liquidsoap:ci \
+            "mirror.gcr.io/savonet/liquidsoap@${LIQUIDSOAP_DIGEST}" \
+            "ghcr.io/savonet/liquidsoap@${LIQUIDSOAP_DIGEST}"
+
+      - name: Build Icecast-KH from the production Dockerfile
+        run: |
+          docker build -f docs/stream-rework/prod/icecast-kh.Dockerfile \
+            -t moafunk/icecast-kh:ci docs/stream-rework/prod
+
+      - name: Start Icecast with the production config
+        run: |
+          set -euo pipefail
+          sed -e "s/CHANGE_ME_SOURCE/${ICECAST_SOURCE_PASSWORD}/" \
+              -e "s/CHANGE_ME_RELAY/ci-relay/" -e "s/CHANGE_ME_ADMIN/ci-admin/" \
+              docs/stream-rework/prod/icecast.xml > "$RUNNER_TEMP/icecast.xml"
+          chmod 644 "$RUNNER_TEMP/icecast.xml"
+          docker run -d --name icecast --network host \
+            -v "$RUNNER_TEMP/icecast.xml:/etc/moafunk/icecast.xml:ro" \
+            moafunk/icecast-kh:ci
+
+      - name: Start Liquidsoap with the production script
+        run: |
+          set -euo pipefail
+          docker run -d --name liquidsoap --network host \
+            -e HARBOR_LIVE_PASSWORD -e HARBOR_TEST_PASSWORD -e ICECAST_SOURCE_PASSWORD \
+            -v "$PWD/docs/stream-rework/prod/moafunk.liq:/moafunk.liq:ro" \
+            moafunk/liquidsoap:ci liquidsoap /moafunk.liq
+
+      - name: Wait for both mounts
+        run: |
+          set -euo pipefail
+          # Icecast answers HEAD with 400, so probe with GET.
+          for _ in $(seq 1 60); do
+            live=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8010/live.mp3 || true)
+            preview=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8010/test.mp3 || true)
+            if [ "$live" = 200 ] && [ "$preview" = 200 ]; then
+              echo "Both mounts are up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Mounts not up: /live.mp3 $live, /test.mp3 $preview" >&2
+          exit 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Run the system tests
+        working-directory: backend
+        run: cargo test --locked stream_system_tests -- --ignored --test-threads=1
+
+      - name: Show stream stack logs
+        if: failure()
+        run: |
+          docker logs liquidsoap || true
+          docker logs icecast || true
