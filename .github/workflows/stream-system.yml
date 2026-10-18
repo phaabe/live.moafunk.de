@@ -33,9 +33,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Production's image (savonet/liquidsoap:v2.4.4 on Docker Hub, same digest),
-  # pulled from GHCR because Docker Hub pulls fail on the runners.
-  LIQUIDSOAP_IMAGE: ghcr.io/savonet/liquidsoap:v2.4.4@sha256:cfcd6e31e8c3d5f81d8f0e3dc148b9bec6356a86c14cb5dc19808779f55ae75e
+  # Production runs savonet/liquidsoap:v2.4.4 from Docker Hub; this is its
+  # digest, pulled from mirrors because Docker Hub pulls fail on the runners.
+  LIQUIDSOAP_DIGEST: sha256:cfcd6e31e8c3d5f81d8f0e3dc148b9bec6356a86c14cb5dc19808779f55ae75e
   HARBOR_LIVE_PASSWORD: ci-harbor-live
   HARBOR_TEST_PASSWORD: ci-harbor-test
   ICECAST_SOURCE_PASSWORD: ci-icecast-source
@@ -59,13 +59,36 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
 
-      - name: Build Icecast-KH from the production Dockerfile
+      - name: Pull the stream stack images
         run: |
           set -euo pipefail
-          # The Dockerfile starts FROM debian:12-slim; serve it from the mirror
-          # the backend image uses so the build never pulls from Docker Hub.
-          docker pull public.ecr.aws/docker/library/debian:12-slim
-          docker tag public.ecr.aws/docker/library/debian:12-slim debian:12-slim
+          # Anonymous pulls from shared runner addresses hit registry rate
+          # limits, so try each mirror a few times before the next one.
+          pull() {
+            local target=$1
+            shift
+            for source in "$@"; do
+              for attempt in 1 2 3; do
+                if docker pull "$source"; then
+                  docker tag "$source" "$target"
+                  return 0
+                fi
+                sleep $((attempt * 10))
+              done
+            done
+            echo "Could not pull $target from any mirror" >&2
+            return 1
+          }
+          # The Icecast-KH Dockerfile starts FROM debian:12-slim.
+          pull debian:12-slim \
+            mirror.gcr.io/library/debian:12-slim \
+            public.ecr.aws/docker/library/debian:12-slim
+          pull moafunk/liquidsoap:ci \
+            "mirror.gcr.io/savonet/liquidsoap@${LIQUIDSOAP_DIGEST}" \
+            "ghcr.io/savonet/liquidsoap@${LIQUIDSOAP_DIGEST}"
+
+      - name: Build Icecast-KH from the production Dockerfile
+        run: |
           docker build -f docs/stream-rework/prod/icecast-kh.Dockerfile \
             -t moafunk/icecast-kh:ci docs/stream-rework/prod
 
@@ -86,7 +109,7 @@ jobs:
           docker run -d --name liquidsoap --network host \
             -e HARBOR_LIVE_PASSWORD -e HARBOR_TEST_PASSWORD -e ICECAST_SOURCE_PASSWORD \
             -v "$PWD/docs/stream-rework/prod/moafunk.liq:/moafunk.liq:ro" \
-            "$LIQUIDSOAP_IMAGE" liquidsoap /moafunk.liq
+            moafunk/liquidsoap:ci liquidsoap /moafunk.liq
 
       - name: Wait for both mounts
         run: |
