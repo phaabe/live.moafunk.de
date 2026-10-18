@@ -281,12 +281,14 @@ impl StreamState {
         self.current_user.is_some() && (self.ffmpeg_stdin.is_some() || self.ffmpeg_handle.is_some())
     }
 
-    /// True when another producer has replaced the one started as
+    /// True when a later start has replaced the producer started as
     /// `generation` (a reconnect, a forced takeover or a prerecorded start).
     /// The replaced producer must then leave the stream and its recording
-    /// alone instead of stopping or finalizing them.
+    /// alone instead of stopping or finalizing them. This holds after its
+    /// successor has stopped too: that successor's own disconnect decides the
+    /// recording (an explicit stop, or a grace wait a reconnect can resume).
     pub fn is_superseded(&self, generation: u64) -> bool {
-        self.is_active() && self.generation != generation
+        self.generation != generation
     }
 
     /// Test stand-in for another producer: `child` plays its FFmpeg process.

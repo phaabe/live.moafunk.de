@@ -380,6 +380,48 @@ async fn replaced_host_stop_leaves_the_takeover_and_its_recording_alone() {
     assert!(next_text(&mut current).await.starts_with("pong:"));
 }
 
+/// The takeover drops and waits out its reconnect grace. A stop from the
+/// host's old tab in that time must not finalize the recording, so the
+/// takeover resumes the same archive when it reconnects.
+#[tokio::test]
+async fn replaced_host_stop_during_the_takeovers_grace_keeps_its_recording() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let mut replaced = connect_producer(&state, addr, host, "show_id=1").await;
+    let takeover = connect_producer(&state, addr, admin, "show_id=1&force=true").await;
+    let archive = state.recording_manager.lock().await.get_temp_file_path();
+    assert!(archive.is_some());
+
+    // A network drop: no stop, so the recording waits for a reconnect.
+    close(takeover).await;
+    assert!(!state.stream_state.lock().await.is_active());
+
+    replaced.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(replaced).await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1),
+        "the show's recording must not be finalized"
+    );
+
+    let mut back = connect_producer(&state, addr, admin, "show_id=1").await;
+    assert_eq!(
+        state.recording_manager.lock().await.get_temp_file_path(),
+        archive,
+        "the reconnect resumes the same archive"
+    );
+    back.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    assert!(next_text(&mut back).await.starts_with("pong:"));
+}
+
 // ── B1.1.6: prerecorded occurrences ─────────────────────────────────────────
 
 const SHOW_START: &str = "2026-09-26T18:00:00+00:00"; // 20:00 Berlin (CEST)
