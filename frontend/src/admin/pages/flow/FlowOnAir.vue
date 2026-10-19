@@ -220,6 +220,9 @@ const streamSocket = useStreamSocket({
       streamEnded.value = true;
       stopElapsed();
       stopMetrics();
+      // Release the mic: onUnmounted skips stopCapture() once streamEnded is
+      // set, and nothing else stops the capture singleton.
+      audioCapture?.stopCapture();
     }
   },
   onError: (msg) => {
