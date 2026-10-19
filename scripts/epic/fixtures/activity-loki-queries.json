@@ -1,0 +1,33 @@
+{
+  "about": "Loki overview query fixtures (issue 681, leaf A681.1.2). requests: the query_range request for a selected range [from, to); step is the resolution and every point is a bucket end. series: bucket records pushed with their Loki timestamp (the bucket end) and the expected overview result, one state series per agent. Times are Unix seconds; T0 = 1791000000 is 2 h aligned.",
+  "requests": [
+    {"name": "1 h aligned", "from": 1791000000, "to": 1791003600, "resolution": "10s", "start": 1791000010, "end": 1791003600, "step": 10, "points": 360},
+    {"name": "1 h, both ends inside a bucket", "from": 1791000005, "to": 1791003605, "resolution": "10s", "start": 1791000010, "end": 1791003610, "step": 10, "points": 361},
+    {"name": "largest 10s range", "from": 1791000000, "to": 1791003990, "resolution": "10s", "start": 1791000010, "end": 1791003990, "step": 10, "points": 399},
+    {"name": "just past the 10s limit", "from": 1791000000, "to": 1791003991, "resolution": "1m", "start": 1791000060, "end": 1791004020, "step": 60, "points": 67},
+    {"name": "7 days", "from": 1791000000, "to": 1791604800, "resolution": "30m", "start": 1791001800, "end": 1791604800, "step": 1800, "points": 336},
+    {"name": "30 days, both ends inside a bucket", "from": 1791000001, "to": 1793592001, "resolution": "2h", "start": 1791007200, "end": 1793599200, "step": 7200, "points": 361}
+  ],
+  "invalid": [
+    {"name": "empty range", "from": 1791000000, "to": 1791000000},
+    {"name": "reversed range", "from": 1791000010, "to": 1791000000},
+    {"name": "over 30 days", "from": 1791000000, "to": 1793592001}
+  ],
+  "series": {
+    "request": {"from": 1791000005, "to": 1791000035},
+    "push": [
+      {"ts": 1791000000, "agent": "claude", "resolution": "10s", "start": 1790999990, "state": "idle"},
+      {"ts": 1791000010, "agent": "claude", "resolution": "10s", "start": 1791000000, "state": "code"},
+      {"ts": 1791000020, "agent": "claude", "resolution": "10s", "start": 1791000010, "state": "waiting"},
+      {"ts": 1791000030, "agent": "claude", "resolution": "10s", "start": 1791000020, "state": "unknown"},
+      {"ts": 1791000040, "agent": "claude", "resolution": "10s", "start": 1791000030, "state": "review"},
+      {"ts": 1791000050, "agent": "claude", "resolution": "10s", "start": 1791000040, "state": "code"},
+      {"ts": 1791000060, "agent": "claude", "resolution": "1m", "start": 1791000000, "state": "paused"},
+      {"ts": 1791000020, "agent": "codex", "resolution": "10s", "start": 1791000010, "state": "review"}
+    ],
+    "expected": {
+      "claude": {"1791000010": "code", "1791000020": "waiting", "1791000030": "unknown", "1791000040": "review"},
+      "codex": {"1791000020": "review"}
+    }
+  }
+}
