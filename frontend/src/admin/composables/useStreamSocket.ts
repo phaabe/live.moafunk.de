@@ -5,7 +5,12 @@ export type StreamConnectionState = 'disconnected' | 'connecting' | 'connected' 
 export interface UseStreamSocketOptions {
   maxReconnectAttempts?: number;
   onConnected?: () => void;
-  onDisconnected?: () => void;
+  /**
+   * Fires on every socket close. `willReconnect` is true when an automatic
+   * reconnect is already scheduled, so the stream may come back (onLive fires
+   * again); false means the connection is over.
+   */
+  onDisconnected?: (willReconnect: boolean) => void;
   onError?: (error: string) => void;
   onLive?: () => void;
 }
@@ -41,7 +46,7 @@ let currentShowId: number | null = null;
 let currentTest = false;
 let currentCallbacks: {
   onConnected?: () => void;
-  onDisconnected?: () => void;
+  onDisconnected?: (willReconnect: boolean) => void;
   onError?: (error: string) => void;
   onLive?: () => void;
 } = {};
@@ -248,7 +253,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
           state.value = 'disconnected';
         }
 
-        currentCallbacks.onDisconnected?.();
+        currentCallbacks.onDisconnected?.(autoReconnecting);
       };
     });
   }

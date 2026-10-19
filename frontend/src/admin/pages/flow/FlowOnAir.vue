@@ -209,7 +209,11 @@ const streamSocket = useStreamSocket({
     // reconnect fires this again; don't reset timers / duplicate intervals.
     if (!streamActive.value) transitionToStreaming();
   },
-  onDisconnected: () => {
+  onDisconnected: (willReconnect) => {
+    // A drop the socket is auto-reconnecting is not the end of the show: keep
+    // the streaming view, timers and end-time stop running. onLive fires when
+    // it is back; giving up arrives here again with willReconnect = false.
+    if (willReconnect) return;
     // Suppressed during a manual reconnect — its teardown closes the socket
     // on purpose and must not route to the "Stream Ended" screen.
     if (streamActive.value && !streamEnded.value && !reconnecting.value) {
@@ -222,6 +226,14 @@ const streamSocket = useStreamSocket({
     goLiveError.value = msg;
   },
 });
+
+// While the socket is (re)connecting mid-show the producer is off air, so the
+// status bar must not claim LIVE.
+const socketReconnecting = computed(
+  () =>
+    isLiveMode.value &&
+    (streamSocket.state.value === 'connecting' || streamSocket.state.value === 'connected')
+);
 
 const goLiveLoading = ref(false);
 const goLiveError = ref<string | null>(null);
@@ -650,8 +662,14 @@ onUnmounted(() => {
       <!-- 1 · Status bar -->
       <div class="panel-card">
         <div class="status-bar">
-          <span class="status-dot live"></span>
-          <span class="status-label">LIVE</span>
+          <template v-if="socketReconnecting">
+            <span class="status-dot reconnecting"></span>
+            <span class="status-label reconnecting">Reconnecting…</span>
+          </template>
+          <template v-else>
+            <span class="status-dot live"></span>
+            <span class="status-label">LIVE</span>
+          </template>
           <button
             v-if="isLiveMode"
             :class="['rec-chip', isRecording ? 'on' : 'off']"
@@ -1048,6 +1066,12 @@ onUnmounted(() => {
   background: var(--color-text-muted);
 }
 
+.status-dot.reconnecting {
+  background: #eab308;
+  box-shadow: 0 0 8px rgba(234, 179, 8, 0.6);
+  animation: pulse-live 1s ease-in-out infinite;
+}
+
 .status-dot.ok {
   background: #22c55e;
   box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
@@ -1079,6 +1103,10 @@ onUnmounted(() => {
   color: #ef4444;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.status-label.reconnecting {
+  color: #eab308;
 }
 
 /* REC chip = the record toggle (no separate control card). */

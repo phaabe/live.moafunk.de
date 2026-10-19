@@ -260,4 +260,43 @@ describe('useStreamSocket auto-reconnect', () => {
     expect(stream.state.value).toBe('disconnected');
     expect(stream.reconnectAttempts.value).toBe(0);
   });
+
+  it('tells onDisconnected whether an auto-reconnect is scheduled', async () => {
+    const onDisconnected = vi.fn();
+    stream = useStreamSocket({ onDisconnected });
+    await startLive();
+
+    sockets[0].drop();
+    expect(onDisconnected).toHaveBeenLastCalledWith(true);
+
+    // Each failed attempt still has another one queued…
+    for (const delay of [1000, 2000]) {
+      vi.advanceTimersByTime(delay);
+      latest().fail();
+      expect(onDisconnected).toHaveBeenLastCalledWith(true);
+    }
+
+    // …until the last one fails and the socket gives up.
+    vi.advanceTimersByTime(4000);
+    latest().fail();
+    expect(onDisconnected).toHaveBeenLastCalledWith(false);
+    expect(onDisconnected).toHaveBeenCalledTimes(4);
+  });
+
+  it('reports error-frame closes and stopStream() as final disconnects', async () => {
+    const onDisconnected = vi.fn();
+    stream = useStreamSocket({ onDisconnected });
+    await startLive();
+
+    sockets[0].message('error: Another connection took over the stream');
+    sockets[0].drop(1005);
+    expect(onDisconnected).toHaveBeenLastCalledWith(false);
+
+    const connected = stream.connect();
+    goLive(sockets[1]);
+    await connected;
+    stream.stopStream();
+    sockets[1].drop(1006);
+    expect(onDisconnected).toHaveBeenLastCalledWith(false);
+  });
 });
