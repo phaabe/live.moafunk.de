@@ -14,6 +14,9 @@ backend ffmpeg (STREAM_OUTPUT=icecast)
                                                                           ▼  listeners (incl. iOS)
 ```
 
+If the admin web app can't stream, go live with OBS or BUTT instead:
+[`../encoder-fallback-runbook.md`](../encoder-fallback-runbook.md).
+
 ## Files
 
 | File | Goes to | Purpose |
