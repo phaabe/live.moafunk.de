@@ -339,6 +339,48 @@ async fn forced_takeover_survives_the_replaced_host() {
     assert!(next_text(&mut current).await.starts_with("pong:"));
 }
 
+/// A replaced producer stays replaced after its successor stops: the
+/// successor's own disconnect decides the recording, so a late `stop` from the
+/// replaced tab must not finalize the archive the successor is about to resume.
+#[tokio::test]
+async fn replaced_host_stop_leaves_the_dropped_successors_recording() {
+    // A recorded, non-rehearsal show: its live ffmpeg also muxes to stdout.
+    let (state, _temp, addr) = serve_stream_socket_with(json!({
+        "stream_output": "icecast",
+        "icecast_url": "pipe:1",
+    }))
+    .await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Live', '2026-10-18', ?)",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let mut replaced = go_live(&state, addr, host, "show_id=1").await;
+    let current = go_live(&state, addr, admin, "show_id=1&force=true").await;
+    let artifact = state.recording_manager.lock().await.get_temp_file_path();
+    assert!(artifact.is_some());
+
+    // The admin's network drops: no `stop`, so the reconnect grace starts.
+    close(current).await;
+    replaced.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(replaced).await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+
+    // The admin's reconnect resumes the same archive.
+    let _resumed = go_live(&state, addr, admin, "show_id=1").await;
+    assert_eq!(
+        state.recording_manager.lock().await.get_temp_file_path(),
+        artifact
+    );
+}
+
 /// A prerecorded show taking the air ends the live show's recording: its
 /// producer was replaced or waits out its reconnect grace, and the grace end
 /// would see the prerecorded stream as live and keep waiting.

@@ -284,9 +284,11 @@ impl StreamState {
     /// True when another producer has replaced the one started as
     /// `generation` (a reconnect, a forced takeover or a prerecorded start).
     /// The replaced producer must then leave the stream and its recording
-    /// alone instead of stopping or finalizing them.
+    /// alone instead of stopping or finalizing them. It stays replaced after
+    /// its successor has stopped: the successor's own disconnect decides the
+    /// recording (finalize on stop, reconnect grace on a drop).
     pub fn is_superseded(&self, generation: u64) -> bool {
-        self.is_active() && self.generation != generation
+        self.generation != generation
     }
 
     /// Returns true if recording to file is active.
