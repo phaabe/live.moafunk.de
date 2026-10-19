@@ -6,6 +6,8 @@ The GitNexus code-intelligence block below is auto-generated; edit only *outside
 
 **Architecture epic** (https://github.com/phaabe/live.moafunk.de/issues/312): before any work on it, read and follow [docs/implementation/epic-rules.md](docs/implementation/epic-rules.md). It covers claims, lane file ownership, PR base `dev/streaming-architecture` (temporarily `dev/312-interim`), the review verdict format and the merge rule. Never write the other agent's review verdict.
 
+**Tickets**: when you create or plan tickets, follow "Ticket tree", "Milestones are releases" and "Every open ticket is in one of three buckets" in [CLAUDE.md](./CLAUDE.md). In short: every new ticket gets its goal parent (`gh issue create --parent <number>`) and starts in the inbox, without a milestone. Never set a milestone. Only Anton does, and only tickets with a milestone become Ready.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 

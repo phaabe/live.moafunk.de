@@ -24,7 +24,7 @@ Apply EXACTLY ONE type:: label and the MOST SPECIFIC project:: label, only from 
 - type::admin_dashboard  → frontend/src/admin/** (Vue 3 + Pinia admin SPA: pages, composables, components)
 - project::Stream | recording | Instagram | Telegram | Soundcloud | ImgGen | Upload | Backup
   | Infrastructure | ExternalShows | Ai | unheard-artist-form | UNHEARD
-Add bug / enhancement / documentation / later when fitting. Never invent a label.`
+Add bug / enhancement / documentation when fitting. Never use later. Never invent a label.`
 
 const SUBTASK = {
   type: 'object',
@@ -40,9 +40,10 @@ const SUBTASK = {
 
 const BREAKDOWN = {
   type: 'object',
-  required: ['parentTitle', 'parentSummary', 'subtasks'],
+  required: ['parentTitle', 'parentSummary', 'goal', 'subtasks'],
   properties: {
     parentTitle: { type: 'string' },
+    goal: { type: 'integer', description: 'open goal issue (label goal) the parent belongs to; 0 when none fits' },
     parentSummary: { type: 'string', description: 'why this epic exists + affected areas (from GitNexus)' },
     subtasks: { type: 'array', items: SUBTASK, minItems: 2, maxItems: 8 },
   },
@@ -56,7 +57,10 @@ const breakdown = await agent(
     `1. Use gitnexus_query({query, repo: "${REPO}"}) (and gitnexus_context for key symbols) to find which ` +
     `functional areas/files the work touches. Do NOT grep blindly.\n` +
     `2. Run \`gh api repos/{owner}/{repo}/labels --paginate --jq '.[].name'\` (REST, not GraphQL) to read the EXACT available labels.\n` +
-    `3. Split into independently-shippable sub-tasks, each with a Conventional-Commit-style title, the ` +
+    `3. Read the open goal issues over REST: \`gh api repos/{owner}/{repo}/issues -X GET -f labels=goal -f state=open ` +
+    `-f per_page=100 --jq '.[] | [.number, .title] | @tsv'\`. Pick the goal the parent belongs to; use 0 when none ` +
+    `fits. Never invent a goal.\n` +
+    `4. Split into independently-shippable sub-tasks, each with a Conventional-Commit-style title, the ` +
     `touched area, exact labels, a body (Context / Scope (GitNexus) / Acceptance criteria / Notes), and an ` +
     `acceptance-criteria list.\n${LABEL_GUIDE}\n` +
     `Return the structured breakdown only.`,
@@ -87,14 +91,17 @@ const refined = await pipeline(
 const subtasks = refined.filter(Boolean)
 log(`Refined ${subtasks.length}/${breakdown.subtasks.length} sub-issues`)
 
-// Drafts only — issue creation is a confirmed step in the main loop:
-//   1) create the parent (with a "- [ ] <child title>" checklist) via REST: gh api repos/{owner}/{repo}/issues,
-//   2) create each child with its labels the same way,
-//   3) edit the parent body to reference the created child numbers (- [ ] #N).
+// Drafts only — issue creation is a confirmed step in the main loop (see "Ticket tree" in CLAUDE.md):
+//   1) create the parent under its goal: gh issue create ... --parent <goal>,
+//   2) create each child under the new parent: gh issue create ... --parent <parent number>.
+// Native sub-issues list the children on the parent; no checklist needed.
+// Never set a milestone: milestones are releases and only Anton assigns them.
+// The new tickets stay in the inbox until Anton's next triage.
 return {
   repo: REPO,
+  goal: breakdown.goal,
   parentTitle: breakdown.parentTitle,
   parentSummary: breakdown.parentSummary,
   subtasks,
-  next: 'Present these drafts to the user; on confirmation, create the parent then each child via REST (`gh api repos/{owner}/{repo}/issues -f title=... -F body=@file -f \'labels[]=...\'`), then link children in the parent checklist.',
+  next: 'Present these drafts to the user, with the goal. On confirmation, create the parent with `gh issue create --title ... --body-file <file> --label ... --parent <goal>` (no --parent when goal is 0; tell Anton), then each child the same way with `--parent <new parent number>`. Never set a milestone; Anton assigns releases.',
 }
