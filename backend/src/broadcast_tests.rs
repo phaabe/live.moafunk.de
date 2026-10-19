@@ -1,19 +1,32 @@
-//! Broadcast permissions and login warnings against real handlers and SQLite.
+//! Broadcast permissions, stream ownership and login warnings against real
+//! handlers and SQLite.
 
 use super::*;
 use axum::{body::to_bytes, extract::Path, http::StatusCode};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::time::Duration;
+use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as WsMessage};
 
 async fn state() -> (Arc<AppState>, tempfile::TempDir) {
+    state_with(json!({})).await
+}
+
+/// `overrides` replaces or adds config fields.
+async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::TempDir) {
     let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
     db::run_migrations(&db).await.unwrap();
-    let mut config: Config = serde_json::from_value(json!({
+    let mut config = json!({
         "secret_key": "test-only", "superadmin_password_hash": "unused",
         "r2_account_id": "unused", "r2_access_key_id": "unused", "r2_secret_access_key": "unused",
         // Never push a test stream to the production default.
         "rtmp_url": "rtmp://127.0.0.1:1/live"
-    }))
-    .unwrap();
+    });
+    config
+        .as_object_mut()
+        .unwrap()
+        .extend(overrides.as_object().unwrap().clone());
+    let mut config: Config = serde_json::from_value(config).unwrap();
     // Local dead end so presigning works offline.
     config.r2_endpoint = "http://127.0.0.1:1".to_string();
     let temp = tempfile::tempdir().unwrap();
@@ -212,6 +225,201 @@ async fn stop_handler_allows_admins_and_owner_but_rejects_another_host() {
         assert_eq!(stopped["message"], "Stream stopped");
         assert!(!state.stream_state.lock().await.is_active());
     }
+}
+
+// ── Stream ownership: a replaced producer leaves its successor alone ────────
+
+/// First bytes of a WebM stream: the producer ffmpeg keeps waiting for more.
+const WEBM_MAGIC: [u8; 4] = [0x1a, 0x45, 0xdf, 0xa3];
+
+type Producer =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Producers, live and rehearsal, run a real ffmpeg that muxes to its
+/// discarded stdout, so these tests need no Icecast or Telegram.
+async fn serve_stream_socket() -> (Arc<AppState>, tempfile::TempDir, std::net::SocketAddr) {
+    let (state, temp) = state_with(json!({
+        "stream_output": "icecast", "icecast_url": "pipe:1", "icecast_test_url": "pipe:1"
+    }))
+    .await;
+    let router = Router::new()
+        .route("/ws", get(stream_ws_handler))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (state, temp, addr)
+}
+
+async fn connect_producer(
+    state: &Arc<AppState>,
+    addr: std::net::SocketAddr,
+    user_id: i64,
+    query: &str,
+) -> Producer {
+    let mut request = format!("ws://{addr}/ws?{query}")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().extend(headers(state, user_id).await);
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(next_text(&mut socket).await, "connected");
+    socket
+}
+
+async fn next_text(socket: &mut Producer) -> String {
+    match tokio::time::timeout(Duration::from_secs(10), socket.next()).await {
+        Ok(Some(Ok(WsMessage::Text(text)))) => text.to_string(),
+        other => panic!("expected a text frame, got {other:?}"),
+    }
+}
+
+/// Closes `socket` and waits until the server drops the connection, which it
+/// does only after the handler has run its disconnect path.
+async fn close(mut socket: Producer) {
+    let _ = socket.close(None).await;
+    let drained = async { while let Some(Ok(_)) = socket.next().await {} };
+    tokio::time::timeout(Duration::from_secs(10), drained)
+        .await
+        .expect("server kept the socket open");
+}
+
+#[tokio::test]
+async fn reconnect_survives_the_late_close_of_the_replaced_socket() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    // A network drop leaves the old socket open on the server while the
+    // panel reconnects. The old one closes much later (nginx: 300 s idle).
+    let replaced = connect_producer(&state, addr, host, "test=true").await;
+    let mut current = connect_producer(&state, addr, host, "test=true").await;
+    close(replaced).await;
+
+    assert!(state.stream_state.lock().await.is_active());
+    current
+        .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    current
+        .send(WsMessage::Text("ping:1".into()))
+        .await
+        .unwrap();
+    // A refused chunk would have produced an error frame before the pong.
+    assert!(next_text(&mut current).await.starts_with("pong:"));
+}
+
+#[tokio::test]
+async fn forced_takeover_survives_the_replaced_host() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    let mut replaced = connect_producer(&state, addr, host, "test=true").await;
+    let mut current = connect_producer(&state, addr, admin, "test=true&force=true").await;
+
+    // The host's audio no longer reaches the admin's ffmpeg, and its
+    // disconnect leaves the admin's stream running.
+    replaced
+        .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_text(&mut replaced).await,
+        "error: Another connection took over the stream"
+    );
+    close(replaced).await;
+
+    {
+        let stream = state.stream_state.lock().await;
+        assert!(stream.is_active());
+        assert_eq!(stream.current_user.as_deref(), Some("admin"));
+    }
+    current
+        .send(WsMessage::Text("ping:1".into()))
+        .await
+        .unwrap();
+    assert!(next_text(&mut current).await.starts_with("pong:"));
+}
+
+/// An admin takes over a host's recorded show. A stop from the host's old tab
+/// must neither end the takeover nor finalize the show's recording under it.
+#[tokio::test]
+async fn replaced_host_stop_leaves_the_takeover_and_its_recording_alone() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let mut replaced = connect_producer(&state, addr, host, "show_id=1").await;
+    let mut current = connect_producer(&state, addr, admin, "show_id=1&force=true").await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+
+    replaced.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(replaced).await;
+
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1),
+        "the show's recording must not be finalized"
+    );
+    {
+        let stream = state.stream_state.lock().await;
+        assert!(stream.is_active());
+        assert_eq!(stream.current_user.as_deref(), Some("admin"));
+        assert!(stream.is_recording());
+    }
+    current
+        .send(WsMessage::Text("ping:1".into()))
+        .await
+        .unwrap();
+    assert!(next_text(&mut current).await.starts_with("pong:"));
+}
+
+/// The takeover drops and waits out its reconnect grace. A stop from the
+/// host's old tab in that time must not finalize the recording, so the
+/// takeover resumes the same archive when it reconnects.
+#[tokio::test]
+async fn replaced_host_stop_during_the_takeovers_grace_keeps_its_recording() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let mut replaced = connect_producer(&state, addr, host, "show_id=1").await;
+    let takeover = connect_producer(&state, addr, admin, "show_id=1&force=true").await;
+    let archive = state.recording_manager.lock().await.get_temp_file_path();
+    assert!(archive.is_some());
+
+    // A network drop: no stop, so the recording waits for a reconnect.
+    close(takeover).await;
+    assert!(!state.stream_state.lock().await.is_active());
+
+    replaced.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(replaced).await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1),
+        "the show's recording must not be finalized"
+    );
+
+    let mut back = connect_producer(&state, addr, admin, "show_id=1").await;
+    assert_eq!(
+        state.recording_manager.lock().await.get_temp_file_path(),
+        archive,
+        "the reconnect resumes the same archive"
+    );
+    back.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    assert!(next_text(&mut back).await.starts_with("pong:"));
 }
 
 // ── B1.1.6: prerecorded occurrences ─────────────────────────────────────────
