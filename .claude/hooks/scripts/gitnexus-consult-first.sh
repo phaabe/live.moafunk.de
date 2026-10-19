@@ -16,10 +16,17 @@ REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
 # Use the name GitNexus registered for this path, not the folder name: the
 # runner checkouts (live.moafunk.de-claude-runner, ...) are registered as
 # live.moafunk.de. GITNEXUS_REGISTRY overrides the registry file (tests).
+# The registry keeps the path as given to analyze (/tmp/x), git gives the
+# resolved one (/private/tmp/x), so match by file identity (-ef), not text.
 REGISTRY="${GITNEXUS_REGISTRY:-$HOME/.gitnexus/registry.json}"
 REPO_NAME=""
 if [ -f "$REGISTRY" ]; then
-  REPO_NAME=$(jq -r --arg p "$REPO_ROOT" '[.[] | select(.path == $p)][0].name // empty' "$REGISTRY" 2>/dev/null || true)
+  while IFS=$'\t' read -r name path; do
+    if [ -n "$name" ] && [ "$path" -ef "$REPO_ROOT" ]; then
+      REPO_NAME="$name"
+      break
+    fi
+  done < <(jq -r '.[] | [.name, .path] | @tsv' "$REGISTRY" 2>/dev/null)
 fi
 [ -z "$REPO_NAME" ] && REPO_NAME=$(basename "$REPO_ROOT")
 P_LOWER=$(printf '%s' "$PROMPT" | tr '\n' ' ' | tr '[:upper:]' '[:lower:]')

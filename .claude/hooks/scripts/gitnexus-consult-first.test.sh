@@ -3,9 +3,9 @@
 set -euo pipefail
 
 HOOK="$(cd "$(dirname "$0")" && pwd)/gitnexus-consult-first.sh"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-TMP="$(cd "$TMP" && pwd -P)" # git reports the real path (/var is /private/var on macOS)
+RAW="$(mktemp -d)"
+trap 'rm -rf "$RAW"' EXIT
+TMP="$(cd "$RAW" && pwd -P)" # git reports the real path (/var is /private/var on macOS)
 fail=0
 
 # A fake indexed checkout whose folder name is not its registry name.
@@ -20,6 +20,9 @@ git -C "$PLAIN" init -q
 REG="$TMP/registry.json"
 jq -n --arg p "$REPO" '[{name: "other", path: "/elsewhere"}, {name: "live.moafunk.de", path: $p}]' >"$REG"
 jq -n '[{name: "other", path: "/elsewhere"}]' >"$TMP/other.json"
+# GitNexus keeps the path spelling given to analyze, aliases included.
+jq -n --arg p "$TMP/link" '[{name: "live.moafunk.de", path: $p}]' >"$TMP/symlink.json"
+jq -n --arg p "$RAW/live.moafunk.de-claude-runner" '[{name: "live.moafunk.de", path: $p}]' >"$TMP/unresolved.json"
 echo '{not json' >"$TMP/broken.json"
 
 REG_URI='gitnexus://repo/live.moafunk.de/context'
@@ -54,6 +57,8 @@ result "no bare analyze advice" "$([[ -z "$bare" ]] && echo 1 || echo 0)"
 
 has "subdirectory uses the repo's registry name" "$(run "$REPO/sub" "$REG")" "$REG_URI"
 has "symlinked cwd matches the real registry path" "$(run "$TMP/link" "$REG")" "$REG_URI"
+has "registry path through a symlink matches" "$(run "$REPO" "$TMP/symlink.json")" "$REG_URI"
+has "unresolved registry path (mktemp spelling) matches" "$(run "$REPO" "$TMP/unresolved.json")" "$REG_URI"
 has "unregistered path falls back to the folder name" "$(run "$REPO" "$TMP/other.json")" "$DIR_URI"
 has "missing registry falls back to the folder name" "$(run "$REPO" "$TMP/missing.json")" "$DIR_URI"
 has "broken registry falls back to the folder name" "$(run "$REPO" "$TMP/broken.json")" "$DIR_URI"
