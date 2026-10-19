@@ -13,7 +13,22 @@ REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
 [ -z "$REPO_ROOT" ] && exit 0
 [ -d "$REPO_ROOT/.gitnexus" ] || exit 0
 
-REPO_NAME=$(basename "$REPO_ROOT")
+# Use the name GitNexus registered for this path, not the folder name: the
+# runner checkouts (live.moafunk.de-claude-runner, ...) are registered as
+# live.moafunk.de. GITNEXUS_REGISTRY overrides the registry file (tests).
+# The registry keeps the path as given to analyze (/tmp/x), git gives the
+# resolved one (/private/tmp/x), so match by file identity (-ef), not text.
+REGISTRY="${GITNEXUS_REGISTRY:-$HOME/.gitnexus/registry.json}"
+REPO_NAME=""
+if [ -f "$REGISTRY" ]; then
+  while IFS=$'\t' read -r name path; do
+    if [ -n "$name" ] && [ "$path" -ef "$REPO_ROOT" ]; then
+      REPO_NAME="$name"
+      break
+    fi
+  done < <(jq -r '.[] | [.name, .path] | @tsv' "$REGISTRY" 2>/dev/null)
+fi
+[ -z "$REPO_NAME" ] && REPO_NAME=$(basename "$REPO_ROOT")
 P_LOWER=$(printf '%s' "$PROMPT" | tr '\n' ' ' | tr '[:upper:]' '[:lower:]')
 
 # ── Heuristic: does the prompt look like a code task? ────────────────────
@@ -61,7 +76,7 @@ Before any code understanding, debugging, refactoring, or review:
 
 This is faster and far more accurate than greps for symbol-level questions. The graph already knows what calls what, who imports whom, and which functions belong to which execution flow.
 
-If \`gitnexus://repo/$REPO_NAME/context\` says the index is stale, run \`!gitnexus analyze\` first (or note it; the SessionStart and PostToolUse hooks may already have a refresh in flight).
+If \`gitnexus://repo/$REPO_NAME/context\` says the index is stale, run \`npx gitnexus analyze --skip-agents-md\` in the repo root first, never a bare analyze: it rewrites the tracked AGENTS.md / CLAUDE.md. Or note it; the SessionStart and PostToolUse hooks may already have a refresh in flight.
 
 Skill files for deep workflows (read whichever matches the task):
   • gitnexus-exploring         — "how does X work?"
