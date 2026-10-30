@@ -238,10 +238,21 @@ type Producer =
 /// Producers, live and rehearsal, run a real ffmpeg that muxes to its
 /// discarded stdout, so these tests need no Icecast or Telegram.
 async fn serve_stream_socket() -> (Arc<AppState>, tempfile::TempDir, std::net::SocketAddr) {
-    let (state, temp) = state_with(json!({
+    serve_stream_socket_with(json!({})).await
+}
+
+/// Same, with `overrides` applied on top of the pipe targets.
+async fn serve_stream_socket_with(
+    overrides: Value,
+) -> (Arc<AppState>, tempfile::TempDir, std::net::SocketAddr) {
+    let mut config = json!({
         "stream_output": "icecast", "icecast_url": "pipe:1", "icecast_test_url": "pipe:1"
-    }))
-    .await;
+    });
+    config
+        .as_object_mut()
+        .unwrap()
+        .extend(overrides.as_object().unwrap().clone());
+    let (state, temp) = state_with(config).await;
     let router = Router::new()
         .route("/ws", get(stream_ws_handler))
         .with_state(state.clone());
@@ -888,4 +899,41 @@ async fn failed_prerecorded_start_leaves_a_waiting_recording_alone() {
         state.recording_manager.lock().await.current_show_id(),
         Some(2)
     );
+}
+
+/// Pings keep a socket open without audio. Such a connection is ended with an
+/// error instead of staying "on air" while listeners hear silence.
+#[tokio::test]
+async fn connection_without_audio_is_ended() {
+    let (state, _temp, addr) =
+        serve_stream_socket_with(json!({ "stream_first_audio_timeout_secs": 1 })).await;
+    let host = add_user(&state, "host", "host").await;
+    let mut socket = connect_producer(&state, addr, host, "test=true").await;
+    socket.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    assert!(next_text(&mut socket).await.starts_with("pong:"));
+
+    assert_eq!(
+        next_text(&mut socket).await,
+        handlers::stream_ws::NO_AUDIO_ERROR
+    );
+    close(socket).await;
+    assert!(!state.stream_state.lock().await.is_active());
+}
+
+#[tokio::test]
+async fn first_audio_chunk_lifts_the_no_audio_deadline() {
+    let (state, _temp, addr) =
+        serve_stream_socket_with(json!({ "stream_first_audio_timeout_secs": 1 })).await;
+    let host = add_user(&state, "host", "host").await;
+    let mut socket = connect_producer(&state, addr, host, "test=true").await;
+    socket
+        .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    socket.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    // An error frame for the deadline would arrive before the pong.
+    assert!(next_text(&mut socket).await.starts_with("pong:"));
+    assert!(state.stream_state.lock().await.is_active());
 }
