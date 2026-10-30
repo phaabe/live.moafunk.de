@@ -41,6 +41,10 @@ const FINALIZE_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 /// as "delivery fell behind", not as a pure network metric.
 const LATE_CHUNK_GAP: std::time::Duration = std::time::Duration::from_millis(1000);
 
+/// Sent when a connection's first audio chunk does not arrive in time.
+pub(crate) const NO_AUDIO_ERROR: &str =
+    "error: No audio arrived from your browser. Check your audio input, then go live again.";
+
 /// WebSocket upgrade handler for streaming.
 ///
 /// Authentication is done via session cookie.
@@ -267,7 +271,28 @@ async fn handle_stream_socket(
     let mut late_chunks: u64 = 0;
     let mut dropped_chunks: u64 = 0;
     let mut last_chunk_at: Option<std::time::Instant> = None;
-    while let Some(msg) = receiver.next().await {
+    // Pings keep a socket open without audio, so wait for the first chunk
+    // only so long: until then the public stream plays silence.
+    let first_audio_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_secs(state.config.stream_first_audio_timeout_secs);
+    loop {
+        let next = if chunks_received == 0 {
+            match tokio::time::timeout_at(first_audio_deadline, receiver.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    tracing::warn!(
+                        "No audio from '{}' within {}s; ending the stream",
+                        username,
+                        state.config.stream_first_audio_timeout_secs
+                    );
+                    let _ = sender.send(Message::Text(NO_AUDIO_ERROR.into())).await;
+                    break;
+                }
+            }
+        } else {
+            receiver.next().await
+        };
+        let Some(msg) = next else { break };
         match msg {
             Ok(Message::Binary(data)) => {
                 let now = std::time::Instant::now();

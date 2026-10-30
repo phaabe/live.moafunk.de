@@ -84,6 +84,12 @@ pub struct Config {
     pub icecast_test_url: Option<String>,
     #[serde(default = "default_icecast_metrics_poll_secs")]
     pub icecast_metrics_poll_secs: u64,
+    // How long a stream connection may stay open before its first audio chunk.
+    // The browser sends one every 250 ms, so a silent connection has no working
+    // input; it is ended instead of sitting "on air" while listeners hear
+    // nothing.
+    #[serde(default = "default_stream_first_audio_timeout_secs")]
+    pub stream_first_audio_timeout_secs: u64,
 
     // Optional assets used for ZIP-time image stamping
     // If not set, the code will fall back to local paths under ./data.
@@ -206,6 +212,10 @@ fn default_rtmp_stream_key() -> String {
 
 fn default_icecast_metrics_poll_secs() -> u64 {
     // ~10-15s keeps the admin listener count near-live without hammering Icecast.
+    15
+}
+
+fn default_stream_first_audio_timeout_secs() -> u64 {
     15
 }
 

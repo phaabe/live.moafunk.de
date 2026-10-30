@@ -371,3 +371,44 @@ async fn prerecorded_start_finalizes_the_live_recording() {
         .unwrap();
     assert_eq!(state.recording_manager.lock().await.current_show_id(), None);
 }
+
+/// Pings keep a socket open without audio. Such a connection is ended with an
+/// error instead of staying "on air" while listeners hear silence.
+#[tokio::test]
+async fn connection_without_audio_is_ended() {
+    let (state, _temp, addr) = serve_stream_socket_with(
+        json!({ "icecast_test_url": "pipe:1", "stream_first_audio_timeout_secs": 1 }),
+    )
+    .await;
+    let host = add_user(&state, "host", "host").await;
+    let mut socket = go_live(&state, addr, host, "test=true").await;
+    socket.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    assert!(next_text(&mut socket).await.starts_with("pong:"));
+
+    assert_eq!(
+        next_text(&mut socket).await,
+        handlers::stream_ws::NO_AUDIO_ERROR
+    );
+    close(socket).await;
+    assert!(!state.stream_state.lock().await.is_active());
+}
+
+#[tokio::test]
+async fn first_audio_chunk_lifts_the_no_audio_deadline() {
+    let (state, _temp, addr) = serve_stream_socket_with(
+        json!({ "icecast_test_url": "pipe:1", "stream_first_audio_timeout_secs": 1 }),
+    )
+    .await;
+    let host = add_user(&state, "host", "host").await;
+    let mut socket = go_live(&state, addr, host, "test=true").await;
+    socket
+        .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    socket.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    // An error frame for the deadline would arrive before the pong.
+    assert!(next_text(&mut socket).await.starts_with("pong:"));
+    assert!(state.stream_state.lock().await.is_active());
+}
