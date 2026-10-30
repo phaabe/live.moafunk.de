@@ -240,12 +240,21 @@ async function handleGoLive() {
 
   try {
     if (isLiveMode.value) {
+      // A socket without audio looks live everywhere while listeners hear
+      // silence, so never connect without an input.
+      if (!audioCapture || !audioDeviceOk.value) {
+        throw new Error('No audio input. Go back to setup and select your input.');
+      }
+      audioCapture.setOnError((msg) => {
+        goLiveError.value = msg;
+      });
       // Recording now starts automatically on the backend when the stream goes
       // live (keyed on show_id), so it survives a dropped tab / WS reconnect.
       await streamSocket.connect(false, show.value?.id);
-      if (audioCapture) {
-        audioCapture.setOnData((data) => streamSocket.send(data));
-        audioCapture.startRecording();
+      audioCapture.setOnData((data) => streamSocket.send(data));
+      if (!audioCapture.startRecording()) {
+        streamSocket.stopStream();
+        throw new Error(audioCapture.error.value ?? 'Failed to start audio');
       }
       // Navigation happens via onLive callback
     } else {
@@ -499,6 +508,9 @@ async function handleReconnect() {
   if (reconnecting.value || !isLiveMode.value) return;
   reconnecting.value = true;
   goLiveError.value = null;
+  // This click is a user gesture: the one chance to start a suspended audio
+  // context after an automatic go-live.
+  audioCapture?.resumeAudioContext();
   try {
     // connect() no-ops while the socket is open — tear it down first so the
     // reconnect actually reopens. onDisconnected is suppressed via
@@ -636,6 +648,7 @@ onUnmounted(() => {
           Your show <strong>{{ show?.title }}</strong> has finished.
         </p>
         <p class="ended-duration">Duration: {{ elapsedText }}</p>
+        <p v-if="goLiveError" class="stream-error">{{ goLiveError }}</p>
         <button class="btn-primary" @click="goToDashboard">Done</button>
       </div>
     </template>

@@ -166,6 +166,8 @@ async function runTest() {
   testError.value = null;
   testPhase.value = 'connecting';
   sentChunks.value = 0;
+  // A user gesture: start the capture's audio context if it is suspended.
+  audioCapture.resumeAudioContext();
 
   try {
     // Connect in TEST mode → backend pushes to `/test`, not `/live`.
@@ -313,8 +315,17 @@ onUnmounted(() => {
 
         <div class="ls-test-actions">
           <p class="ls-question">Does it sound clear on the test stream?</p>
+          <!-- No chunk sent means no audio leaves the browser: never pass that. -->
+          <p v-if="sentChunks === 0" class="ls-muted">
+            Waiting for audio… If this stays, check that your input is active.
+          </p>
           <button class="ls-btn-secondary" type="button" @click="retryTest">⏹ Stop test</button>
-          <button class="ls-btn-success" type="button" @click="markTestPassed">
+          <button
+            class="ls-btn-success"
+            type="button"
+            :disabled="sentChunks === 0"
+            @click="markTestPassed"
+          >
             ✓ Yes, ready to go live
           </button>
         </div>
@@ -572,8 +583,13 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-.ls-btn-success:hover {
+.ls-btn-success:hover:not(:disabled) {
   background: #16a34a;
+}
+
+.ls-btn-success:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .ls-muted {

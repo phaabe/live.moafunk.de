@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { audioContextOptionsForStream } from '../src/admin/composables/useAudioCapture';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  audioContextOptionsForStream,
+  useAudioCapture,
+  NO_AUDIO_DATA_MS,
+  NO_AUDIO_DATA_MESSAGE,
+} from '../src/admin/composables/useAudioCapture';
 
 /** Minimal MediaStream stub exposing just the audio-track sample rate. */
 function streamWithRate(rate: number | undefined): MediaStream {
@@ -28,5 +33,128 @@ describe('audioContextOptionsForStream', () => {
   it('falls back to the default context when there is no audio track', () => {
     const empty = { getAudioTracks: () => [] } as unknown as MediaStream;
     expect(audioContextOptionsForStream(empty)).toBeUndefined();
+  });
+});
+
+// ─── Capture → recorder (fake Web Audio + MediaRecorder) ─────────────────────
+
+const node = () => ({ connect: vi.fn(), disconnect: vi.fn(), gain: { value: 1 } });
+
+/** A context that starts the way the browser starts one outside a gesture. */
+class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
+  state: AudioContextState = 'suspended';
+  resume = vi.fn(async () => {
+    this.state = 'running';
+  });
+  close = vi.fn(async () => {});
+  createMediaStreamSource = vi.fn(node);
+  createGain = vi.fn(node);
+  createAnalyser = vi.fn(() => ({ ...node(), fftSize: 0, smoothingTimeConstant: 0 }));
+  createMediaStreamDestination = vi.fn(() => ({ ...node(), stream: fakeStream('live') }));
+  constructor() {
+    FakeAudioContext.instances.push(this);
+  }
+}
+
+class FakeMediaRecorder {
+  static instances: FakeMediaRecorder[] = [];
+  static isTypeSupported = () => true;
+  state: RecordingState = 'inactive';
+  ondataavailable:
+    | ((event: { data: { size: number; arrayBuffer: () => Promise<ArrayBuffer> } }) => void)
+    | null = null;
+  onerror: ((e: unknown) => void) | null = null;
+  constructor() {
+    FakeMediaRecorder.instances.push(this);
+  }
+  start() {
+    this.state = 'recording';
+  }
+  stop() {
+    this.state = 'inactive';
+  }
+  emit(size: number) {
+    this.ondataavailable?.({ data: { size, arrayBuffer: async () => new ArrayBuffer(size) } });
+  }
+}
+
+function fakeStream(readyState: MediaStreamTrackState): MediaStream {
+  const track = { readyState, getSettings: () => ({}), stop: vi.fn() };
+  return { getAudioTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream;
+}
+
+describe('useAudioCapture recording', () => {
+  let deviceStream: MediaStream;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeAudioContext.instances = [];
+    FakeMediaRecorder.instances = [];
+    deviceStream = fakeStream('live');
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
+    vi.stubGlobal('navigator', {
+      mediaDevices: { getUserMedia: vi.fn(async () => deviceStream) },
+    });
+  });
+
+  afterEach(() => {
+    useAudioCapture().stopCapture();
+    useAudioCapture().setOnError(null);
+    useAudioCapture().setOnData(null);
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('resumes a suspended audio context when capture starts', async () => {
+    const capture = useAudioCapture();
+    expect(await capture.captureDevice('mic')).toBe(true);
+    expect(FakeAudioContext.instances[0].resume).toHaveBeenCalled();
+  });
+
+  it('refuses to record from a device whose track has ended', async () => {
+    deviceStream = fakeStream('ended');
+    const capture = useAudioCapture();
+    await capture.captureDevice('mic');
+    expect(capture.startRecording()).toBe(false);
+    expect(capture.error.value).toMatch(/no longer active/);
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+  });
+
+  it('reports an error when the recorder sends no audio', async () => {
+    const onError = vi.fn();
+    const capture = useAudioCapture({ onError, onData: vi.fn() });
+    await capture.captureDevice('mic');
+    expect(capture.startRecording()).toBe(true);
+
+    // Empty blobs, as from a suspended context, do not count as audio.
+    FakeMediaRecorder.instances[0].emit(0);
+    vi.advanceTimersByTime(NO_AUDIO_DATA_MS);
+    expect(onError).toHaveBeenCalledWith(NO_AUDIO_DATA_MESSAGE);
+  });
+
+  it('stays quiet when the recorder sends audio', async () => {
+    const onError = vi.fn();
+    const onData = vi.fn();
+    const capture = useAudioCapture({ onError, onData });
+    await capture.captureDevice('mic');
+    capture.startRecording();
+
+    FakeMediaRecorder.instances[0].emit(512);
+    await vi.advanceTimersByTimeAsync(NO_AUDIO_DATA_MS);
+    expect(onData).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('does not report a recorder that was stopped in time', async () => {
+    const onError = vi.fn();
+    const capture = useAudioCapture({ onError, onData: vi.fn() });
+    await capture.captureDevice('mic');
+    capture.startRecording();
+    capture.stopRecording();
+
+    vi.advanceTimersByTime(NO_AUDIO_DATA_MS);
+    expect(onError).not.toHaveBeenCalled();
   });
 });
