@@ -4,6 +4,8 @@ import {
   useAudioCapture,
   NO_AUDIO_DATA_MS,
   NO_AUDIO_DATA_MESSAGE,
+  BROWSER_UNSUPPORTED_MESSAGE,
+  streamRecordingMimeType,
 } from '../src/admin/composables/useAudioCapture';
 
 /** Minimal MediaStream stub exposing just the audio-track sample rate. */
@@ -59,7 +61,8 @@ class FakeAudioContext {
 
 class FakeMediaRecorder {
   static instances: FakeMediaRecorder[] = [];
-  static isTypeSupported = () => true;
+  static supported: string[] = [];
+  static isTypeSupported = (type: string) => FakeMediaRecorder.supported.includes(type);
   state: RecordingState = 'inactive';
   ondataavailable:
     | ((event: { data: { size: number; arrayBuffer: () => Promise<ArrayBuffer> } }) => void)
@@ -79,6 +82,10 @@ class FakeMediaRecorder {
   }
 }
 
+const CHROME_TYPE = 'audio/webm;codecs=opus';
+/** Safari before 18.4 records only MP4. */
+const SAFARI_18_3_TYPES = ['audio/mp4'];
+
 function fakeStream(readyState: MediaStreamTrackState): MediaStream {
   const track = { readyState, getSettings: () => ({}), stop: vi.fn() };
   return { getAudioTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream;
@@ -91,6 +98,7 @@ describe('useAudioCapture recording', () => {
     vi.useFakeTimers();
     FakeAudioContext.instances = [];
     FakeMediaRecorder.instances = [];
+    FakeMediaRecorder.supported = [CHROME_TYPE, 'audio/webm'];
     deviceStream = fakeStream('live');
     vi.stubGlobal('AudioContext', FakeAudioContext);
     vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
@@ -156,5 +164,60 @@ describe('useAudioCapture recording', () => {
 
     vi.advanceTimersByTime(NO_AUDIO_DATA_MS);
     expect(onError).not.toHaveBeenCalled();
+  });
+});
+
+describe('streamRecordingMimeType', () => {
+  beforeEach(() => {
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('prefers WebM with Opus', () => {
+    FakeMediaRecorder.supported = [CHROME_TYPE, 'audio/webm'];
+    expect(streamRecordingMimeType()).toBe(CHROME_TYPE);
+  });
+
+  it('falls back to plain WebM', () => {
+    FakeMediaRecorder.supported = ['audio/webm'];
+    expect(streamRecordingMimeType()).toBe('audio/webm');
+  });
+
+  it('refuses Safari before 18.4, which records only MP4', () => {
+    FakeMediaRecorder.supported = SAFARI_18_3_TYPES;
+    expect(streamRecordingMimeType()).toBeNull();
+  });
+
+  it('refuses a browser without MediaRecorder', () => {
+    vi.stubGlobal('MediaRecorder', undefined);
+    expect(streamRecordingMimeType()).toBeNull();
+  });
+});
+
+describe('useAudioCapture on an unsupported browser', () => {
+  beforeEach(() => {
+    FakeMediaRecorder.instances = [];
+    FakeMediaRecorder.supported = SAFARI_18_3_TYPES;
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
+    vi.stubGlobal('navigator', {
+      mediaDevices: { getUserMedia: vi.fn(async () => fakeStream('live')) },
+    });
+  });
+
+  afterEach(() => {
+    useAudioCapture().stopCapture();
+    vi.unstubAllGlobals();
+  });
+
+  it('does not start a recorder and says why', async () => {
+    const capture = useAudioCapture();
+    await capture.captureDevice('mic');
+    expect(capture.startRecording()).toBe(false);
+    expect(capture.error.value).toBe(BROWSER_UNSUPPORTED_MESSAGE);
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
   });
 });

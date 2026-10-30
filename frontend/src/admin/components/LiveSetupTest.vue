@@ -6,6 +6,8 @@ import {
   useStreamSocket,
   useUploadHealth,
   STREAM_AUDIO_BITS_PER_SECOND,
+  BROWSER_UNSUPPORTED_MESSAGE,
+  streamRecordingMimeType,
 } from '@admin/composables';
 import DbMeter from '@admin/components/DbMeter.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
@@ -32,6 +34,9 @@ const flow = useHostFlow();
 // public `/live.mp3` would serve, but non-public. Empty (e.g. local dev) → the
 // real test can't run; the dev-skip below covers that case.
 const previewUrl = config.stream.icecastTestUrl;
+
+// Checked once: the browser's recorder support does not change at runtime.
+const browserSupported = streamRecordingMimeType() !== null;
 
 // ─── Device selection ────────────────────────────────────────────────────────
 const audioCapture = useAudioCapture();
@@ -123,9 +128,12 @@ function startTestRecording(): boolean {
     return false;
   }
 
-  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-    ? 'audio/webm;codecs=opus'
-    : 'audio/webm';
+  const mimeType = streamRecordingMimeType();
+  if (!mimeType) {
+    testPhase.value = 'error';
+    testError.value = BROWSER_UNSUPPORTED_MESSAGE;
+    return false;
+  }
 
   testRecorder = new MediaRecorder(stream, {
     mimeType,
@@ -160,6 +168,11 @@ async function runTest() {
   if (!previewUrl) {
     testPhase.value = 'error';
     testError.value = 'Test stream is not configured on this server.';
+    return;
+  }
+  if (!browserSupported) {
+    testPhase.value = 'error';
+    testError.value = BROWSER_UNSUPPORTED_MESSAGE;
     return;
   }
 
@@ -235,6 +248,8 @@ onUnmounted(() => {
 
 <template>
   <div class="live-setup">
+    <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
+
     <!-- ─── Device selection ─── -->
     <div class="ls-device-row">
       <select v-model="selectedDevice" class="ls-select" @change="handleDeviceSelect">
@@ -282,12 +297,15 @@ onUnmounted(() => {
         <button
           class="ls-btn-primary"
           type="button"
-          :disabled="!audioCapture.isCapturing.value || !previewUrl"
+          :disabled="!browserSupported || !audioCapture.isCapturing.value || !previewUrl"
           @click="runTest"
         >
           🎤 Start test
         </button>
-        <p v-if="!audioCapture.isCapturing.value" class="ls-muted">Select an audio input first.</p>
+        <p v-if="!browserSupported" class="ls-muted">Switch browser to run the test.</p>
+        <p v-else-if="!audioCapture.isCapturing.value" class="ls-muted">
+          Select an audio input first.
+        </p>
         <p v-else-if="!previewUrl" class="ls-muted">Test stream isn't configured on this server.</p>
       </div>
 

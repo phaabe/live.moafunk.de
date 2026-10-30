@@ -11,6 +11,8 @@ export {
 export {
   useAudioCapture,
   STREAM_AUDIO_BITS_PER_SECOND,
+  BROWSER_UNSUPPORTED_MESSAGE,
+  streamRecordingMimeType,
   type AudioDevice,
   type UseAudioCaptureOptions,
 } from './useAudioCapture';

@@ -9,6 +9,8 @@ import {
   useDbMeter,
   DB_FLOOR,
   STREAM_AUDIO_BITS_PER_SECOND,
+  BROWSER_UNSUPPORTED_MESSAGE,
+  streamRecordingMimeType,
 } from '@admin/composables';
 import { streamApi, recordingApi, hostFlowApi, type StreamMetrics } from '@admin/api';
 import ConnectionCard from '@admin/components/ConnectionCard.vue';
@@ -242,6 +244,9 @@ async function handleGoLive() {
     if (isLiveMode.value) {
       // A socket without audio looks live everywhere while listeners hear
       // silence, so never connect without an input.
+      if (!streamRecordingMimeType()) {
+        throw new Error(BROWSER_UNSUPPORTED_MESSAGE);
+      }
       if (!audioCapture || !audioDeviceOk.value) {
         throw new Error('No audio input. Go back to setup and select your input.');
       }
