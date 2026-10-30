@@ -18,6 +18,14 @@ export interface UseAudioCaptureOptions {
 export const STREAM_AUDIO_BITS_PER_SECOND = 192_000;
 
 /**
+ * The recorder emits a chunk every 250 ms. If it has sent nothing this long
+ * after start, no audio leaves the browser and listeners hear silence.
+ */
+export const NO_AUDIO_DATA_MS = 5_000;
+export const NO_AUDIO_DATA_MESSAGE =
+  'No audio is being sent. Check that your audio input is active, then reconnect.';
+
+/**
  * Pick AudioContext options that match the capture device's real sample rate.
  *
  * Pro interfaces (e.g. Allen & Heath Xone:23C) run at 96/44.1 kHz and ignore the
@@ -62,6 +70,7 @@ let audioContext: AudioContext | null = null;
 let gainNode: GainNode | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
 let destinationNode: MediaStreamAudioDestinationNode | null = null;
+let noAudioTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Mutable callbacks — updated via options or setOnData()/setOnError()
 let currentOnData: ((data: ArrayBuffer) => void) | null = null;
@@ -224,6 +233,21 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
 
     // Use the processed stream for recording
     processedStream.value = destinationNode.stream;
+
+    resumeAudioContext();
+  }
+
+  /**
+   * A context created without a user gesture (or after the await on
+   * getUserMedia, on Safari) starts 'suspended'. The gain chain then produces
+   * no audio, so the recorder sends nothing. Resume it; this only works from
+   * a user gesture, so it is also called again at go-live.
+   */
+  function resumeAudioContext(): void {
+    if (audioContext?.state !== 'suspended') return;
+    audioContext.resume().catch((e) => {
+      console.warn('[AudioCapture] AudioContext resume failed:', e);
+    });
   }
 
   // Clean up audio processing nodes
@@ -310,32 +334,54 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
       return false;
     }
 
+    // The processed stream's track stays 'live' after the device is gone, so
+    // check the device's own track.
+    const sourceTracks = mediaStream.value?.getAudioTracks() ?? [];
+    if (!sourceTracks.some((t) => t.readyState === 'live')) {
+      error.value = 'Audio device is no longer active. Re-select your device.';
+      return false;
+    }
+
+    resumeAudioContext();
+
     try {
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
 
-      mediaRecorder = new MediaRecorder(streamToRecord, {
+      const recorder = new MediaRecorder(streamToRecord, {
         mimeType,
         audioBitsPerSecond: streamBitsPerSecond.value,
       });
+      mediaRecorder = recorder;
+      let sentData = false;
 
-      mediaRecorder.ondataavailable = async (event) => {
+      recorder.ondataavailable = async (event) => {
         if (event.data.size > 0 && currentOnData) {
+          sentData = true;
           const buffer = await event.data.arrayBuffer();
           currentOnData(buffer);
         }
       };
 
-      mediaRecorder.onerror = (e) => {
+      recorder.onerror = (e) => {
         console.error('[AudioCapture] Recorder error:', e);
         error.value = 'Recording error';
         currentOnError?.('Recording error');
       };
 
       // 250ms chunks for low latency
-      mediaRecorder.start(250);
+      recorder.start(250);
       isRecording.value = true;
+
+      clearNoAudioTimer();
+      noAudioTimer = setTimeout(() => {
+        noAudioTimer = null;
+        if (mediaRecorder !== recorder || sentData) return;
+        console.error('[AudioCapture] Recorder sent no audio data');
+        error.value = NO_AUDIO_DATA_MESSAGE;
+        currentOnError?.(NO_AUDIO_DATA_MESSAGE);
+      }, NO_AUDIO_DATA_MS);
 
       console.log('[AudioCapture] Recording started');
       return true;
@@ -347,7 +393,15 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     }
   }
 
+  function clearNoAudioTimer(): void {
+    if (noAudioTimer) {
+      clearTimeout(noAudioTimer);
+      noAudioTimer = null;
+    }
+  }
+
   function stopRecording(): void {
+    clearNoAudioTimer();
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
       mediaRecorder = null;
@@ -419,6 +473,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     listDevices,
     captureDevice,
     captureScreenAudio,
+    resumeAudioContext,
     startRecording,
     stopRecording,
     restartRecording,
