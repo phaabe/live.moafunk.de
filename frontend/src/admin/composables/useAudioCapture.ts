@@ -25,6 +25,22 @@ export const NO_AUDIO_DATA_MS = 5_000;
 export const NO_AUDIO_DATA_MESSAGE =
   'No audio is being sent. Check that your audio input is active, then reconnect.';
 
+export const BROWSER_UNSUPPORTED_MESSAGE =
+  "This browser can't stream. Use Chrome or Firefox, or update Safari to 18.4 or newer.";
+
+/**
+ * The MIME type to record the broadcast with, or null when this browser can't.
+ * The backend producer reads WebM (`ffmpeg -f webm`). Safari records WebM only
+ * from 18.4; older Safari (and iOS) throws on `new MediaRecorder`.
+ */
+export function streamRecordingMimeType(): string | null {
+  if (typeof MediaRecorder === 'undefined') return null;
+  for (const type of ['audio/webm;codecs=opus', 'audio/webm']) {
+    if (MediaRecorder.isTypeSupported(type)) return type;
+  }
+  return null;
+}
+
 /**
  * Pick AudioContext options that match the capture device's real sample rate.
  *
@@ -342,13 +358,15 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
       return false;
     }
 
+    const mimeType = streamRecordingMimeType();
+    if (!mimeType) {
+      error.value = BROWSER_UNSUPPORTED_MESSAGE;
+      return false;
+    }
+
     resumeAudioContext();
 
     try {
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm';
-
       const recorder = new MediaRecorder(streamToRecord, {
         mimeType,
         audioBitsPerSecond: streamBitsPerSecond.value,
