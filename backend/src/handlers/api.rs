@@ -5450,11 +5450,16 @@ pub async fn api_my_show_confirm(
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query("UPDATE shows SET prerecorded_confirmed_at = ? WHERE id = ?")
-        .bind(&now)
-        .bind(show.id)
-        .execute(&state.db)
-        .await?;
+    // The show page switches between live and prerecorded only in the browser,
+    // so a show created as live can reach here. The scheduler starts only
+    // `stream_mode = 'prerecorded'` shows at air time.
+    sqlx::query(
+        "UPDATE shows SET prerecorded_confirmed_at = ?, stream_mode = 'prerecorded' WHERE id = ?",
+    )
+    .bind(&now)
+    .bind(show.id)
+    .execute(&state.db)
+    .await?;
 
     tracing::info!("Prerecorded confirmed for show_id={}", show.id);
 

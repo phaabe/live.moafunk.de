@@ -898,6 +898,41 @@ async fn failed_prerecorded_start_leaves_a_waiting_recording_alone() {
     );
 }
 
+/// A host may switch a show created as live to prerecorded on the show page.
+/// Confirming the upload must save that, or the scheduler never starts it.
+#[tokio::test]
+async fn confirming_an_upload_makes_a_live_show_prerecorded() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, start_time, end_time, host_user_id, stream_mode, prerecorded_key) \
+         VALUES (1, 'Tape', '2026-11-08', '12:00', '14:00', ?, 'live', 'shows/1/tape.mp3')",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    body(
+        handlers::api::api_my_show_confirm(
+            State(state.clone()),
+            Query(handlers::api::ShowIdQuery { show_id: 1 }),
+            headers(&state, host).await,
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+
+    let (mode, confirmed): (String, Option<String>) =
+        sqlx::query_as("SELECT stream_mode, prerecorded_confirmed_at FROM shows WHERE id = 1")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(mode, "prerecorded");
+    assert!(confirmed.is_some());
+}
+
 /// Pings keep a socket open without audio. Such a connection is ended with an
 /// error instead of staying "on air" while listeners hear silence.
 #[tokio::test]
