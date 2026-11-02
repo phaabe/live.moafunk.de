@@ -152,6 +152,23 @@ Test: `./mon-attach-networks.test.sh`.
 Note: busybox `nslookup`/`wget` inside the Prometheus container fail to resolve
 service names even when Prometheus itself resolves them. Trust `/api/v1/targets`.
 
+## Config is checked against the pinned images (regression, 2026-11-02)
+
+`alertmanager.yml.tmpl` uses telegram `message_thread_id` (topic 26). Alertmanager
+v0.27.0 doesn't know that field and crash-loops on it, so the first deploy of that
+change took Alertmanager down. Alertmanager is now pinned to v0.28.1.
+
+`deploy_monitoring.sh` runs `mon-check-config.sh` on the staged files before
+anything goes live: `amtool check-config`, `promtool check config` (with rules)
+and `blackbox_exporter --config.check`, each in the image version the compose
+file pins. If a check fails, the deploy stops and the running stack is untouched.
+Run it locally before changing a config or bumping an image:
+
+```bash
+./mon-check-config.sh . <env-file-with-dummy-TELEGRAM_*>
+./mon-check-config.test.sh   # needs docker
+```
+
 ## TODO / follow-ups (out of scope here)
 
 - **Dead-air / silence (EBU-R128) probe**: byte/listener metrics look nominal
