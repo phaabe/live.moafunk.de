@@ -38,7 +38,8 @@ services:
     depends_on: [icecast-exporter, blackbox-exporter, alertmanager]
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    # v0.28+ is required: alertmanager.yml uses telegram message_thread_id (v0.27 crash-loops on it).
+    image: prom/alertmanager:v0.28.1
     restart: unless-stopped
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml

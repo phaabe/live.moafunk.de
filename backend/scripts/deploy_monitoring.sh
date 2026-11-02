@@ -77,6 +77,16 @@ if [[ ! -s /tmp/moafunk-monitoring.env ]]; then
   exit 1
 fi
 
+# Check the staged config with the pinned image versions BEFORE it goes live. A
+# field the pinned version doesn't know crash-loops that service (2026-11-02:
+# message_thread_id on Alertmanager v0.27.0). On failure the running stack and
+# its files stay as they are.
+if ! sudo bash /tmp/moafunk-monitoring/mon-check-config.sh /tmp/moafunk-monitoring /tmp/moafunk-monitoring.env; then
+  echo "ERROR: monitoring config check failed — nothing deployed." >&2
+  rm -rf /tmp/moafunk-monitoring /tmp/moafunk-monitoring.env
+  exit 1
+fi
+
 sudo mkdir -p "$REMOTE_DIR"
 # Sync config (no --delete, so the gitignored rendered alertmanager.yml survives;
 # monitoring.env is written authoritatively just below).
@@ -96,9 +106,10 @@ if ! sudo docker network inspect "$BACKEND_NET" >/dev/null 2>&1; then
 fi
 
 # Install / refresh the systemd unit and (re)start. The unit calls
-# mon-compose.sh (resolves `docker compose` vs `docker-compose`) — make it
+# mon-compose.sh (resolves `docker compose` vs `docker-compose`) and
+# mon-attach-networks.sh (puts Prometheus on both nets) — make them
 # executable before starting.
-sudo chmod +x "$REMOTE_DIR/mon-compose.sh"
+sudo chmod +x "$REMOTE_DIR/mon-compose.sh" "$REMOTE_DIR/mon-attach-networks.sh"
 sudo cp "$REMOTE_DIR/monitoring.service" /etc/systemd/system/monitoring.service
 sudo systemctl daemon-reload
 sudo systemctl enable monitoring >/dev/null 2>&1 || true
