@@ -57,7 +57,7 @@ harden, set `GRAFANA_ADMIN_PASSWORD` in `/etc/moafunk/monitoring/monitoring.env`
 ```bash
 cd /etc/moafunk/monitoring
 cp monitoring.env.example monitoring.env      # fill TELEGRAM_*, GRAFANA_* from Bitwarden
-chmod +x mon-compose.sh                       # unit calls it to resolve docker compose vs docker-compose
+chmod +x mon-compose.sh mon-attach-networks.sh   # unit calls both (compose resolver, network fix)
 cp monitoring.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now monitoring   # renders alertmanager.yml + compose up
 ```
@@ -116,13 +116,41 @@ a stuck recorder leaves the live mount healthy while the **archive** breaks:
 
 Prometheus scrapes `unheard-api:8000` **directly over the backend's docker network**
 (joined as the external `backend` network — set `BACKEND_NETWORK` if its name isn't
-`unheard-backend_default`). Compose v2.24.6 on the box doesn't reliably attach the
-container to that pre-existing external net on recreate, so `monitoring.service` has
-an idempotent `ExecStartPost` that `docker network connect`s Prometheus to it on
-every start. The backend publishes only on the host's `127.0.0.1:8000`,
+`unheard-backend_default`). The backend publishes only on the host's `127.0.0.1:8000`,
 and `/metrics` is `404`'d on the public nginx vhost, so it's never reachable from the
 internet. All recording alerts are `increase()`-based, so they stay silent until the
 backend is on this box; `BackendMetricsDown` (`up == 0`) is expected to fire pre-cutover.
+
+## Prometheus needs both networks (regression, 2026-09-25 → 2026-11-02)
+
+Prometheus is the only service on two networks: the project default net
+(exporters, Alertmanager) and the external backend net (`unheard-api`). Compose
+v2.24.6 on the box attaches it to **only one** of them on create, and not always
+the same one:
+
+- June: it missed the backend net → `backend` target down.
+- 2026-09-25 reboot: it missed the default net → `icecast` and `blackbox_stream`
+  down, and every alert to Alertmanager failed. Monitoring was blind for 38 days,
+  with `IcecastExporterDown`, `IcecastNoLiveSource` and `StreamProbeAbsent` firing
+  but never reaching Telegram.
+
+Symptom: `lastError` in `/api/v1/targets` or the Prometheus log shows
+`lookup <service> on 127.0.0.11:53: server misbehaving`. Check with:
+
+```bash
+docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' moafunk-monitoring-prometheus-1
+# must list moafunk-monitoring_default AND unheard-backend_default
+```
+
+`monitoring.service` runs `mon-attach-networks.sh` after every start. It connects
+any missing net, and the unit fails if that doesn't work. So always (re)start the
+stack with `systemctl restart monitoring`, never a bare `docker-compose up`.
+Manual fix without a restart:
+`docker network connect --alias prometheus moafunk-monitoring_default moafunk-monitoring-prometheus-1`.
+Test: `./mon-attach-networks.test.sh`.
+
+Note: busybox `nslookup`/`wget` inside the Prometheus container fail to resolve
+service names even when Prometheus itself resolves them. Trust `/api/v1/targets`.
 
 ## TODO / follow-ups (out of scope here)
 

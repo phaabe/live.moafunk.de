@@ -96,9 +96,10 @@ if ! sudo docker network inspect "$BACKEND_NET" >/dev/null 2>&1; then
 fi
 
 # Install / refresh the systemd unit and (re)start. The unit calls
-# mon-compose.sh (resolves `docker compose` vs `docker-compose`) — make it
+# mon-compose.sh (resolves `docker compose` vs `docker-compose`) and
+# mon-attach-networks.sh (puts Prometheus on both nets) — make them
 # executable before starting.
-sudo chmod +x "$REMOTE_DIR/mon-compose.sh"
+sudo chmod +x "$REMOTE_DIR/mon-compose.sh" "$REMOTE_DIR/mon-attach-networks.sh"
 sudo cp "$REMOTE_DIR/monitoring.service" /etc/systemd/system/monitoring.service
 sudo systemctl daemon-reload
 sudo systemctl enable monitoring >/dev/null 2>&1 || true

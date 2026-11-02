@@ -27,12 +27,12 @@ ExecStartPre=/bin/bash -c 'set -a; . monitoring.env; : "${TELEGRAM_TOPIC_ID:=26}
 # mon-compose.sh resolves `docker compose` (v2 plugin) OR the standalone
 # `docker-compose` binary — the box may have either. See the script header.
 ExecStart=/etc/moafunk/monitoring/mon-compose.sh --env-file monitoring.env -f docker-compose.monitoring.yml up -d
-# docker-compose v2.24.6 sometimes fails to attach a service to a pre-existing
-# EXTERNAL network on recreate (verified: prometheus landed only on the project
-# default net → 'lookup unheard-api: server misbehaving'). Connect it explicitly
-# every start; idempotent (no-op if already attached), live-attach needs no
-# Prometheus restart. Runs on deploys AND reboots.
-ExecStartPost=/bin/bash -c 'cid=$(docker ps -q -f name=moafunk-monitoring-prometheus | head -1); [ -n "$cid" ] && docker network connect "${BACKEND_NETWORK:-unheard-backend_default}" "$cid" 2>/dev/null; true'
+# docker-compose v2.24.6 attaches Prometheus to only ONE of its two networks on
+# create, and not always the same one (June: missed the backend net; 2026-09-25
+# reboot: missed the default net, so no exporter scrape and no alert worked).
+# Connect whatever is missing on every start (deploys AND reboots); idempotent,
+# no Prometheus restart. Fails the unit if a connect fails.
+ExecStartPost=/etc/moafunk/monitoring/mon-attach-networks.sh
 ExecStop=/etc/moafunk/monitoring/mon-compose.sh -f docker-compose.monitoring.yml down
 
 [Install]
