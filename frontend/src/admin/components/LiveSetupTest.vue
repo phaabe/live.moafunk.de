@@ -6,6 +6,8 @@ import {
   useStreamSocket,
   useUploadHealth,
   STREAM_AUDIO_BITS_PER_SECOND,
+  BROWSER_UNSUPPORTED_MESSAGE,
+  streamRecordingMimeType,
 } from '@admin/composables';
 import DbMeter from '@admin/components/DbMeter.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
@@ -32,6 +34,9 @@ const flow = useHostFlow();
 // public `/live.mp3` would serve, but non-public. Empty (e.g. local dev) → the
 // real test can't run; the dev-skip below covers that case.
 const previewUrl = config.stream.icecastTestUrl;
+
+// Checked once: the browser's recorder support does not change at runtime.
+const browserSupported = streamRecordingMimeType() !== null;
 
 // ─── Device selection ────────────────────────────────────────────────────────
 const audioCapture = useAudioCapture();
@@ -123,9 +128,12 @@ function startTestRecording(): boolean {
     return false;
   }
 
-  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-    ? 'audio/webm;codecs=opus'
-    : 'audio/webm';
+  const mimeType = streamRecordingMimeType();
+  if (!mimeType) {
+    testPhase.value = 'error';
+    testError.value = BROWSER_UNSUPPORTED_MESSAGE;
+    return false;
+  }
 
   testRecorder = new MediaRecorder(stream, {
     mimeType,
@@ -162,10 +170,17 @@ async function runTest() {
     testError.value = 'Test stream is not configured on this server.';
     return;
   }
+  if (!browserSupported) {
+    testPhase.value = 'error';
+    testError.value = BROWSER_UNSUPPORTED_MESSAGE;
+    return;
+  }
 
   testError.value = null;
   testPhase.value = 'connecting';
   sentChunks.value = 0;
+  // A user gesture: start the capture's audio context if it is suspended.
+  audioCapture.resumeAudioContext();
 
   try {
     // Connect in TEST mode → backend pushes to `/test`, not `/live`.
@@ -233,6 +248,8 @@ onUnmounted(() => {
 
 <template>
   <div class="live-setup">
+    <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
+
     <!-- ─── Device selection ─── -->
     <div class="ls-device-row">
       <select v-model="selectedDevice" class="ls-select" @change="handleDeviceSelect">
@@ -280,12 +297,15 @@ onUnmounted(() => {
         <button
           class="ls-btn-primary"
           type="button"
-          :disabled="!audioCapture.isCapturing.value || !previewUrl"
+          :disabled="!browserSupported || !audioCapture.isCapturing.value || !previewUrl"
           @click="runTest"
         >
           🎤 Start test
         </button>
-        <p v-if="!audioCapture.isCapturing.value" class="ls-muted">Select an audio input first.</p>
+        <p v-if="!browserSupported" class="ls-muted">Switch browser to run the test.</p>
+        <p v-else-if="!audioCapture.isCapturing.value" class="ls-muted">
+          Select an audio input first.
+        </p>
         <p v-else-if="!previewUrl" class="ls-muted">Test stream isn't configured on this server.</p>
       </div>
 
@@ -313,8 +333,17 @@ onUnmounted(() => {
 
         <div class="ls-test-actions">
           <p class="ls-question">Does it sound clear on the test stream?</p>
+          <!-- No chunk sent means no audio leaves the browser: never pass that. -->
+          <p v-if="sentChunks === 0" class="ls-muted">
+            Waiting for audio… If this stays, check that your input is active.
+          </p>
           <button class="ls-btn-secondary" type="button" @click="retryTest">⏹ Stop test</button>
-          <button class="ls-btn-success" type="button" @click="markTestPassed">
+          <button
+            class="ls-btn-success"
+            type="button"
+            :disabled="sentChunks === 0"
+            @click="markTestPassed"
+          >
             ✓ Yes, ready to go live
           </button>
         </div>
@@ -572,8 +601,13 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-.ls-btn-success:hover {
+.ls-btn-success:hover:not(:disabled) {
   background: #16a34a;
+}
+
+.ls-btn-success:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .ls-muted {
