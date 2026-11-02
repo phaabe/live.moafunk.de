@@ -9,11 +9,12 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail=0
 
-printf '%s\n' TELEGRAM_BOT_TOKEN=123456:dummy TELEGRAM_ADMIN_CHAT_ID=-1000000000000 >"$TMP/env"
+printf '%s\n' TELEGRAM_BOT_TOKEN=123456:dummy TELEGRAM_ADMIN_CHAT_ID=-1000000000000 \
+  WATCHDOG_PING_URL=https://hc-ping.com/00000000-0000-0000-0000-000000000000 >"$TMP/env"
 
-check() { # description want(pass|fail) dir
+check() { # description want(pass|fail) dir [env]
   local got=pass
-  "$SCRIPT" "$3" "$TMP/env" >"$TMP/out" 2>&1 || got=fail
+  "$SCRIPT" "$3" "${4:-$TMP/env}" >"$TMP/out" 2>&1 || got=fail
   if [[ "$got" == "$2" ]]; then echo "ok   $1"; else
     echo "FAIL $1 (want $2, got $got)"; sed 's/^/     /' "$TMP/out"; fail=1
   fi
@@ -34,6 +35,15 @@ check "broken alert rule is caught" fail "$TMP/cfg"
 copy
 sed -i.bak 's#fail_if_not_ssl:#fail_if_not_tls:#' "$TMP/cfg/blackbox/blackbox.yml"
 check "unknown blackbox field is caught" fail "$TMP/cfg"
+
+# Without its own route, the always-firing Watchdog would fall through to Telegram.
+copy
+sed -i.bak '/alertname = "Watchdog"/,/repeat_interval: 5m/d' "$TMP/cfg/alertmanager/alertmanager.yml.tmpl"
+check "Watchdog routed to Telegram is caught" fail "$TMP/cfg"
+
+# An empty heartbeat url makes alertmanager.yml invalid.
+grep -v '^WATCHDOG_PING_URL=' "$TMP/env" >"$TMP/env-no-watchdog"
+check "missing WATCHDOG_PING_URL is caught" fail "$HERE" "$TMP/env-no-watchdog"
 
 copy
 sed -i.bak '/prom\/prometheus:/d' "$TMP/cfg/docker-compose.monitoring.yml"

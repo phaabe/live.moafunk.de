@@ -5,6 +5,8 @@
 # Token + chat id reuse the project bot (Bitwarden: TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_CHAT_ID).
 # message_thread_id pins alerts to the "MoafunkBot" forum topic (TELEGRAM_TOPIC_ID,
 # default 26) — without it Alertmanager posts into the group's "General" topic.
+# WATCHDOG_PING_URL (Bitwarden SM) is the healthchecks.io ping URL for the
+# dead-man's switch. It must be set: an empty url makes this config invalid.
 global:
   resolve_timeout: 5m
 
@@ -15,6 +17,15 @@ route:
   group_interval: 5m
   repeat_interval: 3h
   routes:
+    # Dead-man's switch: the always-firing Watchdog goes ONLY to the heartbeat
+    # webhook, never to Telegram. Keep this route first. A repeat is sent on the
+    # first group_interval tick after repeat_interval has passed, so 1m + 5m
+    # gives a ping about every 6 min. healthchecks.io pages when they stop.
+    - matchers: ['alertname = "Watchdog"']
+      receiver: heartbeat
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 5m
     # Info-level (e.g. prolonged zero-listeners) → still Telegram but rarely repeats.
     - matchers: ['severity = "info"']
       receiver: telegram
@@ -33,6 +44,13 @@ receivers:
           {{ range .Alerts }}{{ .Annotations.summary }}
           {{ .Annotations.description }}
           {{ end }}
+
+  - name: heartbeat
+    webhook_configs:
+      - url: "${WATCHDOG_PING_URL}"
+        # When Prometheus dies, Watchdog times out as "resolved". That POST
+        # would count as a healthy ping and delay the page, so never send it.
+        send_resolved: false
 
 inhibit_rules:
   # If the stream is down, don't also page about zero listeners.

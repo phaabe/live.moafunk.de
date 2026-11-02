@@ -8,7 +8,8 @@
 #
 # Usage: mon-check-config.sh DIR ENV_FILE
 #   DIR       the monitoring config dir (this folder, or the deploy staging dir)
-#   ENV_FILE  env with TELEGRAM_* for rendering alertmanager.yml.tmpl
+#   ENV_FILE  env with TELEGRAM_* and WATCHDOG_PING_URL for rendering
+#             alertmanager.yml.tmpl
 set -euo pipefail
 
 DIR="${1:?usage: mon-check-config.sh DIR ENV_FILE}"
@@ -45,6 +46,12 @@ trap 'rm -f "$rendered"' EXIT
 echo "==> $am_image: amtool check-config"
 docker run --rm --user 0 --entrypoint amtool \
   -v "$rendered:/cfg/alertmanager.yml:ro" "$am_image" check-config /cfg/alertmanager.yml
+# The always-firing Watchdog must reach the healthchecks.io heartbeat and nothing
+# else. On Telegram it would post every few minutes.
+echo "==> $am_image: Watchdog routes only to heartbeat"
+docker run --rm --user 0 --entrypoint amtool \
+  -v "$rendered:/cfg/alertmanager.yml:ro" "$am_image" config routes test \
+  --config.file=/cfg/alertmanager.yml --verify.receivers=heartbeat alertname=Watchdog severity=none
 echo "==> $prom_image: promtool check config (+ rules)"
 docker run --rm --user 0 --entrypoint promtool \
   -v "$DIR/prometheus:/etc/prometheus:ro" "$prom_image" check config /etc/prometheus/prometheus.yml

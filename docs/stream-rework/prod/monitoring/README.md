@@ -25,11 +25,73 @@ icecast_exporter ── Icecast /status-json.xsl (per-mount listeners) ───
 | `IcecastNoLiveSource` | `absent(icecast_listeners{listenurl=~".*/live.mp3"})` for 10m (**critical**) | Liquidsoap stopped feeding the live mount |
 | `StreamZeroListenersProlonged` | `sum(icecast_listeners) == 0` for 1h (**info**) | informational only (normal between shows) |
 | `StreamProbeAbsent` | `absent(probe_success{...})` for 10m (**warning**) | monitoring itself is broken |
+| `Watchdog` | `vector(1)`, always (**none**) | heartbeat to healthchecks.io, never Telegram — see below |
 
 **Never** write `... or on() vector(0)` in an alert expr — `vector(0)` is always
 present and `< 1`, so the rule fires forever. "stream-down" and "zero-listeners"
 are deliberately **separate** alerts; absence uses `absent()` / `up == 0`. (That
-`or vector(0)` trick is only for Grafana panels.)
+`or vector(0)` trick is only for Grafana panels.) The one rule that fires forever
+on purpose is `Watchdog`.
+
+## Dead-man's switch (`Watchdog` → healthchecks.io)
+
+From 2026-09-25 to 2026-11-02 Prometheus could not reach Alertmanager. Alerts
+fired, but none reached Telegram, and nothing told us. The dead-man's switch
+pages when the alert path itself breaks.
+
+```
+Prometheus ─▶ Alertmanager ─▶ heartbeat webhook ─▶ healthchecks.io ─▶ Telegram topic 26 + email
+  Watchdog       route           POST every ~6 min    no ping for 15 min → page
+```
+
+- `Watchdog` (`expr: vector(1)`, severity `none`) always fires.
+- Alertmanager sends it only to the `heartbeat` receiver: a webhook to
+  `WATCHDOG_PING_URL`. It never goes to Telegram.
+- `group_interval: 1m` + `repeat_interval: 5m` → a ping about every 6 min.
+  `send_resolved: false`: when Prometheus dies, its last "resolved" POST would
+  look like a healthy ping.
+- The healthchecks.io check expects a ping every 10 min, plus 5 min grace. After
+  ~15 min without one, it posts to Telegram with its own bot. It runs outside
+  the box, so it still pages when the box, Docker, Prometheus or Alertmanager is down.
+
+It catches: Prometheus or rule evaluation down, Alertmanager down or with a bad
+config, Prometheus cut off from Alertmanager, the box or its network down. It does
+**not** catch a broken Telegram receiver (bad bot token or chat id) while
+Alertmanager still runs. Check `alertmanager_notifications_failed_total` for that.
+
+### One-time setup
+
+1. healthchecks.io → **Add Check**: Simple schedule, period **10 minutes**, grace
+   **5 minutes**. Copy its ping URL.
+2. **Integrations → Telegram**: invite the healthchecks.io bot (named on that page)
+   to the group. In the **MoafunkBot** topic (26), send `/start@<bot name>`.
+   healthchecks.io stores the topic the command came from. Open the link the bot
+   replies with and connect it. Keep the email integration as a second channel.
+3. Bitwarden SM web UI, project `37a9cffb-…`: new secret `WATCHDOG_PING_URL` = the
+   ping URL. Its UUID goes into the `deploy-monitoring` job in
+   `.github/workflows/backend.yml`.
+4. Deploy via CI. On a manual deploy, also fill `WATCHDOG_PING_URL` in
+   `monitoring.env`. If it is empty, `alertmanager.yml` is invalid and
+   Alertmanager does not start.
+
+A new check stays grey and never alerts until its first ping. After the first
+deploy, make sure it turned green.
+
+### Verify and test
+
+```bash
+# Watchdog is firing:
+curl -s localhost:9090/api/v1/alerts | jq -r '.data.alerts[]|select(.labels.alertname=="Watchdog")|.state'
+# It routes to the heartbeat receiver only (prints "heartbeat"):
+docker exec moafunk-monitoring-alertmanager-1 amtool config routes test \
+  --config.file=/etc/alertmanager/alertmanager.yml alertname=Watchdog severity=none
+# No failed webhook sends:
+curl -s localhost:9093/metrics | grep 'notifications_failed_total.*webhook'
+```
+
+Test the page: `docker stop moafunk-monitoring-alertmanager-1`. After ~15 min,
+healthchecks.io posts "down" in topic 26. Then `docker start` it. The next ping
+comes within about a minute and healthchecks.io posts "up".
 
 ## Deploy
 
@@ -38,7 +100,7 @@ are deliberately **separate** alerts; absence uses `absent()` / `up == 0`. (That
 ### Via CI (preferred — no manual SSH)
 
 Run the **backend** workflow with `deploy_monitoring=true` (manual dispatch). It pulls
-`TELEGRAM_*` + the box IP/SSH key from Bitwarden and runs `backend/scripts/deploy_monitoring.sh`,
+`TELEGRAM_*`, `WATCHDOG_PING_URL` + the box IP/SSH key from Bitwarden and runs `backend/scripts/deploy_monitoring.sh`,
 which ships this dir to `/etc/moafunk/monitoring`, writes `monitoring.env`, and starts the
 systemd unit. Additive + reversible — never touches the backend, stream stack, or DNS.
 
@@ -161,11 +223,12 @@ change took Alertmanager down. Alertmanager is now pinned to v0.28.1.
 `deploy_monitoring.sh` runs `mon-check-config.sh` on the staged files before
 anything goes live: `amtool check-config`, `promtool check config` (with rules)
 and `blackbox_exporter --config.check`, each in the image version the compose
-file pins. If a check fails, the deploy stops and the running stack is untouched.
+file pins. It also checks that `Watchdog` routes only to the `heartbeat` receiver.
+If a check fails, the deploy stops and the running stack is untouched.
 Run it locally before changing a config or bumping an image:
 
 ```bash
-./mon-check-config.sh . <env-file-with-dummy-TELEGRAM_*>
+./mon-check-config.sh . <env-file-with-dummy-TELEGRAM_*-and-WATCHDOG_PING_URL>
 ./mon-check-config.test.sh   # needs docker
 ```
 

@@ -141,6 +141,7 @@ jobs:
             32944dfd-70f2-4f57-8274-b46e00f77c41 > HETZNER_SSH_KEY
             2470e0a8-7e96-4113-9931-b3ed0180cf59 > TELEGRAM_BOT_TOKEN
             3d3c982b-6933-4c23-bb11-b3ee000687d6 > TELEGRAM_ADMIN_CHAT_ID
+            TODO-WATCHDOG-PING-URL-UUID > WATCHDOG_PING_URL
 
       - name: Setup SSH key
         env:
@@ -157,9 +158,11 @@ jobs:
           IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
           TELEGRAM_BOT_TOKEN: ${{ steps.bitwarden-secrets.outputs.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ steps.bitwarden-secrets.outputs.TELEGRAM_ADMIN_CHAT_ID }}
+          WATCHDOG_PING_URL: ${{ steps.bitwarden-secrets.outputs.WATCHDOG_PING_URL }}
         run: |
           IP="$IP" \
           SSH_KEY=~/.ssh/hetzner.pem \
           TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
           TELEGRAM_ADMIN_CHAT_ID="$TELEGRAM_ADMIN_CHAT_ID" \
+          WATCHDOG_PING_URL="$WATCHDOG_PING_URL" \
           ./backend/scripts/deploy_monitoring.sh

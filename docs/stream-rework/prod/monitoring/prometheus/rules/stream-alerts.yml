@@ -7,6 +7,10 @@
 # SEPARATE alerts, and absence is handled with `absent()` / `up == 0`, never
 # `or vector(0)`.
 #
+# The ONE exception is `Watchdog` (`vector(1)`, last group): it fires forever ON
+# PURPOSE as the alert path's heartbeat. Alertmanager sends it only to the
+# healthchecks.io webhook, never to Telegram. See the README.
+#
 # "stream-down" is driven by the Blackbox probe (probe_success) of the Icecast
 # STATUS endpoint — exporter-agnostic and certain. (We do NOT probe the audio
 # mount: it's an infinite stream that times out blackbox's body read.) The
@@ -123,3 +127,19 @@ groups:
         annotations:
           summary: "Backend /metrics scrape down"
           description: "Prometheus cannot scrape the backend `/metrics` for 10m — recording-durability alerting is blind. (Expected pre-cutover; investigate once the backend is on this box.)"
+
+  - name: alert-pipeline
+    rules:
+      # Dead-man's switch. Fires FOREVER on purpose (the exception to the
+      # vector(0) note at the top). Alertmanager routes it only to the
+      # `heartbeat` webhook, which pings healthchecks.io about every 6 min. If
+      # Prometheus, the rule evaluation, Alertmanager or its network path break,
+      # the pings stop and healthchecks.io pages on its own. Without it, a broken
+      # Prometheus → Alertmanager path stayed silent for 38 days (2026-09-25 →
+      # 2026-11-02).
+      - alert: Watchdog
+        expr: vector(1)
+        labels: { severity: none }
+        annotations:
+          summary: "Alert path heartbeat (always firing)"
+          description: "Always fires. Routed only to the healthchecks.io heartbeat, never to Telegram. If healthchecks.io stops getting pings, the alert path is broken."

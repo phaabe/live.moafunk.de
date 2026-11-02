@@ -17,7 +17,7 @@
 # Driven by the `deploy-monitoring` CI job (secrets from Bitwarden), or run
 # locally:
 #   IP=1.2.3.4 SSH_KEY=~/.ssh/hetzner.pem \
-#   TELEGRAM_BOT_TOKEN=... TELEGRAM_ADMIN_CHAT_ID=... \
+#   TELEGRAM_BOT_TOKEN=... TELEGRAM_ADMIN_CHAT_ID=... WATCHDOG_PING_URL=... \
 #   ./backend/scripts/deploy_monitoring.sh
 set -euo pipefail
 
@@ -26,9 +26,18 @@ SSH_KEY="${SSH_KEY:?SSH_KEY is required (path to the private key)}"
 SSH_USER="${SSH_USER:-root}"
 REMOTE_DIR="${REMOTE_DIR:-/etc/moafunk/monitoring}"
 
-# Monitoring config inputs (all but the Telegram pair have safe defaults).
+# Monitoring config inputs (all but the Telegram pair and the Watchdog ping URL
+# have safe defaults).
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}"
 TELEGRAM_ADMIN_CHAT_ID="${TELEGRAM_ADMIN_CHAT_ID:?TELEGRAM_ADMIN_CHAT_ID is required}"
+# healthchecks.io ping URL for the dead-man's switch. Checked here, before the
+# box is touched: an empty or wrong value would make Alertmanager's config
+# invalid and stop ALL alerting. Never echo it.
+WATCHDOG_PING_URL="${WATCHDOG_PING_URL:?WATCHDOG_PING_URL is required (healthchecks.io ping URL)}"
+if [[ "$WATCHDOG_PING_URL" != https://* ]]; then
+  echo "ERROR: WATCHDOG_PING_URL must be an https:// URL (value not shown)." >&2
+  exit 1
+fi
 ICECAST_STATUS_URI="${ICECAST_STATUS_URI:-http://host.docker.internal:8010/status-json.xsl}"
 BACKEND_NETWORK="${BACKEND_NETWORK:-unheard-backend_default}"
 # Grafana is localhost-only (SSH tunnel); default kept weak deliberately — set
@@ -62,6 +71,7 @@ printf '%s\n' \
   "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" \
   "TELEGRAM_ADMIN_CHAT_ID=$TELEGRAM_ADMIN_CHAT_ID" \
   "TELEGRAM_TOPIC_ID=${TELEGRAM_TOPIC_ID:-26}" \
+  "WATCHDOG_PING_URL=$WATCHDOG_PING_URL" \
   "ICECAST_STATUS_URI=$ICECAST_STATUS_URI" \
   "BACKEND_NETWORK=$BACKEND_NETWORK" \
   "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD" \
