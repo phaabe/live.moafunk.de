@@ -1,4 +1,5 @@
 import type { ShowDetail } from './api';
+import type { ShowPhase } from './composables/useShowPhase';
 
 /**
  * Decide which media tab the show detail page opens on (live vs upload).
@@ -15,4 +16,14 @@ export function resolveMediaMode(
 ): 'live' | 'upload' {
   if (show.prerecorded_key) return 'upload';
   return show.stream_mode === 'live' ? 'live' : 'upload';
+}
+
+/**
+ * Whether the host may still switch between live and prerecorded.
+ *
+ * Only before air time: the upload exists only in the prep phase, so from air
+ * time on the switch would change a label and nothing else.
+ */
+export function canSwitchMediaMode(phase: ShowPhase): boolean {
+  return phase === 'prep';
 }

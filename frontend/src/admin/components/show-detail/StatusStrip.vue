@@ -2,14 +2,15 @@
 import { computed } from 'vue';
 import type { ShowDetail, SoundCloudStatus } from '../../api';
 import type { ShowPhase } from '../../composables/useShowPhase';
+import { canSwitchMediaMode } from '../../showMediaMode';
 
 /**
  * The status strip of the redesigned show dashboard: three compact metric
  * cards under the header.
  *
  *   1. Clock    — countdown to air / time on air / finished duration
- *   2. Mode     — streaming-mode toggle + preparation readiness (prep/broadcast)
- *                 or publishing progress (wrap-up)
+ *   2. Mode     — streaming mode (a toggle only before air time) + preparation
+ *                 readiness (prep/broadcast) or publishing progress (wrap-up)
  *   3. Announcements — slot overview (composer wiring lands with the
  *                 scheduled-announcements backend)
  *
@@ -122,7 +123,12 @@ const publishing = computed<{ label: string; cls: string; hint: string | null }>
     <div v-if="phase === 'wrapup' || modeCard !== false" class="ss-card">
       <template v-if="phase !== 'wrapup'">
         <p class="ss-label">Streaming mode</p>
-        <div v-if="canManage" class="ss-modetoggle" role="group" aria-label="Streaming mode">
+        <div
+          v-if="canManage && canSwitchMediaMode(phase)"
+          class="ss-modetoggle"
+          role="group"
+          aria-label="Streaming mode"
+        >
           <button
             type="button"
             :class="['ss-modebtn', { active: mode === 'upload' }]"
