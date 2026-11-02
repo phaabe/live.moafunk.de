@@ -281,12 +281,21 @@ impl StreamState {
         self.current_user.is_some() && (self.ffmpeg_stdin.is_some() || self.ffmpeg_handle.is_some())
     }
 
-    /// True when another producer has replaced the one started as
+    /// True when a later start has replaced the producer started as
     /// `generation` (a reconnect, a forced takeover or a prerecorded start).
     /// The replaced producer must then leave the stream and its recording
-    /// alone instead of stopping or finalizing them.
+    /// alone instead of stopping or finalizing them. This holds after its
+    /// successor has stopped too: that successor's own disconnect decides the
+    /// recording (an explicit stop, or a grace wait a reconnect can resume).
     pub fn is_superseded(&self, generation: u64) -> bool {
-        self.is_active() && self.generation != generation
+        self.generation != generation
+    }
+
+    /// Test stand-in for another producer: `child` plays its FFmpeg process.
+    #[cfg(test)]
+    pub(crate) fn set_active_for_test(&mut self, user: &str, child: Child) {
+        self.current_user = Some(user.to_string());
+        self.ffmpeg_handle = Some(child);
     }
 
     /// Returns true if recording to file is active.
@@ -475,9 +484,12 @@ impl StreamState {
     ///   backward compatibility with the existing R2 layout (FFmpeg probes
     ///   content, not the name).
     pub async fn start_recording(&mut self, path: PathBuf) -> Result<(), StreamError> {
-        // Close any existing recording first
+        // Close any existing recording first. A failed join keeps its segments
+        // for boot recovery and must not block this recording.
         if self.is_recording() {
-            self.stop_recording().await?;
+            if let Err(e) = self.stop_recording().await {
+                tracing::error!("Previous recording did not finish: {}", e);
+            }
         }
 
         // Per-session segment directory: ".../recording_<id>_<ts>.segs/"
@@ -564,6 +576,7 @@ impl StreamState {
     /// segment, then concat-demux all segments into the final artifact path.
     ///
     /// Returns the path to the concatenated artifact if a recording was active.
+    /// Errors when the join fails; the segment dir then stays on disk.
     pub async fn stop_recording(&mut self) -> Result<Option<PathBuf>, StreamError> {
         let path = self.recording_path.take();
         let seg_dir = self.recording_seg_dir.take();
@@ -595,15 +608,23 @@ impl StreamState {
             }
         }
 
-        // Concat the surviving segments into the final artifact.
+        // Concat the surviving segments into the final artifact. After a failed
+        // join the segments are the only full copy: keep them for boot recovery.
         if let (Some(ref dir), Some(ref out)) = (&seg_dir, &path) {
             if let Err(e) = concat_segments(dir, out).await {
-                tracing::error!("Failed to concat recording segments: {}", e);
+                tracing::error!(
+                    "Failed to concat recording segments: {} — keeping {:?} for recovery",
+                    e,
+                    dir
+                );
                 crate::metrics::inc_recording_segment_concat_failure();
                 self.recording_failed = Some(format!("Segment concat failed: {}", e));
-            } else {
-                tracing::info!("Concatenated recording segments into {:?}", out);
+                return Err(StreamError::RecordingError(format!(
+                    "segment join failed, segments kept in {:?}: {}",
+                    dir, e
+                )));
             }
+            tracing::info!("Concatenated recording segments into {:?}", out);
             // Best-effort cleanup of the segment directory.
             if let Err(e) = tokio::fs::remove_dir_all(dir).await {
                 tracing::warn!("Failed to clean up segment directory {:?}: {}", dir, e);
@@ -623,8 +644,6 @@ impl StreamState {
             active: self.is_active() && !self.is_test,
             user: self.current_user.clone(),
             recording: self.is_recording(),
-            recording_path: self.recording_path.clone(),
-            recording_failed: self.recording_failed.clone(),
         }
     }
 }
@@ -643,6 +662,9 @@ pub fn new_shared_state() -> SharedStreamState {
 /// Unlike live streaming (where audio chunks are piped via stdin), this spawns
 /// FFmpeg with `-re` (real-time playback) reading directly from the presigned
 /// URL. A background task monitors when FFmpeg exits and cleans up the state.
+///
+/// Refuses with [`StreamError::ProducerBusy`] while another producer (live
+/// broadcast or prerecorded) is active. It never stops the active producer.
 pub async fn start_prerecorded_stream(
     stream_state: &SharedStreamState,
     user: String,
@@ -652,9 +674,11 @@ pub async fn start_prerecorded_stream(
     let generation = {
         let mut state = stream_state.lock().await;
 
-        // Clean up any existing stream first
+        // Never silently replace the active producer (B1.1.6).
         if state.is_active() {
-            state.stop_stream().await?;
+            return Err(StreamError::ProducerBusy(
+                state.current_user.clone().unwrap_or_default(),
+            ));
         }
 
         tracing::info!(
@@ -755,7 +779,7 @@ pub async fn start_prerecorded_stream(
 }
 
 /// True if `path` names a recording segment (`seg_*.ts`).
-fn is_segment_file(path: &Path) -> bool {
+pub(crate) fn is_segment_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(|n| n.starts_with("seg_") && n.ends_with(".ts"))
@@ -866,17 +890,15 @@ pub(crate) async fn concat_segments(seg_dir: &Path, output: &Path) -> Result<(),
 }
 
 /// Status information for API responses.
+///
+/// Served anonymously on `/api/stream/status`, so it must never carry a
+/// filesystem path or error text. Recording failures stay internal (see
+/// [`StreamState::recording_failure`]).
 #[derive(serde::Serialize)]
 pub struct StreamStatus {
     pub active: bool,
     pub user: Option<String>,
     pub recording: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recording_path: Option<PathBuf>,
-    /// Non-null when a recording write failed mid-stream; the archive for this
-    /// session is incomplete. Stays set until the next recording starts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recording_failed: Option<String>,
 }
 
 /// Errors that can occur during streaming.
@@ -899,11 +921,72 @@ pub enum StreamError {
 
     #[error("Recording error: {0}")]
     RecordingError(String),
+
+    #[error("Another producer is live ({0})")]
+    ProducerBusy(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B5.2.6: the anonymous status JSON must not leak a recording path or
+    /// failure text, even while both are set internally.
+    #[test]
+    fn status_json_has_no_recording_path_or_failure_text() {
+        let mut state = StreamState::new();
+        state.current_user = Some("host".to_string());
+        state.recording_path = Some(PathBuf::from("/srv/data/recordings/secret.mp3"));
+        state.recording_failed = Some("Segment concat failed: disk full".to_string());
+
+        let json = serde_json::to_value(state.get_status()).expect("serialize status");
+        let keys: Vec<&str> = json
+            .as_object()
+            .expect("status is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys.len(), 3, "unexpected keys: {keys:?}");
+        for key in ["active", "user", "recording"] {
+            assert!(keys.contains(&key), "missing {key}: {keys:?}");
+        }
+        let body = json.to_string();
+        assert!(!body.contains("/srv/data"), "path leaked: {body}");
+        assert!(!body.contains("disk full"), "error text leaked: {body}");
+    }
+
+    /// B1.1.6: a prerecorded start must refuse, not replace, an active producer.
+    #[tokio::test]
+    async fn prerecorded_start_refuses_while_another_producer_is_live() {
+        let shared = new_shared_state();
+        {
+            let mut state = shared.lock().await;
+            // Stand-in for the live producer's FFmpeg process.
+            let child = Command::new("sleep")
+                .arg("30")
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn sleep");
+            state.current_user = Some("live-host".to_string());
+            state.ffmpeg_handle = Some(child);
+        }
+        let target = PushTarget::Rtmp {
+            destination: "rtmp://127.0.0.1:1/live/test".to_string(),
+        };
+
+        let result = start_prerecorded_stream(
+            &shared,
+            "prerec-host".to_string(),
+            "http://x/a.mp3",
+            &target,
+        )
+        .await;
+
+        assert!(matches!(result, Err(StreamError::ProducerBusy(ref u)) if u == "live-host"));
+        let state = shared.lock().await;
+        assert_eq!(state.current_user.as_deref(), Some("live-host"));
+        assert!(state.is_active(), "the live producer must keep running");
+    }
 
     #[test]
     fn segment_files_are_recognized() {
@@ -1124,9 +1207,11 @@ mod tests {
             destination: "pipe:1".to_string(),
         };
         // The prerecorded input is missing, so its ffmpeg exits at once.
-        start_prerecorded_stream(&shared, "auto".into(), "/nonexistent.mp3", &target)
+        start_prerecorded_stream(&shared, "host".into(), "/nonexistent.mp3", &target)
             .await
             .unwrap();
+        // The host goes live over the prerecorded show, as the stream socket
+        // allows for the same user.
         let mut state = shared.lock().await;
         state
             .start_stream("host".into(), &target, false)
@@ -1138,7 +1223,9 @@ mod tests {
 
         // One watcher tick (2 s) later the live stream is still the host's.
         tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-        assert_eq!(shared.lock().await.current_user.as_deref(), Some("host"));
+        let state = shared.lock().await;
+        assert_eq!(state.current_user.as_deref(), Some("host"));
+        assert!(state.ffmpeg_handle.is_some(), "the live handle stays");
     }
 
     #[tokio::test]
@@ -1159,5 +1246,60 @@ mod tests {
         .await
         .expect("write waited past its own timeout");
         assert!(matches!(result, Err(StreamError::WriteFailed(_))));
+    }
+
+    /// A stopped recording with its segment dir and joined file in `dir`.
+    fn stopped_recording(dir: &Path) -> (StreamState, PathBuf, PathBuf) {
+        let seg_dir = dir.join("recording_1_2026-06-01T20-00-00.segs");
+        let out = dir.join("recording_1_2026-06-01T20-00-00.webm");
+        std::fs::create_dir(&seg_dir).unwrap();
+        let mut state = StreamState::new();
+        state.recording_path = Some(out.clone());
+        state.recording_seg_dir = Some(seg_dir.clone());
+        (state, seg_dir, out)
+    }
+
+    #[tokio::test]
+    async fn a_failed_join_keeps_the_segments() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut state, seg_dir, out) = stopped_recording(temp.path());
+        std::fs::write(seg_dir.join("seg_00000.ts"), b"audio").unwrap();
+        // A dir at the output path makes the join fail.
+        std::fs::create_dir(&out).unwrap();
+
+        let result = state.stop_recording().await;
+
+        assert!(matches!(result, Err(StreamError::RecordingError(_))));
+        assert!(seg_dir.join("seg_00000.ts").exists());
+        assert!(state.recording_failure().is_some());
+    }
+
+    /// Needs ffmpeg, as the recorder does.
+    #[tokio::test]
+    async fn a_good_join_removes_the_segments() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut state, seg_dir, out) = stopped_recording(temp.path());
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args([
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:a",
+                "aac",
+                "-f",
+                "mpegts",
+            ])
+            .arg(seg_dir.join("seg_00000.ts"))
+            .status()
+            .await
+            .expect("spawn ffmpeg");
+        assert!(status.success());
+
+        let result = state.stop_recording().await;
+
+        assert_eq!(result.unwrap(), Some(out.clone()));
+        assert!(std::fs::metadata(&out).unwrap().len() > 0);
+        assert!(!seg_dir.exists());
+        assert!(state.recording_failure().is_none());
     }
 }

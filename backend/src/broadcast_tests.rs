@@ -18,14 +18,16 @@ async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::TempDir) {
     db::run_migrations(&db).await.unwrap();
     let mut config = json!({
         "secret_key": "test-only", "superadmin_password_hash": "unused",
-        "r2_account_id": "unused", "r2_access_key_id": "unused", "r2_secret_access_key": "unused"
+        "r2_account_id": "unused", "r2_access_key_id": "unused", "r2_secret_access_key": "unused",
+        // Never push a test stream to the production default.
+        "rtmp_url": "rtmp://127.0.0.1:1/live"
     });
     config
         .as_object_mut()
         .unwrap()
         .extend(overrides.as_object().unwrap().clone());
     let mut config: Config = serde_json::from_value(config).unwrap();
-    // Presigning works offline; any real R2 request fails at once.
+    // Local dead end so presigning works offline.
     config.r2_endpoint = "http://127.0.0.1:1".to_string();
     let temp = tempfile::tempdir().unwrap();
     let state = Arc::new(AppState {
@@ -37,7 +39,7 @@ async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::TempDir) {
         stream_state: stream_bridge::new_shared_state(),
         stream_metrics: stream_metrics::new_shared(),
         recording_manager: recording::new_shared_manager(temp.path().to_path_buf()),
-        recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
+        recording_finalizer: Arc::default(),
         cover_debounce: Arc::new(RwLock::new(HashMap::new())),
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot: None,
@@ -225,16 +227,21 @@ async fn stop_handler_allows_admins_and_owner_but_rejects_another_host() {
     }
 }
 
+// ── Stream ownership: a replaced producer leaves its successor alone ────────
+
 /// First bytes of a WebM stream: the producer ffmpeg keeps waiting for more.
 const WEBM_MAGIC: [u8; 4] = [0x1a, 0x45, 0xdf, 0xa3];
 
 pub(crate) type Producer =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Rehearsal producers run a real ffmpeg that muxes to its discarded stdout,
-/// so these tests need no Icecast, recording or Telegram.
+/// Producers, live and rehearsal, run a real ffmpeg that muxes to its
+/// discarded stdout, so these tests need no Icecast or Telegram.
 async fn serve_stream_socket() -> (Arc<AppState>, tempfile::TempDir, std::net::SocketAddr) {
-    serve_stream_socket_with(json!({ "icecast_test_url": "pipe:1" })).await
+    serve_stream_socket_with(json!({
+        "stream_output": "icecast", "icecast_url": "pipe:1", "icecast_test_url": "pipe:1"
+    }))
+    .await
 }
 
 /// Serves the real stream WebSocket handler at `/ws`, with `overrides`
@@ -252,7 +259,7 @@ pub(crate) async fn serve_stream_socket_with(
     (state, temp, addr)
 }
 
-pub(crate) async fn go_live(
+pub(crate) async fn connect_producer(
     state: &Arc<AppState>,
     addr: std::net::SocketAddr,
     user_id: i64,
@@ -290,8 +297,8 @@ async fn reconnect_survives_the_late_close_of_the_replaced_socket() {
     let host = add_user(&state, "host", "host").await;
     // A network drop leaves the old socket open on the server while the
     // panel reconnects. The old one closes much later (nginx: 300 s idle).
-    let replaced = go_live(&state, addr, host, "test=true").await;
-    let mut current = go_live(&state, addr, host, "test=true").await;
+    let replaced = connect_producer(&state, addr, host, "test=true").await;
+    let mut current = connect_producer(&state, addr, host, "test=true").await;
     close(replaced).await;
 
     assert!(state.stream_state.lock().await.is_active());
@@ -312,8 +319,8 @@ async fn forced_takeover_survives_the_replaced_host() {
     let (state, _temp, addr) = serve_stream_socket().await;
     let host = add_user(&state, "host", "host").await;
     let admin = add_user(&state, "admin", "admin").await;
-    let mut replaced = go_live(&state, addr, host, "test=true").await;
-    let mut current = go_live(&state, addr, admin, "test=true&force=true").await;
+    let mut replaced = connect_producer(&state, addr, host, "test=true").await;
+    let mut current = connect_producer(&state, addr, admin, "test=true&force=true").await;
 
     // The host's audio no longer reaches the admin's ffmpeg, and its
     // disconnect leaves the admin's stream running.
@@ -339,37 +346,556 @@ async fn forced_takeover_survives_the_replaced_host() {
     assert!(next_text(&mut current).await.starts_with("pong:"));
 }
 
-/// A prerecorded show taking the air ends the live show's recording: its
-/// producer was replaced or waits out its reconnect grace, and the grace end
-/// would see the prerecorded stream as live and keep waiting.
+/// An admin takes over a host's recorded show. A stop from the host's old tab
+/// must neither end the takeover nor finalize the show's recording under it.
 #[tokio::test]
-async fn prerecorded_start_finalizes_the_live_recording() {
-    let (state, _temp) = state().await;
+async fn replaced_host_stop_leaves_the_takeover_and_its_recording_alone() {
+    let (state, _temp, addr) = serve_stream_socket().await;
     let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
     sqlx::query(
-        "INSERT INTO shows (id, title, date, host_user_id, prerecorded_key, prerecorded_confirmed_at) \
-         VALUES (2, 'Tape', '2026-10-15', ?, 'shows/2/tape.mp3', datetime('now'))",
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
     )
     .bind(host)
     .execute(&state.db)
     .await
     .unwrap();
-    let artifact = {
-        let mut manager = state.recording_manager.lock().await;
-        manager.start(1).await.unwrap();
-        manager.get_temp_file_path().unwrap()
-    };
-    // Finalize for real, but fail locally before any R2 request.
-    let _ = tokio::fs::remove_file(artifact).await;
+    let mut replaced = connect_producer(&state, addr, host, "show_id=1").await;
+    let mut current = connect_producer(&state, addr, admin, "show_id=1&force=true").await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
 
-    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = 2")
+    replaced.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(replaced).await;
+
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1),
+        "the show's recording must not be finalized"
+    );
+    {
+        let stream = state.stream_state.lock().await;
+        assert!(stream.is_active());
+        assert_eq!(stream.current_user.as_deref(), Some("admin"));
+        assert!(stream.is_recording());
+    }
+    current
+        .send(WsMessage::Text("ping:1".into()))
+        .await
+        .unwrap();
+    assert!(next_text(&mut current).await.starts_with("pong:"));
+}
+
+/// The takeover drops and waits out its reconnect grace. A stop from the
+/// host's old tab in that time must not finalize the recording, so the
+/// takeover resumes the same archive when it reconnects.
+#[tokio::test]
+async fn replaced_host_stop_during_the_takeovers_grace_keeps_its_recording() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let mut replaced = connect_producer(&state, addr, host, "show_id=1").await;
+    let takeover = connect_producer(&state, addr, admin, "show_id=1&force=true").await;
+    let archive = state.recording_manager.lock().await.get_temp_file_path();
+    assert!(archive.is_some());
+
+    // A network drop: no stop, so the recording waits for a reconnect.
+    close(takeover).await;
+    assert!(!state.stream_state.lock().await.is_active());
+
+    replaced.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(replaced).await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1),
+        "the show's recording must not be finalized"
+    );
+
+    let mut back = connect_producer(&state, addr, admin, "show_id=1").await;
+    assert_eq!(
+        state.recording_manager.lock().await.get_temp_file_path(),
+        archive,
+        "the reconnect resumes the same archive"
+    );
+    back.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    assert!(next_text(&mut back).await.starts_with("pong:"));
+}
+
+// ── B1.1.6: prerecorded occurrences ─────────────────────────────────────────
+
+const SHOW_START: &str = "2026-09-26T18:00:00+00:00"; // 20:00 Berlin (CEST)
+
+async fn prerecorded_show(state: &Arc<AppState>, host: i64) {
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, start_time, end_time, show_type, host_user_id, \
+         stream_mode, prerecorded_key, prerecorded_confirmed_at) \
+         VALUES (1, 'Tape', '2026-09-26', '20:00', '22:00', 'external', ?, 'prerecorded', \
+         'shows/tape.mp3', datetime('now'))",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+async fn show(state: &Arc<AppState>) -> models::Show {
+    sqlx::query_as("SELECT * FROM shows WHERE id = 1")
         .fetch_one(&state.db)
         .await
+        .unwrap()
+}
+
+/// Another producer (a live broadcast) is on air.
+async fn producer_busy(state: &Arc<AppState>) {
+    let child = tokio::process::Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
         .unwrap();
-    handlers::api::start_prerecorded_show_stream(&state, &show, "host")
+    state
+        .stream_state
+        .lock()
+        .await
+        .set_active_for_test("live-host", child);
+}
+
+async fn producer_ends(state: &Arc<AppState>) {
+    state.stream_state.lock().await.stop_stream().await.unwrap();
+}
+
+async fn on_air(state: &Arc<AppState>) -> Option<String> {
+    let stream = state.stream_state.lock().await;
+    stream
+        .is_active()
+        .then(|| stream.current_user.clone())
+        .flatten()
+}
+
+async fn scheduler_tick(state: &Arc<AppState>) -> handlers::api::Admission {
+    let start = chrono::DateTime::parse_from_rfc3339(SHOW_START)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    handlers::api::start_scheduled_prerecorded_occurrence(state, &show(state).await, "host", start)
+        .await
+        .unwrap()
+}
+
+async fn go_live(state: &Arc<AppState>, headers: &HeaderMap, retry: bool) -> Result<()> {
+    handlers::api::api_my_show_go_live(
+        State(state.clone()),
+        Query(handlers::api::GoLiveQuery { show_id: 1, retry }),
+        headers.clone(),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// (status, manual_retries, latest retry's operator, latest retry's result)
+async fn occurrence(
+    state: &Arc<AppState>,
+) -> Option<(String, i64, Option<String>, Option<String>)> {
+    sqlx::query_as(
+        "SELECT o.status, o.manual_retries, \
+                (SELECT retried_by FROM prerecorded_retries r \
+                 WHERE r.show_id = o.show_id AND r.scheduled_start_utc = o.scheduled_start_utc \
+                 ORDER BY r.id DESC LIMIT 1), \
+                (SELECT result FROM prerecorded_retries r \
+                 WHERE r.show_id = o.show_id AND r.scheduled_start_utc = o.scheduled_start_utc \
+                 ORDER BY r.id DESC LIMIT 1) \
+         FROM prerecorded_occurrences o WHERE o.show_id = 1 AND o.scheduled_start_utc = ?",
+    )
+    .bind(SHOW_START)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap()
+}
+
+async fn show_claimed(state: &Arc<AppState>) -> bool {
+    show(state).await.prerecorded_started_at.is_some()
+}
+
+/// Review finding 1: opening or reloading the on-air page calls Go Live on its
+/// own. That must not start a missed occurrence; only an explicit retry may.
+#[tokio::test]
+async fn automatic_go_live_cannot_start_a_missed_occurrence_but_explicit_retry_can() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+    let headers = headers(&state, host).await;
+
+    producer_busy(&state).await;
+    assert!(matches!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Missed(_)
+    ));
+    db::run_migrations(&state.db).await.unwrap(); // API restart
+    producer_ends(&state).await; // still inside the show's window
+
+    for _ in 0..2 {
+        assert_eq!(
+            scheduler_tick(&state).await,
+            handlers::api::Admission::AlreadyMissed,
+            "no second start and no second alert"
+        );
+        let page_load = go_live(&state, &headers, false).await;
+        assert!(matches!(page_load, Err(AppError::Conflict(_))));
+    }
+    assert_eq!(on_air(&state).await, None);
+    assert!(!show_claimed(&state).await);
+    assert_eq!(occurrence(&state).await.unwrap().1, 0, "no retry recorded");
+
+    if let Err(e) = go_live(&state, &headers, true).await {
+        panic!("explicit retry must start: {e}");
+    }
+    assert_eq!(on_air(&state).await.as_deref(), Some("host"));
+    assert_eq!(
+        occurrence(&state).await,
+        Some((
+            "missed".to_string(),
+            1,
+            Some("host".to_string()),
+            Some("started".to_string())
+        )),
+        "the retry is logged as a retry; missed playback never becomes 'started'"
+    );
+    producer_ends(&state).await;
+}
+
+/// The waiting room's automatic Go Live shares the scheduler's occurrence claim.
+#[tokio::test]
+async fn refused_page_admission_consumes_the_occurrence_for_the_scheduler() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+    let headers = headers(&state, host).await;
+
+    producer_busy(&state).await;
+    assert!(matches!(
+        go_live(&state, &headers, false).await,
+        Err(AppError::Conflict(_))
+    ));
+    assert_eq!(occurrence(&state).await.unwrap().0, "missed");
+    producer_ends(&state).await;
+    assert_eq!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::AlreadyMissed
+    );
+    assert_eq!(on_air(&state).await, None);
+}
+
+/// Review finding 2: the scheduler claims the occurrence but loses the show
+/// claim to another attempt that later fails. The scheduler must not record
+/// 'started'; the next tick records the real result.
+#[tokio::test]
+async fn losing_the_show_claim_never_records_playback_busy_failure() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+    let headers = headers(&state, host).await;
+    producer_busy(&state).await;
+
+    // Another attempt holds the show claim while it starts.
+    sqlx::query("UPDATE shows SET prerecorded_started_at = datetime('now') WHERE id = 1")
+        .execute(&state.db)
         .await
         .unwrap();
-    assert_eq!(state.recording_manager.lock().await.current_show_id(), None);
+    assert_eq!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Skipped
+    );
+    assert_eq!(occurrence(&state).await, None, "not recorded as started");
+
+    // That attempt fails with producer busy and clears its show claim.
+    sqlx::query("UPDATE shows SET prerecorded_started_at = NULL WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let mut alerts = 0;
+    for _ in 0..3 {
+        if matches!(
+            scheduler_tick(&state).await,
+            handlers::api::Admission::Missed(_)
+        ) {
+            alerts += 1;
+        }
+    }
+    assert_eq!(alerts, 1, "exactly one alert for the occurrence");
+    assert_eq!(occurrence(&state).await.unwrap().0, "missed");
+
+    // The missed occurrence stays eligible for an explicit retry.
+    producer_ends(&state).await;
+    if let Err(e) = go_live(&state, &headers, true).await {
+        panic!("explicit retry must start: {e}");
+    }
+    assert_eq!(occurrence(&state).await.unwrap().1, 1);
+    producer_ends(&state).await;
+}
+
+#[tokio::test]
+async fn losing_the_show_claim_never_records_playback_transient_failure() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+
+    sqlx::query("UPDATE shows SET prerecorded_started_at = datetime('now') WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Skipped
+    );
+    assert_eq!(occurrence(&state).await, None);
+
+    // That attempt fails transiently and clears its show claim.
+    sqlx::query("UPDATE shows SET prerecorded_started_at = NULL WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Started
+    );
+    assert_eq!(occurrence(&state).await.unwrap().0, "started");
+    assert_eq!(on_air(&state).await.as_deref(), Some("host"));
+    producer_ends(&state).await;
+}
+
+// ── Recording finalize ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn inactive_admin_stop_finalizes_recording_during_grace() {
+    for role in ["admin", "superadmin"] {
+        let (state, _temp) = state().await;
+        let admin = add_user(&state, role, role).await;
+        let headers = headers(&state, admin).await;
+        let artifact = {
+            let mut manager = state.recording_manager.lock().await;
+            manager.start(1).await.unwrap();
+            manager.get_temp_file_path().unwrap()
+        };
+        // Exercise the real detach, but fail locally before any R2 operation.
+        tokio::fs::remove_file(artifact).await.unwrap();
+        state
+            .recording_finalizer
+            .schedule(handlers::recording::LiveFinalize::new(&state), 1);
+        assert!(!state.stream_state.lock().await.is_active());
+
+        let stopped = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handlers::stream_ws::stream_stop(
+                State(state.clone()),
+                State(state.stream_state.clone()),
+                headers,
+            ),
+        )
+        .await
+        .expect("admin stop must not wait for the 30-second grace period")
+        .unwrap();
+
+        assert_eq!(body(stopped).await["message"], "Stream stopped", "{role}");
+        assert_eq!(
+            state.recording_manager.lock().await.current_show_id(),
+            None,
+            "{role} must detach the recording even with no live producer"
+        );
+    }
+}
+
+/// A detached recording whose upload stays pending until the test releases it.
+struct PendingUpload {
+    session: std::sync::atomic::AtomicBool,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl crate::recording_finalizer::FinalizeOps for PendingUpload {
+    type Session = ();
+
+    fn detach(
+        &self,
+        _show: Option<i64>,
+    ) -> futures_util::future::BoxFuture<'_, std::result::Result<Option<()>, String>> {
+        let session = self
+            .session
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            .then_some(());
+        Box::pin(async move { Ok(session) })
+    }
+
+    fn upload(
+        &self,
+        _session: (),
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        std::result::Result<handlers::recording::FinalizedRecording, String>,
+    > {
+        Box::pin(async move {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(handlers::recording::FinalizedRecording {
+                show_id: 1,
+                version: "test".into(),
+                marker_count: 0,
+                raw_key: "raw".into(),
+                markers_key: "markers".into(),
+                incomplete: false,
+            })
+        })
+    }
+
+    fn stream_active(&self) -> futures_util::future::BoxFuture<'_, bool> {
+        Box::pin(async { false })
+    }
+}
+
+#[tokio::test]
+async fn inactive_admin_stop_waits_for_running_upload() {
+    let (state, _temp) = state().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    let headers = headers(&state, admin).await;
+    let upload = Arc::new(PendingUpload {
+        session: std::sync::atomic::AtomicBool::new(true),
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let running = tokio::spawn({
+        let finalizer = state.recording_finalizer.clone();
+        let upload = upload.clone();
+        async move { finalizer.finalize_now(upload).await }
+    });
+    upload.started.notified().await;
+    assert!(!state.stream_state.lock().await.is_active());
+
+    let stop = handlers::stream_ws::stream_stop(
+        State(state.clone()),
+        State(state.stream_state.clone()),
+        headers,
+    );
+    tokio::pin!(stop);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut stop)
+            .await
+            .is_err(),
+        "admin stop must wait for the running upload"
+    );
+    upload.release.notify_one();
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), stop)
+        .await
+        .expect("admin stop must finish after the upload")
+        .unwrap();
+    assert_eq!(body(stopped).await["message"], "Stream stopped");
+    assert_eq!(running.await.unwrap().unwrap().unwrap().show_id, 1);
+}
+
+#[tokio::test]
+async fn inactive_host_stop_leaves_another_hosts_recording_untouched() {
+    let (state, _temp) = state().await;
+    let owner = add_user(&state, "owner", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
+    )
+    .bind(owner)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    state.recording_manager.lock().await.start(1).await.unwrap();
+    assert!(!state.stream_state.lock().await.is_active());
+
+    let stopped = handlers::stream_ws::stream_stop(
+        State(state.clone()),
+        State(state.stream_state.clone()),
+        headers(&state, other).await,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(body(stopped).await["message"], "No active stream");
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn finalize_detach_takes_only_the_expected_show() {
+    use crate::recording_finalizer::FinalizeOps;
+    let (state, _temp) = state().await;
+    state.recording_manager.lock().await.start(1).await.unwrap();
+    let ops = handlers::recording::LiveFinalize::new(&state);
+    // A grace finalize of show 2 must not end show 1's recording.
+    assert!(ops.detach(Some(2)).await.unwrap().is_none());
+    let current = state.recording_manager.lock().await.current_show_id();
+    assert_eq!(current, Some(1));
+    assert!(ops.detach(Some(1)).await.unwrap().is_some());
+    let current = state.recording_manager.lock().await.current_show_id();
+    assert_eq!(current, None);
+    assert!(ops.detach(None).await.unwrap().is_none());
+}
+
+/// A live recording waits in its grace period when a prerecorded show starts.
+/// The grace end would see the prerecorded stream as live and keep waiting, so
+/// the start finalizes the recording at once, for another show and the same one.
+#[tokio::test]
+async fn prerecorded_start_finalizes_a_recording_in_its_grace_period() {
+    for waiting in [2, 1] {
+        let (state, _temp) = state().await;
+        let host = add_user(&state, "host", "host").await;
+        prerecorded_show(&state, host).await;
+        let artifact = {
+            let mut manager = state.recording_manager.lock().await;
+            manager.start(waiting).await.unwrap();
+            manager.get_temp_file_path().unwrap()
+        };
+        // Exercise the real detach, but fail locally before any R2 operation.
+        tokio::fs::remove_file(artifact).await.unwrap();
+        state
+            .recording_finalizer
+            .schedule(handlers::recording::LiveFinalize::new(&state), waiting);
+
+        assert_eq!(
+            scheduler_tick(&state).await,
+            handlers::api::Admission::Started,
+            "show {waiting}"
+        );
+        assert_eq!(on_air(&state).await.as_deref(), Some("host"));
+        assert_eq!(
+            state.recording_manager.lock().await.current_show_id(),
+            None,
+            "the recording of show {waiting} is detached"
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_prerecorded_start_leaves_a_waiting_recording_alone() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    prerecorded_show(&state, host).await;
+    state.recording_manager.lock().await.start(2).await.unwrap();
+    state
+        .recording_finalizer
+        .schedule(handlers::recording::LiveFinalize::new(&state), 2);
+    producer_busy(&state).await;
+
+    assert!(matches!(
+        scheduler_tick(&state).await,
+        handlers::api::Admission::Missed(_)
+    ));
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(2)
+    );
 }
 
 /// Pings keep a socket open without audio. Such a connection is ended with an
@@ -381,7 +907,7 @@ async fn connection_without_audio_is_ended() {
     )
     .await;
     let host = add_user(&state, "host", "host").await;
-    let mut socket = go_live(&state, addr, host, "test=true").await;
+    let mut socket = connect_producer(&state, addr, host, "test=true").await;
     socket.send(WsMessage::Text("ping:1".into())).await.unwrap();
     assert!(next_text(&mut socket).await.starts_with("pong:"));
 
@@ -400,7 +926,7 @@ async fn first_audio_chunk_lifts_the_no_audio_deadline() {
     )
     .await;
     let host = add_user(&state, "host", "host").await;
-    let mut socket = go_live(&state, addr, host, "test=true").await;
+    let mut socket = connect_producer(&state, addr, host, "test=true").await;
     socket
         .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
         .await

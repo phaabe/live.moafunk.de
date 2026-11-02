@@ -17,7 +17,9 @@
 //! - `STREAM_SYSTEM_HARBOR`: harbor `host:port`, default `127.0.0.1:8005`.
 //! - `STREAM_SYSTEM_ICECAST`: Icecast base URL, default `http://127.0.0.1:8010`.
 
-use crate::broadcast_tests::{add_user, go_live, serve_stream_socket_with, Producer};
+use crate::broadcast_tests::{
+    add_user, connect_producer as go_live, serve_stream_socket_with, Producer,
+};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};

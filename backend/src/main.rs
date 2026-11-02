@@ -12,6 +12,7 @@ mod metrics;
 mod models;
 mod pdf;
 mod recording;
+mod recording_finalizer;
 mod recovery;
 mod recovery_mail;
 mod scheduler;
@@ -62,9 +63,6 @@ pub type PendingShowNotifications =
 /// Active Telegram edit sessions keyed by chat_id (only one edit at a time per chat)
 pub type TelegramEditSessions = Arc<tokio::sync::Mutex<HashMap<i64, models::TelegramEditSession>>>;
 
-/// Handle to a pending grace-period recording-finalize task, if one is scheduled.
-pub type PendingFinalizer = Arc<tokio::sync::Mutex<Option<tokio::task::AbortHandle>>>;
-
 pub struct AppState {
     pub recovery_mail: recovery_mail::RecoveryMailer,
     pub recovery_controls: handlers::recovery::RecoveryControls,
@@ -77,10 +75,9 @@ pub struct AppState {
     pub stream_metrics: stream_metrics::SharedStreamMetrics,
     /// Recording session manager for show recordings
     pub recording_manager: SharedRecordingManager,
-    /// Handle to a pending grace-period finalize task (set when a live stream
-    /// drops without an explicit stop). A reconnect aborts it so a flaky
-    /// connection doesn't fragment the archive. See `stream_ws`.
-    pub recording_finalizer: PendingFinalizer,
+    /// When live recordings are finalized: the grace wait after a dropped
+    /// stream and every running finalize. See `recording_finalizer`.
+    pub recording_finalizer: Arc<recording_finalizer::Finalizer>,
     /// Debounce tracker for show cover regeneration (show_id -> last_request_time)
     pub cover_debounce: CoverDebounceMap,
     /// Cached default cover image (4 black tiles with UN/HEARD branding)
@@ -325,7 +322,7 @@ async fn main() -> anyhow::Result<()> {
         stream_state,
         stream_metrics: stream_metrics::new_shared(),
         recording_manager,
-        recording_finalizer: Arc::new(tokio::sync::Mutex::new(None)),
+        recording_finalizer: Arc::default(),
         cover_debounce,
         default_cover: tokio::sync::OnceCell::new(),
         telegram_bot,
@@ -788,10 +785,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Recover recordings orphaned by a restart mid-show: concat + upload any
-    // `*.segs/` segment dirs left on disk before the daily cleanup could delete
-    // them. Idempotent; only touches dirs present at boot (a new live session
-    // uses a fresh timestamp), so it's safe to run concurrently with startup.
+    // Recover recordings that a restart or failed finalize left on disk: join
+    // and upload `*.segs/` segment dirs, and upload `recording_*.webm` files,
+    // when they have no `recording_versions` row (the daily cleanup never
+    // deletes them). Idempotent; only touches files present at boot, never the
+    // live session's, so it's safe to run concurrently with startup.
     {
         let state = state.clone();
         tokio::spawn(async move {
@@ -800,9 +798,11 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Spawn background task to clean up orphaned recording temp files (stale
-    // `recording_*.webm` artifacts and `*.segs/` segment dirs left by a crash),
-    // older than ~1 day. Runs daily.
+    // Spawn background task to clean up stale temp files older than ~1 day.
+    // Runs daily (first tick at boot). Recording artifacts (`recording_*` and
+    // `*.segs/`) are never deleted here: they may hold the only copy of an
+    // unverified show, so the boot tick cannot race orphan recovery. Watch disk
+    // use until verified cleanup (B3.3.1) exists.
     tokio::spawn(async move {
         let dir = std::path::PathBuf::from("./data/recordings-temp");
         let max_age = std::time::Duration::from_secs(24 * 60 * 60);
