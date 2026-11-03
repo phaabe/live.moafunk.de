@@ -2,7 +2,8 @@ name: BACKEND - Build, Push and Deploy Image (GHCR)
 
 on:
   push:
-    branches: [main]
+    # dev/flow builds sha-* images for staging. Only main moves `latest`.
+    branches: [main, dev/flow]
     paths:
       - backend/**
       - frontend/src/admin/**
