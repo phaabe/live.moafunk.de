@@ -1,0 +1,55 @@
+<!-- Staging Icecast-KH config. Same shape as docs/stream-rework/prod/icecast.xml,
+     but port 8020, small limits and nothing listed publicly. staging.sh setup
+     fills the CHANGE_ME passwords from stream.env into
+     /opt/unheard-staging/icecast.xml (mode 600). Port 8020 is reached only
+     through nginx and localhost; the cloud firewall allows 22/80/443 only. -->
+<icecast>
+  <location>Berlin</location>
+  <admin>admin@moafunk.de</admin>
+
+  <limits>
+    <clients>20</clients>
+    <sources>4</sources>
+    <queue-size>524288</queue-size>
+    <burst-size>65536</burst-size>
+  </limits>
+
+  <authentication>
+    <source-password>CHANGE_ME_SOURCE</source-password>
+    <relay-password>CHANGE_ME_RELAY</relay-password>
+    <admin-user>admin</admin-user>
+    <admin-password>CHANGE_ME_ADMIN</admin-password>
+  </authentication>
+
+  <listen-socket>
+    <port>8020</port>
+  </listen-socket>
+
+  <mount type="normal">
+    <mount-name>/live.mp3</mount-name>
+    <max-listeners>10</max-listeners>
+    <public>0</public>
+  </mount>
+
+  <mount type="normal">
+    <mount-name>/test.mp3</mount-name>
+    <max-listeners>10</max-listeners>
+    <public>0</public>
+  </mount>
+
+  <fileserve>1</fileserve>
+
+  <paths>
+    <logdir>/var/log/icecast</logdir>
+    <webroot>/usr/local/share/icecast/web</webroot>
+    <adminroot>/usr/local/share/icecast/admin</adminroot>
+  </paths>
+
+  <logging>
+    <loglevel>2</loglevel>
+  </logging>
+
+  <security>
+    <chroot>0</chroot>
+  </security>
+</icecast>
