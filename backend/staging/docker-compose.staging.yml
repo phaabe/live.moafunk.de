@@ -1,0 +1,68 @@
+# Staging stack on the production box (a stopgap until staging gets its own
+# server). Separate project, ports and data; hard CPU/memory caps so staging
+# can never starve production. Nothing restarts on its own: staging runs only
+# while someone tests. Start and stop it with staging.sh, never by hand.
+name: unheard-staging
+
+services:
+  api:
+    image: "ghcr.io/phaabe/live.moafunk.de-backend:${STAGING_TAG:?set STAGING_TAG to a sha-* tag}"
+    container_name: unheard-api-staging
+    restart: "no"
+    ports:
+      - "127.0.0.1:8001:8000"
+    # Same as production: the API is bridge-networked, the stream chain is
+    # host-networked, so the API reaches the staging harbor via the host gateway.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    environment:
+      - TZ=Europe/Berlin
+    cpus: "0.75"
+    mem_limit: 640m
+    memswap_limit: 640m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Production's moafunk.liq, unchanged: it reads its ports from stream.env
+  # (harbor 8015, Icecast 8020 here; production uses 8005 and 8010).
+  liquidsoap:
+    image: savonet/liquidsoap:v2.4.4
+    pull_policy: missing
+    container_name: moafunk-liquidsoap-staging
+    restart: "no"
+    network_mode: host
+    env_file: ./stream.env
+    volumes:
+      - ./moafunk.liq:/moafunk.liq:ro
+    command: ["liquidsoap", "/moafunk.liq"]
+    cpus: "0.5"
+    mem_limit: 320m
+    memswap_limit: 320m
+
+  # The production Icecast-KH image (built on the box, not in a registry).
+  icecast:
+    image: moafunk/icecast-kh:kh22
+    pull_policy: never
+    container_name: moafunk-icecast-staging
+    restart: "no"
+    network_mode: host
+    volumes:
+      - ./icecast.xml:/etc/moafunk/icecast.xml:ro
+    cpus: "0.25"
+    mem_limit: 96m
+    memswap_limit: 96m
+    # The image's own health check probes production's port 8010.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8020/status-json.xsl"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

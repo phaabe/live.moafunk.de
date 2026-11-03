@@ -1,0 +1,30 @@
+name: Staging safety checks
+
+# staging.sh must refuse every staging setting that could reach production or
+# real accounts. No secrets, no box access: the test uses throwaway env files.
+on:
+  pull_request:
+    branches: [main, dev/flow]
+    paths:
+      - backend/staging/**
+      - .github/workflows/staging-tests.yml
+  push:
+    branches: [main, dev/flow]
+    paths:
+      - backend/staging/**
+      - .github/workflows/staging-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  staging-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check staging.sh refuses unsafe settings
+        run: bash backend/staging/staging.test.sh
