@@ -2092,6 +2092,16 @@ pub struct ShowDetailResponse {
     /// from the manual `recording_*`/`prerecorded_*` uploads above. `None` when the
     /// show was never recorded. See [`LatestRecordingInfo`].
     latest_recording: Option<LatestRecordingInfo>,
+    /// The Show (series) this episode belongs to, if linked.
+    series_slug: Option<String>,
+    series_name: Option<String>,
+    /// "upcoming" | "wrapup_open" | "finished", the same rule as the Show page.
+    episode_status: crate::series::EpisodeStatus,
+    /// True while this episode's recording session is open (live or in the
+    /// reconnect grace).
+    on_air: bool,
+    /// Length of the pre-recorded set, when it was uploaded through Book Slot.
+    prerecorded_duration_secs: Option<i64>,
 }
 
 /// The most recent live-stream recording for a show, surfaced on the detail page so
@@ -2900,6 +2910,29 @@ pub async fn api_show_detail(
         }
     };
 
+    // Episode view of the host flow: its Show, status and set length.
+    let view: EpisodeViewRow = sqlx::query_as(
+        "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
+                s.wrapup_published_at, s.prerecorded_duration_secs \
+         FROM shows s LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    let on_air = state.recording_manager.lock().await.current_show_id() == Some(id);
+    let episode_end = crate::series::episode_end_utc(
+        &show.date,
+        show.start_time.as_deref(),
+        show.end_time.as_deref(),
+        view.rhythm_end.as_deref(),
+    );
+    let episode_status = crate::series::episode_status(
+        episode_end,
+        view.wrapup_published_at.is_some(),
+        on_air,
+        chrono::Utc::now(),
+    );
+
     Ok(Json(ShowDetailResponse {
         id: show.id,
         title: show.title,
@@ -2939,7 +2972,22 @@ pub async fn api_show_detail(
         stream_mode: show.stream_mode,
         created_by: show.created_by,
         latest_recording,
+        series_slug: view.series_slug,
+        series_name: view.series_name,
+        episode_status,
+        on_air,
+        prerecorded_duration_secs: view.prerecorded_duration_secs,
     }))
+}
+
+/// The host-flow part of a show's detail: its Show, published state and set length.
+#[derive(sqlx::FromRow)]
+struct EpisodeViewRow {
+    series_slug: Option<String>,
+    series_name: Option<String>,
+    rhythm_end: Option<String>,
+    wrapup_published_at: Option<String>,
+    prerecorded_duration_secs: Option<i64>,
 }
 
 /// Whether two same-day time windows clash. Times are zero-padded "HH:MM", so

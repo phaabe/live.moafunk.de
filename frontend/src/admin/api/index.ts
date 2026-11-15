@@ -500,6 +500,8 @@ export interface ShowDetail {
   available_hosts?: { id: number; username: string }[];
   /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */
   stream_mode?: 'live' | 'prerecorded';
+  /** The user who created the show (may differ from the assigned host). */
+  created_by?: number | null;
   /**
    * Most recent live-stream recording (from `recording_versions`), distinct from
    * the manual `recording_*`/`prerecorded_*` uploads. Absent if never recorded.
@@ -507,6 +509,15 @@ export interface ShowDetail {
    * — the finalized mp3 is preferred when available, else the auto-published one.
    */
   latest_recording?: LatestRecording;
+  /** The Show (series) of this episode, when it is linked to one. */
+  series_slug?: string | null;
+  series_name?: string | null;
+  /** Same rule as the Show page: upcoming, wrap-up open or finished. */
+  episode_status?: EpisodeStatus;
+  /** True while this episode's recording session is open. */
+  on_air?: boolean;
+  /** Length of a pre-recorded set booked through Book Slot, in seconds. */
+  prerecorded_duration_secs?: number | null;
 }
 
 export type RecordingVersionStatus = 'raw' | 'finalizing' | 'finalized' | 'failed';
@@ -928,6 +939,16 @@ export const seriesApi = {
       `${seriesPath(slug)}/upload/finalize/${encodeURIComponent(session_id)}`
     );
   },
+
+  /** Cancel an episode before it starts; the slot is free again. */
+  cancelBooking: (showId: number) =>
+    api.delete<{ success: boolean; series_slug: string | null }>(`/api/shows/${showId}/booking`),
+
+  /** Close the wrap-up of an ended episode: it becomes Finished. */
+  publish: (showId: number) =>
+    api.post<{ id: number; status: EpisodeStatus; status_label: string }>(
+      `/api/shows/${showId}/publish`
+    ),
 
   /** Swap the set of a booked pre-recorded episode; the booking stays. */
   replaceFile: (showId: number, uploadId: string) =>

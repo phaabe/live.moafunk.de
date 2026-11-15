@@ -647,3 +647,66 @@ async fn other_hosts_get_403_and_admins_may_book() {
     publish(&state, admin, ended).await.unwrap();
     cancel(&state, admin, by_admin).await.unwrap();
 }
+
+async fn detail(state: &Arc<AppState>, user: i64, id: i64) -> Value {
+    let response =
+        handlers::api::api_show_detail(State(state.clone()), Path(id), headers(state, user).await)
+            .await
+            .unwrap();
+    json_of(response).await.1
+}
+
+/// The episode screens read their Show, status and set length from the show
+/// detail.
+#[tokio::test]
+async fn show_detail_carries_the_episode_view() {
+    let (state, _temp, _r2) = booking_state().await;
+    let host = add_user(&state, "host", "host").await;
+    let (series_id, slug) = series(&state, host).await;
+    let free = slots(&state, host, &slug).await.unwrap();
+    let upload = upload_set(&state, host, &slug, "set.wav").await;
+    let id = book(&state, host, &slug, &free[0], "prerecorded", Some(&upload))
+        .await
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    let view = detail(&state, host, id).await;
+    assert_eq!(view["series_slug"], "brunchtime");
+    assert_eq!(view["series_name"], "Brunchtime");
+    assert_eq!(view["episode_status"], "upcoming");
+    assert_eq!(view["on_air"], false);
+    assert_eq!(view["prerecorded_duration_secs"], 1);
+
+    let ended = insert_episode(&state, series_id, host, "2020-01-05").await;
+    assert_eq!(
+        detail(&state, host, ended).await["episode_status"],
+        "wrapup_open"
+    );
+    publish(&state, host, ended).await.unwrap();
+    assert_eq!(
+        detail(&state, host, ended).await["episode_status"],
+        "finished"
+    );
+
+    // Recording now: the ended episode counts as on air again.
+    state
+        .recording_manager
+        .lock()
+        .await
+        .start(ended)
+        .await
+        .unwrap();
+    let on_air = detail(&state, host, ended).await;
+    assert_eq!(on_air["on_air"], true);
+
+    // A date without a Show has no series fields.
+    let loose = sqlx::query("INSERT INTO shows (title, date) VALUES ('Loose', '2099-01-04')")
+        .execute(&state.db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+    let loose = detail(&state, host, loose).await;
+    assert_eq!(loose["series_slug"], Value::Null);
+    assert_eq!(loose["episode_status"], "upcoming");
+}
