@@ -3,9 +3,9 @@
 use crate::auth::get_current_user;
 use crate::handlers::recording::LiveFinalize;
 use crate::recording_finalizer::FINALIZE_GRACE;
-use crate::stream_bridge::SharedStreamState;
+use crate::stream_bridge::{SharedStreamState, StreamError};
 use crate::{AppState, Result};
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
     http::StatusCode,
@@ -33,6 +33,9 @@ pub struct StreamQuery {
     /// The browser re-sends it on every reconnect. Default true.
     #[serde(default = "record_by_default")]
     pub record: bool,
+    /// The browser's WebM stream this connection continues after a drop. Its
+    /// first binary frame re-sends that stream's header for the new producer.
+    pub resume: Option<String>,
 }
 
 fn record_by_default() -> bool {
@@ -107,14 +110,9 @@ pub async fn stream_ws_handler(
         }
     }
 
-    // A test broadcast never records, so it ignores show_id entirely.
-    let test = query.test;
-    let show_id = if test { None } else { query.show_id };
-    let record = query.record;
-
     // Upgrade to WebSocket
     Ok(ws.on_upgrade(move |socket| {
-        handle_stream_socket(socket, state, stream_state, username, show_id, test, record)
+        handle_stream_socket(socket, state, stream_state, username, query)
     }))
 }
 
@@ -176,10 +174,12 @@ async fn handle_stream_socket(
     state: Arc<AppState>,
     stream_state: SharedStreamState,
     username: String,
-    show_id: Option<i64>,
-    test: bool,
-    record: bool,
+    query: StreamQuery,
 ) {
+    // A test broadcast never records, so it ignores show_id entirely.
+    let test = query.test;
+    let show_id = if test { None } else { query.show_id };
+    let record = query.record;
     let (mut sender, mut receiver) = socket.split();
 
     // Pick the producer target. A test broadcast pushes to the private `/test`
@@ -244,6 +244,13 @@ async fn handle_stream_socket(
             tracing::error!("Failed to auto-start recording for show {}: {}", sid, e);
         }
     }
+
+    // A reconnect continues the browser's WebM stream. Its re-sent header goes
+    // to the recorder only if the recorder has not read that stream yet.
+    let mut header_tee = match query.resume {
+        Some(ref id) => Some(stream_state.lock().await.begin_webm_stream(id).await),
+        None => None,
+    };
 
     // Send confirmation
     if let Err(e) = sender.send(Message::Text("connected".into())).await {
@@ -313,13 +320,23 @@ async fn handle_stream_socket(
                 chunks_received += 1;
                 bytes_received += data.len() as u64;
 
+                let tee = header_tee.take().unwrap_or(true);
                 let mut stream = stream_state.lock().await;
-                if let Err(e) = stream.write_chunk(generation, &data).await {
+                if let Err(e) = stream.write_chunk(generation, &data, tee).await {
                     dropped_chunks += 1;
                     tracing::error!("Failed to write audio chunk: {}", e);
-                    let _ = sender
-                        .send(Message::Text(format!("error: {}", e).into()))
-                        .await;
+                    // A dead producer (e.g. Liquidsoap restarted) is no reason
+                    // to stop: the browser reconnects to a new producer. An
+                    // error frame tells it not to.
+                    let frame = if matches!(e, StreamError::WriteFailed(_)) {
+                        Message::Close(Some(CloseFrame {
+                            code: close_code::ERROR,
+                            reason: "producer failed".into(),
+                        }))
+                    } else {
+                        Message::Text(format!("error: {}", e))
+                    };
+                    let _ = sender.send(frame).await;
                     break;
                 }
             }
@@ -329,6 +346,13 @@ async fn handle_stream_socket(
                     tracing::info!("Received stop command from '{}'", username);
                     explicit_stop = true;
                     break;
+                } else if let Some(id) = text.as_str().strip_prefix("stream:") {
+                    // The browser's recorder starts a new WebM stream with the
+                    // next chunk (a reload, or a recorder restart).
+                    let mut stream = stream_state.lock().await;
+                    if !stream.is_superseded(generation) {
+                        stream.begin_webm_stream(id).await;
+                    }
                 } else if let Some(echo) = text.as_str().strip_prefix("ping:") {
                     // Parse-and-reformat instead of echoing raw text so a
                     // malformed payload can't inject into the JSON reply.

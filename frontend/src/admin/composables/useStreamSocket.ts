@@ -42,6 +42,16 @@ let currentTest = false;
 // "Record this show", remembered so an auto-reconnect never starts recording
 // a show the host chose not to record.
 let currentRecord = true;
+// The recorder's current WebM stream. Each connection gets a new producer
+// ffmpeg, which needs the stream's header (the bytes before its first
+// Cluster) before any audio, so a reconnect re-sends the header and the
+// stream goes on where it is.
+let webmStreamId: string | null = null;
+let webmHeader: Uint8Array | null = null;
+// The stream's bytes so far while its first Cluster has not arrived.
+let webmHead = new Uint8Array(0);
+// A header is a few hundred bytes; stop looking for it after this.
+const WEBM_HEADER_SCAN_LIMIT = 64 * 1024;
 let currentCallbacks: {
   onConnected?: () => void;
   onDisconnected?: () => void;
@@ -152,8 +162,53 @@ export function liveStreamShowId(): number | null {
   return live ? currentShowId : null;
 }
 
+/** Where a WebM stream's header ends: the offset of its first Cluster, or -1. */
+export function webmHeaderLength(bytes: Uint8Array): number {
+  for (let i = 0; i + 3 < bytes.length; i++) {
+    if (
+      bytes[i] === 0x1f &&
+      bytes[i + 1] === 0x43 &&
+      bytes[i + 2] === 0xb6 &&
+      bytes[i + 3] === 0x75
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Follow the recorder's WebM stream: a new stream, and its header once complete. */
+function trackWebm(data: ArrayBuffer, newStream: boolean): void {
+  if (newStream) {
+    webmStreamId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    webmHeader = null;
+    webmHead = new Uint8Array(0);
+  }
+  if (!webmStreamId || webmHeader || webmHead.length > WEBM_HEADER_SCAN_LIMIT) return;
+  const head = new Uint8Array(webmHead.length + data.byteLength);
+  head.set(webmHead);
+  head.set(new Uint8Array(data), webmHead.length);
+  const end = webmHeaderLength(head);
+  if (end >= 0) {
+    webmHeader = head.slice(0, end);
+    webmHead = new Uint8Array(0);
+  } else {
+    webmHead = head;
+  }
+}
+
+function forgetWebm(): void {
+  webmStreamId = null;
+  webmHeader = null;
+  webmHead = new Uint8Array(0);
+}
+
+/** Longest wait between reconnect attempts: 1, 2, 4, then every 5 seconds. */
+const MAX_RECONNECT_DELAY_MS = 5000;
+
 export function useStreamSocket(options: UseStreamSocketOptions = {}) {
-  const { maxReconnectAttempts = 3, onConnected, onDisconnected, onError, onLive } = options;
+  // No limit: a live show reconnects until End Episode (stopStream).
+  const { maxReconnectAttempts = Infinity, onConnected, onDisconnected, onError, onLive } = options;
 
   // Update callbacks so the currently-mounted component receives events
   currentCallbacks = { onConnected, onDisconnected, onError, onLive };
@@ -191,6 +246,9 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       if (currentShowId != null) params.set('show_id', String(currentShowId));
       if (currentTest) params.set('test', 'true');
       if (!currentRecord) params.set('record', 'false');
+      // Continue the recorder's stream: the header goes first, then its audio.
+      const resumeHeader = webmHeader;
+      if (resumeHeader && webmStreamId) params.set('resume', webmStreamId);
       const qs = params.toString();
       const wsUrl = `${protocol}//${window.location.host}/ws/stream${qs ? `?${qs}` : ''}`;
 
@@ -202,6 +260,10 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
       socket.onopen = () => {
         console.log('[StreamSocket] Connected');
+        if (resumeHeader) {
+          socket?.send(resumeHeader);
+          bytesQueued += resumeHeader.byteLength;
+        }
         state.value = 'connected';
         startPings();
         currentCallbacks.onConnected?.();
@@ -258,7 +320,10 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
           // Auto-reconnect on unexpected disconnect, or after a failed attempt
           autoReconnecting = true;
           reconnectAttempts.value++;
-          const delay = Math.pow(2, reconnectAttempts.value - 1) * 1000;
+          const delay = Math.min(
+            Math.pow(2, reconnectAttempts.value - 1) * 1000,
+            MAX_RECONNECT_DELAY_MS
+          );
           state.value = 'connecting';
           console.log(
             `[StreamSocket] Reconnecting in ${delay}ms (${reconnectAttempts.value}/${maxReconnectAttempts})`
@@ -279,10 +344,16 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     });
   }
 
-  function send(data: ArrayBuffer | string): boolean {
+  /**
+   * Send a recorder chunk. `newStream` marks the first chunk of a new
+   * MediaRecorder, so the server reads it as a new WebM stream.
+   */
+  function send(data: ArrayBuffer | string, newStream = false): boolean {
+    if (data instanceof ArrayBuffer) trackWebm(data, newStream);
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return false;
     }
+    if (newStream && webmStreamId) socket.send(`stream:${webmStreamId}`);
     socket.send(data);
     if (data instanceof ArrayBuffer) {
       bytesQueued += data.byteLength;
@@ -312,6 +383,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     currentShowId = null;
     currentTest = false;
     currentRecord = true;
+    forgetWebm();
     autoReconnecting = false;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
@@ -338,6 +410,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     currentShowId = null;
     currentTest = false;
     currentRecord = true;
+    forgetWebm();
     autoReconnecting = false;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';

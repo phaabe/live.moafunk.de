@@ -5,8 +5,11 @@ export interface AudioDevice {
   label: string;
 }
 
+/** `first` is true for the first chunk of each new MediaRecorder. */
+export type AudioDataCallback = (data: ArrayBuffer, first: boolean) => void;
+
 export interface UseAudioCaptureOptions {
-  onData?: (data: ArrayBuffer) => void;
+  onData?: AudioDataCallback;
   onError?: (error: string) => void;
 }
 
@@ -87,9 +90,12 @@ let gainNode: GainNode | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
 let destinationNode: MediaStreamAudioDestinationNode | null = null;
 let noAudioTimer: ReturnType<typeof setTimeout> | null = null;
+// Each blob read is async; chunks must reach the socket in order, also the
+// last chunk of a recorder before the first of the next.
+let chunkReads = Promise.resolve();
 
 // Mutable callbacks — updated via options or setOnData()/setOnError()
-let currentOnData: ((data: ArrayBuffer) => void) | null = null;
+let currentOnData: AudioDataCallback | null = null;
 let currentOnError: ((error: string) => void) | null = null;
 
 export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
@@ -104,7 +110,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
    * Use this to wire audio chunks to a new sink (e.g. streamSocket.send)
    * after the composable has already been created.
    */
-  function setOnData(callback: ((data: ArrayBuffer) => void) | null): void {
+  function setOnData(callback: AudioDataCallback | null): void {
     currentOnData = callback;
   }
 
@@ -373,12 +379,19 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
       });
       mediaRecorder = recorder;
       let sentData = false;
+      let first = true;
 
-      recorder.ondataavailable = async (event) => {
+      recorder.ondataavailable = (event) => {
         if (event.data.size > 0 && currentOnData) {
           sentData = true;
-          const buffer = await event.data.arrayBuffer();
-          currentOnData(buffer);
+          const blob = event.data;
+          chunkReads = chunkReads
+            .then(async () => {
+              const buffer = await blob.arrayBuffer();
+              currentOnData?.(buffer, first);
+              first = false;
+            })
+            .catch((e) => console.error('[AudioCapture] Failed to read a chunk:', e));
         }
       };
 

@@ -19,8 +19,11 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::AbortHandle;
 
-/// Grace period after a live producer drops before its recording is finalized.
-pub const FINALIZE_GRACE: Duration = Duration::from_secs(30);
+/// How long a live episode and its recording stay open after its producer
+/// drops without "stop". The browser reconnects by itself until End Episode,
+/// so this covers a long Wi-Fi drop or a stream server restart. A tab closed
+/// without End Episode stays on air (silent) this long.
+pub const FINALIZE_GRACE: Duration = Duration::from_secs(5 * 60);
 
 /// Result of one finalize, shared with every caller that waits for it. The
 /// error is text so each waiter gets its own copy.
@@ -591,12 +594,12 @@ mod tests {
     async fn new_grace_wait_replaces_an_older_wait() {
         let (f, ops) = (finalizer(), Fake::new(Some(1), true));
         f.schedule(ops.clone(), 1);
-        advance(Duration::from_secs(20)).await;
+        advance(FINALIZE_GRACE * 2 / 3).await;
         f.schedule(ops.clone(), 1);
-        advance(Duration::from_secs(20)).await;
+        advance(FINALIZE_GRACE * 2 / 3).await;
         settle().await;
         assert!(ops.detached().is_empty());
-        advance(Duration::from_secs(15)).await;
+        advance(FINALIZE_GRACE / 2).await;
         settle().await;
         assert_eq!(ops.detached(), vec![1]);
     }
