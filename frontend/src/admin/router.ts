@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 import { useAuthStore } from './stores/auth';
+import { hostPage } from './hostPage';
 
 // Lazy-loaded route components
 const LoginPage = () => import('./pages/LoginPage.vue');
@@ -16,6 +17,8 @@ const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
 const DashboardPage = () => import('./pages/DashboardPage.vue');
+const HostSchedulePage = () => import('./pages/HostSchedulePage.vue');
+const HostMyShowsPage = () => import('./pages/HostMyShowsPage.vue');
 const ConfigPage = () => import('./pages/ConfigPage.vue');
 
 // Host flow pages
@@ -79,7 +82,8 @@ const router = createRouter({
     {
       path: '/dashboard',
       name: 'dashboard',
-      component: DashboardPage,
+      // Hosts get the Schedule screen; admins keep the Dashboard.
+      component: hostPage(HostSchedulePage, DashboardPage),
       // Landing page for everyone except guests.
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
@@ -98,7 +102,8 @@ const router = createRouter({
     {
       path: '/shows',
       name: 'shows',
-      component: ShowsPage,
+      // Hosts get My Shows (their series); admins keep the Shows page.
+      component: hostPage(HostMyShowsPage, ShowsPage),
       // Merged Shows + My Shows page — everyone except guests.
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
@@ -235,8 +240,8 @@ const router = createRouter({
       path: '/calendar',
       name: 'calendar',
       component: CalendarPage,
-      // Read-only schedule — everyone except guests.
-      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+      // Admins only: hosts have Schedule instead (the role guard sends them there).
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/config',

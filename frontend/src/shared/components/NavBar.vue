@@ -10,6 +10,8 @@ const mobileMenuOpen = ref(false);
 
 interface NavItem {
   label: string;
+  /** Hosts see the flow's name for the item. */
+  hostLabel?: string;
   path: string;
   roles?: string[];
   category: string;
@@ -18,6 +20,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   {
     label: 'Dashboard',
+    hostLabel: 'Schedule',
     path: '/dashboard',
     roles: ['admin', 'superadmin', 'host'],
     category: 'Radio',
@@ -25,10 +28,16 @@ const navItems: NavItem[] = [
   {
     label: 'Calendar',
     path: '/calendar',
+    roles: ['admin', 'superadmin'],
+    category: 'Radio',
+  },
+  {
+    label: 'Shows',
+    hostLabel: 'My Shows',
+    path: '/shows',
     roles: ['admin', 'superadmin', 'host'],
     category: 'Radio',
   },
-  { label: 'Shows', path: '/shows', roles: ['admin', 'superadmin', 'host'], category: 'Radio' },
   { label: 'Artists', path: '/artists', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   {
     label: 'Overlay',
@@ -48,10 +57,12 @@ const categoryOrder = ['Radio', 'UNHEARD', 'Configuration'];
 // on desktop instead of behind a hover dropdown.
 const flatCategories = ['Radio'];
 
+const isHost = computed(() => authStore.user?.role === 'host');
+
 const visibleNavItems = computed(() =>
-  navItems.filter(
-    (item) => !item.roles || (authStore.user && item.roles.includes(authStore.user.role))
-  )
+  navItems
+    .filter((item) => !item.roles || (authStore.user && item.roles.includes(authStore.user.role)))
+    .map((item) => (isHost.value && item.hostLabel ? { ...item, label: item.hostLabel } : item))
 );
 
 const groupedNavItems = computed(() => {
@@ -186,7 +197,19 @@ watch(
         <button class="close-button" @click="closeMobileMenu" aria-label="Close menu">✕</button>
       </div>
       <div class="mobile-menu-links">
-        <template v-for="(items, category) in groupedNavItems" :key="category">
+        <!-- Hosts have two items (Schedule, My Shows): no category toggle. -->
+        <template v-if="isHost">
+          <router-link
+            v-for="item in visibleNavItems"
+            :key="item.path"
+            :to="item.path"
+            :class="['mobile-nav-link', { active: isActive(item.path) }]"
+            @click="closeMobileMenu"
+          >
+            {{ item.label }}
+          </router-link>
+        </template>
+        <template v-for="(items, category) in groupedNavItems" v-else :key="category">
           <div class="mobile-nav-group">
             <button class="mobile-nav-category" @click="toggleMobileSection(category as string)">
               {{ category }}
