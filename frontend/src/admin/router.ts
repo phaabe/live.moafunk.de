@@ -6,8 +6,9 @@ const LoginPage = () => import('./pages/LoginPage.vue');
 const ArtistsPage = () => import('./pages/ArtistsPage.vue');
 const ArtistDetailPage = () => import('./pages/ArtistDetailPage.vue');
 const ShowsPage = () => import('./pages/ShowsPage.vue');
-const ShowWizard = () => import('./pages/ShowWizard.vue');
+const ShowCreatePage = () => import('./pages/ShowCreatePage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
+const ShowSeriesPage = () => import('./pages/ShowSeriesPage.vue');
 const RecordingPage = () => import('./pages/RecordingPage.vue');
 const UsersPage = () => import('./pages/UsersPage.vue');
 const UserEditPage = () => import('./pages/UserEditPage.vue');
@@ -102,14 +103,22 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
-      // Multi-step create-show wizard — available to any show creator (admin + host).
+      // Hosts get the New Show screen; everyone else keeps the ShowWizard.
       path: '/shows/new',
       name: 'show-create',
-      component: ShowWizard,
+      component: ShowCreatePage,
       meta: { requiresAuth: true },
     },
     {
-      path: '/shows/:id',
+      // A Show (series) by its slug, with its episodes. Owner only (API 404).
+      path: '/shows/:slug',
+      name: 'show-series',
+      component: ShowSeriesPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+    },
+    {
+      // One episode (dated show). Numbers only, so a slug never lands here.
+      path: '/shows/:id(\\d+)',
       name: 'show-detail',
       component: ShowDetailPage,
       // Hosts may view any show and edit the ones they host; guests reach the
