@@ -127,8 +127,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Shared with the chaos test show (e2e-staging.yml): a deploy waits for a
+    # running test instead of landing mid-show or being skipped by its hold.
     concurrency:
-      group: staging-deploy
+      group: staging-box
       cancel-in-progress: false
     environment:
       name: staging
@@ -170,6 +172,14 @@ jobs:
             exit 0
           fi
           exit "$code"
+
+  e2e-staging:
+    # The chaos test show on what was just deployed (e2e-staging.yml). A
+    # failed run turns this workflow red; staging keeps the deployed image.
+    needs: deploy-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    uses: ./.github/workflows/e2e-staging.yml
+    secrets: inherit
 
   deploy-monitoring:
     # Deploy monitoring to Hetzner only when explicitly requested.

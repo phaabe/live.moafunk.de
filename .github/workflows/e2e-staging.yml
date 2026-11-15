@@ -1,0 +1,101 @@
+name: E2E - Chaos test show on staging
+
+# One test show on https://staging.live.moafunk.de proves the stream, the
+# recording and the self-recovery after a dropout (e2e/). It runs after every
+# staging deploy (backend.yml calls it), every night, and by hand: a soak of
+# `duration` extra minutes on air before each release.
+# Schedule and workflow_dispatch work only once this file is on main.
+on:
+  workflow_call:
+  pull_request:
+    branches: [staging]
+    paths: ['e2e/**', '.github/workflows/e2e-staging.yml']
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Extra minutes on air (soak: 90 before a release)'
+        default: '0'
+
+permissions:
+  contents: read
+
+jobs:
+  chaos-show:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    # Two runs never share staging, and a deploy (backend.yml, same group)
+    # waits until the run ends. A waiting run starts after the current one.
+    concurrency:
+      group: staging-box
+      cancel-in-progress: false
+    env:
+      E2E_RUN: ${{ github.run_id }}
+      DURATION: ${{ inputs.duration || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The nightly run tests staging with the staging branch's test.
+          ref: ${{ github.event_name == 'schedule' && 'staging' || '' }}
+
+      - name: Get the staging CI key and the host login from Bitwarden
+        id: secrets
+        uses: bitwarden/sm-action@v2
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            ba04c03e-d633-40a6-a49f-b50301724312 > STAGING_DEPLOY_SSH_KEY
+            STAGING_HOST_PASSWORD_SECRET_ID > STAGING_HOST_PASSWORD
+
+      - name: Write the CI key and the pinned host key
+        env:
+          DEPLOY_KEY: ${{ steps.secrets.outputs.STAGING_DEPLOY_SSH_KEY }}
+          # Same host key as the deploy in backend.yml.
+          HOST_KEY: staging.live.moafunk.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHw+kqXgS8FmHdVOw2gaNMRzTQ+0SjGKYvsuqu8HyFQp
+        run: |
+          set -euo pipefail
+          (umask 077 && printf '%s\n' "$DEPLOY_KEY" >"$RUNNER_TEMP/staging-key")
+          printf '%s\n' "$HOST_KEY" >"$RUNNER_TEMP/staging-known-hosts"
+          {
+            echo "STAGING_SSH_KEY=$RUNNER_TEMP/staging-key"
+            echo "STAGING_KNOWN_HOSTS=$RUNNER_TEMP/staging-known-hosts"
+          } >>"$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install the test, Chromium and ffmpeg
+        working-directory: e2e
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run typecheck
+
+      - name: Run the chaos test show
+        working-directory: e2e
+        env:
+          STAGING_HOST_PASSWORD: ${{ steps.secrets.outputs.STAGING_HOST_PASSWORD }}
+        run: npx playwright test
+
+      - name: Remove this run's hold (also after a failure)
+        if: always() && env.STAGING_SSH_KEY != ''
+        run: |
+          ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o UserKnownHostsFile="$STAGING_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de "e2e-unhold $E2E_RUN"
+
+      - name: Keep the trace and screenshots of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-staging-${{ github.run_id }}
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 14
