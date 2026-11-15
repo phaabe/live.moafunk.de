@@ -1,6 +1,6 @@
 # Staging
 
-Staging runs `dev/flow` images at https://staging.live.moafunk.de before a release reaches `main` and production. It has its own Hetzner server (`cx23`, Ubuntu 24.04, `nbg1`) and shares nothing with the production box.
+Staging runs images from the `staging` branch at https://staging.live.moafunk.de before a release reaches `main` and production. It has its own Hetzner server (`cx23`, Ubuntu 24.04, `nbg1`) and shares nothing with the production box.
 
 ## Rules
 
@@ -57,7 +57,7 @@ Add `-i <key>` to the `ssh`/`scp` commands below if your ssh config does not pic
 
 ## Daily use
 
-Every push to `dev/flow` builds an image `sha-<7 chars>` (`backend.yml`). On the box:
+Every push to `staging` builds an image `sha-<7 chars>` (`backend.yml`). On the box:
 
 ```bash
 /opt/unheard-staging/staging.sh up sha-1234567   # checks env and R2, pulls, starts, waits for health and both mounts

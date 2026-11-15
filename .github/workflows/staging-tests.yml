@@ -5,12 +5,12 @@ name: Staging safety checks
 # test uses throwaway env files, a fixture DB and stub argon2/docker.
 on:
   pull_request:
-    branches: [main, dev/flow]
+    branches: [main, staging]
     paths:
       - backend/staging/**
       - .github/workflows/staging-tests.yml
   push:
-    branches: [main, dev/flow]
+    branches: [main, staging]
     paths:
       - backend/staging/**
       - .github/workflows/staging-tests.yml

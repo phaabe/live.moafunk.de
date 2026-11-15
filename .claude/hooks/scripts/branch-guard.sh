@@ -55,7 +55,7 @@ fi
 
 # Protected branches (case-sensitive, exact match)
 case "$BRANCH" in
-  main|master|trunk|production|prod|release|develop|dev)
+  main|master|trunk|production|prod|release|develop|dev|staging)
     {
       echo "BLOCKED by ~/.claude/hooks/scripts/branch-guard.sh"
       echo "Refusing to commit directly to protected branch: $BRANCH"
