@@ -94,7 +94,7 @@ async function goLive() {
     });
     flow.setShowStarted();
     await socket.connect(false, showId, false, flow.recordStream.value);
-    audioCapture.setOnData((data) => socket.send(data));
+    audioCapture.setOnData((data, first) => socket.send(data, first));
     if (!audioCapture.startRecording()) {
       socket.stopStream();
       throw new Error(audioCapture.error.value ?? 'Failed to start audio');

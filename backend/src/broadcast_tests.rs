@@ -1120,3 +1120,124 @@ async fn first_audio_chunk_lifts_the_no_audio_deadline() {
     assert!(next_text(&mut socket).await.starts_with("pong:"));
     assert!(state.stream_state.lock().await.is_active());
 }
+
+/// A tone as WebM/Opus, laid out like the browser's MediaRecorder stream.
+async fn webm_tone(frequency: u32, seconds: u32) -> Vec<u8> {
+    let out = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+        .arg(format!(
+            "sine=frequency={frequency}:duration={seconds}:sample_rate=48000"
+        ))
+        .args(["-ac", "2", "-c:a", "libopus", "-f", "webm"])
+        .args(["-cluster_time_limit", "250", "pipe:1"])
+        .output()
+        .await
+        .expect("run ffmpeg");
+    assert!(out.status.success(), "ffmpeg could not make the tone");
+    out.stdout
+}
+
+/// Where the stream's header ends: at its first Cluster.
+fn webm_header_len(webm: &[u8]) -> usize {
+    webm.windows(4)
+        .position(|w| w == [0x1f, 0x43, 0xb6, 0x75])
+        .expect("a WebM stream has a Cluster")
+}
+
+async fn send_audio(socket: &mut Producer, bytes: &[u8]) {
+    for chunk in bytes.chunks(4096) {
+        socket
+            .send(WsMessage::Binary(chunk.to_vec()))
+            .await
+            .unwrap();
+    }
+}
+
+/// Seconds of audio in the recording that `stop_recording` joins.
+async fn recorded_seconds(state: &Arc<AppState>) -> f64 {
+    let joined = state
+        .stream_state
+        .lock()
+        .await
+        .stop_recording()
+        .await
+        .unwrap()
+        .expect("a recording");
+    let out = tokio::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration"])
+        .args(["-of", "csv=p=0"])
+        .arg(&joined)
+        .output()
+        .await
+        .expect("run ffprobe");
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+/// The panel reconnects by itself, also after a long drop. The episode and
+/// its recording wait for it, and the reconnect continues the recorder's
+/// WebM stream: one recording with all the audio.
+#[tokio::test]
+async fn a_drop_longer_than_30_s_still_ends_in_one_recording() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+    let tone = webm_tone(440, 4).await;
+    let (sent, rest) = tone.split_at(tone.len() / 2);
+
+    let mut first = connect_producer(&state, addr, host, "show_id=1").await;
+    first
+        .send(WsMessage::Text("stream:a".into()))
+        .await
+        .unwrap();
+    send_audio(&mut first, sent).await;
+    let archive = state.recording_manager.lock().await.get_temp_file_path();
+    close(first).await;
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(40)).await;
+    tokio::time::resume();
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+
+    let mut back = connect_producer(&state, addr, host, "show_id=1&resume=a").await;
+    assert_eq!(
+        state.recording_manager.lock().await.get_temp_file_path(),
+        archive,
+        "the reconnect resumes the same recording"
+    );
+    // The new producer needs the header; the recorder has it already.
+    send_audio(&mut back, &tone[..webm_header_len(&tone)]).await;
+    send_audio(&mut back, rest).await;
+    close(back).await;
+
+    let seconds = recorded_seconds(&state).await;
+    assert!((seconds - 4.0).abs() < 0.3, "recorded {seconds} s of 4 s");
+}
+
+/// A reload starts a new WebM stream in the same episode. The recorder
+/// cannot read a second WebM header, so a new recorder process writes on
+/// into the same recording.
+#[tokio::test]
+async fn a_new_webm_stream_continues_the_same_recording() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+
+    let mut first = connect_producer(&state, addr, host, "show_id=1").await;
+    first
+        .send(WsMessage::Text("stream:a".into()))
+        .await
+        .unwrap();
+    send_audio(&mut first, &webm_tone(440, 3).await).await;
+    close(first).await;
+
+    let mut reloaded = connect_producer(&state, addr, host, "show_id=1").await;
+    reloaded
+        .send(WsMessage::Text("stream:b".into()))
+        .await
+        .unwrap();
+    send_audio(&mut reloaded, &webm_tone(880, 3).await).await;
+    close(reloaded).await;
+
+    let seconds = recorded_seconds(&state).await;
+    assert!((seconds - 6.0).abs() < 0.3, "recorded {seconds} s of 6 s");
+}

@@ -3,7 +3,18 @@ import {
   liveStreamShowId,
   parsePong,
   useStreamSocket,
+  webmHeaderLength,
 } from '../src/admin/composables/useStreamSocket';
+
+describe('webmHeaderLength', () => {
+  it('finds the first Cluster', () => {
+    expect(webmHeaderLength(new Uint8Array([0x1a, 9, 0x1f, 0x43, 0xb6, 0x75, 0x1f]))).toBe(2);
+  });
+
+  it('is -1 before a Cluster arrives', () => {
+    expect(webmHeaderLength(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x1f, 0x43, 0xb6]))).toBe(-1);
+  });
+});
 
 describe('parsePong', () => {
   it('parses a full server pong frame', () => {
@@ -127,19 +138,15 @@ describe('useStreamSocket auto-reconnect', () => {
     expect(stream.state.value).toBe('live');
   }
 
-  it('a failed first reconnect still schedules the second and third attempts', async () => {
+  it('keeps retrying while live, stops after End Episode', async () => {
     await startLive(true, 42);
 
     sockets[0].drop();
     expect(stream.state.value).toBe('connecting');
-    expect(stream.reconnectAttempts.value).toBe(1);
 
-    // 1 s / 2 s / 4 s backoff, each attempt reusing force + show_id.
-    for (const [attempt, delay] of [
-      [1, 1000],
-      [2, 2000],
-      [3, 4000],
-    ]) {
+    // 1 s / 2 s / 4 s, then every 5 s, with no attempt limit; each attempt
+    // reuses force + show_id.
+    for (const [attempt, delay] of [1000, 2000, 4000, 5000, 5000, 5000, 5000, 5000].entries()) {
       const before = sockets.length;
       vi.advanceTimersByTime(delay - 1);
       expect(sockets).toHaveLength(before);
@@ -147,19 +154,45 @@ describe('useStreamSocket auto-reconnect', () => {
       expect(sockets).toHaveLength(before + 1);
       expect(latest().url).toContain('force=true');
       expect(latest().url).toContain('show_id=42');
-      expect(stream.reconnectAttempts.value).toBe(attempt);
+      expect(stream.reconnectAttempts.value).toBe(attempt + 1);
 
       latest().fail();
-      if (attempt < 3) {
-        expect(stream.state.value).toBe('connecting');
-        expect(stream.reconnectAttempts.value).toBe(attempt + 1);
-      }
+      expect(stream.state.value).toBe('connecting');
     }
 
-    expect(stream.state.value).toBe('error');
-    expect(stream.error.value).toBe('Connection lost after multiple attempts');
+    // End Episode during the backoff.
+    stream.stopStream();
     vi.advanceTimersByTime(60_000);
-    expect(sockets).toHaveLength(4); // the original + 3 attempts, no more
+    expect(sockets).toHaveLength(9);
+    expect(stream.state.value).toBe('disconnected');
+  });
+
+  it("a reconnect re-sends the recorder's WebM header before its audio", async () => {
+    await startLive(false, 42);
+    const head = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2]).buffer;
+    const rest = new Uint8Array([3, 0x1f, 0x43, 0xb6, 0x75, 7]).buffer;
+    stream.send(head, true);
+    stream.send(rest);
+    const announce = sockets[0].sent[0] as string;
+    expect(announce).toMatch(/^stream:\w+$/);
+    expect(sockets[0].sent.slice(1)).toEqual([head, rest]);
+
+    sockets[0].drop();
+    vi.advanceTimersByTime(1000);
+    expect(latest().url).toContain(`resume=${announce.slice('stream:'.length)}`);
+    latest().open();
+    expect(latest().sent[0]).toEqual(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3]));
+
+    const next = new Uint8Array([8]).buffer;
+    stream.send(next);
+    expect(latest().sent[1]).toBe(next);
+
+    // End Episode: the next show starts a stream of its own.
+    stream.stopStream();
+    const again = stream.connect(false, 43);
+    goLive(latest());
+    await again;
+    expect(latest().url).not.toContain('resume=');
   });
 
   it('keeps test mode across reconnect attempts', async () => {
@@ -228,7 +261,7 @@ describe('useStreamSocket auto-reconnect', () => {
     stream = useStreamSocket({ onLive });
     await startLive(false, 7);
 
-    // More drops than maxReconnectAttempts in one show — each recovers.
+    // Many drops in one show — each recovers.
     for (let drop = 1; drop <= 4; drop++) {
       latest().drop();
       expect(stream.state.value).toBe('connecting');

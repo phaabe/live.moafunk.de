@@ -243,6 +243,13 @@ pub struct StreamState {
     /// FFmpeg died). The recording is abandoned but the live stream keeps
     /// running. Surfaced via [`StreamStatus`] so it's never silently swallowed.
     recording_failed: Option<String>,
+    /// The browser's WebM stream the recorder process is reading (one per
+    /// MediaRecorder start), so a reconnect that continues it keeps the same
+    /// recorder process.
+    webm_stream: Option<String>,
+    /// True once the recorder process got audio. A new WebM stream then needs
+    /// a new recorder process: ffmpeg breaks on a second WebM header.
+    recorder_fed: bool,
     /// True while this is a *test* broadcast (pushing to the private `/test`
     /// mount, no recording). The public on-air signal ([`StreamStatus::active`])
     /// excludes it, so a rehearsal never flips listeners onto a silent `/live`.
@@ -276,6 +283,8 @@ impl StreamState {
             recording_seg_dir: None,
             recording_path: None,
             recording_failed: None,
+            webm_stream: None,
+            recorder_fed: false,
             is_test: false,
             generation: 0,
             live_show: None,
@@ -461,7 +470,14 @@ impl StreamState {
     /// `generation` is the producer's own stream (from
     /// [`StreamState::start_stream`]); a replaced producer gets
     /// [`StreamError::Superseded`] instead of writing into its successor.
-    pub async fn write_chunk(&mut self, generation: u64, data: &[u8]) -> Result<(), StreamError> {
+    /// With `tee` false the chunk only goes to the producer (a re-sent WebM
+    /// header the recorder already has).
+    pub async fn write_chunk(
+        &mut self,
+        generation: u64,
+        data: &[u8],
+        tee: bool,
+    ) -> Result<(), StreamError> {
         if self.is_superseded(generation) {
             return Err(StreamError::Superseded);
         }
@@ -480,9 +496,9 @@ impl StreamState {
         // full (recorder/disk too slow) or the writer has stopped, the archive is
         // marked incomplete and surfaced via `recording_failed` — but the live
         // stream keeps running. Completed segments already on disk survive.
-        if let Some(ref tx) = self.recording_tx {
+        if let Some(tx) = self.recording_tx.as_ref().filter(|_| tee) {
             match tx.try_send(data.to_vec()) {
-                Ok(()) => {}
+                Ok(()) => self.recorder_fed = true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     tracing::error!(
                         "Recording tee queue full — dropping chunk (recorder/disk too slow); archive will be incomplete"
@@ -532,63 +548,7 @@ impl StreamState {
             StreamError::RecordingError(format!("Failed to create segment directory: {}", e))
         })?;
 
-        let seg_pattern = seg_dir.join("seg_%05d.ts");
-
-        // Recording FFmpeg: WebM/Opus on stdin → AAC → MPEG-TS segments.
-        // Audio-only means every frame is effectively a keyframe, so there is no
-        // segment-alignment caveat.
-        let mut child = Command::new("ffmpeg")
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "warning",
-                "-f",
-                "webm",
-                "-i",
-                "pipe:0",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-f",
-                "segment",
-                "-segment_time",
-                &SEGMENT_SECONDS.to_string(),
-                "-segment_format",
-                "mpegts",
-                "-reset_timestamps",
-                "1",
-            ])
-            .arg(&seg_pattern)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
-
-        log_ffmpeg_stderr(&mut child, "recorder".to_string(), None);
-        let mut stdin = child.stdin.take().ok_or(StreamError::NoStdin)?;
-
-        // Dedicated writer task owns the recorder stdin and drains the bounded
-        // queue. Keeping it off the stream write path means a slow recorder backs
-        // up the queue (→ dropped chunks) rather than blocking the live stream.
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(RECORDING_CHANNEL_CAP);
-        let writer = tokio::spawn(async move {
-            while let Some(chunk) = rx.recv().await {
-                if let Err(e) = stdin.write_all(&chunk).await {
-                    tracing::error!("Recording writer: failed to write to recorder stdin: {}", e);
-                    break;
-                }
-            }
-            // Channel closed (stop) or write failed: flush + close stdin so the
-            // recorder sees EOF and finalizes its last segment.
-            let _ = stdin.shutdown().await;
-        });
+        let (tx, writer, child) = spawn_recorder(&seg_dir, 0)?;
 
         tracing::info!(
             "Started crash-safe segment recording to {:?} (final artifact {:?})",
@@ -602,19 +562,67 @@ impl StreamState {
         self.recording_seg_dir = Some(seg_dir);
         self.recording_path = Some(path);
         self.recording_failed = None;
+        self.webm_stream = None;
+        self.recorder_fed = false;
 
         Ok(())
     }
 
-    /// Stop recording: signal EOF to the recorder, wait for it to flush the last
-    /// segment, then concat-demux all segments into the final artifact path.
-    ///
-    /// Returns the path to the concatenated artifact if a recording was active.
-    /// Errors when the join fails; the segment dir then stays on disk.
-    pub async fn stop_recording(&mut self) -> Result<Option<PathBuf>, StreamError> {
-        let path = self.recording_path.take();
-        let seg_dir = self.recording_seg_dir.take();
+    /// A producer starts sending the browser's WebM stream `id`, from its
+    /// start or (after a reconnect) from where it left off. Returns true when
+    /// the recorder needs that stream's header: it has not read this stream
+    /// yet. A recorder that already got audio of another stream is replaced
+    /// by a new process that writes on into the same segment directory.
+    pub async fn begin_webm_stream(&mut self, id: &str) -> bool {
+        if self.webm_stream.as_deref() == Some(id) {
+            return false;
+        }
+        self.webm_stream = Some(id.to_string());
+        if self.recorder_fed {
+            self.restart_recorder().await;
+        }
+        true
+    }
 
+    /// Replace the recorder process; its segments stay and the new one
+    /// numbers on after them, so the join keeps one recording.
+    async fn restart_recorder(&mut self) {
+        let Some(seg_dir) = self.recording_seg_dir.clone() else {
+            return;
+        };
+        self.close_recorder().await;
+        self.recorder_fed = false;
+        let next = match segment_count(&seg_dir).await {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::error!("Failed to list recording segments: {}", e);
+                self.recording_failed
+                    .get_or_insert_with(|| format!("recorder restart failed: {}", e));
+                return;
+            }
+        };
+        match spawn_recorder(&seg_dir, next) {
+            Ok((tx, writer, child)) => {
+                tracing::info!(
+                    "New WebM stream: recorder restarted at segment {} in {:?}",
+                    next,
+                    seg_dir
+                );
+                self.recording_tx = Some(tx);
+                self.recording_writer = Some(writer);
+                self.recording_handle = Some(child);
+            }
+            Err(e) => {
+                tracing::error!("Failed to restart the recorder: {}", e);
+                self.recording_failed
+                    .get_or_insert_with(|| format!("recorder restart failed: {}", e));
+            }
+        }
+    }
+
+    /// Signal EOF to the recorder process and wait until it has written its
+    /// last segment.
+    async fn close_recorder(&mut self) {
         // Drop the sender to close the channel; the writer task then drains any
         // queued chunks, writes them, and shuts down the recorder stdin (EOF).
         self.recording_tx = None;
@@ -641,6 +649,20 @@ impl StreamState {
                 }
             }
         }
+    }
+
+    /// Stop recording: signal EOF to the recorder, wait for it to flush the last
+    /// segment, then concat-demux all segments into the final artifact path.
+    ///
+    /// Returns the path to the concatenated artifact if a recording was active.
+    /// Errors when the join fails; the segment dir then stays on disk.
+    pub async fn stop_recording(&mut self) -> Result<Option<PathBuf>, StreamError> {
+        let path = self.recording_path.take();
+        let seg_dir = self.recording_seg_dir.take();
+
+        self.close_recorder().await;
+        self.webm_stream = None;
+        self.recorder_fed = false;
 
         // Concat the surviving segments into the final artifact. After a failed
         // join the segments are the only full copy: keep them for boot recovery.
@@ -680,6 +702,74 @@ impl StreamState {
             recording: self.is_recording(),
         }
     }
+}
+
+/// The recorder's queue sender, its writer task and its ffmpeg process.
+type Recorder = (mpsc::Sender<Vec<u8>>, tokio::task::JoinHandle<()>, Child);
+
+/// Spawn a recorder ffmpeg that writes MPEG-TS segments into `seg_dir`,
+/// numbered from `start_number`.
+fn spawn_recorder(seg_dir: &Path, start_number: usize) -> Result<Recorder, StreamError> {
+    let seg_pattern = seg_dir.join("seg_%05d.ts");
+
+    // Recording FFmpeg: WebM/Opus on stdin → AAC → MPEG-TS segments.
+    // Audio-only means every frame is effectively a keyframe, so there is no
+    // segment-alignment caveat.
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-f",
+            "webm",
+            "-i",
+            "pipe:0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-f",
+            "segment",
+            "-segment_time",
+            &SEGMENT_SECONDS.to_string(),
+            "-segment_start_number",
+            &start_number.to_string(),
+            "-segment_format",
+            "mpegts",
+            "-reset_timestamps",
+            "1",
+        ])
+        .arg(&seg_pattern)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| StreamError::FfmpegSpawn(e.to_string()))?;
+
+    log_ffmpeg_stderr(&mut child, "recorder".to_string(), None);
+    let mut stdin = child.stdin.take().ok_or(StreamError::NoStdin)?;
+
+    // Dedicated writer task owns the recorder stdin and drains the bounded
+    // queue. Keeping it off the stream write path means a slow recorder backs
+    // up the queue (→ dropped chunks) rather than blocking the live stream.
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(RECORDING_CHANNEL_CAP);
+    let writer = tokio::spawn(async move {
+        while let Some(chunk) = rx.recv().await {
+            if let Err(e) = stdin.write_all(&chunk).await {
+                tracing::error!("Recording writer: failed to write to recorder stdin: {}", e);
+                break;
+            }
+        }
+        // Channel closed (stop) or write failed: flush + close stdin so the
+        // recorder sees EOF and finalizes its last segment.
+        let _ = stdin.shutdown().await;
+    });
+    Ok((tx, writer, child))
 }
 
 /// Shared stream state wrapped in a Mutex for concurrent access.
@@ -843,6 +933,18 @@ fn build_concat_list(segments: &[PathBuf]) -> String {
         list.push_str(&format!("file '{}'\n", name));
     }
     list
+}
+
+/// How many segment files `seg_dir` holds.
+async fn segment_count(seg_dir: &Path) -> std::io::Result<usize> {
+    let mut count = 0;
+    let mut entries = tokio::fs::read_dir(seg_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if is_segment_file(&entry.path()) {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 /// Concat-demux the MPEG-TS segments in `seg_dir` into a single `output` file.
