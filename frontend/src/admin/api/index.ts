@@ -806,6 +806,92 @@ export const showTemplatesApi = {
   delete: (id: number) => api.delete<void>(`/api/show-templates/${id}`),
 };
 
+// Show series: a host's "Show" in the flow, with dated episodes.
+export type RepeatRule = 'weekly' | 'biweekly';
+
+export interface SeriesRhythm {
+  repeat_rule: RepeatRule;
+  /** ISO weekday: 1 = Monday … 7 = Sunday. */
+  weekday: number;
+  start_time: string;
+  end_time: string;
+}
+
+export interface Series {
+  id: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  cover_url: string | null;
+  rhythm: SeriesRhythm | null;
+  /** e.g. "Sundays · 12:00–14:00" */
+  rhythm_line: string | null;
+}
+
+export type EpisodeStatus = 'upcoming' | 'wrapup_open' | 'finished';
+
+export interface SeriesEpisode {
+  id: number;
+  title: string;
+  date: string;
+  start_time: string | null;
+  end_time: string | null;
+  mode: 'live' | 'prerecorded';
+  mode_label: string;
+  status: EpisodeStatus;
+  status_label: string;
+}
+
+export interface SeriesDetail extends Series {
+  /** Newest first. */
+  episodes: SeriesEpisode[];
+}
+
+export interface NewSeries extends SeriesRhythm {
+  name: string;
+  description: string;
+  cover: File | null;
+}
+
+export const seriesApi = {
+  list: () => api.get<{ series: Series[] }>('/api/series'),
+
+  /** One of the caller's series, or null when it is not theirs (404). */
+  get: async (slug: string): Promise<SeriesDetail | null> => {
+    const resp = await fetch(`/api/series/${encodeURIComponent(slug)}`, {
+      credentials: 'include',
+    });
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => null);
+      throw new Error(body?.error || `HTTP ${resp.status}`);
+    }
+    return resp.json();
+  },
+
+  /** Create a series; the cover goes up in the same request. */
+  create: async (input: NewSeries): Promise<Series> => {
+    const form = new FormData();
+    form.append('name', input.name);
+    form.append('description', input.description);
+    form.append('repeat_rule', input.repeat_rule);
+    form.append('weekday', String(input.weekday));
+    form.append('start_time', input.start_time);
+    form.append('end_time', input.end_time);
+    if (input.cover) form.append('cover', input.cover);
+    const resp = await fetch('/api/series', {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => null);
+      throw new Error(body?.error || `HTTP ${resp.status}`);
+    }
+    return resp.json();
+  },
+};
+
 // SoundCloud API
 export interface SoundCloudStatus {
   configured: boolean;
