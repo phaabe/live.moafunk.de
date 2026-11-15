@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as WsMessage};
 
-async fn state() -> (Arc<AppState>, tempfile::TempDir) {
+pub(crate) async fn state() -> (Arc<AppState>, tempfile::TempDir) {
     state_with(json!({})).await
 }
 
@@ -61,7 +61,7 @@ pub(crate) async fn add_user(state: &Arc<AppState>, username: &str, role: &str) 
         .last_insert_rowid()
 }
 
-async fn headers(state: &Arc<AppState>, user_id: i64) -> HeaderMap {
+pub(crate) async fn headers(state: &Arc<AppState>, user_id: i64) -> HeaderMap {
     let token = auth::create_session(state, user_id).await.unwrap();
     let mut headers = HeaderMap::new();
     headers.insert("cookie", format!("session={token}").parse().unwrap());

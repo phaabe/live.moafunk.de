@@ -426,6 +426,24 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // A template is a show series: URL slug plus rhythm (repeat rule, ISO
+    // weekday 1-7, start and end "HH:MM"). Each date links to its series.
+    add_column_if_missing(pool, "show_templates", "slug", "TEXT").await?;
+    add_column_if_missing(pool, "show_templates", "repeat_rule", "TEXT").await?;
+    add_column_if_missing(pool, "show_templates", "weekday", "INTEGER").await?;
+    add_column_if_missing(pool, "show_templates", "start_time", "TEXT").await?;
+    add_column_if_missing(pool, "show_templates", "end_time", "TEXT").await?;
+    add_column_if_missing(
+        pool,
+        "shows",
+        "template_id",
+        "INTEGER REFERENCES show_templates(id) ON DELETE SET NULL",
+    )
+    .await?;
+    // Set when the host publishes the wrap-up of an ended date.
+    add_column_if_missing(pool, "shows", "wrapup_published_at", "TEXT").await?;
+    crate::series::migrate(pool).await?;
+
     // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)
     sqlx::query(
         r#"
