@@ -271,6 +271,41 @@ fn rhythm_from_dates(dates: &[(String, String, String)]) -> Option<Rhythm> {
         })
 }
 
+/// How many weeks ahead Book Slot offers dates.
+pub const SLOT_WEEKS: i64 = 12;
+
+/// The dates a rhythm airs on, from `from` (inclusive) for `weeks` weeks.
+/// "Every 2 weeks" counts from the week of `anchor`, the series' latest
+/// booked episode. Before the first booking (no anchor) every week is offered.
+pub fn rhythm_dates(
+    rhythm: &Rhythm,
+    anchor: Option<NaiveDate>,
+    from: NaiveDate,
+    weeks: i64,
+) -> Vec<NaiveDate> {
+    let until = from + Duration::weeks(weeks);
+    let ahead = (rhythm.weekday - i64::from(from.weekday().number_from_monday())).rem_euclid(7);
+    let mut day = from + Duration::days(ahead);
+    let mut dates = Vec::new();
+    while day < until {
+        let in_phase = match (rhythm.repeat_rule, anchor) {
+            (RepeatRule::Biweekly, Some(anchor)) => weeks_between(anchor, day).rem_euclid(2) == 0,
+            _ => true,
+        };
+        if in_phase {
+            dates.push(day);
+        }
+        day += Duration::weeks(1);
+    }
+    dates
+}
+
+/// Whole weeks between the Mondays of the weeks of `a` and `b`.
+fn weeks_between(a: NaiveDate, b: NaiveDate) -> i64 {
+    let monday = |d: NaiveDate| d - Duration::days(i64::from(d.weekday().num_days_from_monday()));
+    (monday(b) - monday(a)).num_days() / 7
+}
+
 // ============================================================================
 // Episode status
 // ============================================================================
@@ -914,6 +949,41 @@ mod tests {
         assert_eq!(rhythm.line(), "Sundays · 12:00–14:00");
         assert_eq!(report.rhythms, [brunch]);
         assert_eq!(report.without_rhythm, [empty, no_end]);
+    }
+
+    fn day(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn rhythm_dates_follow_the_weekday_and_every_other_week() {
+        let sunday =
+            Rhythm::from_columns(Some("weekly"), Some(7), Some("12:00"), Some("14:00")).unwrap();
+        // From Wednesday 2026-11-18: the next Sundays, three weeks long.
+        let dates = rhythm_dates(&sunday, None, day("2026-11-18"), 3);
+        assert_eq!(
+            dates,
+            [day("2026-11-22"), day("2026-11-29"), day("2026-12-06")]
+        );
+        // The start day itself counts when it is the rhythm's weekday.
+        assert_eq!(
+            rhythm_dates(&sunday, None, day("2026-11-22"), 1),
+            [day("2026-11-22")]
+        );
+
+        let biweekly = Rhythm {
+            repeat_rule: RepeatRule::Biweekly,
+            ..sunday
+        };
+        // No booking yet: every week is offered.
+        assert_eq!(rhythm_dates(&biweekly, None, day("2026-11-18"), 3).len(), 3);
+        // Counted from the latest episode (Sunday 2026-11-15), in both directions.
+        let from_anchor = rhythm_dates(&biweekly, Some(day("2026-11-15")), day("2026-11-18"), 4);
+        assert_eq!(from_anchor, [day("2026-11-29"), day("2026-12-13")]);
+        // An anchor on another weekday counts by its week.
+        let saturday_anchor =
+            rhythm_dates(&biweekly, Some(day("2026-12-12")), day("2026-11-18"), 4);
+        assert_eq!(saturday_anchor, [day("2026-11-29"), day("2026-12-13")]);
     }
 
     #[test]

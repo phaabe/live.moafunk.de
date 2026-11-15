@@ -558,6 +558,41 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
+    // Pre-recorded sets uploaded for a show series before an episode exists
+    // (Book Slot is upload-first). A finished upload has `file_key`; booking
+    // or replacing a file consumes the row. `expires_at` is in SQLite
+    // datetime format.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS series_uploads (
+            session_id TEXT PRIMARY KEY,
+            series_id INTEGER NOT NULL REFERENCES show_templates(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            total_chunks INTEGER NOT NULL,
+            file_key TEXT,
+            duration_secs INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS series_upload_chunks (
+            session_id TEXT NOT NULL REFERENCES series_uploads(session_id) ON DELETE CASCADE,
+            chunk_index INTEGER NOT NULL,
+            chunk_key TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            PRIMARY KEY (session_id, chunk_index)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Pending file uploads for chunked submit form uploads (to bypass Cloudflare 100MB limit per file)
     sqlx::query(
         r#"

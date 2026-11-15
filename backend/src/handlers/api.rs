@@ -2429,7 +2429,10 @@ pub async fn ensure_default_cover_exists(state: &Arc<AppState>) -> crate::Result
 }
 
 /// Copy the default cover from S3 to a new show's location
-async fn copy_default_cover_to_show(state: &Arc<AppState>, show_id: i64) -> Option<String> {
+pub(crate) async fn copy_default_cover_to_show(
+    state: &Arc<AppState>,
+    show_id: i64,
+) -> Option<String> {
     let dest_key = format!("shows/{}/cover.png", show_id);
     let source = format!("{}/{}", state.config.r2_bucket_name, DEFAULT_COVER_KEY);
 
@@ -2464,7 +2467,7 @@ async fn copy_default_cover_to_show(state: &Arc<AppState>, show_id: i64) -> Opti
 /// Copy a show template's cover into a show's cover slot (S3-to-S3) and stamp
 /// `cover_generated_at`. Mirrors `copy_default_cover_to_show` but sources the
 /// template cover instead of the global default.
-async fn copy_template_cover_to_show(
+pub(crate) async fn copy_template_cover_to_show(
     state: &Arc<AppState>,
     template_cover_key: &str,
     show_id: i64,
@@ -2943,7 +2946,7 @@ pub async fn api_show_detail(
 /// lexical comparison matches chronological order. A missing end is treated as a
 /// zero-length point at its start; identical starts always clash (catches the
 /// "two shows booked at the same time" case even when end times are absent).
-fn time_windows_overlap(
+pub(crate) fn time_windows_overlap(
     start_a: &str,
     end_a: Option<&str>,
     start_b: &str,
@@ -2958,7 +2961,7 @@ fn time_windows_overlap(
 /// Reject if the proposed window overlaps another show on the same date.
 /// `exclude_id` skips the show being edited (so it never clashes with itself).
 /// No start time → nothing to check (the window is undefined).
-async fn ensure_no_show_conflict(
+pub(crate) async fn ensure_no_show_conflict(
     state: &AppState,
     date: &str,
     start_time: Option<&str>,
@@ -3008,7 +3011,7 @@ pub struct CreateShowRequest {
 
 /// Default show type for host-created shows. Hosts can't pick a type, and host
 /// assignment is reserved for non-UNHEARD shows (see `api_show_assign_host`).
-const HOST_DEFAULT_SHOW_TYPE: &str = "external";
+pub(crate) const HOST_DEFAULT_SHOW_TYPE: &str = "external";
 
 pub async fn api_create_show(
     State(state): State<Arc<AppState>>,

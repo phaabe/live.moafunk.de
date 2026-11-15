@@ -26,6 +26,8 @@ mod telegram_notify;
 mod video;
 
 #[cfg(test)]
+mod booking_tests;
+#[cfg(test)]
 mod broadcast_tests;
 #[cfg(test)]
 mod recovery_tests;
@@ -578,6 +580,39 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::series::api_list_series).post(handlers::series::api_create_series),
         )
         .route("/api/series/:slug", get(handlers::series::api_get_series))
+        // Booking: slots, upload-first sets, episodes (owner or admin)
+        .route(
+            "/api/series/:slug/slots",
+            get(handlers::booking::api_series_slots),
+        )
+        .route(
+            "/api/series/:slug/episodes",
+            post(handlers::booking::api_book_episode),
+        )
+        .route(
+            "/api/series/:slug/upload/init",
+            post(handlers::booking::api_series_upload_init),
+        )
+        .route(
+            "/api/series/:slug/upload/chunk/:session_id",
+            post(handlers::booking::api_series_upload_chunk),
+        )
+        .route(
+            "/api/series/:slug/upload/finalize/:session_id",
+            post(handlers::booking::api_series_upload_finalize),
+        )
+        .route(
+            "/api/shows/:id/prerecorded",
+            axum::routing::put(handlers::booking::api_replace_prerecorded),
+        )
+        .route(
+            "/api/shows/:id/booking",
+            axum::routing::delete(handlers::booking::api_cancel_booking),
+        )
+        .route(
+            "/api/shows/:id/publish",
+            post(handlers::booking::api_publish_episode),
+        )
         // Note: distinct literal (not /api/shows/overview) to avoid a matchit
         // 0.7 static-vs-:id sibling conflict with the route below.
         .route(
