@@ -20,17 +20,18 @@ vi.hoisted(() => {
   Object.defineProperty(document, 'fonts', { value: { add() {} }, configurable: true });
 });
 
-// Today's show page and the waveform player have their own tests.
+// Today's show page has its own tests.
 vi.mock('../pages/ShowDetailPage.vue', () => ({
   __esModule: true,
   default: { render: () => h('div', "Today's show page") },
 }));
+// Like the real player: no file name, and 0:00 until its first Play.
 vi.mock('../components/AudioPlayer.vue', () => ({
   __esModule: true,
   default: {
-    props: ['src', 'label'],
-    render(this: { label: string }) {
-      return h('div', { class: 'audio-player' }, `Waveform · ${this.label}`);
+    props: ['src'],
+    render(this: { src: string }) {
+      return h('div', { class: 'audio-player', 'data-src': this.src }, 'Waveform 0:00 / 0:00');
     },
   },
 }));
@@ -242,7 +243,7 @@ describe('Episode · Pre-recorded', () => {
       'Pre-recorded & confirmed · plays at 12:00',
       'Next step',
       'Nothing to do. The set plays at air time. Wrap-up opens after 14:00.',
-      'Waveform · brunchtime-0811.mp3 · 1:58:40',
+      'brunchtime-0811.mp3 · 1:58:40',
       'Replace file',
       'Open Wrap-up',
     ]) {
@@ -252,6 +253,25 @@ describe('Episode · Pre-recorded', () => {
       expect(text()).not.toContain(part);
     }
     expect(button('Open Wrap-up').disabled).toBe(true);
+  });
+
+  it('names the booked set and its length next to the player', async () => {
+    current = prerecorded();
+    await mount();
+    expect(root.querySelector('.set-file')?.textContent).toBe('brunchtime-0811.mp3 · 1:58:40');
+    expect(root.querySelector('.audio-player')?.getAttribute('data-src')).toBe(
+      'https://r2.example/brunchtime-0811.mp3'
+    );
+  });
+
+  it.each([
+    ['no length', { prerecorded_duration_secs: null }, 'brunchtime-0811.mp3', true],
+    ['no file link', { prerecorded_url: undefined }, 'brunchtime-0811.mp3 · 1:58:40', false],
+  ])('names the set with %s', async (_name, overrides, line, player) => {
+    current = prerecorded(overrides);
+    await mount();
+    expect(root.querySelector('.set-file')?.textContent).toBe(line);
+    expect(!!root.querySelector('.audio-player')).toBe(player);
   });
 
   it('opens Upload Your Set to replace the file of this episode', async () => {
