@@ -27,8 +27,15 @@ EOF
 # Stub: compose works, no staging container runs.
 cat >"$TMP/bin/docker" <<'EOF'
 #!/usr/bin/env bash
+echo "docker $*" >>"$CALLS"
 exit 0
 EOF
+# Stubs: the firewall and the timer only log what they were asked.
+for tool in iptables systemd-run; do
+  printf '#!/usr/bin/env bash\necho "%s $*" >>"$CALLS"\n' "$tool" >"$TMP/bin/$tool"
+  chmod +x "$TMP/bin/$tool"
+done
+export CALLS="$TMP/calls"
 chmod +x "$TMP/bin/argon2" "$TMP/bin/docker"
 
 staging() {
@@ -356,6 +363,51 @@ fi
 if [[ "$(ci status)" == *"hold: "*"R1 release checks"* ]]; then pass "status shows the hold"; else fail "status shows the hold: $(ci status 2>&1)"; fi
 expect_ok "unhold resumes CI deploys" staging unhold
 expect_refused "after unhold a CI deploy reaches up" "run staging.sh setup first" ci "deploy sha-abc1234 $DIGEST"
+
+echo "--- the chaos test show through the CI key"
+rm -f "$BOX/hold"
+expect_ok "e2e-hold holds an idle staging" ci "e2e-hold 42"
+if [[ "$(cat "$BOX/hold")" == *" | e2e run 42" ]]; then pass "the hold names the run"; else fail "the hold names the run: $(cat "$BOX/hold")"; fi
+expect_ok "e2e-unhold of another run" ci "e2e-unhold 43"
+if [[ -f "$BOX/hold" ]]; then pass "leaves the run's hold"; else fail "leaves the run's hold"; fi
+expect_ok "e2e-unhold removes its own hold" ci "e2e-unhold 42"
+if [[ ! -f "$BOX/hold" ]]; then pass "the hold is gone"; else fail "the hold is gone"; fi
+staging hold "R1 release checks" >/dev/null
+if [[ "$(ci "e2e-hold 42")" == "already on hold: "*"R1 release checks" ]]; then pass "e2e-hold keeps a release hold"; else fail "e2e-hold keeps a release hold"; fi
+ci "e2e-unhold 42" >/dev/null
+if [[ "$(cat "$BOX/hold")" == *"| R1 release checks" ]]; then pass "e2e-unhold never removes a release hold"; else fail "e2e-unhold never removes a release hold"; fi
+staging unhold >/dev/null
+: >"$CALLS"
+expect_ok "e2e-restart-liquidsoap" ci e2e-restart-liquidsoap
+if grep -q "restart liquidsoap" "$CALLS"; then pass "it restarts only Liquidsoap"; else fail "it restarts only Liquidsoap: $(cat "$CALLS")"; fi
+cut() { # e2e-cut, called from 203.0.113.7
+  SSH_CLIENT="203.0.113.7 51000 22" SSH_ORIGINAL_COMMAND="e2e-cut $1" staging ci-deploy
+}
+: >"$CALLS"
+expect_ok "e2e-cut cuts the caller" cut 20
+rule="INPUT -s 203.0.113.7 -p tcp -m multiport --dports 80,443 -j REJECT --reject-with tcp-reset"
+if [[ "$(cat "$CALLS")" == "systemd-run --quiet --on-active=20 iptables -D $rule"$'\n'"iptables -I $rule" ]]; then
+  pass "the cut gets its timer first, then the rule, for the caller's IP only"
+else
+  fail "the cut gets its timer first, then the rule, for the caller's IP only: $(cat "$CALLS")"
+fi
+for bad in 0 61 "20 198.51.100.1" "20; reboot"; do
+  expect_refused "e2e-cut refuses '$bad'" "the CI key may only run" cut "$bad"
+done
+expect_refused "e2e-cut needs the caller's address" "needs the caller's IPv4 address" ci "e2e-cut 20"
+expect_refused "e2e-hold needs a run number" "the CI key may only run" ci 'e2e-hold $(reboot)'
+python3 - "$BOX/data/unheard.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("CREATE TABLE IF NOT EXISTS shows (id INTEGER PRIMARY KEY, title TEXT, date TEXT)")
+con.execute("CREATE TABLE IF NOT EXISTS recording_versions (id INTEGER PRIMARY KEY, show_id INTEGER, status TEXT, duration_ms INTEGER, archive_key TEXT)")
+con.execute("INSERT INTO shows (id, title, date) VALUES (901, 'e2e-42 #1', '2026-11-16'), (902, 'Real show #3', '2026-11-16')")
+con.execute("INSERT INTO recording_versions (show_id, status, duration_ms, archive_key) VALUES (901, 'finalized', 312000, 'shows/x.mp3'), (902, 'finalized', 1, NULL)")
+con.commit()
+PY
+if [[ "$(ci "e2e-recordings 901")" == "finalized 312000 1" ]]; then pass "e2e-recordings lists a test episode's recordings"; else fail "e2e-recordings lists a test episode's recordings: $(ci "e2e-recordings 901" 2>&1)"; fi
+expect_refused "e2e-recordings refuses other shows" "is not a test episode" ci "e2e-recordings 902"
+expect_refused "e2e-recordings needs a show number" "the CI key may only run" ci "e2e-recordings 1 OR 1=1"
 
 AUTH="$TMP/authorized_keys"
 cp "$HERE/ci-deploy.pub" "$BOX/ci-deploy.pub"

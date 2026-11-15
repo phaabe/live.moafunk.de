@@ -13,6 +13,8 @@
 #                                   check, then pull and start that image with the stream chain
 #   staging.sh hold <reason>        pause CI deploys (for release checks); staging.sh unhold resumes them
 #   staging.sh ci-deploy            forced command of the CI key: "status" or "deploy sha-<commit> sha256:<digest>"
+#                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap, e2e-cut,
+#                                   e2e-recordings)
 #   staging.sh install-ci-key       let the CI key (ci-deploy.pub) run only ci-deploy (part of setup)
 #   staging.sh down                 stop staging (keeps its data)
 #   staging.sh status               containers, running tag, health
@@ -496,11 +498,74 @@ cmd_unhold() {
   echo "hold removed: the next push to the staging branch deploys again"
 }
 
-# Forced command of the CI deploy key (see install-ci-key). The key can do
-# exactly two things: say what staging runs, and deploy one exact image
-# unless staging is on hold.
+# Requests of the chaos test show (e2e/, workflow e2e-staging.yml). It holds
+# staging only when nobody else did, removes only its own hold, and can cut
+# only its own connection, for at most a minute.
+ci_e2e() {
+  local request="$1" run secs ip
+  if [[ "$request" =~ ^e2e-hold\ ([0-9]{1,20})$ ]]; then
+    run="${BASH_REMATCH[1]}"
+    if [[ -f "$STAGING_DIR/hold" ]]; then
+      echo "already on hold: $(cat "$STAGING_DIR/hold")"
+    else
+      cmd_hold "e2e run $run" >/dev/null
+      echo "held for e2e run $run"
+    fi
+  elif [[ "$request" =~ ^e2e-unhold\ ([0-9]{1,20})$ ]]; then
+    run="${BASH_REMATCH[1]}"
+    if [[ "$(cat "$STAGING_DIR/hold" 2>/dev/null)" == *" | e2e run $run" ]]; then
+      cmd_unhold >/dev/null
+      echo "hold of e2e run $run removed"
+    else
+      echo "not held by e2e run $run: hold left as it is"
+    fi
+  elif [[ "$request" == e2e-restart-liquidsoap ]]; then
+    compose restart liquidsoap
+  elif [[ "$request" =~ ^e2e-cut\ ([1-9]|[1-5][0-9]|60)$ ]]; then
+    secs="${BASH_REMATCH[1]}"
+    ip="${SSH_CLIENT:-}"
+    ip="${ip%% *}"
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "e2e-cut needs the caller's IPv4 address"
+    local rule=(INPUT -s "$ip" -p tcp -m multiport --dports "80,443" -j REJECT --reject-with tcp-reset)
+    # The timer comes first: it removes the rule even if the caller never returns.
+    systemd-run --quiet --on-active="$secs" iptables -D "${rule[@]}"
+    iptables -I "${rule[@]}"
+    echo "connections from $ip to ports 80 and 443 are reset for ${secs}s"
+  elif [[ "$request" =~ ^e2e-recordings\ ([0-9]{1,12})$ ]]; then
+    e2e_recordings "${BASH_REMATCH[1]}"
+  else
+    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>"
+  fi
+}
+
+# The recordings of a test episode ("e2e-…"), one line each: status,
+# duration in ms, and 1 when its mp3 is in the shows archive. Read-only.
+e2e_recordings() {
+  python3 - "$STAGING_DIR/data/unheard.db" "$1" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+show = int(sys.argv[2])
+title = con.execute("SELECT title FROM shows WHERE id = ?", (show,)).fetchone()
+if not title or not (title[0] or "").startswith("e2e-"):
+    sys.exit(f"show {show} is not a test episode (e2e-...)")
+for status, ms, archive in con.execute(
+    "SELECT status, COALESCE(duration_ms, 0), archive_key IS NOT NULL"
+    " FROM recording_versions WHERE show_id = ? ORDER BY id",
+    (show,),
+):
+    print(status, ms, int(archive))
+PY
+}
+
+# Forced command of the CI deploy key (see install-ci-key). The key can say
+# what staging runs, deploy one exact image unless staging is on hold, and
+# serve the chaos test show (ci_e2e).
 cmd_ci_deploy() {
   local request="${SSH_ORIGINAL_COMMAND:-}" tag digest
+  if [[ "$request" == e2e-* ]]; then
+    ci_e2e "$request"
+    return
+  fi
   if [[ "$request" == status ]]; then
     echo "tag: $(cat "$STAGING_DIR/tag" 2>/dev/null || echo none)"
     echo "hold: $(cat "$STAGING_DIR/hold" 2>/dev/null || echo no)"
@@ -725,7 +790,7 @@ main() {
     seed-db) cmd_seed_db "${1:-}" ;;
     users) staging_users "$STAGING_DIR/data/unheard.db" ;;
     *)
-      sed -n '7,21p' "$0" >&2
+      sed -n '7,23p' "$0" >&2
       exit 2
       ;;
   esac
