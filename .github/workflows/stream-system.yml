@@ -8,7 +8,7 @@ name: STREAM - System test
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev/flow]
     paths:
       - backend/src/**
       - backend/Cargo.toml
@@ -16,7 +16,7 @@ on:
       - docs/stream-rework/prod/**
       - .github/workflows/stream-system.yml
   push:
-    branches: [main]
+    branches: [main, dev/flow]
     paths:
       - backend/src/**
       - backend/Cargo.toml

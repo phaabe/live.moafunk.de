@@ -1,91 +1,182 @@
 <script setup lang="ts">
+import { computed, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { useHostFlow } from '@admin/composables';
+import { BaseButton } from '@shared/components';
+import {
+  useHostFlow,
+  useAudioCapture,
+  useStreamSocket,
+  BROWSER_UNSUPPORTED_MESSAGE,
+  streamRecordingMimeType,
+} from '@admin/composables';
 import LiveSetupTest from '@admin/components/LiveSetupTest.vue';
 
 /**
- * Fullscreen live-preparation step (/stream/live). The actual device setup +
- * rehearsal logic lives in the shared LiveSetupTest component, which the show
- * dashboard also renders inline; this page only wraps it with the step chrome
- * and handles navigation.
+ * The Studio (/stream/live, flow screen `studio`): soundcheck, then a manual
+ * Go Live. Nothing goes live by itself. The router gate opens it 30 min
+ * before the start. Go Live works from the start time once the test
+ * broadcast sounds right.
  */
 const router = useRouter();
 const flow = useHostFlow();
+const audioCapture = useAudioCapture();
 
-function goToStream() {
-  flow.goToStep('on-air');
-  router.push('/stream/on-air');
+const show = computed(() => flow.show.value);
+const episodePath = computed(() => (show.value ? `/shows/${show.value.id}` : '/shows'));
+
+const now = ref(Date.now());
+const clock = setInterval(() => (now.value = Date.now()), 1000);
+
+const secondsToStart = computed(() => {
+  const s = show.value;
+  if (!s?.start_time) return 0;
+  return Math.ceil((flow.berlinToUtcDate(s.date, s.start_time).getTime() - now.value) / 1000);
+});
+
+const soundcheck = computed(() => {
+  const left = secondsToStart.value;
+  if (left <= 0) return 'Soundcheck · it is air time';
+  const mm = String(Math.floor(left / 60)).padStart(2, '0');
+  const ss = String(left % 60).padStart(2, '0');
+  return `Soundcheck · show starts in ${mm}:${ss}`;
+});
+
+const record = computed({
+  get: () => flow.recordStream.value,
+  set: (value: boolean) => flow.setRecordStream(value),
+});
+
+const goingLive = ref(false);
+const wentLive = ref(false);
+const goLiveError = ref<string | null>(null);
+
+const canGoLive = computed(
+  () =>
+    !!show.value &&
+    flow.liveTestPassed.value &&
+    audioCapture.isCapturing.value &&
+    secondsToStart.value <= 0
+);
+
+function failGoLive(message: string) {
+  goLiveError.value = message;
+  goingLive.value = false;
+  audioCapture.stopRecording();
 }
 
-function goBackToMode() {
-  flow.revertToMode();
-  router.push(flow.showId.value ? `/shows/${flow.showId.value}` : '/stream/select');
+async function goLive() {
+  if (!show.value || !canGoLive.value || goingLive.value) return;
+  const showId = show.value.id;
+  goingLive.value = true;
+  goLiveError.value = null;
+  // Take over the socket's callbacks from the soundcheck: this connection is
+  // the broadcast. On Air registers its own once it opens.
+  const socket = useStreamSocket({
+    onLive: () => {
+      wentLive.value = true;
+      void router.push({ path: '/stream/on-air', query: { show: String(showId) } });
+    },
+    onError: (message) => {
+      socket.stopStream();
+      failGoLive(message);
+    },
+    onDisconnected: () => {
+      if (goingLive.value && !wentLive.value) failGoLive('Could not go live. Try again.');
+    },
+  });
+  try {
+    // A socket without audio looks live while listeners hear silence.
+    if (!streamRecordingMimeType()) throw new Error(BROWSER_UNSUPPORTED_MESSAGE);
+    // This click is a user gesture: start a suspended audio context.
+    audioCapture.resumeAudioContext();
+    audioCapture.setOnError((message) => {
+      goLiveError.value = message;
+    });
+    flow.setShowStarted();
+    await socket.connect(false, showId, false, flow.recordStream.value);
+    audioCapture.setOnData((data) => socket.send(data));
+    if (!audioCapture.startRecording()) {
+      socket.stopStream();
+      throw new Error(audioCapture.error.value ?? 'Failed to start audio');
+    }
+  } catch (err) {
+    failGoLive(err instanceof Error ? err.message : 'Failed to go live');
+  }
 }
+
+onUnmounted(() => {
+  clearInterval(clock);
+  // Left the Studio while Go Live was still connecting: do not leave a
+  // broadcast running without its On Air screen.
+  if (goingLive.value && !wentLive.value) {
+    useStreamSocket().stopStream();
+    audioCapture.stopRecording();
+  }
+});
 </script>
 
 <template>
-  <div class="flow-live">
-    <h1 class="step-title">Set Up Audio &amp; Test</h1>
-    <p class="step-subtitle">
-      Pick your audio input, check the level on the meter, then run a quick test.
-    </p>
+  <div class="studio">
+    <router-link :to="episodePath" class="back-link">&lt; Episode</router-link>
+    <h1 class="page-title">Studio</h1>
+    <p class="pill warn">{{ soundcheck }}</p>
 
-    <div class="setup-card">
-      <LiveSetupTest @passed="goToStream" />
-    </div>
+    <LiveSetupTest studio />
 
-    <div class="step-actions">
-      <button class="btn-secondary" type="button" @click="goBackToMode">← Back</button>
+    <label class="check">
+      <input v-model="record" type="checkbox" />
+      Record this show
+    </label>
+
+    <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
+    <div>
+      <BaseButton :disabled="!canGoLive" :loading="goingLive" @click="goLive">Go Live</BaseButton>
     </div>
   </div>
 </template>
 
 <style scoped>
-.flow-live {
-  max-width: 640px;
+.studio {
+  max-width: 560px;
   margin: 0 auto;
-}
-
-.step-title {
-  font-size: var(--font-size-2xl);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text);
-  margin: 0 0 var(--spacing-sm);
-}
-
-.step-subtitle {
-  color: var(--color-text-muted);
-  margin: 0 0 var(--spacing-xl);
-}
-
-.setup-card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-lg);
-}
-
-.step-actions {
   display: flex;
-  justify-content: space-between;
-  margin-top: var(--spacing-2xl);
+  flex-direction: column;
   gap: var(--spacing-md);
 }
 
-.btn-secondary {
-  background: none;
-  border: 1px solid var(--color-border);
+.back-link {
+  align-self: flex-start;
+  font-size: var(--font-size-sm);
   color: var(--color-text-muted);
-  padding: var(--spacing-sm) var(--spacing-xl);
-  border-radius: var(--radius-md);
-  font-family: var(--font-family);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-  transition: all var(--transition-fast);
 }
 
-.btn-secondary:hover {
-  color: var(--color-text);
-  border-color: var(--color-border-light);
+.page-title {
+  margin: 0;
+}
+
+.pill {
+  align-self: flex-start;
+  margin: 0;
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+.pill.warn {
+  border-color: var(--color-warning, var(--color-border));
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+}
+
+.field-error {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  margin: 0;
 }
 </style>

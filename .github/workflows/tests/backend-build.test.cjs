@@ -27,7 +27,7 @@ function enabled(condition, event, inputs) {
 test('only image build and explicitly requested monitoring jobs remain', () => {
   assert.deepEqual(Object.keys(workflow.jobs).sort(), ['build-and-push', 'deploy-monitoring']);
   assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
-  assert.deepEqual(workflow.on.push.branches, ['main']);
+  assert.deepEqual(workflow.on.push.branches, ['main', 'dev/flow']);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), [
     'build',
     'deploy_monitoring',
@@ -171,9 +171,12 @@ test('image summary records the exact image and source without contacting a host
   }
 });
 
-test('regression CI always checks main PRs and pushes without publishing or production access', () => {
+test('regression CI always checks main and dev/flow PRs and pushes without publishing or production access', () => {
   const ci = yaml.load(readFileSync(path.resolve(__dirname, '../backend-build-tests.yml'), 'utf8'));
-  assert.deepEqual(ci.on, { pull_request: { branches: ['main'] }, push: { branches: ['main'] } });
+  assert.deepEqual(ci.on, {
+    pull_request: { branches: ['main', 'dev/flow'] },
+    push: { branches: ['main', 'dev/flow'] },
+  });
   assert.deepEqual(ci.permissions, { contents: 'read' });
   assert.deepEqual(Object.keys(ci.jobs), ['backend-build-tests']);
   const job = ci.jobs['backend-build-tests'];

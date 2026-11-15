@@ -39,6 +39,9 @@ let currentShowId: number | null = null;
 // Without this, an auto-reconnect (which calls connect() with no flags) would
 // silently fall back to the public `/live` producer.
 let currentTest = false;
+// "Record this show", remembered so an auto-reconnect never starts recording
+// a show the host chose not to record.
+let currentRecord = true;
 let currentCallbacks: {
   onConnected?: () => void;
   onDisconnected?: () => void;
@@ -46,11 +49,13 @@ let currentCallbacks: {
   onLive?: () => void;
 } = {};
 
-// ─── Browser close safety net: send 'stop' if page is unloaded ─────────────
+// ─── Page unload: close the socket without 'stop' ───────────────────────────
+// The server stops the stream on any close. Without 'stop' it treats a reload
+// like a dropped connection: the episode stays on air for the reconnect grace,
+// so the host can open the Studio again and go back on air.
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', () => {
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send('stop');
       socket.close(1000, 'Page unload');
     }
   });
@@ -135,13 +140,30 @@ export function getStreamSocketStats(): StreamSocketStats {
   };
 }
 
+/**
+ * The show of the live broadcast in this tab: live, or reconnecting after a
+ * drop. Null for a test broadcast or when nothing is live. A standalone export
+ * like getStreamSocketStats, so a route guard can read it without taking over
+ * the socket's callbacks.
+ */
+export function liveStreamShowId(): number | null {
+  if (currentTest || currentShowId == null) return null;
+  const live = state.value === 'live' || (state.value === 'connecting' && autoReconnecting);
+  return live ? currentShowId : null;
+}
+
 export function useStreamSocket(options: UseStreamSocketOptions = {}) {
   const { maxReconnectAttempts = 3, onConnected, onDisconnected, onError, onLive } = options;
 
   // Update callbacks so the currently-mounted component receives events
   currentCallbacks = { onConnected, onDisconnected, onError, onLive };
 
-  function connect(force = false, showId?: number, test?: boolean): Promise<void> {
+  function connect(
+    force = false,
+    showId?: number,
+    test?: boolean,
+    record?: boolean
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (socket && socket.readyState === WebSocket.OPEN) {
         resolve();
@@ -156,6 +178,9 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       if (test != null) {
         currentTest = test;
       }
+      if (record != null) {
+        currentRecord = record;
+      }
 
       error.value = null;
       state.value = 'connecting';
@@ -165,6 +190,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       if (force) params.set('force', 'true');
       if (currentShowId != null) params.set('show_id', String(currentShowId));
       if (currentTest) params.set('test', 'true');
+      if (!currentRecord) params.set('record', 'false');
       const qs = params.toString();
       const wsUrl = `${protocol}//${window.location.host}/ws/stream${qs ? `?${qs}` : ''}`;
 
@@ -285,6 +311,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
     currentShowId = null;
     currentTest = false;
+    currentRecord = true;
     autoReconnecting = false;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
@@ -310,6 +337,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
     currentShowId = null;
     currentTest = false;
+    currentRecord = true;
     autoReconnecting = false;
     reconnectAttempts.value = 0;
     state.value = 'disconnected';

@@ -2,9 +2,9 @@ name: Backend build-only regression tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev/flow]
   push:
-    branches: [main]
+    branches: [main, dev/flow]
 
 permissions:
   contents: read

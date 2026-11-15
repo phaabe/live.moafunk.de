@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { parsePong, useStreamSocket } from '../src/admin/composables/useStreamSocket';
+import {
+  liveStreamShowId,
+  parsePong,
+  useStreamSocket,
+} from '../src/admin/composables/useStreamSocket';
 
 describe('parsePong', () => {
   it('parses a full server pong frame', () => {
@@ -172,6 +176,52 @@ describe('useStreamSocket auto-reconnect', () => {
       expect(ws.url).not.toContain('force=true');
     }
   });
+
+  it('keeps "Record this show" off across reconnect attempts', async () => {
+    const connected = stream.connect(false, 42, false, false);
+    goLive(sockets[0]);
+    await connected;
+    expect(sockets[0].url).toContain('show_id=42');
+    expect(sockets[0].url).toContain('record=false');
+
+    sockets[0].drop();
+    vi.advanceTimersByTime(1000);
+    expect(sockets).toHaveLength(2);
+    expect(latest().url).toContain('show_id=42');
+    expect(latest().url).toContain('record=false');
+  });
+
+  it('records by default and after a stop', async () => {
+    const connected = stream.connect(false, 42, false, false);
+    goLive(sockets[0]);
+    await connected;
+    stream.stopStream();
+
+    const again = stream.connect(false, 42);
+    goLive(latest());
+    await again;
+    expect(latest().url).not.toContain('record=');
+  });
+
+  it('reports the live show while live or reconnecting, never for a test', async () => {
+    expect(liveStreamShowId()).toBeNull();
+    await startLive(false, 42);
+    expect(liveStreamShowId()).toBe(42);
+
+    sockets[0].drop();
+    expect(liveStreamShowId()).toBe(42);
+    stream.stopStream();
+    expect(liveStreamShowId()).toBeNull();
+
+    await startLiveAgain(true);
+    expect(liveStreamShowId()).toBeNull();
+  });
+
+  async function startLiveAgain(test: boolean) {
+    const connected = stream.connect(false, undefined, test);
+    goLive(latest());
+    await connected;
+  }
 
   it('a successful reconnect resets the counter', async () => {
     const onLive = vi.fn();

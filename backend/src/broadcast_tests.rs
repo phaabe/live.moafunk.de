@@ -8,12 +8,12 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as WsMessage};
 
-async fn state() -> (Arc<AppState>, tempfile::TempDir) {
+pub(crate) async fn state() -> (Arc<AppState>, tempfile::TempDir) {
     state_with(json!({})).await
 }
 
 /// `overrides` replaces or adds config fields.
-async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::TempDir) {
+pub(crate) async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::TempDir) {
     let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
     db::run_migrations(&db).await.unwrap();
     let mut config = json!({
@@ -27,8 +27,13 @@ async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::TempDir) {
         .unwrap()
         .extend(overrides.as_object().unwrap().clone());
     let mut config: Config = serde_json::from_value(config).unwrap();
-    // Local dead end so presigning works offline.
-    config.r2_endpoint = "http://127.0.0.1:1".to_string();
+    // Local dead end so presigning works offline, unless the test brings a
+    // fake R2 of its own. `r2_endpoint` is computed, so serde skips it.
+    config.r2_endpoint = overrides
+        .get("r2_endpoint")
+        .and_then(Value::as_str)
+        .unwrap_or("http://127.0.0.1:1")
+        .to_string();
     let temp = tempfile::tempdir().unwrap();
     let state = Arc::new(AppState {
         recovery_mail: crate::recovery_mail::RecoveryMailer::default(),
@@ -61,7 +66,7 @@ pub(crate) async fn add_user(state: &Arc<AppState>, username: &str, role: &str) 
         .last_insert_rowid()
 }
 
-async fn headers(state: &Arc<AppState>, user_id: i64) -> HeaderMap {
+pub(crate) async fn headers(state: &Arc<AppState>, user_id: i64) -> HeaderMap {
     let token = auth::create_session(state, user_id).await.unwrap();
     let mut headers = HeaderMap::new();
     headers.insert("cookie", format!("session={token}").parse().unwrap());
@@ -289,6 +294,67 @@ async fn close(mut socket: Producer) {
     tokio::time::timeout(Duration::from_secs(10), drained)
         .await
         .expect("server kept the socket open");
+}
+
+async fn hosted_show(state: &Arc<AppState>, host: i64) {
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+/// "Record this show" unticked: the show streams and counts as on air, but
+/// nothing records it, also after a reconnect.
+#[tokio::test]
+async fn unticked_record_streams_the_show_without_recording_it() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+
+    let first = connect_producer(&state, addr, host, "show_id=1&record=false").await;
+    assert_eq!(state.recording_manager.lock().await.current_show_id(), None);
+    assert!(!state.stream_state.lock().await.is_recording());
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+
+    // A network drop: still on air during the reconnect grace.
+    close(first).await;
+    assert!(!state.stream_state.lock().await.is_active());
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+
+    let mut back = connect_producer(&state, addr, host, "show_id=1&record=false").await;
+    assert_eq!(state.recording_manager.lock().await.current_show_id(), None);
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+
+    // End Episode: no longer on air, and the episode counts as ended.
+    back.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(back).await;
+    assert_eq!(handlers::series::on_air_show_id(&state).await, None);
+    let (ended, recorded): (Option<String>, Option<bool>) =
+        sqlx::query_as("SELECT live_ended_at, live_recorded FROM shows WHERE id = 1")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert!(ended.is_some());
+    assert_eq!(recorded, Some(false));
+}
+
+/// The record flag defaults to on: a live show is recorded as before.
+#[tokio::test]
+async fn a_live_show_is_recorded_by_default() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+
+    let _socket = connect_producer(&state, addr, host, "show_id=1").await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+    assert!(state.stream_state.lock().await.is_recording());
 }
 
 #[tokio::test]
@@ -521,6 +587,87 @@ async fn occurrence(
 
 async fn show_claimed(state: &Arc<AppState>) -> bool {
     show(state).await.prerecorded_started_at.is_some()
+}
+
+/// A pre-recorded episode booked through Book Slot starts by itself at air
+/// time: booking sets everything the scheduler needs, scheduler.rs unchanged.
+#[tokio::test]
+async fn a_booked_prerecorded_episode_starts_by_itself_at_air_time() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let rhythm =
+        series::Rhythm::from_columns(Some("weekly"), Some(7), Some("20:00"), Some("22:00"))
+            .unwrap();
+    let (series_id, slug) = series::insert_series(&state.db, host, "Tape", None, Some(&rhythm))
+        .await
+        .unwrap();
+    // A finished upload, as finalize leaves it.
+    sqlx::query(
+        "INSERT INTO series_uploads (session_id, series_id, user_id, filename, total_chunks, \
+         file_key, duration_secs, expires_at) \
+         VALUES ('up', ?, ?, 'tape.mp3', 1, 'series-uploads/up/tape.mp3', 7200, datetime('now', '+1 hour'))",
+    )
+    .bind(series_id)
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let headers = headers(&state, host).await;
+
+    let slots = body(
+        handlers::booking::api_series_slots(
+            State(state.clone()),
+            Path(slug.clone()),
+            headers.clone(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    let slot = &slots["slots"][0];
+    let request = serde_json::from_value(json!({
+        "date": slot["date"], "start_time": slot["start_time"], "end_time": slot["end_time"],
+        "mode": "prerecorded", "upload_id": "up"
+    }))
+    .unwrap();
+    let booked = handlers::booking::api_book_episode(
+        State(state.clone()),
+        Path(slug),
+        headers,
+        axum::Json(request),
+    )
+    .await
+    .unwrap()
+    .into_response();
+    assert_eq!(booked.status(), StatusCode::CREATED);
+    let booked: Value =
+        serde_json::from_slice(&to_bytes(booked.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+
+    let episode: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+        .bind(booked["id"].as_i64().unwrap())
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(episode.stream_mode.as_deref(), Some("prerecorded"));
+    assert!(episode.prerecorded_confirmed_at.is_some());
+    assert!(episode.prerecorded_started_at.is_none());
+
+    // The scheduler's own start call, at the booked air time.
+    let air_time =
+        scheduler::show_start_utc(&episode.date, episode.start_time.as_deref().unwrap()).unwrap();
+    let admission =
+        handlers::api::start_scheduled_prerecorded_occurrence(&state, &episode, "host", air_time)
+            .await
+            .unwrap();
+    assert_eq!(admission, handlers::api::Admission::Started);
+    let started: Option<String> =
+        sqlx::query_scalar("SELECT prerecorded_started_at FROM shows WHERE id = ?")
+            .bind(episode.id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert!(started.is_some());
+    assert_eq!(on_air(&state).await.as_deref(), Some("host"));
 }
 
 /// Review finding 1: opening or reloading the on-air page calls Go Live on its

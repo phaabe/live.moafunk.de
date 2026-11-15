@@ -426,6 +426,30 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // A template is a show series: URL slug plus rhythm (repeat rule, ISO
+    // weekday 1-7, start and end "HH:MM"). Each date links to its series.
+    add_column_if_missing(pool, "show_templates", "slug", "TEXT").await?;
+    add_column_if_missing(pool, "show_templates", "repeat_rule", "TEXT").await?;
+    add_column_if_missing(pool, "show_templates", "weekday", "INTEGER").await?;
+    add_column_if_missing(pool, "show_templates", "start_time", "TEXT").await?;
+    add_column_if_missing(pool, "show_templates", "end_time", "TEXT").await?;
+    add_column_if_missing(
+        pool,
+        "shows",
+        "template_id",
+        "INTEGER REFERENCES show_templates(id) ON DELETE SET NULL",
+    )
+    .await?;
+    // Set when the host publishes the wrap-up of an ended date.
+    add_column_if_missing(pool, "shows", "wrapup_published_at", "TEXT").await?;
+    // When the host ended the live episode with End Episode (RFC 3339).
+    add_column_if_missing(pool, "shows", "live_ended_at", "TEXT").await?;
+    // Whether that broadcast was recorded ("Record this show"): 1 or 0.
+    add_column_if_missing(pool, "shows", "live_recorded", "INTEGER").await?;
+    // Length of a pre-recorded set booked through Book Slot (from ffprobe).
+    add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
+    crate::series::migrate(pool).await?;
+
     // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)
     sqlx::query(
         r#"
@@ -539,6 +563,41 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM pending_recording_uploads WHERE expires_at < datetime('now')")
         .execute(pool)
         .await?;
+
+    // Pre-recorded sets uploaded for a show series before an episode exists
+    // (Book Slot is upload-first). A finished upload has `file_key`; booking
+    // or replacing a file consumes the row. `expires_at` is in SQLite
+    // datetime format.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS series_uploads (
+            session_id TEXT PRIMARY KEY,
+            series_id INTEGER NOT NULL REFERENCES show_templates(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            total_chunks INTEGER NOT NULL,
+            file_key TEXT,
+            duration_secs INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS series_upload_chunks (
+            session_id TEXT NOT NULL REFERENCES series_uploads(session_id) ON DELETE CASCADE,
+            chunk_index INTEGER NOT NULL,
+            chunk_key TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            PRIMARY KEY (session_id, chunk_index)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     // Pending file uploads for chunked submit form uploads (to bypass Cloudflare 100MB limit per file)
     sqlx::query(

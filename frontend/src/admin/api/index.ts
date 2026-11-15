@@ -500,6 +500,8 @@ export interface ShowDetail {
   available_hosts?: { id: number; username: string }[];
   /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */
   stream_mode?: 'live' | 'prerecorded';
+  /** The user who created the show (may differ from the assigned host). */
+  created_by?: number | null;
   /**
    * Most recent live-stream recording (from `recording_versions`), distinct from
    * the manual `recording_*`/`prerecorded_*` uploads. Absent if never recorded.
@@ -507,6 +509,19 @@ export interface ShowDetail {
    * — the finalized mp3 is preferred when available, else the auto-published one.
    */
   latest_recording?: LatestRecording;
+  /** The Show (series) of this episode, when it is linked to one. */
+  series_slug?: string | null;
+  series_name?: string | null;
+  /** Same rule as the Show page: upcoming, wrap-up open or finished. */
+  episode_status?: EpisodeStatus;
+  /** True while this episode is on air (recorded or not). */
+  on_air?: boolean;
+  /** Length of a pre-recorded set booked through Book Slot, in seconds. */
+  prerecorded_duration_secs?: number | null;
+  /** When the host ended the broadcast with End Episode (RFC 3339). */
+  live_ended_at?: string | null;
+  /** Whether the broadcast the host ended with End Episode was recorded. */
+  live_recorded?: boolean | null;
 }
 
 export type RecordingVersionStatus = 'raw' | 'finalizing' | 'finalized' | 'failed';
@@ -804,6 +819,172 @@ export const showTemplatesApi = {
   },
 
   delete: (id: number) => api.delete<void>(`/api/show-templates/${id}`),
+};
+
+// Show series: a host's "Show" in the flow, with dated episodes.
+export type RepeatRule = 'weekly' | 'biweekly';
+
+export interface SeriesRhythm {
+  repeat_rule: RepeatRule;
+  /** ISO weekday: 1 = Monday … 7 = Sunday. */
+  weekday: number;
+  start_time: string;
+  end_time: string;
+}
+
+export interface Series {
+  id: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  cover_url: string | null;
+  rhythm: SeriesRhythm | null;
+  /** e.g. "Sundays · 12:00–14:00" */
+  rhythm_line: string | null;
+}
+
+export type EpisodeStatus = 'upcoming' | 'wrapup_open' | 'finished';
+
+export interface SeriesEpisode {
+  id: number;
+  title: string;
+  date: string;
+  start_time: string | null;
+  end_time: string | null;
+  mode: 'live' | 'prerecorded';
+  mode_label: string;
+  status: EpisodeStatus;
+  status_label: string;
+}
+
+export interface SeriesDetail extends Series {
+  /** Newest first. */
+  episodes: SeriesEpisode[];
+}
+
+export interface NewSeries {
+  name: string;
+  description: string;
+  cover: File | null;
+  /** null: "No fixed rhythm"; each episode books a free date and time. */
+  rhythm: SeriesRhythm | null;
+}
+
+/** A bookable date and time of a series' rhythm. */
+export interface SeriesSlot {
+  date: string;
+  start_time: string;
+  end_time: string;
+}
+
+export interface BookedEpisode extends SeriesSlot {
+  id: number;
+  title: string;
+  mode: 'live' | 'prerecorded';
+  prerecorded_filename: string | null;
+  duration: number | null;
+}
+
+/** A finished upload-first set; `duration` is in seconds. */
+export interface UploadedSet {
+  upload_id: string;
+  filename: string;
+  duration: number;
+}
+
+/** Upload chunks stay under Cloudflare's 100 MB request limit. */
+const SET_CHUNK_SIZE = 50 * 1024 * 1024;
+
+async function errorOf(resp: Response): Promise<Error> {
+  const body = await resp.json().catch(() => null);
+  return new Error(body?.error || `HTTP ${resp.status}`);
+}
+
+const seriesPath = (slug: string) => `/api/series/${encodeURIComponent(slug)}`;
+
+export const seriesApi = {
+  list: () => api.get<{ series: Series[] }>('/api/series'),
+
+  /** One of the caller's series, or null when it is not theirs (404). */
+  get: async (slug: string): Promise<SeriesDetail | null> => {
+    const resp = await fetch(seriesPath(slug), { credentials: 'include' });
+    if (resp.status === 404) return null;
+    if (!resp.ok) throw await errorOf(resp);
+    return resp.json();
+  },
+
+  /** Free slots of the rhythm for the next weeks (none without a rhythm). */
+  slots: (slug: string) => api.get<{ slots: SeriesSlot[] }>(`${seriesPath(slug)}/slots`),
+
+  /** Book a slot. A slot someone else took in the meantime is rejected. */
+  book: (slug: string, body: SeriesSlot & { mode: 'live' | 'prerecorded'; upload_id?: string }) =>
+    api.post<BookedEpisode>(`${seriesPath(slug)}/episodes`, body),
+
+  /** Chunked upload of a pre-recorded set before it is booked. */
+  uploadSet: async (
+    slug: string,
+    file: File,
+    onProgress?: (percent: number) => void
+  ): Promise<UploadedSet> => {
+    const totalChunks = Math.max(1, Math.ceil(file.size / SET_CHUNK_SIZE));
+    const { session_id } = await api.post<{ session_id: string }>(
+      `${seriesPath(slug)}/upload/init`,
+      { filename: file.name, total_chunks: totalChunks }
+    );
+    for (let index = 0; index < totalChunks; index++) {
+      const form = new FormData();
+      form.append('chunk', file.slice(index * SET_CHUNK_SIZE, (index + 1) * SET_CHUNK_SIZE));
+      const resp = await fetch(
+        `${seriesPath(slug)}/upload/chunk/${encodeURIComponent(session_id)}?index=${index}`,
+        { method: 'POST', credentials: 'include', body: form }
+      );
+      if (!resp.ok) throw await errorOf(resp);
+      onProgress?.(Math.round(((index + 1) / totalChunks) * 100));
+    }
+    return api.post<UploadedSet>(
+      `${seriesPath(slug)}/upload/finalize/${encodeURIComponent(session_id)}`
+    );
+  },
+
+  /** Cancel an episode before it starts; the slot is free again. */
+  cancelBooking: (showId: number) =>
+    api.delete<{ success: boolean; series_slug: string | null }>(`/api/shows/${showId}/booking`),
+
+  /** Close the wrap-up of an ended episode: it becomes Finished. */
+  publish: (showId: number) =>
+    api.post<{ id: number; status: EpisodeStatus; status_label: string }>(
+      `/api/shows/${showId}/publish`
+    ),
+
+  /** Swap the set of a booked pre-recorded episode; the booking stays. */
+  replaceFile: (showId: number, uploadId: string) =>
+    api.put<{ id: number; prerecorded_filename: string; duration: number | null }>(
+      `/api/shows/${showId}/prerecorded`,
+      { upload_id: uploadId }
+    ),
+
+  /** Create a series; the cover goes up in the same request. */
+  create: async (input: NewSeries): Promise<Series> => {
+    const form = new FormData();
+    form.append('name', input.name);
+    form.append('description', input.description);
+    if (input.rhythm) {
+      form.append('repeat_rule', input.rhythm.repeat_rule);
+      form.append('weekday', String(input.rhythm.weekday));
+      form.append('start_time', input.rhythm.start_time);
+      form.append('end_time', input.rhythm.end_time);
+    } else {
+      form.append('repeat_rule', 'none');
+    }
+    if (input.cover) form.append('cover', input.cover);
+    const resp = await fetch('/api/series', {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!resp.ok) throw await errorOf(resp);
+    return resp.json();
+  },
 };
 
 // SoundCloud API

@@ -2092,6 +2092,23 @@ pub struct ShowDetailResponse {
     /// from the manual `recording_*`/`prerecorded_*` uploads above. `None` when the
     /// show was never recorded. See [`LatestRecordingInfo`].
     latest_recording: Option<LatestRecordingInfo>,
+    /// The Show (series) this episode belongs to, if linked.
+    series_slug: Option<String>,
+    series_name: Option<String>,
+    /// "upcoming" | "wrapup_open" | "finished", the same rule as the Show page.
+    episode_status: crate::series::EpisodeStatus,
+    /// True while this episode is on air: its recording session is open (live
+    /// or in the reconnect grace), or it streams with "Record this show" off.
+    on_air: bool,
+    /// Length of the pre-recorded set, when it was uploaded through Book Slot.
+    prerecorded_duration_secs: Option<i64>,
+    /// When the host ended the live broadcast with End Episode (RFC 3339).
+    /// None until one ended. The wrap-up counts its recording wait from here
+    /// when it is before the scheduled end.
+    live_ended_at: Option<String>,
+    /// Whether the live broadcast the host ended with End Episode was
+    /// recorded. None until one ended.
+    live_recorded: Option<bool>,
 }
 
 /// The most recent live-stream recording for a show, surfaced on the detail page so
@@ -2429,7 +2446,10 @@ pub async fn ensure_default_cover_exists(state: &Arc<AppState>) -> crate::Result
 }
 
 /// Copy the default cover from S3 to a new show's location
-async fn copy_default_cover_to_show(state: &Arc<AppState>, show_id: i64) -> Option<String> {
+pub(crate) async fn copy_default_cover_to_show(
+    state: &Arc<AppState>,
+    show_id: i64,
+) -> Option<String> {
     let dest_key = format!("shows/{}/cover.png", show_id);
     let source = format!("{}/{}", state.config.r2_bucket_name, DEFAULT_COVER_KEY);
 
@@ -2464,7 +2484,7 @@ async fn copy_default_cover_to_show(state: &Arc<AppState>, show_id: i64) -> Opti
 /// Copy a show template's cover into a show's cover slot (S3-to-S3) and stamp
 /// `cover_generated_at`. Mirrors `copy_default_cover_to_show` but sources the
 /// template cover instead of the global default.
-async fn copy_template_cover_to_show(
+pub(crate) async fn copy_template_cover_to_show(
     state: &Arc<AppState>,
     template_cover_key: &str,
     show_id: i64,
@@ -2897,6 +2917,33 @@ pub async fn api_show_detail(
         }
     };
 
+    // Episode view of the host flow: its Show, status and set length.
+    let view: EpisodeViewRow = sqlx::query_as(
+        "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
+                s.wrapup_published_at, s.prerecorded_duration_secs, s.live_ended_at, \
+                s.live_recorded \
+         FROM shows s LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    let on_air = super::series::on_air_show_id(&state).await == Some(id);
+    let episode_end = crate::series::ended_by_host(
+        crate::series::episode_end_utc(
+            &show.date,
+            show.start_time.as_deref(),
+            show.end_time.as_deref(),
+            view.rhythm_end.as_deref(),
+        ),
+        view.live_ended_at.as_deref(),
+    );
+    let episode_status = crate::series::episode_status(
+        episode_end,
+        view.wrapup_published_at.is_some(),
+        on_air,
+        chrono::Utc::now(),
+    );
+
     Ok(Json(ShowDetailResponse {
         id: show.id,
         title: show.title,
@@ -2936,14 +2983,33 @@ pub async fn api_show_detail(
         stream_mode: show.stream_mode,
         created_by: show.created_by,
         latest_recording,
+        series_slug: view.series_slug,
+        series_name: view.series_name,
+        episode_status,
+        on_air,
+        prerecorded_duration_secs: view.prerecorded_duration_secs,
+        live_ended_at: view.live_ended_at,
+        live_recorded: view.live_recorded,
     }))
+}
+
+/// The host-flow part of a show's detail: its Show, published state and set length.
+#[derive(sqlx::FromRow)]
+struct EpisodeViewRow {
+    series_slug: Option<String>,
+    series_name: Option<String>,
+    rhythm_end: Option<String>,
+    wrapup_published_at: Option<String>,
+    prerecorded_duration_secs: Option<i64>,
+    live_ended_at: Option<String>,
+    live_recorded: Option<bool>,
 }
 
 /// Whether two same-day time windows clash. Times are zero-padded "HH:MM", so
 /// lexical comparison matches chronological order. A missing end is treated as a
 /// zero-length point at its start; identical starts always clash (catches the
 /// "two shows booked at the same time" case even when end times are absent).
-fn time_windows_overlap(
+pub(crate) fn time_windows_overlap(
     start_a: &str,
     end_a: Option<&str>,
     start_b: &str,
@@ -2958,7 +3024,7 @@ fn time_windows_overlap(
 /// Reject if the proposed window overlaps another show on the same date.
 /// `exclude_id` skips the show being edited (so it never clashes with itself).
 /// No start time → nothing to check (the window is undefined).
-async fn ensure_no_show_conflict(
+pub(crate) async fn ensure_no_show_conflict(
     state: &AppState,
     date: &str,
     start_time: Option<&str>,
@@ -3008,7 +3074,7 @@ pub struct CreateShowRequest {
 
 /// Default show type for host-created shows. Hosts can't pick a type, and host
 /// assignment is reserved for non-UNHEARD shows (see `api_show_assign_host`).
-const HOST_DEFAULT_SHOW_TYPE: &str = "external";
+pub(crate) const HOST_DEFAULT_SHOW_TYPE: &str = "external";
 
 pub async fn api_create_show(
     State(state): State<Arc<AppState>>,
@@ -3111,7 +3177,7 @@ pub async fn api_create_show(
     .await?;
 
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id, stream_mode, created_by) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id, stream_mode, created_by, template_id) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
@@ -3122,6 +3188,8 @@ pub async fn api_create_show(
     .bind(host_user_id)
     .bind(stream_mode)
     .bind(user.id)
+    // Validated above: the template exists and belongs to the caller.
+    .bind(req.template_id)
     .execute(&state.db)
     .await?;
 
@@ -3236,21 +3304,16 @@ pub async fn api_create_show_template(
         ));
     }
 
-    let result = sqlx::query(
-        "INSERT INTO show_templates (owner_user_id, name, description) VALUES (?, ?, ?)",
-    )
-    .bind(user.id)
-    .bind(name)
-    .bind(&req.description)
-    .execute(&state.db)
-    .await?;
-
-    let id = result.last_insert_rowid();
+    // Every template is a show series, so it gets a slug like one.
+    let (id, slug) =
+        crate::series::insert_series(&state.db, user.id, name, req.description.as_deref(), None)
+            .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
             "id": id,
+            "slug": slug,
             "name": name,
             "description": req.description,
         })),
