@@ -518,6 +518,8 @@ export interface ShowDetail {
   on_air?: boolean;
   /** Length of a pre-recorded set booked through Book Slot, in seconds. */
   prerecorded_duration_secs?: number | null;
+  /** When the host ended the broadcast with End Episode (RFC 3339). */
+  live_ended_at?: string | null;
   /** Whether the broadcast the host ended with End Episode was recorded. */
   live_recorded?: boolean | null;
 }

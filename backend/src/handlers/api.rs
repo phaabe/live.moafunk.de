@@ -2102,6 +2102,10 @@ pub struct ShowDetailResponse {
     on_air: bool,
     /// Length of the pre-recorded set, when it was uploaded through Book Slot.
     prerecorded_duration_secs: Option<i64>,
+    /// When the host ended the live broadcast with End Episode (RFC 3339).
+    /// None until one ended. The wrap-up counts its recording wait from here
+    /// when it is before the scheduled end.
+    live_ended_at: Option<String>,
     /// Whether the live broadcast the host ended with End Episode was
     /// recorded. None until one ended.
     live_recorded: Option<bool>,
@@ -2984,6 +2988,7 @@ pub async fn api_show_detail(
         episode_status,
         on_air,
         prerecorded_duration_secs: view.prerecorded_duration_secs,
+        live_ended_at: view.live_ended_at,
         live_recorded: view.live_recorded,
     }))
 }

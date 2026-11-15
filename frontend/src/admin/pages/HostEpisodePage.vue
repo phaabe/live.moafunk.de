@@ -102,7 +102,12 @@ const pill = computed<Pill>(() => {
   if (s.live_recorded === false) {
     return { state: 'failed', text: 'No usable recording · Record this show was off.' };
   }
-  const endMs = s.end_time ? berlinToUtcDate(s.date, s.end_time).getTime() : null;
+  // An End Episode before the scheduled end starts the wait at that moment.
+  const ends = [
+    s.end_time ? berlinToUtcDate(s.date, s.end_time).getTime() : NaN,
+    s.live_ended_at ? Date.parse(s.live_ended_at) : NaN,
+  ].filter((ms) => !Number.isNaN(ms));
+  const endMs = ends.length ? Math.min(...ends) : null;
   if (endMs !== null && now.value < endMs + RECORDING_GRACE_MS) {
     return { state: 'processing', text: 'Recording processing…' };
   }

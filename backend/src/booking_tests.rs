@@ -609,12 +609,18 @@ async fn an_episode_ended_early_can_be_published() {
         .unwrap()["id"]
         .as_i64()
         .unwrap();
+    let ended_at = chrono::Utc::now().to_rfc3339();
     sqlx::query("UPDATE shows SET live_ended_at = ? WHERE id = ?")
-        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(&ended_at)
         .bind(id)
         .execute(&state.db)
         .await
         .unwrap();
+
+    // The wrap-up reads the early end, so its recording wait starts there.
+    let view = detail(&state, host, id).await;
+    assert_eq!(view["episode_status"], "wrapup_open");
+    assert_eq!(view["live_ended_at"], ended_at.as_str());
 
     publish(&state, host, id).await.unwrap();
     assert!(episode(&state, id)
