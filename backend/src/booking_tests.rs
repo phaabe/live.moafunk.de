@@ -411,6 +411,60 @@ async fn booking_a_live_slot_creates_one_linked_episode() {
     assert_eq!(count().await, before);
 }
 
+/// "No fixed rhythm": the host picks any free date and time ahead, live or
+/// pre-recorded.
+#[tokio::test]
+async fn a_series_without_a_rhythm_books_a_free_date_and_time() {
+    let (state, _temp, _r2) = booking_state().await;
+    let host = add_user(&state, "host", "host").await;
+    let (series_id, slug) = crate::series::insert_series(&state.db, host, "Bare", None, None)
+        .await
+        .unwrap();
+    let day = |days: i64| {
+        (chrono::Utc::now() + chrono::Duration::days(days))
+            .with_timezone(&chrono_tz::Europe::Berlin)
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+    let free = json!({"date": day(3), "start_time": "20:00", "end_time": "22:00"});
+
+    let booked = book(&state, host, &slug, &free, "live", None)
+        .await
+        .unwrap();
+    let row = episode(&state, booked["id"].as_i64().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(row.title, "Bare #1");
+    assert_eq!(row.template_id, Some(series_id));
+
+    let upload = upload_set(&state, host, &slug, "set.wav").await;
+    let later = json!({"date": day(10), "start_time": "18:30", "end_time": "19:45"});
+    let pre = book(&state, host, &slug, &later, "prerecorded", Some(&upload))
+        .await
+        .unwrap();
+    assert_eq!(pre["mode"], "prerecorded");
+
+    // The same time again overlaps the first episode: 409.
+    assert!(matches!(
+        book(&state, host, &slug, &free, "live", None).await,
+        Err(AppError::Conflict(_))
+    ));
+    // In the past, end before start, or not HH:MM: 400.
+    let past = json!({"date": "2020-01-05", "start_time": "20:00", "end_time": "22:00"});
+    let backwards = json!({"date": day(4), "start_time": "22:00", "end_time": "20:00"});
+    let sloppy = json!({"date": day(4), "start_time": "8:00", "end_time": "10:00"});
+    let no_date = json!({"date": "soon", "start_time": "20:00", "end_time": "22:00"});
+    for slot in [past, backwards, sloppy, no_date] {
+        assert!(
+            matches!(
+                book(&state, host, &slug, &slot, "live", None).await,
+                Err(AppError::BadRequest(_))
+            ),
+            "{slot}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_set_is_uploaded_first_then_booked_as_prerecorded() {
     let (state, _temp, objects) = booking_state().await;
