@@ -7,7 +7,7 @@ on:
       - frontend/**
       - .github/workflows/frontend.yml
   pull_request:
-    branches: [main, dev/flow]
+    branches: [main, staging]
     paths:
       - frontend/**
       - .github/workflows/frontend.yml
