@@ -9,6 +9,7 @@ const ShowsPage = () => import('./pages/ShowsPage.vue');
 const ShowCreatePage = () => import('./pages/ShowCreatePage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
 const ShowSeriesPage = () => import('./pages/ShowSeriesPage.vue');
+const BookSlotPage = () => import('./pages/BookSlotPage.vue');
 const RecordingPage = () => import('./pages/RecordingPage.vue');
 const UsersPage = () => import('./pages/UsersPage.vue');
 const UserEditPage = () => import('./pages/UserEditPage.vue');
@@ -48,6 +49,28 @@ export async function ensureFlowReady(
     return;
   }
   next();
+}
+
+/**
+ * Hosts upload and book on Book Slot now, so the old upload and confirm
+ * steps ("Review & Confirm", "Continue to Waiting Room") send them to their
+ * episode. Admins and guests keep the steps.
+ */
+export async function sendHostToEpisode(
+  to: unknown,
+  from: unknown,
+  next: (target?: string) => void
+): Promise<void> {
+  if (useAuthStore().user?.role !== 'host') {
+    await ensureFlowReady(to, from, next);
+    return;
+  }
+  const { useHostFlow } = await import('./composables');
+  const flow = useHostFlow();
+  if (!flow.show.value) {
+    await flow.fetchMyShow();
+  }
+  next(flow.show.value ? `/shows/${flow.show.value.id}` : '/shows');
 }
 
 const router = createRouter({
@@ -108,6 +131,13 @@ const router = createRouter({
       name: 'show-create',
       component: ShowCreatePage,
       meta: { requiresAuth: true },
+    },
+    {
+      // Book Slot, or Upload Your Set with ?mode=prerecorded.
+      path: '/shows/:slug/book',
+      name: 'show-book',
+      component: BookSlotPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
       // A Show (series) by its slug, with its episodes. Owner only (API 404).
@@ -177,13 +207,13 @@ const router = createRouter({
           path: 'upload',
           name: 'stream-upload',
           component: FlowUpload,
-          beforeEnter: ensureFlowReady,
+          beforeEnter: sendHostToEpisode,
         },
         {
           path: 'confirm',
           name: 'stream-confirm',
           component: FlowConfirm,
-          beforeEnter: ensureFlowReady,
+          beforeEnter: sendHostToEpisode,
         },
         {
           path: 'live',
