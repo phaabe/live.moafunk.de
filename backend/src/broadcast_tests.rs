@@ -1241,3 +1241,45 @@ async fn a_new_webm_stream_continues_the_same_recording() {
     let seconds = recorded_seconds(&state).await;
     assert!((seconds - 6.0).abs() < 0.3, "recorded {seconds} s of 6 s");
 }
+
+/// After a drop the browser re-sends what the server may have missed, from
+/// the last offset the server confirmed. The overlap is recorded once.
+#[tokio::test]
+async fn audio_re_sent_after_a_drop_is_recorded_once() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+    let tone = webm_tone(440, 4).await;
+    let mid = tone.len() / 2;
+
+    let mut first = connect_producer(&state, addr, host, "show_id=1").await;
+    first
+        .send(WsMessage::Text("stream:a".into()))
+        .await
+        .unwrap();
+    send_audio(&mut first, &tone[..mid]).await;
+    first.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    let pong: Value =
+        serde_json::from_str(next_text(&mut first).await.strip_prefix("pong:").unwrap()).unwrap();
+    assert_eq!(
+        (pong["stream"].as_str(), pong["offset"].as_u64()),
+        (Some("a"), Some(mid as u64))
+    );
+    close(first).await;
+
+    // The browser had confirmed less than the server got.
+    let at = mid - 5000;
+    let mut back = connect_producer(&state, addr, host, "show_id=1&resume=a").await;
+    send_audio(&mut back, &tone[..webm_header_len(&tone)]).await;
+    back.send(WsMessage::Text(format!("at:{at}")))
+        .await
+        .unwrap();
+    send_audio(&mut back, &tone[at..]).await;
+    close(back).await;
+
+    // Every byte of the stream reached the recorder exactly once.
+    let received = state.stream_state.lock().await.webm_received().1;
+    assert_eq!(received, tone.len() as u64);
+    let seconds = recorded_seconds(&state).await;
+    assert!((seconds - 4.0).abs() < 0.3, "recorded {seconds} s of 4 s");
+}

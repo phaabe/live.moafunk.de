@@ -57,7 +57,7 @@ vi.mock('@admin/composables', () => ({
     return mocks.capture;
   },
   useStreamSocket: () => {
-    mocks.socket = { state: ref('live'), stopStream: vi.fn() };
+    mocks.socket = { state: ref('live'), audioDropped: ref(false), stopStream: vi.fn() };
     return mocks.socket;
   },
   useUploadHealth: () => ({ bufferSeconds: ref(0), ticks: ref(0), verdict: ref('good') }),

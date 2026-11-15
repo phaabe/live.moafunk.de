@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   liveStreamShowId,
+  MAX_PENDING_CHUNKS,
   parsePong,
   useStreamSocket,
   webmHeaderLength,
@@ -18,12 +19,15 @@ describe('webmHeaderLength', () => {
 
 describe('parsePong', () => {
   it('parses a full server pong frame', () => {
-    const msg = 'pong:{"echo":12345.678,"chunks":40,"bytes":276000,"late":2}';
+    const msg =
+      'pong:{"echo":12345.678,"chunks":40,"bytes":276000,"late":2,"stream":"s1","offset":9000}';
     expect(parsePong(msg)).toEqual({
       echoMs: 12345.678,
       chunks: 40,
       bytes: 276000,
       late: 2,
+      stream: 's1',
+      offset: 9000,
     });
   });
 
@@ -33,6 +37,8 @@ describe('parsePong', () => {
       chunks: 0,
       bytes: 0,
       late: 0,
+      stream: null,
+      offset: 0,
     });
   });
 
@@ -181,11 +187,17 @@ describe('useStreamSocket auto-reconnect', () => {
     vi.advanceTimersByTime(1000);
     expect(latest().url).toContain(`resume=${announce.slice('stream:'.length)}`);
     latest().open();
-    expect(latest().sent[0]).toEqual(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3]));
+    // Nothing was confirmed, so both chunks follow the header again.
+    expect(latest().sent).toEqual([
+      new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3]),
+      'at:0',
+      head,
+      rest,
+    ]);
 
     const next = new Uint8Array([8]).buffer;
     stream.send(next);
-    expect(latest().sent[1]).toBe(next);
+    expect(latest().sent[4]).toBe(next);
 
     // End Episode: the next show starts a stream of its own.
     stream.stopStream();
@@ -193,6 +205,76 @@ describe('useStreamSocket auto-reconnect', () => {
     goLive(latest());
     await again;
     expect(latest().url).not.toContain('resume=');
+  });
+
+  describe('chunks of a drop', () => {
+    const header = [0x1a, 0x45, 0xdf, 0xa3];
+    const cluster = [0x1f, 0x43, 0xb6, 0x75];
+    const chunk = (...bytes: number[]) => new Uint8Array(bytes).buffer;
+
+    /** Live, with a stream whose header is known; returns its id. */
+    async function liveStream(): Promise<string> {
+      await startLive(false, 42);
+      stream.send(chunk(...header, ...cluster), true);
+      return (sockets[0].sent[0] as string).slice('stream:'.length);
+    }
+
+    function confirm(ws: FakeWebSocket, id: string, offset: number) {
+      ws.message(`pong:${JSON.stringify({ echo: 1, stream: id, offset })}`);
+    }
+
+    async function reconnect() {
+      vi.advanceTimersByTime(1000);
+      latest().open();
+      latest().message('connected');
+    }
+
+    it('keeps them while reconnecting and sends them in order', async () => {
+      const id = await liveStream();
+      confirm(sockets[0], id, 8);
+      sockets[0].drop();
+
+      const missed = [chunk(1), chunk(2, 3)];
+      for (const c of missed) expect(stream.send(c)).toBe(false);
+      await reconnect();
+      expect(latest().url).toContain(`resume=${id}`);
+      expect(latest().sent).toEqual([new Uint8Array(header), 'at:8', ...missed]);
+
+      const later = chunk(4);
+      expect(stream.send(later)).toBe(true);
+      expect(latest().sent.at(-1)).toBe(later);
+    });
+
+    it('re-sends from the last offset the server confirmed', async () => {
+      const id = await liveStream();
+      const inFlight = chunk(5, 6);
+      stream.send(inFlight);
+      // The pong confirms the first chunk only; the second may be lost.
+      confirm(sockets[0], id, 8);
+      confirm(sockets[0], 'another-stream', 10);
+      sockets[0].drop();
+
+      await reconnect();
+      expect(latest().sent.slice(1)).toEqual(['at:8', inFlight]);
+    });
+
+    it('drops the oldest after about 10 minutes and warns', async () => {
+      const id = await liveStream();
+      confirm(sockets[0], id, 8);
+      sockets[0].drop();
+      for (let i = 0; i < MAX_PENDING_CHUNKS; i++) stream.send(chunk(i % 256));
+      expect(stream.audioDropped.value).toBe(false);
+      stream.send(chunk(7));
+      expect(stream.audioDropped.value).toBe(true);
+
+      await reconnect();
+      // The first missed chunk is gone: the stream goes on from the second.
+      expect(latest().sent[1]).toBe('at:9');
+      expect(latest().sent).toHaveLength(2 + MAX_PENDING_CHUNKS);
+
+      stream.stopStream();
+      expect(stream.audioDropped.value).toBe(false);
+    });
   });
 
   it('keeps test mode across reconnect attempts', async () => {

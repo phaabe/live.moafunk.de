@@ -247,6 +247,9 @@ pub struct StreamState {
     /// MediaRecorder start), so a reconnect that continues it keeps the same
     /// recorder process.
     webm_stream: Option<String>,
+    /// Bytes of `webm_stream` received so far. A reconnect tells from where
+    /// it re-sends (`at:`), so no byte is lost or recorded twice.
+    webm_offset: u64,
     /// True once the recorder process got audio. A new WebM stream then needs
     /// a new recorder process: ffmpeg breaks on a second WebM header.
     recorder_fed: bool,
@@ -284,6 +287,7 @@ impl StreamState {
             recording_path: None,
             recording_failed: None,
             webm_stream: None,
+            webm_offset: 0,
             recorder_fed: false,
             is_test: false,
             generation: 0,
@@ -481,13 +485,7 @@ impl StreamState {
         if self.is_superseded(generation) {
             return Err(StreamError::Superseded);
         }
-
-        // Write to FFmpeg (required for streaming)
-        if let Some(ref mut stdin) = self.ffmpeg_stdin {
-            write_stdin_with_timeout(stdin, data, PRODUCER_WRITE_TIMEOUT)
-                .await
-                .inspect_err(|e| tracing::error!("Failed to write to FFmpeg stdin: {}", e))?;
-        } else {
+        if self.ffmpeg_stdin.is_none() {
             return Err(StreamError::NotStreaming);
         }
 
@@ -496,6 +494,11 @@ impl StreamState {
         // full (recorder/disk too slow) or the writer has stopped, the archive is
         // marked incomplete and surfaced via `recording_failed` — but the live
         // stream keeps running. Completed segments already on disk survive.
+        // This runs before the producer write: a chunk counted as received
+        // (`webm_offset`) is recorded even if the producer has died.
+        if tee {
+            self.webm_offset += data.len() as u64;
+        }
         if let Some(tx) = self.recording_tx.as_ref().filter(|_| tee) {
             match tx.try_send(data.to_vec()) {
                 Ok(()) => self.recorder_fed = true,
@@ -516,6 +519,13 @@ impl StreamState {
                     self.recording_tx = None;
                 }
             }
+        }
+
+        // Write to FFmpeg (required for streaming)
+        if let Some(ref mut stdin) = self.ffmpeg_stdin {
+            write_stdin_with_timeout(stdin, data, PRODUCER_WRITE_TIMEOUT)
+                .await
+                .inspect_err(|e| tracing::error!("Failed to write to FFmpeg stdin: {}", e))?;
         }
 
         Ok(())
@@ -578,10 +588,32 @@ impl StreamState {
             return false;
         }
         self.webm_stream = Some(id.to_string());
+        self.webm_offset = 0;
         if self.recorder_fed {
             self.restart_recorder().await;
         }
         true
+    }
+
+    /// A reconnect re-sends the current WebM stream from byte `offset`.
+    /// Returns how many of those bytes were received already and must be
+    /// skipped. Bytes lost before `offset` leave a gap; the count goes on
+    /// from there.
+    pub fn resume_webm_at(&mut self, offset: u64) -> u64 {
+        if offset > self.webm_offset {
+            tracing::warn!(
+                "WebM stream resumes at byte {} after byte {}: audio is missing",
+                offset,
+                self.webm_offset
+            );
+            self.webm_offset = offset;
+        }
+        self.webm_offset - offset
+    }
+
+    /// The current WebM stream and how many of its bytes arrived.
+    pub fn webm_received(&self) -> (Option<&str>, u64) {
+        (self.webm_stream.as_deref(), self.webm_offset)
     }
 
     /// Replace the recorder process; its segments stay and the new one

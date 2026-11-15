@@ -52,6 +52,15 @@ let webmHeader: Uint8Array | null = null;
 let webmHead = new Uint8Array(0);
 // A header is a few hundred bytes; stop looking for it after this.
 const WEBM_HEADER_SCAN_LIMIT = 64 * 1024;
+// Chunks of the stream the server has not confirmed yet (pong `offset`),
+// with their byte offsets. A drop keeps them; the reconnect re-sends them, so
+// the recording has no gap.
+let pending: { offset: number; data: ArrayBuffer }[] = [];
+let webmOffset = 0;
+/** About 10 minutes of the recorder's 250 ms chunks. Older ones are dropped. */
+export const MAX_PENDING_CHUNKS = 2400;
+/** True once a drop lasted so long that audio was dropped from the buffer. */
+const audioDropped = ref(false);
 let currentCallbacks: {
   onConnected?: () => void;
   onDisconnected?: () => void;
@@ -88,12 +97,15 @@ export interface StreamSocketStats {
   serverLate: number;
 }
 
-/** Server pong frame: `pong:{"echo":…,"chunks":…,"bytes":…,"late":…}` */
+/** Server pong frame: `pong:{"echo":…,"chunks":…,"bytes":…,"late":…,"stream":…,"offset":…}` */
 export interface PongStats {
   echoMs: number;
   chunks: number;
   bytes: number;
   late: number;
+  /** The WebM stream the server reads, and how many of its bytes arrived. */
+  stream: string | null;
+  offset: number;
 }
 
 /** Parse a pong text frame; null for anything malformed. Pure — unit tested. */
@@ -107,6 +119,8 @@ export function parsePong(msg: string): PongStats | null {
       chunks: typeof o.chunks === 'number' ? o.chunks : 0,
       bytes: typeof o.bytes === 'number' ? o.bytes : 0,
       late: typeof o.late === 'number' ? o.late : 0,
+      stream: typeof o.stream === 'string' ? o.stream : null,
+      offset: typeof o.offset === 'number' ? o.offset : 0,
     };
   } catch {
     return null;
@@ -183,8 +197,17 @@ function trackWebm(data: ArrayBuffer, newStream: boolean): void {
     webmStreamId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     webmHeader = null;
     webmHead = new Uint8Array(0);
+    pending = [];
+    webmOffset = 0;
   }
-  if (!webmStreamId || webmHeader || webmHead.length > WEBM_HEADER_SCAN_LIMIT) return;
+  if (!webmStreamId) return;
+  pending.push({ offset: webmOffset, data });
+  webmOffset += data.byteLength;
+  if (pending.length > MAX_PENDING_CHUNKS) {
+    pending.shift();
+    audioDropped.value = true;
+  }
+  if (webmHeader || webmHead.length > WEBM_HEADER_SCAN_LIMIT) return;
   const head = new Uint8Array(webmHead.length + data.byteLength);
   head.set(webmHead);
   head.set(new Uint8Array(data), webmHead.length);
@@ -201,6 +224,39 @@ function forgetWebm(): void {
   webmStreamId = null;
   webmHeader = null;
   webmHead = new Uint8Array(0);
+  pending = [];
+  webmOffset = 0;
+  audioDropped.value = false;
+}
+
+/** The server has the stream up to `pong.offset`: let go of those chunks. */
+function confirmWebm(pong: PongStats): void {
+  if (pong.stream !== webmStreamId) return;
+  while (pending.length && pending[0].offset + pending[0].data.byteLength <= pong.offset) {
+    pending.shift();
+  }
+}
+
+/**
+ * On a new connection, go on with the recorder's stream: the header (or the
+ * stream's start), then from where the server may have lost it, every chunk
+ * it has not confirmed. The server skips the bytes it already has.
+ */
+function resumeWebm(ws: WebSocket, header: Uint8Array | null, headerOf: string | null): number {
+  if (!webmStreamId) return 0;
+  let bytes = 0;
+  if (header && headerOf === webmStreamId) {
+    ws.send(header);
+    bytes += header.byteLength;
+  } else {
+    ws.send(`stream:${webmStreamId}`);
+  }
+  ws.send(`at:${pending[0]?.offset ?? webmOffset}`);
+  for (const chunk of pending) {
+    ws.send(chunk.data);
+    bytes += chunk.data.byteLength;
+  }
+  return bytes;
 }
 
 /** Longest wait between reconnect attempts: 1, 2, 4, then every 5 seconds. */
@@ -248,7 +304,8 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       if (!currentRecord) params.set('record', 'false');
       // Continue the recorder's stream: the header goes first, then its audio.
       const resumeHeader = webmHeader;
-      if (resumeHeader && webmStreamId) params.set('resume', webmStreamId);
+      const resumeId = resumeHeader ? webmStreamId : null;
+      if (resumeId) params.set('resume', resumeId);
       const qs = params.toString();
       const wsUrl = `${protocol}//${window.location.host}/ws/stream${qs ? `?${qs}` : ''}`;
 
@@ -260,10 +317,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
       socket.onopen = () => {
         console.log('[StreamSocket] Connected');
-        if (resumeHeader) {
-          socket?.send(resumeHeader);
-          bytesQueued += resumeHeader.byteLength;
-        }
+        if (socket) bytesQueued += resumeWebm(socket, resumeHeader, resumeId);
         state.value = 'connected';
         startPings();
         currentCallbacks.onConnected?.();
@@ -284,6 +338,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
           if (pong) {
             rttMs = Math.max(0, Math.round(performance.now() - pong.echoMs));
             serverStats = { chunks: pong.chunks, bytes: pong.bytes, late: pong.late };
+            confirmWebm(pong);
           }
         } else if (typeof msg === 'string' && msg.startsWith('error:')) {
           const errMsg = msg.substring(7);
@@ -346,7 +401,8 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
 
   /**
    * Send a recorder chunk. `newStream` marks the first chunk of a new
-   * MediaRecorder, so the server reads it as a new WebM stream.
+   * MediaRecorder, so the server reads it as a new WebM stream. While the
+   * socket is down, chunks wait for the reconnect (false).
    */
   function send(data: ArrayBuffer | string, newStream = false): boolean {
     if (data instanceof ArrayBuffer) trackWebm(data, newStream);
@@ -434,6 +490,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
   return {
     state,
     error,
+    audioDropped,
     reconnectAttempts,
     maxReconnectAttempts,
     connect,
