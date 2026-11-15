@@ -235,10 +235,15 @@ async fn handle_stream_socket(
     // recording failure here must not kill the live broadcast. Without
     // "Record this show" the producer records nothing, like a rehearsal.
     let recorded_show = if record { show_id } else { None };
-    state
-        .recording_finalizer
-        .go_live(LiveFinalize::new(&state), recorded_show)
-        .await;
+    // A rehearsal (the Studio's test after a reload) leaves a live show's
+    // recording alone: a wait for its reconnect goes on, and the rehearsal's
+    // audio never reaches it (see StreamState::write_chunk).
+    if !test {
+        state
+            .recording_finalizer
+            .go_live(LiveFinalize::new(&state), recorded_show)
+            .await;
+    }
     if let Some(sid) = recorded_show {
         if let Err(e) = crate::handlers::recording::ensure_recording_started(&state, sid).await {
             tracing::error!("Failed to auto-start recording for show {}: {}", sid, e);
@@ -435,12 +440,13 @@ async fn handle_stream_socket(
     // - replaced       → leave it to the connection that replaced this one.
     // - explicit stop  → finalize + upload now.
     // - network drop    → defer finalize so a reconnect can resume the archive.
+    // - rehearsal       → like a drop: a live show's recording waits on.
     if superseded {
         tracing::info!(
             "Stream connection of '{}' was replaced; the current stream keeps running",
             username
         );
-    } else if explicit_stop {
+    } else if explicit_stop && !test {
         if let Some(sid) = show_id {
             note_episode_ended(&state, sid, record).await;
         }
