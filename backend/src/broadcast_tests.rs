@@ -1283,3 +1283,47 @@ async fn audio_re_sent_after_a_drop_is_recorded_once() {
     let seconds = recorded_seconds(&state).await;
     assert!((seconds - 4.0).abs() < 0.3, "recorded {seconds} s of 4 s");
 }
+
+/// After a reload the Studio asks for a new soundcheck while the live show
+/// waits for its reconnect. The rehearsal must not end that recording or
+/// reach it.
+#[tokio::test]
+async fn a_rehearsal_during_the_reconnect_grace_keeps_the_live_recording() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+
+    let mut live = connect_producer(&state, addr, host, "show_id=1").await;
+    live.send(WsMessage::Text("stream:a".into())).await.unwrap();
+    send_audio(&mut live, &webm_tone(440, 3).await).await;
+    let archive = state.recording_manager.lock().await.get_temp_file_path();
+    close(live).await;
+
+    let mut rehearsal = connect_producer(&state, addr, host, "test=true").await;
+    rehearsal
+        .send(WsMessage::Text("stream:t".into()))
+        .await
+        .unwrap();
+    send_audio(&mut rehearsal, &webm_tone(660, 2).await).await;
+    rehearsal
+        .send(WsMessage::Text("stop".into()))
+        .await
+        .unwrap();
+    close(rehearsal).await;
+    assert_eq!(
+        state.recording_manager.lock().await.get_temp_file_path(),
+        archive,
+        "the live recording still waits for its reconnect"
+    );
+
+    let mut back = connect_producer(&state, addr, host, "show_id=1").await;
+    back.send(WsMessage::Text("stream:b".into())).await.unwrap();
+    send_audio(&mut back, &webm_tone(880, 3).await).await;
+    close(back).await;
+
+    let seconds = recorded_seconds(&state).await;
+    assert!(
+        (seconds - 6.0).abs() < 0.3,
+        "recorded {seconds} s, want the 6 s of the live show only"
+    );
+}

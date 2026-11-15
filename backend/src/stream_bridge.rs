@@ -496,6 +496,9 @@ impl StreamState {
         // stream keeps running. Completed segments already on disk survive.
         // This runs before the producer write: a chunk counted as received
         // (`webm_offset`) is recorded even if the producer has died.
+        // A rehearsal is never recorded; a live show's recording may wait
+        // for its reconnect meanwhile.
+        let tee = tee && !self.is_test;
         if tee {
             self.webm_offset += data.len() as u64;
         }
@@ -584,7 +587,7 @@ impl StreamState {
     /// yet. A recorder that already got audio of another stream is replaced
     /// by a new process that writes on into the same segment directory.
     pub async fn begin_webm_stream(&mut self, id: &str) -> bool {
-        if self.webm_stream.as_deref() == Some(id) {
+        if self.is_test || self.webm_stream.as_deref() == Some(id) {
             return false;
         }
         self.webm_stream = Some(id.to_string());
@@ -600,6 +603,9 @@ impl StreamState {
     /// skipped. Bytes lost before `offset` leave a gap; the count goes on
     /// from there.
     pub fn resume_webm_at(&mut self, offset: u64) -> u64 {
+        if self.is_test {
+            return 0;
+        }
         if offset > self.webm_offset {
             tracing::warn!(
                 "WebM stream resumes at byte {} after byte {}: audio is missing",
