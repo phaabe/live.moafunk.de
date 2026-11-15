@@ -442,6 +442,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .await?;
     // Set when the host publishes the wrap-up of an ended date.
     add_column_if_missing(pool, "shows", "wrapup_published_at", "TEXT").await?;
+    // Length of a pre-recorded set booked through Book Slot (from ffprobe).
+    add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
     crate::series::migrate(pool).await?;
 
     // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)

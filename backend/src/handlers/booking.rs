@@ -217,8 +217,9 @@ pub async fn api_book_episode(
     let id = sqlx::query(
         "INSERT INTO shows (title, date, status, show_type, start_time, end_time, \
          host_user_id, created_by, stream_mode, template_id, \
-         prerecorded_key, prerecorded_filename, prerecorded_confirmed_at) \
-         VALUES (?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         prerecorded_key, prerecorded_filename, prerecorded_confirmed_at, \
+         prerecorded_duration_secs) \
+         VALUES (?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&title)
     .bind(&slot.date)
@@ -233,6 +234,7 @@ pub async fn api_book_episode(
     .bind(upload.as_ref().map(|u| u.file_key.as_str()))
     .bind(upload.as_ref().map(|u| u.filename.as_str()))
     .bind(&confirmed_at)
+    .bind(upload.as_ref().and_then(|u| u.duration_secs))
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -630,12 +632,16 @@ pub async fn api_replace_prerecorded(
 
     let mut tx = state.db.begin().await?;
     let upload = finished_upload(&mut tx, series_id, Some(&req.upload_id)).await?;
-    sqlx::query("UPDATE shows SET prerecorded_key = ?, prerecorded_filename = ? WHERE id = ?")
-        .bind(&upload.file_key)
-        .bind(&upload.filename)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE shows SET prerecorded_key = ?, prerecorded_filename = ?, \
+         prerecorded_duration_secs = ? WHERE id = ?",
+    )
+    .bind(&upload.file_key)
+    .bind(&upload.filename)
+    .bind(upload.duration_secs)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM series_uploads WHERE session_id = ?")
         .bind(&upload.session_id)
         .execute(&mut *tx)

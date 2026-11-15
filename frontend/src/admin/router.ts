@@ -9,6 +9,7 @@ const ArtistDetailPage = () => import('./pages/ArtistDetailPage.vue');
 const ShowsPage = () => import('./pages/ShowsPage.vue');
 const ShowCreatePage = () => import('./pages/ShowCreatePage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
+const HostEpisodePage = () => import('./pages/HostEpisodePage.vue');
 const ShowSeriesPage = () => import('./pages/ShowSeriesPage.vue');
 const BookSlotPage = () => import('./pages/BookSlotPage.vue');
 const RecordingPage = () => import('./pages/RecordingPage.vue');
@@ -155,7 +156,8 @@ const router = createRouter({
       // One episode (dated show). Numbers only, so a slug never lands here.
       path: '/shows/:id(\\d+)',
       name: 'show-detail',
-      component: ShowDetailPage,
+      // Hosts get the flow's episode screens for their own episodes.
+      component: hostPage(HostEpisodePage, ShowDetailPage),
       // Hosts may view any show and edit the ones they host; guests reach the
       // detail of the show they're assigned to. Finer-grained edit gating lives
       // in ShowDetailPage + the backend (which restricts guests to their show).
