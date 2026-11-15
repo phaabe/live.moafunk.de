@@ -53,7 +53,7 @@ Add `-i <key>` to the `ssh`/`scp` commands below if your ssh config does not pic
    ```
 
 7. **Finish setup:** `ssh root@<staging-ip> /opt/unheard-staging/staging.sh setup` again. It checks both env files and the R2 token, writes `icecast.xml`, installs the nginx vhost and gets the TLS certificate once DNS points at the box. It is safe to run again at any time.
-8. **Start:** `staging.sh up sha-<commit>` (see below), then log in as `staging-admin` with the password from `Moafunk STAGING_SUPERADMIN_PASSWORD`.
+8. **Start:** `staging.sh up sha-<commit>` (see below), then log in as `staging-admin` (password in `Moafunk STAGING_SUPERADMIN_PASSWORD`) or `staging-host` (password in `Moafunk STAGING_HOST_PASSWORD`).
 
 ## Daily use
 
@@ -67,6 +67,8 @@ Every push to `dev/flow` builds an image `sha-<7 chars>` (`backend.yml`). On the
 
 Staging keeps running (also after a reboot) until `down`.
 
+`up` and `seed-db` create or reset the two logins `staging-admin` (superadmin) and `staging-host` (host) to the Bitwarden passwords. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
+
 ## A copy of production data
 
 Production stays read-only. Run this on your Mac; the copy is scrubbed on the production box before it leaves, and scrubbed again on staging:
@@ -76,7 +78,7 @@ ssh root@178.104.160.103 'bash -s -- export-db' < backend/staging/staging.sh \
   | ssh root@<staging-ip> '/opt/unheard-staging/staging.sh seed-db -'
 ```
 
-The copy has no sessions, no stored tokens (SoundCloud), no reset links or recovery emails, no pending uploads and no usable passwords. The scrub refuses the copy if a column that looks like a credential holds data it does not know about. `seed-db` adds `staging-admin` from `.env`. To test as a host, reset that host's password in the staging admin. Files in the production buckets (artist images, recordings) are not copied, so older entries show no media on staging.
+The copy has no sessions, no stored tokens (SoundCloud), no reset links or recovery emails, no pending uploads and no usable passwords. The scrub refuses the copy if a column that looks like a credential holds data it does not know about. `seed-db` adds `staging-admin` and `staging-host`. Other users you create by hand are gone after a seed. To test as a production user, reset that user's password in the staging admin. Files in the production buckets (artist images, recordings) are not copied, so older entries show no media on staging.
 
 ## Tests
 

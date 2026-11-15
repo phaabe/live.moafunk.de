@@ -16,7 +16,8 @@ set -euo pipefail
 
 PREFIX="Moafunk"
 ADMIN_USER="staging-admin"
-GENERATED="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HARBOR_TEST_PASSWORD
+HOST_USER="staging-host"
+GENERATED="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_HARBOR_TEST_PASSWORD
 STAGING_HARBOR_LIVE_PASSWORD STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD
 STAGING_ICECAST_RELAY_PASSWORD"
 MANUAL="STAGING_R2_ACCESS_KEY_ID STAGING_R2_SECRET_ACCESS_KEY"
@@ -58,12 +59,14 @@ for name in $GENERATED; do
     0) ;;
     *) die "more than one item named '$item'; delete the extra ones" ;;
   esac
-  user=""
-  [[ "$name" != STAGING_SUPERADMIN_PASSWORD ]] || user="$ADMIN_USER"
   # Letters and digits only: the harbor passwords sit unescaped in a URL, and
-  # all values sit unquoted in .env. The superadmin password is typed by hand.
+  # all values sit unquoted in .env. Login passwords are typed by hand.
+  user=""
   length=48
-  [[ "$name" != STAGING_SUPERADMIN_PASSWORD ]] || length=24
+  case "$name" in
+    STAGING_SUPERADMIN_PASSWORD) user="$ADMIN_USER" length=24 ;;
+    STAGING_HOST_PASSWORD) user="$HOST_USER" length=24 ;;
+  esac
   bw generate -uln --length "$length" |
     jq -Rs --arg n "$item" --arg f "$folder" --arg u "$user" --argjson t "$template" \
       'rtrimstr("\n") as $p | $t | .type=1 | .name=$n | .folderId=$f | .notes="live.moafunk.de staging (backend/staging)" | .login={username:$u, password:$p}' |

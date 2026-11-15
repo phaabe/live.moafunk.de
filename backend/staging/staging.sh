@@ -14,6 +14,7 @@
 #   staging.sh status               containers, running tag, health
 #   staging.sh export-db            ON PRODUCTION: write a scrubbed copy of the production DB to stdout
 #   staging.sh seed-db <file|->     replace the staging DB with a scrubbed copy
+#   staging.sh users                set the staging logins (staging-admin, staging-host) from .env
 set -euo pipefail
 
 STAGING_DIR="${STAGING_DIR:-/opt/unheard-staging}"
@@ -28,9 +29,12 @@ STAGING_BUCKETS="unheard-artists-staging moafunk-staging"
 PROD_BUCKETS="unheard-artists-prod unheard-artists-dev moafunk-prod"
 
 # Values install-env reads from stdin (push-secrets.sh sends them from Bitwarden).
-SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_R2_ACCESS_KEY_ID
+SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_R2_ACCESS_KEY_ID
 STAGING_R2_SECRET_ACCESS_KEY STAGING_HARBOR_TEST_PASSWORD STAGING_HARBOR_LIVE_PASSWORD
 STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD STAGING_ICECAST_RELAY_PASSWORD"
+
+# Login passwords: stored only as argon2 hashes, so any characters are fine.
+LOGIN_PASSWORDS="STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD"
 
 STREAM_PASSWORD_KEYS="HARBOR_TEST_PASSWORD HARBOR_LIVE_PASSWORD ICECAST_SOURCE_PASSWORD
 ICECAST_ADMIN_PASSWORD ICECAST_RELAY_PASSWORD"
@@ -148,6 +152,14 @@ check_env() {
       problem "$key must be icecast://source:<password>@host.docker.internal:$HARBOR_PORT/${pair#*=}"
   done
 
+  # The staging logins (see staging_users).
+  for key in SUPERADMIN_USERNAME STAGING_HOST_USERNAME; do
+    [[ "$(env_value "$key" "$file")" =~ ^[a-z0-9-]+$ ]] || problem "$key must be set (lowercase letters, digits, -)"
+  done
+  for key in SUPERADMIN_PASSWORD_HASH STAGING_HOST_PASSWORD_HASH; do
+    [[ "$(env_value "$key" "$file")" == '$argon2'* ]] || problem "$key must be an argon2 hash"
+  done
+
   for key in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$file" | cut -d= -f1); do
     if forbidden_key "$key"; then problem "$key must not be set in staging"; fi
   done
@@ -230,17 +242,22 @@ cmd_install_env() {
       *" $name "*) ;;
       *) die "unknown name on stdin: '$name'" ;;
     esac
-    [[ "$value" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || die "$name is empty or has characters a .env cannot hold unquoted"
+    case " $(echo $LOGIN_PASSWORDS) " in
+      *" $name "*) [[ -n "$value" ]] || die "$name is empty" ;;
+      *) [[ "$value" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || die "$name is empty or has characters a .env cannot hold unquoted" ;;
+    esac
     [[ ! -e "$tmp/$name" ]] || die "$name was sent twice"
     printf '%s' "$value" >"$tmp/$name"
   done
   for name in $SECRET_NAMES; do
     [[ -s "$tmp/$name" ]] || die "$name missing on stdin; nothing was written"
   done
-  argon2 "$(head -c 16 /dev/urandom | base64 | tr -d '/+=')" -id -t 2 -m 16 -p 1 -e \
-    <"$tmp/STAGING_SUPERADMIN_PASSWORD" >"$tmp/STAGING_SUPERADMIN_PASSWORD_HASH"
-  rm -f "$tmp/STAGING_SUPERADMIN_PASSWORD"
-  [[ "$(cat "$tmp/STAGING_SUPERADMIN_PASSWORD_HASH")" == '$argon2id$'* ]] || die "argon2 did not return a hash"
+  for name in $LOGIN_PASSWORDS; do
+    argon2 "$(head -c 16 /dev/urandom | base64 | tr -d '/+=')" -id -t 2 -m 16 -p 1 -e \
+      <"$tmp/$name" >"$tmp/${name}_HASH"
+    rm -f "$tmp/$name"
+    [[ "$(cat "$tmp/${name}_HASH")" == '$argon2id$'* ]] || die "argon2 did not return a hash for $name"
+  done
 
   python3 - "$tmp" "$STAGING_DIR/staging.env.example" "$tmp/.env" "$STAGING_DIR/stream.env.example" "$tmp/stream.env" <<'PY'
 import os, re, sys
@@ -427,6 +444,7 @@ cmd_up() {
   compose up -d
   echo "$tag" >"$STAGING_DIR/tag"
   wait_healthy
+  staging_users "$STAGING_DIR/data/unheard.db"
   wait_mounts
   echo "staging runs $tag: https://$DOMAIN"
 }
@@ -534,31 +552,45 @@ PY
   cat "$tmp/copy.db"
 }
 
-# Staging superadmin from .env. Needed because the backend seeds it only into
-# an empty users table, and every user in the copy has an unusable password.
-add_superadmin() {
+# The staging logins from .env, with passwords from Bitwarden: staging-admin
+# (superadmin) and staging-host (host). Needed because the backend seeds a
+# superadmin only into an empty users table, and every user in a production
+# copy has an unusable password. Resets both to the Bitwarden password.
+staging_users() {
   local env="$STAGING_DIR/.env"
+  [[ -f "$1" ]] || die "missing $1 (start staging first)"
   ADMIN_NAME="$(env_value SUPERADMIN_USERNAME "$env")" \
     ADMIN_HASH="$(env_value SUPERADMIN_PASSWORD_HASH "$env")" \
+    HOST_NAME="$(env_value STAGING_HOST_USERNAME "$env")" \
+    HOST_HASH="$(env_value STAGING_HOST_PASSWORD_HASH "$env")" \
     python3 - "$1" <<'PY'
 import os, sqlite3, sys
 
-name, hashed = os.environ["ADMIN_NAME"], os.environ["ADMIN_HASH"]
-if not name or not hashed.startswith("$argon2"):
-    sys.exit("staging: SUPERADMIN_USERNAME and SUPERADMIN_PASSWORD_HASH must be set in .env")
-con = sqlite3.connect(sys.argv[1])
-con.execute(
-    "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'superadmin') "
-    "ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, "
-    "role = 'superadmin', expires_at = NULL",
-    (name, hashed),
-)
+logins = [
+    (os.environ["ADMIN_NAME"], os.environ["ADMIN_HASH"], "superadmin"),
+    (os.environ["HOST_NAME"], os.environ["HOST_HASH"], "host"),
+]
+for name, hashed, role in logins:
+    if not name or not hashed.startswith("$argon2"):
+        sys.exit(f"staging: the {role} login needs a username and an argon2 hash in .env (run push-secrets.sh)")
+# The API may be running: wait for its write lock instead of failing.
+con = sqlite3.connect(sys.argv[1], timeout=30)
+if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
+    sys.exit("staging: the DB has no users table yet")
 columns = [r[1] for r in con.execute("PRAGMA table_info(users)")]
-for column, value in (("must_change_password", 0), ("login_date", None)):
-    if column in columns:
-        con.execute(f"UPDATE users SET {column} = ? WHERE username = ?", (value, name))
+for name, hashed, role in logins:
+    con.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) "
+        "ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, "
+        "role = excluded.role, expires_at = NULL",
+        (name, hashed, role),
+    )
+    for column, value in (("must_change_password", 0), ("login_date", None)):
+        if column in columns:
+            con.execute(f"UPDATE users SET {column} = ? WHERE username = ?", (value, name))
 con.commit()
 con.close()
+print("staging logins: " + ", ".join(f"{name} ({role})" for name, _, role in logins), file=sys.stderr)
 PY
 }
 
@@ -577,7 +609,7 @@ cmd_seed_db() {
   fi
   [[ -s "$data/seed.tmp.db" ]] || { rm -f "$data/seed.tmp.db"; die "the DB copy is empty"; }
   # Never trust the copy: scrub again, whoever made it.
-  if ! scrub_db "$data/seed.tmp.db" || ! add_superadmin "$data/seed.tmp.db"; then
+  if ! scrub_db "$data/seed.tmp.db" || ! staging_users "$data/seed.tmp.db"; then
     rm -f "$data/seed.tmp.db"
     die "staging DB not changed"
   fi
@@ -593,7 +625,7 @@ cmd_seed_db() {
     wait_healthy
   fi
   echo "staging DB is now a scrubbed copy of production: no sessions, no stored tokens, no usable passwords."
-  echo "Log in as the staging superadmin; reset a user's password in the admin to test as that user."
+  echo "Log in as staging-admin or staging-host; to test as a production user, reset that user's password in the admin."
 }
 
 main() {
@@ -612,8 +644,9 @@ main() {
     status) cmd_status ;;
     export-db) cmd_export_db ;;
     seed-db) cmd_seed_db "${1:-}" ;;
+    users) staging_users "$STAGING_DIR/data/unheard.db" ;;
     *)
-      sed -n '7,16p' "$0" >&2
+      sed -n '7,17p' "$0" >&2
       exit 2
       ;;
   esac

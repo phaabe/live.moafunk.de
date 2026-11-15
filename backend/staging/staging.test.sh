@@ -14,6 +14,8 @@ failures=0
 LIVE_PW=liveliveliveliveliveLIVE1
 TEST_PW=testtesttesttesttestTEST1
 ADMIN_PW=AdminTypedByHand2026xyz
+HOST_PW='Host pw! with #symbols 2026'
+HOST_HASH='$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aG9zdA'
 
 mkdir -p "$TMP/bin" "$BOX"
 cp "$HERE/staging.env.example" "$HERE/stream.env.example" "$BOX/"
@@ -40,6 +42,8 @@ ADMIN_BASE_URL=https://staging.live.moafunk.de
 SECRET_KEY=test-secret
 SUPERADMIN_USERNAME=staging-admin
 SUPERADMIN_PASSWORD_HASH='\$argon2id\$v=19\$m=19456,t=2,p=1\$c2FsdA\$aGFzaA'
+STAGING_HOST_USERNAME=staging-host
+STAGING_HOST_PASSWORD_HASH='$HOST_HASH'
 R2_ACCOUNT_ID=account
 R2_ACCESS_KEY_ID=key
 R2_SECRET_ACCESS_KEY=secret
@@ -139,6 +143,8 @@ case_env "Facebook secret set" "FACEBOOK_APP_SECRET must not be set" FACEBOOK_AP
 case_env "OpenAI key set" "OPENAI_API_KEY must not be set" OPENAI_API_KEY sk-x
 case_env "empty recovery mail key" "RECOVERY_MAIL_FROM must not be set" RECOVERY_MAIL_FROM ""
 case_env "placeholder left in .env" "SECRET_KEY still has a <placeholder>" SECRET_KEY "<STAGING_SECRET_KEY>"
+case_env "host login has no hash" "STAGING_HOST_PASSWORD_HASH must be an argon2 hash" STAGING_HOST_PASSWORD_HASH -
+case_env "host login has no name" "STAGING_HOST_USERNAME must be set" STAGING_HOST_USERNAME -
 case_env "unquoted value with a space" "has an unquoted value with a space" SUPERADMIN_USERNAME "Staging Admin"
 case_env "harbor password differs from stream.env" "ICECAST_URL must use HARBOR_LIVE_PASSWORD" ICECAST_URL \
   "icecast://source:otherotherotherotherother1@host.docker.internal:8005/live"
@@ -166,6 +172,7 @@ secrets() {
   cat <<EOF
 STAGING_SECRET_KEY=secretsecretsecretsecretsecret
 STAGING_SUPERADMIN_PASSWORD=$ADMIN_PW
+STAGING_HOST_PASSWORD=$HOST_PW
 STAGING_R2_ACCESS_KEY_ID=0123456789abcdef0123456789abcdef
 STAGING_R2_SECRET_ACCESS_KEY=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 STAGING_HARBOR_TEST_PASSWORD=$TEST_PW
@@ -184,7 +191,8 @@ rm -f "$BOX/.env" "$BOX/stream.env"
 expect_ok "install-env writes env files from the secrets" install_env < <(secrets)
 expect_ok "installed env files pass check-env" check
 if grep -q "^SUPERADMIN_PASSWORD_HASH='\$argon2id\\$" "$BOX/.env"; then pass "superadmin hash is single-quoted"; else fail "superadmin hash is single-quoted"; fi
-if grep -rq "$ADMIN_PW" "$BOX"; then fail "plaintext superadmin password was written"; else pass "plaintext superadmin password is not stored"; fi
+if grep -rqF -e "$ADMIN_PW" -e "$HOST_PW" "$BOX"; then fail "plaintext login passwords were written"; else pass "plaintext login passwords are not stored"; fi
+if grep -q "^STAGING_HOST_PASSWORD_HASH='\$argon2id\\$" "$BOX/.env"; then pass "host login hash (password with spaces and symbols)"; else fail "host login hash (password with spaces and symbols)"; fi
 if [[ "$(ls -l "$BOX/.env" "$BOX/stream.env" | cut -c1-10 | sort -u)" == "-rw-------" ]]; then
   pass "env files are mode 600"
 else
@@ -300,12 +308,20 @@ mkdir -p "$BOX/data"
 expect_ok "seed-db installs a copy from stdin" seed_from_stdin "$TMP/copy.db"
 expect_fact "seed-db adds the staging superadmin" "$BOX/data/unheard.db" \
   "user staging-admin superadmin \$argon2id\$v=19\$m=19456,t=2,p=1\$c2FsdA\$aGFzaA"
+expect_fact "seed-db adds the staging host" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
 expect_fact "seed-db keeps production users unusable" "$BOX/data/unheard.db" "user boss superadmin !"
 
 make_prod_db "$TMP/raw.db"
 expect_ok "seed-db scrubs a copy that was not scrubbed" seed_from_stdin "$TMP/raw.db"
 expect_fact "seed-db empties sessions itself" "$BOX/data/unheard.db" "sessions 0"
 expect_fact "seed-db drops stored tokens itself" "$BOX/data/unheard.db" "settings notifications_enabled"
+
+python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"UPDATE users SET role='admin', password_hash='old' WHERE username='staging-host'\"); c.commit()" "$BOX/data/unheard.db"
+expect_ok "users resets the staging logins in the running DB" staging users
+expect_fact "users gives staging-host back its role and Bitwarden password" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
+set_key "$BOX/.env" STAGING_HOST_PASSWORD_HASH -
+expect_refused "users refuses .env without the host hash" "the host login needs a username and an argon2 hash" staging users
+write_good
 
 printf 'not a database' >"$TMP/broken.db"
 expect_refused "seed-db refuses a damaged copy" "staging DB not changed" seed_from_stdin "$TMP/broken.db"
@@ -367,6 +383,11 @@ if grep -q "ICECAST_URL=icecast://source:$(vault_pw STAGING_HARBOR_LIVE_PASSWORD
   pass "the box gets the Bitwarden values"
 else
   fail "the box gets the Bitwarden values"
+fi
+if [[ "$(jq -r '.[] | select(.name=="Moafunk STAGING_HOST_PASSWORD") | "\(.login.username) \(.login.password | length)"' "$VAULT")" == "staging-host 24" ]]; then
+  pass "the host item has the username and 24 characters"
+else
+  fail "the host item has the username and 24 characters"
 fi
 if out="$(push 2>&1)" && [[ "$out" != *created* ]]; then pass "a second run creates nothing"; else fail "a second run creates nothing: $out"; fi
 
