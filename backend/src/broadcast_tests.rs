@@ -296,6 +296,67 @@ async fn close(mut socket: Producer) {
         .expect("server kept the socket open");
 }
 
+async fn hosted_show(state: &Arc<AppState>, host: i64) {
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Hosted', '2026-09-26', ?)",
+    )
+    .bind(host)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+/// "Record this show" unticked: the show streams and counts as on air, but
+/// nothing records it, also after a reconnect.
+#[tokio::test]
+async fn unticked_record_streams_the_show_without_recording_it() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+
+    let first = connect_producer(&state, addr, host, "show_id=1&record=false").await;
+    assert_eq!(state.recording_manager.lock().await.current_show_id(), None);
+    assert!(!state.stream_state.lock().await.is_recording());
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+
+    // A network drop: still on air during the reconnect grace.
+    close(first).await;
+    assert!(!state.stream_state.lock().await.is_active());
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+
+    let mut back = connect_producer(&state, addr, host, "show_id=1&record=false").await;
+    assert_eq!(state.recording_manager.lock().await.current_show_id(), None);
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+
+    // End Episode: no longer on air, and the episode counts as ended.
+    back.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(back).await;
+    assert_eq!(handlers::series::on_air_show_id(&state).await, None);
+    let (ended, recorded): (Option<String>, Option<bool>) =
+        sqlx::query_as("SELECT live_ended_at, live_recorded FROM shows WHERE id = 1")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert!(ended.is_some());
+    assert_eq!(recorded, Some(false));
+}
+
+/// The record flag defaults to on: a live show is recorded as before.
+#[tokio::test]
+async fn a_live_show_is_recorded_by_default() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+
+    let _socket = connect_producer(&state, addr, host, "show_id=1").await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+    assert_eq!(handlers::series::on_air_show_id(&state).await, Some(1));
+    assert!(state.stream_state.lock().await.is_recording());
+}
+
 #[tokio::test]
 async fn reconnect_survives_the_late_close_of_the_replaced_socket() {
     let (state, _temp, addr) = serve_stream_socket().await;

@@ -6,6 +6,7 @@
 //! concat-demuxed into a single artifact at stop. The live RTMP stream is never
 //! affected by a recording failure.
 
+use crate::recording_finalizer::FINALIZE_GRACE;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
@@ -250,6 +251,11 @@ pub struct StreamState {
     /// takes the next value, so a replaced producer can tell that the stream
     /// is no longer its own (see [`StreamState::is_superseded`]).
     generation: u64,
+    /// Show of the live browser stream, also when it is not recorded.
+    live_show: Option<i64>,
+    /// Show of a live stream that dropped without "stop", and when. It counts
+    /// as on air for [`FINALIZE_GRACE`], the time a reconnect has to resume it.
+    dropped_show: Option<(i64, std::time::Instant)>,
 }
 
 impl Default for StreamState {
@@ -272,7 +278,33 @@ impl StreamState {
             recording_failed: None,
             is_test: false,
             generation: 0,
+            live_show: None,
+            dropped_show: None,
         }
+    }
+
+    /// Sets the show of the live browser stream that just started. A test
+    /// broadcast passes None.
+    pub fn set_live_show(&mut self, show_id: Option<i64>) {
+        self.live_show = show_id;
+        self.dropped_show = None;
+    }
+
+    /// The live stream of `show_id` dropped without "stop".
+    pub fn note_dropped_show(&mut self, show_id: i64) {
+        self.dropped_show = Some((show_id, std::time::Instant::now()));
+    }
+
+    /// The show this stream puts on air: the live browser stream's show, or
+    /// one that dropped less than [`FINALIZE_GRACE`] ago. It covers a live
+    /// stream with "Record this show" off, which has no recording session.
+    pub fn on_air_show_id(&self) -> Option<i64> {
+        if self.is_active() {
+            return self.live_show;
+        }
+        self.dropped_show
+            .filter(|(_, at)| at.elapsed() < FINALIZE_GRACE)
+            .map(|(show_id, _)| show_id)
     }
 
     /// Returns true if a stream is currently active.
@@ -383,6 +415,8 @@ impl StreamState {
         let user = self.current_user.take();
         let had_stdin = self.ffmpeg_stdin.is_some();
         self.is_test = false;
+        self.live_show = None;
+        self.dropped_show = None;
 
         // Close stdin to signal EOF to FFmpeg (live streams only)
         if let Some(mut stdin) = self.ffmpeg_stdin.take() {
@@ -723,6 +757,7 @@ pub async fn start_prerecorded_stream(
         // Not a test broadcast: make sure a stale `is_test = true` from an
         // earlier rehearsal never leaks in and flips the public status off.
         state.is_test = false;
+        state.set_live_show(None);
         state.generation += 1;
         state.generation
     };

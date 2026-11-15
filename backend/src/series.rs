@@ -357,6 +357,21 @@ pub fn episode_end_utc(
     berlin_to_utc(local)
 }
 
+/// An episode ends at its scheduled end, or earlier when the host ended it
+/// with End Episode (`live_ended_at`, RFC 3339).
+pub fn ended_by_host(
+    end: Option<DateTime<Utc>>,
+    live_ended_at: Option<&str>,
+) -> Option<DateTime<Utc>> {
+    let stopped = live_ended_at
+        .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| at.with_timezone(&Utc));
+    match (end, stopped) {
+        (Some(end), Some(stopped)) => Some(end.min(stopped)),
+        (end, stopped) => end.or(stopped),
+    }
+}
+
 fn berlin_to_utc(local: NaiveDateTime) -> Option<DateTime<Utc>> {
     Berlin
         .from_local_datetime(&local)
@@ -793,6 +808,17 @@ mod tests {
         let overnight = episode_end_utc("2026-07-01", Some("23:00"), Some("01:00"), None);
         assert_eq!(overnight, Some(utc("2026-07-01T23:00:00Z")));
         assert_eq!(episode_end_utc("not a date", None, None, None), None);
+    }
+
+    #[test]
+    fn end_episode_before_the_end_ends_the_episode_early() {
+        let end = Some(utc("2026-10-25T13:00:00Z"));
+        let early = "2026-10-25T12:50:00+00:00";
+        assert_eq!(ended_by_host(end, Some(early)), Some(utc(early)));
+        // Overtime: the scheduled end stays (the status uses "on air" for it).
+        assert_eq!(ended_by_host(end, Some("2026-10-25T13:30:00Z")), end);
+        assert_eq!(ended_by_host(end, None), end);
+        assert_eq!(ended_by_host(end, Some("garbage")), end);
     }
 
     #[test]

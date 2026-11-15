@@ -442,6 +442,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .await?;
     // Set when the host publishes the wrap-up of an ended date.
     add_column_if_missing(pool, "shows", "wrapup_published_at", "TEXT").await?;
+    // When the host ended the live episode with End Episode (RFC 3339).
+    add_column_if_missing(pool, "shows", "live_ended_at", "TEXT").await?;
+    // Whether that broadcast was recorded ("Record this show"): 1 or 0.
+    add_column_if_missing(pool, "shows", "live_recorded", "INTEGER").await?;
     // Length of a pre-recorded set booked through Book Slot (from ffprobe).
     add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
     crate::series::migrate(pool).await?;

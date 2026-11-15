@@ -29,6 +29,14 @@ pub struct StreamQuery {
     /// before going live. Requires `ICECAST_TEST_URL` to be configured.
     #[serde(default)]
     pub test: bool,
+    /// "Record this show". False streams `show_id` without recording it.
+    /// The browser re-sends it on every reconnect. Default true.
+    #[serde(default = "record_by_default")]
+    pub record: bool,
+}
+
+fn record_by_default() -> bool {
+    true
 }
 
 /// Inter-chunk cadence gap above which a chunk counts as "late" (#277).
@@ -102,10 +110,11 @@ pub async fn stream_ws_handler(
     // A test broadcast never records, so it ignores show_id entirely.
     let test = query.test;
     let show_id = if test { None } else { query.show_id };
+    let record = query.record;
 
     // Upgrade to WebSocket
     Ok(ws.on_upgrade(move |socket| {
-        handle_stream_socket(socket, state, stream_state, username, show_id, test)
+        handle_stream_socket(socket, state, stream_state, username, show_id, test, record)
     }))
 }
 
@@ -123,6 +132,21 @@ async fn defer_finalize(state: &Arc<AppState>) {
         state
             .recording_finalizer
             .schedule(LiveFinalize::new(state), sid);
+    }
+}
+
+/// The host ended the live episode (End Episode): from now on it counts as
+/// ended, also before its scheduled end, so its wrap-up opens. `recorded`
+/// tells the wrap-up whether to wait for a recording.
+async fn note_episode_ended(state: &AppState, show_id: i64, recorded: bool) {
+    let result = sqlx::query("UPDATE shows SET live_ended_at = ?, live_recorded = ? WHERE id = ?")
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(recorded)
+        .bind(show_id)
+        .execute(&state.db)
+        .await;
+    if let Err(e) = result {
+        tracing::error!("Failed to save the end of show {}: {}", show_id, e);
     }
 }
 
@@ -145,7 +169,8 @@ async fn stop_own_stream(stream_state: &SharedStreamState, generation: u64) -> b
 /// `show_id` (when present) drives automatic recording: it starts when the
 /// stream goes live and is finalized when the stream truly ends. A transient
 /// disconnect defers finalize for a grace period so a reconnect resumes the
-/// same archive rather than fragmenting it.
+/// same archive rather than fragmenting it. With `record` false the show
+/// streams without a recording.
 async fn handle_stream_socket(
     socket: WebSocket,
     state: Arc<AppState>,
@@ -153,6 +178,7 @@ async fn handle_stream_socket(
     username: String,
     show_id: Option<i64>,
     test: bool,
+    record: bool,
 ) {
     let (mut sender, mut receiver) = socket.split();
 
@@ -186,7 +212,10 @@ async fn handle_stream_socket(
             .start_stream(username.clone(), &push_target, test)
             .await
         {
-            Ok(generation) => generation,
+            Ok(generation) => {
+                stream.set_live_show(show_id);
+                generation
+            }
             Err(e) => {
                 tracing::error!("Failed to start stream: {}", e);
                 let _ = sender
@@ -203,12 +232,14 @@ async fn handle_stream_socket(
     // when already recording this show). A wait of another show, or a rehearsal
     // during it, finalizes that show first, so this producer's audio never
     // reaches its file. A finalize that has started is never aborted. A
-    // recording failure here must not kill the live broadcast.
+    // recording failure here must not kill the live broadcast. Without
+    // "Record this show" the producer records nothing, like a rehearsal.
+    let recorded_show = if record { show_id } else { None };
     state
         .recording_finalizer
-        .go_live(LiveFinalize::new(&state), show_id)
+        .go_live(LiveFinalize::new(&state), recorded_show)
         .await;
-    if let Some(sid) = show_id {
+    if let Some(sid) = recorded_show {
         if let Err(e) = crate::handlers::recording::ensure_recording_started(&state, sid).await {
             tracing::error!("Failed to auto-start recording for show {}: {}", sid, e);
         }
@@ -353,6 +384,9 @@ async fn handle_stream_socket(
             username
         );
     } else if explicit_stop {
+        if let Some(sid) = show_id {
+            note_episode_ended(&state, sid, record).await;
+        }
         let finalized = state
             .recording_finalizer
             .finalize_now(LiveFinalize::new(&state))
@@ -368,6 +402,9 @@ async fn handle_stream_socket(
             Err(e) => tracing::error!("Finalize on explicit stop failed: {}", e),
         }
     } else {
+        if let Some(sid) = show_id {
+            stream_state.lock().await.note_dropped_show(sid);
+        }
         defer_finalize(&state).await;
     }
 
@@ -421,7 +458,7 @@ pub async fn stream_stop(
         return Ok((StatusCode::UNAUTHORIZED, "Not authenticated").into_response());
     };
 
-    let was_active = {
+    let (was_active, live_show) = {
         let mut stream = stream_state.lock().await;
         if stream.is_active() {
             if !crate::auth::can_control_stream(&user, stream.current_user.as_deref()) {
@@ -429,6 +466,9 @@ pub async fn stream_stop(
                     "You cannot stop another user's stream".into(),
                 ));
             }
+            let live_show = stream
+                .on_air_show_id()
+                .map(|sid| (sid, stream.is_recording()));
             if let Err(e) = stream.stop_stream().await {
                 tracing::error!("Failed to stop stream: {}", e);
                 return Ok((
@@ -437,11 +477,14 @@ pub async fn stream_stop(
                 )
                     .into_response());
             }
-            true
+            (true, live_show)
         } else {
-            false
+            (false, None)
         }
     };
+    if let Some((sid, recorded)) = live_show {
+        note_episode_ended(&state, sid, recorded).await;
+    }
 
     if was_active || user.role_enum().can_access_admin() {
         // Admin stop is a deliberate end: finalize the recording immediately
