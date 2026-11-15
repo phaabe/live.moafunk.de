@@ -22,6 +22,12 @@ function series(slug: string, name: string): Series {
 
 const BRUNCHTIME = series('brunchtime', 'Brunchtime');
 const NIGHT = series('night', 'Night');
+/** "No fixed rhythm": no slots, a free date and time. */
+const STEPPER: Series = {
+  ...series('stepper', 'Most Silent Stepper'),
+  rhythm: null,
+  rhythm_line: null,
+};
 const slot = (date: string): SeriesSlot => ({ date, start_time: '12:00', end_time: '14:00' });
 
 let app: App | undefined;
@@ -45,6 +51,8 @@ beforeEach(() => {
       const body = typeof options?.body === 'string' ? JSON.parse(options.body) : options?.body;
       requests.push({ url, method, body });
       if (url === '/api/series/brunchtime') return Response.json({ ...BRUNCHTIME, episodes: [] });
+      if (url === '/api/series/stepper') return Response.json({ ...STEPPER, episodes: [] });
+      if (url === '/api/series/stepper/episodes') return bookResponse();
       if (url === '/api/series') return Response.json({ series: [BRUNCHTIME, NIGHT] });
       if (url === '/api/series/brunchtime/slots') {
         slotLoads += 1;
@@ -177,6 +185,49 @@ describe('Book Slot', () => {
     show.value = 'night';
     show.dispatchEvent(new Event('change'));
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/night/book'));
+  });
+});
+
+describe('Book Slot for a show with no fixed rhythm', () => {
+  const field = (selector: string) => root.querySelector(selector) as HTMLInputElement;
+  function fill(selector: string, value: string) {
+    field(selector).value = value;
+    field(selector).dispatchEvent(new Event('input'));
+  }
+
+  it('books a free date and time', async () => {
+    const router = await mount('/shows/stepper/book');
+    expect(requests.some((r) => r.url.endsWith('/slots'))).toBe(false);
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' }).format(
+      new Date()
+    );
+    expect(field('input[type="date"]').min).toBe(today);
+    expect(button('Book slot').disabled).toBe(true);
+
+    fill('input[type="date"]', '2030-11-19');
+    fill('input[aria-label="Start time"]', '20:00');
+    fill('input[aria-label="End time"]', '22:00');
+    await nextTick();
+    button('Book slot').click();
+    await settle();
+
+    expect(requests.find((r) => r.url === '/api/series/stepper/episodes')?.body).toEqual({
+      date: '2030-11-19',
+      start_time: '20:00',
+      end_time: '22:00',
+      mode: 'live',
+    });
+    expect(router.currentRoute.value.fullPath).toBe('/shows/77');
+  });
+
+  it('refuses an end time before the start', async () => {
+    await mount('/shows/stepper/book');
+    fill('input[type="date"]', '2030-11-19');
+    fill('input[aria-label="Start time"]', '22:00');
+    fill('input[aria-label="End time"]', '20:00');
+    await nextTick();
+    expect(root.textContent).toContain('The end time must be after the start time');
+    expect(button('Book slot').disabled).toBe(true);
   });
 });
 
