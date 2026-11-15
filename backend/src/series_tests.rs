@@ -309,3 +309,34 @@ async fn a_failed_cover_upload_leaves_no_series() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+/// The end time never cuts a show: the episode on air stays open past it.
+#[tokio::test]
+async fn an_episode_on_air_is_not_over_at_its_end_time() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let series = create(&state, host, BRUNCHTIME).await.unwrap();
+    let series_id = series["id"].as_i64().unwrap();
+    let on_air = episode(&state, series_id, "2020-01-12", "live").await;
+    let over = episode(&state, series_id, "2020-01-05", "live").await;
+    state
+        .recording_manager
+        .lock()
+        .await
+        .start(on_air)
+        .await
+        .unwrap();
+
+    let detail = get(&state, host, "brunchtime").await.unwrap();
+    let status = |id: i64| {
+        detail["episodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == id)
+            .unwrap()["status"]
+            .clone()
+    };
+    assert_eq!(status(on_air), "upcoming");
+    assert_eq!(status(over), "wrapup_open");
+}

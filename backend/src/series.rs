@@ -331,14 +331,16 @@ fn berlin_to_utc(local: NaiveDateTime) -> Option<DateTime<Utc>> {
 
 /// Before the end: Upcoming. After the end: wrap-up open until it is
 /// published, then Finished. An end that can't be computed counts as not
-/// reached yet.
+/// reached yet. The end time never cuts a show: while the episode is on air
+/// it is not over, also past its end time or midnight.
 pub fn episode_status(
     end: Option<DateTime<Utc>>,
     published: bool,
+    on_air: bool,
     now: DateTime<Utc>,
 ) -> EpisodeStatus {
     match end {
-        Some(end) if now >= end => {
+        Some(end) if now >= end && !on_air => {
             if published {
                 EpisodeStatus::Finished
             } else {
@@ -763,10 +765,27 @@ mod tests {
         let end = Some(utc("2026-10-25T13:00:00Z"));
         let before = utc("2026-10-25T12:59:00Z");
         let after = utc("2026-10-25T13:00:00Z");
-        assert_eq!(episode_status(end, false, before), EpisodeStatus::Upcoming);
-        assert_eq!(episode_status(end, false, after), EpisodeStatus::WrapupOpen);
-        assert_eq!(episode_status(end, true, after), EpisodeStatus::Finished);
-        assert_eq!(episode_status(None, false, after), EpisodeStatus::Upcoming);
+        assert_eq!(
+            episode_status(end, false, false, before),
+            EpisodeStatus::Upcoming
+        );
+        assert_eq!(
+            episode_status(end, false, false, after),
+            EpisodeStatus::WrapupOpen
+        );
+        assert_eq!(
+            episode_status(end, true, false, after),
+            EpisodeStatus::Finished
+        );
+        assert_eq!(
+            episode_status(None, false, false, after),
+            EpisodeStatus::Upcoming
+        );
+        // Still on air after the end time: the show goes on.
+        assert_eq!(
+            episode_status(end, false, true, after),
+            EpisodeStatus::Upcoming
+        );
         assert_eq!(EpisodeStatus::WrapupOpen.label(), "Finished · wrap-up open");
     }
 

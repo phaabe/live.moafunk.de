@@ -296,6 +296,9 @@ pub async fn api_get_series(
     .fetch_all(&state.db)
     .await?;
 
+    // The episode being recorded is on air, so its end time does not end it.
+    // The session also lasts through the reconnect grace after a drop.
+    let on_air = state.recording_manager.lock().await.current_show_id();
     let now = Utc::now();
     let episodes = rows
         .into_iter()
@@ -306,7 +309,12 @@ pub async fn api_get_series(
                 e.end_time.as_deref(),
                 rhythm_end.as_deref(),
             );
-            let status = series::episode_status(end, e.wrapup_published_at.is_some(), now);
+            let status = series::episode_status(
+                end,
+                e.wrapup_published_at.is_some(),
+                on_air == Some(e.id),
+                now,
+            );
             let (mode, mode_label) = series::mode_of(e.stream_mode.as_deref());
             EpisodeItem {
                 id: e.id,
