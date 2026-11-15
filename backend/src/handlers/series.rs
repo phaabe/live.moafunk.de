@@ -164,13 +164,17 @@ impl CreateSeriesForm {
         Ok(form)
     }
 
-    fn rhythm(&self) -> Result<Rhythm> {
+    /// The rhythm, or `None` for "No fixed rhythm" (`repeat_rule=none`).
+    fn rhythm(&self) -> Result<Option<Rhythm>> {
+        if self.repeat_rule.as_deref().map(str::trim) == Some("none") {
+            return Ok(None);
+        }
         let repeat_rule = self
             .repeat_rule
             .as_deref()
             .and_then(RepeatRule::parse)
             .ok_or_else(|| {
-                AppError::BadRequest("Repeats must be 'weekly' or 'biweekly'".to_string())
+                AppError::BadRequest("Repeats must be 'weekly', 'biweekly' or 'none'".to_string())
             })?;
         let weekday = self
             .weekday
@@ -195,18 +199,20 @@ impl CreateSeriesForm {
                 ))
             }
         }
-        Ok(Rhythm {
+        Ok(Some(Rhythm {
             repeat_rule,
             weekday,
             start_time: start.to_string(),
             end_time: end.to_string(),
-        })
+        }))
     }
 }
 
 /// POST /api/series — multipart: `name`, `description`, `repeat_rule`
-/// (`weekly` | `biweekly`), `weekday` (1-7, Monday first), `start_time`,
-/// `end_time` ("HH:MM"), and an optional `cover` image file.
+/// (`weekly` | `biweekly` | `none`), `weekday` (1-7, Monday first),
+/// `start_time`, `end_time` ("HH:MM"), and an optional `cover` image file.
+/// With `none` (No fixed rhythm) the day and times are not needed: each
+/// episode is booked on a free date and time.
 pub async fn api_create_series(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -227,7 +233,7 @@ pub async fn api_create_series(
     let rhythm = form.rhythm()?;
 
     let (id, slug) =
-        series::insert_series(&state.db, user.id, name, description, Some(&rhythm)).await?;
+        series::insert_series(&state.db, user.id, name, description, rhythm.as_ref()).await?;
 
     if let Some(cover) = form.cover {
         // Same storage as template covers. No series without its cover:

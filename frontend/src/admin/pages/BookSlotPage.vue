@@ -33,14 +33,30 @@ const uploading = ref(false);
 const progress = ref(0);
 const uploaded = ref<UploadedSet | null>(null);
 
+/** A Show with no fixed rhythm books any free date and time ahead. */
+const freeChoice = computed(() => series.value?.rhythm === null && !replacing.value);
+const freeDate = ref('');
+const freeStart = ref('');
+const freeEnd = ref('');
+const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' }).format(new Date());
+const freeTimeError = computed(() =>
+  freeStart.value && freeEnd.value && freeEnd.value <= freeStart.value
+    ? 'The end time must be after the start time'
+    : null
+);
+
 const choices = computed<SeriesSlot[]>(() => (replacing.value ? [replacing.value] : slots.value));
 const dates = computed(() => [...new Set(choices.value.map((s) => s.date))]);
 const times = computed(() =>
   choices.value.filter((s) => s.date === date.value).map((s) => slotTime(s))
 );
-const selected = computed(
-  () => choices.value.find((s) => s.date === date.value && slotTime(s) === time.value) ?? null
-);
+const selected = computed<SeriesSlot | null>(() => {
+  if (freeChoice.value) {
+    if (!freeDate.value || !freeStart.value || !freeEnd.value || freeTimeError.value) return null;
+    return { date: freeDate.value, start_time: freeStart.value, end_time: freeEnd.value };
+  }
+  return choices.value.find((s) => s.date === date.value && slotTime(s) === time.value) ?? null;
+});
 
 watch(dates, (list) => {
   if (!list.includes(date.value)) date.value = list[0] ?? '';
@@ -71,7 +87,7 @@ async function load() {
     series.value = found;
     myShows.value = list.series;
     replacing.value = isUpload.value ? currentReplaceTarget(router) : null;
-    if (!replacing.value) await loadSlots();
+    if (!replacing.value && found.rhythm) await loadSlots();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the show';
   }
@@ -137,7 +153,7 @@ async function bookSlot() {
   } catch (e) {
     // Usually someone took the slot in the meantime: show why, offer the rest.
     error.value = e instanceof Error ? e.message : 'Could not book the slot';
-    if (!replacing.value) await loadSlots().catch(() => undefined);
+    if (!replacing.value && !freeChoice.value) await loadSlots().catch(() => undefined);
   } finally {
     booking.value = false;
   }
@@ -199,18 +215,53 @@ async function bookSlot() {
       </p>
     </template>
 
-    <label class="field">
-      <span class="label">Date</span>
-      <select v-model="date" class="input" :disabled="waitingForFile || !!replacing">
-        <option v-for="d in dates" :key="d" :value="d">{{ slotDate(d) }}</option>
-      </select>
-    </label>
-    <label class="field">
-      <span class="label">Time</span>
-      <select v-model="time" class="input" :disabled="waitingForFile || !!replacing">
-        <option v-for="t in times" :key="t" :value="t">{{ t }}</option>
-      </select>
-    </label>
+    <template v-if="freeChoice">
+      <label class="field">
+        <span class="label">Date</span>
+        <input
+          v-model="freeDate"
+          type="date"
+          class="input"
+          :min="today"
+          :disabled="waitingForFile"
+        />
+      </label>
+      <div class="field">
+        <span class="label">Time</span>
+        <div class="time-range">
+          <input
+            v-model="freeStart"
+            type="time"
+            class="input"
+            aria-label="Start time"
+            :disabled="waitingForFile"
+          />
+          <span>–</span>
+          <input
+            v-model="freeEnd"
+            type="time"
+            class="input"
+            aria-label="End time"
+            :disabled="waitingForFile"
+          />
+        </div>
+      </div>
+      <p v-if="freeTimeError" class="field-error">{{ freeTimeError }}</p>
+    </template>
+    <template v-else>
+      <label class="field">
+        <span class="label">Date</span>
+        <select v-model="date" class="input" :disabled="waitingForFile || !!replacing">
+          <option v-for="d in dates" :key="d" :value="d">{{ slotDate(d) }}</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="label">Time</span>
+        <select v-model="time" class="input" :disabled="waitingForFile || !!replacing">
+          <option v-for="t in times" :key="t" :value="t">{{ t }}</option>
+        </select>
+      </label>
+    </template>
     <p v-if="!isUpload" class="hint">Pre-recorded shows need the file before you pick a time.</p>
     <p v-if="error" class="field-error" role="alert">{{ error }}</p>
 
@@ -308,5 +359,11 @@ async function bookSlot() {
   color: var(--color-error);
   font-size: var(--font-size-sm);
   margin: 0;
+}
+
+.time-range {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
 }
 </style>

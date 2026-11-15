@@ -862,10 +862,12 @@ export interface SeriesDetail extends Series {
   episodes: SeriesEpisode[];
 }
 
-export interface NewSeries extends SeriesRhythm {
+export interface NewSeries {
   name: string;
   description: string;
   cover: File | null;
+  /** null: "No fixed rhythm"; each episode books a free date and time. */
+  rhythm: SeriesRhythm | null;
 }
 
 /** A bookable date and time of a series' rhythm. */
@@ -911,7 +913,7 @@ export const seriesApi = {
     return resp.json();
   },
 
-  /** Free slots of the rhythm for the next weeks. */
+  /** Free slots of the rhythm for the next weeks (none without a rhythm). */
   slots: (slug: string) => api.get<{ slots: SeriesSlot[] }>(`${seriesPath(slug)}/slots`),
 
   /** Book a slot. A slot someone else took in the meantime is rejected. */
@@ -966,10 +968,14 @@ export const seriesApi = {
     const form = new FormData();
     form.append('name', input.name);
     form.append('description', input.description);
-    form.append('repeat_rule', input.repeat_rule);
-    form.append('weekday', String(input.weekday));
-    form.append('start_time', input.start_time);
-    form.append('end_time', input.end_time);
+    if (input.rhythm) {
+      form.append('repeat_rule', input.rhythm.repeat_rule);
+      form.append('weekday', String(input.rhythm.weekday));
+      form.append('start_time', input.rhythm.start_time);
+      form.append('end_time', input.rhythm.end_time);
+    } else {
+      form.append('repeat_rule', 'none');
+    }
     if (input.cover) form.append('cover', input.cover);
     const resp = await fetch('/api/series', {
       method: 'POST',

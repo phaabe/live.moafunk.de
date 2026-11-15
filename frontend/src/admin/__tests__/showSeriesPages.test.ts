@@ -187,6 +187,27 @@ describe('New Show', () => {
     });
   });
 
+  it('creates a show with no fixed rhythm, without day and time', async () => {
+    const router = await mount('host', '/shows/new');
+    await vi.waitFor(() => expect(root.textContent).toContain('Create show'));
+    input('.form-input input', 'Most Silent Stepper');
+    input('select', 'none', 'change');
+    await nextTick();
+    expect([...root.querySelectorAll('option')].map((o) => o.textContent)).toContain(
+      'No fixed rhythm'
+    );
+    expect(root.querySelector('input[aria-label="Start time"]')).toBeNull();
+    expect([...root.querySelectorAll('.label')].map((l) => l.textContent)).not.toContain('Day');
+    button('Create show').click();
+
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime'));
+    expect(Object.fromEntries(posted!.entries())).toEqual({
+      name: 'Most Silent Stepper',
+      description: '',
+      repeat_rule: 'none',
+    });
+  });
+
   it('refuses an end time before the start', async () => {
     await mount('host', '/shows/new');
     await vi.waitFor(() => expect(root.textContent).toContain('Create show'));

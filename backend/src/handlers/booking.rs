@@ -91,7 +91,8 @@ async fn is_taken(state: &AppState, slot: &Slot) -> Result<bool> {
 }
 
 /// GET /api/series/:slug/slots — free slots of the rhythm for the next
-/// 12 weeks.
+/// 12 weeks. Empty for a series without a rhythm: it books a free date and
+/// time instead.
 pub async fn api_series_slots(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
@@ -157,8 +158,39 @@ async fn finished_upload(
     })
 }
 
+/// A date and time for a series without a rhythm: "YYYY-MM-DD", "HH:MM",
+/// the end after the start, and the start still ahead.
+fn check_free_choice(slot: &Slot, now: DateTime<Utc>) -> Result<()> {
+    if NaiveDate::parse_from_str(&slot.date, "%Y-%m-%d").is_err() {
+        return Err(AppError::BadRequest("Pick a date".to_string()));
+    }
+    match (
+        model::parse_hhmm(&slot.start_time),
+        model::parse_hhmm(&slot.end_time),
+    ) {
+        (Some(start), Some(end)) if start < end => {}
+        (Some(_), Some(_)) => {
+            return Err(AppError::BadRequest(
+                "The end time must be after the start time".to_string(),
+            ))
+        }
+        _ => {
+            return Err(AppError::BadRequest(
+                "Start and end time must be HH:MM".to_string(),
+            ))
+        }
+    }
+    if scheduler::show_start_utc(&slot.date, &slot.start_time).is_none_or(|start| start <= now) {
+        return Err(AppError::BadRequest(
+            "Pick a date and time that is still ahead".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// POST /api/series/:slug/episodes — book a free slot as a live or a
-/// pre-recorded episode. Returns the new episode.
+/// pre-recorded episode. Returns the new episode. A series with a rhythm
+/// takes one of its slots; one without takes any free date and time ahead.
 pub async fn api_book_episode(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
@@ -173,7 +205,9 @@ pub async fn api_book_episode(
         start_time: req.start_time,
         end_time: req.end_time,
     };
-    if !rhythm_slots(&state, &series, Utc::now())
+    if series.rhythm().is_none() {
+        check_free_choice(&slot, Utc::now())?;
+    } else if !rhythm_slots(&state, &series, Utc::now())
         .await?
         .contains(&slot)
     {

@@ -11,8 +11,9 @@ const router = useRouter();
 
 const name = ref('');
 const description = ref('');
-// Defaults as on the flow screen: "Every week", "Sunday".
-const repeatRule = ref<RepeatRule>('weekly');
+// Defaults as on the flow screen: "Every week", "Sunday". "none" is
+// "No fixed rhythm": no day or time, episodes book a free date and time.
+const repeatRule = ref<RepeatRule | 'none'>('weekly');
 const weekday = ref(7);
 const startTime = ref('');
 const endTime = ref('');
@@ -25,8 +26,10 @@ const error = ref<string | null>(null);
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+const fixedRhythm = computed(() => repeatRule.value !== 'none');
+
 const timeError = computed(() =>
-  startTime.value && endTime.value && endTime.value <= startTime.value
+  fixedRhythm.value && startTime.value && endTime.value && endTime.value <= startTime.value
     ? 'The end time must be after the start time'
     : null
 );
@@ -34,10 +37,8 @@ const timeError = computed(() =>
 const canSubmit = computed(
   () =>
     name.value.trim() !== '' &&
-    weekday.value >= 1 &&
-    startTime.value !== '' &&
-    endTime.value !== '' &&
-    !timeError.value &&
+    (!fixedRhythm.value ||
+      (weekday.value >= 1 && startTime.value !== '' && endTime.value !== '' && !timeError.value)) &&
     !saving.value
 );
 
@@ -64,10 +65,15 @@ async function createShow() {
     const created = await seriesApi.create({
       name: name.value.trim(),
       description: description.value.trim(),
-      repeat_rule: repeatRule.value,
-      weekday: weekday.value,
-      start_time: startTime.value,
-      end_time: endTime.value,
+      rhythm:
+        repeatRule.value === 'none'
+          ? null
+          : {
+              repeat_rule: repeatRule.value,
+              weekday: weekday.value,
+              start_time: startTime.value,
+              end_time: endTime.value,
+            },
       cover: cover.value,
     });
     await router.push(`/shows/${created.slug}`);
@@ -122,15 +128,16 @@ onUnmounted(() => setCover(null));
         <select v-model="repeatRule" class="input">
           <option value="weekly">Every week</option>
           <option value="biweekly">Every 2 weeks</option>
+          <option value="none">No fixed rhythm</option>
         </select>
       </label>
-      <label class="field">
+      <label v-if="fixedRhythm" class="field">
         <span class="label">Day</span>
         <select v-model.number="weekday" class="input">
           <option v-for="(day, i) in DAYS" :key="day" :value="i + 1">{{ day }}</option>
         </select>
       </label>
-      <div class="field">
+      <div v-if="fixedRhythm" class="field">
         <span class="label">Time</span>
         <div class="time-range">
           <input v-model="startTime" type="time" class="input" aria-label="Start time" />

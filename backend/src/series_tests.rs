@@ -226,6 +226,23 @@ async fn series_are_only_visible_to_their_owner() {
     assert_eq!(get(&state, alice, "brunchtime").await.unwrap()["id"], 1);
 }
 
+/// "No fixed rhythm": no day or times, and no rhythm line.
+#[tokio::test]
+async fn create_without_a_fixed_rhythm() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let created = create(
+        &state,
+        host,
+        &[("name", "Most Silent Stepper"), ("repeat_rule", "none")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(created["slug"], "most-silent-stepper");
+    assert_eq!(created["rhythm"], Value::Null);
+    assert_eq!(created["rhythm_line"], Value::Null);
+}
+
 #[tokio::test]
 async fn create_rejects_a_missing_name_or_a_bad_rhythm() {
     let (state, _temp) = state().await;
