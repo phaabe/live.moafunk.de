@@ -3111,7 +3111,7 @@ pub async fn api_create_show(
     .await?;
 
     let result = sqlx::query(
-        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id, stream_mode, created_by) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO shows (title, date, description, status, show_type, start_time, end_time, host_user_id, stream_mode, created_by, template_id) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&req.title)
     .bind(&req.date)
@@ -3122,6 +3122,8 @@ pub async fn api_create_show(
     .bind(host_user_id)
     .bind(stream_mode)
     .bind(user.id)
+    // Validated above: the template exists and belongs to the caller.
+    .bind(req.template_id)
     .execute(&state.db)
     .await?;
 
@@ -3236,21 +3238,16 @@ pub async fn api_create_show_template(
         ));
     }
 
-    let result = sqlx::query(
-        "INSERT INTO show_templates (owner_user_id, name, description) VALUES (?, ?, ?)",
-    )
-    .bind(user.id)
-    .bind(name)
-    .bind(&req.description)
-    .execute(&state.db)
-    .await?;
-
-    let id = result.last_insert_rowid();
+    // Every template is a show series, so it gets a slug like one.
+    let (id, slug) =
+        crate::series::insert_series(&state.db, user.id, name, req.description.as_deref(), None)
+            .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
             "id": id,
+            "slug": slug,
             "name": name,
             "description": req.description,
         })),

@@ -16,6 +16,7 @@ mod recording_finalizer;
 mod recovery;
 mod recovery_mail;
 mod scheduler;
+mod series;
 mod soundcloud;
 mod storage;
 mod stream_bridge;
@@ -28,6 +29,8 @@ mod video;
 mod broadcast_tests;
 #[cfg(test)]
 mod recovery_tests;
+#[cfg(test)]
+mod series_tests;
 #[cfg(test)]
 mod stream_system_tests;
 
@@ -569,6 +572,12 @@ async fn main() -> anyhow::Result<()> {
             "/api/show-templates/:id/cover",
             post(handlers::api::api_upload_template_cover),
         )
+        // Show series (the host flow's "Shows"), scoped to their owner
+        .route(
+            "/api/series",
+            get(handlers::series::api_list_series).post(handlers::series::api_create_series),
+        )
+        .route("/api/series/:slug", get(handlers::series::api_get_series))
         // Note: distinct literal (not /api/shows/overview) to avoid a matchit
         // 0.7 static-vs-:id sibling conflict with the route below.
         .route(
