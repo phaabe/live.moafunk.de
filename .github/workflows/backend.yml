@@ -141,7 +141,7 @@ jobs:
         with:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
-            REPLACE_WITH_SM_UUID > STAGING_DEPLOY_SSH_KEY
+            ba04c03e-d633-40a6-a49f-b50301724312 > STAGING_DEPLOY_SSH_KEY
 
       - name: Deploy the exact image to staging
         id: deploy
