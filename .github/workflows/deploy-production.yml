@@ -1,0 +1,151 @@
+name: Deploy production
+
+# Manual production deploy of one release image (docs/deployment.md).
+# - Runs only from main, only for the people in the gate step, one at a time.
+# - Deploys main's exact image digest, and only when main has exactly the code
+#   that the staging server runs (the release checks happened there).
+# - The host script refuses during a show or 2 hours before one, backs up the
+#   DB and waits for health. dry_run (the default) checks all of this and
+#   switches nothing.
+# - rollback_tag puts an earlier release back; it skips the staging check.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy production"'
+        required: true
+        type: string
+      dry_run:
+        description: Check everything, switch nothing
+        type: boolean
+        default: true
+      rollback_tag:
+        description: "Rollback only: an earlier release tag (sha-1234567) to put back"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: api-production
+      url: https://admin.live.moafunk.de
+
+    steps:
+      - name: Check who asks and what
+        id: gate
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+          CONFIRM: ${{ inputs.confirm }}
+          ROLLBACK_TAG: ${{ inputs.rollback_tag }}
+        run: |
+          set -euo pipefail
+          case "$ACTOR" in
+            anneoneone | phaabe) ;;
+            *) echo "::error::$ACTOR may not deploy production"; exit 1 ;;
+          esac
+          [[ "$CONFIRM" == "deploy production" ]] || { echo '::error::type "deploy production" to confirm'; exit 1; }
+          [[ -z "$ROLLBACK_TAG" || "$ROLLBACK_TAG" =~ ^sha-[0-9a-f]{7}$ ]] ||
+            { echo "::error::rollback_tag must look like sha-1234567"; exit 1; }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Pick the image
+        id: image
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          ROLLBACK_TAG: ${{ inputs.rollback_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ROLLBACK_TAG" ]]; then
+            # Only code that was released before: an ancestor of main.
+            git merge-base --is-ancestor "${ROLLBACK_TAG#sha-}" HEAD ||
+              { echo "::error::$ROLLBACK_TAG is not an earlier commit of main"; exit 1; }
+            tag="$ROLLBACK_TAG"
+          else
+            tag="sha-${SOURCE_SHA:0:7}"
+          fi
+          repo=phaabe/live.moafunk.de-backend
+          token="$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -r .token)"
+          digest="$(curl -fsSI -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/$repo/manifests/$tag" | tr -d '\r' |
+            awk -F': ' 'tolower($1) == "docker-content-digest" {print $2}' || true)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+            { echo "::error::no image $tag yet; wait for the main build to finish"; exit 1; }
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+          echo "Image: ghcr.io/$repo:$tag ($digest)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Get keys from Bitwarden
+        id: keys
+        uses: bitwarden/sm-action@v2
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            546972ad-7db9-4525-8d30-b46e00f8802a > HETZNER_IP
+            32944dfd-70f2-4f57-8274-b46e00f77c41 > HETZNER_SSH_KEY
+            REPLACE_WITH_SM_UUID > STAGING_DEPLOY_SSH_KEY
+
+      - name: Check main is what staging runs
+        id: staging
+        if: inputs.rollback_tag == ''
+        env:
+          STAGING_KEY: ${{ steps.keys.outputs.STAGING_DEPLOY_SSH_KEY }}
+          STAGING_HOST_KEY: staging.live.moafunk.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHw+kqXgS8FmHdVOw2gaNMRzTQ+0SjGKYvsuqu8HyFQp
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/staging-key"
+          known="$RUNNER_TEMP/staging-known-hosts"
+          trap 'rm -f "$key" "$known"' EXIT
+          (umask 077 && printf '%s\n' "$STAGING_KEY" >"$key")
+          printf '%s\n' "$STAGING_HOST_KEY" >"$known"
+          # The staging key may only read the status or deploy (staging.sh ci-deploy).
+          status="$(ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes root@staging.live.moafunk.de status)"
+          echo "Staging: $(echo "$status" | tr '\n' ' ')" | tee -a "$GITHUB_STEP_SUMMARY"
+          tag="$(echo "$status" | sed -n 's/^tag: //p')"
+          [[ "$tag" =~ ^sha-[0-9a-f]{7,40}$ ]] || { echo "::error::staging runs no release image ($tag)"; exit 1; }
+          tested="$(git rev-parse --verify --quiet "${tag#sha-}^{commit}")" ||
+            { echo "::error::staging runs $tag, which is not in this repository"; exit 1; }
+          if [[ "$(git rev-parse HEAD^{tree})" != "$(git rev-parse "$tested^{tree}")" ]]; then
+            echo "::error::main is not what staging runs ($tag). Test this release on staging first (staging.sh hold while you check), or merge only the tested commit."
+            git diff --stat "$tested" HEAD | tail -20
+            exit 1
+          fi
+          echo "main has exactly the code of $tag on staging" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy
+        env:
+          PROD_IP: ${{ steps.keys.outputs.HETZNER_IP }}
+          PROD_KEY: ${{ steps.keys.outputs.HETZNER_SSH_KEY }}
+          # Pinned host key of the production server; a different key stops the deploy.
+          PROD_HOST_KEY: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL76nCwfiKTFFhXYlN68sxFT4jd0m9IAQpmbLFyL/nru
+          TAG: ${{ steps.image.outputs.tag }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sha-[0-9a-f]{7}$ && "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ && "$DRY_RUN" =~ ^[01]$ ]] ||
+            { echo "::error::bad tag, digest or dry_run"; exit 1; }
+          key="$RUNNER_TEMP/prod-key"
+          known="$RUNNER_TEMP/prod-known-hosts"
+          trap 'rm -f "$key" "$known"' EXIT
+          (umask 077 && printf '%s\n' "$PROD_KEY" >"$key")
+          printf '%s %s\n' "$PROD_IP" "$PROD_HOST_KEY" >"$known"
+          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes "root@$PROD_IP" \
+            "TAG=$TAG DIGEST=$DIGEST DRY_RUN=$DRY_RUN bash -s" <backend/deploy/deploy-production.sh
