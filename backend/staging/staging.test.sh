@@ -311,6 +311,73 @@ printf 'not a database' >"$TMP/broken.db"
 expect_refused "seed-db refuses a damaged copy" "staging DB not changed" seed_from_stdin "$TMP/broken.db"
 expect_fact "a refused seed leaves the staging DB alone" "$BOX/data/unheard.db" "artists 1"
 
+echo "--- push-secrets"
+# Stub bw with a JSON file as the vault, and an ssh that runs install-env here.
+VAULT="$TMP/vault.json"
+mkdir -p "$TMP/pushbin"
+cat >"$TMP/pushbin/bw" <<EOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "status "*) echo '{"status":"unlocked"}' ;;
+  "sync "*) ;;
+  "list folders") echo '[{"id":"f1","name":"Staging"}]' ;;
+  "list items") jq --arg s "\$4" '[.[] | select(.name | contains(\$s))]' "$VAULT" ;;
+  "get template") echo '{"type":1,"name":"Item name","folderId":null,"notes":null,"login":null}' ;;
+  "generate "*) LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "\$4" ;;
+  "encode ") base64 ;;
+  "create item") jq --argjson i "\$(base64 -d)" '. + [\$i]' "$VAULT" >"$VAULT.new" && mv "$VAULT.new" "$VAULT" ;;
+  *) echo "stub bw: \$*" >&2; exit 1 ;;
+esac
+EOF
+cat >"$TMP/pushbin/ssh" <<EOF
+#!/usr/bin/env bash
+PATH="$TMP/bin:\$PATH" STAGING_DIR="$BOX" bash "$HERE/staging.sh" install-env
+EOF
+chmod +x "$TMP/pushbin/bw" "$TMP/pushbin/ssh"
+
+r2_items() {
+  printf '[{"name":"Moafunk STAGING_R2_ACCESS_KEY_ID","login":{"password":"0123456789abcdef0123456789abcdef"}},
+    {"name":"Moafunk STAGING_R2_SECRET_ACCESS_KEY","login":{"password":"%s"}}]' "$1" >"$VAULT"
+}
+
+push() {
+  PATH="$TMP/pushbin:$PATH" BW_FOLDER=Staging bash "$HERE/push-secrets.sh" root@staging.test
+}
+
+# Password of the vault item NAME (empty when it is not a string).
+vault_pw() {
+  jq -r --arg n "Moafunk $1" '.[] | select(.name==$n) | .login.password | strings' "$VAULT"
+}
+
+rm -f "$BOX/.env" "$BOX/stream.env"
+r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+expect_ok "push-secrets creates the items and installs the env" push
+expect_ok "pushed env files pass check-env" check
+if [[ "$(vault_pw STAGING_HARBOR_LIVE_PASSWORD)" =~ ^[A-Za-z0-9]{48}$ ]]; then
+  pass "generated passwords are 48 letters and digits"
+else
+  fail "generated passwords are 48 letters and digits: '$(vault_pw STAGING_HARBOR_LIVE_PASSWORD)'"
+fi
+if [[ "$(jq -r '.[] | select(.name=="Moafunk STAGING_SUPERADMIN_PASSWORD") | "\(.login.username) \(.login.password | length) \(.folderId)"' "$VAULT")" == "staging-admin 24 f1" ]]; then
+  pass "the superadmin item has the username, 24 characters and the folder"
+else
+  fail "the superadmin item has the username, 24 characters and the folder: $(jq -c '.[2]' "$VAULT")"
+fi
+if grep -q "ICECAST_URL=icecast://source:$(vault_pw STAGING_HARBOR_LIVE_PASSWORD)@" "$BOX/.env"; then
+  pass "the box gets the Bitwarden values"
+else
+  fail "the box gets the Bitwarden values"
+fi
+if out="$(push 2>&1)" && [[ "$out" != *created* ]]; then pass "a second run creates nothing"; else fail "a second run creates nothing: $out"; fi
+
+r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+jq '.[1:]' "$VAULT" >"$VAULT.new" && mv "$VAULT.new" "$VAULT"
+expect_refused "a missing R2 item stops the push" "add exactly one Bitwarden item 'Moafunk STAGING_R2_ACCESS_KEY_ID'" push
+
+r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+jq '. + [{"name":"Moafunk STAGING_SECRET_KEY","login":{"password":{"type":1}}}]' "$VAULT" >"$VAULT.new" && mv "$VAULT.new" "$VAULT"
+expect_refused "an item whose password is not a string stops the push" "Moafunk STAGING_SECRET_KEY has no password" push
+
 if ((failures > 0)); then
   echo "$failures staging test(s) failed"
   exit 1

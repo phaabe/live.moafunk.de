@@ -41,10 +41,13 @@ items_named() {
   bw list items --search "$1" | jq --arg n "$1" 'map(select(.name==$n)) | length'
 }
 
-# Password of the one item with exactly this name.
+# Password of the one item with exactly this name; fails unless it is a non-empty string.
 bwpw() {
   bw list items --search "$1" |
-    jq -er --arg n "$1" 'map(select(.name==$n)) | if length==1 then .[0].login.password else error("\(length) items named \($n)") end'
+    jq -er --arg n "$1" 'map(select(.name==$n))
+      | if length != 1 then error("\(length) items named \($n)")
+        elif (.[0].login.password | type) != "string" or .[0].login.password == "" then error("\($n) has no password")
+        else .[0].login.password end'
 }
 
 template="$(bw get template item)"
@@ -63,7 +66,7 @@ for name in $GENERATED; do
   [[ "$name" != STAGING_SUPERADMIN_PASSWORD ]] || length=24
   bw generate -uln --length "$length" |
     jq -Rs --arg n "$item" --arg f "$folder" --arg u "$user" --argjson t "$template" \
-      '$t | .type=1 | .name=$n | .folderId=$f | .notes="live.moafunk.de staging (backend/staging)" | .login={username:$u, password:rtrimstr("\n")}' |
+      'rtrimstr("\n") as $p | $t | .type=1 | .name=$n | .folderId=$f | .notes="live.moafunk.de staging (backend/staging)" | .login={username:$u, password:$p}' |
     bw encode | bw create item >/dev/null
   echo "created Bitwarden item '$item'"
 done
