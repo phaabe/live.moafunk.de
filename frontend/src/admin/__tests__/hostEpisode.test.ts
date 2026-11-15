@@ -338,6 +338,27 @@ describe('Wrap-up and Done', () => {
     expect(button('Publish').disabled).toBe(true);
   });
 
+  it('counts the recording wait from an early End Episode', async () => {
+    // Ended 20 min ago, long before its scheduled end; no recording was saved.
+    current = episode({
+      episode_status: 'wrapup_open',
+      live_ended_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+    });
+    await mount('host', 1, { episodeEnded: 42 });
+    expect(text()).toContain('No usable recording · Nothing was recorded.');
+    expect(button('Publish').disabled).toBe(false);
+  });
+
+  it('still waits right after an early End Episode', async () => {
+    current = episode({
+      episode_status: 'wrapup_open',
+      live_ended_at: new Date(Date.now() - 60 * 1000).toISOString(),
+    });
+    await mount('host', 1, { episodeEnded: 42 });
+    expect(text()).toContain('Recording processing…');
+    expect(button('Publish').disabled).toBe(true);
+  });
+
   it('says when "Record this show" was off', async () => {
     current = episode({ episode_status: 'wrapup_open', live_recorded: false });
     await mount('host', 1, { episodeEnded: 42 });
