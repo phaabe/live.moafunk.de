@@ -39,7 +39,7 @@ Add `-i <key>` to the `ssh`/`scp` commands below if your ssh config does not pic
 
    ```bash
    ssh root@<staging-ip> 'mkdir -p /opt/unheard-staging/icecast-web'
-   scp backend/staging/{staging.sh,docker-compose.staging.yml,icecast.staging.xml,nginx-staging.conf,staging.env.example,stream.env.example} \
+   scp backend/staging/{staging.sh,docker-compose.staging.yml,icecast.staging.xml,nginx-staging.conf,staging.env.example,stream.env.example,ci-deploy.pub} \
      docs/stream-rework/prod/{moafunk.liq,icecast-kh.Dockerfile} root@<staging-ip>:/opt/unheard-staging/
    scp docs/stream-rework/prod/icecast-web/{status-json.xsl,xml2json.xslt} root@<staging-ip>:/opt/unheard-staging/icecast-web/
    ```
@@ -57,13 +57,24 @@ Add `-i <key>` to the `ssh`/`scp` commands below if your ssh config does not pic
 
 ## Daily use
 
-Every push to `staging` builds an image `sha-<7 chars>` (`backend.yml`). On the box:
+Every push to the `staging` branch builds an image `sha-<7 chars>` and deploys exactly that image here (`backend.yml`, job `deploy-staging`). Nobody needs to log in for that.
+
+For release checks, stop the automatic deploys so the release candidate stays on staging:
+
+```bash
+/opt/unheard-staging/staging.sh hold "R1 release checks"   # CI builds go on, but are not deployed
+/opt/unheard-staging/staging.sh unhold                     # after the production deploy
+```
+
+By hand, on the box:
 
 ```bash
 /opt/unheard-staging/staging.sh up sha-1234567   # checks env and R2, pulls, starts, waits for health and both mounts
-/opt/unheard-staging/staging.sh status
+/opt/unheard-staging/staging.sh status           # running tag, hold, containers, health
 /opt/unheard-staging/staging.sh down             # stop (data stays)
 ```
+
+The CI key (`ci-deploy.pub`, private part in Bitwarden Secrets Manager as `STAGING_DEPLOY_SSH_KEY`) may only run `staging.sh ci-deploy`: read the tag and hold, or deploy one tag with its exact digest. `setup` installs it that way; `staging.sh install-ci-key` does only that step.
 
 Staging keeps running (also after a reboot) until `down`.
 

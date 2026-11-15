@@ -9,7 +9,11 @@
 #   staging.sh check-env [env] [stream-env]
 #                                   refuse settings that reach production or real accounts
 #   staging.sh check-r2             the R2 token reaches the staging buckets and no production bucket
-#   staging.sh up sha-<commit>      check, then pull and start that image with the stream chain
+#   staging.sh up sha-<commit> [sha256:<digest>]
+#                                   check, then pull and start that image with the stream chain
+#   staging.sh hold <reason>        pause CI deploys (for release checks); staging.sh unhold resumes them
+#   staging.sh ci-deploy            forced command of the CI key: "status" or "deploy sha-<commit> sha256:<digest>"
+#   staging.sh install-ci-key       let the CI key (ci-deploy.pub) run only ci-deploy (part of setup)
 #   staging.sh down                 stop staging (keeps its data)
 #   staging.sh status               containers, running tag, health
 #   staging.sh export-db            ON PRODUCTION: write a scrubbed copy of the production DB to stdout
@@ -25,6 +29,9 @@ API_PORT=8000
 HARBOR_PORT=8005
 ICECAST_PORT=8010
 ICECAST_IMAGE=moafunk/icecast-kh:kh22
+API_IMAGE=ghcr.io/phaabe/live.moafunk.de-backend
+AUTHORIZED_KEYS="${STAGING_AUTHORIZED_KEYS:-/root/.ssh/authorized_keys}"
+HOLD_EXIT=3 # ci-deploy: staging is on hold, nothing deployed
 STAGING_BUCKETS="unheard-artists-staging moafunk-staging"
 PROD_BUCKETS="unheard-artists-prod unheard-artists-dev moafunk-prod"
 
@@ -412,11 +419,12 @@ cmd_setup() {
   local file
   for file in docker-compose.staging.yml icecast.staging.xml nginx-staging.conf moafunk.liq \
     icecast-kh.Dockerfile icecast-web/status-json.xsl icecast-web/xml2json.xslt \
-    staging.env.example stream.env.example; do
+    staging.env.example stream.env.example ci-deploy.pub; do
     [[ -f "$STAGING_DIR/$file" ]] || die "missing $STAGING_DIR/$file (copy the files first, see README)"
   done
   chmod 700 "$STAGING_DIR"
   harden_ssh
+  cmd_install_ci_key
   install_packages
   build_icecast
   if [[ ! -f "$STAGING_DIR/.env" || ! -f "$STAGING_DIR/stream.env" ]]; then
@@ -433,14 +441,23 @@ cmd_setup() {
 }
 
 cmd_up() {
-  local tag="${1:-}"
-  [[ "$tag" =~ ^sha-[0-9a-f]{7,40}$ ]] || die "usage: staging.sh up sha-<commit>"
+  local tag="${1:-}" digest="${2:-}"
+  [[ "$tag" =~ ^sha-[0-9a-f]{7,40}$ ]] || die "usage: staging.sh up sha-<commit> [sha256:<digest>]"
+  [[ -z "$digest" || "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "digest must be sha256:<64 hex>"
   [[ -f "$STAGING_DIR/icecast.xml" ]] || die "run staging.sh setup first"
   docker image inspect "$ICECAST_IMAGE" >/dev/null 2>&1 || die "Icecast image missing: run staging.sh setup"
+  # One deploy at a time (CI and a person can meet here).
+  exec 9>"$STAGING_DIR/.deploy.lock"
+  flock -w 900 9 || die "another deploy is still running"
+  [[ ! -f "$STAGING_DIR/hold" ]] || echo "note: staging is on hold ($(cat "$STAGING_DIR/hold")); deploying by hand anyway"
   check_all_env
   check_r2
   STAGING_TAG="$tag"
   compose pull api
+  if [[ -n "$digest" ]]; then
+    docker image inspect --format '{{join .RepoDigests "\n"}}' "$API_IMAGE:$tag" | grep -qxF "$API_IMAGE@$digest" ||
+      die "$API_IMAGE:$tag is not $digest; nothing was started"
+  fi
   compose up -d
   echo "$tag" >"$STAGING_DIR/tag"
   wait_healthy
@@ -456,12 +473,70 @@ cmd_down() {
 
 cmd_status() {
   echo "tag: $(cat "$STAGING_DIR/tag" 2>/dev/null || echo none)"
+  echo "hold: $(cat "$STAGING_DIR/hold" 2>/dev/null || echo "no (CI deploys every push to the staging branch)")"
   compose ps
   if curl -fsS --max-time 3 "http://127.0.0.1:$API_PORT/health" >/dev/null 2>&1; then
     echo "API healthy: https://$DOMAIN"
   else
     echo "API not running"
   fi
+}
+
+# Pause CI deploys, so a release candidate stays on staging while it is tested.
+cmd_hold() {
+  local reason="$*"
+  [[ -n "$reason" ]] || die 'usage: staging.sh hold <reason>, e.g. staging.sh hold "R1 release checks"'
+  printf '%s | %s | %s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$(cat "$STAGING_DIR/tag" 2>/dev/null || echo none)" "$reason" \
+    >"$STAGING_DIR/hold"
+  echo "staging is on hold: CI deploys are skipped until staging.sh unhold"
+}
+
+cmd_unhold() {
+  rm -f "$STAGING_DIR/hold"
+  echo "hold removed: the next push to the staging branch deploys again"
+}
+
+# Forced command of the CI deploy key (see install-ci-key). The key can do
+# exactly two things: say what staging runs, and deploy one exact image
+# unless staging is on hold.
+cmd_ci_deploy() {
+  local request="${SSH_ORIGINAL_COMMAND:-}" tag digest
+  if [[ "$request" == status ]]; then
+    echo "tag: $(cat "$STAGING_DIR/tag" 2>/dev/null || echo none)"
+    echo "hold: $(cat "$STAGING_DIR/hold" 2>/dev/null || echo no)"
+    return 0
+  fi
+  if [[ "$request" =~ ^deploy\ (sha-[0-9a-f]{7,40})\ (sha256:[0-9a-f]{64})$ ]]; then
+    tag="${BASH_REMATCH[1]}"
+    digest="${BASH_REMATCH[2]}"
+  else
+    die "the CI key may only run: status, or deploy sha-<commit> sha256:<digest>"
+  fi
+  if [[ -f "$STAGING_DIR/hold" ]]; then
+    echo "staging is on hold ($(cat "$STAGING_DIR/hold")); $tag was not deployed"
+    exit "$HOLD_EXIT"
+  fi
+  cmd_up "$tag" "$digest"
+}
+
+# Allow the CI key in ci-deploy.pub, but only for `staging.sh ci-deploy`.
+cmd_install_ci_key() {
+  local key blob line
+  key="$(cat "$STAGING_DIR/ci-deploy.pub")"
+  [[ "$key" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+\ ci-staging-deploy$ ]] || die "ci-deploy.pub is not the CI deploy key"
+  blob="$(echo "$key" | awk '{print $2}')"
+  line="command=\"$STAGING_DIR/staging.sh ci-deploy\",restrict $key"
+  mkdir -p "$(dirname "$AUTHORIZED_KEYS")"
+  touch "$AUTHORIZED_KEYS"
+  if grep -qxF "$line" "$AUTHORIZED_KEYS"; then
+    return 0
+  fi
+  # Replace any older line for this key; keep every other key as it is.
+  { grep -vF "$blob" "$AUTHORIZED_KEYS" || true; } >"$AUTHORIZED_KEYS.new"
+  printf '%s\n' "$line" >>"$AUTHORIZED_KEYS.new"
+  chmod 600 "$AUTHORIZED_KEYS.new"
+  mv "$AUTHORIZED_KEYS.new" "$AUTHORIZED_KEYS"
+  echo "CI key allowed for staging.sh ci-deploy only"
 }
 
 # Remove everything that works against production or a real account, then
@@ -639,14 +714,18 @@ main() {
       echo "env ok"
       ;;
     check-r2) check_r2 ;;
-    up) cmd_up "${1:-}" ;;
+    up) cmd_up "${1:-}" "${2:-}" ;;
+    hold) cmd_hold "$@" ;;
+    unhold) cmd_unhold ;;
+    ci-deploy) cmd_ci_deploy ;;
+    install-ci-key) cmd_install_ci_key ;;
     down) cmd_down ;;
     status) cmd_status ;;
     export-db) cmd_export_db ;;
     seed-db) cmd_seed_db "${1:-}" ;;
     users) staging_users "$STAGING_DIR/data/unheard.db" ;;
     *)
-      sed -n '7,17p' "$0" >&2
+      sed -n '7,21p' "$0" >&2
       exit 2
       ;;
   esac

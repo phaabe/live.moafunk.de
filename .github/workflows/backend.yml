@@ -116,6 +116,61 @@ jobs:
             printf 'The API was not deployed. Use the approved maintenance procedure.\n'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  deploy-staging:
+    # Put the image just built on the staging server
+    # (https://staging.live.moafunk.de). Only for pushes to the staging
+    # branch. No production access: the box lets this key run only
+    # `staging.sh ci-deploy` (backend/staging/README.md). During a release
+    # check, `staging.sh hold` makes this a no-op with a notice.
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: staging-deploy
+      cancel-in-progress: false
+    environment:
+      name: staging
+      url: https://staging.live.moafunk.de
+
+    steps:
+      - name: Get the staging deploy key from Bitwarden
+        id: key
+        uses: bitwarden/sm-action@v2
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            ba04c03e-d633-40a6-a49f-b50301724312 > STAGING_DEPLOY_SSH_KEY
+
+      - name: Deploy the exact image to staging
+        id: deploy
+        env:
+          DEPLOY_KEY: ${{ steps.key.outputs.STAGING_DEPLOY_SSH_KEY }}
+          SOURCE_SHA: ${{ needs.build-and-push.outputs.source-sha }}
+          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+          # Pinned host key of the staging server; a different key stops the deploy.
+          HOST_KEY: staging.live.moafunk.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHw+kqXgS8FmHdVOw2gaNMRzTQ+0SjGKYvsuqu8HyFQp
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "missing image digest" >&2; exit 1; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "missing source commit" >&2; exit 1; }
+          key="$RUNNER_TEMP/staging-deploy-key"
+          known="$RUNNER_TEMP/staging-known-hosts"
+          trap 'rm -f "$key" "$known"' EXIT
+          (umask 077 && printf '%s\n' "$DEPLOY_KEY" >"$key")
+          printf '%s\n' "$HOST_KEY" >"$known"
+          tag="sha-${SOURCE_SHA:0:7}"
+          code=0
+          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de "deploy $tag $DIGEST" || code=$?
+          if [[ "$code" == 3 ]]; then
+            echo "::notice title=Staging is on hold::$tag was built but not deployed. Run staging.sh unhold on the box to resume."
+            exit 0
+          fi
+          exit "$code"
+
   deploy-monitoring:
     # Deploy monitoring to Hetzner only when explicitly requested.
     # Additive + reversible: never touches the backend, the stream stack, or DNS.

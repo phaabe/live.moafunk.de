@@ -327,6 +327,56 @@ printf 'not a database' >"$TMP/broken.db"
 expect_refused "seed-db refuses a damaged copy" "staging DB not changed" seed_from_stdin "$TMP/broken.db"
 expect_fact "a refused seed leaves the staging DB alone" "$BOX/data/unheard.db" "artists 1"
 
+echo "--- hold and the CI key"
+DIGEST="sha256:$(printf '%064d' 7)"
+write_good
+rm -f "$BOX/hold" "$BOX/icecast.xml"
+
+ci() { # what the CI asks for over ssh
+  SSH_ORIGINAL_COMMAND="$1" staging ci-deploy
+}
+
+expect_refused "the CI key cannot run other commands" "the CI key may only run" ci "rm -rf /"
+expect_refused "the CI key needs an exact digest" "the CI key may only run" ci "deploy sha-abc1234"
+expect_refused "the CI key cannot add commands" "the CI key may only run" ci "deploy sha-abc1234 $DIGEST; reboot"
+expect_refused "the CI key cannot use a short digest" "the CI key may only run" ci "deploy sha-abc1234 sha256:abc"
+expect_refused "a hold needs a reason" "usage: staging.sh hold" staging hold
+echo sha-abc1234 >"$BOX/tag"
+if [[ "$(ci status)" == $'tag: sha-abc1234\nhold: no' ]]; then pass "the CI key can read the tag and hold"; else fail "the CI key can read the tag and hold: $(ci status 2>&1)"; fi
+expect_ok "hold pauses CI deploys" staging hold "R1 release checks"
+set +e
+out="$(ci "deploy sha-abc1234 $DIGEST" 2>&1)"
+code=$?
+set -e
+if [[ "$code" == 3 && "$out" == *"on hold"*"R1 release checks"*"sha-abc1234 was not deployed"* ]]; then
+  pass "a CI deploy during a hold changes nothing and exits 3"
+else
+  fail "a CI deploy during a hold changes nothing and exits 3: exit $code, $out"
+fi
+if [[ "$(ci status)" == *"hold: "*"R1 release checks"* ]]; then pass "status shows the hold"; else fail "status shows the hold: $(ci status 2>&1)"; fi
+expect_ok "unhold resumes CI deploys" staging unhold
+expect_refused "after unhold a CI deploy reaches up" "run staging.sh setup first" ci "deploy sha-abc1234 $DIGEST"
+
+AUTH="$TMP/authorized_keys"
+cp "$HERE/ci-deploy.pub" "$BOX/ci-deploy.pub"
+ci_key="$(cat "$HERE/ci-deploy.pub")"
+printf 'ssh-ed25519 AAAAotherkey anton\n%s\n' "$ci_key" >"$AUTH"
+install_key() {
+  STAGING_AUTHORIZED_KEYS="$AUTH" staging install-ci-key
+}
+expect_ok "install-ci-key restricts the CI key" install_key
+want="command=\"$BOX/staging.sh ci-deploy\",restrict $ci_key"
+if [[ "$(grep -c "${ci_key#* }" "$AUTH")" == 1 ]] && grep -qxF "$want" "$AUTH" && grep -qx 'ssh-ed25519 AAAAotherkey anton' "$AUTH"; then
+  pass "the CI key line is replaced, other keys stay"
+else
+  fail "the CI key line is replaced, other keys stay: $(cat "$AUTH")"
+fi
+before="$(cat "$AUTH")"
+expect_ok "install-ci-key runs again" install_key
+if [[ "$(cat "$AUTH")" == "$before" ]]; then pass "install-ci-key changes nothing the second time"; else fail "install-ci-key changes nothing the second time"; fi
+echo "ssh-ed25519 AAAAsomeoneelse laptop" >"$BOX/ci-deploy.pub"
+expect_refused "install-ci-key refuses a key that is not the CI key" "ci-deploy.pub is not the CI deploy key" install_key
+
 echo "--- push-secrets"
 # Stub bw with a JSON file as the vault, and an ssh that runs install-env here.
 VAULT="$TMP/vault.json"
