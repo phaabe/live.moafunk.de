@@ -4,7 +4,6 @@ import WaveSurfer from 'wavesurfer.js';
 
 const props = withDefaults(defineProps<{
   src: string;
-  label?: string;
   showVolume?: boolean;
   initialVolume?: number;
 }>(), {
@@ -31,6 +30,39 @@ const volume = ref(props.initialVolume);
 
 let wavesurfer: WaveSurfer | null = null;
 let isDestroyed = false;
+// Bumped when the file changes, so a load that is still reading the header stops.
+let loadId = 0;
+
+/** Longer files stream: playback starts at once, flat bars stand in for the waveform. */
+const WAVEFORM_MAX_SECS = 10 * 60;
+
+/** Flat bars for a streamed file: enough values for one bar per 3 px up to 12 000 px. */
+function flatPeaks(): Float32Array[] {
+  return [new Float32Array(4000).fill(0.1)];
+}
+
+/**
+ * Read the length from the file header only (a small range request).
+ * `wavesurfer.load(url)` without peaks downloads and decodes the whole file
+ * before it can play, which takes too long for a 2 h set.
+ */
+function readDuration(src: string): Promise<number> {
+  const probe = document.createElement('audio');
+  probe.preload = 'metadata';
+  return new Promise<number>((resolve, reject) => {
+    probe.addEventListener('loadedmetadata', () => resolve(probe.duration), { once: true });
+    probe.addEventListener(
+      'error',
+      () => reject(probe.error ?? new Error('Audio file failed to load')),
+      { once: true }
+    );
+    probe.src = src;
+  }).finally(() => {
+    // Stop the probe. Wavesurfer plays through its own audio element.
+    probe.removeAttribute('src');
+    probe.load();
+  });
+}
 
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -38,7 +70,7 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-function initWaveSurfer(): void {
+async function initWaveSurfer(): Promise<void> {
   if (!waveformContainer.value || isDestroyed || isInitialized.value) return;
 
   if (!props.src) {
@@ -48,6 +80,22 @@ function initWaveSurfer(): void {
 
   isLoading.value = true;
   isInitialized.value = true;
+  const id = ++loadId;
+  const src = props.src;
+
+  let fileSecs: number;
+  try {
+    fileSecs = await readDuration(src);
+  } catch (err) {
+    if (isDestroyed || id !== loadId) return;
+    console.error('AudioPlayer: could not read the audio file:', err);
+    isLoading.value = false;
+    isInitialized.value = false;
+    return;
+  }
+  if (isDestroyed || id !== loadId || !waveformContainer.value) return;
+  // NaN or Infinity (unknown length) also streams.
+  const stream = !(fileSecs <= WAVEFORM_MAX_SECS);
 
   // Destroy existing instance
   if (wavesurfer) {
@@ -58,7 +106,6 @@ function initWaveSurfer(): void {
     }
   }
 
-  // Use MediaElement backend for streaming (buffers progressively, doesn't download entire file)
   wavesurfer = WaveSurfer.create({
     container: waveformContainer.value,
     waveColor: '#666666',
@@ -68,12 +115,11 @@ function initWaveSurfer(): void {
     barGap: 1,
     barRadius: 2,
     height: 48,
-    normalize: true,
+    // A real waveform fills the height; the flat bars stay thin.
+    normalize: !stream,
     backend: 'MediaElement',
     mediaControls: false,
   });
-
-  wavesurfer.load(props.src);
 
   wavesurfer.on('loading', () => {
     isLoading.value = true;
@@ -126,6 +172,15 @@ function initWaveSurfer(): void {
     console.error('WaveSurfer error:', err);
     isLoading.value = false;
   });
+
+  if (stream) {
+    // With peaks and a length, wavesurfer skips the download and decode:
+    // the audio element plays the file while it streams.
+    wavesurfer.load(src, flatPeaks(), fileSecs);
+  } else {
+    // Short file: download and decode it all to draw the real waveform.
+    wavesurfer.load(src);
+  }
 }
 
 function getBasePath(url: string): string {
@@ -140,7 +195,7 @@ function getBasePath(url: string): string {
 function togglePlay(): void {
   // Lazy init: only create wavesurfer when user clicks play
   if (!isInitialized.value) {
-    initWaveSurfer();
+    void initWaveSurfer();
     return;
   }
 
@@ -181,6 +236,7 @@ watch(() => props.src, (newSrc, oldSrc) => {
   const oldBasePath = oldSrc ? getBasePath(oldSrc) : '';
 
   if (newBasePath !== oldBasePath) {
+    loadId++;
     isInitialized.value = false;
     isLoading.value = false;
     if (wavesurfer) {
