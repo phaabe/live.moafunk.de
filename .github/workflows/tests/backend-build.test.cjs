@@ -263,6 +263,7 @@ test('regression CI always checks main and staging PRs and pushes without publis
     [
       ['npm ci --ignore-scripts', 'frontend'],
       ['node --test .github/workflows/tests/backend-build.test.cjs', undefined],
+      ['node --test .github/workflows/tests/deploy-production.test.cjs', undefined],
     ]
   );
   for (const step of job.steps) {

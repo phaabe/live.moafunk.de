@@ -35,3 +35,6 @@ jobs:
 
       - name: Check backend workflow
         run: node --test .github/workflows/tests/backend-build.test.cjs
+
+      - name: Check production deploy workflow
+        run: node --test .github/workflows/tests/deploy-production.test.cjs
