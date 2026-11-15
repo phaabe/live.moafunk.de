@@ -177,7 +177,8 @@ describe('broadcast entry from the show page', () => {
     expect(liveButton()).toBeDefined();
     liveButton()!.click();
     await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/stream/live'));
-    expect(root.textContent).toContain('Set Up Audio & Test');
+    expect(root.textContent).toContain('Studio');
+    expect(root.textContent).toContain('Go Live');
     expect(flow.showId.value).toBe(39);
     expect(flow.uploadMode.value).toBe('live');
     expect(flow.canNavigateTo('live')).toBe(true);
@@ -376,7 +377,9 @@ describe('inline preparation selection', () => {
     expect(flow.liveTestPassed.value).toBe(false);
     flow.setLiveTestPassed(true);
     root.querySelector<HTMLButtonElement>('[data-testid="pass-live-test"]')!.click();
-    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/stream/on-air'));
+    // Go Live is in the Studio now: the inline test never goes on air itself.
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/stream/live'));
+    expect(router.currentRoute.value.query.show).toBe('39');
   });
 
   it('rejects a stale passed event if another show is now selected', async () => {

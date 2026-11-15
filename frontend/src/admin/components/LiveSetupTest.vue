@@ -8,6 +8,7 @@ import {
   STREAM_AUDIO_BITS_PER_SECOND,
   BROWSER_UNSUPPORTED_MESSAGE,
   streamRecordingMimeType,
+  type UseStreamSocketOptions,
 } from '@admin/composables';
 import DbMeter from '@admin/components/DbMeter.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
@@ -22,7 +23,13 @@ import { config } from '@/config';
  * host confirming "sounds good" emits `passed` and the parent decides where
  * to navigate. Uses the useAudioCapture / useHostFlow singletons, so capture
  * survives into the on-air step regardless of which surface ran the test.
+ *
+ * `studio` renders the flow's Studio controls: the input level meter, "Audio
+ * input" (screen audio is one of its options) and "Test broadcast sounds
+ * right", which can be ticked once a test broadcast sent audio.
  */
+const props = withDefaults(defineProps<{ studio?: boolean }>(), { studio: false });
+
 const emit = defineEmits<{
   /** The host confirmed the test stream sounds right (test marked passed). */
   passed: [];
@@ -54,7 +61,7 @@ onMounted(async () => {
   // The capture singleton persists across navigations; mirror a still-active
   // device in the dropdown instead of showing "no input selected".
   const activeId = audioCapture.selectedDeviceId.value;
-  if (audioCapture.isCapturing.value && activeId && activeId !== 'screen') {
+  if (audioCapture.isCapturing.value && activeId && (props.studio || activeId !== 'screen')) {
     selectedDevice.value = activeId;
   }
   navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
@@ -66,6 +73,19 @@ async function handleDeviceSelect() {
   await audioCapture.captureDevice(selectedDevice.value);
   // A change of input invalidates any previous successful test.
   resetTest();
+}
+
+/** Studio "Audio input": a device, or screen audio. */
+async function handleInputSelect() {
+  if (selectedDevice.value !== 'screen') {
+    await handleDeviceSelect();
+    return;
+  }
+  if (await audioCapture.captureScreenAudio()) {
+    resetTest();
+  } else {
+    selectedDevice.value = '';
+  }
 }
 
 async function handleScreenShare() {
@@ -91,11 +111,13 @@ const testError = ref<string | null>(null);
 const sentChunks = ref(0);
 const testActive = computed(() => testPhase.value === 'connecting' || testPhase.value === 'live');
 
-const streamSocket = useStreamSocket({
+// The socket's callbacks are shared: the Studio's Go Live takes them over,
+// so each test broadcast takes them back before it connects.
+const socketCallbacks: UseStreamSocketOptions = {
   onLive: () => {
     testPhase.value = 'live';
   },
-  onError: (msg) => {
+  onError: (msg: string) => {
     testPhase.value = 'error';
     testError.value = msg;
     stopTestRecording();
@@ -106,7 +128,8 @@ const streamSocket = useStreamSocket({
       stopTestRecording();
     }
   },
-});
+};
+const streamSocket = useStreamSocket(socketCallbacks);
 
 // Dedicated MediaRecorder on the capture stream — independent of the
 // singleton capture's main onData wiring, so it never disturbs the real
@@ -179,10 +202,13 @@ async function runTest() {
   testError.value = null;
   testPhase.value = 'connecting';
   sentChunks.value = 0;
+  // A new test has to be listened to again.
+  flow.setLiveTestPassed(false);
   // A user gesture: start the capture's audio context if it is suspended.
   audioCapture.resumeAudioContext();
 
   try {
+    useStreamSocket(socketCallbacks);
     // Connect in TEST mode → backend pushes to `/test`, not `/live`.
     await streamSocket.connect(false, undefined, true);
     if (!startTestRecording()) {
@@ -220,6 +246,19 @@ function markTestPassed() {
   emit('passed');
 }
 
+/** Studio: ticked once a test broadcast sent audio (or the test passed before). */
+const canTickTest = computed(
+  () => flow.liveTestPassed.value || (testPhase.value === 'live' && sentChunks.value > 0)
+);
+
+function onTestSoundsRight(event: Event) {
+  if ((event.target as HTMLInputElement).checked) {
+    markTestPassed();
+  } else {
+    flow.setLiveTestPassed(false);
+  }
+}
+
 // ─── Rehearsal connection verdict (#275) ─────────────────────────────────────
 // The same browser-side upload telemetry as the on-air connection card runs
 // against the test broadcast, so the host knows "connection good enough"
@@ -247,7 +286,70 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="live-setup">
+  <div v-if="studio" class="live-setup">
+    <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
+
+    <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input level" />
+
+    <label class="ls-field">
+      <span class="ls-label">Audio input</span>
+      <select v-model="selectedDevice" class="ls-select" @change="handleInputSelect">
+        <option value="">Select audio input</option>
+        <option
+          v-for="device in audioCapture.devices.value"
+          :key="device.deviceId"
+          :value="device.deviceId"
+        >
+          {{ device.label }}
+        </option>
+        <option value="screen">Screen audio</option>
+      </select>
+    </label>
+    <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
+
+    <div class="ls-check-row">
+      <label class="ls-check">
+        <input
+          type="checkbox"
+          :checked="flow.liveTestPassed.value"
+          :disabled="!canTickTest"
+          @change="onTestSoundsRight"
+        />
+        Test broadcast sounds right
+      </label>
+      <button v-if="testActive" class="ls-btn-secondary" type="button" @click="retryTest">
+        Stop test
+      </button>
+      <button
+        v-else
+        class="ls-btn-secondary"
+        type="button"
+        :disabled="!browserSupported || !audioCapture.isCapturing.value || !previewUrl"
+        @click="runTest"
+      >
+        Start test
+      </button>
+    </div>
+    <StreamPreviewPlayer v-if="testPhase === 'live' && previewUrl" :src="previewUrl" />
+    <p v-if="testPhase === 'connecting'" class="ls-muted">Connecting to the test stream…</p>
+    <p v-else-if="testPhase === 'live' && sentChunks === 0" class="ls-muted">
+      Waiting for audio… If this stays, check that your input is active.
+    </p>
+    <p v-else-if="testPhase === 'error'" class="ls-error">
+      {{ testError || 'An error occurred during the test.' }}
+    </p>
+
+    <button
+      v-if="isDev && !flow.liveTestPassed.value"
+      class="ls-dev-skip"
+      type="button"
+      @click="markTestPassed"
+    >
+      🛠 Skip test (dev)
+    </button>
+  </div>
+
+  <div v-else class="live-setup">
     <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
 
     <!-- ─── Device selection ─── -->
@@ -372,6 +474,33 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--spacing-sm);
   font-family: var(--font-ui);
+}
+
+.ls-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.ls-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.ls-check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.ls-check {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
 }
 
 .ls-device-row {

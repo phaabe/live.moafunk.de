@@ -1,33 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import {
-  useHostFlow,
-  useAudioCapture,
-  useStreamSocket,
-  useSpectrum,
-  useDbMeter,
-  DB_FLOOR,
-  STREAM_AUDIO_BITS_PER_SECOND,
-  BROWSER_UNSUPPORTED_MESSAGE,
-  streamRecordingMimeType,
-} from '@admin/composables';
-import { streamApi, recordingApi, hostFlowApi, type StreamMetrics } from '@admin/api';
-import ConnectionCard from '@admin/components/ConnectionCard.vue';
+import { useHostFlow } from '@admin/composables';
+import { streamApi, hostFlowApi } from '@admin/api';
 import LiveChatCard from '@admin/components/LiveChatCard.vue';
-import DbMeter from '@admin/components/DbMeter.vue';
-import SpectrumBars from '@admin/components/SpectrumBars.vue';
-import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
-import { config } from '@/config';
 
+// On Air for a pre-recorded set: waiting room, then playback status. Live
+// episodes use StudioOnAir (see FlowOnAirPage).
 const router = useRouter();
 const flow = useHostFlow();
 const show = computed(() => flow.show.value);
-const isLiveMode = computed(() => flow.uploadMode.value === 'live');
-
-// Broadcaster preview (#175): only shown for a live broadcast and only when an
-// Icecast /test mount is configured (empty until the Phase-2 stack is live).
-const previewUrl = config.stream.icecastTestUrl;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Phase: waiting (before stream starts) vs streaming (after go-live)
@@ -171,68 +153,9 @@ function playBeep() {
   }
 }
 
-// ─── Audio device status (live mode, waiting + streaming phases) ────────────
-const audioCapture = isLiveMode.value ? useAudioCapture() : null;
-const audioDeviceOk = computed(() => audioCapture?.isCapturing.value ?? false);
-
-// ─── Input spectrum + gain fader (Live Panel 2.0 analyzers, #274) ───────────
-// Spectrum + peak both tap the post-gain signal, so the fader shapes exactly
-// what is recorded/streamed. Gated on the streaming phase — the waiting room
-// has its own DbMeter, and each meter costs an AudioContext + rAF loop.
-const { bands: inputBands } = useSpectrum(
-  computed(() => (streamActive.value ? (audioCapture?.analyserNode.value ?? null) : null))
-);
-const { peakDb: inputPeakDb } = useDbMeter(
-  computed(() => (streamActive.value ? (audioCapture?.processedStream.value ?? null) : null))
-);
-const inputPeakText = computed(() =>
-  inputPeakDb.value <= DB_FLOOR + 0.5 ? '−∞ dB' : `${inputPeakDb.value.toFixed(1)} dB`
-);
-const inputGainPct = computed(() => Math.round((audioCapture?.inputVolume.value ?? 1) * 100));
-
-function onInputGain(event: Event) {
-  const pct = Number((event.target as HTMLInputElement).value);
-  audioCapture?.setInputVolume(pct / 100);
-}
-
-// ─── Upload bitrate (selectable + auto, #276) ───────────────────────────────
-const uploadBitsPerSecond = computed(
-  () => audioCapture?.streamBitsPerSecond.value ?? STREAM_AUDIO_BITS_PER_SECOND
-);
-
-function onSelectBitrate(bitsPerSecond: number) {
-  audioCapture?.setStreamBitsPerSecond(bitsPerSecond);
-}
-
-// ─── Stream socket ──────────────────────────────────────────────────────────
-const streamSocket = useStreamSocket({
-  onLive: () => {
-    // Socket connected — transition from waiting → streaming. A manual
-    // reconnect fires this again; don't reset timers / duplicate intervals.
-    if (!streamActive.value) transitionToStreaming();
-  },
-  onDisconnected: () => {
-    // Suppressed during a manual reconnect — its teardown closes the socket
-    // on purpose and must not route to the "Stream Ended" screen.
-    if (streamActive.value && !streamEnded.value && !reconnecting.value) {
-      streamEnded.value = true;
-      stopElapsed();
-      stopMetrics();
-    }
-  },
-  onError: (msg) => {
-    goLiveError.value = msg;
-  },
-});
-
 const goLiveLoading = ref(false);
 const goLiveError = ref<string | null>(null);
 const autoStarted = ref(false);
-
-// ─── Recording option ───────────────────────────────────────────────────────
-function toggleRecordStream() {
-  flow.setRecordStream(!flow.recordStream.value);
-}
 
 // ─── Go Live (transition from waiting → streaming) ─────────────────────────
 async function handleGoLive() {
@@ -241,32 +164,9 @@ async function handleGoLive() {
   flow.setShowStarted();
 
   try {
-    if (isLiveMode.value) {
-      // A socket without audio looks live everywhere while listeners hear
-      // silence, so never connect without an input.
-      if (!streamRecordingMimeType()) {
-        throw new Error(BROWSER_UNSUPPORTED_MESSAGE);
-      }
-      if (!audioCapture || !audioDeviceOk.value) {
-        throw new Error('No audio input. Go back to setup and select your input.');
-      }
-      audioCapture.setOnError((msg) => {
-        goLiveError.value = msg;
-      });
-      // Recording now starts automatically on the backend when the stream goes
-      // live (keyed on show_id), so it survives a dropped tab / WS reconnect.
-      await streamSocket.connect(false, show.value?.id);
-      audioCapture.setOnData((data) => streamSocket.send(data));
-      if (!audioCapture.startRecording()) {
-        streamSocket.stopStream();
-        throw new Error(audioCapture.error.value ?? 'Failed to start audio');
-      }
-      // Navigation happens via onLive callback
-    } else {
-      if (!show.value?.id) throw new Error('No show selected');
-      await hostFlowApi.goLive(show.value.id);
-      transitionToStreaming();
-    }
+    if (!show.value?.id) throw new Error('No show selected');
+    await hostFlowApi.goLive(show.value.id);
+    transitionToStreaming();
   } catch (err) {
     goLiveError.value = err instanceof Error ? err.message : 'Failed to go live';
     goLiveLoading.value = false;
@@ -278,18 +178,7 @@ function transitionToStreaming() {
   startedAt.value = Date.now();
   elapsedInterval = setInterval(updateElapsed, 1000);
 
-  if (!isLiveMode.value) {
-    statusInterval = setInterval(checkUploadStatus, 5000);
-  }
-  if (flow.recordStream.value) {
-    pollRecordingStatus();
-    recordingPollInterval = setInterval(pollRecordingStatus, 3000);
-  }
-  // Live listener/quality telemetry (#177) — only useful for a live broadcast.
-  if (isLiveMode.value) {
-    pollMetrics();
-    metricsInterval = setInterval(pollMetrics, 10000);
-  }
+  statusInterval = setInterval(checkUploadStatus, 5000);
   if (show.value?.end_time) {
     updateEndTimeCountdown();
     endTimeInterval = setInterval(updateEndTimeCountdown, 1000);
@@ -347,57 +236,8 @@ function stopElapsed() {
   }
 }
 
-// ─── Live Icecast telemetry (#177) ───────────────────────────────────────────
-// Polled while streaming. Degrades gracefully: when the Icecast stack isn't live
-// (or offline), the panels just show a dash instead of real numbers.
-const metrics = ref<StreamMetrics | null>(null);
-let metricsInterval: ReturnType<typeof setInterval> | null = null;
-
-async function pollMetrics() {
-  try {
-    metrics.value = await streamApi.metrics();
-  } catch {
-    // Ignore — backend may not expose metrics yet / Icecast not configured.
-  }
-}
-
-function stopMetrics() {
-  if (metricsInterval) {
-    clearInterval(metricsInterval);
-    metricsInterval = null;
-  }
-}
-
-const metricsOnline = computed(() => metrics.value?.online === true);
-const listenerCount = computed(() => (metricsOnline.value ? metrics.value!.total_listeners : null));
-const primaryMount = computed(() => metrics.value?.mounts?.[0] ?? null);
-const audioQuality = computed(() => {
-  if (!metricsOnline.value) return null;
-  const m = primaryMount.value;
-  if (!m) return null;
-  const parts: string[] = [];
-  if (m.bitrate) parts.push(`${m.bitrate} kbps`);
-  if (m.samplerate) parts.push(`${(m.samplerate / 1000).toFixed(1)} kHz`);
-  if (m.channels === 2) parts.push('stereo');
-  else if (m.channels === 1) parts.push('mono');
-  return parts.length ? parts.join(' · ') : null;
-});
-
 // ─── Stop streaming ─────────────────────────────────────────────────────────
 const stopping = ref(false);
-
-function handleStop() {
-  stopping.value = true;
-  streamSocket.stopStream();
-  audioCapture?.stopCapture();
-  if (isRecording.value) {
-    recordingApi.stop().catch(() => {});
-    isRecording.value = false;
-  }
-  streamEnded.value = true;
-  stopElapsed();
-  stopMetrics();
-}
 
 async function handleStopUpload() {
   stopping.value = true;
@@ -408,7 +248,6 @@ async function handleStopUpload() {
   }
   streamEnded.value = true;
   stopElapsed();
-  stopMetrics();
   if (statusInterval) {
     clearInterval(statusInterval);
     statusInterval = null;
@@ -419,16 +258,7 @@ async function handleStopUpload() {
 const changingSettings = ref(false);
 async function handleStopAndChangeSettings() {
   changingSettings.value = true;
-  if (isLiveMode.value) {
-    streamSocket.stopStream();
-    audioCapture?.stopCapture();
-  }
-  if (isRecording.value) {
-    recordingApi.stop().catch(() => {});
-    isRecording.value = false;
-  }
   stopElapsed();
-  stopMetrics();
   if (statusInterval) {
     clearInterval(statusInterval);
     statusInterval = null;
@@ -452,81 +282,6 @@ async function checkUploadStatus() {
     }
   } catch {
     // Ignore polling errors
-  }
-}
-
-// ─── Recording state ────────────────────────────────────────────────────────
-const isRecording = ref(flow.recordStream.value);
-const recordingElapsed = ref('');
-let recordingPollInterval: ReturnType<typeof setInterval> | null = null;
-
-async function pollRecordingStatus() {
-  // Don't let a poll race the REC-chip toggle and flip the state back.
-  if (recToggling.value) return;
-  try {
-    const status = await recordingApi.status();
-    if (recToggling.value) return;
-    isRecording.value = status.is_recording;
-    if (status.is_recording && status.elapsed_ms) {
-      const sec = Math.floor(status.elapsed_ms / 1000);
-      const m = Math.floor(sec / 60);
-      const s = sec % 60;
-      recordingElapsed.value = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    }
-  } catch {
-    // Ignore polling errors
-  }
-}
-
-// The REC chip in the status bar is the record toggle (Live Panel 2.0 shell):
-// no separate recording control card.
-const recToggling = ref(false);
-
-async function toggleRecording() {
-  if (recToggling.value) return;
-  recToggling.value = true;
-  try {
-    if (isRecording.value) {
-      await recordingApi.stop();
-      isRecording.value = false;
-      recordingElapsed.value = '';
-    } else {
-      if (!show.value?.id) throw new Error('No show selected');
-      await recordingApi.start(show.value.id);
-      isRecording.value = true;
-      if (!recordingPollInterval) {
-        pollRecordingStatus();
-        recordingPollInterval = setInterval(pollRecordingStatus, 3000);
-      }
-    }
-  } catch (err) {
-    console.warn('[FlowOnAir] Failed to toggle recording:', err);
-  } finally {
-    recToggling.value = false;
-  }
-}
-
-// ─── Reconnect stream (status-bar icon button) ──────────────────────────────
-const reconnecting = ref(false);
-
-async function handleReconnect() {
-  if (reconnecting.value || !isLiveMode.value) return;
-  reconnecting.value = true;
-  goLiveError.value = null;
-  // This click is a user gesture: the one chance to start a suspended audio
-  // context after an automatic go-live.
-  audioCapture?.resumeAudioContext();
-  try {
-    // connect() no-ops while the socket is open — tear it down first so the
-    // reconnect actually reopens. onDisconnected is suppressed via
-    // `reconnecting`; the sub-second chunk gap is covered by the relay.
-    streamSocket.cleanup();
-    streamSocket.resetReconnect();
-    await streamSocket.connect(true, show.value?.id);
-  } catch (err) {
-    goLiveError.value = err instanceof Error ? err.message : 'Reconnect failed';
-  } finally {
-    reconnecting.value = false;
   }
 }
 
@@ -615,22 +370,10 @@ onUnmounted(() => {
     beepCtx = null;
   }
   stopElapsed();
-  stopMetrics();
   stopEndTimeInterval();
   if (statusInterval) {
     clearInterval(statusInterval);
     statusInterval = null;
-  }
-  if (recordingPollInterval) {
-    clearInterval(recordingPollInterval);
-    recordingPollInterval = null;
-  }
-  if (isRecording.value) {
-    recordingApi.stop().catch(() => {});
-  }
-  if (isLiveMode.value && streamActive.value && !streamEnded.value) {
-    streamSocket.stopStream();
-    audioCapture?.stopCapture();
   }
 });
 </script>
@@ -665,26 +408,6 @@ onUnmounted(() => {
         <div class="status-bar">
           <span class="status-dot live"></span>
           <span class="status-label">LIVE</span>
-          <button
-            v-if="isLiveMode"
-            :class="['rec-chip', isRecording ? 'on' : 'off']"
-            :disabled="recToggling"
-            :title="isRecording ? 'Stop recording' : 'Start recording'"
-            @click="toggleRecording"
-          >
-            <span v-if="isRecording" class="rec-dot"></span>
-            REC
-            <template v-if="isRecording && recordingElapsed">&nbsp;{{ recordingElapsed }}</template>
-            <template v-else-if="!isRecording">&nbsp;off</template>
-          </button>
-          <span
-            v-if="isLiveMode"
-            class="listener-chip"
-            :class="{ muted: listenerCount === null }"
-            title="Current listeners"
-          >
-            👥 {{ listenerCount ?? '—' }}
-          </span>
           <span class="status-spacer"></span>
           <span class="clock-group">
             <span class="clock-label">On air</span>
@@ -698,16 +421,6 @@ onUnmounted(() => {
             </span>
           </template>
           <button
-            v-if="isLiveMode"
-            class="btn-icon"
-            title="Reconnect stream"
-            aria-label="Reconnect stream"
-            :disabled="reconnecting || stopping"
-            @click="handleReconnect"
-          >
-            ⟳
-          </button>
-          <button
             class="btn-icon"
             title="Stop and change settings"
             aria-label="Stop and change settings"
@@ -716,15 +429,7 @@ onUnmounted(() => {
           >
             ⚙
           </button>
-          <button
-            v-if="isLiveMode"
-            class="btn-stop-danger"
-            :disabled="stopping"
-            @click="handleStop"
-          >
-            {{ stopping ? 'Stopping…' : '⏹ Stop' }}
-          </button>
-          <button v-else class="btn-stop-danger" :disabled="stopping" @click="handleStopUpload">
+          <button class="btn-stop-danger" :disabled="stopping" @click="handleStopUpload">
             {{ stopping ? 'Stopping…' : '⏹ Stop' }}
           </button>
         </div>
@@ -734,45 +439,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 2 · Analyzers (live mode): input | stream. Spectra + faders land with
-           the analyzer issue; the slots host the existing meter & preview. -->
-      <div v-if="isLiveMode" class="analyzer-grid">
-        <div class="panel-card slot-card">
-          <div class="slot-head">
-            <span class="slot-title">🎙 Input — your source</span>
-            <span class="slot-readout">{{ inputPeakText }}</span>
-          </div>
-          <SpectrumBars :bands="inputBands" variant="input" />
-          <div class="fader-row">
-            <label class="fader-label" for="input-gain">Input gain</label>
-            <input
-              id="input-gain"
-              class="fader-range"
-              type="range"
-              min="0"
-              max="150"
-              step="1"
-              :value="inputGainPct"
-              @input="onInputGain"
-            />
-            <span class="fader-value">{{ inputGainPct }}%</span>
-          </div>
-        </div>
-        <div class="panel-card slot-card">
-          <div class="slot-head">
-            <span class="slot-title">📡 Stream — what listeners hear</span>
-            <span class="slot-badge">~6 s behind</span>
-          </div>
-          <!-- Broadcaster preview: hear the relay feed (#175). Hidden unless a
-               /test mount is configured. -->
-          <StreamPreviewPlayer v-if="previewUrl" :src="previewUrl" />
-          <p v-else class="slot-hint">No relay preview mount configured.</p>
-          <p v-if="audioQuality" class="slot-meta">{{ audioQuality }}</p>
-        </div>
-      </div>
-
       <!-- Upload mode: passive monitoring -->
-      <div v-if="!isLiveMode" class="panel-card slot-card">
+      <div class="panel-card slot-card">
         <div class="upload-streaming-status">
           <span :class="['status-dot', uploadStreamActive ? 'live' : 'offline']"></span>
           <div class="upload-status-body">
@@ -790,14 +458,6 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 3 · Connection & upload (live mode, browser-side telemetry #275) -->
-      <ConnectionCard
-        v-if="isLiveMode"
-        :active="streamActive"
-        :target-bits-per-second="uploadBitsPerSecond"
-        @select-bitrate="onSelectBitrate"
-      />
-
       <!-- 4 · Live chat — Telegram discussion group bridge (#278) -->
       <LiveChatCard :active="streamActive" />
     </template>
@@ -811,8 +471,8 @@ onUnmounted(() => {
         <p class="waiting-meta">
           {{ show?.title }} · {{ formattedDate
           }}<template v-if="show?.start_time"> · {{ show.start_time }}</template
-          ><template v-if="show?.end_time">–{{ show.end_time }}</template> ·
-          {{ isLiveMode ? '🎙 Live' : '📁 Pre-recorded' }} · Berlin time
+          ><template v-if="show?.end_time">–{{ show.end_time }}</template> · 📁 Pre-recorded ·
+          Berlin time
         </p>
 
         <p class="countdown-label">
@@ -828,35 +488,11 @@ onUnmounted(() => {
           Starting soon!
         </p>
 
-        <!-- Recording toggle + device / upload readiness -->
         <div class="waiting-status-row">
-          <template v-if="isLiveMode">
-            <label class="record-checkbox-label" @click="toggleRecordStream">
-              <span :class="['checkbox-icon', { checked: flow.recordStream.value }]">
-                {{ flow.recordStream.value ? '☑' : '☐' }}
-              </span>
-              <span>Record this show</span>
-            </label>
-            <span class="audio-status">
-              <span :class="['status-dot', audioDeviceOk ? 'ok' : 'lost']"></span>
-              <span v-if="audioDeviceOk">Audio device active</span>
-              <span v-else class="status-lost-text">
-                Audio device disconnected — return to setup
-              </span>
-            </span>
-          </template>
-          <span v-else class="upload-status">
+          <span class="upload-status">
             <span class="upload-ready-icon">✓</span>
             <span>Your pre-recorded set is ready to go</span>
           </span>
-        </div>
-        <p v-if="isLiveMode" class="record-hint">
-          Audio will be saved for later download &amp; editing
-        </p>
-
-        <!-- dB meter stays live throughout the countdown -->
-        <div v-if="isLiveMode && audioCapture && audioDeviceOk" class="waiting-meter">
-          <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input Level" />
         </div>
 
         <!-- Auto-start status -->

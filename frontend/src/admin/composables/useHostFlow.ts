@@ -65,7 +65,8 @@ const uploadProgress = ref<UploadProgress | null>(null);
 // Live-specific state
 const liveTestPassed = ref(false);
 const showStarted = ref(false);
-const recordStream = ref(false);
+// "Record this show" in the Studio: on unless the host unticks it.
+const recordStream = ref(true);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Computed
@@ -173,7 +174,7 @@ function deselectShow(): void {
   // Reset flow-specific state
   liveTestPassed.value = false;
   showStarted.value = false;
-  recordStream.value = false;
+  recordStream.value = true;
 }
 
 function goToStep(step: FlowStep): boolean {
@@ -303,7 +304,7 @@ async function revertToMode(): Promise<void> {
   uploadMode.value = null;
   liveTestPassed.value = false;
   showStarted.value = false;
-  recordStream.value = false;
+  recordStream.value = true;
   currentStep.value = 'mode';
 }
 
@@ -331,7 +332,7 @@ function reset(): void {
   uploadProgress.value = null;
   liveTestPassed.value = false;
   showStarted.value = false;
-  recordStream.value = false;
+  recordStream.value = true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

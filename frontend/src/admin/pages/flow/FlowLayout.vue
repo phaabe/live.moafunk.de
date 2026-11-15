@@ -9,16 +9,8 @@ const flow = useHostFlow();
 
 // Dynamic steps based on which branch the user is on
 const progressSteps = computed<{ key: FlowStep; label: string; route: string }[]>(() => {
-  const mode = flow.uploadMode.value;
-
-  if (mode === 'live') {
-    return [
-      { key: 'live', label: 'Set Up & Test', route: '/stream/live' },
-      { key: 'on-air', label: 'Stream', route: '/stream/on-air' },
-    ];
-  }
-
-  // Default / prerecorded branch
+  // Default / prerecorded branch. Live episodes have no step bar: the
+  // Studio and On Air are one screen each in the flow.
   return [
     { key: 'upload', label: 'Upload', route: '/stream/upload' },
     { key: 'confirm', label: 'Confirm', route: '/stream/confirm' },
@@ -39,7 +31,13 @@ const currentStepIndex = computed(() => {
 // show-select / not-assigned landing pages (currentStep is derived from show
 // state, so it can read "upload" even while we're still on /stream/select).
 const STEP_ROUTES = ['/stream/upload', '/stream/confirm', '/stream/live', '/stream/on-air'];
-const showProgressBar = computed(() => flow.assigned.value && STEP_ROUTES.includes(route.path));
+const showProgressBar = computed(
+  () =>
+    flow.assigned.value &&
+    flow.uploadMode.value !== 'live' &&
+    route.path !== '/stream/live' &&
+    STEP_ROUTES.includes(route.path)
+);
 
 onMounted(async () => {
   await flow.fetchMyShow();

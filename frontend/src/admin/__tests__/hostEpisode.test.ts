@@ -107,7 +107,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mount(role: User['role'] = 'host', userId = 1): Promise<Router> {
+async function mount(
+  role: User['role'] = 'host',
+  userId = 1,
+  state?: Record<string, number>
+): Promise<Router> {
   const stub = (text: string) => ({ render: () => h('div', text) });
   const router = createRouter({
     history: createMemoryHistory(),
@@ -130,7 +134,7 @@ async function mount(role: User['role'] = 'host', userId = 1): Promise<Router> {
   app = createApp({ render: () => h(RouterView) });
   app.use(pinia).use(router);
   useAuthStore(pinia).user = { id: userId, username: 'lena', role };
-  await router.push('/shows/42');
+  await router.push(state ? { path: '/shows/42', state } : '/shows/42');
   await router.isReady();
   app.mount(root);
   await settle();
@@ -187,7 +191,7 @@ describe('Episode', () => {
     const router = await mount();
     expect(button('Open Studio').disabled).toBe(false);
     button('Open Studio').click();
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/stream/live'));
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/stream/live?show=42'));
   });
 
   it('saves the title', async () => {
@@ -322,6 +326,22 @@ describe('Wrap-up and Done', () => {
     current = episode({ date: PAST, episode_status: 'wrapup_open', latest_recording });
     await mount();
     expect(text()).toContain(pill);
+    expect(button('Publish').disabled).toBe(false);
+  });
+
+  it('opens the wrap-up after End Episode, while the recording is still saved', async () => {
+    // Ended before its scheduled end, and the session is still closing.
+    current = episode({ on_air: true });
+    await mount('host', 1, { episodeEnded: 42 });
+    expect(text()).toContain('Wrap-up');
+    expect(text()).toContain('Recording processing…');
+    expect(button('Publish').disabled).toBe(true);
+  });
+
+  it('says when "Record this show" was off', async () => {
+    current = episode({ episode_status: 'wrapup_open', live_recorded: false });
+    await mount('host', 1, { episodeEnded: 42 });
+    expect(text()).toContain('No usable recording · Record this show was off.');
     expect(button('Publish').disabled).toBe(false);
   });
 

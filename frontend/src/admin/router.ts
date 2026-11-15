@@ -1,6 +1,8 @@
-import { createRouter, createWebHashHistory } from 'vue-router';
+import { createRouter, createWebHashHistory, type LocationQuery } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 import { hostPage } from './hostPage';
+import { berlinToUtcDate, isShowEnded } from './showTime';
+import type { MyShowInfo } from './api';
 
 // Lazy-loaded route components
 const LoginPage = () => import('./pages/LoginPage.vue');
@@ -28,7 +30,7 @@ const FlowLayout = () => import('./pages/flow/FlowLayout.vue');
 const FlowUpload = () => import('./pages/flow/FlowUpload.vue');
 const FlowConfirm = () => import('./pages/flow/FlowConfirm.vue');
 const FlowLive = () => import('./pages/flow/FlowLive.vue');
-const FlowOnAir = () => import('./pages/flow/FlowOnAir.vue');
+const FlowOnAirPage = () => import('./pages/flow/FlowOnAirPage.vue');
 const FlowNotAssigned = () => import('./pages/flow/FlowNotAssigned.vue');
 
 /**
@@ -75,6 +77,125 @@ export async function sendHostToEpisode(
     await flow.fetchMyShow();
   }
   next(flow.show.value ? `/shows/${flow.show.value.id}` : '/shows');
+}
+
+/** The Studio opens this long before the start. */
+export const STUDIO_OPENS_MS = 30 * 60 * 1000;
+
+type FlowGuardNext = (target?: string | { path: string; query?: LocationQuery }) => void;
+
+/**
+ * Select the episode named by `?show=<id>` in the host flow, so a reload of the
+ * Studio or On Air keeps it. Without the query the selected show stays.
+ * Returns a redirect when the episode is not the user's or none is selected.
+ */
+async function selectFlowShow(query: LocationQuery): Promise<string | null> {
+  const { useHostFlow } = await import('./composables');
+  const flow = useHostFlow();
+  const wanted = Number(query.show);
+  if (Number.isInteger(wanted) && wanted > 0 && flow.showId.value !== wanted) {
+    let mine = flow.shows.value.find((s) => s.id === wanted);
+    if (!mine) {
+      await flow.fetchMyShow();
+      mine = flow.shows.value.find((s) => s.id === wanted);
+    }
+    if (!mine) return `/shows/${wanted}`;
+    flow.setLiveTestPassed(false);
+    // The flow hands out readonly copies; selectShow only stores it.
+    flow.selectShow(mine as MyShowInfo);
+  }
+  if (!flow.show.value) await flow.fetchMyShow();
+  return flow.show.value ? null : '/stream';
+}
+
+/** The episode is on air (being recorded or streamed), so its end time does not end it. */
+async function isOnAir(showId: number): Promise<boolean> {
+  const { showsApi } = await import('./api');
+  try {
+    return (await showsApi.get(showId)).on_air === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The Studio (/stream/live) opens 30 min before the start and closes at the
+ * end time, unless the episode is still on air: then a host who reloaded or
+ * lost the connection can go live again. A closed Studio, and a pre-recorded
+ * episode, send the user to the episode. Live in this tab: On Air.
+ */
+export async function studioGate(
+  to: { query: LocationQuery },
+  _from: unknown,
+  next: FlowGuardNext
+): Promise<void> {
+  const redirect = await selectFlowShow(to.query);
+  if (redirect) {
+    next(redirect);
+    return;
+  }
+  const { useHostFlow, liveStreamShowId } = await import('./composables');
+  const flow = useHostFlow();
+  const show = flow.show.value!;
+  const episode = `/shows/${show.id}`;
+  if (liveStreamShowId() === show.id) {
+    next({ path: '/stream/on-air', query: { show: String(show.id) } });
+    return;
+  }
+  if (show.prerecorded_confirmed_at) {
+    next(episode);
+    return;
+  }
+  if (
+    show.start_time &&
+    Date.now() < berlinToUtcDate(show.date, show.start_time).getTime() - STUDIO_OPENS_MS
+  ) {
+    next(episode);
+    return;
+  }
+  if (isShowEnded(show) && !(await isOnAir(show.id))) {
+    next(episode);
+    return;
+  }
+  flow.selectMode('live');
+  next();
+}
+
+/**
+ * On Air (/stream/on-air). A live episode shows it only while this tab is live
+ * (or reconnecting); otherwise the Studio. Pre-recorded episodes keep today's
+ * waiting room.
+ */
+export async function onAirGate(
+  to: { query: LocationQuery },
+  _from: unknown,
+  next: FlowGuardNext
+): Promise<void> {
+  const redirect = await selectFlowShow(to.query);
+  if (redirect) {
+    next(redirect);
+    return;
+  }
+  const { useHostFlow, liveStreamShowId } = await import('./composables');
+  const flow = useHostFlow();
+  const show = flow.show.value!;
+  if (flow.uploadMode.value === 'prerecorded' || liveStreamShowId() === show.id) {
+    next();
+    return;
+  }
+  next({ path: '/stream/live', query: { show: String(show.id) } });
+}
+
+/** Old waiting room and streaming URLs: On Air while live, else the Studio. */
+async function legacyStreamRedirect(
+  to: { query: LocationQuery },
+  _from: unknown,
+  next: FlowGuardNext
+): Promise<void> {
+  const { useHostFlow, liveStreamShowId } = await import('./composables');
+  const flow = useHostFlow();
+  const onAir = flow.uploadMode.value === 'prerecorded' || liveStreamShowId() !== null;
+  next({ path: onAir ? '/stream/on-air' : '/stream/live', query: to.query });
 }
 
 const router = createRouter({
@@ -176,10 +297,22 @@ const router = createRouter({
             const { useHostFlow } = await import('./composables');
             const flow = useHostFlow();
             await flow.fetchMyShow();
+            // A host's live episode opens the Studio (its gate sends them to
+            // the episode while it is closed).
+            const show = flow.show.value;
+            if (
+              show &&
+              useAuthStore().user?.role === 'host' &&
+              !show.prerecorded_confirmed_at &&
+              (flow.currentStep.value === 'mode' || flow.currentStep.value === 'live')
+            ) {
+              next({ path: '/stream/live', query: { show: String(show.id) } });
+              return;
+            }
             // The media type is chosen on the show dashboard now, so an
             // unconfigured ("mode") show redirects to its detail page.
-            if (flow.currentStep.value === 'mode' && flow.show.value) {
-              next(`/shows/${flow.show.value.id}`);
+            if (flow.currentStep.value === 'mode' && show) {
+              next(`/shows/${show.id}`);
               return;
             }
             const stepRouteMap: Record<string, string> = {
@@ -223,26 +356,24 @@ const router = createRouter({
           beforeEnter: sendHostToEpisode,
         },
         {
+          // The Studio.
           path: 'live',
           name: 'stream-live',
           component: FlowLive,
-          beforeEnter: ensureFlowReady,
+          beforeEnter: studioGate,
         },
         {
           path: 'on-air',
           name: 'stream-on-air',
-          component: FlowOnAir,
-          beforeEnter: ensureFlowReady,
+          component: FlowOnAirPage,
+          beforeEnter: onAirGate,
         },
-        {
-          // Legacy redirects
-          path: 'waiting',
-          redirect: '/stream/on-air',
-        },
-        {
-          path: 'streaming',
-          redirect: '/stream/on-air',
-        },
+        ...['waiting', 'streaming'].map((path) => ({
+          // Legacy URLs (never render: the guard redirects).
+          path,
+          component: FlowNotAssigned,
+          beforeEnter: legacyStreamRedirect,
+        })),
         {
           path: 'not-assigned',
           name: 'stream-not-assigned',

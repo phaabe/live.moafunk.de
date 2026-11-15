@@ -2,6 +2,7 @@ export { useFlash, type FlashMessage } from './useFlash';
 export {
   useStreamSocket,
   getStreamSocketStats,
+  liveStreamShowId,
   parsePong,
   type StreamConnectionState,
   type StreamSocketStats,
