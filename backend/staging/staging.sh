@@ -307,6 +307,18 @@ install_packages() {
   systemctl enable --now docker nginx >/dev/null
 }
 
+# Keys only. Root has no password on Hetzner images, but say it explicitly.
+harden_ssh() {
+  local conf=/etc/ssh/sshd_config.d/10-staging.conf
+  [[ ! -f "$conf" ]] || return 0
+  printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' >"$conf"
+  if ! sshd -t; then
+    rm -f "$conf"
+    die "sshd config test failed; $conf removed again"
+  fi
+  systemctl reload ssh
+}
+
 build_icecast() {
   if docker image inspect "$ICECAST_IMAGE" >/dev/null 2>&1; then
     return 0
@@ -387,6 +399,7 @@ cmd_setup() {
     [[ -f "$STAGING_DIR/$file" ]] || die "missing $STAGING_DIR/$file (copy the files first, see README)"
   done
   chmod 700 "$STAGING_DIR"
+  harden_ssh
   install_packages
   build_icecast
   if [[ ! -f "$STAGING_DIR/.env" || ! -f "$STAGING_DIR/stream.env" ]]; then
