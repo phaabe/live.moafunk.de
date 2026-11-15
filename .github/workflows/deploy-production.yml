@@ -98,7 +98,7 @@ jobs:
           secrets: |
             546972ad-7db9-4525-8d30-b46e00f8802a > HETZNER_IP
             32944dfd-70f2-4f57-8274-b46e00f77c41 > HETZNER_SSH_KEY
-            REPLACE_WITH_SM_UUID > STAGING_DEPLOY_SSH_KEY
+            ba04c03e-d633-40a6-a49f-b50301724312 > STAGING_DEPLOY_SSH_KEY
 
       - name: Check main is what staging runs
         id: staging
