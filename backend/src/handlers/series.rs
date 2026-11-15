@@ -17,23 +17,46 @@ use crate::series::{self, EpisodeStatus, RepeatRule, Rhythm};
 use crate::{storage, AppError, AppState, Result};
 
 #[derive(sqlx::FromRow)]
-struct SeriesRow {
-    id: i64,
+pub(super) struct SeriesRow {
+    pub(super) id: i64,
     slug: String,
-    name: String,
+    pub(super) name: String,
     description: Option<String>,
-    cover_key: Option<String>,
+    pub(super) cover_key: Option<String>,
+    pub(super) owner_user_id: i64,
     repeat_rule: Option<String>,
     weekday: Option<i64>,
     start_time: Option<String>,
     end_time: Option<String>,
 }
 
-const SERIES_COLUMNS: &str =
-    "id, slug, name, description, cover_key, repeat_rule, weekday, start_time, end_time";
+const SERIES_COLUMNS: &str = "id, slug, name, description, cover_key, owner_user_id, \
+                              repeat_rule, weekday, start_time, end_time";
+
+/// A series by slug for its owner or an admin (booking endpoints). Another
+/// host gets 403; an unknown slug is 404.
+pub(super) async fn load_series_for_editor(
+    state: &Arc<AppState>,
+    user: &crate::models::User,
+    slug: &str,
+) -> Result<SeriesRow> {
+    let row: SeriesRow = sqlx::query_as(&format!(
+        "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ?"
+    ))
+    .bind(slug)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+    if row.owner_user_id != user.id && !user.role_enum().can_access_admin() {
+        return Err(AppError::Forbidden(
+            "You can only book episodes of your own shows".to_string(),
+        ));
+    }
+    Ok(row)
+}
 
 impl SeriesRow {
-    fn rhythm(&self) -> Option<Rhythm> {
+    pub(super) fn rhythm(&self) -> Option<Rhythm> {
         Rhythm::from_columns(
             self.repeat_rule.as_deref(),
             self.weekday,
