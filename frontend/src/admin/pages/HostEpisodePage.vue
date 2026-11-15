@@ -99,6 +99,9 @@ const pill = computed<Pill>(() => {
     };
   }
   if (r || s.on_air) return { state: 'processing', text: 'Recording processing…' };
+  if (s.live_recorded === false) {
+    return { state: 'failed', text: 'No usable recording · Record this show was off.' };
+  }
   const endMs = s.end_time ? berlinToUtcDate(s.date, s.end_time).getTime() : null;
   if (endMs !== null && now.value < endMs + RECORDING_GRACE_MS) {
     return { state: 'processing', text: 'Recording processing…' };
@@ -106,8 +109,16 @@ const pill = computed<Pill>(() => {
   return { state: 'failed', text: 'No usable recording · Nothing was recorded.' };
 });
 
+/** End Episode on On Air opens the Wrap-up, also while the recording is
+ * still being saved (the episode can be on air for a moment). */
+function endedOnAir(): boolean {
+  const state = router.options.history.state as { episodeEnded?: number } | null;
+  return state?.episodeEnded === id.value;
+}
+
 function defaultView(s: ShowDetail): typeof view.value {
   if (s.episode_status === 'finished') return 'done';
+  if (endedOnAir()) return 'wrapup';
   if (s.on_air) return 'episode';
   if (s.episode_status === 'wrapup_open') return 'wrapup';
   if (s.stream_mode !== 'prerecorded' && s.latest_recording) return 'wrapup';
@@ -165,9 +176,10 @@ async function openStudio() {
       mine = hostFlow.shows.value.find((s) => s.id === show.value?.id);
     }
     if (!mine) throw new Error('This episode is not assigned to you');
+    if (hostFlow.showId.value !== mine.id) hostFlow.setLiveTestPassed(false);
     hostFlow.selectShow(mine);
     hostFlow.selectMode('live');
-    await router.push('/stream/live');
+    await router.push({ path: '/stream/live', query: { show: String(mine.id) } });
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not open the Studio';
   } finally {

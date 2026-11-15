@@ -698,20 +698,27 @@ pub async fn api_publish_episode(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let (_user, show) = require_show_editor(&state, &headers, id).await?;
-    let (published_at, rhythm_end): (Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT s.wrapup_published_at, t.end_time FROM shows s \
-         LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
+    let (published_at, rhythm_end, live_ended_at): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT s.wrapup_published_at, t.end_time, s.live_ended_at FROM shows s \
+             LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
     )
     .bind(id)
     .fetch_one(&state.db)
     .await?;
-    let end = model::episode_end_utc(
-        &show.date,
-        show.start_time.as_deref(),
-        show.end_time.as_deref(),
-        rhythm_end.as_deref(),
+    let end = model::ended_by_host(
+        model::episode_end_utc(
+            &show.date,
+            show.start_time.as_deref(),
+            show.end_time.as_deref(),
+            rhythm_end.as_deref(),
+        ),
+        live_ended_at.as_deref(),
     );
-    let on_air = state.recording_manager.lock().await.current_show_id() == Some(id);
+    let on_air = super::series::on_air_show_id(&state).await == Some(id);
     match model::episode_status(end, published_at.is_some(), on_air, Utc::now()) {
         EpisodeStatus::Upcoming => {
             return Err(AppError::BadRequest(

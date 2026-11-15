@@ -514,10 +514,12 @@ export interface ShowDetail {
   series_name?: string | null;
   /** Same rule as the Show page: upcoming, wrap-up open or finished. */
   episode_status?: EpisodeStatus;
-  /** True while this episode's recording session is open. */
+  /** True while this episode is on air (recorded or not). */
   on_air?: boolean;
   /** Length of a pre-recorded set booked through Book Slot, in seconds. */
   prerecorded_duration_secs?: number | null;
+  /** Whether the broadcast the host ended with End Episode was recorded. */
+  live_recorded?: boolean | null;
 }
 
 export type RecordingVersionStatus = 'raw' | 'finalizing' | 'finalized' | 'failed';

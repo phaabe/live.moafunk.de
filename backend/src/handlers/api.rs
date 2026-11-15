@@ -2097,11 +2097,14 @@ pub struct ShowDetailResponse {
     series_name: Option<String>,
     /// "upcoming" | "wrapup_open" | "finished", the same rule as the Show page.
     episode_status: crate::series::EpisodeStatus,
-    /// True while this episode's recording session is open (live or in the
-    /// reconnect grace).
+    /// True while this episode is on air: its recording session is open (live
+    /// or in the reconnect grace), or it streams with "Record this show" off.
     on_air: bool,
     /// Length of the pre-recorded set, when it was uploaded through Book Slot.
     prerecorded_duration_secs: Option<i64>,
+    /// Whether the live broadcast the host ended with End Episode was
+    /// recorded. None until one ended.
+    live_recorded: Option<bool>,
 }
 
 /// The most recent live-stream recording for a show, surfaced on the detail page so
@@ -2913,18 +2916,22 @@ pub async fn api_show_detail(
     // Episode view of the host flow: its Show, status and set length.
     let view: EpisodeViewRow = sqlx::query_as(
         "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
-                s.wrapup_published_at, s.prerecorded_duration_secs \
+                s.wrapup_published_at, s.prerecorded_duration_secs, s.live_ended_at, \
+                s.live_recorded \
          FROM shows s LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
     )
     .bind(id)
     .fetch_one(&state.db)
     .await?;
-    let on_air = state.recording_manager.lock().await.current_show_id() == Some(id);
-    let episode_end = crate::series::episode_end_utc(
-        &show.date,
-        show.start_time.as_deref(),
-        show.end_time.as_deref(),
-        view.rhythm_end.as_deref(),
+    let on_air = super::series::on_air_show_id(&state).await == Some(id);
+    let episode_end = crate::series::ended_by_host(
+        crate::series::episode_end_utc(
+            &show.date,
+            show.start_time.as_deref(),
+            show.end_time.as_deref(),
+            view.rhythm_end.as_deref(),
+        ),
+        view.live_ended_at.as_deref(),
     );
     let episode_status = crate::series::episode_status(
         episode_end,
@@ -2977,6 +2984,7 @@ pub async fn api_show_detail(
         episode_status,
         on_air,
         prerecorded_duration_secs: view.prerecorded_duration_secs,
+        live_recorded: view.live_recorded,
     }))
 }
 
@@ -2988,6 +2996,8 @@ struct EpisodeViewRow {
     rhythm_end: Option<String>,
     wrapup_published_at: Option<String>,
     prerecorded_duration_secs: Option<i64>,
+    live_ended_at: Option<String>,
+    live_recorded: Option<bool>,
 }
 
 /// Whether two same-day time windows clash. Times are zero-padded "HH:MM", so

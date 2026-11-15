@@ -265,6 +265,17 @@ async fn load_own_series(state: &Arc<AppState>, owner_id: i64, slug: &str) -> Re
     .ok_or_else(|| AppError::NotFound("Show not found".to_string()))
 }
 
+/// The episode on air, so its end time does not end it: the one being
+/// recorded (the session lasts through the reconnect grace after a drop), else
+/// the live stream's show, which has no session when "Record this show" is off.
+pub(crate) async fn on_air_show_id(state: &AppState) -> Option<i64> {
+    let recorded = state.recording_manager.lock().await.current_show_id();
+    if recorded.is_some() {
+        return recorded;
+    }
+    state.stream_state.lock().await.on_air_show_id()
+}
+
 #[derive(sqlx::FromRow)]
 struct EpisodeRow {
     id: i64,
@@ -274,6 +285,7 @@ struct EpisodeRow {
     end_time: Option<String>,
     stream_mode: Option<String>,
     wrapup_published_at: Option<String>,
+    live_ended_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -311,7 +323,8 @@ pub async fn api_get_series(
     let rhythm_end = row.rhythm().map(|r| r.end_time);
 
     let rows: Vec<EpisodeRow> = sqlx::query_as(
-        "SELECT id, title, date, start_time, end_time, stream_mode, wrapup_published_at \
+        "SELECT id, title, date, start_time, end_time, stream_mode, wrapup_published_at, \
+                live_ended_at \
          FROM shows WHERE template_id = ? \
          ORDER BY date DESC, start_time DESC, id DESC",
     )
@@ -319,18 +332,19 @@ pub async fn api_get_series(
     .fetch_all(&state.db)
     .await?;
 
-    // The episode being recorded is on air, so its end time does not end it.
-    // The session also lasts through the reconnect grace after a drop.
-    let on_air = state.recording_manager.lock().await.current_show_id();
+    let on_air = on_air_show_id(&state).await;
     let now = Utc::now();
     let episodes = rows
         .into_iter()
         .map(|e| {
-            let end = series::episode_end_utc(
-                &e.date,
-                e.start_time.as_deref(),
-                e.end_time.as_deref(),
-                rhythm_end.as_deref(),
+            let end = series::ended_by_host(
+                series::episode_end_utc(
+                    &e.date,
+                    e.start_time.as_deref(),
+                    e.end_time.as_deref(),
+                    rhythm_end.as_deref(),
+                ),
+                e.live_ended_at.as_deref(),
             );
             let status = series::episode_status(
                 end,

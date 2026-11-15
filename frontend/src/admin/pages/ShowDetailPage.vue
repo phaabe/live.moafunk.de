@@ -263,17 +263,18 @@ function onPrepChanged() {
   void loadShow();
 }
 
-/** The inline live test passed — continue to the fullscreen live panel. */
+/** The inline live test passed — continue to the Studio (Go Live is there). */
 function goLivePanel() {
   if (
     !canPrepareMedia.value ||
     hostFlow.uploadMode.value !== 'live' ||
-    !hostFlow.goToStep('on-air')
+    !hostFlow.liveTestPassed.value ||
+    !hostFlow.goToStep('live')
   ) {
     flash.error('Select this show and complete its live test before going on air.');
     return;
   }
-  router.push('/stream/on-air');
+  router.push({ path: '/stream/live', query: { show: String(hostFlow.showId.value) } });
 }
 
 async function sendTelegramFromModal() {
@@ -563,7 +564,11 @@ async function enterFlow(mode: 'prerecorded' | 'live') {
     mediaMode.value = mode === 'live' ? 'live' : 'upload';
     hostFlow.selectShow(mine);
     hostFlow.selectMode(mode);
-    router.push(mode === 'live' ? '/stream/live' : '/stream/upload');
+    router.push(
+      mode === 'live'
+        ? { path: '/stream/live', query: { show: String(mine.id) } }
+        : '/stream/upload'
+    );
   } catch (e) {
     flash.error(e instanceof Error ? e.message : 'Failed to open the streaming flow');
   }

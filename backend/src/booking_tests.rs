@@ -596,6 +596,34 @@ async fn publish_closes_the_wrapup_of_an_ended_episode_once() {
         .is_none());
 }
 
+/// End Episode before the scheduled end ends the episode: its wrap-up opens
+/// and can be published at once.
+#[tokio::test]
+async fn an_episode_ended_early_can_be_published() {
+    let (state, _temp, _r2) = booking_state().await;
+    let host = add_user(&state, "host", "host").await;
+    let (_series_id, slug) = series(&state, host).await;
+    let free = slots(&state, host, &slug).await.unwrap();
+    let id = book(&state, host, &slug, &free[0], "live", None)
+        .await
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    sqlx::query("UPDATE shows SET live_ended_at = ? WHERE id = ?")
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    publish(&state, host, id).await.unwrap();
+    assert!(episode(&state, id)
+        .await
+        .unwrap()
+        .wrapup_published_at
+        .is_some());
+}
+
 #[tokio::test]
 async fn other_hosts_get_403_and_admins_may_book() {
     let (state, _temp, _r2) = booking_state().await;
