@@ -853,21 +853,88 @@ export interface NewSeries extends SeriesRhythm {
   cover: File | null;
 }
 
+/** A bookable date and time of a series' rhythm. */
+export interface SeriesSlot {
+  date: string;
+  start_time: string;
+  end_time: string;
+}
+
+export interface BookedEpisode extends SeriesSlot {
+  id: number;
+  title: string;
+  mode: 'live' | 'prerecorded';
+  prerecorded_filename: string | null;
+  duration: number | null;
+}
+
+/** A finished upload-first set; `duration` is in seconds. */
+export interface UploadedSet {
+  upload_id: string;
+  filename: string;
+  duration: number;
+}
+
+/** Upload chunks stay under Cloudflare's 100 MB request limit. */
+const SET_CHUNK_SIZE = 50 * 1024 * 1024;
+
+async function errorOf(resp: Response): Promise<Error> {
+  const body = await resp.json().catch(() => null);
+  return new Error(body?.error || `HTTP ${resp.status}`);
+}
+
+const seriesPath = (slug: string) => `/api/series/${encodeURIComponent(slug)}`;
+
 export const seriesApi = {
   list: () => api.get<{ series: Series[] }>('/api/series'),
 
   /** One of the caller's series, or null when it is not theirs (404). */
   get: async (slug: string): Promise<SeriesDetail | null> => {
-    const resp = await fetch(`/api/series/${encodeURIComponent(slug)}`, {
-      credentials: 'include',
-    });
+    const resp = await fetch(seriesPath(slug), { credentials: 'include' });
     if (resp.status === 404) return null;
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => null);
-      throw new Error(body?.error || `HTTP ${resp.status}`);
-    }
+    if (!resp.ok) throw await errorOf(resp);
     return resp.json();
   },
+
+  /** Free slots of the rhythm for the next weeks. */
+  slots: (slug: string) => api.get<{ slots: SeriesSlot[] }>(`${seriesPath(slug)}/slots`),
+
+  /** Book a slot. A slot someone else took in the meantime is rejected. */
+  book: (slug: string, body: SeriesSlot & { mode: 'live' | 'prerecorded'; upload_id?: string }) =>
+    api.post<BookedEpisode>(`${seriesPath(slug)}/episodes`, body),
+
+  /** Chunked upload of a pre-recorded set before it is booked. */
+  uploadSet: async (
+    slug: string,
+    file: File,
+    onProgress?: (percent: number) => void
+  ): Promise<UploadedSet> => {
+    const totalChunks = Math.max(1, Math.ceil(file.size / SET_CHUNK_SIZE));
+    const { session_id } = await api.post<{ session_id: string }>(
+      `${seriesPath(slug)}/upload/init`,
+      { filename: file.name, total_chunks: totalChunks }
+    );
+    for (let index = 0; index < totalChunks; index++) {
+      const form = new FormData();
+      form.append('chunk', file.slice(index * SET_CHUNK_SIZE, (index + 1) * SET_CHUNK_SIZE));
+      const resp = await fetch(
+        `${seriesPath(slug)}/upload/chunk/${encodeURIComponent(session_id)}?index=${index}`,
+        { method: 'POST', credentials: 'include', body: form }
+      );
+      if (!resp.ok) throw await errorOf(resp);
+      onProgress?.(Math.round(((index + 1) / totalChunks) * 100));
+    }
+    return api.post<UploadedSet>(
+      `${seriesPath(slug)}/upload/finalize/${encodeURIComponent(session_id)}`
+    );
+  },
+
+  /** Swap the set of a booked pre-recorded episode; the booking stays. */
+  replaceFile: (showId: number, uploadId: string) =>
+    api.put<{ id: number; prerecorded_filename: string; duration: number | null }>(
+      `/api/shows/${showId}/prerecorded`,
+      { upload_id: uploadId }
+    ),
 
   /** Create a series; the cover goes up in the same request. */
   create: async (input: NewSeries): Promise<Series> => {
@@ -884,10 +951,7 @@ export const seriesApi = {
       credentials: 'include',
       body: form,
     });
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => null);
-      throw new Error(body?.error || `HTTP ${resp.status}`);
-    }
+    if (!resp.ok) throw await errorOf(resp);
     return resp.json();
   },
 };
