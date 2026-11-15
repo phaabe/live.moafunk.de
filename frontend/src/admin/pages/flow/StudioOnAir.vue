@@ -145,6 +145,9 @@ onUnmounted(() => {
       </div>
     </dl>
 
+    <p v-if="socket.audioDropped.value" class="field-error" role="alert">
+      The connection was down for more than 10 minutes. The recording misses some audio.
+    </p>
     <p v-if="error" class="field-error" role="alert">{{ error }}</p>
     <div>
       <BaseButton variant="danger" :loading="ending" @click="endEpisode">End Episode</BaseButton>

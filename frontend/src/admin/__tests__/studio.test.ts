@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   passed: null as null | { value: boolean },
   record: null as null | { value: boolean },
   socketState: null as null | { value: string },
+  audioDropped: null as null | { value: boolean },
   verdict: null as null | { value: string },
   capture: {} as Record<string, unknown>,
   flowReset: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock('@admin/composables', () => {
       mocks.options = options;
       return {
         state: mocks.socketState,
+        audioDropped: mocks.audioDropped,
         connect: mocks.connect,
         send: vi.fn(),
         stopStream: mocks.stopStream,
@@ -103,6 +105,7 @@ beforeEach(() => {
   mocks.passed = ref(false);
   mocks.record = ref(true);
   mocks.socketState = ref('live');
+  mocks.audioDropped = ref(false);
   mocks.verdict = ref('good');
   mocks.recording = { is_recording: true, show_id: 7 };
   mocks.capture = {
@@ -246,6 +249,14 @@ describe('On Air', () => {
     await nextTick();
     expect(text()).toContain('Connectionlost');
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('warns when a long drop cost recorded audio', async () => {
+    await mountOnAir();
+    expect(text()).not.toContain('misses some audio');
+    mocks.audioDropped!.value = true;
+    await nextTick();
+    expect(text()).toContain('The recording misses some audio.');
   });
 
   it('End Episode stops the stream and opens the Wrap-up', async () => {

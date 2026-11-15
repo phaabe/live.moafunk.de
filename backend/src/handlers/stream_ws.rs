@@ -247,6 +247,8 @@ async fn handle_stream_socket(
 
     // A reconnect continues the browser's WebM stream. Its re-sent header goes
     // to the recorder only if the recorder has not read that stream yet.
+    // Bytes a reconnect re-sends that arrived already (`at:`).
+    let mut skip: u64 = 0;
     let mut header_tee = match query.resume {
         Some(ref id) => Some(stream_state.lock().await.begin_webm_stream(id).await),
         None => None,
@@ -321,8 +323,17 @@ async fn handle_stream_socket(
                 bytes_received += data.len() as u64;
 
                 let tee = header_tee.take().unwrap_or(true);
+                let mut data = &data[..];
+                if tee && skip > 0 {
+                    let cut = data.len().min(skip as usize);
+                    skip -= cut as u64;
+                    data = &data[cut..];
+                    if data.is_empty() {
+                        continue;
+                    }
+                }
                 let mut stream = stream_state.lock().await;
-                if let Err(e) = stream.write_chunk(generation, &data, tee).await {
+                if let Err(e) = stream.write_chunk(generation, data, tee).await {
                     dropped_chunks += 1;
                     tracing::error!("Failed to write audio chunk: {}", e);
                     // A dead producer (e.g. Liquidsoap restarted) is no reason
@@ -353,6 +364,19 @@ async fn handle_stream_socket(
                     if !stream.is_superseded(generation) {
                         stream.begin_webm_stream(id).await;
                     }
+                    // The new stream brings its own header.
+                    header_tee = None;
+                    skip = 0;
+                } else if let Some(offset) = text
+                    .as_str()
+                    .strip_prefix("at:")
+                    .and_then(|n| n.parse::<u64>().ok())
+                {
+                    // A reconnect re-sends the audio the server may not have.
+                    let mut stream = stream_state.lock().await;
+                    if !stream.is_superseded(generation) {
+                        skip = stream.resume_webm_at(offset);
+                    }
                 } else if let Some(echo) = text.as_str().strip_prefix("ping:") {
                     // Parse-and-reformat instead of echoing raw text so a
                     // malformed payload can't inject into the JSON reply.
@@ -360,11 +384,20 @@ async fn handle_stream_socket(
                         // No `dropped` here: a write error breaks the loop, so
                         // a live pong could only ever report 0. It surfaces in
                         // the end-of-stream log instead.
+                        // `stream` + `offset`: how much of the browser's WebM
+                        // stream arrived, so it can let go of those chunks.
+                        let (webm, offset) = {
+                            let stream = stream_state.lock().await;
+                            let (webm, offset) = stream.webm_received();
+                            (webm.map(str::to_owned), offset)
+                        };
                         let payload = serde_json::json!({
                             "echo": echo_ms,
                             "chunks": chunks_received,
                             "bytes": bytes_received,
                             "late": late_chunks,
+                            "stream": webm,
+                            "offset": offset,
                         });
                         if sender
                             .send(Message::Text(format!("pong:{}", payload).into()))
