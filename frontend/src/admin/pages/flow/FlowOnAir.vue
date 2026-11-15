@@ -536,7 +536,9 @@ function goToDashboard() {
   router.push('/dashboard');
 }
 
-// ─── Auto-end timer (based on show end_time) ───────────────────────────────
+// ─── Time left until the scheduled end_time ────────────────────────────────
+// The end time never cuts a show: the stream goes on past it (and past
+// midnight) until the host stops it. Only the clock goes away.
 const remainingText = ref<string | null>(null);
 const endTimeWarning = ref(false);
 let endTimeInterval: ReturnType<typeof setInterval> | null = null;
@@ -569,15 +571,8 @@ function updateEndTimeCountdown() {
   const diff = Math.floor((target.getTime() - Date.now()) / 1000);
 
   if (diff <= 0) {
-    remainingText.value = '00:00';
+    remainingText.value = null;
     endTimeWarning.value = false;
-    if (!streamEnded.value && !stopping.value) {
-      if (isLiveMode.value) {
-        handleStop();
-      } else {
-        handleStopUpload();
-      }
-    }
     stopEndTimeInterval();
     return;
   }
