@@ -183,7 +183,8 @@ fn default_database_url() -> String {
 }
 
 fn default_max_file_size() -> u64 {
-    180
+    // The artist form allows 500 MB per file (unheard-artists-form.ts).
+    500
 }
 
 fn default_max_upload_size() -> u64 {
