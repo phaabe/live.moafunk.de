@@ -182,6 +182,10 @@ test('the dashboard runs after staging deploys and nightly or manual chaos runs,
   assert.match(steps.find((s) => /collect\.cjs/.test(s.run ?? '')).env.GH_TOKEN, /github\.token/);
   const keys = steps.find((s) => s.id === 'vercel').with.secrets.trim().split('\n');
   assert.deepEqual(keys.map((k) => k.split(' > ')[1]), ['VERCEL_TOKEN']);
+  assert.match(keys[0], /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12} > /, 'a Bitwarden secret id');
+  const deploy = steps.at(-1).env;
+  assert.match(deploy.VERCEL_ORG_ID, /^team_\w+$/);
+  assert.match(deploy.VERCEL_PROJECT_ID, /^prj_\w+$/);
   assert.match(steps.at(-1).run, /vercel@\d+\.\d+\.\d+ deploy "\$RUNNER_TEMP\/site" --prod/);
 
   for (const [file, id, needs] of [

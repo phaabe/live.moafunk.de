@@ -46,14 +46,14 @@ jobs:
         with:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
-            VERCEL_TESTS_TOKEN_UUID > VERCEL_TOKEN
+            8f9a9b95-7d4a-458f-be6e-b50400b59ace > VERCEL_TOKEN
 
       - name: Deploy to Vercel
         env:
           VERCEL_TOKEN: ${{ steps.vercel.outputs.VERCEL_TOKEN }}
-          # Not secret: they only name the project `moafunk-tests`.
-          VERCEL_ORG_ID: VERCEL_ORG_ID_VALUE
-          VERCEL_PROJECT_ID: VERCEL_PROJECT_ID_VALUE
+          # Not secret: they only name the project `moafunk-tests` (team anneoneones-projects).
+          VERCEL_ORG_ID: team_Mh4tRrI5C0V7BW2apbk7diK5
+          VERCEL_PROJECT_ID: prj_ywI3PDezEEYc0z74cRDBdt2DI9c1
         run: |
           set -euo pipefail
           npx --yes vercel@59.17.0 deploy "$RUNNER_TEMP/site" --prod --yes --token "$VERCEL_TOKEN"
