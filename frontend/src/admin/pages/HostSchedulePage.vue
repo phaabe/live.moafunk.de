@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { seriesApi, showsApi, streamApi, type ShowOverviewItem } from '../api';
 import { episodeDay } from '../episodeRow';
+import BoardIcon from '../components/BoardIcon.vue';
 import { isShowRunning } from '../showTime';
 
 // Flow screen `schedule` (host at /dashboard): what is on air now and the
@@ -82,82 +83,42 @@ onUnmounted(() => {
   <div class="schedule-page">
     <h1 class="page-title">Schedule</h1>
 
-    <section v-if="onAir" class="section">
-      <h2 class="section-title">On air now</h2>
-      <p class="on-air">{{ onAirLine }}</p>
+    <section v-if="onAir" class="status-banner live">
+      <h2 class="board-card-title">On air now</h2>
+      <span class="on-air">{{ onAirLine }}</span>
     </section>
 
-    <section class="section">
-      <h2 class="section-title">Your next episodes</h2>
-      <ul class="episodes">
-        <li v-for="row in rows" :key="row.id">
-          <router-link :to="`/shows/${row.id}`" class="episode">
-            <span>{{ row.left }}</span>
-            <span class="status">{{ row.right }}</span>
-          </router-link>
-        </li>
-      </ul>
+    <section class="board-card">
+      <div class="board-card-head">
+        <h2 class="board-card-title"><BoardIcon name="calendar" />Your next episodes</h2>
+      </div>
+      <div class="board-card-body">
+        <ul class="episodes board-rows">
+          <li v-for="row in rows" :key="row.id">
+            <router-link :to="`/shows/${row.id}`" class="board-row">
+              <span>{{ row.left }}</span>
+              <span class="tag tag-upcoming">{{ row.right }}</span>
+            </router-link>
+          </li>
+        </ul>
+      </div>
     </section>
   </div>
 </template>
 
 <style scoped>
 .schedule-page {
-  max-width: 560px;
+  max-width: 960px;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  gap: var(--spacing-lg);
 }
 
 .page-title {
   margin: 0;
 }
 
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-sm);
-}
-
-.section-title {
-  font-size: var(--font-size-lg);
-  margin: 0;
-}
-
 .on-air {
-  margin: 0;
-  padding: var(--spacing-sm) var(--spacing-md);
-  border-radius: var(--radius-md);
-  background-color: var(--color-error);
-  color: #fff;
-  font-weight: var(--font-weight-bold);
-  align-self: flex-start;
-}
-
-.episodes {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.episode {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--spacing-md);
-  padding: var(--spacing-sm) var(--spacing-md);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-}
-
-.episode:hover {
-  border-color: var(--color-primary);
-}
-
-.status {
-  color: var(--color-text-muted);
+  font-size: var(--font-size-lg);
 }
 </style>

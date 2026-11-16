@@ -22,27 +22,39 @@ onMounted(async () => {
 
 <template>
   <div class="my-shows-page">
-    <h1 class="page-title">My Shows</h1>
-    <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-    <ul class="shows">
-      <li v-for="show in shows" :key="show.slug">
-        <router-link :to="`/shows/${show.slug}`" class="show-row">
-          <span>{{ show.name }}</span>
-          <span class="rhythm">{{ show.rhythm_line }}</span>
-        </router-link>
-      </li>
-    </ul>
-    <div>
+    <div class="page-head">
+      <h1 class="page-title">My Shows</h1>
       <BaseButton @click="router.push('/shows/new')">New show</BaseButton>
     </div>
+    <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+    <section class="board-card">
+      <div class="board-card-body">
+        <ul class="shows board-rows">
+          <li v-for="show in shows" :key="show.slug">
+            <router-link :to="`/shows/${show.slug}`" class="board-row">
+              <span class="name">{{ show.name }}</span>
+              <span class="rhythm">{{ show.rhythm_line }}</span>
+            </router-link>
+          </li>
+        </ul>
+      </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
 .my-shows-page {
-  max-width: 560px;
+  max-width: 960px;
   display: flex;
   flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--spacing-md);
 }
 
@@ -50,31 +62,13 @@ onMounted(async () => {
   margin: 0;
 }
 
-.shows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.show-row {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--spacing-md);
-  padding: var(--spacing-sm) var(--spacing-md);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-}
-
-.show-row:hover {
-  border-color: var(--color-primary);
+.name {
+  font-weight: var(--font-weight-bold);
 }
 
 .rhythm {
   color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .field-error {

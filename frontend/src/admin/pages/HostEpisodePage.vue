@@ -6,6 +6,7 @@ import { seriesApi, showsApi, type ShowDetail } from '../api';
 import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '../composables';
 import AudioPlayer from '../components/AudioPlayer.vue';
+import BoardIcon from '../components/BoardIcon.vue';
 import { episodeDay, setLength } from '../episodeRow';
 import { openReplaceFile } from '../replaceFile';
 import { berlinToUtcDate, isShowEnded } from '../showTime';
@@ -254,7 +255,7 @@ async function publish() {
     <template v-else-if="view === 'wrapup'">
       <button type="button" class="back-link" @click="view = 'episode'">&lt; Episode</button>
       <h1 class="page-title">Wrap-up</h1>
-      <p :class="['pill', pill.state]">{{ pill.text }}</p>
+      <p :class="['pill', 'status-banner', pill.state]">{{ pill.text }}</p>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
       <div>
         <BaseButton :disabled="pill.state === 'processing'" :loading="busy" @click="publish">
@@ -267,52 +268,76 @@ async function publish() {
     <template v-else-if="isPrerecorded">
       <router-link :to="backTo" class="back-link">&lt; {{ showName }}</router-link>
       <h1 class="page-title">{{ heading }}</h1>
-      <p class="pill ok">Pre-recorded &amp; confirmed · plays at {{ show.start_time }}</p>
-      <h2 class="section-title">Next step</h2>
-      <p class="text">
-        Nothing to do. The set plays at air time. Wrap-up opens after {{ show.end_time }}.
+      <p class="pill status-banner ok">
+        Pre-recorded &amp; confirmed · plays at {{ show.start_time }}
       </p>
-      <!-- The player shows no file name, and 0:00 until its first Play. -->
-      <p v-if="setFile" class="set-file">{{ setFile }}</p>
-      <AudioPlayer v-if="show.prerecorded_url" :src="show.prerecorded_url" />
-      <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-      <div class="actions">
-        <BaseButton variant="secondary" :disabled="!show.series_slug" @click="replaceFile">
-          Replace file
-        </BaseButton>
-        <BaseButton :disabled="!ended" @click="view = 'wrapup'">Open Wrap-up</BaseButton>
-      </div>
+      <section class="board-card">
+        <div class="board-card-head">
+          <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
+        </div>
+        <div class="board-card-body">
+          <p class="text">
+            Nothing to do. The set plays at air time. Wrap-up opens after {{ show.end_time }}.
+          </p>
+          <!-- The player shows no file name, and 0:00 until its first Play. -->
+          <p v-if="setFile" class="set-file">{{ setFile }}</p>
+          <AudioPlayer v-if="show.prerecorded_url" :src="show.prerecorded_url" />
+          <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+          <div class="actions">
+            <BaseButton variant="secondary" :disabled="!show.series_slug" @click="replaceFile">
+              Replace file
+            </BaseButton>
+            <BaseButton :disabled="!ended" @click="view = 'wrapup'">Open Wrap-up</BaseButton>
+          </div>
+        </div>
+      </section>
     </template>
 
     <!-- Episode (live) -->
     <template v-else>
       <router-link :to="backTo" class="back-link">&lt; {{ showName }}</router-link>
       <h1 class="page-title">{{ heading }}</h1>
-      <p class="pill">Upcoming · Live · {{ slot }}</p>
-      <h2 class="section-title">Next step</h2>
-      <p class="text">Test your audio before air time. The Studio opens 30 min before the start.</p>
-      <div>
-        <BaseButton :disabled="!studioOpen" :loading="busy" @click="openStudio">
-          Open Studio
-        </BaseButton>
+      <p class="pill status-banner">Upcoming · Live · {{ slot }}</p>
+      <div class="board-grid">
+        <section class="board-card">
+          <div class="board-card-head">
+            <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
+          </div>
+          <div class="board-card-body">
+            <p class="text">
+              Test your audio before air time. The Studio opens 30 min before the start.
+            </p>
+            <div>
+              <BaseButton :disabled="!studioOpen" :loading="busy" @click="openStudio">
+                Open Studio
+              </BaseButton>
+            </div>
+          </div>
+        </section>
+        <section class="board-card">
+          <div class="board-card-head">
+            <h2 class="board-card-title"><BoardIcon name="details" />Details</h2>
+          </div>
+          <div class="board-card-body">
+            <label class="field">
+              <span class="label">Title</span>
+              <input
+                v-model="title"
+                class="input"
+                type="text"
+                @change="saveTitle"
+                @keydown.enter.prevent="saveTitle"
+              />
+            </label>
+            <div>
+              <BaseButton variant="danger" :disabled="busy" @click="cancelBooking">
+                Cancel booking
+              </BaseButton>
+            </div>
+          </div>
+        </section>
       </div>
-      <h2 class="section-title">Details</h2>
-      <label class="field">
-        <span class="label">Title</span>
-        <input
-          v-model="title"
-          class="input"
-          type="text"
-          @change="saveTitle"
-          @keydown.enter.prevent="saveTitle"
-        />
-      </label>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-      <div>
-        <BaseButton variant="danger" :disabled="busy" @click="cancelBooking">
-          Cancel booking
-        </BaseButton>
-      </div>
     </template>
   </div>
   <p v-else-if="error" class="field-error" role="alert">{{ error }}</p>
@@ -320,10 +345,10 @@ async function publish() {
 
 <style scoped>
 .episode-page {
-  max-width: 560px;
+  max-width: 960px;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  gap: var(--spacing-lg);
 }
 
 .back-link {
@@ -341,31 +366,9 @@ async function publish() {
   margin: 0;
 }
 
-.section-title {
-  font-size: var(--font-size-lg);
-  margin: var(--spacing-sm) 0 0;
-}
-
 .text {
   margin: 0;
   color: var(--color-text-muted);
-}
-
-.pill {
-  align-self: flex-start;
-  margin: 0;
-  padding: var(--spacing-xs) var(--spacing-md);
-  border-radius: var(--radius-md);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-}
-
-.pill.ok {
-  border-color: var(--color-success, var(--color-border));
-}
-
-.pill.failed {
-  border-color: var(--color-error);
 }
 
 .set-file {
@@ -390,8 +393,8 @@ async function publish() {
 }
 
 .input {
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border-light);
   border-radius: var(--radius-md);
   color: var(--color-text);
   font-family: var(--font-family);

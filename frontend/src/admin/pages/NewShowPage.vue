@@ -93,65 +93,69 @@ onUnmounted(() => setCover(null));
     <h1 class="page-title">New Show</h1>
     <p class="intro">A show is your series. You book its episodes after this.</p>
 
-    <div
-      class="cover-drop"
-      :class="{ dragging }"
-      role="button"
-      tabindex="0"
-      @click="fileInput?.click()"
-      @keydown.enter.prevent="fileInput?.click()"
-      @dragover.prevent="dragging = true"
-      @dragleave="dragging = false"
-      @drop.prevent="onDrop"
-    >
-      <img v-if="coverPreview" :src="coverPreview" alt="Show cover" />
-      <span v-else>Show cover · drop an image</span>
-    </div>
-    <!-- Outside the drop zone, so its click does not bubble back into it. -->
-    <input ref="fileInput" type="file" accept="image/*" class="file-input" @change="onPick" />
-
-    <FormInput v-model="name" label="Name" placeholder="Brunchtime" />
-    <label class="field">
-      <span class="label">Description</span>
-      <textarea
-        v-model="description"
-        class="input"
-        rows="3"
-        placeholder="Sunday brunch sounds, every week from 12:00."
-      ></textarea>
-    </label>
-
-    <h2 class="section-title">Rhythm</h2>
-    <div class="rhythm">
-      <label class="field">
-        <span class="label">Repeats</span>
-        <select v-model="repeatRule" class="input">
-          <option value="weekly">Every week</option>
-          <option value="biweekly">Every 2 weeks</option>
-          <option value="none">No fixed rhythm</option>
-        </select>
-      </label>
-      <label v-if="fixedRhythm" class="field">
-        <span class="label">Day</span>
-        <select v-model.number="weekday" class="input">
-          <option v-for="(day, i) in DAYS" :key="day" :value="i + 1">{{ day }}</option>
-        </select>
-      </label>
-      <div v-if="fixedRhythm" class="field">
-        <span class="label">Time</span>
-        <div class="time-range">
-          <input v-model="startTime" type="time" class="input" aria-label="Start time" />
-          <span>–</span>
-          <input v-model="endTime" type="time" class="input" aria-label="End time" />
+    <section class="board-card">
+      <div class="board-card-body">
+        <div
+          class="cover-drop"
+          :class="{ dragging }"
+          role="button"
+          tabindex="0"
+          @click="fileInput?.click()"
+          @keydown.enter.prevent="fileInput?.click()"
+          @dragover.prevent="dragging = true"
+          @dragleave="dragging = false"
+          @drop.prevent="onDrop"
+        >
+          <img v-if="coverPreview" :src="coverPreview" alt="Show cover" />
+          <span v-else>Show cover · drop an image</span>
         </div>
-      </div>
-    </div>
-    <p v-if="timeError" class="field-error">{{ timeError }}</p>
-    <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+        <!-- Outside the drop zone, so its click does not bubble back into it. -->
+        <input ref="fileInput" type="file" accept="image/*" class="file-input" @change="onPick" />
 
-    <BaseButton :disabled="!canSubmit" :loading="saving" @click="createShow">
-      Create show
-    </BaseButton>
+        <FormInput v-model="name" label="Name" placeholder="Brunchtime" />
+        <label class="field">
+          <span class="label">Description</span>
+          <textarea
+            v-model="description"
+            class="input"
+            rows="3"
+            placeholder="Sunday brunch sounds, every week from 12:00."
+          ></textarea>
+        </label>
+
+        <h2 class="section-title">Rhythm</h2>
+        <div class="rhythm">
+          <label class="field">
+            <span class="label">Repeats</span>
+            <select v-model="repeatRule" class="input">
+              <option value="weekly">Every week</option>
+              <option value="biweekly">Every 2 weeks</option>
+              <option value="none">No fixed rhythm</option>
+            </select>
+          </label>
+          <label v-if="fixedRhythm" class="field">
+            <span class="label">Day</span>
+            <select v-model.number="weekday" class="input">
+              <option v-for="(day, i) in DAYS" :key="day" :value="i + 1">{{ day }}</option>
+            </select>
+          </label>
+          <div v-if="fixedRhythm" class="field">
+            <span class="label">Time</span>
+            <div class="time-range">
+              <input v-model="startTime" type="time" class="input" aria-label="Start time" />
+              <span>–</span>
+              <input v-model="endTime" type="time" class="input" aria-label="End time" />
+            </div>
+          </div>
+        </div>
+        <p v-if="timeError" class="field-error">{{ timeError }}</p>
+        <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+
+        <BaseButton :disabled="!canSubmit" :loading="saving" @click="createShow">
+          Create show
+        </BaseButton>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -160,7 +164,7 @@ onUnmounted(() => setCover(null));
   max-width: 560px;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  gap: var(--spacing-lg);
 }
 
 .back-link {
@@ -222,8 +226,8 @@ onUnmounted(() => setCover(null));
 }
 
 .input {
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border-light);
   border-radius: var(--radius-md);
   color: var(--color-text);
   font-family: var(--font-family);
