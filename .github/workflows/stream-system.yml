@@ -7,14 +7,10 @@ name: STREAM - System test
 # networking (docs/stream-rework/prod/), with throwaway passwords.
 
 on:
+  # Every PR, without path filters: stream-system is a required check, and a
+  # required check that does not run blocks the merge.
   pull_request:
     branches: [main, staging]
-    paths:
-      - backend/src/**
-      - backend/Cargo.toml
-      - backend/Cargo.lock
-      - docs/stream-rework/prod/**
-      - .github/workflows/stream-system.yml
   push:
     branches: [main, staging]
     paths:
