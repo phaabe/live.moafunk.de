@@ -7,7 +7,9 @@ import { flowSync } from './src/admin/flow/report';
 
 // A build identity that changes on every deploy. Prefer the git short SHA (stable,
 // available in CI); fall back to a build timestamp for detached/no-git builds.
+// The Docker build has no .git, so CI passes the commit as GIT_SHA.
 function resolveBuildId(): string {
+  if (process.env.GIT_SHA) return process.env.GIT_SHA.slice(0, 7);
   try {
     return execSync('git rev-parse --short HEAD', {
       stdio: ['ignore', 'pipe', 'ignore'],

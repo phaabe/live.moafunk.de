@@ -43,6 +43,9 @@ ENV VITE_STREAM_ICECAST_LIVE_URL=$VITE_STREAM_ICECAST_LIVE_URL \
 # The build serves the committed flow check results at /flow-sync.json, so a
 # failing check must stop the image. CI=true: compare results, never write them.
 RUN CI=true npx vitest run
+# This stage has no .git: CI passes the commit for /flow-sync.json.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
 RUN npm run build
 
 # Runtime stage

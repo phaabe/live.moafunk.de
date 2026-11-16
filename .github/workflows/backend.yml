@@ -89,6 +89,7 @@ jobs:
             VITE_STREAM_ICECAST_LIVE_URL=${{ vars.VITE_STREAM_ICECAST_LIVE_URL }}
             VITE_STREAM_ICECAST_TEST_URL=${{ vars.VITE_STREAM_ICECAST_TEST_URL }}
             VITE_STREAM_STATUS_URL=${{ vars.VITE_STREAM_STATUS_URL }}
+            GIT_SHA=${{ github.sha }}
           # Always push — workflow only runs on main or manual dispatch
           push: true
           tags: ${{ steps.meta.outputs.tags }}
