@@ -8,6 +8,8 @@ name: Deploy production
 #   DB and waits for health. dry_run (the default) checks all of this and
 #   switches nothing.
 # - rollback_tag puts an earlier release back; it skips the staging check.
+# - hotfix skips only the staging check, and only when main's head commit is
+#   the merge of a PR with label hotfix. All other checks stay.
 on:
   workflow_dispatch:
     inputs:
@@ -24,9 +26,14 @@ on:
         required: false
         type: string
         default: ""
+      hotfix:
+        description: "Hotfix only: main's head is a merged PR with label hotfix; skip the staging check"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: production-deploy
@@ -47,6 +54,7 @@ jobs:
           ACTOR: ${{ github.triggering_actor }}
           CONFIRM: ${{ inputs.confirm }}
           ROLLBACK_TAG: ${{ inputs.rollback_tag }}
+          HOTFIX: ${{ inputs.hotfix }}
         run: |
           set -euo pipefail
           case "$ACTOR" in
@@ -56,12 +64,33 @@ jobs:
           [[ "$CONFIRM" == "deploy production" ]] || { echo '::error::type "deploy production" to confirm'; exit 1; }
           [[ -z "$ROLLBACK_TAG" || "$ROLLBACK_TAG" =~ ^sha-[0-9a-f]{7}$ ]] ||
             { echo "::error::rollback_tag must look like sha-1234567"; exit 1; }
+          [[ "$HOTFIX" != "true" || -z "$ROLLBACK_TAG" ]] ||
+            { echo "::error::a rollback is not a hotfix; leave hotfix off"; exit 1; }
 
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Check main's head is a merged hotfix PR
+        id: hotfix
+        if: inputs.hotfix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Only the PR whose merge made main's head counts. Any later commit on
+          # main ends the hotfix mode until the next release.
+          pr="$(gh api "repos/$REPO/commits/$SOURCE_SHA/pulls" | jq -r --arg sha "$SOURCE_SHA" \
+            '[.[] | select(.merge_commit_sha == $sha and .merged_at != null and .base.ref == "main"
+              and any(.labels[]; .name == "hotfix"))][0].number // empty')"
+          [[ "$pr" =~ ^[0-9]+$ ]] ||
+            { echo "::error::main's head $SOURCE_SHA is not a merged PR with label hotfix; deploy without hotfix"; exit 1; }
+          echo "Hotfix: main's head is https://github.com/$REPO/pull/$pr; the staging check is skipped" |
+            tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Pick the image
         id: image
@@ -102,7 +131,7 @@ jobs:
 
       - name: Check main is what staging runs
         id: staging
-        if: inputs.rollback_tag == ''
+        if: inputs.rollback_tag == '' && !inputs.hotfix
         env:
           STAGING_KEY: ${{ steps.keys.outputs.STAGING_DEPLOY_SSH_KEY }}
           STAGING_HOST_KEY: staging.live.moafunk.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHw+kqXgS8FmHdVOw2gaNMRzTQ+0SjGKYvsuqu8HyFQp
@@ -153,7 +182,8 @@ jobs:
       - name: Smoke test (read-only)
         # After a real deploy: what listeners and hosts reach answers, and the
         # API runs exactly the image this run deployed (main's build of the
-        # code staging ran, checked above). A failure fails the run.
+        # code staging ran, or of the hotfix, checked above). A failure fails
+        # the run.
         if: ${{ !inputs.dry_run }}
         env:
           PUBLIC: https://admin.live.moafunk.de

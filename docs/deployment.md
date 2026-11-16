@@ -29,7 +29,7 @@ The admin SPA ships inside the backend image, so one image covers API and admin.
 It stops, and changes nothing, when:
 
 - it does not run from `main`, or someone other than Anton (`anneoneone`) or phaabe starts it, or the confirmation is not `deploy production`
-- the code on `main` is not exactly the code that staging runs (it asks the staging box which tag it runs and compares the git trees)
+- the code on `main` is not exactly the code that staging runs (it asks the staging box which tag it runs and compares the git trees). With `hotfix` on, it skips only this check, and only when `main`'s head commit is the merge of a PR with label `hotfix`. Otherwise the run stops.
 - the image for the commit is not built yet, or the pulled image does not have the expected digest
 - a show is on air, or a show starts or runs within the next 2 hours
 - another deploy is running
