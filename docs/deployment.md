@@ -13,7 +13,7 @@ The admin SPA ships inside the backend image, so one image covers API and admin.
 ## Rules
 
 1. Every change is a PR into `staging`, squash merged. Each PR has exactly one label `release::feature`, `release::fix` or `release::internal` (check `release-label`). The label sorts the PR into the release notes; `release::internal` is left out. Nobody commits to `staging` or `main` directly. Only release PRs (`release/rN`) and hotfix PRs (`hotfix/<slug>`) go into `main` (check `release-gate`).
-2. Every merge into `staging` builds an image `sha-<7>` and puts exactly that image on staging, unless staging is on hold.
+2. Every merge into `staging` builds an image `sha-<7>` and puts exactly that image on staging, then runs the chaos test show on it (`backend.yml`, job `e2e-staging`). On hold, neither the deploy nor the chaos test show happens.
 3. A release goes like this. `rN` is the next number after the last `r*` tag (`r0` was the first).
    1. On the staging box: `/opt/unheard-staging/staging.sh hold "rN release checks"`. Builds go on, but staging keeps the release candidate. `staging.sh status` prints the tag it runs (`sha-<7>`): that commit is the release.
    2. Run the release checks on staging: the restore drill (below) and the 90-minute soak of the chaos test show (`backend/staging/README.md`). No check enforces the soak; it is your step.
