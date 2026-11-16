@@ -1,0 +1,31 @@
+name: Release label
+
+# Every PR into staging needs exactly one label release::feature,
+# release::fix or release::internal. The label puts the PR into a group of the
+# release notes (.github/release.yml, docs/deployment.md). Runs again when
+# labels change, so a missing label is fixed without a new push.
+on:
+  pull_request:
+    branches: [staging]
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  release-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for exactly one release label
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          found="$(jq -r '[.[] | select(startswith("release::"))] | join(" ")' <<<"$LABELS")"
+          case "$found" in
+            release::feature | release::fix | release::internal)
+              echo "Release label: $found" ;;
+            "")
+              echo "::error::add one label: release::feature, release::fix or release::internal"; exit 1 ;;
+            *)
+              echo "::error::need exactly one of release::feature, release::fix, release::internal (has: $found)"; exit 1 ;;
+          esac
