@@ -4975,58 +4975,6 @@ async fn resolve_user_shows(
     auth::broadcast_shows(&state.db, user).await
 }
 
-#[derive(Debug, Serialize)]
-pub struct MyShowsListResponse {
-    shows: Vec<ShowListItem>,
-}
-
-/// GET /api/my-shows — list all shows assigned to the authenticated user
-pub async fn api_my_shows_list(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse> {
-    let token = auth::get_session_from_headers(&headers);
-    let user = auth::get_current_user(&state, token.as_deref())
-        .await
-        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
-
-    let shows = resolve_user_shows(&state, &user).await?;
-
-    let mut show_items = Vec::new();
-    for show in shows {
-        let artists: Vec<ArtistBrief> = sqlx::query_as(
-            "SELECT a.id, a.name FROM artists a \
-             INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
-             WHERE asa.show_id = ? \
-             ORDER BY asa.sort_order, a.name",
-        )
-        .bind(show.id)
-        .fetch_all(&state.db)
-        .await?;
-
-        let (host_username, host_has_logged_in) =
-            show_host_info(&state.db, show.host_user_id).await?;
-
-        show_items.push(ShowListItem {
-            id: show.id,
-            title: show.title,
-            date: show.date,
-            start_time: show.start_time,
-            end_time: show.end_time,
-            description: show.description,
-            status: show.status,
-            show_type: show.show_type,
-            host_username,
-            host_has_logged_in,
-            artists,
-            // Host/artist "my shows" view doesn't badge recordings (yet).
-            recording_status: None,
-        });
-    }
-
-    Ok(Json(MyShowsListResponse { shows: show_items }))
-}
-
 pub async fn api_my_show(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

@@ -217,9 +217,6 @@ export const artistsApi = {
 
   get: (id: number) => api.get<ArtistDetail>(`/api/artists/${id}`),
 
-  updateStatus: (id: number, status: string) =>
-    api.put<void>(`/api/artists/${id}/status`, { status }),
-
   delete: (id: number) => api.delete<void>(`/api/artists/${id}`),
 
   assignShow: (artistId: number, showId: number) =>
@@ -541,9 +538,6 @@ export const showsApi = {
 
   /** Read-only list of all shows (incl. other users') for any authenticated user. */
   overview: () => api.get<{ shows: ShowOverviewItem[] }>('/api/shows-overview'),
-
-  /** List all shows assigned to the authenticated user (host or artist) */
-  myShows: () => api.get<{ shows: Show[] }>('/api/my-shows'),
 
   get: (id: number) => api.get<ShowDetail>(`/api/shows/${id}`),
 

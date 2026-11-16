@@ -7,7 +7,6 @@ pub mod recording;
 pub mod recovery;
 pub mod series;
 pub mod settings;
-pub mod stream_test_ws;
 pub mod stream_ws;
 pub mod submit;
 pub mod submit_chunked;

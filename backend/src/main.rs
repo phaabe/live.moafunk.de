@@ -441,7 +441,6 @@ async fn main() -> anyhow::Result<()> {
         .merge(handlers::recovery::routes())
         // Artist flow — my show
         .route("/api/my-show", get(handlers::api::api_my_show))
-        .route("/api/my-shows", get(handlers::api::api_my_shows_list))
         .route(
             "/api/my-show/upload",
             post(handlers::api::api_my_show_upload),
@@ -772,10 +771,6 @@ async fn main() -> anyhow::Result<()> {
         // Stream WebSocket and API
         .route("/ws/stream", get(stream_ws_handler))
         .route("/ws/chat", get(handlers::chat_ws::chat_ws_handler))
-        .route(
-            "/ws/stream-test",
-            get(handlers::stream_test_ws::stream_test_ws_handler),
-        )
         .route("/api/stream/status", get(stream_status_handler))
         .route("/api/stream/metrics", get(stream_metrics_handler))
         .route("/metrics", get(metrics_handler))
