@@ -378,3 +378,93 @@ pub async fn api_get_series(
         episodes,
     }))
 }
+
+#[derive(sqlx::FromRow)]
+struct UpcomingRow {
+    id: i64,
+    date: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    stream_mode: Option<String>,
+    wrapup_published_at: Option<String>,
+    live_ended_at: Option<String>,
+    show_name: String,
+    owner_user_id: i64,
+    host_username: String,
+}
+
+/// One row of the host Dashboard. Other hosts' episodes carry no id.
+#[derive(Debug, Serialize)]
+pub struct UpcomingEpisode {
+    date: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    show_name: String,
+    host_username: String,
+    /// "live" | "prerecorded"
+    mode: &'static str,
+    /// "Live" | "Pre-recorded"
+    mode_label: &'static str,
+    /// The episode id, only when the caller owns the show.
+    own_episode_id: Option<i64>,
+}
+
+/// GET /api/upcoming-episodes — the upcoming episodes of all hosts' series,
+/// by date and start time.
+pub async fn api_upcoming_episodes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let user = require_show_creator(&state, &headers).await?;
+    // An episode ends at most a day after its date, so older dates are over.
+    let rows: Vec<UpcomingRow> = sqlx::query_as(
+        "SELECT s.id, s.date, COALESCE(s.start_time, t.start_time) AS start_time, \
+                COALESCE(s.end_time, t.end_time) AS end_time, s.stream_mode, \
+                s.wrapup_published_at, s.live_ended_at, t.name AS show_name, t.owner_user_id, u.username AS host_username \
+         FROM shows s \
+         JOIN show_templates t ON t.id = s.template_id \
+         JOIN users u ON u.id = t.owner_user_id \
+         WHERE t.slug IS NOT NULL AND s.date >= date('now', '-2 days') \
+         ORDER BY s.date, start_time, s.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let on_air = on_air_show_id(&state).await;
+    let now = Utc::now();
+    let episodes: Vec<UpcomingEpisode> = rows
+        .into_iter()
+        .filter(|e| {
+            let end = series::ended_by_host(
+                series::episode_end_utc(
+                    &e.date,
+                    e.start_time.as_deref(),
+                    e.end_time.as_deref(),
+                    None,
+                ),
+                e.live_ended_at.as_deref(),
+            );
+            series::episode_status(
+                end,
+                e.wrapup_published_at.is_some(),
+                on_air == Some(e.id),
+                now,
+            ) == EpisodeStatus::Upcoming
+        })
+        .map(|e| {
+            let (mode, mode_label) = series::mode_of(e.stream_mode.as_deref());
+            UpcomingEpisode {
+                own_episode_id: (e.owner_user_id == user.id).then_some(e.id),
+                date: e.date,
+                start_time: e.start_time,
+                end_time: e.end_time,
+                show_name: e.show_name,
+                host_username: e.host_username,
+                mode,
+                mode_label,
+            }
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "episodes": episodes })))
+}

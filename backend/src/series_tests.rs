@@ -357,3 +357,68 @@ async fn an_episode_on_air_is_not_over_at_its_end_time() {
     assert_eq!(status(on_air), "upcoming");
     assert_eq!(status(over), "wrapup_open");
 }
+
+/// The host Dashboard lists every host's upcoming episodes, soonest first.
+/// Only the caller's own rows carry the episode id.
+#[tokio::test]
+async fn dashboard_lists_all_hosts_upcoming_episodes() {
+    let (state, _temp) = state().await;
+    let lena = add_user(&state, "lena", "host").await;
+    let jonas = add_user(&state, "jonas", "host").await;
+    let brunch = create(&state, lena, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let night = create(
+        &state,
+        jonas,
+        &[("name", "Night Shift"), ("repeat_rule", "none")],
+    )
+    .await
+    .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    let later = episode(&state, brunch, "2099-01-04", "prerecorded").await;
+    let sooner = episode(&state, brunch, "2099-01-01", "live").await;
+    episode(&state, night, "2099-01-02", "live").await;
+    // Over: an old date, and yesterday's episode (it ended at 14:00).
+    episode(&state, brunch, "2020-01-05", "live").await;
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    episode(&state, brunch, &yesterday, "live").await;
+    // A date outside any series is not a host episode.
+    sqlx::query(
+        "INSERT INTO shows (title, date, show_type) VALUES ('UNHEARD', '2099-01-03', 'unheard')",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let response =
+        handlers::series::api_upcoming_episodes(State(state.clone()), headers(&state, lena).await)
+            .await
+            .unwrap();
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["episodes"],
+        json!([
+            {
+                "date": "2099-01-01", "start_time": "12:00", "end_time": "14:00",
+                "show_name": "Brunchtime", "host_username": "lena",
+                "mode": "live", "mode_label": "Live", "own_episode_id": sooner
+            },
+            {
+                "date": "2099-01-02", "start_time": "12:00", "end_time": null,
+                "show_name": "Night Shift", "host_username": "jonas",
+                "mode": "live", "mode_label": "Live", "own_episode_id": null
+            },
+            {
+                "date": "2099-01-04", "start_time": "12:00", "end_time": "14:00",
+                "show_name": "Brunchtime", "host_username": "lena",
+                "mode": "prerecorded", "mode_label": "Pre-recorded", "own_episode_id": later
+            },
+        ])
+    );
+}

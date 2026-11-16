@@ -575,6 +575,11 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::series::api_list_series).post(handlers::series::api_create_series),
         )
         .route("/api/series/:slug", get(handlers::series::api_get_series))
+        // Host Dashboard: all hosts' upcoming episodes
+        .route(
+            "/api/upcoming-episodes",
+            get(handlers::series::api_upcoming_episodes),
+        )
         // Booking: slots, upload-first sets, episodes (owner or admin)
         .route(
             "/api/series/:slug/slots",
