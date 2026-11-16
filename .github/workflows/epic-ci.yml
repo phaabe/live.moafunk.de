@@ -71,8 +71,13 @@ jobs:
           if [[ "$REPORT" == true ]]; then
             rustup component add llvm-tools-preview
             mkdir -p ../results
-            cargo llvm-cov --locked --all-targets --json --summary-only \
-              --output-path ../results/coverage.json | tee ../results/cargo-test.txt
+            # src/bin/ holds dev tools, not product code.
+            ignore='src/bin/'
+            cargo llvm-cov --locked --all-targets --no-report | tee ../results/cargo-test.txt
+            cargo llvm-cov report --json --summary-only --ignore-filename-regex "$ignore" \
+              --output-path ../results/coverage.json
+            cargo llvm-cov report --lcov --ignore-filename-regex "$ignore" \
+              --output-path ../results/lcov.info
           else
             cargo test --locked --all-targets
           fi
@@ -143,7 +148,7 @@ jobs:
           if [[ "$REPORT" == true ]]; then
             mkdir -p ../results
             npm test -- --run --coverage --reporter=default --reporter=json --outputFile.json=../results/vitest.json
-            cp coverage/coverage-summary.json ../results/
+            cp coverage/coverage-summary.json coverage/lcov.info ../results/
           else
             npm test -- --run
           fi

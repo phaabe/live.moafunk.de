@@ -223,3 +223,20 @@ test('coverage and result files only on pushes to staging; PR runs stay plain', 
     assert.match(upload.if, /github\.event_name == 'push' && github\.ref == 'refs\/heads\/staging'/);
   }
 });
+
+test('coverage counts product code only and also writes lcov', () => {
+  const ci = load('epic-ci.yml');
+  const run = (id) => ci.jobs[id].steps.find((s) => s.name === `Run ${id} tests`).run;
+  const backend = run('backend');
+  assert.match(backend, /ignore='src\/bin\/'/);
+  assert.match(backend, /--no-report \| tee \.\.\/results\/cargo-test\.txt/);
+  const reports = backend.split('cargo llvm-cov report').slice(1);
+  assert.deepEqual(reports.map((r) => r.match(/--output-path (\S+)/)[1]), ['../results/coverage.json', '../results/lcov.info']);
+  for (const r of reports) assert.match(r, /--ignore-filename-regex "\$ignore"/);
+  assert.match(run('frontend'), /cp coverage\/coverage-summary\.json coverage\/lcov\.info \.\.\/results\//);
+
+  const vitest = readFileSync(path.resolve(__dirname, '../../../frontend/vitest.config.ts'), 'utf8');
+  assert.match(vitest, /provider: 'istanbul'/);
+  assert.match(vitest, /include: \['src\/\*\*'\]/);
+  assert.match(vitest, /reporter: \[[^\]]*'lcov'\]/);
+});
