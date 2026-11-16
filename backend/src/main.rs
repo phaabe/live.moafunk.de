@@ -32,6 +32,8 @@ mod broadcast_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
+mod scheduler_tests;
+#[cfg(test)]
 mod series_tests;
 #[cfg(test)]
 mod stream_system_tests;
@@ -868,7 +870,7 @@ async fn main() -> anyhow::Result<()> {
                 if state.telegram_bot.is_none() {
                     continue;
                 }
-                scheduler::check_missing_recordings(state.clone()).await;
+                scheduler::check_missing_recordings(state.clone(), chrono::Utc::now()).await;
             }
         });
     }
@@ -883,7 +885,7 @@ async fn main() -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                scheduler::check_prerecorded_show_start(state.clone()).await;
+                scheduler::check_prerecorded_show_start(state.clone(), chrono::Utc::now()).await;
             }
         });
     }
