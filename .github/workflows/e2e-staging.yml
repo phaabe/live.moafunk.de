@@ -9,7 +9,8 @@ on:
   workflow_call:
   pull_request:
     branches: [staging]
-    paths: ['e2e/**', '.github/workflows/e2e-staging.yml']
+    # staging.sh holds the test's e2e-* requests (copied to the box by hand).
+    paths: ['e2e/**', '.github/workflows/e2e-staging.yml', 'backend/staging/staging.sh']
   schedule:
     - cron: '30 2 * * *'
   workflow_dispatch:
