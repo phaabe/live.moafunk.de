@@ -100,3 +100,16 @@ jobs:
             e2e/playwright-report/
             e2e/test-results/
           retention-days: 14
+
+  dashboard:
+    # The test dashboard after the nightly or a manual run (a soak when
+    # duration > 0). After a staging deploy backend.yml updates it instead.
+    needs: chaos-show
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !cancelled()
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/test-dashboard.yml
+    with:
+      soak-minutes: ${{ inputs.duration || '0' }}
+    secrets: inherit
