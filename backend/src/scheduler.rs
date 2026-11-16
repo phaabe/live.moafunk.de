@@ -134,6 +134,14 @@ pub async fn check_artist_preview_schedule(state: Arc<AppState>) {
     }
 }
 
+/// First show date (UTC, "YYYY-MM-DD") the checks look at: two days before
+/// `now`, as SQLite's `date('now', '-2 days')`.
+fn scope_start(now: DateTime<Utc>) -> String {
+    (now - chrono::Duration::days(2))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
 /// Parse an "HH:MM" string into a `NaiveTime`.
 fn parse_hhmm(s: &str) -> Option<NaiveTime> {
     NaiveTime::parse_from_str(s, "%H:%M").ok()
@@ -194,21 +202,20 @@ fn recording_overdue(
 /// — a short/corrupt recording is marked `failed` by the upload verifier and so
 /// counts as missing), and has not already been alerted. Scoped to the last 2 days
 /// so enabling the feature never back-alerts the whole archive.
-pub async fn check_missing_recordings(state: Arc<AppState>) {
-    let now = Utc::now();
-
+pub async fn check_missing_recordings(state: Arc<AppState>, now: DateTime<Utc>) {
     let shows: Vec<models::Show> = match sqlx::query_as(
         "SELECT * FROM shows s \
          WHERE s.stream_mode = 'live' \
            AND s.recording_alert_sent_at IS NULL \
            AND s.end_time IS NOT NULL \
-           AND s.date >= date('now', '-2 days') \
+           AND s.date >= ? \
            AND NOT EXISTS ( \
              SELECT 1 FROM recording_versions rv \
              WHERE rv.show_id = s.id \
                AND rv.status IN ('raw', 'finalizing', 'finalized') \
            )",
     )
+    .bind(scope_start(now))
     .fetch_all(&state.db)
     .await
     {
@@ -357,17 +364,16 @@ async fn resolve_show_host_username(state: &Arc<AppState>, show: &models::Show) 
 /// page open in a browser tab (see issue #240). Scoped to confirmed uploads
 /// that haven't been started yet, and bounded so a show that's already ended
 /// (or, lacking an end time, is well past its start) is never resurrected.
-pub async fn check_prerecorded_show_start(state: Arc<AppState>) {
-    let now = Utc::now();
-
+pub async fn check_prerecorded_show_start(state: Arc<AppState>, now: DateTime<Utc>) {
     let shows: Vec<models::Show> = match sqlx::query_as(
         "SELECT * FROM shows \
          WHERE stream_mode = 'prerecorded' \
            AND prerecorded_confirmed_at IS NOT NULL \
            AND prerecorded_started_at IS NULL \
            AND start_time IS NOT NULL \
-           AND date >= date('now', '-2 days')",
+           AND date >= ?",
     )
+    .bind(scope_start(now))
     .fetch_all(&state.db)
     .await
     {
