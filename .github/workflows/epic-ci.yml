@@ -54,33 +54,36 @@ jobs:
       - name: Check backend formatting
         run: cargo fmt --check
 
-      # Pushes to staging also measure coverage for the test dashboard
-      # (test-dashboard.yml); PR runs stay plain cargo test.
+      # Every run measures coverage, so the floors below gate PRs too.
+      # Pushes to staging also keep the results for the test dashboard
+      # (test-dashboard.yml).
       - name: Install the coverage tool
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.9.1
 
       - name: Run backend tests
+        id: tests
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        env:
-          REPORT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
         run: |
           set -euo pipefail
-          if [[ "$REPORT" == true ]]; then
-            rustup component add llvm-tools-preview
-            mkdir -p ../results
-            # src/bin/ holds dev tools, not product code.
-            ignore='src/bin/'
-            cargo llvm-cov --locked --all-targets --no-report | tee ../results/cargo-test.txt
-            cargo llvm-cov report --json --summary-only --ignore-filename-regex "$ignore" \
-              --output-path ../results/coverage.json
-            cargo llvm-cov report --lcov --ignore-filename-regex "$ignore" \
-              --output-path ../results/lcov.info
-          else
-            cargo test --locked --all-targets
-          fi
+          rustup component add llvm-tools-preview
+          mkdir -p ../results
+          # src/bin/ holds dev tools, not product code.
+          ignore='src/bin/'
+          cargo llvm-cov --locked --all-targets --no-report | tee ../results/cargo-test.txt
+          cargo llvm-cov report --json --summary-only --ignore-filename-regex "$ignore" \
+            --output-path ../results/coverage.json
+          cargo llvm-cov report --lcov --ignore-filename-regex "$ignore" \
+            --output-path ../results/lcov.info
+
+      # Only the critical modules in backend/coverage-floors.json are gated;
+      # all other coverage is reported on the test dashboard.
+      - name: Check coverage floors
+        if: ${{ !cancelled() && steps.tests.outcome == 'success' }}
+        working-directory: .
+        run: node scripts/coverage-floors.cjs results/coverage.json backend/coverage-floors.json
 
       - name: Keep the results for the test dashboard
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
