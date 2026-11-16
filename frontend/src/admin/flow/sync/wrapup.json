@@ -1,0 +1,41 @@
+{
+  "screen": "wrapup",
+  "hash": "0c51c988",
+  "status": "ok",
+  "leftOut": [
+    {
+      "item": "h2: SoundCloud",
+      "release": "R2"
+    },
+    {
+      "item": "field: Track title",
+      "release": "R2"
+    },
+    {
+      "item": "check: Upload as private track",
+      "release": "R2"
+    },
+    {
+      "item": "check: Add to playlist “Brunchtime”",
+      "release": "R2"
+    },
+    {
+      "item": "h2: 3 moments for Instagram",
+      "release": "R4"
+    },
+    {
+      "item": "check: 00:12:30 | Opening track",
+      "release": "R4"
+    },
+    {
+      "item": "check: 00:31:05 | Guest talk",
+      "release": "R4"
+    },
+    {
+      "item": "check: 01:20:44 | Closing set",
+      "release": "R4"
+    }
+  ],
+  "missing": [],
+  "extra": []
+}

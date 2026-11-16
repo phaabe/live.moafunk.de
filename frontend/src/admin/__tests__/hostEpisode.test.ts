@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores/auth';
 import { hostPage } from '../hostPage';
 import { currentReplaceTarget } from '../replaceFile';
 import type { ShowDetail, User } from '../api';
+import { expectFlow } from '../flow/expectFlow';
 
 // jsdom does not implement font loading used by the composables barrel.
 vi.hoisted(() => {
@@ -401,5 +402,57 @@ describe('who sees what', () => {
     app?.unmount();
     await mount('host', 7);
     await vi.waitFor(() => expect(text()).toContain("Today's show page"));
+  });
+});
+
+describe('flow', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const recordingReady: ShowDetail['latest_recording'] = {
+    id: 1,
+    version: 'v1',
+    status: 'raw',
+    duration_ms: 7120000,
+    download_url: 'https://r2.example/v1.mp3',
+  };
+
+  it('Episode matches the flow', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T10:00:00Z'));
+    current = episode({ date: '2026-10-25' });
+    await mount();
+    await expectFlow('episode', root);
+  });
+
+  it('Episode · Pre-recorded matches the flow', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-01T10:00:00Z'));
+    current = episode({
+      date: '2026-11-08',
+      stream_mode: 'prerecorded',
+      prerecorded_filename: 'brunchtime-0811.mp3',
+      prerecorded_url: 'https://r2.example/brunchtime-0811.mp3',
+      prerecorded_duration_secs: 7120,
+      prerecorded_confirmed_at: '2026-11-01T10:00:00Z',
+    });
+    await mount();
+    await expectFlow('episode-pre', root);
+  });
+
+  it('Wrap-up matches the flow', async () => {
+    current = episode({
+      date: PAST,
+      episode_status: 'wrapup_open',
+      latest_recording: recordingReady,
+    });
+    await mount();
+    await expectFlow('wrapup', root);
+  });
+
+  it('Published matches the flow', async () => {
+    current = episode({ date: PAST, episode_status: 'finished', latest_recording: recordingReady });
+    await mount();
+    await expectFlow('done', root);
   });
 });

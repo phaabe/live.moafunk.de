@@ -39,6 +39,7 @@ vi.mock('@admin/api', () => ({
 vi.mock('@admin/composables', () => {
   return {
     BROWSER_UNSUPPORTED_MESSAGE: 'unsupported',
+    STREAM_AUDIO_BITS_PER_SECOND: 128000,
     streamRecordingMimeType: () => 'audio/webm',
     useHostFlow: () => ({
       show: ref({ id: 7, date: '2026-11-15', start_time: '12:00', end_time: '14:00' }),
@@ -66,6 +67,8 @@ vi.mock('@admin/composables', () => {
     useAutoBitrate: vi.fn(),
   };
 });
+
+import { expectFlow } from '../flow/expectFlow';
 
 let app: App | null = null;
 let root: HTMLElement;
@@ -269,5 +272,57 @@ describe('On Air', () => {
     expect(mocks.stopStream).toHaveBeenCalledOnce();
     expect(mocks.capture.stopCapture).toHaveBeenCalledOnce();
     expect(mocks.push).toHaveBeenCalledWith({ path: '/shows/7', state: { episodeEnded: 7 } });
+  });
+});
+
+// Keep this block last: it swaps in the real LiveSetupTest.
+describe('flow', () => {
+  afterEach(() => {
+    // Unmount before the stubbed navigator goes: LiveSetupTest unhooks from it.
+    app?.unmount();
+    app = null;
+    vi.unstubAllGlobals();
+    vi.doMock('@admin/components/LiveSetupTest.vue', () => ({
+      __esModule: true,
+      default: { render: () => h('div', 'Audio input') },
+    }));
+  });
+
+  it('Studio matches the flow', async () => {
+    // The flow names the audio controls, so check the real ones.
+    vi.doUnmock('@admin/components/LiveSetupTest.vue');
+    Object.assign(mocks.capture, {
+      devices: ref([]),
+      selectedDeviceId: ref(''),
+      refreshDevices: vi.fn(),
+      listDevices: vi.fn(),
+    });
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: { addEventListener: vi.fn(), removeEventListener: vi.fn() },
+    });
+    mocks.passed = ref(true);
+    vi.setSystemTime(new Date('2026-11-15T11:41:18Z'));
+    const { default: FlowLive } = await import('../pages/flow/FlowLive.vue');
+    await mountPage(FlowLive);
+    await expectFlow('studio', root);
+  });
+
+  it('Studio · On Air matches the flow', async () => {
+    vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
+    const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
+    await mountPage(StudioOnAir);
+    await vi.advanceTimersByTimeAsync((42 * 60 + 10) * 1000);
+    await expectFlow('studio-onair', root);
+  });
+
+  it('Studio · On Air during a long drop: the flow has no such state yet', async () => {
+    mocks.socketState = ref('connecting');
+    mocks.audioDropped = ref(true);
+    vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
+    const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
+    await mountPage(StudioOnAir);
+    await vi.advanceTimersByTimeAsync((42 * 60 + 10) * 1000);
+    await expectFlow('studio-onair', root, 'reconnecting');
   });
 });
