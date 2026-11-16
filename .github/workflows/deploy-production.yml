@@ -149,3 +149,35 @@ jobs:
           ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
             -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes "root@$PROD_IP" \
             "TAG=$TAG DIGEST=$DIGEST DRY_RUN=$DRY_RUN bash -s" <backend/deploy/deploy-production.sh
+
+      - name: Smoke test (read-only)
+        # After a real deploy: what listeners and hosts reach answers, and the
+        # API runs exactly the image this run deployed (main's build of the
+        # code staging ran, checked above). A failure fails the run.
+        if: ${{ !inputs.dry_run }}
+        env:
+          PUBLIC: https://admin.live.moafunk.de
+          PROD_IP: ${{ steps.keys.outputs.HETZNER_IP }}
+          PROD_KEY: ${{ steps.keys.outputs.HETZNER_SSH_KEY }}
+          PROD_HOST_KEY: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL76nCwfiKTFFhXYlN68sxFT4jd0m9IAQpmbLFyL/nru
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::smoke test: $*"; exit 1; }
+          curl -fsS -m 10 "$PUBLIC/health" | grep -q '"status":"healthy"' || fail "/health is not healthy"
+          curl -fsS -m 10 "$PUBLIC/api/stream/status" | grep -q '"active":' || fail "/api/stream/status does not answer"
+          page="$(curl -fsS -m 10 "$PUBLIC/")" || fail "the admin login page does not load"
+          [[ "$page" == *"<title>Moafunk Admin</title>"* ]] || fail "the admin login page is not the admin"
+          script="$(grep -o 'src="/assets/[^"]*\.js"' <<<"$page" | head -1 | cut -d'"' -f2)"
+          [[ -n "$script" ]] && curl -fsS -m 10 -o /dev/null "$PUBLIC$script" || fail "the admin app script does not load"
+          key="$RUNNER_TEMP/prod-key"
+          known="$RUNNER_TEMP/prod-known-hosts"
+          trap 'rm -f "$key" "$known"' EXIT
+          (umask 077 && printf '%s\n' "$PROD_KEY" >"$key")
+          printf '%s %s\n' "$PROD_IP" "$PROD_HOST_KEY" >"$known"
+          running="$(ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes "root@$PROD_IP" \
+            'docker image inspect --format "{{join .RepoDigests \" \"}}" "$(docker inspect --format "{{.Image}}" unheard-api)"')"
+          [[ " $running " == *"@$DIGEST "* ]] || fail "unheard-api runs ${running:-nothing}, not $DIGEST"
+          echo "Smoke test passed: /health, /api/stream/status, the admin page, and unheard-api runs $DIGEST" |
+            tee -a "$GITHUB_STEP_SUMMARY"
