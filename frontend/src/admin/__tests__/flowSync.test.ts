@@ -109,10 +109,15 @@ describe('compareScreen', () => {
     const { result, unexplained } = compareScreen(
       SCREEN,
       NO_GAPS,
-      dom(PAGE + '<button>Create guest link</button><button>Reconnect</button><h2>Chat</h2>')
+      dom(
+        PAGE +
+          '<button>Create guest link</button><button>Reconnect</button><h2>Chat</h2>' +
+          '<dl><div><dt>Bitrate</dt><dd>128 kbps</dd></div></dl>'
+      )
     );
-    expect(result.extra).toEqual(['h2: Chat', 'button: Reconnect']);
-    expect(unexplained).toEqual(['h2: Chat', 'button: Reconnect']);
+    const extra = ['h2: Chat', 'button: Reconnect', 'row: Bitrate | 128 kbps'];
+    expect(result.extra).toEqual(extra);
+    expect(unexplained).toEqual(extra);
   });
 
   it('keeps left-out items apart and flags a left-out item that is shown', () => {

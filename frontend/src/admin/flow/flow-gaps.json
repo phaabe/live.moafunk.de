@@ -163,6 +163,7 @@
       "state": "reconnecting",
       "items": [
         "row: Connection | stable",
+        "row: Connection | reconnecting…",
         "notice: The connection was down for more than 10 minutes. The recording misses some audio."
       ],
       "why": "The flow has no state for a dropped connection. The code shows 'reconnecting…' or 'lost' and, after 10 minutes, this warning (tickets 877, 878). Add the state to the flow first."

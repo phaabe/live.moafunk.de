@@ -26,8 +26,8 @@ checked. Behaviour from the notes needs its own test.
 A test fails when:
 
 - a flow item is missing and `flow-gaps.json` does not list it as left out;
-- the page shows a heading, pill, notice, button, link or form label that the
-  flow does not have;
+- the page shows a heading, pill, notice, button, link, form label or row that
+  the flow does not have;
 - a flow screen has no check and is not left out as a whole;
 - an entry in `flow-gaps.json` no longer applies.
 

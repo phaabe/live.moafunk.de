@@ -25,6 +25,7 @@
     "row: Connection | stable"
   ],
   "extra": [
-    "notice: The connection was down for more than 10 minutes. The recording misses some audio."
+    "notice: The connection was down for more than 10 minutes. The recording misses some audio.",
+    "row: Connection | reconnecting…"
   ]
 }

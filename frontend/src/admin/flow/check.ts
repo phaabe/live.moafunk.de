@@ -214,7 +214,7 @@ export function compareScreen(
     else if (!there) result.missing.push(label(e));
   }
   for (const c of found) {
-    if (c.kind === 'row' || screen.elements.some((e) => shows(e, c))) continue;
+    if (screen.elements.some((e) => shows(e, c))) continue;
     const item = `${c.kind}: ${c.text}`;
     if (!allowed.has(item) && !result.extra.includes(item)) result.extra.push(item);
   }
