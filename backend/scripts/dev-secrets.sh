@@ -34,7 +34,10 @@ BOOTSTRAP_FILE="$BACKEND_DIR/.env.bootstrap"
 # .env.bootstrap so you don't have to re-export it every session. This file feeds THIS
 # script only — the backend never reads it. See .env.bootstrap.example.
 if [[ -z "${BWS_ACCESS_TOKEN:-}" && -f "$BOOTSTRAP_FILE" ]]; then
-  set -a; . "$BOOTSTRAP_FILE"; set +a
+  set -a
+  # shellcheck source=/dev/null
+  . "$BOOTSTRAP_FILE"
+  set +a
 fi
 
 # Bitwarden region — US cloud by default (CI sets no base_url, i.e. sm-action's

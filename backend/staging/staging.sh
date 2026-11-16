@@ -245,11 +245,11 @@ cmd_install_env() {
     [[ -z "$line" ]] && continue
     name="${line%%=*}"
     value="${line#*=}"
-    case " $(echo $SECRET_NAMES) " in
+    case " ${SECRET_NAMES//$'\n'/ } " in
       *" $name "*) ;;
       *) die "unknown name on stdin: '$name'" ;;
     esac
-    case " $(echo $LOGIN_PASSWORDS) " in
+    case " $LOGIN_PASSWORDS " in
       *" $name "*) [[ -n "$value" ]] || die "$name is empty" ;;
       *) [[ "$value" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || die "$name is empty or has characters a .env cannot hold unquoted" ;;
     esac

@@ -407,7 +407,7 @@ export interface Show {
   /** Username of the assigned host (external/brunchtime shows), if any. */
   host_username?: string;
   host_has_logged_in: boolean | null;
-  artists: { id: number; name: string }[];
+  artists: readonly { id: number; name: string }[];
   /**
    * Status of the show's most recent live-stream recording, or absent if never
    * recorded. Lets the list badge a recording without fetching its versions.
@@ -1193,7 +1193,7 @@ export interface MyShowInfo {
   end_time?: string;
   description?: string;
   show_type: string;
-  artists: MyShowArtist[];
+  artists: readonly MyShowArtist[];
   cover_url?: string;
   prerecorded_key?: string;
   prerecorded_url?: string;

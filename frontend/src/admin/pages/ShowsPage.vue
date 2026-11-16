@@ -67,7 +67,7 @@ const showCount = computed(() => {
   return filtered.length;
 });
 
-function goToShow(show: ScheduleItem) {
+function goToShow(show: Pick<ScheduleItem, 'id'>) {
   router.push(`/shows/${show.id}`);
 }
 

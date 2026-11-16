@@ -16,7 +16,7 @@ const props = defineProps<{
   startMinutes: number | null;
   endMinutes: number | null;
   /** All scheduled shows; the component renders those on `date`. */
-  shows: ScheduleItem[];
+  shows: readonly ScheduleItem[];
   /** Whether the placed block overlaps an existing show (drives styling). */
   conflict?: boolean;
   /** Visible height of the scroll viewport, in px (matched to the calendar). */

@@ -62,6 +62,15 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo clippy --locked --all-targets
 
+      - name: Check the shell scripts (shellcheck)
+        if: ${{ !cancelled() }}
+        working-directory: .
+        # Pinned, so a runner image update cannot change the findings.
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.sh' ':!:.claude/' ':!:.codex/' |
+            xargs -0 pipx run --spec shellcheck-py==0.10.0.1 shellcheck -S warning
+
   frontend:
     name: frontend-ci
     runs-on: ubuntu-24.04

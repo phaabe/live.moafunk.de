@@ -17,46 +17,6 @@ const show = computed(() => flow.show.value);
 const streamActive = ref(false);
 const streamEnded = ref(false);
 
-// ─── Shared date formatting ─────────────────────────────────────────────────
-function fmtDateTime(date: string, time: string): string {
-  const d = new Date(date + 'T' + time + ':00');
-  return (
-    d.toLocaleDateString('en-US', {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    }) +
-    ' · ' +
-    time
-  );
-}
-
-function computeEndDate(date: string, startTime: string, endTime: string): string {
-  if (endTime <= startTime) {
-    const d = new Date(date + 'T00:00:00');
-    d.setDate(d.getDate() + 1);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  }
-  return date;
-}
-
-const formattedStart = computed(() => {
-  if (!show.value?.date || !show.value?.start_time) return '—';
-  return fmtDateTime(show.value.date, show.value.start_time);
-});
-
-const formattedEnd = computed(() => {
-  if (!show.value?.date || !show.value?.end_time) return '—';
-  const endDate = show.value.start_time
-    ? computeEndDate(show.value.date, show.value.start_time, show.value.end_time)
-    : show.value.date;
-  return fmtDateTime(endDate, show.value.end_time);
-});
-
 const formattedDate = computed(() => {
   if (!show.value?.date) return '';
   try {

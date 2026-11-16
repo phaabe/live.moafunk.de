@@ -1,7 +1,7 @@
 <script lang="ts">
 // When the live episode went on air, kept across remounts: leaving On Air
 // does not end the broadcast, and the Studio sends the host back here.
-let onAirSince: { showId: number; at: number } | null = null;
+let onAirSince = null as { showId: number; at: number } | null;
 </script>
 
 <script setup lang="ts">
@@ -29,8 +29,8 @@ const flow = useHostFlow();
 const audioCapture = useAudioCapture();
 const showId = flow.showId.value!;
 
-if (onAirSince?.showId !== showId) onAirSince = { showId, at: Date.now() };
-const since = onAirSince.at;
+const since = onAirSince?.showId === showId ? onAirSince.at : Date.now();
+onAirSince = { showId, at: since };
 
 const error = ref<string | null>(null);
 const ending = ref(false);
