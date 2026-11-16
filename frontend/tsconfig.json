@@ -18,7 +18,14 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+
+    /* Same aliases as vite.config.ts */
+    "paths": {
+      "@/*": ["./src/*"],
+      "@admin/*": ["./src/admin/*"],
+      "@shared/*": ["./src/shared/*"]
+    }
   },
   "include": ["src/**/*", "tests/**/*"],
   "exclude": ["node_modules", "dist"]

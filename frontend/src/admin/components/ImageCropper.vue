@@ -18,7 +18,6 @@ const cropperWrapper = ref<HTMLElement | null>(null);
 const cropperImg = ref<HTMLImageElement | null>(null);
 const overlayRoot = ref<HTMLElement | null>(null);
 const overlayName = ref<HTMLElement | null>(null);
-const fileInput = ref<HTMLInputElement | null>(null);
 
 let cropper: Cropper | null = null;
 let originalFile: File | null = null;
@@ -262,37 +261,6 @@ function zoomImageToContainer(): void {
   }
 }
 
-function zoomToFill(): void {
-  if (!cropper) return;
-  
-  const cropBoxData = cropper.getCropBoxData();
-  const canvasData = cropper.getCanvasData();
-  
-  if (!cropBoxData || !canvasData || cropBoxData.width <= 0 || cropBoxData.height <= 0) return;
-  
-  // Calculate the zoom ratio needed to fill the crop box
-  const scaleX = cropBoxData.width / canvasData.width;
-  const scaleY = cropBoxData.height / canvasData.height;
-  const scale = Math.max(scaleX, scaleY);
-  
-  if (scale > 1) {
-    // Need to zoom in to fill
-    const newWidth = canvasData.width * scale;
-    const newHeight = canvasData.height * scale;
-    
-    // Center the image in the crop box
-    const newLeft = cropBoxData.left - (newWidth - cropBoxData.width) / 2;
-    const newTop = cropBoxData.top - (newHeight - cropBoxData.height) / 2;
-    
-    cropper.setCanvasData({
-      left: newLeft,
-      top: newTop,
-      width: newWidth,
-      height: newHeight,
-    });
-  }
-}
-
 async function save(): Promise<void> {
   if (!originalFile || !croppedBlob.value || !brandedBlob.value) return;
   
@@ -365,7 +333,6 @@ function onImageLoad(): void {
 
     <div class="file-input-wrapper">
       <input 
-        ref="fileInput"
         type="file" 
         accept="image/*" 
         @change="onFileChange"

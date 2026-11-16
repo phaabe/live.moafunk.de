@@ -4,7 +4,7 @@ import { Calendar } from 'v-calendar';
 import type { ScheduleItem } from '../api';
 
 const props = defineProps<{
-  shows: ScheduleItem[];
+  shows: readonly ScheduleItem[];
 }>();
 
 const emit = defineEmits<{

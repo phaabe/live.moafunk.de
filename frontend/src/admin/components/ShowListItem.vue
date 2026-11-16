@@ -22,15 +22,6 @@ function getDaysClass(days: number): string {
   return 'days-ok';
 }
 
-function getDotColor(show: ScheduleItem): string {
-  const daysUntil = getDaysUntil(show.date);
-  if (daysUntil < 0) return 'dot-gray';
-  const type = show.show_type || 'unheard';
-  if (type === 'brunchtime') return 'dot-green';
-  if (type === 'external') return 'dot-blue';
-  return 'dot-yellow';
-}
-
 function formatDateShort(dateStr: string): string {
   const d = new Date(dateStr + 'T12:00:00');
   return d.toLocaleDateString('en-US', {
