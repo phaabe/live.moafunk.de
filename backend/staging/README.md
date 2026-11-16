@@ -74,11 +74,39 @@ By hand, on the box:
 /opt/unheard-staging/staging.sh down             # stop (data stays)
 ```
 
-The CI key (`ci-deploy.pub`, private part in Bitwarden Secrets Manager as `STAGING_DEPLOY_SSH_KEY`) may only run `staging.sh ci-deploy`: read the tag and hold, or deploy one tag with its exact digest. `setup` installs it that way; `staging.sh install-ci-key` does only that step.
+The CI key (`ci-deploy.pub`, private part in Bitwarden Secrets Manager as `STAGING_DEPLOY_SSH_KEY`) may only run `staging.sh ci-deploy`: read the tag and hold, deploy one tag with its exact digest, or serve the chaos test show (below). `setup` installs it that way; `staging.sh install-ci-key` does only that step.
 
 Staging keeps running (also after a reboot) until `down`.
 
 `up` and `seed-db` create or reset the two logins `staging-admin` (superadmin) and `staging-host` (host) to the Bitwarden passwords. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
+
+## Chaos test show
+
+`e2e/` is a Playwright test that runs one live show and one pre-recorded set on staging, as `staging-host` with a fake microphone (a 440 Hz tone). The live show must survive a 20 s network cut, a Liquidsoap restart and a page reload by itself: `/live.mp3` carries the tone again within 15 s each time, and the show ends in exactly one recording as long as its time on air, with its mp3 in the archive.
+
+- It runs after every staging deploy (`backend.yml` calls `e2e-staging.yml`), every night, and on pull requests that change `e2e/`. Before a release, run it by hand as a 90-minute soak: **Actions → E2E - Chaos test show on staging → Run workflow**, `duration` 90 (nightly and by hand work once the workflow is on `main`).
+- A deploy waits while a test runs (both use the concurrency group `staging-box`). The test also holds staging, and removes only its own hold, so a release hold stays.
+- The test deletes its episodes and Show. Their files stay in the staging buckets (no API removes them).
+- A failed run keeps the Playwright trace and screenshots as a workflow artifact for 14 days.
+
+For the test, the CI key may also run, on the box:
+
+| Request | What it does |
+|---------|--------------|
+| `e2e-hold <run>` | holds staging, unless it is on hold already |
+| `e2e-unhold <run>` | removes the hold, only if this run set it |
+| `e2e-restart-liquidsoap` | restarts the Liquidsoap container |
+| `e2e-cut <1-60>` | resets the caller's own connections to ports 80 and 443 for that many seconds (`iptables`, removed by a `systemd-run` timer) |
+| `e2e-recordings <show>` | status, length and archive flag of a test episode's recordings (read-only) |
+
+Run it from your Mac (needs the CI key in `~/.config/moafunk-staging/ci_deploy_ed25519`, ffmpeg and Node):
+
+```bash
+cd e2e && npm ci && npx playwright install chromium
+STAGING_HOST_PASSWORD="$(bwpw 'Moafunk STAGING_HOST_PASSWORD')" npx playwright test
+```
+
+After a change to `staging.sh`, copy it to the box (CI deploys only the image).
 
 ## A copy of production data
 

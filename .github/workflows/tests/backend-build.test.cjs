@@ -13,6 +13,8 @@ const workflow = yaml.load(readFileSync(path.resolve(__dirname, '../backend.yml'
 const build = workflow.jobs['build-and-push'];
 const monitoring = workflow.jobs['deploy-monitoring'];
 const staging = workflow.jobs['deploy-staging'];
+const e2e = workflow.jobs['e2e-staging'];
+const chaos = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-staging.yml'), 'utf8'));
 
 // These workflow conditions use only property reads, booleans and comparisons.
 // GitHub preserves boolean workflow_dispatch inputs in the inputs context.
@@ -25,11 +27,12 @@ function enabled(condition, event, inputs, ref = 'refs/heads/main') {
   );
 }
 
-test('only image build, staging deploy and explicitly requested monitoring jobs remain', () => {
+test('only image build, staging deploy, its chaos test and explicitly requested monitoring jobs remain', () => {
   assert.deepEqual(Object.keys(workflow.jobs).sort(), [
     'build-and-push',
     'deploy-monitoring',
     'deploy-staging',
+    'e2e-staging',
   ]);
   assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
   assert.deepEqual(workflow.on.push.branches, ['main', 'staging']);
@@ -45,7 +48,7 @@ test('only image build, staging deploy and explicitly requested monitoring jobs 
 
 const cases = [
   ['push', {}, ['build-and-push']],
-  ['push', {}, ['build-and-push', 'deploy-staging'], 'refs/heads/staging'],
+  ['push', {}, ['build-and-push', 'deploy-staging', 'e2e-staging'], 'refs/heads/staging'],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push'], 'refs/heads/staging'],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push']],
   ['workflow_dispatch', { build: false, deploy_monitoring: false }, []],
@@ -181,7 +184,7 @@ test('image summary records the exact image and source without contacting a host
 test('staging deploy reaches only the staging box, with the exact image built', () => {
   assert.equal(staging.needs, 'build-and-push');
   assert.deepEqual(staging.permissions, { contents: 'read' });
-  assert.deepEqual(staging.concurrency, { group: 'staging-deploy', 'cancel-in-progress': false });
+  assert.deepEqual(staging.concurrency, { group: 'staging-box', 'cancel-in-progress': false });
   assert.deepEqual(staging.environment, { name: 'staging', url: 'https://staging.live.moafunk.de' });
   const text = JSON.stringify(staging);
   assert.deepEqual(
@@ -202,6 +205,36 @@ test('staging deploy reaches only the staging box, with the exact image built', 
   assert.match(deploy.env.HOST_KEY, /^staging\.live\.moafunk\.de ssh-ed25519 \S+$/);
   assert.match(deploy.run, /StrictHostKeyChecking=yes/);
   assert.match(deploy.run, /root@staging\.live\.moafunk\.de "deploy \$tag \$DIGEST"/);
+});
+
+test('the chaos test show runs after each staging deploy and never next to one', () => {
+  assert.equal(e2e.needs, 'deploy-staging');
+  assert.equal(e2e.uses, './.github/workflows/e2e-staging.yml');
+  assert.equal(e2e.secrets, 'inherit');
+  assert.deepEqual(Object.keys(chaos.on).sort(), [
+    'pull_request',
+    'schedule',
+    'workflow_call',
+    'workflow_dispatch',
+  ]);
+  assert.deepEqual(chaos.permissions, { contents: 'read' });
+  const job = chaos.jobs['chaos-show'];
+  assert.deepEqual(job.concurrency, staging.concurrency, 'deploys wait for a running test');
+  const text = JSON.stringify(chaos);
+  assert.deepEqual(
+    [...text.matchAll(/secrets\.([A-Z_]+)/g)].map((match) => match[1]),
+    ['BW_ACCESS_TOKEN']
+  );
+  assert.doesNotMatch(text, /HETZNER|178\.104\.160\.103|admin\.live|deploy_hetzner|scp/i);
+  const keys = job.steps.find((step) => step.id === 'secrets');
+  assert.deepEqual(
+    keys.with.secrets.trim().split('\n').map((line) => line.split(' > ')[1]),
+    ['STAGING_DEPLOY_SSH_KEY', 'STAGING_HOST_PASSWORD']
+  );
+  const hostKey = job.steps.find((step) => step.env?.HOST_KEY).env.HOST_KEY;
+  assert.equal(hostKey, staging.steps.find((step) => step.id === 'deploy').env.HOST_KEY);
+  const unhold = job.steps.find((step) => /e2e-unhold/.test(step.run ?? ''));
+  assert.match(unhold.if, /always\(\)/, 'the hold is removed also after a failure');
 });
 
 test('staging deploy step passes tag and digest, treats a hold as success, fails otherwise', () => {
