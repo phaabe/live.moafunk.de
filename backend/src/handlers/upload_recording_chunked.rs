@@ -121,7 +121,8 @@ pub async fn init_recording_upload(
     .bind(req.total_size as i64)
     .bind(req.total_chunks as i32)
     .bind(&req.peaks)
-    .bind(expires_at.to_rfc3339())
+    // SQLite's own format, so `expires_at > datetime('now')` compares right.
+    .bind(expires_at.format("%Y-%m-%d %H:%M:%S").to_string())
     .execute(&state.db)
     .await?;
 

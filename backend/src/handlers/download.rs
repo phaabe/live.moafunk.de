@@ -11,7 +11,8 @@ use std::sync::Arc;
 fn require_admin(user: Option<&models::User>) -> Result<()> {
     match user {
         Some(u) if u.role_enum().can_access_admin() => Ok(()),
-        _ => Err(AppError::Unauthorized("Unauthorized".to_string())),
+        Some(_) => Err(AppError::Forbidden("Admin access required".to_string())),
+        None => Err(AppError::Unauthorized("Unauthorized".to_string())),
     }
 }
 
@@ -973,17 +974,4 @@ Things to Mention:
         zip_buffer,
     )
         .into_response())
-}
-
-pub async fn download_show(
-    State(state): State<Arc<AppState>>,
-    Path(show_id): Path<i64>,
-    request: Request<axum::body::Body>,
-) -> Result<Response> {
-    let token = auth::get_session_from_cookies(&request);
-    let user = auth::get_current_user(&state, token.as_deref()).await;
-    require_admin(user.as_ref())?;
-
-    // Legacy endpoint: default to all-data.
-    download_show_impl(state, show_id, ShowPackage::AllData).await
 }
