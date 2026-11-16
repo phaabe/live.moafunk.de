@@ -54,9 +54,37 @@ jobs:
       - name: Check backend formatting
         run: cargo fmt --check
 
+      # Pushes to staging also measure coverage for the test dashboard
+      # (test-dashboard.yml); PR runs stay plain cargo test.
+      - name: Install the coverage tool
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
       - name: Run backend tests
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        run: cargo test --locked --all-targets
+        env:
+          REPORT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        run: |
+          set -euo pipefail
+          if [[ "$REPORT" == true ]]; then
+            rustup component add llvm-tools-preview
+            mkdir -p ../results
+            cargo llvm-cov --locked --all-targets --json --summary-only \
+              --output-path ../results/coverage.json | tee ../results/cargo-test.txt
+          else
+            cargo test --locked --all-targets
+          fi
+
+      - name: Keep the results for the test dashboard
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Run Clippy
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
@@ -108,4 +136,23 @@ jobs:
 
       - name: Run frontend tests
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: npm test -- --run
+        env:
+          REPORT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        run: |
+          set -euo pipefail
+          if [[ "$REPORT" == true ]]; then
+            mkdir -p ../results
+            npm test -- --run --coverage --reporter=default --reporter=json --outputFile.json=../results/vitest.json
+            cp coverage/coverage-summary.json ../results/
+          else
+            npm test -- --run
+          fi
+
+      - name: Keep the results for the test dashboard
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-frontend
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 14

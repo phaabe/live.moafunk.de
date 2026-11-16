@@ -23,17 +23,19 @@ function enabled(condition, event, inputs, ref = 'refs/heads/main', needs = depl
   if (condition === undefined) return true;
   return runInNewContext(
     `Boolean(${condition})`,
-    { github: { event_name: event, ref }, inputs, needs },
+    // cancelled() is false: these cases model runs nobody cancelled.
+    { github: { event_name: event, ref }, inputs, needs, cancelled: () => false },
     { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }
   );
 }
 
-test('only image build, staging deploy, its chaos test and explicitly requested monitoring jobs remain', () => {
+test('only image build, staging deploy, its chaos test, the test dashboard and explicitly requested monitoring jobs remain', () => {
   assert.deepEqual(Object.keys(workflow.jobs).sort(), [
     'build-and-push',
     'deploy-monitoring',
     'deploy-staging',
     'e2e-staging',
+    'test-dashboard',
   ]);
   assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
   assert.deepEqual(workflow.on.push.branches, ['main', 'staging']);
@@ -49,9 +51,9 @@ test('only image build, staging deploy, its chaos test and explicitly requested 
 
 const cases = [
   ['push', {}, ['build-and-push']],
-  ['push', {}, ['build-and-push', 'deploy-staging', 'e2e-staging'], 'refs/heads/staging'],
-  // Staging on hold: nothing new deployed, so no chaos test show.
-  ['push', {}, ['build-and-push', 'deploy-staging'], 'refs/heads/staging', { 'deploy-staging': { outputs: {} } }],
+  ['push', {}, ['build-and-push', 'deploy-staging', 'e2e-staging', 'test-dashboard'], 'refs/heads/staging'],
+  // Staging on hold: nothing new deployed, so no chaos test show. The dashboard still runs.
+  ['push', {}, ['build-and-push', 'deploy-staging', 'test-dashboard'], 'refs/heads/staging', { 'deploy-staging': { outputs: {} } }],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push'], 'refs/heads/staging'],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push']],
   ['workflow_dispatch', { build: false, deploy_monitoring: false }, []],

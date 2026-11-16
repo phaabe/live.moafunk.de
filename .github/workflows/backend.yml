@@ -185,7 +185,23 @@ jobs:
     # here would let release-gate pass a commit that staging never ran.
     needs: deploy-staging
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging' && needs['deploy-staging'].outputs.deployed == 'true'
+    # actions: read only for e2e-staging.yml's dashboard job, which never runs
+    # here; GitHub still checks a nested job's permissions against the caller.
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/e2e-staging.yml
+    secrets: inherit
+
+  test-dashboard:
+    # Every test level on the test dashboard (test-dashboard.yml), also after
+    # a failed or skipped (hold) chaos test show.
+    needs: [deploy-staging, e2e-staging]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging' && !cancelled()
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/test-dashboard.yml
     secrets: inherit
 
   deploy-monitoring:

@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moafunk tests</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --ink: #0b0b0b; --ink-2: #52514e; --muted: #7a7974;
+    --line: #e1e0d9; --pass: #0ca30c; --fail: #d03b3b; --none: #8d8c86; --accent: #2a6fdb;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121211; --card: #1a1a19; --ink: #f2f1ec; --ink-2: #b9b8b1; --muted: #8d8c86;
+      --line: #2c2c2a; --pass: #0ca30c; --fail: #e05252; --none: #6e6d68; --accent: #6ea0f0;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0; }
+  a { color: var(--accent); }
+  .sub { color: var(--ink-2); font-size: 13px; margin: 4px 0 18px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .tile, .level { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .tile .label { color: var(--ink-2); font-size: 13px; }
+  .tile .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile svg { display: block; width: 200px; max-width: 100%; height: 32px; margin-top: 6px; }
+  .tile .spark { fill: none; stroke: var(--muted); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .tile .now { fill: var(--accent); stroke: var(--card); stroke-width: 2; }
+  .levels { display: grid; gap: 10px; }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .title { font-weight: 600; flex: 1 1 auto; min-width: 12em; }
+  .title .id { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600;
+    padding: 2px 10px 2px 4px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap;
+  }
+  .pill i {
+    font-style: normal; width: 18px; height: 18px; border-radius: 50%; display: inline-grid;
+    place-items: center; color: #fff; font-size: 12px; background: var(--none);
+  }
+  .pass i { background: var(--pass); } .fail i { background: var(--fail); }
+  .not-built i { background: transparent; border: 1.5px dashed var(--none); color: var(--muted); }
+  .fail { border-color: var(--fail); }
+  .trend { display: flex; gap: 2px; align-items: center; }
+  .trend span { width: 8px; height: 14px; border-radius: 2px; background: var(--none); opacity: .55; }
+  .trend .pass { background: var(--pass); opacity: 1; } .trend .fail { background: var(--fail); opacity: 1; }
+  .meta { color: var(--ink-2); font-size: 13px; margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-variant-numeric: tabular-nums; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+  .checks li { font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; color: var(--ink-2); }
+  .checks li.fail { color: var(--fail); border-color: var(--fail); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .error { color: var(--fail); }
+  footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>moafunk tests</h1>
+  <p class="sub" id="sub">Loading…</p>
+  <section class="tiles" id="coverage" aria-label="Code coverage"></section>
+  <section class="levels" id="levels" aria-label="Test levels"></section>
+  <footer>
+    Levels follow the testing concept, L0 (static) to L8 (production). Data:
+    <a href="summary.json">summary.json</a> · <a href="history.json">history.json</a> (last 50 runs).
+    Source: <a href="https://github.com/phaabe/live.moafunk.de/tree/staging/test-dashboard">test-dashboard/</a>.
+  </footer>
+</main>
+<script>
+  const ICON = { pass: '✓', fail: '✕', 'not run': '–', 'not built': '○' };
+  const TREND = 20;
+
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    n.append(...kids.filter((k) => k != null && k !== ''));
+    return n;
+  };
+  const cls = (status) => status.replace(' ', '-');
+  const dur = (s) => (s == null ? null : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`);
+  const ago = (iso) => {
+    const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m} min ago`;
+    if (m < 48 * 60) return `${Math.round(m / 60)} h ago`;
+    return `${Math.round(m / 1440)} days ago`;
+  };
+  const counts = (t) =>
+    t && [`${t.passed} passed`, t.failed ? `${t.failed} failed` : null, t.skipped ? `${t.skipped} skipped` : null]
+      .filter(Boolean).join(' · ');
+
+  const pill = (status) => el('span', { class: `pill ${cls(status)}` }, el('i', { 'aria-hidden': 'true' }, ICON[status]), status);
+
+  // One square per distinct run of this level (a level that did not run again
+  // keeps its last result, so the same run can sit in several summaries).
+  function trend(history, id) {
+    const runs = [];
+    for (const s of history) {
+      const l = s.levels?.find((x) => x.id === id);
+      if (!l?.run?.url || runs.at(-1)?.run.url === l.run.url) continue;
+      runs.push(l);
+    }
+    const last = runs.slice(-TREND);
+    if (!last.length) return null;
+    const pass = last.filter((l) => l.status === 'pass').length;
+    return el('span', { class: 'trend', role: 'img', 'aria-label': `Last ${last.length} runs: ${pass} passed` },
+      ...last.map((l) => el('span', { class: cls(l.status), title: `${l.status} · ${l.run.sha.slice(0, 7)} · ${new Date(l.run.at).toLocaleString()}` })));
+  }
+
+  function spark(points) {
+    if (points.length < 2) return null;
+    const w = 200, h = 32, pad = 4;
+    const ys = points.map((p) => p.v);
+    const lo = Math.min(...ys) - 1, hi = Math.max(...ys) + 1;
+    const x = (i) => pad + (i * (w - 2 * pad)) / (points.length - 1);
+    const y = (v) => h - pad - ((v - lo) * (h - 2 * pad)) / (hi - lo);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', `Coverage over the last ${points.length} runs: ${ys[0]}% to ${ys.at(-1)}%`);
+    svg.innerHTML =
+      `<polyline class="spark" points="${points.map((p, i) => `${x(i)},${y(p.v)}`).join(' ')}"/>` +
+      points.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.v)}" r="${i === points.length - 1 ? 4 : 6}" ` +
+        `class="${i === points.length - 1 ? 'now' : ''}" fill="transparent"><title>${p.v}% · ${p.sha}</title></circle>`).join('');
+    return svg;
+  }
+
+  function coverageTile(history, key, label) {
+    const points = [];
+    for (const s of history) {
+      const l1 = s.levels?.find((x) => x.id === 'L1');
+      const v = s.coverage?.[key];
+      if (v == null || points.at(-1)?.url === l1?.run?.url) continue;
+      points.push({ v, url: l1?.run?.url, sha: l1?.run?.sha?.slice(0, 7) ?? '' });
+    }
+    const now = points.at(-1);
+    return el('div', { class: 'tile' },
+      el('div', { class: 'label' }, `${label} · line coverage`),
+      el('div', { class: 'value' }, now ? `${now.v}%` : '–'),
+      spark(points.slice(-TREND)) ?? el('div', { class: 'note' }, now ? 'Trend after the next run.' : 'Measured on pushes to staging.'));
+  }
+
+  function card(level, history) {
+    const run = level.run;
+    const cov = level.coverage &&
+      ['rust', 'frontend'].filter((k) => level.coverage[k] != null).map((k) => `${k === 'rust' ? 'Rust' : 'Frontend'} ${level.coverage[k]}%`).join(' · ');
+    return el('article', { class: 'level' },
+      el('div', { class: 'head' },
+        pill(level.status),
+        el('span', { class: 'title' }, el('span', { class: 'id' }, level.id), level.name),
+        trend(history, level.id)),
+      el('div', { class: 'meta' },
+        counts(level.tests) && el('span', {}, counts(level.tests)),
+        dur(level.seconds) && el('span', {}, dur(level.seconds)),
+        cov && el('span', {}, `coverage ${cov}`),
+        run && el('span', {}, el('a', { href: run.url }, run.sha.slice(0, 7)), ` · ${ago(run.at)}`)),
+      level.checks.length
+        ? el('ul', { class: 'checks' }, ...level.checks.map((c) =>
+            el('li', { class: cls(c.status) }, `${ICON[c.status]} ${c.name}${c.seconds != null ? ` ${dur(c.seconds)}` : ''}`)))
+        : null,
+      level.note && el('div', { class: 'note' },
+        ...level.note.split(/(https:\/\/\S+)/).map((part, i) => (i % 2 ? el('a', { href: part }, part) : part))));
+  }
+
+  async function load(name) {
+    const res = await fetch(name, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`${name}: ${res.status}`);
+    return res.json();
+  }
+
+  Promise.all([load('summary.json'), load('history.json')])
+    .then(([summary, history]) => {
+      const sub = document.getElementById('sub');
+      sub.textContent = `Updated ${ago(summary.generated_at)}`;
+      if (summary.run) sub.append(' from a ', summary.run.event, ' run on ', el('a', { href: summary.run.url }, summary.run.sha.slice(0, 7)));
+      document.getElementById('coverage').append(
+        coverageTile(history, 'rust', 'Rust backend'), coverageTile(history, 'frontend', 'Frontend'));
+      document.getElementById('levels').append(...summary.levels.map((l) => card(l, history)));
+    })
+    .catch((err) => {
+      const sub = document.getElementById('sub');
+      sub.className = 'sub error';
+      sub.textContent = `Could not load the results: ${err.message}`;
+    });
+</script>
+</body>
+</html>
