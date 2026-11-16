@@ -528,7 +528,8 @@ ci_e2e() {
     [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "e2e-cut needs the caller's IPv4 address"
     local rule=(INPUT -s "$ip" -p tcp -m multiport --dports "80,443" -j REJECT --reject-with tcp-reset)
     # The timer comes first: it removes the rule even if the caller never returns.
-    systemd-run --quiet --on-active="$secs" iptables -D "${rule[@]}"
+    # A timer may fire up to 1 min late by default (AccuracySec).
+    systemd-run --quiet --on-active="$secs" --timer-property=AccuracySec=100ms iptables -D "${rule[@]}"
     iptables -I "${rule[@]}"
     echo "connections from $ip to ports 80 and 443 are reset for ${secs}s"
   elif [[ "$request" =~ ^e2e-recordings\ ([0-9]{1,12})$ ]]; then

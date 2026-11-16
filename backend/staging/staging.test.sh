@@ -386,7 +386,7 @@ cut() { # e2e-cut, called from 203.0.113.7
 : >"$CALLS"
 expect_ok "e2e-cut cuts the caller" cut 20
 rule="INPUT -s 203.0.113.7 -p tcp -m multiport --dports 80,443 -j REJECT --reject-with tcp-reset"
-if [[ "$(cat "$CALLS")" == "systemd-run --quiet --on-active=20 iptables -D $rule"$'\n'"iptables -I $rule" ]]; then
+if [[ "$(cat "$CALLS")" == "systemd-run --quiet --on-active=20 --timer-property=AccuracySec=100ms iptables -D $rule"$'\n'"iptables -I $rule" ]]; then
   pass "the cut gets its timer first, then the rule, for the caller's IP only"
 else
   fail "the cut gets its timer first, then the rule, for the caller's IP only: $(cat "$CALLS")"
