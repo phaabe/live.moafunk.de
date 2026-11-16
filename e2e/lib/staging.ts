@@ -149,7 +149,13 @@ export async function bookSlot(page: Page, start: Date, end: Date): Promise<numb
   await page.getByLabel('Date').fill(from.date);
   await page.getByLabel('Start time').fill(from.time);
   await page.getByLabel('End time').fill(endTime);
+  const booked = page.waitForResponse(
+    (r) => r.url().endsWith('/episodes') && r.request().method() === 'POST'
+  );
   await page.getByRole('button', { name: 'Book slot' }).click();
+  // A refused booking (a taken slot) keeps the form open: fail now, not at the test timeout.
+  const res = await booked;
+  if (!res.ok()) throw new Error(`booking refused (${res.status()}): ${await res.text()}`);
   await page.waitForURL(/#\/shows\/\d+$/);
   return Number(page.url().match(/#\/shows\/(\d+)$/)![1]);
 }
@@ -158,4 +164,22 @@ export async function bookSlot(page: Page, start: Date, end: Date): Promise<numb
 export async function deleteShow(page: Page, showId: number, episodes: number[]): Promise<void> {
   for (const id of episodes) await page.request.delete(`/api/shows/${id}`);
   await page.request.delete(`/api/show-templates/${showId}`);
+}
+
+/**
+ * Delete the e2e Shows of an earlier run whose clean-up failed: their slots
+ * block this run's bookings. Runs never overlap (concurrency group
+ * staging-box), so every e2e Show here is a leftover.
+ */
+export async function deleteLeftovers(page: Page): Promise<void> {
+  const res = await page.request.get('/api/series');
+  if (!res.ok()) throw new Error(`GET /api/series: ${res.status()}`);
+  const { series } = (await res.json()) as { series: { id: number; slug: string; name: string }[] };
+  for (const s of series.filter((x) => x.name.startsWith('e2e-'))) {
+    const detail = await page.request.get(`/api/series/${encodeURIComponent(s.slug)}`);
+    if (!detail.ok()) throw new Error(`GET /api/series/${s.slug}: ${detail.status()}`);
+    const { episodes } = (await detail.json()) as { episodes: { id: number }[] };
+    console.log(`deleting the leftover Show ${s.name} and ${episodes.length} episode(s)`);
+    await deleteShow(page, s.id, episodes.map((e) => e.id));
+  }
 }

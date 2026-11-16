@@ -10,6 +10,7 @@ import {
   createShow,
   bookSlot,
   deleteShow,
+  deleteLeftovers,
   nextMinute,
   toneBack,
 } from '../lib/staging';
@@ -33,6 +34,7 @@ let episode: number | null = null;
 test.beforeAll(async ({ browser }) => {
   page = await browser.newPage();
   await login(page);
+  await deleteLeftovers(page);
 });
 
 test.afterAll(async () => {
