@@ -18,7 +18,6 @@ These lists answer "which paths must go through the new rule". A leaf that chang
 | Stop | `POST /api/stream/stop` → `stream_ws.rs::stream_stop` :386 | Login-only; runs `finalize_and_upload`. |
 | Manual finalize | `GET /ws/recording/finalize` → `handlers/recording.rs::run_finalize` :1357 | Merges tracks into `final.mp3`. |
 | Re-export | `POST /api/shows/:id/recordings/reexport`, CLI `reexport-archive` (`main.rs` :331) → `handlers/recording.rs::reexport_to_archive` :918 | |
-| Rehearsal loopback | `GET /ws/stream-test` → `handlers/stream_test_ws.rs` | Does not touch Icecast; out of admission scope. |
 
 ### Schedule mutations (B2.2.3)
 

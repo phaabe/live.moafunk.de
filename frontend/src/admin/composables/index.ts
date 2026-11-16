@@ -73,7 +73,6 @@ export {
 } from './useOverlayRenderer';
 export { useHostFlow, type FlowStep, type UploadMode, type UploadProgress } from './useHostFlow';
 export { useShowPhase, type ShowPhase, type PhaseSource } from './useShowPhase';
-export { useStreamTest, type StreamTestState, type UseStreamTestOptions } from './useStreamTest';
 export {
   useShowWizard,
   type WizardMode,
