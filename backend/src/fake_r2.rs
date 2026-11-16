@@ -97,6 +97,23 @@ fn path(state: &AppState, key: &str) -> String {
     format!("{}/{key}", state.config.r2_bucket_name)
 }
 
+/// `%XX` escapes decoded, as the SDK sends keys with spaces.
+fn decode(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            out.push(u8::from_str_radix(&path[i + 1..i + 3], 16).unwrap());
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
+
 fn xml(status: StatusCode, body: String) -> Response {
     (status, [("content-type", "application/xml")], body).into_response()
 }
@@ -140,7 +157,7 @@ async fn fake_r2_request(
     body: Bytes,
 ) -> Response {
     // Path style: /<bucket>/<key>
-    let key = uri.path().trim_start_matches('/').to_string();
+    let key = decode(uri.path().trim_start_matches('/'));
     let query: HashMap<String, String> =
         serde_urlencoded::from_str(uri.query().unwrap_or("")).unwrap();
     r2.requests.lock().unwrap().push(format!("{method} {key}"));
@@ -210,8 +227,8 @@ async fn fake_r2_request(
     match method {
         Method::PUT => {
             if let Some(source) = headers.get("x-amz-copy-source") {
-                let source = source.to_str().unwrap().trim_start_matches('/');
-                let Some(data) = objects.get(source).cloned() else {
+                let source = decode(source.to_str().unwrap().trim_start_matches('/'));
+                let Some(data) = objects.get(&source).cloned() else {
                     return error(StatusCode::NOT_FOUND, "NoSuchKey");
                 };
                 objects.insert(key, data);

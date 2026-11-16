@@ -623,6 +623,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "pending_submissions", "peaks_json_track1", "TEXT").await?;
     add_column_if_missing(pool, "pending_submissions", "peaks_json_track2", "TEXT").await?;
     add_column_if_missing(pool, "pending_submissions", "peaks_json_voice", "TEXT").await?;
+    // The artist a finalize created, so a second finalize creates none.
+    add_column_if_missing(pool, "pending_submissions", "artist_id", "INTEGER").await?;
 
     // Clean up expired pending file uploads
     sqlx::query("DELETE FROM pending_file_uploads WHERE expires_at < datetime('now')")

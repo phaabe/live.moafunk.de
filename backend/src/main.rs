@@ -41,6 +41,8 @@ mod scheduler_tests;
 mod series_tests;
 #[cfg(test)]
 mod stream_system_tests;
+#[cfg(test)]
+mod submit_download_tests;
 
 use axum::{
     extract::{DefaultBodyLimit, Query, State, WebSocketUpgrade},
@@ -755,10 +757,6 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/artists/:id/download/pdf",
             get(handlers::download::download_artist_pdf),
-        )
-        .route(
-            "/shows/:id/download",
-            get(handlers::download::download_show),
         )
         .route(
             "/shows/:id/download/:package",

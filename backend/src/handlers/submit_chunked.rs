@@ -401,7 +401,8 @@ pub async fn submit_init(
     .bind(&pic_key)
     .bind(&pic_cropped_key)
     .bind(&pic_overlay_key)
-    .bind(expires_at.to_rfc3339())
+    // SQLite's own format, so `expires_at > datetime('now')` compares right.
+    .bind(expires_at.format("%Y-%m-%d %H:%M:%S").to_string())
     .execute(&state.db)
     .await?;
 
@@ -695,7 +696,10 @@ pub async fn submit_finalize(
         ));
     }
 
-    // Insert artist record with 'processing' status - files will be moved in background
+    // Insert artist record with 'processing' status - files will be moved in background.
+    // The session is claimed in the same transaction, so a second finalize
+    // (a double click, a retry) creates no second artist.
+    let mut tx = state.db.begin().await?;
     let result = sqlx::query(
         r#"
         INSERT INTO artists (
@@ -718,10 +722,39 @@ pub async fn submit_finalize(
     .bind(&upcoming_events)
     .bind(&mentions)
     .bind(&music_description)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
 
     let artist_id = result.last_insert_rowid();
+    let claimed = sqlx::query(
+        "UPDATE pending_submissions SET artist_id = ? WHERE session_id = ? AND artist_id IS NULL",
+    )
+    .bind(artist_id)
+    .bind(&session_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        == 1;
+    if !claimed {
+        tx.rollback().await?;
+        let first: Option<i64> =
+            sqlx::query_scalar("SELECT artist_id FROM pending_submissions WHERE session_id = ?")
+                .bind(&session_id)
+                .fetch_optional(&state.db)
+                .await?
+                .flatten();
+        tracing::info!(
+            "Chunked upload: session_id={} is already finalized, artist_id={:?}",
+            session_id,
+            first
+        );
+        return Ok(Json(FinalizeResponse {
+            success: true,
+            message: "Thank you for your submission! We'll be in touch soon.".to_string(),
+            artist_id: first,
+        }));
+    }
+    tx.commit().await?;
 
     tracing::info!(
         "Chunked upload: created artist record, artist_id={}, session_id={}, starting background processing",
@@ -1127,6 +1160,10 @@ pub async fn submit_file_chunk_init(
         )));
     }
 
+    if req.total_size > state.config.max_file_size_bytes() {
+        return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
+    }
+
     // Generate file-specific session ID
     let file_session_id = Uuid::new_v4().to_string();
     let expires_at = chrono::Utc::now() + chrono::Duration::hours(2);
@@ -1147,7 +1184,7 @@ pub async fn submit_file_chunk_init(
     .bind(req.total_size as i64)
     .bind(req.total_chunks as i32)
     .bind(&req.peaks)
-    .bind(expires_at.to_rfc3339())
+    .bind(expires_at.format("%Y-%m-%d %H:%M:%S").to_string())
     .execute(&state.db)
     .await?;
 
@@ -1186,18 +1223,20 @@ pub async fn submit_file_chunk(
     );
 
     // Verify file session exists
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM pending_file_uploads WHERE file_session_id = ? AND field = ? AND expires_at > datetime('now'))"
+    let total_chunks: i32 = sqlx::query_scalar(
+        "SELECT total_chunks FROM pending_file_uploads WHERE file_session_id = ? AND field = ? AND expires_at > datetime('now')"
     )
     .bind(&file_session_id)
     .bind(field_name)
-    .fetch_one(&state.db)
-    .await?;
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("File upload session not found or expired".to_string()))?;
 
-    if !exists {
-        return Err(AppError::NotFound(
-            "File upload session not found or expired".to_string(),
-        ));
+    if chunk_index >= total_chunks as u32 {
+        return Err(AppError::Validation(format!(
+            "Chunk index {} exceeds total chunks {}",
+            chunk_index, total_chunks
+        )));
     }
 
     // Get chunk data from multipart
@@ -1221,6 +1260,9 @@ pub async fn submit_file_chunk(
         chunk_data.ok_or_else(|| AppError::Validation("No chunk data provided".to_string()))?;
 
     let received_bytes = chunk_data.len();
+    if received_bytes as u64 > state.config.max_file_size_bytes() {
+        return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
+    }
 
     // Store chunk in S3 with temporary key
     let chunk_key = format!(
@@ -1304,6 +1346,10 @@ pub async fn submit_file_chunk_finalize(
             .into_bytes();
 
         assembled_data.extend_from_slice(&chunk_bytes);
+        // The client chose the chunk count, so stop as soon as the file is too large.
+        if assembled_data.len() as u64 > state.config.max_file_size_bytes() {
+            return Err(AppError::FileTooLarge(state.config.max_file_size_mb));
+        }
     }
 
     tracing::info!(
