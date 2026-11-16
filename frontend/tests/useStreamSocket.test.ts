@@ -425,4 +425,36 @@ describe('useStreamSocket auto-reconnect', () => {
     expect(stream.state.value).toBe('disconnected');
     expect(stream.reconnectAttempts.value).toBe(0);
   });
+
+  it('stopStream() reports the disconnect at once, and only once', async () => {
+    const onDisconnected = vi.fn();
+    stream = useStreamSocket({ onDisconnected });
+    await startLive();
+
+    stream.stopStream();
+    expect(onDisconnected).toHaveBeenCalledTimes(1);
+    sockets[0].drop(1000);
+    expect(onDisconnected).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stopped soundcheck's late close leaves the Go Live connection alone", async () => {
+    await startLive(false, undefined, true);
+    stream.stopStream();
+
+    // Go Live takes over the callbacks before the soundcheck's close arrives.
+    const onDisconnected = vi.fn();
+    stream = useStreamSocket({ onDisconnected });
+    const connected = stream.connect(false, 42);
+    goLive(sockets[1]);
+    await connected;
+    sockets[0].drop(1000);
+
+    expect(onDisconnected).not.toHaveBeenCalled();
+    expect(stream.state.value).toBe('live');
+    // Its pings go on, and a drop still reconnects.
+    vi.advanceTimersByTime(2000);
+    expect(sockets[1].sent.some((m) => typeof m === 'string' && m.startsWith('ping:'))).toBe(true);
+    sockets[1].drop();
+    expect(stream.state.value).toBe('connecting');
+  });
 });

@@ -309,22 +309,27 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
       const qs = params.toString();
       const wsUrl = `${protocol}//${window.location.host}/ws/stream${qs ? `?${qs}` : ''}`;
 
-      socket = new WebSocket(wsUrl);
-      socket.binaryType = 'arraybuffer';
+      // A socket that was stopped or replaced (a soundcheck that just ended)
+      // still fires events; they must not touch the current connection.
+      const ws = new WebSocket(wsUrl);
+      socket = ws;
+      ws.binaryType = 'arraybuffer';
       bytesQueued = 0;
       rttMs = null;
       serverStats = { chunks: 0, bytes: 0, late: 0 };
 
-      socket.onopen = () => {
+      ws.onopen = () => {
+        if (ws !== socket) return;
         console.log('[StreamSocket] Connected');
-        if (socket) bytesQueued += resumeWebm(socket, resumeHeader, resumeId);
+        bytesQueued += resumeWebm(ws, resumeHeader, resumeId);
         state.value = 'connected';
         startPings();
         currentCallbacks.onConnected?.();
         resolve();
       };
 
-      socket.onmessage = (event) => {
+      ws.onmessage = (event) => {
+        if (ws !== socket) return;
         const msg = event.data;
         if (msg === 'connected') {
           state.value = 'live';
@@ -352,15 +357,18 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
         }
       };
 
-      socket.onerror = () => {
+      ws.onerror = () => {
         console.error('[StreamSocket] Connection error');
-        error.value = 'Connection error';
-        state.value = 'error';
+        if (ws === socket) {
+          error.value = 'Connection error';
+          state.value = 'error';
+        }
         reject(new Error('Connection error'));
       };
 
-      socket.onclose = (event) => {
+      ws.onclose = (event) => {
         console.log('[StreamSocket] Closed:', event.code, event.reason);
+        if (ws !== socket) return;
         stopPings();
         const wasLive = state.value === 'live';
         // Consumed here; set again below only if another attempt is scheduled.
@@ -422,6 +430,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
    * Use this ONLY for the explicit "Stop Streaming" user action.
    */
   function stopStream() {
+    const hadSocket = socket !== null;
     stopPings();
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
@@ -444,6 +453,8 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
     error.value = null;
+    // The socket's own close event is ignored from here on (see connect).
+    if (hadSocket) currentCallbacks.onDisconnected?.();
   }
 
   /**
@@ -451,6 +462,7 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
    * The stream continues on the backend until explicitly stopped.
    */
   function cleanup() {
+    const hadSocket = socket !== null;
     stopPings();
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
@@ -471,6 +483,8 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
     reconnectAttempts.value = 0;
     state.value = 'disconnected';
     error.value = null;
+    // The socket's own close event is ignored from here on (see connect).
+    if (hadSocket) currentCallbacks.onDisconnected?.();
   }
 
   /**
