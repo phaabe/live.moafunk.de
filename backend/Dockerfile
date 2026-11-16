@@ -40,6 +40,9 @@ ARG VITE_STREAM_STATUS_URL=""
 ENV VITE_STREAM_ICECAST_LIVE_URL=$VITE_STREAM_ICECAST_LIVE_URL \
     VITE_STREAM_ICECAST_TEST_URL=$VITE_STREAM_ICECAST_TEST_URL \
     VITE_STREAM_STATUS_URL=$VITE_STREAM_STATUS_URL
+# The build serves the committed flow check results at /flow-sync.json, so a
+# failing check must stop the image. CI=true: compare results, never write them.
+RUN CI=true npx vitest run
 RUN npm run build
 
 # Runtime stage
