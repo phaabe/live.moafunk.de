@@ -91,15 +91,17 @@ export async function listen(seconds: number): Promise<Heard | null> {
  */
 export async function toneBack(withinS: number): Promise<number> {
   const start = Date.now();
+  let took = 0;
+  let last: Heard | null = null;
   for (;;) {
-    const heard = await listen(3);
-    if (heard && heard.meanDb > TONE_DB) break;
-    const waited = (Date.now() - start) / 1000;
-    expect(waited, `no tone on /live.mp3 (last ${heard?.meanDb ?? 'unreachable'} dB)`).toBeLessThan(
+    // The time a listen starts: a 3 s window with the tone had it from about then.
+    took = (Date.now() - start) / 1000;
+    expect(took, `no tone on /live.mp3 (last ${last?.meanDb ?? 'unreachable'} dB)`).toBeLessThan(
       withinS
     );
+    last = await listen(3);
+    if (last && last.meanDb > TONE_DB) break;
   }
-  const took = (Date.now() - start) / 1000;
   const heard = await listen(5);
   expect(heard?.meanDb, 'the tone stays on /live.mp3').toBeGreaterThan(TONE_DB);
   expect(heard!.maxDb - heard!.meanDb, 'a click on /live.mp3').toBeLessThan(CLICK_DB);

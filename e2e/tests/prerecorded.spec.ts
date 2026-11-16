@@ -37,7 +37,10 @@ test('an uploaded set starts by itself and is published', async () => {
   await test.step('create a Show, upload a set, book it a minute ahead', async () => {
     show = await createShow(page, `e2e-${RUN}-set`);
     await page.locator('a, button').filter({ hasText: /^Book Slot$/ }).click();
-    await page.getByLabel('Pre-recorded').check();
+    // The radio switches the page to ?mode=prerecorded; check() would wait for
+    // the old radio forever.
+    await page.getByLabel('Pre-recorded').click();
+    await page.waitForURL(/mode=prerecorded/);
     await page.locator('input[type=file]').setInputFiles(SET_MP3);
     await expect(page.getByText(/· uploaded/)).toBeVisible({ timeout: 60_000 });
     episode = await bookSlot(page, start, end);
