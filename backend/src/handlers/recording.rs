@@ -1389,6 +1389,16 @@ pub async fn reexport_to_archive(
     let _ = tokio::fs::remove_file(&temp_path).await;
     let archive_key = publish?;
 
+    // The row's archive key is what the API offers as the download.
+    if let Err(e) = crate::db::set_recording_archive_key(&state.db, version.id, &archive_key).await
+    {
+        tracing::error!(
+            "Re-export: failed to store archive key on version {}: {}",
+            version.id,
+            e
+        );
+    }
+
     // The capture is a complete raw recording — clear any stale `failed` status so
     // it stops counting as a missing archive (the dead-man's-switch).
     if version.status == "failed" {

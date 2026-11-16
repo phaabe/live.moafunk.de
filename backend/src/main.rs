@@ -30,6 +30,10 @@ mod booking_tests;
 #[cfg(test)]
 mod broadcast_tests;
 #[cfg(test)]
+mod fake_r2;
+#[cfg(test)]
+mod recording_tests;
+#[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
 mod scheduler_tests;
