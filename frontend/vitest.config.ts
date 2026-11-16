@@ -15,8 +15,10 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     coverage: {
-      provider: 'v8',
-      reporter: ['text', 'html', 'json', 'json-summary'],
+      // istanbul, not v8: v8 in vitest 1.6 counts every CSS and template line of .vue files.
+      provider: 'istanbul',
+      reporter: ['text', 'html', 'json', 'json-summary', 'lcov'],
+      include: ['src/**'],
       exclude: [
         'node_modules/',
         'dist/',

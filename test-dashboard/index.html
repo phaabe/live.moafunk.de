@@ -247,7 +247,7 @@
     return svg;
   }
 
-  function coverageCard(summary, history, key, label, tool) {
+  function coverageCard(summary, history, key, label, tool, note) {
     const points = [];
     for (const s of history) {
       const v = s.coverage?.[key];
@@ -264,7 +264,8 @@
       el('div', { class: 'meter', role: 'img', 'aria-label': pct != null ? `${pct}% of lines run by tests` : 'Not measured yet' },
         el('span', { style: `width: ${pct ?? 0}%` })),
       points.length > 1 ? spark(points.slice(-TREND)) : null,
-      el('p', { class: 'small' }, `Share of ${tool}. Measured on each push to staging${points.length > 1 ? '' : '; the trend shows after the next runs'}.`));
+      el('p', { class: 'small' }, `Share of ${tool}. Measured on each push to staging${points.length > 1 ? '' : '; the trend shows after the next runs'}.`),
+      note ? el('p', { class: 'small' }, note) : null);
   }
 
   function facts(level) {
@@ -331,8 +332,9 @@
       if (summary.run) sub.append(` from the ${summary.run.event} run on `, el('a', { href: summary.run.url }, summary.run.sha.slice(0, 7)), '.');
       document.getElementById('cells').append(...levels.map(cell));
       document.getElementById('coverage').append(
-        coverageCard(summary, history, 'rust', 'Rust backend', 'backend lines that cargo test runs (L1 and L3), with cargo llvm-cov'),
-        coverageCard(summary, history, 'frontend', 'Frontend', 'frontend lines that vitest runs (L1 and L2), with vitest v8 coverage'));
+        coverageCard(summary, history, 'rust', 'Rust backend', 'backend lines that cargo test runs (L1 and L3), with cargo llvm-cov',
+          'The number still includes the inline #[cfg(test)] test code.'),
+        coverageCard(summary, history, 'frontend', 'Frontend', 'frontend lines that vitest runs (L1 and L2), with vitest istanbul coverage'));
       document.getElementById('levels').append(...levels.map((l) => card(l, history)));
     })
     .catch((err) => {
