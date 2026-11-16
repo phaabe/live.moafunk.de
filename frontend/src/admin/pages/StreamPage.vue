@@ -54,7 +54,7 @@ const statusText = computed(() => {
       return audioCapture.isCapturing.value ? 'Audio Ready' : 'Disconnected';
     case 'connecting':
       if (streamSocket.reconnectAttempts.value > 0) {
-        return `Reconnecting (${streamSocket.reconnectAttempts.value}/${streamSocket.maxReconnectAttempts})...`;
+        return `Reconnecting (attempt ${streamSocket.reconnectAttempts.value})...`;
       }
       return 'Connecting...';
     case 'connected':

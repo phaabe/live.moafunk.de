@@ -32,7 +32,7 @@ fi
 echo ""
 echo ">>> Step 2/2: R2 Media Backup"
 echo ""
-if ! "$SCRIPT_DIR/backup-r2.sh" $FULL_BACKUP; then
+if ! "$SCRIPT_DIR/backup-r2.sh" ${FULL_BACKUP:+"$FULL_BACKUP"}; then
     echo ""
     echo "⚠ R2 backup failed!"
     ERRORS=$((ERRORS + 1))

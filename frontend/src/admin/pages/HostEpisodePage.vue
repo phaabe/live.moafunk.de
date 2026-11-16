@@ -72,6 +72,14 @@ const ended = computed(() => {
   );
 });
 
+/** The booked set as the flow writes it: "brunchtime-0811.mp3 · 1:58:40". */
+const setFile = computed(() => {
+  const name = show.value?.prerecorded_filename;
+  const length = show.value?.prerecorded_duration_secs;
+  if (!name) return '';
+  return length ? `${name} · ${setLength(length)}` : name;
+});
+
 type Pill = { state: 'ok' | 'processing' | 'failed'; text: string };
 const pill = computed<Pill>(() => {
   const s = show.value;
@@ -264,15 +272,9 @@ async function publish() {
       <p class="text">
         Nothing to do. The set plays at air time. Wrap-up opens after {{ show.end_time }}.
       </p>
-      <AudioPlayer
-        v-if="show.prerecorded_url"
-        :src="show.prerecorded_url"
-        :label="
-          show.prerecorded_duration_secs
-            ? `${show.prerecorded_filename} · ${setLength(show.prerecorded_duration_secs)}`
-            : (show.prerecorded_filename ?? '')
-        "
-      />
+      <!-- The player shows no file name, and 0:00 until its first Play. -->
+      <p v-if="setFile" class="set-file">{{ setFile }}</p>
+      <AudioPlayer v-if="show.prerecorded_url" :src="show.prerecorded_url" />
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
       <div class="actions">
         <BaseButton variant="secondary" :disabled="!show.series_slug" @click="replaceFile">
@@ -364,6 +366,11 @@ async function publish() {
 
 .pill.failed {
   border-color: var(--color-error);
+}
+
+.set-file {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .actions {

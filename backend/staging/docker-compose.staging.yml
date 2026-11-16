@@ -1,0 +1,49 @@
+# Staging stack on its own server (staging.live.moafunk.de). Same images and
+# ports as production, but own data, own R2 buckets and own stream passwords.
+# Start and stop it with staging.sh: it checks the env files first.
+name: unheard-staging
+
+services:
+  api:
+    image: "ghcr.io/phaabe/live.moafunk.de-backend:${STAGING_TAG:?set STAGING_TAG to a sha-* tag}"
+    container_name: unheard-api-staging
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    # Same as production: the API is bridge-networked, the stream chain is
+    # host-networked, so the API reaches the harbor via the host gateway.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    environment:
+      - TZ=Europe/Berlin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Production's moafunk.liq, unchanged: harbor 8005 -> Icecast 8010.
+  liquidsoap:
+    image: savonet/liquidsoap:v2.4.4
+    pull_policy: missing
+    container_name: moafunk-liquidsoap-staging
+    restart: unless-stopped
+    network_mode: host
+    env_file: ./stream.env
+    volumes:
+      - ./moafunk.liq:/moafunk.liq:ro
+    command: ["liquidsoap", "/moafunk.liq"]
+
+  # The production Icecast-KH image, built on the box by staging.sh setup.
+  icecast:
+    image: moafunk/icecast-kh:kh22
+    pull_policy: never
+    container_name: moafunk-icecast-staging
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./icecast.xml:/etc/moafunk/icecast.xml:ro

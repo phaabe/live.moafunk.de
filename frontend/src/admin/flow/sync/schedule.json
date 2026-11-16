@@ -1,0 +1,25 @@
+{
+  "screen": "schedule",
+  "hash": "dc7292f1",
+  "status": "ok",
+  "leftOut": [
+    {
+      "item": "h2: Free slots",
+      "release": "R3"
+    },
+    {
+      "item": "row: So 01.11. · 12:00–14:00 | Free",
+      "release": "R3"
+    },
+    {
+      "item": "row: So 15.11. · 12:00–14:00 | Free",
+      "release": "R3"
+    },
+    {
+      "item": "nav: Pool",
+      "release": "UNHEARD"
+    }
+  ],
+  "missing": [],
+  "extra": []
+}

@@ -155,6 +155,24 @@ describe('useAudioCapture recording', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it('marks the first chunk of each new recorder', async () => {
+    const onData = vi.fn();
+    const capture = useAudioCapture({ onData });
+    await capture.captureDevice('mic');
+    capture.startRecording();
+    FakeMediaRecorder.instances[0].emit(1);
+    FakeMediaRecorder.instances[0].emit(2);
+    capture.restartRecording();
+    FakeMediaRecorder.instances[1].emit(3);
+    await vi.runAllTimersAsync();
+
+    expect(onData.mock.calls.map(([data, first]) => [data.byteLength, first])).toEqual([
+      [1, true],
+      [2, false],
+      [3, true],
+    ]);
+  });
+
   it('does not report a recorder that was stopped in time', async () => {
     const onError = vi.fn();
     const capture = useAudioCapture({ onError, onData: vi.fn() });

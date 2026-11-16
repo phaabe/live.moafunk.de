@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores/auth';
 import { hostPage } from '../hostPage';
 import { currentReplaceTarget } from '../replaceFile';
 import type { ShowDetail, User } from '../api';
+import { expectFlow } from '../flow/expectFlow';
 
 // jsdom does not implement font loading used by the composables barrel.
 vi.hoisted(() => {
@@ -20,17 +21,18 @@ vi.hoisted(() => {
   Object.defineProperty(document, 'fonts', { value: { add() {} }, configurable: true });
 });
 
-// Today's show page and the waveform player have their own tests.
+// Today's show page has its own tests.
 vi.mock('../pages/ShowDetailPage.vue', () => ({
   __esModule: true,
   default: { render: () => h('div', "Today's show page") },
 }));
+// Like the real player: no file name, and 0:00 until its first Play.
 vi.mock('../components/AudioPlayer.vue', () => ({
   __esModule: true,
   default: {
-    props: ['src', 'label'],
-    render(this: { label: string }) {
-      return h('div', { class: 'audio-player' }, `Waveform · ${this.label}`);
+    props: ['src'],
+    render(this: { src: string }) {
+      return h('div', { class: 'audio-player', 'data-src': this.src }, 'Waveform 0:00 / 0:00');
     },
   },
 }));
@@ -242,7 +244,7 @@ describe('Episode · Pre-recorded', () => {
       'Pre-recorded & confirmed · plays at 12:00',
       'Next step',
       'Nothing to do. The set plays at air time. Wrap-up opens after 14:00.',
-      'Waveform · brunchtime-0811.mp3 · 1:58:40',
+      'brunchtime-0811.mp3 · 1:58:40',
       'Replace file',
       'Open Wrap-up',
     ]) {
@@ -252,6 +254,25 @@ describe('Episode · Pre-recorded', () => {
       expect(text()).not.toContain(part);
     }
     expect(button('Open Wrap-up').disabled).toBe(true);
+  });
+
+  it('names the booked set and its length next to the player', async () => {
+    current = prerecorded();
+    await mount();
+    expect(root.querySelector('.set-file')?.textContent).toBe('brunchtime-0811.mp3 · 1:58:40');
+    expect(root.querySelector('.audio-player')?.getAttribute('data-src')).toBe(
+      'https://r2.example/brunchtime-0811.mp3'
+    );
+  });
+
+  it.each([
+    ['no length', { prerecorded_duration_secs: null }, 'brunchtime-0811.mp3', true],
+    ['no file link', { prerecorded_url: undefined }, 'brunchtime-0811.mp3 · 1:58:40', false],
+  ])('names the set with %s', async (_name, overrides, line, player) => {
+    current = prerecorded(overrides);
+    await mount();
+    expect(root.querySelector('.set-file')?.textContent).toBe(line);
+    expect(!!root.querySelector('.audio-player')).toBe(player);
   });
 
   it('opens Upload Your Set to replace the file of this episode', async () => {
@@ -381,5 +402,57 @@ describe('who sees what', () => {
     app?.unmount();
     await mount('host', 7);
     await vi.waitFor(() => expect(text()).toContain("Today's show page"));
+  });
+});
+
+describe('flow', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const recordingReady: ShowDetail['latest_recording'] = {
+    id: 1,
+    version: 'v1',
+    status: 'raw',
+    duration_ms: 7120000,
+    download_url: 'https://r2.example/v1.mp3',
+  };
+
+  it('Episode matches the flow', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T10:00:00Z'));
+    current = episode({ date: '2026-10-25' });
+    await mount();
+    await expectFlow('episode', root);
+  });
+
+  it('Episode · Pre-recorded matches the flow', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-01T10:00:00Z'));
+    current = episode({
+      date: '2026-11-08',
+      stream_mode: 'prerecorded',
+      prerecorded_filename: 'brunchtime-0811.mp3',
+      prerecorded_url: 'https://r2.example/brunchtime-0811.mp3',
+      prerecorded_duration_secs: 7120,
+      prerecorded_confirmed_at: '2026-11-01T10:00:00Z',
+    });
+    await mount();
+    await expectFlow('episode-pre', root);
+  });
+
+  it('Wrap-up matches the flow', async () => {
+    current = episode({
+      date: PAST,
+      episode_status: 'wrapup_open',
+      latest_recording: recordingReady,
+    });
+    await mount();
+    await expectFlow('wrapup', root);
+  });
+
+  it('Published matches the flow', async () => {
+    current = episode({ date: PAST, episode_status: 'finished', latest_recording: recordingReady });
+    await mount();
+    await expectFlow('done', root);
   });
 });

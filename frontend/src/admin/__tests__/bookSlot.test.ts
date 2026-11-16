@@ -7,6 +7,7 @@ import BookSlotPage from '../pages/BookSlotPage.vue';
 import { openReplaceFile } from '../replaceFile';
 import { setLength, slotDate } from '../episodeRow';
 import type { Series, SeriesSlot } from '../api';
+import { expectFlow } from '../flow/expectFlow';
 
 function series(slug: string, name: string): Series {
   return {
@@ -36,12 +37,15 @@ let slots: SeriesSlot[];
 let slotLoads: number;
 let requests: { url: string; method: string; body: unknown }[];
 let bookResponse: () => Response;
+/** File name the upload finalize answers with. */
+let setName: string;
 
 beforeEach(() => {
   slots = [slot('2026-10-25'), slot('2026-11-01')];
   slotLoads = 0;
   requests = [];
   bookResponse = () => Response.json({ id: 77 }, { status: 201 });
+  setName = 'set.mp3';
   root = document.createElement('div');
   document.body.appendChild(root);
   vi.stubGlobal(
@@ -63,7 +67,7 @@ beforeEach(() => {
       if (url.startsWith('/api/series/brunchtime/upload/chunk/s1'))
         return Response.json({ index: 0 });
       if (url === '/api/series/brunchtime/upload/finalize/s1')
-        return Response.json({ upload_id: 's1', filename: 'set.mp3', duration: 7120 });
+        return Response.json({ upload_id: 's1', filename: setName, duration: 7120 });
       if (url === '/api/shows/43/prerecorded') return Response.json({ id: 43 });
       throw new Error(`Unexpected API request: ${method} ${url}`);
     })
@@ -301,5 +305,19 @@ describe('Book Slot formats', () => {
     expect(slotDate('2026-10-25')).toBe('So 25.10.2026');
     expect(setLength(7120)).toBe('1:58:40');
     expect(setLength(3520)).toBe('58:40');
+  });
+});
+
+describe('flow', () => {
+  it('Book Slot matches the flow', async () => {
+    await mount('/shows/brunchtime/book');
+    await expectFlow('book-slot', root);
+  });
+
+  it('Upload Your Set matches the flow', async () => {
+    setName = 'brunchtime-0811.mp3';
+    await mount('/shows/brunchtime/book?mode=prerecorded');
+    await uploadSet();
+    await expectFlow('upload', root);
   });
 });

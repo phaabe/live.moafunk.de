@@ -14,7 +14,7 @@
     "format": "prettier --write \"src/**/*.{ts,js,html,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,js,html,css}\"",
     "generate:html": "node scripts/generate-html.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
     "@vuepic/vue-datepicker": "^12.1.0",
@@ -39,7 +39,8 @@
     "prettier": "^3.1.1",
     "typescript": "^5.3.3",
     "vite": "^5.0.10",
-    "vitest": "^1.1.0"
+    "vitest": "^1.1.0",
+    "vue-tsc": "^3.3.14"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -1,0 +1,31 @@
+{
+  "screen": "studio-onair",
+  "state": "reconnecting",
+  "hash": "b0b2f0e3",
+  "status": "drift",
+  "leftOut": [
+    {
+      "item": "h2: Moments",
+      "release": "R4"
+    },
+    {
+      "item": "button: Mark moment",
+      "release": "R4"
+    },
+    {
+      "item": "row: 00:12:30 | Opening track",
+      "release": "R4"
+    },
+    {
+      "item": "row: 00:31:05 | Guest talk",
+      "release": "R4"
+    }
+  ],
+  "missing": [
+    "row: Connection | stable"
+  ],
+  "extra": [
+    "notice: The connection was down for more than 10 minutes. The recording misses some audio.",
+    "row: Connection | reconnecting…"
+  ]
+}

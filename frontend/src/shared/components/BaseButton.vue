@@ -1,6 +1,6 @@
 <script setup lang="ts">
 interface Props {
-  variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'success';
   size?: 'sm' | 'md' | 'lg';
   disabled?: boolean;
   loading?: boolean;
@@ -78,6 +78,15 @@ defineEmits<{
 
 .variant-danger:hover:not(:disabled) {
   background-color: #dc2626;
+}
+
+.variant-success {
+  background-color: var(--color-success);
+  color: var(--color-primary-text);
+}
+
+.variant-success:hover:not(:disabled) {
+  filter: brightness(1.1);
 }
 
 .variant-ghost {

@@ -8,6 +8,7 @@ import { episodeDay, episodeTarget } from '../episodeRow';
 import ShowCreatePage from '../pages/ShowCreatePage.vue';
 import ShowSeriesPage from '../pages/ShowSeriesPage.vue';
 import type { SeriesDetail, User } from '../api';
+import { expectFlow } from '../flow/expectFlow';
 
 // The wizard has its own tests; here it only has to be the admin page.
 vi.mock('../pages/ShowWizard.vue', () => ({
@@ -253,5 +254,19 @@ describe('Show page', () => {
   it("sends a host away from another host's show", async () => {
     const router = await mount('host', '/shows/someone-else');
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows'));
+  });
+});
+
+describe('flow', () => {
+  it('New Show matches the flow', async () => {
+    await mount('host', '/shows/new');
+    await vi.waitFor(() => expect(root.textContent).toContain('New Show'));
+    await expectFlow('new-show', root);
+  });
+
+  it('Show matches the flow', async () => {
+    await mount('host', '/shows/brunchtime');
+    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(3));
+    await expectFlow('show', root);
   });
 });

@@ -6,13 +6,13 @@ on:
       - main
       - dev/312-interim
       - dev/streaming-architecture
-      - dev/flow
+      - staging
   push:
     branches:
       - main
       - dev/312-interim
       - dev/streaming-architecture
-      - dev/flow
+      - staging
 
 # Both checks must exist for every PR, including documentation-only changes.
 # Keep path filters out of this workflow so these names can be required.
@@ -61,6 +61,15 @@ jobs:
       - name: Run Clippy
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo clippy --locked --all-targets
+
+      - name: Check the shell scripts (shellcheck)
+        if: ${{ !cancelled() }}
+        working-directory: .
+        # Pinned, so a runner image update cannot change the findings.
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.sh' ':!:.claude/' ':!:.codex/' |
+            xargs -0 pipx run --spec shellcheck-py==0.10.0.1 shellcheck -S warning
 
   frontend:
     name: frontend-ci

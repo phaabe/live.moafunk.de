@@ -1,18 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   liveStreamShowId,
+  MAX_PENDING_CHUNKS,
   parsePong,
   useStreamSocket,
+  webmHeaderLength,
 } from '../src/admin/composables/useStreamSocket';
+
+describe('webmHeaderLength', () => {
+  it('finds the first Cluster', () => {
+    expect(webmHeaderLength(new Uint8Array([0x1a, 9, 0x1f, 0x43, 0xb6, 0x75, 0x1f]))).toBe(2);
+  });
+
+  it('is -1 before a Cluster arrives', () => {
+    expect(webmHeaderLength(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x1f, 0x43, 0xb6]))).toBe(-1);
+  });
+});
 
 describe('parsePong', () => {
   it('parses a full server pong frame', () => {
-    const msg = 'pong:{"echo":12345.678,"chunks":40,"bytes":276000,"late":2}';
+    const msg =
+      'pong:{"echo":12345.678,"chunks":40,"bytes":276000,"late":2,"stream":"s1","offset":9000}';
     expect(parsePong(msg)).toEqual({
       echoMs: 12345.678,
       chunks: 40,
       bytes: 276000,
       late: 2,
+      stream: 's1',
+      offset: 9000,
     });
   });
 
@@ -22,6 +37,8 @@ describe('parsePong', () => {
       chunks: 0,
       bytes: 0,
       late: 0,
+      stream: null,
+      offset: 0,
     });
   });
 
@@ -127,19 +144,15 @@ describe('useStreamSocket auto-reconnect', () => {
     expect(stream.state.value).toBe('live');
   }
 
-  it('a failed first reconnect still schedules the second and third attempts', async () => {
+  it('keeps retrying while live, stops after End Episode', async () => {
     await startLive(true, 42);
 
     sockets[0].drop();
     expect(stream.state.value).toBe('connecting');
-    expect(stream.reconnectAttempts.value).toBe(1);
 
-    // 1 s / 2 s / 4 s backoff, each attempt reusing force + show_id.
-    for (const [attempt, delay] of [
-      [1, 1000],
-      [2, 2000],
-      [3, 4000],
-    ]) {
+    // 1 s / 2 s / 4 s, then every 5 s, with no attempt limit; each attempt
+    // reuses force + show_id.
+    for (const [attempt, delay] of [1000, 2000, 4000, 5000, 5000, 5000, 5000, 5000].entries()) {
       const before = sockets.length;
       vi.advanceTimersByTime(delay - 1);
       expect(sockets).toHaveLength(before);
@@ -147,19 +160,121 @@ describe('useStreamSocket auto-reconnect', () => {
       expect(sockets).toHaveLength(before + 1);
       expect(latest().url).toContain('force=true');
       expect(latest().url).toContain('show_id=42');
-      expect(stream.reconnectAttempts.value).toBe(attempt);
+      expect(stream.reconnectAttempts.value).toBe(attempt + 1);
 
       latest().fail();
-      if (attempt < 3) {
-        expect(stream.state.value).toBe('connecting');
-        expect(stream.reconnectAttempts.value).toBe(attempt + 1);
-      }
+      expect(stream.state.value).toBe('connecting');
     }
 
-    expect(stream.state.value).toBe('error');
-    expect(stream.error.value).toBe('Connection lost after multiple attempts');
+    // End Episode during the backoff.
+    stream.stopStream();
     vi.advanceTimersByTime(60_000);
-    expect(sockets).toHaveLength(4); // the original + 3 attempts, no more
+    expect(sockets).toHaveLength(9);
+    expect(stream.state.value).toBe('disconnected');
+  });
+
+  it("a reconnect re-sends the recorder's WebM header before its audio", async () => {
+    await startLive(false, 42);
+    const head = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2]).buffer;
+    const rest = new Uint8Array([3, 0x1f, 0x43, 0xb6, 0x75, 7]).buffer;
+    stream.send(head, true);
+    stream.send(rest);
+    const announce = sockets[0].sent[0] as string;
+    expect(announce).toMatch(/^stream:\w+$/);
+    expect(sockets[0].sent.slice(1)).toEqual([head, rest]);
+
+    sockets[0].drop();
+    vi.advanceTimersByTime(1000);
+    expect(latest().url).toContain(`resume=${announce.slice('stream:'.length)}`);
+    latest().open();
+    // Nothing was confirmed, so both chunks follow the header again.
+    expect(latest().sent).toEqual([
+      new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3]),
+      'at:0',
+      head,
+      rest,
+    ]);
+
+    const next = new Uint8Array([8]).buffer;
+    stream.send(next);
+    expect(latest().sent[4]).toBe(next);
+
+    // End Episode: the next show starts a stream of its own.
+    stream.stopStream();
+    const again = stream.connect(false, 43);
+    goLive(latest());
+    await again;
+    expect(latest().url).not.toContain('resume=');
+  });
+
+  describe('chunks of a drop', () => {
+    const header = [0x1a, 0x45, 0xdf, 0xa3];
+    const cluster = [0x1f, 0x43, 0xb6, 0x75];
+    const chunk = (...bytes: number[]) => new Uint8Array(bytes).buffer;
+
+    /** Live, with a stream whose header is known; returns its id. */
+    async function liveStream(): Promise<string> {
+      await startLive(false, 42);
+      stream.send(chunk(...header, ...cluster), true);
+      return (sockets[0].sent[0] as string).slice('stream:'.length);
+    }
+
+    function confirm(ws: FakeWebSocket, id: string, offset: number) {
+      ws.message(`pong:${JSON.stringify({ echo: 1, stream: id, offset })}`);
+    }
+
+    async function reconnect() {
+      vi.advanceTimersByTime(1000);
+      latest().open();
+      latest().message('connected');
+    }
+
+    it('keeps them while reconnecting and sends them in order', async () => {
+      const id = await liveStream();
+      confirm(sockets[0], id, 8);
+      sockets[0].drop();
+
+      const missed = [chunk(1), chunk(2, 3)];
+      for (const c of missed) expect(stream.send(c)).toBe(false);
+      await reconnect();
+      expect(latest().url).toContain(`resume=${id}`);
+      expect(latest().sent).toEqual([new Uint8Array(header), 'at:8', ...missed]);
+
+      const later = chunk(4);
+      expect(stream.send(later)).toBe(true);
+      expect(latest().sent.at(-1)).toBe(later);
+    });
+
+    it('re-sends from the last offset the server confirmed', async () => {
+      const id = await liveStream();
+      const inFlight = chunk(5, 6);
+      stream.send(inFlight);
+      // The pong confirms the first chunk only; the second may be lost.
+      confirm(sockets[0], id, 8);
+      confirm(sockets[0], 'another-stream', 10);
+      sockets[0].drop();
+
+      await reconnect();
+      expect(latest().sent.slice(1)).toEqual(['at:8', inFlight]);
+    });
+
+    it('drops the oldest after about 10 minutes and warns', async () => {
+      const id = await liveStream();
+      confirm(sockets[0], id, 8);
+      sockets[0].drop();
+      for (let i = 0; i < MAX_PENDING_CHUNKS; i++) stream.send(chunk(i % 256));
+      expect(stream.audioDropped.value).toBe(false);
+      stream.send(chunk(7));
+      expect(stream.audioDropped.value).toBe(true);
+
+      await reconnect();
+      // The first missed chunk is gone: the stream goes on from the second.
+      expect(latest().sent[1]).toBe('at:9');
+      expect(latest().sent).toHaveLength(2 + MAX_PENDING_CHUNKS);
+
+      stream.stopStream();
+      expect(stream.audioDropped.value).toBe(false);
+    });
   });
 
   it('keeps test mode across reconnect attempts', async () => {
@@ -228,7 +343,7 @@ describe('useStreamSocket auto-reconnect', () => {
     stream = useStreamSocket({ onLive });
     await startLive(false, 7);
 
-    // More drops than maxReconnectAttempts in one show — each recovers.
+    // Many drops in one show — each recovers.
     for (let drop = 1; drop <= 4; drop++) {
       latest().drop();
       expect(stream.state.value).toBe('connecting');
@@ -309,5 +424,37 @@ describe('useStreamSocket auto-reconnect', () => {
     expect(sockets).toHaveLength(2);
     expect(stream.state.value).toBe('disconnected');
     expect(stream.reconnectAttempts.value).toBe(0);
+  });
+
+  it('stopStream() reports the disconnect at once, and only once', async () => {
+    const onDisconnected = vi.fn();
+    stream = useStreamSocket({ onDisconnected });
+    await startLive();
+
+    stream.stopStream();
+    expect(onDisconnected).toHaveBeenCalledTimes(1);
+    sockets[0].drop(1000);
+    expect(onDisconnected).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stopped soundcheck's late close leaves the Go Live connection alone", async () => {
+    await startLive(false, undefined, true);
+    stream.stopStream();
+
+    // Go Live takes over the callbacks before the soundcheck's close arrives.
+    const onDisconnected = vi.fn();
+    stream = useStreamSocket({ onDisconnected });
+    const connected = stream.connect(false, 42);
+    goLive(sockets[1]);
+    await connected;
+    sockets[0].drop(1000);
+
+    expect(onDisconnected).not.toHaveBeenCalled();
+    expect(stream.state.value).toBe('live');
+    // Its pings go on, and a drop still reconnects.
+    vi.advanceTimersByTime(2000);
+    expect(sockets[1].sent.some((m) => typeof m === 'string' && m.startsWith('ping:'))).toBe(true);
+    sockets[1].drop();
+    expect(stream.state.value).toBe('connecting');
   });
 });

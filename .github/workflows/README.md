@@ -18,6 +18,12 @@ Do not use the old deployment job as a rollback procedure. O1.2.5 in
 https://github.com/phaabe/live.moafunk.de/issues/381 supplies the future manual
 API deployment path and its configuration contract.
 
+`deploy-staging` runs after `build-and-push`, only on pushes to `staging`. It
+deploys the exact image digest to https://staging.live.moafunk.de with a key
+the staging box limits to `staging.sh ci-deploy`. It has no production secret.
+When staging is on hold for release checks, it deploys nothing and ends with a
+notice. See `backend/staging/README.md`.
+
 `deploy_monitoring: true` still explicitly deploys monitoring and needs operator
 approval. It defaults to false and runs independently of `build`. Build
 cancellation uses a new ref-scoped job group. Monitoring uses a separate fixed

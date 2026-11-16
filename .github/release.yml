@@ -1,0 +1,18 @@
+# Groups the generated release notes (docs/deployment.md). Every PR into
+# staging has exactly one release::* label (workflows/release-label.yml).
+changelog:
+  exclude:
+    labels:
+      - release::internal
+  categories:
+    - title: Features
+      labels:
+        - release::feature
+    - title: Fixes
+      labels:
+        - release::fix
+        - hotfix
+    # PRs without a release label, e.g. from before the labels existed.
+    - title: Other changes
+      labels:
+        - "*"

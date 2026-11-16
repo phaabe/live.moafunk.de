@@ -19,7 +19,7 @@ PATTERNS=(
   '\bdd[[:space:]]+if=.*[[:space:]]+of=/dev/(sd[a-z]|nvme|disk)'
   '\bmkfs\.'
   ':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:'                 # fork bomb
-  '\bgit[[:space:]]+push[[:space:]]+(--force([[:space:]]|=)|-f([[:space:]]|$)).*\b(main|master|trunk|production|prod)\b'
+  '\bgit[[:space:]]+push[[:space:]]+(--force([[:space:]]|=)|-f([[:space:]]|$)).*\b(main|master|trunk|production|prod|staging)\b'
   '\bcurl[[:space:]]+[^|]*\|[[:space:]]*(sh|bash|zsh|fish)\b'
   '\bwget[[:space:]]+[^|]*\|[[:space:]]*(sh|bash|zsh|fish)\b'
   '>[[:space:]]*/dev/sd[a-z]'

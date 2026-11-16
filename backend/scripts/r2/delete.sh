@@ -58,6 +58,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -y|--yes)
+            # shellcheck disable=SC2034 # accepted, but the script never asks
             SKIP_CONFIRM=true
             shift
             ;;
@@ -81,6 +82,7 @@ set -- "${POSITIONAL_ARGS[@]:-}"
 # Load .env if exists
 if [[ -f "$ENV_FILE" ]]; then
     set -a
+    # shellcheck source=/dev/null
     source "$ENV_FILE"
     set +a
 fi

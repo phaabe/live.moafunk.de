@@ -41,7 +41,7 @@ done
 
 # Create temp file for cookies
 COOKIE_FILE=$(mktemp)
-trap "rm -f $COOKIE_FILE" EXIT
+trap 'rm -f "$COOKIE_FILE"' EXIT
 
 echo "1. Logging in as $USERNAME..."
 LOGIN_RESPONSE=$(curl -s -c "$COOKIE_FILE" -b "$COOKIE_FILE" \
@@ -131,7 +131,7 @@ for KEY in $(echo "$FILE_URLS" | jq -r 'keys[]'); do
     # Make HEAD request to check accessibility
     CONTENT_RESPONSE=$(curl -s -I "$URL" -o /dev/null -w "%{http_code}|%{content_type}|%{size_download}")
     
-    IFS='|' read -r HTTP_CODE CONTENT_TYPE SIZE <<< "$CONTENT_RESPONSE"
+    IFS='|' read -r HTTP_CODE CONTENT_TYPE _ <<< "$CONTENT_RESPONSE"
     
     if [ "$HTTP_CODE" == "200" ]; then
         echo -e "   ${GREEN}✓ Accessible (HTTP $HTTP_CODE, Type: $CONTENT_TYPE)${NC}"

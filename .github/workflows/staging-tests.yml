@@ -1,0 +1,40 @@
+name: Staging safety checks
+
+# staging.sh must refuse every staging setting that could reach production or
+# real accounts, and scrub the production DB copy. deploy-production.sh must
+# refuse during a show and deploy only the exact image. No secrets, no server:
+# the tests use throwaway env files, fixture DBs and stub argon2/docker/curl.
+on:
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - backend/staging/**
+      - backend/deploy/**
+      - .github/workflows/staging-tests.yml
+  push:
+    branches: [main, staging]
+    paths:
+      - backend/staging/**
+      - backend/deploy/**
+      - .github/workflows/staging-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  staging-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check staging.sh refuses unsafe settings and scrubs the DB copy
+        run: bash backend/staging/staging.test.sh
+
+      - name: Check deploy-production.sh guards
+        run: bash backend/deploy/deploy-production.test.sh
+
+      - name: Check the show-day check
+        run: bash backend/deploy/showday-check.test.sh
