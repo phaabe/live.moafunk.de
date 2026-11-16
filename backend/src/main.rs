@@ -398,8 +398,6 @@ async fn main() -> anyhow::Result<()> {
         .nest_service("/assets/brand", ServeDir::new("assets/brand"))
         // Health check
         .route("/health", get(handlers::health_check))
-        // Public API (single-request upload, kept for backwards compatibility)
-        .route("/api/submit", post(handlers::submit::submit_form))
         // Chunked upload API (multi-request, stays under Cloudflare 100MB limit)
         .route(
             "/api/submit/init",
@@ -566,10 +564,6 @@ async fn main() -> anyhow::Result<()> {
                 .post(handlers::api::api_create_show_template),
         )
         .route(
-            "/api/show-templates/:id",
-            axum::routing::delete(handlers::api::api_delete_show_template),
-        )
-        .route(
             "/api/show-templates/:id/cover",
             post(handlers::api::api_upload_template_cover),
         )
@@ -626,10 +620,6 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/overlays",
             get(handlers::api::api_list_show_overlays),
-        )
-        .route(
-            "/api/shows/:id/overlays",
-            post(handlers::api::api_save_show_overlay),
         )
         .route(
             "/api/shows/:id/with-artists",

@@ -8,7 +8,6 @@ pub mod recovery;
 pub mod series;
 pub mod settings;
 pub mod stream_ws;
-pub mod submit;
 pub mod submit_chunked;
 pub mod upload_recording_chunked;
 
