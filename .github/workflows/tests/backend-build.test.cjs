@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -18,11 +18,12 @@ const chaos = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-staging.yml
 
 // These workflow conditions use only property reads, booleans and comparisons.
 // GitHub preserves boolean workflow_dispatch inputs in the inputs context.
-function enabled(condition, event, inputs, ref = 'refs/heads/main') {
+const deployed = { 'deploy-staging': { outputs: { deployed: 'true' } } };
+function enabled(condition, event, inputs, ref = 'refs/heads/main', needs = deployed) {
   if (condition === undefined) return true;
   return runInNewContext(
     `Boolean(${condition})`,
-    { github: { event_name: event, ref }, inputs },
+    { github: { event_name: event, ref }, inputs, needs },
     { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }
   );
 }
@@ -49,6 +50,8 @@ test('only image build, staging deploy, its chaos test and explicitly requested 
 const cases = [
   ['push', {}, ['build-and-push']],
   ['push', {}, ['build-and-push', 'deploy-staging', 'e2e-staging'], 'refs/heads/staging'],
+  // Staging on hold: nothing new deployed, so no chaos test show.
+  ['push', {}, ['build-and-push', 'deploy-staging'], 'refs/heads/staging', { 'deploy-staging': { outputs: {} } }],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push'], 'refs/heads/staging'],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push']],
   ['workflow_dispatch', { build: false, deploy_monitoring: false }, []],
@@ -65,10 +68,11 @@ const cases = [
     ['build-and-push'],
   ],
 ];
-for (const [event, inputs, expected, ref = 'refs/heads/main'] of cases) {
-  test(`${event} on ${ref} ${JSON.stringify(inputs)} selects ${expected.join(', ') || 'no jobs'}`, () => {
+for (const [event, inputs, expected, ref = 'refs/heads/main', needs = deployed] of cases) {
+  const hold = needs === deployed ? '' : ' (staging on hold)';
+  test(`${event} on ${ref}${hold} ${JSON.stringify(inputs)} selects ${expected.join(', ') || 'no jobs'}`, () => {
     const selected = Object.entries(workflow.jobs)
-      .filter(([, job]) => enabled(job.if, event, inputs, ref))
+      .filter(([, job]) => enabled(job.if, event, inputs, ref, needs))
       .map(([id]) => id);
     assert.deepEqual(selected, expected);
     for (const id of selected.filter((id) => id === 'build-and-push')) {
@@ -209,6 +213,7 @@ test('staging deploy reaches only the staging box, with the exact image built', 
 
 test('the chaos test show runs after each staging deploy and never next to one', () => {
   assert.equal(e2e.needs, 'deploy-staging');
+  assert.deepEqual(staging.outputs, { deployed: '${{ steps.deploy.outputs.deployed }}' });
   assert.equal(e2e.uses, './.github/workflows/e2e-staging.yml');
   assert.equal(e2e.secrets, 'inherit');
   assert.deepEqual(Object.keys(chaos.on).sort(), [
@@ -246,6 +251,7 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
   execFileSync('/bin/bash', ['-c', `printf '%s\\n' '#!/bin/bash' 'echo "\${@: -1}" >"$RUNNER_TEMP/ssh-request"' 'exit "\${FAKE_EXIT:-0}"' >"${bin}/ssh" && chmod +x "${bin}/ssh"`]);
   const digest = `sha256:${'c'.repeat(64)}`;
   const source = `abc1234${'d'.repeat(33)}`;
+  const output = path.join(dir, 'output');
   const run = (env) =>
     execFileSync('/bin/bash', ['--noprofile', '--norc', '-e', '-c', deploy.run], {
       env: {
@@ -255,15 +261,26 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
         HOST_KEY: 'staging.live.moafunk.de ssh-ed25519 AAAA',
         SOURCE_SHA: source,
         DIGEST: digest,
+        GITHUB_OUTPUT: output,
         ...env,
       },
       stdio: 'pipe',
     }).toString();
+  // What the step left in GITHUB_OUTPUT; the file is emptied for the next run.
+  const outputs = () => {
+    const text = readFileSync(output, 'utf8');
+    writeFileSync(output, '');
+    return text;
+  };
   try {
+    writeFileSync(output, '');
     run({});
     assert.equal(readFileSync(path.join(dir, 'ssh-request'), 'utf8'), `deploy sha-abc1234 ${digest}\n`);
+    assert.equal(outputs(), 'deployed=true\n');
     assert.match(run({ FAKE_EXIT: '3' }), /Staging is on hold/);
+    assert.equal(outputs(), '', 'a hold deploys nothing, so no chaos test show');
     assert.throws(() => run({ FAKE_EXIT: '1' }));
+    assert.equal(outputs(), '');
     rmSync(path.join(dir, 'ssh-request'));
     assert.throws(() => run({ DIGEST: '' }));
     assert.throws(() => readFileSync(path.join(dir, 'ssh-request')), 'no ssh without a digest');

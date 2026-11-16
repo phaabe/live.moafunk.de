@@ -1,0 +1,52 @@
+name: Release gate
+
+# The required check that decides what may go into main (docs/deployment.md):
+# - head release/*: passes only when the chaos test show passed right after
+#   the staging deploy of the head commit (backend.yml, job
+#   "e2e-staging / chaos-show"). Runs named only "chaos-show" (by hand,
+#   nightly, on PRs) do not count: they test whatever staging runs, which
+#   need not be the commit they are attached to.
+# - head hotfix/* with label hotfix: passes; the chaos test is skipped.
+# - anything else: fails.
+# It runs on PR events only. If the chaos run turns green after the PR was
+# opened, re-run this job.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+
+permissions:
+  checks: read
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the head branch and the chaos test show
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          case "$HEAD_REF" in
+            release/*)
+              name="e2e-staging / chaos-show"
+              found="$(gh api -X GET "repos/$REPO/commits/$HEAD_SHA/check-runs" -f check_name="$name" |
+                jq -r '.check_runs[] | select(.app.slug == "github-actions") | "\(.conclusion // .status) \(.html_url)"')"
+              echo "$name on $HEAD_SHA: ${found:-no run}"
+              grep -q '^success ' <<<"$found" || {
+                echo "::error::no green chaos test show after the staging deploy of $HEAD_SHA. Cut release/* from the commit staging runs. If its chaos test show failed, re-run it, then re-run this job."
+                exit 1
+              }
+              echo "Release: the chaos test show passed on $HEAD_SHA" ;;
+            hotfix/*)
+              jq -e 'index("hotfix") != null' <<<"$LABELS" >/dev/null ||
+                { echo "::error::a hotfix PR needs the label hotfix"; exit 1; }
+              echo "Hotfix: label hotfix, the chaos test is skipped" ;;
+            *)
+              echo "::error::only release/* and hotfix/* (with label hotfix) may go into main, see docs/deployment.md"
+              exit 1 ;;
+          esac
