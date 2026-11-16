@@ -119,9 +119,12 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
   const frontend = epic?.jobs.find((j) => j.name === 'frontend-ci');
   const cargo = results.cargo && parseCargo(results.cargo);
   const vitest = results.vitest && parseVitest(results.vitest);
-  const coverage = {
-    rust: round1(results.rustCoverage?.data?.[0]?.totals?.lines?.percent),
-    frontend: round1(results.frontendCoverage?.total?.lines?.pct),
+  const rustLines = results.rustCoverage?.data?.[0]?.totals?.lines;
+  const frontendLines = results.frontendCoverage?.total?.lines;
+  const coverage = { rust: round1(rustLines?.percent), frontend: round1(frontendLines?.pct) };
+  const coverageLines = {
+    rust: rustLines ? { covered: rustLines.covered, total: rustLines.count } : null,
+    frontend: frontendLines ? { covered: frontendLines.covered, total: frontendLines.total } : null,
   };
   const epicRef = runRef(epic?.run);
   const prev = (id) => previous?.levels?.find((l) => l.id === id);
@@ -152,7 +155,6 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
       tests: addCounts(cargo?.unit, vitest?.unit),
       coverage: coverage.rust != null || coverage.frontend != null ? coverage : null,
       run: epicRef,
-      note: 'Coverage includes the L2 and L3 tests, which run in the same test runs.',
     })
   );
   const screens = vitest && { passed: vitest.screens.passed, failed: vitest.screens.failed, skipped: vitest.screens.skipped };
@@ -161,7 +163,6 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
       checks: [{ name: 'Flow Lab checks', status: screens ? countStatus(screens) : vitestStep.status, seconds: vitest ? vitest.screens.seconds : null }],
       tests: screens,
       run: epicRef,
-      note: "Vitest tests in describe('flow') blocks and flowSync.test.ts.",
     })
   );
   levels.push(
@@ -169,15 +170,9 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
       checks: [{ name: 'handlers + SQLite + fake R2', status: cargo ? countStatus(cargo.integration) : cargoStep.status, seconds: null }],
       tests: cargo?.integration ?? null,
       run: epicRef,
-      note: 'The *_tests modules in backend/src. They run inside cargo test (L1), so no own duration.',
     })
   );
-  levels.push(
-    level('L4', {
-      status: 'not built',
-      note: 'Parked: https://github.com/phaabe/live.moafunk.de/issues/874',
-    })
-  );
+  levels.push(level('L4', { status: 'not built' }));
   const streamJob = stream?.jobs.find((j) => j.name === 'stream-system');
   levels.push(
     level('L5', {
@@ -201,12 +196,8 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
   levels.push(chaos && !soak ? chaosLevel('L6') : (prev('L6') ?? level('L6', { status: 'not run' })));
   levels.push(
     chaos && soak
-      ? chaosLevel('L7', `Soak: ${Number(soakMinutes)} extra minutes on air. Restore drill: by hand, not reported.`)
-      : (prev('L7') ??
-          level('L7', {
-            status: 'not run',
-            note: 'No soak yet (a manual chaos run with duration > 0). Restore drill: by hand, not reported.',
-          }))
+      ? chaosLevel('L7', `Soak: ${Number(soakMinutes)} extra minutes on air.`)
+      : (prev('L7') ?? level('L7', { status: 'not run' }))
   );
 
   // The newest production deploy that ran its smoke test (dry runs skip it).
@@ -221,7 +212,6 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
       checks: smoke ? [smoke.check] : [],
       status: smoke ? undefined : 'not run',
       run: smoke ? runRef(smoke.run, smoke.job) : null,
-      note: 'Show-day timer: on the box, not reported.',
     })
   );
 
@@ -229,6 +219,7 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
     generated_at: now,
     run: current?.run ? { url: current.run.html_url, event: current.run.event, sha: current.run.head_sha } : null,
     coverage,
+    coverage_lines: coverageLines,
     levels,
   };
 }

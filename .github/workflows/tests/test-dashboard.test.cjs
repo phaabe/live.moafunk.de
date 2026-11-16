@@ -76,8 +76,8 @@ const vitest = {
 const results = {
   cargo,
   vitest,
-  rustCoverage: { data: [{ totals: { lines: { percent: 61.234 } } }] },
-  frontendCoverage: { total: { lines: { pct: 48.16 } } },
+  rustCoverage: { data: [{ totals: { lines: { percent: 61.234, covered: 612, count: 1000 } } }] },
+  frontendCoverage: { total: { lines: { pct: 48.16, covered: 4816, total: 10000 } } },
 };
 const base = { now: T0, epic, stream, deploys, current, results, soakMinutes: '0', previous: null };
 const byId = (summary) => Object.fromEntries(summary.levels.map((l) => [l.id, l]));
@@ -98,7 +98,8 @@ test("vitest tests in describe('flow') and flowSync.test.ts are the screen check
 });
 
 test('every level L0–L8 gets a status, counts, duration, coverage and a run link', () => {
-  const l = byId(buildSummary(base));
+  const summary = buildSummary(base);
+  const l = byId(summary);
   assert.deepEqual(Object.keys(l), ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8']);
 
   // A skipped check is not a pass.
@@ -117,6 +118,10 @@ test('every level L0–L8 gets a status, counts, duration, coverage and a run li
   assert.equal(l.L1.status, 'pass');
   assert.deepEqual(l.L1.tests, { passed: 3, failed: 0, skipped: 1 });
   assert.deepEqual(l.L1.coverage, { rust: 61.2, frontend: 48.2 });
+  assert.deepEqual(buildSummary(base).coverage_lines, {
+    rust: { covered: 612, total: 1000 },
+    frontend: { covered: 4816, total: 10000 },
+  });
   assert.equal(l.L2.status, 'fail');
   assert.deepEqual(l.L2.tests, { passed: 1, failed: 1, skipped: 0 });
   assert.equal(l.L2.seconds, 2);
@@ -124,7 +129,6 @@ test('every level L0–L8 gets a status, counts, duration, coverage and a run li
   assert.deepEqual(l.L3.tests, { passed: 1, failed: 1, skipped: 0 });
 
   assert.equal(l.L4.status, 'not built');
-  assert.match(l.L4.note, /https:\/\/github\.com\/phaabe\/live\.moafunk\.de\/issues\/874/);
   assert.equal(l.L5.status, 'pass');
   assert.equal(l.L5.seconds, 90);
   assert.equal(l.L6.status, 'fail');
@@ -133,7 +137,8 @@ test('every level L0–L8 gets a status, counts, duration, coverage and a run li
   assert.equal(l.L7.status, 'not run');
   assert.equal(l.L8.status, 'pass');
   assert.equal(l.L8.run.sha, deploys[1].run.head_sha);
-  assert.match(l.L8.note, /on the box, not reported/);
+  // The page explains each level; only a soak brings its own note.
+  assert.deepEqual(summary.levels.filter((x) => x.note), []);
 });
 
 test('without result files the levels fall back to the step results', () => {
@@ -141,6 +146,7 @@ test('without result files the levels fall back to the step results', () => {
   assert.equal(l.L1.status, 'fail');
   assert.equal(l.L1.tests, null);
   assert.equal(l.L1.coverage, null);
+  assert.deepEqual(buildSummary({ ...base, results: { cargo: null, vitest: null, rustCoverage: null, frontendCoverage: null } }).coverage_lines, { rust: null, frontend: null });
   assert.equal(l.L2.status, 'pass');
   assert.equal(l.L3.status, 'fail');
 });
