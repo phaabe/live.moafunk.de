@@ -123,3 +123,55 @@ test('deploy step pins the production host key and runs only the deploy script',
   assert.throws(() => bash(deploy.run, { TAG: 'sha-1234567; reboot', DIGEST: `sha256:${'a'.repeat(64)}`, DRY_RUN: '1' }));
   assert.throws(() => bash(deploy.run, { TAG: 'sha-1234567', DIGEST: 'latest', DRY_RUN: '1' }));
 });
+
+test('smoke test after a real deploy: public endpoints, admin page and the exact running image', () => {
+  const smoke = job.steps.find((s) => s.name === 'Smoke test (read-only)');
+  const deploy = job.steps.find((s) => s.name === 'Deploy');
+  assert.equal(job.steps.at(-1), smoke, 'the run ends with the smoke test');
+  assert.equal(smoke.if, '${{ !inputs.dry_run }}');
+  assert.equal(smoke.env.PROD_HOST_KEY, deploy.env.PROD_HOST_KEY);
+  assert.equal(smoke.env.DIGEST, '${{ steps.image.outputs.digest }}');
+  assert.match(smoke.run, /StrictHostKeyChecking=yes/);
+  const dir = mkdtempSync(path.join(tmpdir(), 'deploy-smoke-'));
+  const bin = path.join(dir, 'bin');
+  mkdirSync(bin);
+  // Fake curl answers like production; fake ssh prints the running image's digests.
+  writeFileSync(
+    path.join(bin, 'curl'),
+    [
+      '#!/bin/bash',
+      'for url; do :; done',
+      'case "$url" in',
+      '  */health) echo "{\\"app\\":\\"unheard-backend\\",\\"status\\":\\"${FAKE_HEALTH:-healthy}\\"}" ;;',
+      '  */api/stream/status) echo \'{"active":false,"user":null,"recording":false}\' ;;',
+      '  */assets/*) exit 0 ;;',
+      '  */) echo \'<title>Moafunk Admin</title><script type="module" src="/assets/admin-x1.js"></script>\' ;;',
+      'esac',
+    ].join('\n') + '\n'
+  );
+  writeFileSync(path.join(bin, 'ssh'), '#!/bin/bash\necho "$FAKE_RUNNING"\n');
+  chmodSync(path.join(bin, 'curl'), 0o755);
+  chmodSync(path.join(bin, 'ssh'), 0o755);
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const run = (extra = {}) =>
+    bash(smoke.run, {
+      PATH: `${bin}:/usr/bin:/bin`,
+      RUNNER_TEMP: dir,
+      GITHUB_STEP_SUMMARY: path.join(dir, 'summary'),
+      PUBLIC: smoke.env.PUBLIC,
+      PROD_IP: '192.0.2.1',
+      PROD_KEY: 'fake',
+      PROD_HOST_KEY: smoke.env.PROD_HOST_KEY,
+      DIGEST: digest,
+      FAKE_RUNNING: `ghcr.io/phaabe/live.moafunk.de-backend@${digest}`,
+      ...extra,
+    });
+  try {
+    assert.match(run(), /Smoke test passed/);
+    assert.throws(() => run({ FAKE_RUNNING: `ghcr.io/phaabe/live.moafunk.de-backend@sha256:${'b'.repeat(64)}` }), 'another image runs');
+    assert.throws(() => run({ FAKE_RUNNING: '' }), 'no image runs');
+    assert.throws(() => run({ FAKE_HEALTH: 'starting' }), 'the API is not healthy');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

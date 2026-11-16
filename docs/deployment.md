@@ -36,6 +36,12 @@ It stops, and changes nothing, when:
 
 Then it backs up the DB (SQLite backup API), starts the new image, waits until it is healthy, checks `/health` and `/api/stream/status`, and prints the rollback. The host part is `backend/deploy/deploy-production.sh`; it also runs by hand over ssh (see its header).
 
+After a real deploy (not a dry run) the run ends with a read-only smoke test from outside, and fails if one check fails:
+
+- `https://admin.live.moafunk.de/health` says healthy, and `/api/stream/status` answers
+- the admin login page and its app script load
+- `unheard-api` runs exactly the image digest this run deployed. That image is `main`'s build of the code that staging ran (checked before the deploy). Staging ran its own build of the same code, so its digest differs.
+
 ## Keys
 
 | Key | Can do | Stored |
