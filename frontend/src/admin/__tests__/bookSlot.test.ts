@@ -37,6 +37,7 @@ let slots: SeriesSlot[];
 let slotLoads: number;
 let requests: { url: string; method: string; body: unknown }[];
 let bookResponse: () => Response;
+let finalizeResponse: () => Response;
 /** File name the upload finalize answers with. */
 let setName: string;
 
@@ -46,6 +47,7 @@ beforeEach(() => {
   requests = [];
   bookResponse = () => Response.json({ id: 77 }, { status: 201 });
   setName = 'set.mp3';
+  finalizeResponse = () => Response.json({ upload_id: 's1', filename: setName, duration: 7120 });
   root = document.createElement('div');
   document.body.appendChild(root);
   vi.stubGlobal(
@@ -66,8 +68,7 @@ beforeEach(() => {
       if (url === '/api/series/brunchtime/upload/init') return Response.json({ session_id: 's1' });
       if (url.startsWith('/api/series/brunchtime/upload/chunk/s1'))
         return Response.json({ index: 0 });
-      if (url === '/api/series/brunchtime/upload/finalize/s1')
-        return Response.json({ upload_id: 's1', filename: setName, duration: 7120 });
+      if (url === '/api/series/brunchtime/upload/finalize/s1') return finalizeResponse();
       if (url === '/api/shows/43/prerecorded') return Response.json({ id: 43 });
       throw new Error(`Unexpected API request: ${method} ${url}`);
     })
@@ -125,11 +126,14 @@ function button(text: string): HTMLButtonElement {
   return found;
 }
 
-async function uploadSet() {
+function pick(name: string) {
   const input = root.querySelector('input[type="file"]') as HTMLInputElement;
-  const file = new File(['abc'], 'set.mp3', { type: 'audio/mpeg' });
-  Object.defineProperty(input, 'files', { value: [file] });
+  Object.defineProperty(input, 'files', { value: [new File(['abc'], name)], configurable: true });
   input.dispatchEvent(new Event('change'));
+}
+
+async function uploadSet() {
+  pick('set.mp3');
   await vi.waitFor(() => expect(root.textContent).toContain('uploaded'));
   await nextTick();
 }
@@ -274,6 +278,24 @@ describe('Upload Your Set', () => {
       mode: 'prerecorded',
       upload_id: 's1',
     });
+  });
+
+  it('shows an upload error and keeps Book slot off', async () => {
+    finalizeResponse = () =>
+      Response.json({ error: 'This file is not a readable MP3 or WAV' }, { status: 400 });
+    await mount('/shows/brunchtime/book?mode=prerecorded');
+
+    pick('set.flac');
+    await settle();
+    expect(root.textContent).toContain('Upload an MP3 or WAV file');
+    expect(requests.some((r) => r.url.includes('/upload/'))).toBe(false);
+
+    pick('set.mp3');
+    await vi.waitFor(() =>
+      expect(root.textContent).toContain('This file is not a readable MP3 or WAV')
+    );
+    expect(root.textContent).not.toContain('uploaded');
+    expect(button('Book slot').disabled).toBe(true);
   });
 
   it('replaces the file of a booked episode without booking again', async () => {
