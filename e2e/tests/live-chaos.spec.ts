@@ -19,6 +19,8 @@ const RECOVER_S = 15;
 /** The first time on air: the harbor buffers a new source for several seconds. */
 const FIRST_TONE_S = 45;
 const CUT_S = 20;
+/** Liquidsoap's harbor keeps up to 20 s of a source (`input.harbor` max). */
+const HARBOR_MAX_S = 20;
 /** Recorded length vs. time on air (Go Live and End Episode are clicks). */
 const LENGTH_TOLERANCE_S = 5;
 
@@ -91,7 +93,10 @@ test('a live show recovers by itself and ends in one recording', async () => {
     // On Air sends a tab that is not live to the Studio.
     await soundcheckAndGoLive();
     offAirMs += Date.now() - reloaded;
-    console.log(`tone back ${await toneBack(RECOVER_S)} s after Go Live`);
+    // Up to 20 s after the reload, the harbor can still play the old page's
+    // audio. So the tone must not stop for 15 s until then, and be there after.
+    while (Date.now() < reloaded + HARBOR_MAX_S * 1000) await toneBack(RECOVER_S);
+    console.log(`tone back ${await toneBack(RECOVER_S)} s after the old audio ran out`);
   });
 
   if (DURATION_MIN > 0) {

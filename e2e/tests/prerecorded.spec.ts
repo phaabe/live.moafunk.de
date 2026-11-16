@@ -53,8 +53,8 @@ test('an uploaded set starts by itself and is published', async () => {
 
   await test.step('after its end: Wrap-up, Publish, Finished', async () => {
     await page.waitForTimeout(Math.max(0, end.getTime() - Date.now()) + 5_000);
+    // After its end the episode is "wrapup_open": the page opens the Wrap-up.
     await page.reload();
-    await page.getByRole('button', { name: 'Open Wrap-up' }).click();
     const publish = page.getByRole('button', { name: 'Publish' });
     await expect(publish).toBeEnabled({ timeout: 60_000 });
     await publish.click();

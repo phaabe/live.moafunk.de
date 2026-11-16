@@ -69,14 +69,21 @@ interface Heard {
   maxDb: number;
 }
 
+/**
+ * Icecast sends its burst (burst-size 64 KB, about 2 s at 256 kbps) at once
+ * on connect. That audio is from the past, so a listen skips it.
+ */
+const BURST_S = 3;
+
 /** Decode `seconds` of /live.mp3 as a listener would; null when it cannot be reached. */
 export async function listen(seconds: number): Promise<Heard | null> {
   try {
     const { stderr } = await promisify(execFile)(
       'ffmpeg',
-      ['-hide_banner', '-nostats', '-t', String(seconds), '-i', `${STAGING_URL}/live.mp3`]
-        .concat(['-af', 'volumedetect', '-f', 'null', '-']),
-      { timeout: (seconds + 20) * 1000 }
+      ['-hide_banner', '-nostats', '-t', String(seconds + BURST_S)]
+        .concat(['-i', `${STAGING_URL}/live.mp3`])
+        .concat(['-af', `atrim=start=${BURST_S},volumedetect`, '-f', 'null', '-']),
+      { timeout: (seconds + BURST_S + 20) * 1000 }
     );
     const read = (name: string) => Number(stderr.match(new RegExp(`${name}: (-?[\\d.]+) dB`))?.[1]);
     return { meanDb: read('mean_volume'), maxDb: read('max_volume') };
