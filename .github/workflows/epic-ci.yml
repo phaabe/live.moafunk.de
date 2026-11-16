@@ -13,7 +13,6 @@ on:
       - dev/312-interim
       - dev/streaming-architecture
       - staging
-      - ci/899-coverage-measure
 
 # Both checks must exist for every PR, including documentation-only changes.
 # Keep path filters out of this workflow so these names can be required.
@@ -58,7 +57,7 @@ jobs:
       # Pushes to staging also measure coverage for the test dashboard
       # (test-dashboard.yml); PR runs stay plain cargo test.
       - name: Install the coverage tool
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && true }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.9.1
@@ -66,7 +65,7 @@ jobs:
       - name: Run backend tests
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         env:
-          REPORT: ${{ true }}
+          REPORT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
         run: |
           set -euo pipefail
           if [[ "$REPORT" == true ]]; then
@@ -84,7 +83,7 @@ jobs:
           fi
 
       - name: Keep the results for the test dashboard
-        if: ${{ !cancelled() && true }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
         uses: actions/upload-artifact@v4
         with:
           name: test-results-backend
@@ -143,7 +142,7 @@ jobs:
       - name: Run frontend tests
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         env:
-          REPORT: ${{ true }}
+          REPORT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
         run: |
           set -euo pipefail
           if [[ "$REPORT" == true ]]; then
@@ -155,7 +154,7 @@ jobs:
           fi
 
       - name: Keep the results for the test dashboard
-        if: ${{ !cancelled() && true }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
         uses: actions/upload-artifact@v4
         with:
           name: test-results-frontend
