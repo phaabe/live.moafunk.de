@@ -42,6 +42,48 @@ After a real deploy (not a dry run) the run ends with a read-only smoke test fro
 - the admin login page and its app script load
 - `unheard-api` runs exactly the image digest this run deployed. That image is `main`'s build of the code that staging ran (checked before the deploy). Staging ran its own build of the same code, so its digest differs.
 
+## Show-day check
+
+`backend/deploy/showday-check.sh` runs on the production box every 15 minutes from a systemd timer. The day before a show (from 18:00 Berlin) and in the hour before it, it checks the box and posts the result to the MoafunkBot topic of the Telegram group, with the backend's own bot settings (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`, `TELEGRAM_TOPIC_ID` in `/opt/unheard-backend/.env`). Each show gets each post once. It needs no CI key and changes nothing.
+
+It checks: the API is healthy, `https://admin.live.moafunk.de` answers, the TLS certificate is valid for 14 more days, Icecast has `/live.mp3` and `/test.mp3`, Liquidsoap runs, 5 GB are free, and the newest DB backup is at most 30 hours old. The post also says if a pre-recorded set is not confirmed.
+
+Install it once (Anton, from the repo root on your Mac):
+
+```bash
+scp backend/deploy/showday-check.sh root@178.104.160.103:/usr/local/sbin/showday-check.sh
+ssh root@178.104.160.103 'bash -s' <<'EOF'
+set -euo pipefail
+chmod 755 /usr/local/sbin/showday-check.sh
+cat >/etc/systemd/system/showday-check.service <<'UNIT'
+[Unit]
+Description=Moafunk show-day check (posts to the MoafunkBot topic)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/showday-check.sh
+UNIT
+cat >/etc/systemd/system/showday-check.timer <<'UNIT'
+[Unit]
+Description=Run the Moafunk show-day check every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now showday-check.timer
+systemctl list-timers showday-check.timer --no-pager
+EOF
+```
+
+Try it: `ssh root@178.104.160.103 'SHOWDAY_FORCE=1 /usr/local/sbin/showday-check.sh'` checks now and posts once for every show of today and tomorrow (nothing when there is none). A failed check or post shows in `systemctl status showday-check`. After a change to the script, copy it again (the first line above).
+
 ## Keys
 
 | Key | Can do | Stored |

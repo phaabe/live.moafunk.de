@@ -35,3 +35,6 @@ jobs:
 
       - name: Check deploy-production.sh guards
         run: bash backend/deploy/deploy-production.test.sh
+
+      - name: Check the show-day check
+        run: bash backend/deploy/showday-check.test.sh
