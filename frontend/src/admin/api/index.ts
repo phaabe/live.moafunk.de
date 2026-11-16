@@ -764,21 +764,6 @@ export const showsApi = {
   },
 
   listOverlays: (id: number) => api.get<OverlayListResponse>(`/api/shows/${id}/overlays`),
-
-  saveOverlay: async (id: number, blob: Blob): Promise<{ key: string; url: string }> => {
-    const formData = new FormData();
-    formData.append('image', blob, 'overlay.jpg');
-    const response = await fetch(`${API_BASE}/api/shows/${id}/overlays`, {
-      method: 'POST',
-      credentials: 'include',
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
-      throw new Error(error.error || 'Upload failed');
-    }
-    return response.json();
-  },
 };
 
 // Show Templates API — per-user reusable (name + cover + description) bundles
@@ -811,8 +796,6 @@ export const showTemplatesApi = {
     if (!resp.ok) throw new Error(await resp.text());
     return resp.json();
   },
-
-  delete: (id: number) => api.delete<void>(`/api/show-templates/${id}`),
 };
 
 // Show series: a host's "Show" in the flow, with dated episodes.

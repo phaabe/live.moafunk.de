@@ -1464,74 +1464,6 @@ pub async fn api_show_image_proxy(
     ))
 }
 
-/// Save an overlay image for a show to R2.
-/// POST /api/shows/:id/overlays
-pub async fn api_save_show_overlay(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-    headers: HeaderMap,
-    mut multipart: axum::extract::Multipart,
-) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
-
-    // Verify show exists
-    let _show: models::Show = sqlx::query_as::<_, models::Show>("SELECT * FROM shows WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
-
-    let mut image_data: Option<Vec<u8>> = None;
-    let mut content_type = "image/jpeg".to_string();
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {}", e)))?
-    {
-        let field_name = field.name().unwrap_or("").to_string();
-        if field_name == "image" {
-            content_type = field.content_type().unwrap_or("image/jpeg").to_string();
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| AppError::BadRequest(format!("Failed to read image data: {}", e)))?;
-            if !data.is_empty() {
-                image_data = Some(data.to_vec());
-            }
-        }
-    }
-
-    let data = image_data.ok_or_else(|| AppError::BadRequest("No image provided".to_string()))?;
-
-    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let uuid_short = &uuid::Uuid::new_v4().to_string()[..8];
-    let ext = if content_type.contains("png") {
-        "png"
-    } else {
-        "jpg"
-    };
-    let key = format!("shows/{}/overlay/{}-{}.{}", id, timestamp, uuid_short, ext);
-
-    state
-        .s3_client
-        .put_object()
-        .bucket(&state.config.r2_bucket_name)
-        .key(&key)
-        .body(aws_sdk_s3::primitives::ByteStream::from(data))
-        .content_type(&content_type)
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("Failed to upload show overlay: {}", e)))?;
-
-    let url = storage::get_presigned_url(&state, &key, 3600).await?;
-
-    Ok(Json(serde_json::json!({
-        "key": key,
-        "url": url,
-    })))
-}
-
 /// List all overlay images saved for a show in R2.
 /// GET /api/shows/:id/overlays
 pub async fn api_list_show_overlays(
@@ -3374,27 +3306,6 @@ pub async fn api_upload_template_cover(
         "success": true,
         "cover_url": cover_url,
     })))
-}
-
-/// DELETE /api/show-templates/:id — delete a template owned by the current user.
-pub async fn api_delete_show_template(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse> {
-    let user = require_show_creator(&state, &headers).await?;
-
-    let result = sqlx::query("DELETE FROM show_templates WHERE id = ? AND owner_user_id = ?")
-        .bind(id)
-        .bind(user.id)
-        .execute(&state.db)
-        .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound("Template not found".to_string()));
-    }
-
-    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 #[derive(Debug, Deserialize)]

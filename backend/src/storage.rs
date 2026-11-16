@@ -566,33 +566,6 @@ pub async fn upload_file_named(
     Ok(key)
 }
 
-pub async fn upload_file(
-    state: &Arc<AppState>,
-    artist_id: i64,
-    file_type: &str,
-    filename: &str,
-    data: Vec<u8>,
-    content_type: &str,
-) -> Result<String> {
-    let ext = extract_ext(filename);
-
-    let unique_id = Uuid::new_v4().to_string()[..8].to_string();
-    let key = build_key_with_name(artist_id, file_type, &unique_id, &ext);
-
-    state
-        .s3_client
-        .put_object()
-        .bucket(&state.config.r2_bucket_name)
-        .key(&key)
-        .body(ByteStream::from(data))
-        .content_type(content_type)
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("Failed to upload file: {}", e)))?;
-
-    Ok(key)
-}
-
 pub async fn download_file(state: &Arc<AppState>, key: &str) -> Result<(Vec<u8>, String)> {
     download_file_from_bucket(state, &state.config.r2_bucket_name, key).await
 }
@@ -885,102 +858,6 @@ pub async fn upload_show_recording(
 // ─────────────────────────────────────────────────────────────────────────────
 // Audio upload helpers (with mp3 conversion)
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Result of uploading an audio file with conversion.
-/// Contains both the mp3 key (for regular use) and original key (for backup).
-#[derive(Debug, Clone)]
-pub struct AudioUploadResult {
-    /// Key for the converted MP3 file (used for playback, wavesurfer, downloads)
-    pub mp3_key: String,
-    /// Key for the original uploaded file (backup, used only in full artist package)
-    pub original_key: String,
-}
-
-/// Upload an audio file, converting it to MP3 if needed.
-/// Stores both the original file and the converted MP3.
-///
-/// # Arguments
-/// * `state` - App state with S3 client
-/// * `artist_id` - The artist ID for storage path
-/// * `file_type` - Type of file (track1, track2, voice)
-/// * `desired_name` - Human-readable name for the file
-/// * `original_filename` - Original filename with extension
-/// * `data` - Raw audio file bytes
-/// * `content_type` - MIME type of the original file
-///
-/// # Returns
-/// * `AudioUploadResult` with both mp3_key and original_key
-pub async fn upload_audio_with_conversion(
-    state: &Arc<AppState>,
-    artist_id: i64,
-    file_type: &str,
-    desired_name: &str,
-    original_filename: &str,
-    data: Vec<u8>,
-    content_type: &str,
-) -> Result<AudioUploadResult> {
-    let original_ext = extract_ext(original_filename);
-    let mut safe_name = sanitize_object_name(desired_name);
-    if safe_name.len() > 120 {
-        safe_name.truncate(120);
-        safe_name = safe_name.trim_matches([' ', '-', '_']).to_string();
-    }
-    if safe_name.is_empty() {
-        safe_name = Uuid::new_v4().to_string()[..8].to_string();
-    }
-
-    // Upload original file
-    let original_key = build_key_with_name(
-        artist_id,
-        &format!("{}_original", file_type),
-        &safe_name,
-        &original_ext,
-    );
-
-    state
-        .s3_client
-        .put_object()
-        .bucket(&state.config.r2_bucket_name)
-        .key(&original_key)
-        .body(ByteStream::from(data.clone()))
-        .content_type(content_type)
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("Failed to upload original audio: {}", e)))?;
-
-    // Convert to MP3 if not already mp3
-    let mp3_data = if audio::is_mp3(original_filename) {
-        data
-    } else {
-        audio::convert_to_mp3(&data, original_filename, &state.config).await?
-    };
-
-    // Upload MP3 file
-    let mp3_key = build_key_with_name(artist_id, file_type, &safe_name, "mp3");
-
-    state
-        .s3_client
-        .put_object()
-        .bucket(&state.config.r2_bucket_name)
-        .key(&mp3_key)
-        .body(ByteStream::from(mp3_data))
-        .content_type("audio/mpeg")
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("Failed to upload MP3 audio: {}", e)))?;
-
-    tracing::info!(
-        "Uploaded audio for artist {}: mp3={}, original={}",
-        artist_id,
-        mp3_key,
-        original_key
-    );
-
-    Ok(AudioUploadResult {
-        mp3_key,
-        original_key,
-    })
-}
 
 /// Result of starting an async audio upload with background conversion.
 #[derive(Debug, Clone)]
