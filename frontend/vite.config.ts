@@ -1,7 +1,9 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import { resolve } from 'path';
 import { execSync } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import vue from '@vitejs/plugin-vue';
+import { flowSync } from './src/admin/flow/report';
 
 // A build identity that changes on every deploy. Prefer the git short SHA (stable,
 // available in CI); fall back to a build timestamp for detached/no-git builds.
@@ -30,6 +32,33 @@ function emitVersionManifest(): Plugin {
         type: 'asset',
         fileName: 'version.json',
         source: JSON.stringify({ hash: BUILD_ID }),
+      });
+    },
+  };
+}
+
+// Emit admin/flow-sync.json: how this build stands against the pinned Flow Lab
+// flow. The backend serves dist/admin at /, so each environment answers on
+// /flow-sync.json. See src/admin/flow/README.md.
+function emitFlowSync(): Plugin {
+  return {
+    name: 'emit-flow-sync',
+    generateBundle() {
+      const dir = resolve(__dirname, 'src/admin/flow');
+      const read = (file: string) => JSON.parse(readFileSync(resolve(dir, file), 'utf8'));
+      const results = readdirSync(resolve(dir, 'sync'))
+        .filter((file) => file.endsWith('.json'))
+        .map((file) => read(`sync/${file}`));
+      const report = flowSync(
+        read('flow.contract.json'),
+        read('flow-gaps.json'),
+        results,
+        BUILD_ID
+      );
+      this.emitFile({
+        type: 'asset',
+        fileName: 'admin/flow-sync.json',
+        source: JSON.stringify(report, null, 2) + '\n',
       });
     },
   };
@@ -82,7 +111,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
-    plugins: [vue(), emitVersionManifest(), bugdropFeedbackWidget(feedbackRepo)],
+    plugins: [vue(), emitVersionManifest(), emitFlowSync(), bugdropFeedbackWidget(feedbackRepo)],
     root: 'src',
     publicDir: '../public',
     build: {
