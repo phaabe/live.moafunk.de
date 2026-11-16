@@ -46,7 +46,7 @@ jobs:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
             ba04c03e-d633-40a6-a49f-b50301724312 > STAGING_DEPLOY_SSH_KEY
-            STAGING_HOST_PASSWORD_SECRET_ID > STAGING_HOST_PASSWORD
+            1137ba63-20f1-4544-b8f8-b5040008ade4 > STAGING_HOST_PASSWORD
 
       - name: Write the CI key and the pinned host key
         env:
