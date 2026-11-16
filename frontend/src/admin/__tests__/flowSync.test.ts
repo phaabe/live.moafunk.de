@@ -19,6 +19,11 @@ const results = Object.entries(files).map(([path, result]) => ({
   result,
 }));
 const wholeLeftOut = (id: string) => gaps.leftOut.some((g) => g.screen === id && !g.items);
+// A result file outlives a deleted check, so the expectFlow call must be there too.
+const sources = Object.values(
+  import.meta.glob<string>('./*.test.ts', { query: '?raw', import: 'default', eager: true })
+).join('\n');
+const quoted = (s: string) => `'${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`;
 
 describe('flow sync coverage', () => {
   it('has a check or a whole-screen leave-out for every flow screen', () => {
@@ -26,6 +31,17 @@ describe('flow sync coverage', () => {
       .filter((s) => !wholeLeftOut(s.id) && !results.some((r) => r.name === s.id))
       .map((s) => s.id);
     expect(unchecked, 'flow screens with no expectFlow case and no leave-out').toEqual([]);
+  });
+
+  it('has an expectFlow call for every result file', () => {
+    const gone = results
+      .filter(({ result: r }) => {
+        const state = r.state ? `\\s*,\\s*${quoted(r.state)}` : '';
+        const call = `expectFlow\\(\\s*${quoted(r.screen)}\\s*,\\s*\\w+${state}\\s*\\)`;
+        return !new RegExp(call).test(sources);
+      })
+      .map((r) => r.name);
+    expect(gone, 'result files whose expectFlow case is gone: delete them').toEqual([]);
   });
 
   it('keeps every result in step with the pinned flow', () => {
