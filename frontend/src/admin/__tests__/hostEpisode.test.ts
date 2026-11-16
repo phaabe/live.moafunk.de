@@ -118,7 +118,7 @@ async function mount(
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
-      { path: '/dashboard', component: stub('Schedule screen') },
+      { path: '/schedule', component: stub('Schedule screen') },
       { path: '/shows', component: stub('My Shows') },
       { path: '/shows/:slug/book', component: stub('Upload Your Set') },
       {
@@ -314,7 +314,7 @@ describe('Wrap-up and Done', () => {
     await vi.waitFor(() => expect(text()).toContain('Episode published'));
     expect(text()).not.toContain('SoundCloud');
     button('Back to Schedule').click();
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/dashboard'));
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/schedule'));
   });
 
   it('switches between the wrap-up and the episode on one path', async () => {

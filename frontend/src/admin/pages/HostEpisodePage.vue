@@ -247,7 +247,7 @@ async function publish() {
     <template v-if="view === 'done'">
       <h1 class="page-title">Episode published</h1>
       <div>
-        <BaseButton @click="router.push('/dashboard')">Back to Schedule</BaseButton>
+        <BaseButton @click="router.push('/schedule')">Back to Schedule</BaseButton>
       </div>
     </template>
 

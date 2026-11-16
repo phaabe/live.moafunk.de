@@ -2,15 +2,98 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 6,
+  "rev": 7,
   "screens": [
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "5a00957e",
+      "notesHash": "9f9a3b2f",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Dashboard"
+        },
+        {
+          "k": "h2",
+          "text": "Upcoming shows"
+        },
+        {
+          "k": "row",
+          "text": "So 25.10. · 12:00–14:00 · Brunchtime · lena",
+          "meta": "Upcoming · Live",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "Di 27.10. · 20:00–22:00 · Night Shift · jonas",
+          "meta": "Upcoming · Live",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira",
+          "meta": "Upcoming · Pre-recorded",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "So 08.11. · 12:00–14:00 · Brunchtime · lena",
+          "meta": "Upcoming · Pre-recorded",
+          "to": "episode-pre"
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "nav",
+          "text": "Schedule",
+          "to": "schedule"
+        },
+        {
+          "k": "nav",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "nav",
+          "text": "Pool",
+          "to": "unheard-pool"
+        },
+        {
+          "k": "nav",
+          "text": "lena",
+          "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Change Password",
+          "to": "set-password"
+        },
+        {
+          "k": "nav",
+          "text": "Recovery Email",
+          "to": "recovery-email"
+        },
+        {
+          "k": "nav",
+          "text": "Logout",
+          "to": "login"
+        }
+      ]
+    },
     {
       "id": "schedule",
       "title": "Schedule",
       "who": "host",
       "lane": "showday",
-      "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "dc7292f1",
+      "path": "admin.live.moafunk.de/#/schedule",
+      "hash": "49407601",
       "notesHash": "767dbae5",
       "elements": [
         {
@@ -60,6 +143,11 @@
         },
         {
           "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "nav",
           "text": "Schedule",
           "to": "schedule"
         },
@@ -101,7 +189,7 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
-      "hash": "19320f7e",
+      "hash": "868f9bba",
       "notesHash": "76a6a531",
       "elements": [
         {
@@ -125,6 +213,11 @@
           "text": "New show",
           "to": "new-show",
           "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -750,7 +843,7 @@
       "who": "host",
       "lane": "unheard",
       "path": "admin.live.moafunk.de/#/artists",
-      "hash": "89872408",
+      "hash": "e0e462bc",
       "notesHash": "d155d113",
       "elements": [
         {
@@ -812,6 +905,11 @@
           "text": "Copy invite link",
           "to": "submission",
           "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -1041,7 +1139,7 @@
       "who": "host",
       "lane": "signin",
       "path": "admin.live.moafunk.de/#/login",
-      "hash": "830f2c10",
+      "hash": "7076a9ab",
       "notesHash": "69c2144f",
       "elements": [
         {
@@ -1066,7 +1164,7 @@
         {
           "k": "button",
           "text": "Login",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": true
         },
         {
@@ -1160,7 +1258,7 @@
       "who": "host",
       "lane": "first",
       "path": "admin.live.moafunk.de/#/recovery-email",
-      "hash": "04bc981c",
+      "hash": "bacbb3ef",
       "notesHash": "dd46e540",
       "elements": [
         {
@@ -1195,7 +1293,7 @@
         {
           "k": "button",
           "text": "Skip for now",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": false
         }
       ]
@@ -1206,7 +1304,7 @@
       "who": "host",
       "lane": "first",
       "path": "admin.live.moafunk.de/#/verify-email?token=…",
-      "hash": "440e18b0",
+      "hash": "21b819dd",
       "notesHash": "0c9b45ca",
       "elements": [
         {
@@ -1220,7 +1318,7 @@
         {
           "k": "button",
           "text": "Verify Email",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": true
         },
         {

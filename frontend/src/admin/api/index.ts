@@ -839,6 +839,19 @@ export interface SeriesDetail extends Series {
   episodes: SeriesEpisode[];
 }
 
+/** A row of the host Dashboard: an upcoming episode of any host. */
+export interface UpcomingEpisode {
+  date: string;
+  start_time: string | null;
+  end_time: string | null;
+  show_name: string;
+  host_username: string;
+  mode: 'live' | 'prerecorded';
+  mode_label: string;
+  /** Set only on the caller's own episodes. */
+  own_episode_id: number | null;
+}
+
 export interface NewSeries {
   name: string;
   description: string;
@@ -881,6 +894,9 @@ const seriesPath = (slug: string) => `/api/series/${encodeURIComponent(slug)}`;
 
 export const seriesApi = {
   list: () => api.get<{ series: Series[] }>('/api/series'),
+
+  /** All hosts' upcoming episodes, by date and start time. */
+  upcoming: () => api.get<{ episodes: UpcomingEpisode[] }>('/api/upcoming-episodes'),
 
   /** One of the caller's series, or null when it is not theirs (404). */
   get: async (slug: string): Promise<SeriesDetail | null> => {

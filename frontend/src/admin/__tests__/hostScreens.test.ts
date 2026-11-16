@@ -8,9 +8,10 @@ import { hostPage } from '../hostPage';
 import { getBerlinNowISO } from '../showTime';
 import NavBar from '@shared/components/NavBar.vue';
 import LoginPage from '../pages/LoginPage.vue';
+import HostDashboardPage from '../pages/HostDashboardPage.vue';
 import HostSchedulePage from '../pages/HostSchedulePage.vue';
 import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
-import type { Series, SeriesDetail, User } from '../api';
+import type { Series, SeriesDetail, UpcomingEpisode, User } from '../api';
 import { expectFlow } from '../flow/expectFlow';
 // Load the composables barrel now, while FontFace is stubbed: the guest
 // landing route imports it later, after afterEach unstubs the globals.
@@ -80,6 +81,23 @@ const DETAIL: SeriesDetail = {
   ],
 };
 
+/** The flow's Dashboard rows: lena's own episodes and two of other hosts. */
+const UPCOMING: UpcomingEpisode[] = [
+  ['2026-10-25', '12:00', '14:00', 'Brunchtime', 'lena', 'Live', 42],
+  ['2026-10-27', '20:00', '22:00', 'Night Shift', 'jonas', 'Live', null],
+  ['2026-10-30', '18:00', '20:00', 'Dub Kitchen', 'mira', 'Pre-recorded', null],
+  ['2026-11-08', '12:00', '14:00', 'Brunchtime', 'lena', 'Pre-recorded', 43],
+].map(([date, start_time, end_time, show_name, host_username, mode_label, own_episode_id]) => ({
+  date: date as string,
+  start_time: start_time as string,
+  end_time: end_time as string,
+  show_name: show_name as string,
+  host_username: host_username as string,
+  mode: mode_label === 'Live' ? 'live' : 'prerecorded',
+  mode_label: mode_label as string,
+  own_episode_id: own_episode_id as number | null,
+}));
+
 let app: App | undefined;
 let root: HTMLDivElement;
 let streamActive: boolean;
@@ -120,6 +138,8 @@ beforeEach(() => {
           });
         case '/api/series':
           return Response.json({ series: mySeries });
+        case '/api/upcoming-episodes':
+          return Response.json({ episodes: UPCOMING });
         case '/api/series/brunchtime':
           return Response.json(DETAIL);
         case '/api/series/night':
@@ -152,7 +172,8 @@ async function mount(component: Component, role: User['role'], path = '/'): Prom
     routes: [
       { path: '/', component },
       { path: '/login', component },
-      { path: '/dashboard', component: stub('Schedule screen') },
+      { path: '/dashboard', component: stub('Dashboard screen') },
+      { path: '/schedule', component: stub('Schedule screen') },
       { path: '/calendar', component: stub('Calendar') },
       { path: '/shows', component: stub('Shows') },
       { path: '/shows/new', component: stub('New Show screen') },
@@ -181,10 +202,11 @@ const links = (selector: string) =>
   ]);
 
 describe('nav', () => {
-  it('gives hosts exactly Schedule and My Shows, on desktop and mobile', async () => {
+  it('gives hosts exactly Dashboard, Schedule and My Shows, on desktop and mobile', async () => {
     await mount(NavBar, 'host');
     const expected = [
-      ['Schedule', '/dashboard'],
+      ['Dashboard', '/dashboard'],
+      ['Schedule', '/schedule'],
       ['My Shows', '/shows'],
     ];
     expect(links('.nav-links')).toEqual(expected);
@@ -269,7 +291,7 @@ describe('router guard', () => {
     await appRouter.replace('/login');
   });
 
-  it('sends a host from the calendar to Schedule', async () => {
+  it('sends a host from the calendar to Dashboard', async () => {
     useAuthStore().user = { id: 1, username: 'lena', role: 'host' };
     await appRouter.push('/calendar');
     expect(appRouter.currentRoute.value.fullPath).toBe('/dashboard');
@@ -285,6 +307,30 @@ describe('router guard', () => {
     useAuthStore().user = { id: 3, username: 'guest', role: 'guest' };
     await appRouter.push('/calendar');
     expect(appRouter.currentRoute.value.fullPath).toBe('/shows/39');
+  });
+});
+
+describe('Dashboard', () => {
+  it("lists all hosts' upcoming shows and links only the host's own", async () => {
+    await mount(HostDashboardPage, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(4));
+    expect(root.querySelector('h1')?.textContent).toBe('Dashboard');
+    const rows = [...root.querySelectorAll('.episodes li')].map((li) => ({
+      text: [...li.querySelectorAll('span')].map((s) => s.textContent).join(' | '),
+      href: li.querySelector('a')?.getAttribute('href') ?? null,
+    }));
+    expect(rows).toEqual([
+      { text: 'So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live', href: '/shows/42' },
+      { text: 'Di 27.10. · 20:00–22:00 · Night Shift · jonas | Upcoming · Live', href: null },
+      {
+        text: 'Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira | Upcoming · Pre-recorded',
+        href: null,
+      },
+      {
+        text: 'So 08.11. · 12:00–14:00 · Brunchtime · lena | Upcoming · Pre-recorded',
+        href: '/shows/43',
+      },
+    ]);
   });
 });
 
@@ -363,6 +409,12 @@ describe('flow', () => {
     await vi.waitFor(() => expect(root.textContent).toContain('On air now'));
     await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(2));
     await expectFlow('schedule', root);
+  });
+
+  it('Dashboard matches the flow', async () => {
+    await mount({ render: () => [h(NavBar), h(HostDashboardPage)] }, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(4));
+    await expectFlow('dashboard', root);
   });
 
   it('My Shows matches the flow', async () => {

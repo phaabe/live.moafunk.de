@@ -5,7 +5,7 @@ import { episodeDay } from '../episodeRow';
 import BoardIcon from '../components/BoardIcon.vue';
 import { isShowRunning } from '../showTime';
 
-// Flow screen `schedule` (host at /dashboard): what is on air now and the
+// Flow screen `schedule` (host at /schedule): what is on air now and the
 // host's next episodes. Free slots come in a later release.
 
 interface Row {
