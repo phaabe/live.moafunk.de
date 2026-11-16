@@ -16,7 +16,7 @@ The admin SPA ships inside the backend image, so one image covers API and admin.
 2. Every merge into `staging` builds an image `sha-<7>` and puts exactly that image on staging, unless staging is on hold.
 3. A release goes like this:
    1. On the staging box: `/opt/unheard-staging/staging.sh hold "R1 release checks"`. Builds go on, but staging keeps the release candidate.
-   2. Run the release checks on staging.
+   2. Run the release checks on staging, including the restore drill (below) and the 90-minute soak of the chaos test show (`backend/staging/README.md`).
    3. Open the release PR `staging` → `main` (merge commit) and merge it.
    4. When the `main` image build is green, run **Deploy production** with `dry_run` on, then again with `dry_run` off.
    5. `/opt/unheard-staging/staging.sh unhold`.
@@ -83,6 +83,22 @@ EOF
 ```
 
 Try it: `ssh root@178.104.160.103 'SHOWDAY_FORCE=1 /usr/local/sbin/showday-check.sh'` checks now and posts once for every show of today and tomorrow (nothing when there is none). A failed check or post shows in `systemctl status showday-check`. After a change to the script, copy it again (the first line above).
+
+## Restore drill
+
+Before each release, prove that the latest production backup (`backup.yml`, nightly to `r2-backup:unheard-backups/db/`) restores and works: put it into staging and run the chaos test show on it. Staging is on hold for the release checks, so no deploy replaces the data meanwhile. The backup is scrubbed on the production box before it leaves, as for any copy of production data (`backend/staging/README.md`).
+
+```bash
+# 1. The newest backup, unpacked on the production box
+ssh root@178.104.160.103 'set -e; f="$(rclone lsf r2-backup:unheard-backups/db/ --files-only | sort | tail -1)"; echo "backup: $f" >&2; rclone cat "r2-backup:unheard-backups/db/$f" | gunzip >/tmp/restore-drill.db'
+# 2. Scrubbed there, then put into staging
+ssh root@178.104.160.103 'PROD_DB=/tmp/restore-drill.db bash -s -- export-db' < backend/staging/staging.sh \
+  | ssh -F ~/.config/moafunk-staging/ssh_config staging '/opt/unheard-staging/staging.sh seed-db -'
+ssh root@178.104.160.103 'rm -f /tmp/restore-drill.db'
+```
+
+3. Run **Actions → E2E - Chaos test show on staging → Run workflow** with `duration` 90. It must pass. Log in as `staging-admin` and look at a few episodes and Shows from production.
+4. Note the backup's name and the run in the release PR.
 
 ## Keys
 
