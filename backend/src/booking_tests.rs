@@ -2,105 +2,19 @@
 
 use super::*;
 use crate::broadcast_tests::{add_user, headers, state_with};
+use crate::fake_r2::FakeR2;
 use crate::series::{RepeatRule, Rhythm};
 use axum::{
-    body::{to_bytes, Body, Bytes},
+    body::{to_bytes, Body},
     extract::{FromRequest, Multipart, Path, Query},
-    http::{Method, Request, StatusCode, Uri},
+    http::{Request, StatusCode},
 };
 use chrono::Datelike;
 use handlers::booking;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-
-// ── Fake R2: path-style PUT / GET / DELETE and CopyObject in memory ─────────
-
-#[derive(Clone, Default)]
-struct FakeR2 {
-    objects: Arc<Mutex<HashMap<String, Vec<u8>>>>,
-    /// While set, every PUT fails like an R2 that refuses writes.
-    refuse_writes: Arc<AtomicBool>,
-}
-
-impl FakeR2 {
-    fn refuse_writes(&self, refuse: bool) {
-        self.refuse_writes.store(refuse, Ordering::SeqCst);
-    }
-
-    /// The stored object at `key` (without the bucket).
-    fn object(&self, state: &AppState, key: &str) -> Option<Vec<u8>> {
-        let path = format!("{}/{key}", state.config.r2_bucket_name);
-        self.objects.lock().unwrap().get(&path).cloned()
-    }
-}
-
-async fn fake_r2_object(
-    State(r2): State<FakeR2>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> axum::response::Response {
-    // Path style: /<bucket>/<key>
-    let key = uri.path().trim_start_matches('/').to_string();
-    if method == Method::PUT && r2.refuse_writes.load(Ordering::SeqCst) {
-        // 403, not 5xx: the SDK does not retry it, so the test stays fast.
-        return (
-            StatusCode::FORBIDDEN,
-            [("content-type", "application/xml")],
-            "<?xml version=\"1.0\"?><Error><Code>AccessDenied</Code><Message>no</Message></Error>",
-        )
-            .into_response();
-    }
-    let mut objects = r2.objects.lock().unwrap();
-    let not_found = || {
-        (
-            StatusCode::NOT_FOUND,
-            [("content-type", "application/xml")],
-            "<?xml version=\"1.0\"?><Error><Code>NoSuchKey</Code><Message>no</Message></Error>",
-        )
-            .into_response()
-    };
-    match method {
-        Method::PUT => {
-            if let Some(source) = headers.get("x-amz-copy-source") {
-                let source = source.to_str().unwrap().trim_start_matches('/');
-                let Some(data) = objects.get(source).cloned() else {
-                    return not_found();
-                };
-                objects.insert(key, data);
-                return (
-                    StatusCode::OK,
-                    [("content-type", "application/xml")],
-                    "<?xml version=\"1.0\"?><CopyObjectResult><ETag>\"e\"</ETag>\
-                     <LastModified>2026-01-01T00:00:00.000Z</LastModified></CopyObjectResult>",
-                )
-                    .into_response();
-            }
-            objects.insert(key, body.to_vec());
-            (StatusCode::OK, [("etag", "\"e\"")]).into_response()
-        }
-        Method::GET => match objects.get(&key) {
-            Some(data) => (StatusCode::OK, data.clone()).into_response(),
-            None => not_found(),
-        },
-        Method::DELETE => {
-            objects.remove(&key);
-            StatusCode::NO_CONTENT.into_response()
-        }
-        _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
-    }
-}
 
 async fn booking_state() -> (Arc<AppState>, tempfile::TempDir, FakeR2) {
-    let r2 = FakeR2::default();
-    let app = axum::Router::new()
-        .fallback(fake_r2_object)
-        .with_state(r2.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (r2, endpoint) = FakeR2::serve().await;
     let (state, temp) = state_with(json!({ "r2_endpoint": endpoint })).await;
     (state, temp, r2)
 }
