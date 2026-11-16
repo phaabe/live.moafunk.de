@@ -11,6 +11,7 @@ import LoginPage from '../pages/LoginPage.vue';
 import HostSchedulePage from '../pages/HostSchedulePage.vue';
 import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
 import type { Series, SeriesDetail, User } from '../api';
+import { expectFlow } from '../flow/expectFlow';
 // Load the composables barrel now, while FontFace is stubbed: the guest
 // landing route imports it later, after afterEach unstubs the globals.
 import '../composables';
@@ -84,11 +85,14 @@ let root: HTMLDivElement;
 let streamActive: boolean;
 let mySeries: Series[];
 let loginRole: User['role'];
+/** Air time of the show in /api/shows-overview. */
+let onAir: { start: string; end: string };
 
 beforeEach(() => {
   streamActive = false;
   mySeries = [BRUNCHTIME, NIGHT];
   loginRole = 'host';
+  onAir = { start: '00:00', end: '23:59' };
   root = document.createElement('div');
   document.body.appendChild(root);
   const today = getBerlinNowISO().slice(0, 10);
@@ -105,8 +109,8 @@ beforeEach(() => {
                 id: 42,
                 title: 'Brunchtime #2',
                 date: today,
-                start_time: '00:00',
-                end_time: '23:59',
+                start_time: onAir.start,
+                end_time: onAir.end,
                 status: 'scheduled',
                 show_type: 'external',
                 host_has_logged_in: true,
@@ -340,5 +344,36 @@ describe('My Shows', () => {
     await mount(HostMyShowsPage, 'host');
     await vi.waitFor(() => expect(root.textContent).toContain('New show'));
     expect(root.querySelectorAll('.shows li')).toHaveLength(0);
+  });
+});
+
+describe('flow', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('Schedule matches the flow', async () => {
+    streamActive = true;
+    onAir = { start: '12:00', end: '14:00' };
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // 12:30 or 13:30 in Berlin, so the 12:00–14:00 show is on air.
+    vi.setSystemTime(new Date(`${getBerlinNowISO().slice(0, 10)}T11:30:00Z`));
+    mySeries = [BRUNCHTIME];
+    await mount({ render: () => [h(NavBar), h(HostSchedulePage)] }, 'host');
+    await vi.waitFor(() => expect(root.textContent).toContain('On air now'));
+    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(2));
+    await expectFlow('schedule', root);
+  });
+
+  it('My Shows matches the flow', async () => {
+    mySeries = [BRUNCHTIME];
+    await mount({ render: () => [h(NavBar), h(HostMyShowsPage)] }, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.shows li')).toHaveLength(1));
+    await expectFlow('my-shows', root);
+  });
+
+  it('Admin Login matches the flow', async () => {
+    await mount(LoginPage, null as unknown as User['role'], '/login');
+    await expectFlow('login', root);
   });
 });

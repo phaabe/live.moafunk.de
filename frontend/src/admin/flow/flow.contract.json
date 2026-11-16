@@ -1,0 +1,1376 @@
+{
+  "format": "flow-contract",
+  "version": 1,
+  "flow": "moafunk",
+  "rev": 6,
+  "screens": [
+    {
+      "id": "schedule",
+      "title": "Schedule",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "dc7292f1",
+      "notesHash": "767dbae5",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Schedule"
+        },
+        {
+          "k": "h2",
+          "text": "On air now"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · Brunchtime · until 14:00"
+        },
+        {
+          "k": "h2",
+          "text": "Your next episodes"
+        },
+        {
+          "k": "row",
+          "text": "So 25.10. · Brunchtime",
+          "meta": "Upcoming · Live",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "So 08.11. · Brunchtime",
+          "meta": "Upcoming · Pre-recorded",
+          "to": "episode-pre"
+        },
+        {
+          "k": "h2",
+          "text": "Free slots"
+        },
+        {
+          "k": "row",
+          "text": "So 01.11. · 12:00–14:00",
+          "meta": "Free",
+          "to": "book-slot"
+        },
+        {
+          "k": "row",
+          "text": "So 15.11. · 12:00–14:00",
+          "meta": "Free",
+          "to": "book-slot"
+        },
+        {
+          "k": "nav",
+          "text": "Schedule",
+          "to": "schedule"
+        },
+        {
+          "k": "nav",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "nav",
+          "text": "Pool",
+          "to": "unheard-pool"
+        },
+        {
+          "k": "nav",
+          "text": "lena",
+          "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Change Password",
+          "to": "set-password"
+        },
+        {
+          "k": "nav",
+          "text": "Recovery Email",
+          "to": "recovery-email"
+        },
+        {
+          "k": "nav",
+          "text": "Logout",
+          "to": "login"
+        }
+      ]
+    },
+    {
+      "id": "my-shows",
+      "title": "My Shows",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows",
+      "hash": "19320f7e",
+      "notesHash": "76a6a531",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "My Shows"
+        },
+        {
+          "k": "row",
+          "text": "Brunchtime",
+          "meta": "Sundays · 12:00–14:00",
+          "to": "show"
+        },
+        {
+          "k": "row",
+          "text": "UNHEARD",
+          "meta": "Monthly · 4 artists",
+          "to": "unheard-pool"
+        },
+        {
+          "k": "button",
+          "text": "New show",
+          "to": "new-show",
+          "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Schedule",
+          "to": "schedule"
+        },
+        {
+          "k": "nav",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "nav",
+          "text": "Pool",
+          "to": "unheard-pool"
+        },
+        {
+          "k": "nav",
+          "text": "lena",
+          "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Change Password",
+          "to": "set-password"
+        },
+        {
+          "k": "nav",
+          "text": "Recovery Email",
+          "to": "recovery-email"
+        },
+        {
+          "k": "nav",
+          "text": "Logout",
+          "to": "login"
+        }
+      ]
+    },
+    {
+      "id": "new-show",
+      "title": "New Show",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/new",
+      "hash": "bbe1a73e",
+      "notesHash": "ec4d1f03",
+      "elements": [
+        {
+          "k": "back",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "h1",
+          "text": "New Show"
+        },
+        {
+          "k": "text",
+          "text": "A show is your series. You book its episodes after this."
+        },
+        {
+          "k": "media",
+          "text": "Show cover · drop an image",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Name",
+          "value": "Brunchtime"
+        },
+        {
+          "k": "field",
+          "text": "Description",
+          "value": "Sunday brunch sounds, every week from 12:00."
+        },
+        {
+          "k": "h2",
+          "text": "Rhythm"
+        },
+        {
+          "k": "field",
+          "text": "Repeats",
+          "value": "Every week ▾"
+        },
+        {
+          "k": "field",
+          "text": "Day",
+          "value": "Sunday ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "button",
+          "text": "Create show",
+          "to": "show",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "show",
+      "title": "Show",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/brunchtime",
+      "hash": "8f0978bf",
+      "notesHash": "152f6c7f",
+      "elements": [
+        {
+          "k": "back",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "media",
+          "text": "Show cover",
+          "to": null
+        },
+        {
+          "k": "h1",
+          "text": "Brunchtime"
+        },
+        {
+          "k": "text",
+          "text": "Sunday brunch sounds, every week from 12:00."
+        },
+        {
+          "k": "button",
+          "text": "Book Slot",
+          "to": "book-slot",
+          "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Episodes"
+        },
+        {
+          "k": "row",
+          "text": "So 25.10. · Live",
+          "meta": "Upcoming",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "So 18.10. · Live",
+          "meta": "Finished · wrap-up open",
+          "to": "wrapup"
+        },
+        {
+          "k": "row",
+          "text": "So 11.10. · Pre-recorded",
+          "meta": "Finished",
+          "to": null
+        }
+      ]
+    },
+    {
+      "id": "book-slot",
+      "title": "Book Slot",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/brunchtime/book",
+      "hash": "a3675931",
+      "notesHash": "9f0648fb",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "h1",
+          "text": "Book Slot"
+        },
+        {
+          "k": "field",
+          "text": "Show",
+          "value": "Brunchtime ▾"
+        },
+        {
+          "k": "h2",
+          "text": "Mode"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": "upload",
+          "on": false
+        },
+        {
+          "k": "field",
+          "text": "Date",
+          "value": "So 25.10.2026 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "notice",
+          "text": "Pre-recorded shows need the file before you pick a time."
+        },
+        {
+          "k": "button",
+          "text": "Book slot",
+          "to": "episode",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "upload",
+      "title": "Upload Your Set",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/brunchtime/book?mode=prerecorded",
+      "hash": "a5da7c09",
+      "notesHash": "51e1820b",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Book Slot",
+          "to": "book-slot"
+        },
+        {
+          "k": "h1",
+          "text": "Upload Your Set"
+        },
+        {
+          "k": "text",
+          "text": "Pre-recorded episodes start with the file."
+        },
+        {
+          "k": "media",
+          "text": "Drop your set here · MP3 or WAV",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "brunchtime-0811.mp3 · 1:58:40 · uploaded"
+        },
+        {
+          "k": "field",
+          "text": "Date",
+          "value": "So 08.11.2026 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "button",
+          "text": "Book slot",
+          "to": "episode-pre",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "episode",
+      "title": "Episode",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "574a351b",
+      "notesHash": "06275bb2",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "h1",
+          "text": "So 25.10. · Brunchtime"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Upcoming · Live · 12:00–14:00"
+        },
+        {
+          "k": "h2",
+          "text": "Next step"
+        },
+        {
+          "k": "text",
+          "text": "Test your audio before air time. The Studio opens 30 min before the start."
+        },
+        {
+          "k": "button",
+          "text": "Open Studio",
+          "to": "studio",
+          "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "field",
+          "text": "Title",
+          "value": "Brunchtime #31"
+        },
+        {
+          "k": "field",
+          "text": "Announcements",
+          "value": "Story + Post · before and after"
+        },
+        {
+          "k": "button",
+          "text": "Create guest link",
+          "to": "guest-link",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Cancel booking",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "episode-pre",
+      "title": "Episode · Pre-recorded",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/43",
+      "hash": "56f8c825",
+      "notesHash": "35e32059",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "h1",
+          "text": "So 08.11. · Brunchtime"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Pre-recorded & confirmed · plays at 12:00"
+        },
+        {
+          "k": "h2",
+          "text": "Next step"
+        },
+        {
+          "k": "text",
+          "text": "Nothing to do. The set plays at air time. Wrap-up opens after 14:00."
+        },
+        {
+          "k": "media",
+          "text": "Waveform · brunchtime-0811.mp3 · 1:58:40",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Replace file",
+          "to": "upload",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Open Wrap-up",
+          "to": "wrapup",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio",
+      "title": "Studio · Soundcheck",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "9191bf61",
+      "notesHash": "3bdf2dca",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "check",
+          "text": "Test broadcast sounds right",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Start test",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "media",
+          "text": "Test player · what listeners hear",
+          "to": null
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": "studio-onair",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair",
+      "title": "Studio · On Air",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "b0b2f0e3",
+      "notesHash": "5a47a38f",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "stable",
+          "to": null
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "wrapup",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "wrapup",
+      "title": "Wrap-up",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "0c51c988",
+      "notesHash": "a3418514",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Wrap-up"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Recording ready · 1:58:40"
+        },
+        {
+          "k": "h2",
+          "text": "SoundCloud"
+        },
+        {
+          "k": "field",
+          "text": "Track title",
+          "value": "Brunchtime #31 · 25.10.2026"
+        },
+        {
+          "k": "check",
+          "text": "Upload as private track",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "check",
+          "text": "Add to playlist “Brunchtime”",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "h2",
+          "text": "3 moments for Instagram"
+        },
+        {
+          "k": "check",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "on": true
+        },
+        {
+          "k": "check",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "on": true
+        },
+        {
+          "k": "check",
+          "text": "01:20:44",
+          "meta": "Closing set",
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "Publish",
+          "to": "done",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "title": "Published",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "9dfee1cb",
+      "notesHash": "35e32059",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Episode published"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "SoundCloud · private track uploaded"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Instagram · 3 posts queued"
+        },
+        {
+          "k": "button",
+          "text": "Back to Schedule",
+          "to": "schedule",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "unheard-pool",
+      "title": "UNHEARD Pool",
+      "who": "host",
+      "lane": "unheard",
+      "path": "admin.live.moafunk.de/#/artists",
+      "hash": "89872408",
+      "notesHash": "d155d113",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Schedule",
+          "to": "schedule"
+        },
+        {
+          "k": "h1",
+          "text": "UNHEARD Pool"
+        },
+        {
+          "k": "text",
+          "text": "Pick 4 submissions for the next UNHEARD episode."
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "2 of 4 picked"
+        },
+        {
+          "k": "check",
+          "text": "Mira Sol",
+          "meta": "Dream pop · Leipzig",
+          "on": true
+        },
+        {
+          "k": "check",
+          "text": "Kofi Mensah",
+          "meta": "Afro house · Berlin",
+          "on": true
+        },
+        {
+          "k": "check",
+          "text": "The Pale Rooms",
+          "meta": "Post-punk · Hamburg",
+          "on": false
+        },
+        {
+          "k": "check",
+          "text": "Ana Ruiz",
+          "meta": "Ambient · Köln",
+          "on": false
+        },
+        {
+          "k": "check",
+          "text": "Juno Park",
+          "meta": "Jazz-trap · Berlin",
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "Book with 4 artists",
+          "to": "book-slot",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Copy invite link",
+          "to": "submission",
+          "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Schedule",
+          "to": "schedule"
+        },
+        {
+          "k": "nav",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "nav",
+          "text": "Pool",
+          "to": "unheard-pool"
+        },
+        {
+          "k": "nav",
+          "text": "lena",
+          "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Change Password",
+          "to": "set-password"
+        },
+        {
+          "k": "nav",
+          "text": "Recovery Email",
+          "to": "recovery-email"
+        },
+        {
+          "k": "nav",
+          "text": "Logout",
+          "to": "login"
+        }
+      ]
+    },
+    {
+      "id": "submission",
+      "title": "Submission",
+      "who": "musician",
+      "lane": "unheard",
+      "path": "/pages/unheard-artists-form.html?invite=brunchtime",
+      "hash": "98428602",
+      "notesHash": "2f41764f",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Apply for UNHEARD"
+        },
+        {
+          "k": "text",
+          "text": "Invited by **Brunchtime**. Your music could air on Moafunk."
+        },
+        {
+          "k": "field",
+          "text": "Artist name",
+          "value": ""
+        },
+        {
+          "k": "field",
+          "text": "Email",
+          "value": ""
+        },
+        {
+          "k": "field",
+          "text": "City",
+          "value": ""
+        },
+        {
+          "k": "field",
+          "text": "Track link",
+          "value": "soundcloud.com/…"
+        },
+        {
+          "k": "field",
+          "text": "About you",
+          "value": ""
+        },
+        {
+          "k": "check",
+          "text": "Moafunk may play my track on air and post about it",
+          "meta": "",
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "Submit Application",
+          "to": "submission-sent",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "submission-sent",
+      "title": "Submission sent",
+      "who": "musician",
+      "lane": "unheard",
+      "path": "/pages/unheard-artists-form.html#sent",
+      "hash": "d7e07812",
+      "notesHash": "35e32059",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Thanks, Mira!"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Application received"
+        },
+        {
+          "k": "text",
+          "text": "The host picks 4 artists per UNHEARD episode. We email you if you are in."
+        }
+      ]
+    },
+    {
+      "id": "guest-link",
+      "title": "Guest link",
+      "who": "host",
+      "lane": "guest",
+      "path": "admin.live.moafunk.de/#/shows/42/guest",
+      "hash": "99470104",
+      "notesHash": "cba25e05",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Guest link"
+        },
+        {
+          "k": "text",
+          "text": "A one-time link for a take-over. It works once and expires after the episode."
+        },
+        {
+          "k": "field",
+          "text": "Guest name",
+          "value": "DJ Lumen"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "live.moafunk.de/t/7Hk2-qP9"
+        },
+        {
+          "k": "button",
+          "text": "Copy link",
+          "to": "takeover",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Revoke",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "takeover",
+      "title": "Take-Over",
+      "who": "guest",
+      "lane": "guest",
+      "path": "/t/7Hk2-qP9",
+      "hash": "dec14993",
+      "notesHash": "93077c70",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Take-Over"
+        },
+        {
+          "k": "text",
+          "text": "You are taking over **Brunchtime** on So 25.10., 12:00–14:00."
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "One-time link · expires 25.10. 14:00"
+        },
+        {
+          "k": "field",
+          "text": "Your name on air",
+          "value": "DJ Lumen"
+        },
+        {
+          "k": "button",
+          "text": "Start soundcheck",
+          "to": "studio",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "takeover-done",
+      "title": "Take-over finished",
+      "who": "guest",
+      "lane": "guest",
+      "path": "/t/7Hk2-qP9",
+      "hash": "60c8f8a7",
+      "notesHash": "35e32059",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Thanks for the take-over"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Stream ended · 1:58:40"
+        },
+        {
+          "k": "text",
+          "text": "The host gets the recording for Wrap-up. This link no longer works."
+        }
+      ]
+    },
+    {
+      "id": "login",
+      "title": "Admin Login",
+      "who": "host",
+      "lane": "signin",
+      "path": "admin.live.moafunk.de/#/login",
+      "hash": "830f2c10",
+      "notesHash": "69c2144f",
+      "elements": [
+        {
+          "k": "media",
+          "text": "Moafunk logo",
+          "to": null
+        },
+        {
+          "k": "h1",
+          "text": "Admin Login"
+        },
+        {
+          "k": "field",
+          "text": "Username",
+          "value": "lena"
+        },
+        {
+          "k": "field",
+          "text": "Password",
+          "value": "••••••••"
+        },
+        {
+          "k": "button",
+          "text": "Login",
+          "to": "schedule",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Forgot password?",
+          "to": "forgot-password",
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "login-first",
+      "title": "Admin Login · first sign-in",
+      "who": "host",
+      "lane": "first",
+      "path": "admin.live.moafunk.de/#/login",
+      "hash": "095f7c1f",
+      "notesHash": "a74d1020",
+      "elements": [
+        {
+          "k": "media",
+          "text": "Moafunk logo",
+          "to": null
+        },
+        {
+          "k": "h1",
+          "text": "Admin Login"
+        },
+        {
+          "k": "field",
+          "text": "Username",
+          "value": "lena"
+        },
+        {
+          "k": "field",
+          "text": "Password",
+          "value": "temporary password from an admin"
+        },
+        {
+          "k": "button",
+          "text": "Login",
+          "to": "set-password",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Forgot password?",
+          "to": "forgot-password",
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "set-password",
+      "title": "Set Your Password",
+      "who": "host",
+      "lane": "first",
+      "path": "admin.live.moafunk.de/#/change-password",
+      "hash": "f42e0f0c",
+      "notesHash": "1df0a8c2",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Set Your Password"
+        },
+        {
+          "k": "notice",
+          "text": "You are signed in with a temporary password. Choose your own password to continue."
+        },
+        {
+          "k": "field",
+          "text": "New Password",
+          "value": ""
+        },
+        {
+          "k": "field",
+          "text": "Confirm New Password",
+          "value": ""
+        },
+        {
+          "k": "button",
+          "text": "Set Password",
+          "to": "recovery-email",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "recovery-email",
+      "title": "Recovery Email",
+      "who": "host",
+      "lane": "first",
+      "path": "admin.live.moafunk.de/#/recovery-email",
+      "hash": "04bc981c",
+      "notesHash": "dd46e540",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Recovery Email"
+        },
+        {
+          "k": "text",
+          "text": "Add an email and verify it to reset a forgotten password."
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Verified email: none"
+        },
+        {
+          "k": "field",
+          "text": "Recovery Email",
+          "value": "lena@example.org"
+        },
+        {
+          "k": "field",
+          "text": "Current Password",
+          "value": "••••••••"
+        },
+        {
+          "k": "button",
+          "text": "Send Verification Email",
+          "to": "verify-email",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Skip for now",
+          "to": "schedule",
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "verify-email",
+      "title": "Verify Recovery Email",
+      "who": "host",
+      "lane": "first",
+      "path": "admin.live.moafunk.de/#/verify-email?token=…",
+      "hash": "440e18b0",
+      "notesHash": "0c9b45ca",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Verify Recovery Email"
+        },
+        {
+          "k": "text",
+          "text": "Confirm that you want to use this email to recover your account."
+        },
+        {
+          "k": "button",
+          "text": "Verify Email",
+          "to": "schedule",
+          "primary": true
+        },
+        {
+          "k": "text",
+          "text": "If the link expired, sign in and request another from Recovery Email settings."
+        },
+        {
+          "k": "button",
+          "text": "Back to login",
+          "to": "login",
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "forgot-password",
+      "title": "Reset Password · request",
+      "who": "host",
+      "lane": "signin",
+      "path": "admin.live.moafunk.de/#/forgot-password",
+      "hash": "003e8fb8",
+      "notesHash": "4a7a0b45",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Back to login",
+          "to": "login"
+        },
+        {
+          "k": "h1",
+          "text": "Reset Password"
+        },
+        {
+          "k": "text",
+          "text": "Enter your verified recovery email. The email includes your username."
+        },
+        {
+          "k": "field",
+          "text": "Email",
+          "value": "lena@example.org"
+        },
+        {
+          "k": "button",
+          "text": "Send Reset Link",
+          "to": "reset-sent",
+          "primary": true
+        },
+        {
+          "k": "text",
+          "text": "If no email arrives, check spam or try again later. You can also ask an admin for help."
+        }
+      ]
+    },
+    {
+      "id": "reset-sent",
+      "title": "Reset link sent",
+      "who": "host",
+      "lane": "signin",
+      "path": "admin.live.moafunk.de/#/forgot-password",
+      "hash": "b68245c6",
+      "notesHash": "6854245d",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Back to login",
+          "to": "login"
+        },
+        {
+          "k": "h1",
+          "text": "Reset Password"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "If this address is eligible, a reset link will be sent."
+        },
+        {
+          "k": "text",
+          "text": "Open the link in the email within 30 minutes."
+        },
+        {
+          "k": "button",
+          "text": "Open the email link",
+          "to": "reset-password",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "reset-password",
+      "title": "Reset Password · new password",
+      "who": "host",
+      "lane": "signin",
+      "path": "admin.live.moafunk.de/#/reset-password?token=…",
+      "hash": "8f024932",
+      "notesHash": "94861fec",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Reset Password"
+        },
+        {
+          "k": "field",
+          "text": "New Password",
+          "value": ""
+        },
+        {
+          "k": "field",
+          "text": "Confirm New Password",
+          "value": ""
+        },
+        {
+          "k": "button",
+          "text": "Set Password",
+          "to": "reset-done",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Request a new reset link",
+          "to": "forgot-password",
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "reset-done",
+      "title": "Password changed",
+      "who": "host",
+      "lane": "signin",
+      "path": "admin.live.moafunk.de/#/reset-password?token=…",
+      "hash": "6421694e",
+      "notesHash": "15dc0834",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Reset Password"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Password changed. Sign in with your username and new password."
+        },
+        {
+          "k": "button",
+          "text": "Back to login",
+          "to": "login",
+          "primary": true
+        }
+      ]
+    }
+  ]
+}
