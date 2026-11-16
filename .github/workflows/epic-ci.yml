@@ -13,6 +13,7 @@ on:
       - dev/312-interim
       - dev/streaming-architecture
       - staging
+      - ci/899-coverage-measure
 
 # Both checks must exist for every PR, including documentation-only changes.
 # Keep path filters out of this workflow so these names can be required.
