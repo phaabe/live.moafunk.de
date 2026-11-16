@@ -39,8 +39,7 @@ export interface ScreenResult {
   /** A second state of the screen, checked against the same flow screen. */
   state?: string;
   hash: string;
-  status: 'ok' | 'drift' | 'left-out';
-  release?: string;
+  status: 'ok' | 'drift';
   leftOut: { item: string; release: string }[];
   missing: string[];
   extra: string[];
@@ -115,7 +114,7 @@ const plain = (e: FlowElement) => e.k === 'notice' || e.k === 'pill' || (e.k ===
 const joined = (e: FlowElement) => (e.meta ? `${e.text} | ${e.meta}` : e.text);
 
 /** How `checkScreen` names a flow item in its output and in flow-gaps.json. */
-export function label(e: FlowElement): string {
+function label(e: FlowElement): string {
   return `${e.k}: ${joined(e)}`;
 }
 
