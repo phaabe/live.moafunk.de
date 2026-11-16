@@ -12,19 +12,19 @@ The admin SPA ships inside the backend image, so one image covers API and admin.
 
 ## Rules
 
-1. Every change is a PR into `staging`, squash merged. Each PR has exactly one label `release::feature`, `release::fix` or `release::internal` (check `release-label`). The label sorts the PR into the release notes; `release::internal` is left out. Nobody commits to `staging` or `main` directly. Only release PRs (`release/rN`) and hotfix PRs (`hotfix/<slug>`) go into `main`.
+1. Every change is a PR into `staging`, squash merged. Each PR has exactly one label `release::feature`, `release::fix` or `release::internal` (check `release-label`). The label sorts the PR into the release notes; `release::internal` is left out. Nobody commits to `staging` or `main` directly. Only release PRs (`release/rN`) and hotfix PRs (`hotfix/<slug>`) go into `main` (check `release-gate`).
 2. Every merge into `staging` builds an image `sha-<7>` and puts exactly that image on staging, unless staging is on hold.
 3. A release goes like this. `rN` is the next number after the last `r*` tag (`r0` was the first).
    1. On the staging box: `/opt/unheard-staging/staging.sh hold "rN release checks"`. Builds go on, but staging keeps the release candidate. `staging.sh status` prints the tag it runs (`sha-<7>`): that commit is the release.
    2. Run the release checks on staging: the restore drill (below) and the 90-minute soak of the chaos test show (`backend/staging/README.md`). No check enforces the soak; it is your step.
    3. `scripts/release.sh pr rN sha-<7>`. It cuts `release/rN` from that commit and opens the release PR `release/rN` → `main`. The PR body holds the release notes since the last tag, grouped by the `release::*` labels. Note the backup's name and the soak run in a comment on the PR.
-   4. Wait until every check of the release PR is green. Then merge it with a **merge commit**, never a squash: `gh pr merge <n> --merge --delete-branch --match-head-commit <sha>`. A squash would put a commit on `main` that `staging` never has, so the next release would conflict and its notes would miss the PRs.
+   4. Wait until every check of the release PR is green. `release-gate` passes only when the chaos test show passed right after the staging deploy of the release commit (job `e2e-staging`). A run by hand or the nightly run does not count. If that run failed, re-run it (the commit's **BACKEND - Build, Push and Deploy Image** run → Re-run failed jobs), then re-run `release-gate`. Then merge it with a **merge commit**, never a squash: `gh pr merge <n> --merge --delete-branch --match-head-commit <sha>`. A squash would put a commit on `main` that `staging` never has, so the next release would conflict and its notes would miss the PRs.
    5. `scripts/release.sh tag rN`. It tags `rN` on the merge commit and creates the GitHub Release with the same notes.
    6. When the `main` image build is green, run **Deploy production** with `dry_run` on, then again with `dry_run` off.
    7. `/opt/unheard-staging/staging.sh unhold`.
 4. Deploy to production only release commits on `main` that passed the checks on staging, or a hotfix (rule 5). Never during a show or in the 2 hours before one. The best time is soon after a show, so there is a week to fix problems.
 5. A hotfix skips the chaos test and goes to `main` at once:
-   1. Branch `hotfix/<slug>` from `main`. Open a PR into `main` with the label `hotfix`. The unit tests must pass; the chaos test does not run.
+   1. Branch `hotfix/<slug>` from `main`. Open a PR into `main` with the label `hotfix`. The unit tests must pass; the chaos test does not run (`release-gate` checks only the branch name and the label).
    2. Squash merge it: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
    3. When the `main` image build is green, run **Deploy production** with `hotfix` on, first with `dry_run` on. It skips only the staging check, and only while `main`'s head commit is that hotfix merge.
    4. Right after: the same fix as a normal PR into `staging`, label `release::fix`. Cherry-pick the commit from `main` onto a branch from `origin/staging` (`git cherry-pick <commit>`). Without it, the next release conflicts with the fix or removes it.
@@ -120,7 +120,7 @@ The staging box has no key for production, and the staging key has no access to 
 These need a repository admin (phaabe), see https://github.com/phaabe/live.moafunk.de/issues/890:
 
 - ruleset on `staging`: PR required, squash only, required checks `backend-ci`, `frontend-ci`, `stream-system`, `backend-build-tests` and `release-label`
-- ruleset on `main`: PR required, merge commit and squash allowed, the same four checks, no direct push, no bypass
+- ruleset on `main`: PR required, merge commit and squash allowed, the same four checks and `release-gate`, no direct push, no bypass
 - required approvers on the environment `api-production`
 
 **Deploy production** can be started only after its workflow file is on `main`, so the first release that contains it also brings it.
