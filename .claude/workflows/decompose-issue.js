@@ -88,13 +88,12 @@ const subtasks = refined.filter(Boolean)
 log(`Refined ${subtasks.length}/${breakdown.subtasks.length} sub-issues`)
 
 // Drafts only — issue creation is a confirmed step in the main loop:
-//   1) gh issue create the parent (with a "- [ ] <child title>" checklist),
-//   2) gh issue create each child with its labels,
-//   3) edit the parent body to reference the created child numbers (- [ ] #N).
+//   1) gh issue create the parent with --parent <goal> (an open goal issue, see CLAUDE.md "Parent"),
+//   2) gh issue create each child with its labels and --parent <new parent number> (native sub-issues).
 return {
   repo: REPO,
   parentTitle: breakdown.parentTitle,
   parentSummary: breakdown.parentSummary,
   subtasks,
-  next: 'Present these drafts to the user; on confirmation, create the parent then each child via `gh issue create`, then link children in the parent checklist.',
+  next: 'Present these drafts to the user; on confirmation, create the parent under its goal (`gh issue create --parent <goal>`), then each child with `--parent <new parent number>`.',
 }
