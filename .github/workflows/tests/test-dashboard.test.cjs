@@ -208,7 +208,7 @@ test('the dashboard runs after staging deploys and nightly or manual chaos runs,
   assert.deepEqual(load('backend.yml').jobs['e2e-staging'].permissions, { contents: 'read', actions: 'read' });
 });
 
-test('coverage and result files only on pushes to staging; PR runs stay plain', () => {
+test('result files only on pushes to staging; frontend PR runs stay plain', () => {
   const ci = load('epic-ci.yml');
   for (const [id, artifact] of [
     ['backend', 'test-results-backend'],
@@ -216,12 +216,28 @@ test('coverage and result files only on pushes to staging; PR runs stay plain', 
   ]) {
     const steps = ci.jobs[id].steps;
     const tests = steps.find((s) => s.name === `Run ${id} tests`);
-    assert.equal(tests.env.REPORT, "${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}");
     assert.match(tests.run, /set -euo pipefail/);
     const upload = steps.find((s) => s.uses === 'actions/upload-artifact@v4');
     assert.equal(upload.with.name, artifact);
     assert.match(upload.if, /github\.event_name == 'push' && github\.ref == 'refs\/heads\/staging'/);
   }
+  const frontend = ci.jobs.frontend.steps.find((s) => s.name === 'Run frontend tests');
+  assert.equal(frontend.env.REPORT, "${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}");
+});
+
+test('every backend run measures coverage and checks the floors', () => {
+  const steps = load('epic-ci.yml').jobs.backend.steps;
+  const names = steps.map((s) => s.name);
+  const install = steps.find((s) => s.name === 'Install the coverage tool');
+  assert.doesNotMatch(install.if, /github\.ref|event_name/, 'PR runs measure coverage too');
+  const tests = steps.find((s) => s.name === 'Run backend tests');
+  assert.equal(tests.id, 'tests');
+  assert.equal(tests.env, undefined);
+  assert.doesNotMatch(tests.run, /cargo test/);
+  const floors = steps.find((s) => s.name === 'Check coverage floors');
+  assert.ok(names.indexOf('Check coverage floors') === names.indexOf('Run backend tests') + 1);
+  assert.equal(floors.if, "${{ !cancelled() && steps.tests.outcome == 'success' }}");
+  assert.equal(floors.run, 'node scripts/coverage-floors.cjs results/coverage.json backend/coverage-floors.json');
 });
 
 test('coverage counts product code only and also writes lcov', () => {

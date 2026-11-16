@@ -1,0 +1,10 @@
+{
+  "src/stream_bridge.rs": 88,
+  "src/handlers/stream_ws.rs": 80,
+  "src/recording_finalizer.rs": 97,
+  "src/recording.rs": 72,
+  "src/handlers/recording.rs": 49,
+  "src/scheduler.rs": 78,
+  "src/handlers/booking.rs": 94,
+  "src/auth.rs": 91
+}
