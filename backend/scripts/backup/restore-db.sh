@@ -85,7 +85,7 @@ fi
 # Create temp directory
 TEMP_DIR="/tmp/db-restore-$$"
 mkdir -p "$TEMP_DIR"
-trap "rm -rf $TEMP_DIR" EXIT
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # Download backup
 echo ""

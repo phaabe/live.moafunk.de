@@ -86,7 +86,11 @@ fail() {
   failures=$((failures + 1))
 }
 called() { grep -q "$1" "$TMP/fake/calls"; }
-backups() { ls "$APP/data" | grep -c '^unheard.db.pre-' || true; }
+backups() {
+  local f n=0
+  for f in "$APP/data"/unheard.db.pre-*; do [[ -e "$f" ]] && n=$((n + 1)); done
+  echo "$n"
+}
 
 check() { # name want-exit want-text [env...]
   local name="$1" want="$2" text="$3" out code=0
@@ -137,7 +141,8 @@ fi
 
 reset
 check "a real deploy switches and reports healthy" 0 "OK    unheard-api healthy on $IMAGE:sha-1234567" TAG=sha-1234567 DIGEST="$DIGEST"
-backup="$(ls "$APP/data" | grep '^unheard.db.pre-sha-1234567-' || true)"
+backup=""
+for f in "$APP/data"/unheard.db.pre-sha-1234567-*; do [[ -e "$f" ]] && backup="${f##*/}"; done
 if [[ -n "$backup" ]] && python3 -c "import sqlite3,sys; assert sqlite3.connect(sys.argv[1]).execute('SELECT username FROM users').fetchone()[0] == 'kept'" "$APP/data/$backup"; then
   pass "the DB backup is a working copy"
 else

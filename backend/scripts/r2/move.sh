@@ -72,6 +72,7 @@ set -- "${POSITIONAL_ARGS[@]:-}"
 # Load .env if exists
 if [[ -f "$ENV_FILE" ]]; then
     set -a
+    # shellcheck source=/dev/null
     source "$ENV_FILE"
     set +a
 fi
@@ -132,7 +133,8 @@ move_object() {
     else
         # Fallback to wrangler (download + upload + delete)
         mkdir -p "$TEMP_DIR"
-        local temp_file="$TEMP_DIR/$(basename "$src")"
+        local temp_file
+        temp_file="$TEMP_DIR/$(basename "$src")"
         
         if ! wrangler r2 object get "$BUCKET/$src" --file "$temp_file" 2>/dev/null; then
             echo "  ✗ Failed to download source"
