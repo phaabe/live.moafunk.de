@@ -7,6 +7,22 @@ interface ApiError {
   details?: string;
 }
 
+const LOGIN_ENDPOINT = '/api/auth/login';
+
+let onUnauthorized: (() => void) | null = null;
+
+/** Run `handler` when an API call answers 401: the session has expired. */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
+/** fetch for API calls. A 401 from the login call is a wrong password, not an expired session. */
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(url, init);
+  if (response.status === 401 && url !== LOGIN_ENDPOINT) onUnauthorized?.();
+  return response;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -17,7 +33,7 @@ class ApiClient {
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
 
-    const response = await fetch(url, {
+    const response = await apiFetch(url, {
       ...options,
       credentials: 'include', // Include cookies for auth
       headers: {
@@ -84,7 +100,7 @@ export interface LoginResponse {
 
 export const authApi = {
   login: (username: string, password: string) =>
-    api.post<LoginResponse>('/api/auth/login', { username, password }),
+    api.post<LoginResponse>(LOGIN_ENDPOINT, { username, password }),
 
   logout: () => api.post<void>('/api/auth/logout'),
 
@@ -276,7 +292,7 @@ export const artistsApi = {
     id: number,
     type: 'original' | 'cropped' | 'overlay' = 'original'
   ): Promise<Blob> => {
-    const response = await fetch(`${API_BASE}/api/artists/${id}/image-proxy?type=${type}`, {
+    const response = await apiFetch(`${API_BASE}/api/artists/${id}/image-proxy?type=${type}`, {
       credentials: 'include',
     });
     if (!response.ok) {
@@ -297,7 +313,7 @@ export const artistsApi = {
     formData.append('original', data.original);
     formData.append('cropped', data.cropped, 'cropped.jpg');
     formData.append('branded', data.branded, 'branded.jpg');
-    const response = await fetch(`${API_BASE}/api/artists/${id}/picture`, {
+    const response = await apiFetch(`${API_BASE}/api/artists/${id}/picture`, {
       method: 'PUT',
       credentials: 'include',
       body: formData,
@@ -313,7 +329,7 @@ export const artistsApi = {
   saveOverlay: async (id: number, blob: Blob): Promise<{ key: string; url: string }> => {
     const formData = new FormData();
     formData.append('image', blob, 'overlay.jpg');
-    const response = await fetch(`${API_BASE}/api/artists/${id}/overlays`, {
+    const response = await apiFetch(`${API_BASE}/api/artists/${id}/overlays`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
@@ -376,7 +392,7 @@ export const artistsApi = {
     if (data.track1_name) formData.append('track1_name', data.track1_name);
     if (data.track2_name) formData.append('track2_name', data.track2_name);
 
-    const response = await fetch(`${API_BASE}/api/artists/${id}/audio`, {
+    const response = await apiFetch(`${API_BASE}/api/artists/${id}/audio`, {
       method: 'PUT',
       credentials: 'include',
       body: formData,
@@ -560,7 +576,7 @@ export const showsApi = {
     const formData = new FormData();
     formData.append('file', file);
     const token = localStorage.getItem('auth_token');
-    const resp = await fetch(`/api/shows/${showId}/upload-cover`, {
+    const resp = await apiFetch(`/api/shows/${showId}/upload-cover`, {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
@@ -630,7 +646,7 @@ export const showsApi = {
       }
 
       onProgress?.({ phase: 'uploading', percent: 0 });
-      const response = await fetch(`${API_BASE}/api/shows/${showId}/upload-recording`, {
+      const response = await apiFetch(`${API_BASE}/api/shows/${showId}/upload-recording`, {
         method: 'POST',
         credentials: 'include',
         body: formData,
@@ -650,7 +666,7 @@ export const showsApi = {
 
     // Step 1: Initialize upload
     onProgress?.({ phase: 'uploading', percent: 0, chunkIndex: 0, totalChunks });
-    const initResponse = await fetch(`${API_BASE}/api/shows/${showId}/upload-recording/init`, {
+    const initResponse = await apiFetch(`${API_BASE}/api/shows/${showId}/upload-recording/init`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -678,7 +694,7 @@ export const showsApi = {
       const chunkFormData = new FormData();
       chunkFormData.append('chunk', chunk);
 
-      const chunkResponse = await fetch(
+      const chunkResponse = await apiFetch(
         `${API_BASE}/api/shows/${showId}/upload-recording/chunk/${session_id}?index=${i}`,
         {
           method: 'POST',
@@ -700,7 +716,7 @@ export const showsApi = {
 
     // Step 3: Finalize upload
     onProgress?.({ phase: 'finalizing', percent: 0 });
-    const finalizeResponse = await fetch(
+    const finalizeResponse = await apiFetch(
       `${API_BASE}/api/shows/${showId}/upload-recording/finalize/${session_id}`,
       {
         method: 'POST',
@@ -759,7 +775,7 @@ export const showsApi = {
   /** Fetch a show image as a same-origin blob (avoids R2 CORS issues).
    *  @param type 'cover' (default, with overlay) or 'collage' (plain 2×2 grid) */
   getImageBlob: async (id: number, type: 'cover' | 'collage' = 'cover'): Promise<Blob> => {
-    const response = await fetch(`${API_BASE}/api/shows/${id}/image-proxy?type=${type}`, {
+    const response = await apiFetch(`${API_BASE}/api/shows/${id}/image-proxy?type=${type}`, {
       credentials: 'include',
     });
     if (!response.ok) {
@@ -793,7 +809,7 @@ export const showTemplatesApi = {
   ): Promise<{ success: boolean; cover_url?: string }> => {
     const formData = new FormData();
     formData.append('file', file);
-    const resp = await fetch(`/api/show-templates/${templateId}/cover`, {
+    const resp = await apiFetch(`/api/show-templates/${templateId}/cover`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
@@ -904,7 +920,7 @@ export const seriesApi = {
 
   /** One of the caller's series, or null when it is not theirs (404). */
   get: async (slug: string): Promise<SeriesDetail | null> => {
-    const resp = await fetch(seriesPath(slug), { credentials: 'include' });
+    const resp = await apiFetch(seriesPath(slug), { credentials: 'include' });
     if (resp.status === 404) return null;
     if (!resp.ok) throw await errorOf(resp);
     return resp.json();
@@ -931,7 +947,7 @@ export const seriesApi = {
     for (let index = 0; index < totalChunks; index++) {
       const form = new FormData();
       form.append('chunk', file.slice(index * SET_CHUNK_SIZE, (index + 1) * SET_CHUNK_SIZE));
-      const resp = await fetch(
+      const resp = await apiFetch(
         `${seriesPath(slug)}/upload/chunk/${encodeURIComponent(session_id)}?index=${index}`,
         { method: 'POST', credentials: 'include', body: form }
       );
@@ -980,7 +996,7 @@ async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries)
     form.append('repeat_rule', 'none');
   }
   if (input.cover) form.append('cover', input.cover);
-  const resp = await fetch(url, { method, credentials: 'include', body: form });
+  const resp = await apiFetch(url, { method, credentials: 'include', body: form });
   if (!resp.ok) throw await errorOf(resp);
   return resp.json();
 }
@@ -1244,7 +1260,7 @@ export const hostFlowApi = {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE}/api/my-show/upload?show_id=${showId}`, {
+    const response = await apiFetch(`${API_BASE}/api/my-show/upload?show_id=${showId}`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
@@ -1284,7 +1300,7 @@ export const hostFlowApi = {
 
     // Step 1: Init
     onProgress?.({ phase: 'uploading', percent: 0, chunkIndex: 0, totalChunks });
-    const initResponse = await fetch(`${API_BASE}/api/my-show/upload/init?show_id=${showId}`, {
+    const initResponse = await apiFetch(`${API_BASE}/api/my-show/upload/init?show_id=${showId}`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -1311,7 +1327,7 @@ export const hostFlowApi = {
       const chunkFormData = new FormData();
       chunkFormData.append('chunk', chunk);
 
-      const chunkResponse = await fetch(
+      const chunkResponse = await apiFetch(
         `${API_BASE}/api/my-show/upload/chunk/${session_id}?index=${i}&show_id=${showId}`,
         {
           method: 'POST',
@@ -1333,7 +1349,7 @@ export const hostFlowApi = {
 
     // Step 3: Finalize
     onProgress?.({ phase: 'finalizing', percent: 0 });
-    const finalizeResponse = await fetch(
+    const finalizeResponse = await apiFetch(
       `${API_BASE}/api/my-show/upload/finalize/${session_id}?show_id=${showId}`,
       {
         method: 'POST',
