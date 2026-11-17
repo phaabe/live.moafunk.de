@@ -74,7 +74,7 @@ struct TgResponse {
 /// Send a photo via the Telegram Bot API using raw reqwest multipart.
 ///
 /// Returns the `message_id` of the sent message on success.
-async fn send_photo_raw(
+pub(crate) async fn send_photo_raw(
     token: &str,
     chat_id: i64,
     photo_bytes: Vec<u8>,
