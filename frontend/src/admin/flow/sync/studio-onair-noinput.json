@@ -1,0 +1,25 @@
+{
+  "screen": "studio-onair-noinput",
+  "hash": "5c31e13d",
+  "status": "ok",
+  "leftOut": [
+    {
+      "item": "h2: Moments",
+      "release": "R4"
+    },
+    {
+      "item": "button: Mark moment",
+      "release": "R4"
+    },
+    {
+      "item": "row: 00:12:30 | Opening track",
+      "release": "R4"
+    },
+    {
+      "item": "row: 00:31:05 | Guest talk",
+      "release": "R4"
+    }
+  ],
+  "missing": [],
+  "extra": []
+}

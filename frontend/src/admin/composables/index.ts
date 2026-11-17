@@ -13,6 +13,7 @@ export {
   useAudioCapture,
   STREAM_AUDIO_BITS_PER_SECOND,
   BROWSER_UNSUPPORTED_MESSAGE,
+  DEVICE_ENDED_MESSAGE,
   streamRecordingMimeType,
   type AudioDevice,
   type UseAudioCaptureOptions,
@@ -42,12 +43,7 @@ export {
   type UploadQualityMode,
   type AutoBitrateState,
 } from './useAutoBitrate';
-export {
-  useLiveChat,
-  parseChatFrame,
-  type ChatMessage,
-  type ChatFrame,
-} from './useLiveChat';
+export { useLiveChat, parseChatFrame, type ChatMessage, type ChatFrame } from './useLiveChat';
 export {
   useRecordingSession,
   type TrackType,
