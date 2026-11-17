@@ -351,8 +351,11 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     // Use processed stream (with gain) if available, otherwise raw stream
     const streamToRecord = processedStream.value || mediaStream.value;
 
+    // Every failed start goes to onError too: a caller that ignores the
+    // return value (a bitrate restart on air) must not hide it.
     if (!streamToRecord) {
       error.value = 'No audio source available';
+      currentOnError?.(error.value);
       return false;
     }
 
@@ -361,12 +364,14 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     const sourceTracks = mediaStream.value?.getAudioTracks() ?? [];
     if (!sourceTracks.some((t) => t.readyState === 'live')) {
       error.value = 'Audio device is no longer active. Re-select your device.';
+      currentOnError?.(error.value);
       return false;
     }
 
     const mimeType = streamRecordingMimeType();
     if (!mimeType) {
       error.value = BROWSER_UNSUPPORTED_MESSAGE;
+      currentOnError?.(error.value);
       return false;
     }
 
