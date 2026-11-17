@@ -1,6 +1,6 @@
 //! The checks at two trust boundaries, against real handlers, SQLite and the
 //! fake R2: the public artist submission (no login) and the admin-only
-//! artist downloads. Also the admin's chunked show recording upload.
+//! artist downloads. Also the chunked show recording uploads of admins and hosts.
 
 use super::*;
 use crate::broadcast_tests::{add_user, headers, state_with};
@@ -11,7 +11,7 @@ use axum::{
     http::{Request, StatusCode},
     Json,
 };
-use handlers::{download, submit_chunked, upload_recording_chunked};
+use handlers::{api, download, submit_chunked, upload_recording_chunked};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -702,4 +702,71 @@ async fn a_chunked_show_recording_is_joined_in_order() {
         recording_chunk(&state, 1, &late, &admin, 0, b"aaa").await,
         StatusCode::BAD_REQUEST
     );
+}
+
+/// The host's pre-recorded upload session lives two hours; after that a
+/// chunk is refused.
+#[tokio::test]
+async fn a_host_upload_session_expires_after_two_hours() {
+    let (state, _temp, _r2) = setup(json!({})).await;
+    let host_id = add_user(&state, "host", "host").await;
+    sqlx::query(
+        "INSERT INTO shows (id, title, date, host_user_id) VALUES (1, 'Night Shift', '2026-06-01', ?)",
+    )
+    .bind(host_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let host = headers(&state, host_id).await;
+    let chunk = |session: String| {
+        let (state, host) = (state.clone(), host.clone());
+        async move {
+            status_of(
+                api::api_my_show_upload_chunk(
+                    State(state),
+                    Path(session),
+                    Query(upload_recording_chunked::ChunkQueryWithShowId {
+                        index: 0,
+                        show_id: 1,
+                    }),
+                    host,
+                    form(&[("chunk", Some("blob"), b"aaa")]).await,
+                )
+                .await,
+            )
+        }
+    };
+
+    let init = api::api_my_show_upload_init(
+        State(state.clone()),
+        Query(api::ShowIdQuery { show_id: 1 }),
+        host.clone(),
+        Json(api::PrerecordedInitRequest {
+            filename: "show.mp3".to_string(),
+            total_size: 3,
+            total_chunks: 1,
+        }),
+    )
+    .await;
+    assert_eq!(status_of(init), StatusCode::OK);
+    let (session, in_two_hours): (String, bool) = sqlx::query_as(
+        "SELECT session_id, expires_at > datetime('now', '+119 minutes') \
+         AND expires_at < datetime('now', '+121 minutes') \
+         FROM pending_recording_uploads WHERE show_id = 1",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert!(in_two_hours);
+    assert_eq!(chunk(session.clone()).await, StatusCode::OK);
+
+    sqlx::query(
+        "UPDATE pending_recording_uploads SET expires_at = datetime('now', '-1 minute') \
+         WHERE session_id = ?",
+    )
+    .bind(&session)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(chunk(session).await, StatusCode::BAD_REQUEST);
 }
