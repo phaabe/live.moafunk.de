@@ -28,6 +28,7 @@ vi.mock('../composables', () => ({
 }));
 vi.mock('../api', () => ({
   showsApi: { get: vi.fn(async () => ({ on_air: stub.onAir })) },
+  setUnauthorizedHandler: vi.fn(),
 }));
 
 import { onAirGate, studioGate } from '../router';

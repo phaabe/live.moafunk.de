@@ -1,8 +1,8 @@
-import { createRouter, createWebHashHistory, type LocationQuery } from 'vue-router';
+import { createRouter, createWebHashHistory, type LocationQuery, type Router } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 import { hostPage } from './hostPage';
 import { berlinToUtcDate, isShowEnded } from './showTime';
-import type { MyShowInfo } from './api';
+import { setUnauthorizedHandler, type MyShowInfo } from './api';
 
 // Lazy-loaded route components
 const LoginPage = () => import('./pages/LoginPage.vue');
@@ -449,6 +449,32 @@ async function landingRoute(role: string | undefined): Promise<string> {
   }
   return '/dashboard';
 }
+
+/**
+ * The page to open after login, from `?redirect=`. Only an app page that needs
+ * a login: never the login page, a recovery page or another site.
+ */
+export function returnPath(appRouter: Router, value: unknown): string | null {
+  if (typeof value !== 'string' || !value.startsWith('/')) return null;
+  const target = appRouter.resolve(value);
+  return target.matched.length > 0 && target.meta.requiresAuth !== false ? target.fullPath : null;
+}
+
+/**
+ * An API call answered 401: the session has expired. Forget the user and open
+ * the login page, which leads back to this page. Without a user there is
+ * nothing to end: the auth check at page load (the guard handles it) or a later
+ * 401 of parallel calls (the first one already navigates).
+ */
+export function expireSession(): void {
+  const authStore = useAuthStore();
+  if (!authStore.user) return;
+  authStore.user = null;
+  const redirect = returnPath(router, router.currentRoute.value.fullPath);
+  void router.push({ name: 'login', query: redirect ? { redirect } : {} });
+}
+
+setUnauthorizedHandler(expireSession);
 
 // Navigation guard for auth
 router.beforeEach(async (to, _from, next) => {

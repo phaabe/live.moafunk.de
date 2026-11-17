@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, authApi, hostFlowApi, recordingApi, streamApi } from '../api';
+import { createPinia, setActivePinia } from 'pinia';
+import {
+  api,
+  authApi,
+  hostFlowApi,
+  recordingApi,
+  seriesApi,
+  setUnauthorizedHandler,
+  streamApi,
+} from '../api';
+import router, { expireSession } from '../router';
+import { useAuthStore } from '../stores/auth';
 
 const MB = 1024 * 1024;
 const fetchMock = vi.fn();
@@ -31,6 +42,7 @@ const requests = () =>
   }));
 
 beforeEach(() => {
+  setActivePinia(createPinia());
   fetchMock.mockReset().mockImplementation(async () => json({ ok: true }));
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -67,12 +79,16 @@ describe('api client errors', () => {
     await expect(authApi.me()).rejects.toThrow('Not authenticated');
   });
 
-  // Today a 401 in the middle of the work only shows "Not authenticated"; the user stays on the page.
   // https://github.com/phaabe/live.moafunk.de/issues/924
-  it.skip('sends the user to the login page when the session has expired', async () => {
+  it('sends the user to the login page when the session has expired', async () => {
+    const auth = useAuthStore();
+    auth.initialized = true;
+    auth.user = { id: 1, username: 'lena', role: 'host' };
+    await router.push('/shows/42');
     fetchMock.mockResolvedValueOnce(json({ error: 'Not authenticated' }, 401));
     await hostFlowApi.getMyShows().catch(() => undefined);
-    expect(window.location.hash).toBe('#/login');
+    await vi.waitFor(() => expect(window.location.hash).toBe('#/login?redirect=/shows/42'));
+    expect(auth.user).toBeNull();
   });
 
   it('resolves with nothing on 204 No Content', async () => {
@@ -90,6 +106,43 @@ describe('api client errors', () => {
       headers: { 'Content-Type': 'application/json' },
     });
     expect(JSON.parse(init.body)).toEqual({ username: 'host', password: 'pw' });
+  });
+});
+
+describe('expired session', () => {
+  const expired = vi.fn();
+  const notAuthenticated = () => json({ error: 'Not authenticated' }, 401);
+
+  beforeEach(() => {
+    expired.mockClear();
+    setUnauthorizedHandler(expired);
+  });
+
+  afterEach(() => {
+    setUnauthorizedHandler(expireSession);
+  });
+
+  it('does not treat a wrong password at login as an expired session', async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'Invalid username or password' }, 401));
+    await expect(authApi.login('lena', 'wrong')).rejects.toThrow('Invalid username or password');
+    expect(expired).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a JSON call', () => hostFlowApi.getMyShows()],
+    ['the auth check', () => authApi.me()],
+    ['a series page', () => seriesApi.get('brunchtime')],
+    ['a set upload', () => hostFlowApi.uploadFile(7, fakeFile('set.mp3', MB))],
+  ])('ends the session on a 401 from %s', async (_name, call) => {
+    fetchMock.mockResolvedValueOnce(notAuthenticated());
+    await call().catch(() => undefined);
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([403, 500])('keeps the session on a %s', async (status) => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'No' }, status));
+    await hostFlowApi.getMyShows().catch(() => undefined);
+    expect(expired).not.toHaveBeenCalled();
   });
 });
 
