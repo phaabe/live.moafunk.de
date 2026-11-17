@@ -160,10 +160,16 @@ export async function bookSlot(page: Page, start: Date, end: Date): Promise<numb
   return Number(page.url().match(/#\/shows\/(\d+)$/)![1]);
 }
 
-/** Delete the test's episodes and Show (the host's own). */
-export async function deleteShow(page: Page, showId: number, episodes: number[]): Promise<void> {
-  for (const id of episodes) await page.request.delete(`/api/shows/${id}`);
-  await page.request.delete(`/api/show-templates/${showId}`);
+/**
+ * Delete the test's episodes, then every e2e Show of the host that has no
+ * episodes left. No API route deletes a Show, so the box does it.
+ */
+export async function deleteShow(page: Page, episodes: number[]): Promise<void> {
+  for (const id of episodes) {
+    const res = await page.request.delete(`/api/shows/${id}`);
+    if (!res.ok()) throw new Error(`DELETE /api/shows/${id}: ${res.status()} ${await res.text()}`);
+  }
+  console.log(staging('e2e-cleanup'));
 }
 
 /**
@@ -174,12 +180,14 @@ export async function deleteShow(page: Page, showId: number, episodes: number[])
 export async function deleteLeftovers(page: Page): Promise<void> {
   const res = await page.request.get('/api/series');
   if (!res.ok()) throw new Error(`GET /api/series: ${res.status()}`);
-  const { series } = (await res.json()) as { series: { id: number; slug: string; name: string }[] };
+  const { series } = (await res.json()) as { series: { slug: string; name: string }[] };
+  const episodes: number[] = [];
   for (const s of series.filter((x) => x.name.startsWith('e2e-'))) {
     const detail = await page.request.get(`/api/series/${encodeURIComponent(s.slug)}`);
     if (!detail.ok()) throw new Error(`GET /api/series/${s.slug}: ${detail.status()}`);
-    const { episodes } = (await detail.json()) as { episodes: { id: number }[] };
-    console.log(`deleting the leftover Show ${s.name} and ${episodes.length} episode(s)`);
-    await deleteShow(page, s.id, episodes.map((e) => e.id));
+    const found = ((await detail.json()) as { episodes: { id: number }[] }).episodes;
+    console.log(`deleting the leftover Show ${s.name} and ${found.length} episode(s)`);
+    episodes.push(...found.map((e) => e.id));
   }
+  await deleteShow(page, episodes);
 }
