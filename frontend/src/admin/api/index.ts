@@ -961,28 +961,29 @@ export const seriesApi = {
     ),
 
   /** Create a series; the cover goes up in the same request. */
-  create: async (input: NewSeries): Promise<Series> => {
-    const form = new FormData();
-    form.append('name', input.name);
-    form.append('description', input.description);
-    if (input.rhythm) {
-      form.append('repeat_rule', input.rhythm.repeat_rule);
-      form.append('weekday', String(input.rhythm.weekday));
-      form.append('start_time', input.rhythm.start_time);
-      form.append('end_time', input.rhythm.end_time);
-    } else {
-      form.append('repeat_rule', 'none');
-    }
-    if (input.cover) form.append('cover', input.cover);
-    const resp = await fetch('/api/series', {
-      method: 'POST',
-      credentials: 'include',
-      body: form,
-    });
-    if (!resp.ok) throw await errorOf(resp);
-    return resp.json();
-  },
+  create: (input: NewSeries) => sendSeries('POST', '/api/series', input),
+
+  /** The owner edits a Show. The slug stays; a missing cover keeps the old one. */
+  update: (slug: string, input: NewSeries) => sendSeries('PUT', seriesPath(slug), input),
 };
+
+async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries): Promise<Series> {
+  const form = new FormData();
+  form.append('name', input.name);
+  form.append('description', input.description);
+  if (input.rhythm) {
+    form.append('repeat_rule', input.rhythm.repeat_rule);
+    form.append('weekday', String(input.rhythm.weekday));
+    form.append('start_time', input.rhythm.start_time);
+    form.append('end_time', input.rhythm.end_time);
+  } else {
+    form.append('repeat_rule', 'none');
+  }
+  if (input.cover) form.append('cover', input.cover);
+  const resp = await fetch(url, { method, credentials: 'include', body: form });
+  if (!resp.ok) throw await errorOf(resp);
+  return resp.json();
+}
 
 // SoundCloud API
 export interface SoundCloudStatus {

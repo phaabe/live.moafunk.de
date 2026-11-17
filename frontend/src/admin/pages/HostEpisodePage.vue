@@ -6,6 +6,7 @@ import { seriesApi, showsApi, type ShowDetail } from '../api';
 import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '../composables';
 import AudioPlayer from '../components/AudioPlayer.vue';
+import EpisodeDetailsCard from '../components/EpisodeDetailsCard.vue';
 import HostEpisodeView from './HostEpisodeView.vue';
 import BoardIcon from '../components/BoardIcon.vue';
 import { episodeDay, setLength } from '../episodeRow';
@@ -31,7 +32,6 @@ const show = ref<ShowDetail | null>(null);
 const view = ref<'episode' | 'wrapup' | 'done'>('episode');
 const error = ref<string | null>(null);
 const busy = ref(false);
-const title = ref('');
 const now = ref(Date.now());
 const clock = setInterval(() => (now.value = Date.now()), 15000);
 let poll: ReturnType<typeof setTimeout> | null = null;
@@ -143,7 +143,6 @@ async function load(resetView: boolean) {
   try {
     const loaded = await showsApi.get(id.value);
     show.value = loaded;
-    title.value = loaded.title;
     if (resetView) view.value = defaultView(loaded);
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the episode';
@@ -166,17 +165,6 @@ onUnmounted(() => {
   clearInterval(clock);
   if (poll) clearTimeout(poll);
 });
-
-async function saveTitle() {
-  const value = title.value.trim();
-  if (!show.value || !value || value === show.value.title) return;
-  try {
-    await showsApi.update(show.value.id, { title: value });
-    show.value = { ...show.value, title: value };
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Could not save the title';
-  }
-}
 
 async function openStudio() {
   if (!show.value || !studioOpen.value) return;
@@ -263,6 +251,30 @@ async function publish() {
       </div>
     </template>
 
+    <!-- Episode · Pre-recorded, no file yet -->
+    <template v-else-if="isPrerecorded && !show.prerecorded_filename">
+      <router-link :to="backTo" class="back-link">&lt; {{ showName }}</router-link>
+      <h1 class="page-title">{{ heading }}</h1>
+      <p class="pill status-banner warn">
+        Pre-recorded · no file yet · plays at {{ show.start_time }}
+      </p>
+      <section class="board-card">
+        <div class="board-card-head">
+          <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
+        </div>
+        <div class="board-card-body">
+          <p class="text">Upload your set before air time. Without a file nothing plays.</p>
+          <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+          <div>
+            <BaseButton :disabled="!show.series_slug" @click="replaceFile">
+              Upload your set
+            </BaseButton>
+          </div>
+        </div>
+      </section>
+      <EpisodeDetailsCard :show="show" @saved="load(true)" />
+    </template>
+
     <!-- Episode · Pre-recorded -->
     <template v-else-if="isPrerecorded">
       <router-link :to="backTo" class="back-link">&lt; {{ showName }}</router-link>
@@ -290,6 +302,7 @@ async function publish() {
           </div>
         </div>
       </section>
+      <EpisodeDetailsCard :show="show" @saved="load(true)" />
     </template>
 
     <!-- Episode (live) -->
@@ -313,28 +326,11 @@ async function publish() {
             </div>
           </div>
         </section>
-        <section class="board-card">
-          <div class="board-card-head">
-            <h2 class="board-card-title"><BoardIcon name="details" />Details</h2>
-          </div>
-          <div class="board-card-body">
-            <label class="field">
-              <span class="label">Title</span>
-              <input
-                v-model="title"
-                class="input"
-                type="text"
-                @change="saveTitle"
-                @keydown.enter.prevent="saveTitle"
-              />
-            </label>
-            <div>
-              <BaseButton variant="danger" :disabled="busy" @click="cancelBooking">
-                Cancel booking
-              </BaseButton>
-            </div>
-          </div>
-        </section>
+        <EpisodeDetailsCard :show="show" @saved="load(true)">
+          <BaseButton variant="danger" :disabled="busy" @click="cancelBooking">
+            Cancel booking
+          </BaseButton>
+        </EpisodeDetailsCard>
       </div>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
     </template>
@@ -378,26 +374,6 @@ async function publish() {
 .actions {
   display: flex;
   gap: var(--spacing-md);
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.label {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.input {
-  background-color: var(--color-surface-alt);
-  border: 1px solid var(--color-border-light);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-  font-family: var(--font-family);
-  padding: var(--spacing-sm) var(--spacing-md);
 }
 
 .field-error {
