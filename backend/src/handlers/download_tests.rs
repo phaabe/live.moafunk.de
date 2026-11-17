@@ -158,6 +158,12 @@ fn file_names_drop_unsafe_characters() {
         "a_b_c_d_e_f_g_h_i_j"
     );
     assert_eq!(sanitize_filename("Ünïcode ok"), "Ünïcode ok");
+    // No path tricks from the public form.
+    for name in ["", "  ", ".", "..", " .. "] {
+        assert_eq!(sanitize_filename(name), "_", "{name:?}");
+    }
+    assert_eq!(sanitize_filename("../x"), ".._x");
+    assert_eq!(sanitize_filename(".hidden"), ".hidden");
     assert_eq!(
         audio_filename("A/B", "T1", "Song?", "mp3"),
         "A_B - T1 - Song_.mp3"
@@ -416,4 +422,19 @@ async fn same_artist_names_still_give_a_show_zip() {
         let (_, entries) = zip(package(&state, &admin, show, name).await).await;
         assert!(!entries.is_empty(), "{name}");
     }
+}
+
+/// An artist named ".." must not put files outside the ZIP folder.
+#[tokio::test]
+async fn dot_dot_artist_name_stays_inside_the_zip() {
+    let (state, _temp, r2, admin) = setup().await;
+    let id = add_artist(&state, &r2, "..").await;
+    let (name, entries) =
+        zip(download_artist(State(state.clone()), Path(id), request(&admin)).await).await;
+    assert_eq!(name, format!("UNHEARD_artist___{id}.zip"));
+    assert!(
+        paths(&entries).iter().all(|p| p.starts_with("_/")),
+        "{:?}",
+        paths(&entries)
+    );
 }

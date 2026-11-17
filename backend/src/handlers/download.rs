@@ -43,14 +43,21 @@ impl ShowPackage {
 }
 
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    let name = name
+        .chars()
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
             _ => c,
         })
         .collect::<String>()
         .trim()
-        .to_string()
+        .to_string();
+    // Artist names come from the public form. "..", "." or an empty name
+    // would make ZIP paths like "../info.txt" or "/info.txt".
+    match name.as_str() {
+        "" | "." | ".." => "_".to_string(),
+        _ => name,
+    }
 }
 
 async fn fetch_show_and_artists(
@@ -98,11 +105,11 @@ fn zip_filename(show: &models::Show, package: ShowPackage) -> String {
 
 fn audio_filename(artist_name: &str, tag: &str, title: &str, ext: &str) -> String {
     let artist = sanitize_filename(artist_name);
-    let title = sanitize_filename(title);
     let tag = sanitize_filename(tag);
     if title.trim().is_empty() {
         format!("{} - {}.{}", artist, tag, ext)
     } else {
+        let title = sanitize_filename(title);
         format!("{} - {} - {}.{}", artist, tag, title, ext)
     }
 }
