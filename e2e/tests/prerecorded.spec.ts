@@ -27,7 +27,7 @@ test.beforeAll(async ({ browser }) => {
 });
 
 test.afterAll(async () => {
-  if (show) await deleteShow(page, show.id, episode ? [episode] : []);
+  if (show) await deleteShow(page, episode ? [episode] : []);
   await page.close();
 });
 

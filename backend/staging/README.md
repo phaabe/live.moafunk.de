@@ -98,6 +98,7 @@ For the test, the CI key may also run, on the box:
 | `e2e-restart-liquidsoap` | restarts the Liquidsoap container |
 | `e2e-cut <1-60>` | resets the caller's own connections to ports 80 and 443 for that many seconds (`iptables`, removed by a `systemd-run` timer) |
 | `e2e-recordings <show>` | status, length and archive flag of a test episode's recordings (read-only) |
+| `e2e-cleanup` | deletes the `e2e-…` Shows of `staging-host` that have no episodes left (no API route deletes a Show) |
 
 Run it from your Mac (needs the CI key in `~/.config/moafunk-staging/ci_deploy_ed25519`, ffmpeg and Node):
 

@@ -408,6 +408,35 @@ PY
 if [[ "$(ci "e2e-recordings 901")" == "finalized 312000 1" ]]; then pass "e2e-recordings lists a test episode's recordings"; else fail "e2e-recordings lists a test episode's recordings: $(ci "e2e-recordings 901" 2>&1)"; fi
 expect_refused "e2e-recordings refuses other shows" "is not a test episode" ci "e2e-recordings 902"
 expect_refused "e2e-recordings needs a show number" "the CI key may only run" ci "e2e-recordings 1 OR 1=1"
+python3 - "$BOX/data/unheard.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.executescript("""
+CREATE TABLE show_templates (id INTEGER PRIMARY KEY, owner_user_id INTEGER NOT NULL REFERENCES users(id), name TEXT NOT NULL);
+ALTER TABLE shows ADD COLUMN template_id INTEGER REFERENCES show_templates(id) ON DELETE SET NULL;
+CREATE TABLE series_uploads (session_id TEXT PRIMARY KEY, series_id INTEGER NOT NULL REFERENCES show_templates(id) ON DELETE CASCADE);
+INSERT INTO show_templates (id, owner_user_id, name) VALUES
+  (1, (SELECT id FROM users WHERE username = 'staging-host'), 'e2e-42-live'),
+  (2, (SELECT id FROM users WHERE username = 'staging-host'), 'e2e-42-set'),
+  (3, (SELECT id FROM users WHERE username = 'boss'), 'e2e-boss'),
+  (4, (SELECT id FROM users WHERE username = 'staging-host'), 'Real show');
+INSERT INTO series_uploads VALUES ('upload-1', 1);
+INSERT INTO shows (id, title, date, template_id) VALUES (903, 'e2e-42-set #1', '2026-11-17', 2);
+""")
+PY
+out="$(ci e2e-cleanup 2>&1)"
+if [[ "$out" == "deleted 1 test Show(s); kept, with episodes: e2e-42-set" ]]; then
+  pass "e2e-cleanup deletes the host's test Shows without episodes"
+else
+  fail "e2e-cleanup deletes the host's test Shows without episodes: $out"
+fi
+left="$(python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(','.join(r[0] for r in c.execute('SELECT name FROM show_templates ORDER BY id')), c.execute('SELECT COUNT(*) FROM series_uploads').fetchone()[0])" "$BOX/data/unheard.db")"
+if [[ "$left" == "e2e-42-set,e2e-boss,Real show 0" ]]; then
+  pass "e2e-cleanup keeps other Shows and drops the deleted Show's uploads"
+else
+  fail "e2e-cleanup keeps other Shows and drops the deleted Show's uploads: $left"
+fi
+expect_refused "e2e-cleanup takes no arguments" "the CI key may only run" ci "e2e-cleanup 1"
 
 AUTH="$TMP/authorized_keys"
 cp "$HERE/ci-deploy.pub" "$BOX/ci-deploy.pub"

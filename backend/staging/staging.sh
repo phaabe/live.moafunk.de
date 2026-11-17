@@ -14,7 +14,7 @@
 #   staging.sh hold <reason>        pause CI deploys (for release checks); staging.sh unhold resumes them
 #   staging.sh ci-deploy            forced command of the CI key: "status" or "deploy sha-<commit> sha256:<digest>"
 #                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap, e2e-cut,
-#                                   e2e-recordings)
+#                                   e2e-recordings, e2e-cleanup)
 #   staging.sh install-ci-key       let the CI key (ci-deploy.pub) run only ci-deploy (part of setup)
 #   staging.sh down                 stop staging (keeps its data)
 #   staging.sh status               containers, running tag, health
@@ -534,9 +534,35 @@ ci_e2e() {
     echo "connections from $ip to ports 80 and 443 are reset for ${secs}s"
   elif [[ "$request" =~ ^e2e-recordings\ ([0-9]{1,12})$ ]]; then
     e2e_recordings "${BASH_REMATCH[1]}"
+  elif [[ "$request" == e2e-cleanup ]]; then
+    e2e_cleanup
   else
-    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>"
+    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>, e2e-cleanup"
   fi
+}
+
+# Delete the test Shows ("e2e-…" of staging-host) that have no episodes left:
+# the API has no route that deletes a Show. Their uploads go with them. A Show
+# that still has an episode stays, so the next run's clean-up still finds it.
+e2e_cleanup() {
+  python3 - "$STAGING_DIR/data/unheard.db" <<'PY'
+import sqlite3, sys
+# The API may be running: wait for its write lock instead of failing.
+con = sqlite3.connect(sys.argv[1], timeout=30)
+con.execute("PRAGMA foreign_keys = ON")
+test_show = (
+    "name GLOB 'e2e-*' AND owner_user_id = (SELECT id FROM users WHERE username = 'staging-host')"
+)
+has_episodes = "EXISTS (SELECT 1 FROM shows WHERE template_id = show_templates.id)"
+kept = [r[0] for r in con.execute(
+    f"SELECT name FROM show_templates WHERE {test_show} AND {has_episodes} ORDER BY id"
+)]
+deleted = con.execute(
+    f"DELETE FROM show_templates WHERE {test_show} AND NOT {has_episodes}"
+).rowcount
+con.commit()
+print(f"deleted {deleted} test Show(s)" + (f"; kept, with episodes: {', '.join(kept)}" if kept else ""))
+PY
 }
 
 # The recordings of a test episode ("e2e-…"), one line each: status,
