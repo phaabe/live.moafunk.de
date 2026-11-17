@@ -1320,3 +1320,101 @@ async fn the_session_of_an_expired_account_is_refused() {
         NOBODY
     );
 }
+
+async fn add_artist(state: &Arc<AppState>, id: i64, user: Option<i64>) {
+    sqlx::query(
+        "INSERT INTO artists (id, name, pronouns, track1_name, track2_name, user_id) \
+         VALUES (?, 'Band', 'they', 'a', 'b', ?)",
+    )
+    .bind(id)
+    .bind(user)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+async fn artist_user(state: &Arc<AppState>, artist: i64) -> Option<i64> {
+    sqlx::query_scalar("SELECT user_id FROM artists WHERE id = ?")
+        .bind(artist)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+/// A taken name or a bad artist is refused before the user is written.
+#[tokio::test]
+async fn a_refused_user_create_leaves_no_user() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_artist(&state, 5, Some(p.other_host)).await;
+    add_artist(&state, 6, None).await;
+    let users = || async {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+            .fetch_one(&state.db)
+            .await
+            .unwrap()
+    };
+    let before = users().await;
+    let admin = |username: &str, artist_id: i64| json!({"username": username, "role": "admin", "artist_id": artist_id});
+
+    let (code, error) = create_user(
+        &state,
+        p.admin,
+        json!({"username": "host", "role": "admin"}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert!(error["error"].as_str().unwrap().contains("already exists"));
+    let (code, _) = create_user(&state, p.admin, admin("new", 77)).await;
+    assert_eq!(code, StatusCode::NOT_FOUND);
+    let (code, _) = create_user(&state, p.admin, admin("new", 5)).await;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert_eq!(users().await, before);
+
+    // The name is still free after the refusals.
+    let (code, created) = create_user(&state, p.admin, admin("new", 6)).await;
+    assert_eq!(code, StatusCode::CREATED);
+    assert_eq!(created["user"]["linked_artist_id"], 6);
+    assert_eq!(artist_user(&state, 6).await, created["user"]["id"].as_i64());
+}
+
+/// A bad artist link is refused before any other field changes.
+#[tokio::test]
+async fn a_refused_user_update_changes_nothing() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_artist(&state, 5, Some(p.host)).await;
+    add_artist(&state, 6, Some(p.other_host)).await;
+    add_artist(&state, 7, None).await;
+    let update = |body: Value| {
+        let state = state.clone();
+        async move {
+            let h = headers(&state, p.admin).await;
+            status(api::api_update_user(State(state), Path(p.host), h, req(body)).await)
+        }
+    };
+    let expires = || async {
+        sqlx::query_scalar::<_, Option<String>>("SELECT expires_at FROM users WHERE id = ?")
+            .bind(p.host)
+            .fetch_one(&state.db)
+            .await
+            .unwrap()
+    };
+
+    let bad_link = |artist: i64| json!({"expires_at": "2099-12-31", "artist_id": artist});
+    assert_eq!(update(bad_link(77)).await, StatusCode::NOT_FOUND);
+    assert_eq!(update(bad_link(6)).await, StatusCode::BAD_REQUEST);
+    assert_eq!(expires().await, None);
+    assert_eq!(artist_user(&state, 5).await, Some(p.host));
+    assert_eq!(artist_user(&state, 6).await, Some(p.other_host));
+
+    assert_eq!(
+        update(json!({"expires_at": "2099-12-31", "artist_id": 7})).await,
+        OK
+    );
+    assert_eq!(expires().await.as_deref(), Some("2099-12-31"));
+    assert_eq!(artist_user(&state, 5).await, None);
+    assert_eq!(artist_user(&state, 7).await, Some(p.host));
+    assert_eq!(update(json!({"artist_id": null})).await, OK);
+    assert_eq!(artist_user(&state, 7).await, None);
+}

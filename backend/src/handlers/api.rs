@@ -3865,6 +3865,34 @@ pub async fn api_create_user(
         ));
     }
 
+    // Check the name and the artist before writing, so a refused request
+    // leaves no user behind.
+    let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE username = ?")
+        .bind(&req.username)
+        .fetch_optional(&state.db)
+        .await?;
+    if existing.is_some() {
+        return Err(AppError::BadRequest(
+            "A user with this username already exists".to_string(),
+        ));
+    }
+    if let Some(artist_id) = req.artist_id {
+        let linked: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
+                .bind(artist_id)
+                .fetch_optional(&state.db)
+                .await?;
+        match linked {
+            None => return Err(AppError::NotFound("Artist not found".to_string())),
+            Some((Some(_),)) => {
+                return Err(AppError::BadRequest(
+                    "Artist is already linked to another user".to_string(),
+                ));
+            }
+            Some((None,)) => {}
+        }
+    }
+
     // Generate random password
     let password = auth::generate_session_token()[..16].to_string();
     let password_hash = auth::hash_password(&password)?;
@@ -3882,32 +3910,13 @@ pub async fn api_create_user(
 
     let user_id = result.last_insert_rowid();
 
-    // Link to artist profile if requested
+    // Link to artist profile if requested (checked above)
     if let Some(artist_id) = req.artist_id {
-        // Validate artist exists and is not already linked
-        let existing: Option<(Option<i64>,)> =
-            sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
-                .bind(artist_id)
-                .fetch_optional(&state.db)
-                .await?;
-
-        match existing {
-            None => {
-                return Err(AppError::NotFound("Artist not found".to_string()));
-            }
-            Some((Some(_),)) => {
-                return Err(AppError::BadRequest(
-                    "Artist is already linked to another user".to_string(),
-                ));
-            }
-            Some((None,)) => {
-                sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
-                    .bind(user_id)
-                    .bind(artist_id)
-                    .execute(&state.db)
-                    .await?;
-            }
-        }
+        sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
+            .bind(user_id)
+            .bind(artist_id)
+            .execute(&state.db)
+            .await?;
     }
 
     // Fetch the created user
@@ -4050,7 +4059,16 @@ pub async fn api_delete_user(
 pub struct UpdateUserRequest {
     role: Option<String>,
     expires_at: Option<String>,
+    /// Missing: keep the link. `null`: unlink. A number: link that artist.
+    #[serde(default, deserialize_with = "sent_value")]
     artist_id: Option<serde_json::Value>,
+}
+
+/// Keeps a JSON `null` as `Some(Value::Null)`. Plain serde reads it as `None`.
+fn sent_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 pub async fn api_update_user(
@@ -4106,6 +4124,25 @@ pub async fn api_update_user(
         }
     }
 
+    // Check a new artist link before writing, so a refused request changes nothing.
+    let new_artist_id = req.artist_id.as_ref().and_then(|v| v.as_i64());
+    if let Some(artist_id) = new_artist_id {
+        let linked: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
+                .bind(artist_id)
+                .fetch_optional(&state.db)
+                .await?;
+        match linked {
+            None => return Err(AppError::NotFound("Artist not found".to_string())),
+            Some((Some(linked_uid),)) if linked_uid != id => {
+                return Err(AppError::BadRequest(
+                    "Artist is already linked to another user".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
     // Update user
     if let Some(role) = &req.role {
         sqlx::query("UPDATE users SET role = ? WHERE id = ?")
@@ -4123,39 +4160,20 @@ pub async fn api_update_user(
             .await?;
     }
 
-    // Handle artist linking: null to unlink, number to link
-    if let Some(ref artist_id_val) = req.artist_id {
+    // Handle artist linking: null to unlink, number to link (checked above)
+    if req.artist_id.is_some() {
         // First, unlink any currently linked artist
         sqlx::query("UPDATE artists SET user_id = NULL WHERE user_id = ?")
             .bind(id)
             .execute(&state.db)
             .await?;
 
-        // If a new artist_id is provided (not null), link it
-        if let Some(artist_id) = artist_id_val.as_i64() {
-            let existing: Option<(Option<i64>,)> =
-                sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
-                    .bind(artist_id)
-                    .fetch_optional(&state.db)
-                    .await?;
-
-            match existing {
-                None => {
-                    return Err(AppError::NotFound("Artist not found".to_string()));
-                }
-                Some((Some(existing_uid),)) if existing_uid != id => {
-                    return Err(AppError::BadRequest(
-                        "Artist is already linked to another user".to_string(),
-                    ));
-                }
-                _ => {
-                    sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
-                        .bind(id)
-                        .bind(artist_id)
-                        .execute(&state.db)
-                        .await?;
-                }
-            }
+        if let Some(artist_id) = new_artist_id {
+            sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
+                .bind(id)
+                .bind(artist_id)
+                .execute(&state.db)
+                .await?;
         }
     }
 
