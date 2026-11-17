@@ -3351,6 +3351,23 @@ pub async fn api_update_show(
         ));
     }
 
+    // A host moves or switches an episode only before it starts.
+    let moves = req.date.is_some()
+        || req.start_time.is_some()
+        || req.end_time.is_some()
+        || req.stream_mode.is_some();
+    if moves && !user.role_enum().can_access_admin() {
+        let start = existing
+            .start_time
+            .as_deref()
+            .and_then(|t| crate::scheduler::show_start_utc(&existing.date, t));
+        if start.is_some_and(|start| chrono::Utc::now() >= start) {
+            return Err(AppError::BadRequest(
+                "Date, time and mode can only change before the episode starts".to_string(),
+            ));
+        }
+    }
+
     // Build dynamic update query
     let mut updates = Vec::new();
     let mut binds: Vec<String> = Vec::new();
@@ -3398,6 +3415,18 @@ pub async fn api_update_show(
         }
         updates.push("stream_mode = ?");
         binds.push(stream_mode.clone());
+        // "Confirmed" means "plays the file at air time". Live keeps the file
+        // unconfirmed; switching back to Pre-recorded confirms a kept file.
+        let was = existing.stream_mode.as_deref();
+        if stream_mode == "live" && was == Some("prerecorded") {
+            updates.push("prerecorded_confirmed_at = NULL");
+        } else if stream_mode == "prerecorded"
+            && was != Some("prerecorded")
+            && existing.prerecorded_key.is_some()
+        {
+            updates.push("prerecorded_confirmed_at = ?");
+            binds.push(chrono::Utc::now().to_rfc3339());
+        }
     }
 
     if updates.is_empty() {

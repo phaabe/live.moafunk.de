@@ -455,3 +455,56 @@ async fn another_host_sees_an_episode_with_its_show() {
     assert_eq!(body["episode_status_label"], "Upcoming");
     assert_eq!(body["host_username"], "lena");
 }
+
+/// The owner edits a series in place: the slug stays, the rhythm can go.
+/// Another host cannot.
+#[tokio::test]
+async fn the_owner_edits_a_series_and_keeps_its_slug() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    create(&state, host, BRUNCHTIME).await.unwrap();
+    let edit = |user: i64, fields: &'static [(&'static str, &'static str)]| {
+        let state = state.clone();
+        async move {
+            handlers::series::api_update_series(
+                State(state.clone()),
+                Path("brunchtime".to_string()),
+                headers(&state, user).await,
+                form(fields).await,
+            )
+            .await
+            .map(|r| r.into_response())
+        }
+    };
+
+    let fields: &[(&str, &str)] = &[
+        ("name", "Brunch Club"),
+        ("description", "Now every other Saturday."),
+        ("repeat_rule", "biweekly"),
+        ("weekday", "6"),
+        ("start_time", "11:00"),
+        ("end_time", "13:00"),
+    ];
+    let (status, body) = json_of(edit(host, fields).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["slug"], "brunchtime");
+    assert_eq!(body["name"], "Brunch Club");
+    assert_eq!(body["description"], "Now every other Saturday.");
+    assert_eq!(body["rhythm_line"], "Every other Saturday · 11:00–13:00");
+
+    let none: &[(&str, &str)] = &[("name", "Brunch Club"), ("repeat_rule", "none")];
+    let (_, body) = json_of(edit(host, none).await.unwrap()).await;
+    assert_eq!(body["rhythm"], Value::Null);
+    assert_eq!(body["description"], Value::Null);
+
+    assert!(matches!(
+        edit(other, none).await,
+        Err(AppError::NotFound(_))
+    ));
+    let empty: &[(&str, &str)] = &[("name", " "), ("repeat_rule", "none")];
+    assert!(matches!(
+        edit(host, empty).await,
+        Err(AppError::BadRequest(_))
+    ));
+}

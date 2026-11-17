@@ -798,3 +798,106 @@ async fn show_detail_carries_the_episode_view() {
     assert_eq!(loose["series_slug"], Value::Null);
     assert_eq!(loose["episode_status"], "upcoming");
 }
+
+async fn update(state: &Arc<AppState>, user: i64, id: i64, body: Value) -> Result<()> {
+    handlers::api::api_update_show(
+        State(state.clone()),
+        Path(id),
+        headers(state, user).await,
+        axum::Json(serde_json::from_value(body).unwrap()),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Live to Pre-recorded switches at once; the first file confirms the set.
+/// Back to Live keeps the file.
+#[tokio::test]
+async fn a_live_episode_switches_to_prerecorded_and_gets_its_file_later() {
+    let (state, _temp, _r2) = booking_state().await;
+    let host = add_user(&state, "host", "host").await;
+    let (_, slug) = series(&state, host).await;
+    let free = slots(&state, host, &slug).await.unwrap();
+    let id = book(&state, host, &slug, &free[0], "live", None)
+        .await
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    update(&state, host, id, json!({ "stream_mode": "prerecorded" }))
+        .await
+        .unwrap();
+    let switched = episode(&state, id).await.unwrap();
+    assert_eq!(switched.stream_mode.as_deref(), Some("prerecorded"));
+    assert_eq!(switched.prerecorded_key, None);
+    assert_eq!(switched.prerecorded_confirmed_at, None);
+
+    let set = upload_set(&state, host, &slug, "set.wav").await;
+    replace_file(&state, host, id, &set).await.unwrap();
+    let uploaded = episode(&state, id).await.unwrap();
+    assert_eq!(uploaded.prerecorded_filename.as_deref(), Some("set.wav"));
+    assert!(uploaded.prerecorded_confirmed_at.is_some());
+
+    // Live keeps the file but does not play it; back to Pre-recorded plays it again.
+    update(&state, host, id, json!({ "stream_mode": "live" }))
+        .await
+        .unwrap();
+    let back = episode(&state, id).await.unwrap();
+    assert_eq!(back.stream_mode.as_deref(), Some("live"));
+    assert_eq!(back.prerecorded_filename.as_deref(), Some("set.wav"));
+    assert_eq!(back.prerecorded_confirmed_at, None);
+    update(&state, host, id, json!({ "stream_mode": "prerecorded" }))
+        .await
+        .unwrap();
+    assert!(episode(&state, id)
+        .await
+        .unwrap()
+        .prerecorded_confirmed_at
+        .is_some());
+}
+
+/// A host moves an episode only before it starts; the title can still change.
+#[tokio::test]
+async fn a_host_moves_an_episode_only_before_it_starts() {
+    let (state, _temp, _r2) = booking_state().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    let (series_id, slug) = series(&state, host).await;
+    let free = slots(&state, host, &slug).await.unwrap();
+    let id = book(&state, host, &slug, &free[0], "live", None)
+        .await
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let date = free[1]["date"].as_str().unwrap();
+    update(
+        &state,
+        host,
+        id,
+        json!({ "date": date, "description": "Guest mix" }),
+    )
+    .await
+    .unwrap();
+
+    let started = insert_episode(&state, series_id, host, "2020-01-05").await;
+    assert!(matches!(
+        update(&state, host, started, json!({ "date": "2099-01-04" })).await,
+        Err(AppError::BadRequest(_))
+    ));
+    assert!(matches!(
+        update(
+            &state,
+            host,
+            started,
+            json!({ "stream_mode": "prerecorded" })
+        )
+        .await,
+        Err(AppError::BadRequest(_))
+    ));
+    update(&state, host, started, json!({ "title": "Renamed" }))
+        .await
+        .unwrap();
+    update(&state, admin, started, json!({ "date": "2099-01-11" }))
+        .await
+        .unwrap();
+}

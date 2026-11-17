@@ -260,6 +260,53 @@ pub async fn api_create_series(
     Ok((StatusCode::CREATED, Json(series_item(&state, row).await)))
 }
 
+/// PUT /api/series/:slug — the owner edits a series. Same multipart fields as
+/// POST /api/series; `cover` is optional and kept when left out. The slug
+/// stays, so links keep working. Booked episodes keep their date and time.
+pub async fn api_update_series(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Result<impl IntoResponse> {
+    let user = require_show_creator(&state, &headers).await?;
+    let row = load_own_series(&state, user.id, &slug).await?;
+    let form = CreateSeriesForm::read(multipart).await?;
+
+    let name = form.name.as_deref().map(str::trim).unwrap_or("");
+    if name.is_empty() {
+        return Err(AppError::BadRequest("Name is required".to_string()));
+    }
+    let description = form
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let rhythm = form.rhythm()?;
+    let cover_key = match form.cover {
+        Some(cover) => Some(storage::upload_template_cover(&state, row.id, cover).await?),
+        None => row.cover_key.clone(),
+    };
+
+    sqlx::query(
+        "UPDATE show_templates SET name = ?, description = ?, cover_key = ?, repeat_rule = ?, \
+         weekday = ?, start_time = ?, end_time = ? WHERE id = ?",
+    )
+    .bind(name)
+    .bind(description)
+    .bind(cover_key)
+    .bind(rhythm.as_ref().map(|r| r.repeat_rule.as_str()))
+    .bind(rhythm.as_ref().map(|r| r.weekday))
+    .bind(rhythm.as_ref().map(|r| r.start_time.as_str()))
+    .bind(rhythm.as_ref().map(|r| r.end_time.as_str()))
+    .bind(row.id)
+    .execute(&state.db)
+    .await?;
+
+    let row = load_own_series(&state, user.id, &slug).await?;
+    Ok(Json(series_item(&state, row).await))
+}
+
 async fn load_own_series(state: &Arc<AppState>, owner_id: i64, slug: &str) -> Result<SeriesRow> {
     sqlx::query_as(&format!(
         "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ? AND owner_user_id = ?"
