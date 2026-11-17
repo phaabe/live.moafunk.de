@@ -26,6 +26,8 @@ mod telegram_notify;
 mod video;
 
 #[cfg(test)]
+mod api_tests;
+#[cfg(test)]
 mod booking_tests;
 #[cfg(test)]
 mod broadcast_tests;
