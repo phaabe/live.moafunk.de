@@ -532,3 +532,13 @@ async fn show_updates_are_debounced() {
     assert_eq!(fake.calls().len(), 1, "the first change was replaced");
     fake.assert_all_sends_in_topic();
 }
+/// Telegram counts characters; a cut inside a multi-byte character must not
+/// panic.
+#[test]
+fn captions_with_emoji_are_cut_safely() {
+    let caption = format!("{}🎵 tail", "a".repeat(1021));
+    assert_eq!(
+        truncate_caption(&caption, 1024),
+        format!("{}…", "a".repeat(1021))
+    );
+}
