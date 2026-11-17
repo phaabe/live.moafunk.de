@@ -28,6 +28,8 @@ export const NO_AUDIO_DATA_MS = 5_000;
 export const NO_AUDIO_DATA_MESSAGE =
   'No audio is being sent. Check that your audio input is active, then reconnect.';
 
+export const DEVICE_ENDED_MESSAGE = 'Audio device is no longer active. Re-select your device.';
+
 export const BROWSER_UNSUPPORTED_MESSAGE =
   "This browser can't stream. Use Chrome or Firefox, or update Safari to 18.4 or newer.";
 
@@ -215,6 +217,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
 
       // Set up audio processing chain with gain control
       setupAudioProcessing(stream);
+      warnWhenDeviceEnds(stream);
 
       mediaStream.value = stream;
       selectedDeviceId.value = deviceId;
@@ -257,6 +260,24 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     processedStream.value = destinationNode.stream;
 
     resumeAudioContext();
+  }
+
+  /**
+   * The device's track ends when the input is unplugged or stops, or the
+   * shared tab closes. The processed stream stays 'live' and the recorder
+   * keeps sending silence, so tell the host while on air. The recorder keeps
+   * running, so the recording keeps its timeline until a new input is picked.
+   * A track the page stops itself (stopCapture) fires no 'ended'.
+   */
+  function warnWhenDeviceEnds(stream: MediaStream): void {
+    for (const track of stream.getAudioTracks()) {
+      track.addEventListener('ended', () => {
+        if (mediaStream.value !== stream || !isRecording.value) return;
+        if (stream.getAudioTracks().some((t) => t.readyState === 'live')) return;
+        error.value = DEVICE_ENDED_MESSAGE;
+        currentOnError?.(DEVICE_ENDED_MESSAGE);
+      });
+    }
   }
 
   /**
@@ -329,6 +350,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
 
       // Set up audio processing chain with gain control
       setupAudioProcessing(audioStream);
+      warnWhenDeviceEnds(audioStream);
 
       mediaStream.value = audioStream;
       selectedDeviceId.value = 'screen';
@@ -363,7 +385,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     // check the device's own track.
     const sourceTracks = mediaStream.value?.getAudioTracks() ?? [];
     if (!sourceTracks.some((t) => t.readyState === 'live')) {
-      error.value = 'Audio device is no longer active. Re-select your device.';
+      error.value = DEVICE_ENDED_MESSAGE;
       currentOnError?.(error.value);
       return false;
     }

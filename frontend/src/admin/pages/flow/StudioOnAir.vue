@@ -14,6 +14,7 @@ import {
   useStreamSocket,
   useUploadHealth,
   useAutoBitrate,
+  DEVICE_ENDED_MESSAGE,
   type UploadQualityMode,
 } from '@admin/composables';
 import { streamApi, recordingApi } from '@admin/api';
@@ -40,9 +41,44 @@ const socket = useStreamSocket({
     error.value = message;
   },
 });
+// ─── Audio input gone (flow screen `studio-onair-noinput`) ──────────────────
+// The device's track ended: listeners hear silence. The notice and Audio
+// input stay until a new input sends audio.
+const inputGone = ref(false);
+const pickedInput = ref('');
 audioCapture.setOnError((message) => {
-  error.value = message;
+  if (message !== DEVICE_ENDED_MESSAGE) {
+    error.value = message;
+    return;
+  }
+  inputGone.value = true;
+  void audioCapture.listDevices();
 });
+// A plugged-in device shows up in the list.
+function onDeviceChange() {
+  if (inputGone.value) void audioCapture.listDevices();
+}
+navigator.mediaDevices?.addEventListener('devicechange', onDeviceChange);
+
+async function pickInput() {
+  const id = pickedInput.value;
+  // Back to the placeholder, so picking the same input again is a change too.
+  pickedInput.value = '';
+  if (!id) return;
+  const ok =
+    id === 'screen'
+      ? await audioCapture.captureScreenAudio()
+      : await audioCapture.captureDevice(id);
+  if (!ok) {
+    error.value = audioCapture.error.value;
+    return;
+  }
+  // The capture stopped the old recorder; the new one sends to the same socket.
+  if (audioCapture.startRecording()) {
+    inputGone.value = false;
+    error.value = null;
+  }
+}
 
 // ─── On air · hh:mm:ss · REC ────────────────────────────────────────────────
 const now = ref(Date.now());
@@ -121,6 +157,7 @@ onUnmounted(() => {
   clearInterval(clock);
   clearInterval(listenerPoll);
   if (recordingPoll) clearInterval(recordingPoll);
+  navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
 });
 </script>
 
@@ -154,6 +191,23 @@ onUnmounted(() => {
     <p v-if="socket.audioDropped.value" class="field-error" role="alert">
       The connection was down for more than 10 minutes. The recording misses some audio.
     </p>
+    <template v-if="inputGone">
+      <p class="field-error" role="alert">{{ DEVICE_ENDED_MESSAGE }}</p>
+      <label class="input-field">
+        <span class="label">Audio input</span>
+        <select v-model="pickedInput" class="input-select" @change="pickInput">
+          <option value="">Select audio input</option>
+          <option
+            v-for="device in audioCapture.devices.value"
+            :key="device.deviceId"
+            :value="device.deviceId"
+          >
+            {{ device.label }}
+          </option>
+          <option value="screen">Screen audio</option>
+        </select>
+      </label>
+    </template>
     <p v-if="error" class="field-error" role="alert">{{ error }}</p>
     <div>
       <BaseButton variant="danger" :loading="ending" @click="endEpisode">End Episode</BaseButton>
@@ -180,6 +234,25 @@ onUnmounted(() => {
 
 .connection.warn {
   color: var(--color-warning);
+}
+
+.input-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.input-field .label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.input-select {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
 }
 
 .field-error {

@@ -87,7 +87,7 @@ const CHROME_TYPE = 'audio/webm;codecs=opus';
 const SAFARI_18_3_TYPES = ['audio/mp4'];
 
 function fakeStream(readyState: MediaStreamTrackState): MediaStream {
-  const track = { readyState, getSettings: () => ({}), stop: vi.fn() };
+  const track = { readyState, getSettings: () => ({}), stop: vi.fn(), addEventListener: vi.fn() };
   return { getAudioTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream;
 }
 

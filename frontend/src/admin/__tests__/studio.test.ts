@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { createApp, defineComponent, h, nextTick, ref, type App, type Component } from 'vue';
 
 // Flow screens `studio` (/stream/live) and `studio-onair` (/stream/on-air)
@@ -39,6 +39,7 @@ vi.mock('@admin/api', () => ({
 vi.mock('@admin/composables', () => {
   return {
     BROWSER_UNSUPPORTED_MESSAGE: 'unsupported',
+    DEVICE_ENDED_MESSAGE: 'Audio device is no longer active. Re-select your device.',
     STREAM_AUDIO_BITS_PER_SECOND: 128000,
     streamRecordingMimeType: () => 'audio/webm',
     useHostFlow: () => ({
@@ -124,8 +125,14 @@ beforeEach(() => {
     stopRecording: vi.fn(),
     stopCapture: vi.fn(),
     setStreamBitsPerSecond: vi.fn(),
+    devices: ref([{ deviceId: 'mic-2', label: 'Focusrite USB' }]),
+    listDevices: vi.fn(),
+    captureDevice: vi.fn(() => Promise.resolve(true)),
+    captureScreenAudio: vi.fn(() => Promise.resolve(true)),
   };
 });
+
+const DEVICE_ENDED = 'Audio device is no longer active. Re-select your device.';
 
 afterEach(() => {
   app?.unmount();
@@ -208,6 +215,22 @@ describe('Studio', () => {
     expect(mocks.push).not.toHaveBeenCalled();
     expect(goLiveButton().disabled).toBe(false);
   });
+
+  it('stays on the Studio when the input was unplugged before Go Live', async () => {
+    mocks.passed!.value = true;
+    mocks.capture.startRecording = vi.fn(() => {
+      (mocks.capture.error as { value: string }).value = DEVICE_ENDED;
+      return false;
+    });
+    await mountStudio('2026-11-15T12:00:30Z');
+
+    goLiveButton().click();
+    await vi.advanceTimersByTimeAsync(0);
+    await nextTick();
+    expect(text()).toContain(DEVICE_ENDED);
+    expect(mocks.stopStream).toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
 });
 
 describe('On Air', () => {
@@ -260,6 +283,90 @@ describe('On Air', () => {
     mocks.audioDropped!.value = true;
     await nextTick();
     expect(text()).toContain('The recording misses some audio.');
+  });
+
+  describe('when the audio input is gone', () => {
+    /** What useAudioCapture calls when the device's track ends on air. */
+    const captureError = (message: string) =>
+      (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](message);
+    const inputSelect = () => root.querySelector('select');
+    async function pick(value: string) {
+      const select = inputSelect()!;
+      select.value = value;
+      select.dispatchEvent(new Event('change'));
+      await vi.advanceTimersByTimeAsync(0);
+      await nextTick();
+    }
+
+    it('warns and lets the host pick an input again', async () => {
+      await mountOnAir();
+      expect(text()).not.toContain(DEVICE_ENDED);
+      expect(inputSelect()).toBeNull();
+
+      captureError(DEVICE_ENDED);
+      await nextTick();
+      expect(text()).toContain(DEVICE_ENDED);
+      expect(text()).toContain('Audio input');
+      expect(mocks.capture.listDevices).toHaveBeenCalled();
+      expect(mocks.push).not.toHaveBeenCalled();
+
+      await pick('mic-2');
+      expect(mocks.capture.captureDevice).toHaveBeenCalledWith('mic-2');
+      expect(mocks.capture.startRecording).toHaveBeenCalledOnce();
+      expect(text()).not.toContain(DEVICE_ENDED);
+      expect(inputSelect()).toBeNull();
+    });
+
+    it('can share screen audio instead', async () => {
+      await mountOnAir();
+      captureError(DEVICE_ENDED);
+      await nextTick();
+      await pick('screen');
+      expect(mocks.capture.captureScreenAudio).toHaveBeenCalledOnce();
+      expect(mocks.capture.captureDevice).not.toHaveBeenCalled();
+      expect(text()).not.toContain(DEVICE_ENDED);
+    });
+
+    it('keeps the notice and shows why when the picked input fails', async () => {
+      (mocks.capture.captureDevice as Mock).mockResolvedValue(false);
+      (mocks.capture.error as { value: string | null }).value = 'Could not start audio source';
+      await mountOnAir();
+      captureError(DEVICE_ENDED);
+      await nextTick();
+      await pick('mic-2');
+      expect(mocks.capture.startRecording).not.toHaveBeenCalled();
+      expect(text()).toContain(DEVICE_ENDED);
+      expect(text()).toContain('Could not start audio source');
+
+      // The same input again is a new try.
+      expect(inputSelect()!.value).toBe('');
+      (mocks.capture.captureDevice as Mock).mockResolvedValue(true);
+      await pick('mic-2');
+      expect(mocks.capture.captureDevice).toHaveBeenCalledTimes(2);
+      expect(text()).not.toContain(DEVICE_ENDED);
+      expect(text()).not.toContain('Could not start audio source');
+    });
+
+    it('keeps the notice when the picked input cannot start', async () => {
+      mocks.capture.startRecording = vi.fn(() => {
+        captureError(DEVICE_ENDED);
+        return false;
+      });
+      await mountOnAir();
+      captureError(DEVICE_ENDED);
+      await nextTick();
+      await pick('mic-2');
+      expect(text()).toContain(DEVICE_ENDED);
+      expect(inputSelect()).not.toBeNull();
+    });
+
+    it('shows other audio errors without the input picker', async () => {
+      await mountOnAir();
+      captureError('Recording error');
+      await nextTick();
+      expect(text()).toContain('Recording error');
+      expect(inputSelect()).toBeNull();
+    });
   });
 
   it('End Episode stops the stream and opens the Wrap-up', async () => {

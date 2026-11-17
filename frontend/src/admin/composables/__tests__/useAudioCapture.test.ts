@@ -5,14 +5,22 @@ import { BROWSER_UNSUPPORTED_MESSAGE } from '../useAudioCapture';
 // the host would notice: which chunks leave the browser, in which order, and
 // which errors reach the screen.
 
-class FakeTrack {
+class FakeTrack extends EventTarget {
   readyState: MediaStreamTrackState = 'live';
   constructor(
     public kind: 'audio' | 'video' = 'audio',
     private sampleRate?: number
-  ) {}
+  ) {
+    super();
+  }
+  /** Like the browser: a track the page stops fires no 'ended'. */
   stop() {
     this.readyState = 'ended';
+  }
+  /** The device goes away (unplugged, or the shared tab closed). */
+  unplug() {
+    this.readyState = 'ended';
+    this.dispatchEvent(new Event('ended'));
   }
   getSettings() {
     return { sampleRate: this.sampleRate };
@@ -351,12 +359,57 @@ describe('a failed start is shown to the host, never swallowed', () => {
     expect(capture.error.value).toBe('Please select an audio device');
   });
 
-  // Not built yet: https://github.com/phaabe/live.moafunk.de/issues/922
-  it.skip('warns when the input is unplugged while on air', async () => {
+  it('warns when the input is unplugged while on air', async () => {
+    const { capture, onError, recorder } = await goLive();
+    device.tracks[0].unplug();
+    expect(onError).toHaveBeenCalledWith(mod.DEVICE_ENDED_MESSAGE);
+    expect(capture.error.value).toBe(mod.DEVICE_ENDED_MESSAGE);
+    // The recorder keeps sending (silence), so the recording keeps its timeline.
+    expect(recorder.state).toBe('recording');
+    expect(capture.isRecording.value).toBe(true);
+  });
+
+  it('warns when the shared screen stops while on air', async () => {
+    const audio = new FakeTrack();
+    mediaDevices.getDisplayMedia.mockResolvedValue(new FakeStream([audio, new FakeTrack('video')]));
+    const onError = vi.fn();
+    const capture = mod.useAudioCapture({ onError });
+    await capture.captureScreenAudio();
+    capture.startRecording();
+    audio.unplug();
+    expect(onError).toHaveBeenCalledWith(mod.DEVICE_ENDED_MESSAGE);
+  });
+
+  it('stays quiet when one of two input tracks ends', async () => {
+    device = new FakeStream([new FakeTrack(), new FakeTrack()]);
     const { onError } = await goLive();
-    device.tracks[0].readyState = 'ended';
-    await vi.advanceTimersByTimeAsync(mod.NO_AUDIO_DATA_MS);
-    expect(onError).toHaveBeenCalled();
+    device.tracks[0].unplug();
+    expect(onError).not.toHaveBeenCalled();
+    device.tracks[1].unplug();
+    expect(onError).toHaveBeenCalledWith(mod.DEVICE_ENDED_MESSAGE);
+  });
+
+  it('leaves an input unplugged before Go Live to the Go Live check', async () => {
+    const onError = vi.fn();
+    const capture = mod.useAudioCapture({ onError });
+    await capture.captureDevice('mic-1');
+    device.tracks[0].unplug();
+    expect(onError).not.toHaveBeenCalled();
+    expect(capture.startRecording()).toBe(false);
+    expect(onError).toHaveBeenCalledWith(mod.DEVICE_ENDED_MESSAGE);
+  });
+
+  it('ignores the end of an input that was replaced', async () => {
+    const { capture, onError } = await goLive();
+    const old = device;
+    device = new FakeStream([new FakeTrack('audio', 48000)]);
+    await capture.captureDevice('mic-2');
+    expect(capture.startRecording()).toBe(true);
+    old.tracks[0].unplug();
+    expect(onError).not.toHaveBeenCalled();
+    // The new input is watched.
+    device.tracks[0].unplug();
+    expect(onError).toHaveBeenCalledWith(mod.DEVICE_ENDED_MESSAGE);
   });
 });
 
