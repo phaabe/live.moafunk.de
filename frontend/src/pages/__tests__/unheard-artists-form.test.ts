@@ -403,6 +403,35 @@ describe('chunked upload', () => {
 });
 
 describe('errors shown to the artist', () => {
+  it('shows the error from the server JSON, not the raw JSON', async () => {
+    fillRequired();
+    choose('track1-file', fakeFile('long.wav', 120 * MB));
+    failWith = (p) =>
+      p.startsWith('/api/submit/file-chunk/init/')
+        ? new Response('{"error":"Total upload too large: max 1500MB allowed"}', { status: 413 })
+        : undefined;
+    await submit();
+    expect(message().textContent).toBe('Total upload too large: max 1500MB allowed');
+  });
+
+  it('hides a proxy error page behind a clear text', async () => {
+    fillRequired();
+    failWith = (p) =>
+      p.startsWith('/api/submit/file/')
+        ? new Response('<html><body>502 Bad Gateway</body></html>', { status: 502 })
+        : undefined;
+    await submit();
+    expect(message().textContent).toBe('Failed to upload Track 1');
+  });
+
+  it('falls back to a clear text when the server JSON has no error', async () => {
+    fillRequired();
+    failWith = (p) =>
+      p.startsWith('/api/submit/finalize/') ? new Response('{}', { status: 500 }) : undefined;
+    await submit();
+    expect(message().textContent).toBe('Failed to finalize submission');
+  });
+
   it('shows the server text when the start of the submission fails', async () => {
     fillRequired();
     failWith = (p) =>
