@@ -256,8 +256,10 @@
     }
     const pct = summary.coverage?.[key];
     const lines = summary.coverage_lines?.[key];
+    const at = summary.levels?.find((x) => x.id === 'L1')?.run;
     return el('div', { class: 'card cov' },
-      el('div', { class: 'cov-head' }, el('strong', {}, label), el('span', { class: 'muted' }, 'line coverage')),
+      el('div', { class: 'cov-head' }, el('strong', {}, label),
+        el('span', { class: 'muted' }, 'line coverage', at && ' on ', at && el('a', { href: at.url }, at.sha.slice(0, 7)))),
       el('div', { class: 'cov-value' },
         el('span', { class: 'big' }, pct != null ? `${pct}%` : '–'),
         lines && el('span', { class: 'small' }, `${num(lines.covered)} of ${num(lines.total)} lines`)),
@@ -328,8 +330,11 @@
         count('not built').length && `${count('not built').length} not built (${ids('not built')})`,
       ].filter(Boolean).join(' · ');
       const sub = document.getElementById('sub');
-      sub.textContent = `Updated ${ago(summary.generated_at)}`;
-      if (summary.run) sub.append(` from the ${summary.run.event} run on `, el('a', { href: summary.run.url }, summary.run.sha.slice(0, 7)), '.');
+      sub.textContent = `Updated ${ago(summary.generated_at)}.`;
+      // Tests come from the newest finished check run; cancelled runs make it older than the publishing run.
+      const tests = levels.find((l) => l.id === 'L1')?.run;
+      if (tests) sub.append(' Tests and coverage from ', el('a', { href: tests.url }, tests.sha.slice(0, 7)), '.');
+      if (summary.run) sub.append(` Published by the ${summary.run.event} run on `, el('a', { href: summary.run.url }, summary.run.sha.slice(0, 7)), '.');
       document.getElementById('cells').append(...levels.map(cell));
       document.getElementById('coverage').append(
         coverageCard(summary, history, 'rust', 'Rust backend', 'backend lines that cargo test runs (L1 and L3), with cargo llvm-cov',
