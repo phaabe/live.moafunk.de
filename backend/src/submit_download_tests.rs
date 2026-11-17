@@ -19,7 +19,7 @@ const BOUNDARY: &str = "submit-test-boundary";
 const MIB: usize = 1024 * 1024;
 
 /// A fake R2 and a state with `overrides` on top of the test config.
-async fn setup(overrides: Value) -> (Arc<AppState>, tempfile::TempDir, FakeR2) {
+pub(crate) async fn setup(overrides: Value) -> (Arc<AppState>, tempfile::TempDir, FakeR2) {
     let (r2, endpoint) = FakeR2::serve().await;
     let mut config = overrides;
     config["r2_endpoint"] = json!(endpoint);
@@ -28,7 +28,7 @@ async fn setup(overrides: Value) -> (Arc<AppState>, tempfile::TempDir, FakeR2) {
 }
 
 /// A multipart form of `(name, file name, data)` parts.
-async fn form(parts: &[(&str, Option<&str>, &[u8])]) -> Multipart {
+pub(crate) async fn form(parts: &[(&str, Option<&str>, &[u8])]) -> Multipart {
     let mut body = Vec::new();
     for (name, file, data) in parts {
         let disposition = match file {
