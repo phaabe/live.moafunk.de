@@ -359,7 +359,6 @@ async fn an_episode_on_air_is_not_over_at_its_end_time() {
 }
 
 /// The host Dashboard lists every host's upcoming episodes, soonest first.
-/// Only the caller's own rows carry the episode id.
 #[tokio::test]
 async fn dashboard_lists_all_hosts_upcoming_episodes() {
     let (state, _temp) = state().await;
@@ -380,7 +379,7 @@ async fn dashboard_lists_all_hosts_upcoming_episodes() {
 
     let later = episode(&state, brunch, "2099-01-04", "prerecorded").await;
     let sooner = episode(&state, brunch, "2099-01-01", "live").await;
-    episode(&state, night, "2099-01-02", "live").await;
+    let night_episode = episode(&state, night, "2099-01-02", "live").await;
     // Over: an old date, and yesterday's episode (it ended at 14:00).
     episode(&state, brunch, "2020-01-05", "live").await;
     let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
@@ -407,18 +406,52 @@ async fn dashboard_lists_all_hosts_upcoming_episodes() {
             {
                 "date": "2099-01-01", "start_time": "12:00", "end_time": "14:00",
                 "show_name": "Brunchtime", "host_username": "lena",
-                "mode": "live", "mode_label": "Live", "own_episode_id": sooner
+                "mode": "live", "mode_label": "Live", "id": sooner
             },
             {
                 "date": "2099-01-02", "start_time": "12:00", "end_time": null,
                 "show_name": "Night Shift", "host_username": "jonas",
-                "mode": "live", "mode_label": "Live", "own_episode_id": null
+                "mode": "live", "mode_label": "Live", "id": night_episode
             },
             {
                 "date": "2099-01-04", "start_time": "12:00", "end_time": "14:00",
                 "show_name": "Brunchtime", "host_username": "lena",
-                "mode": "prerecorded", "mode_label": "Pre-recorded", "own_episode_id": later
+                "mode": "prerecorded", "mode_label": "Pre-recorded", "id": later
             },
         ])
     );
+}
+
+/// Another host may view an episode: it carries the Show's name and
+/// description, the status label and the host.
+#[tokio::test]
+async fn another_host_sees_an_episode_with_its_show() {
+    let (state, _temp) = state().await;
+    let lena = add_user(&state, "lena", "host").await;
+    let jonas = add_user(&state, "jonas", "host").await;
+    let series = create(&state, lena, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let id = episode(&state, series, "2099-01-04", "live").await;
+    sqlx::query("UPDATE shows SET host_user_id = ? WHERE id = ?")
+        .bind(lena)
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let response = handlers::api::api_show_detail(
+        State(state.clone()),
+        Path(id),
+        headers(&state, jonas).await,
+    )
+    .await
+    .unwrap();
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["series_name"], "Brunchtime");
+    assert_eq!(body["series_description"], "Sunday brunch sounds.");
+    assert_eq!(body["series_cover_url"], Value::Null);
+    assert_eq!(body["episode_status_label"], "Upcoming");
+    assert_eq!(body["host_username"], "lena");
 }

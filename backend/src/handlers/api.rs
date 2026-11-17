@@ -2027,8 +2027,13 @@ pub struct ShowDetailResponse {
     /// The Show (series) this episode belongs to, if linked.
     series_slug: Option<String>,
     series_name: Option<String>,
+    /// The Show's description and cover, for hosts who view another host's episode.
+    series_description: Option<String>,
+    series_cover_url: Option<String>,
     /// "upcoming" | "wrapup_open" | "finished", the same rule as the Show page.
     episode_status: crate::series::EpisodeStatus,
+    /// "Upcoming" | "Finished · wrap-up open" | "Finished"
+    episode_status_label: &'static str,
     /// True while this episode is on air: its recording session is open (live
     /// or in the reconnect grace), or it streams with "Record this show" off.
     on_air: bool,
@@ -2852,6 +2857,7 @@ pub async fn api_show_detail(
     // Episode view of the host flow: its Show, status and set length.
     let view: EpisodeViewRow = sqlx::query_as(
         "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
+                t.description AS series_description, t.cover_key AS series_cover_key, \
                 s.wrapup_published_at, s.prerecorded_duration_secs, s.live_ended_at, \
                 s.live_recorded \
          FROM shows s LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
@@ -2875,6 +2881,10 @@ pub async fn api_show_detail(
         on_air,
         chrono::Utc::now(),
     );
+    let series_cover_url = match &view.series_cover_key {
+        Some(key) => storage::get_presigned_url(&state, key, 3600).await.ok(),
+        None => None,
+    };
 
     Ok(Json(ShowDetailResponse {
         id: show.id,
@@ -2917,7 +2927,10 @@ pub async fn api_show_detail(
         latest_recording,
         series_slug: view.series_slug,
         series_name: view.series_name,
+        series_description: view.series_description,
+        series_cover_url,
         episode_status,
+        episode_status_label: episode_status.label(),
         on_air,
         prerecorded_duration_secs: view.prerecorded_duration_secs,
         live_ended_at: view.live_ended_at,
@@ -2930,6 +2943,8 @@ pub async fn api_show_detail(
 struct EpisodeViewRow {
     series_slug: Option<String>,
     series_name: Option<String>,
+    series_description: Option<String>,
+    series_cover_key: Option<String>,
     rhythm_end: Option<String>,
     wrapup_published_at: Option<String>,
     prerecorded_duration_secs: Option<i64>,

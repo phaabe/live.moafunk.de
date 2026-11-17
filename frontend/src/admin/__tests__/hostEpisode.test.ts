@@ -396,12 +396,21 @@ describe('Wrap-up and Done', () => {
 });
 
 describe('who sees what', () => {
-  it("keeps today's page for admins and for another host's show", async () => {
+  it("keeps today's page for admins", async () => {
     await mount('admin', 9);
     await vi.waitFor(() => expect(text()).toContain("Today's show page"));
-    app?.unmount();
-    await mount('host', 7);
-    await vi.waitFor(() => expect(text()).toContain("Today's show page"));
+  });
+
+  it("shows another host's episode read-only", async () => {
+    current = episode({ host_username: 'lena', episode_status_label: 'Upcoming' });
+    const router = await mount('host', 7);
+    await vi.waitFor(() => expect(text()).toContain('So 04.01. · Brunchtime'));
+    expect(text()).toContain('Upcoming · Live · 12:00–14:00');
+    expect(text()).toContain('lena');
+    expect(text()).not.toContain("Today's show page");
+    expect(root.querySelectorAll('button, input')).toHaveLength(0);
+    expect(root.querySelector('a')?.getAttribute('href')).toBe('/dashboard');
+    expect(router.currentRoute.value.fullPath).toBe('/shows/42');
   });
 });
 
@@ -438,6 +447,23 @@ describe('flow', () => {
     });
     await mount();
     await expectFlow('episode-pre', root);
+  });
+
+  it('Episode (other host) matches the flow', async () => {
+    current = episode({
+      date: '2026-10-27',
+      start_time: '20:00',
+      end_time: '22:00',
+      series_slug: 'night-shift',
+      series_name: 'Night Shift',
+      series_description: 'Late-night club sounds, every Tuesday from 20:00.',
+      host_user_id: 7,
+      created_by: 7,
+      host_username: 'jonas',
+      episode_status_label: 'Upcoming',
+    });
+    await mount();
+    await expectFlow('episode-view', root);
   });
 
   it('Wrap-up matches the flow', async () => {

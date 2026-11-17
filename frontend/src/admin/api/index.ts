@@ -509,8 +509,13 @@ export interface ShowDetail {
   /** The Show (series) of this episode, when it is linked to one. */
   series_slug?: string | null;
   series_name?: string | null;
+  /** The Show's description and cover, for hosts who view another host's episode. */
+  series_description?: string | null;
+  series_cover_url?: string | null;
   /** Same rule as the Show page: upcoming, wrap-up open or finished. */
   episode_status?: EpisodeStatus;
+  /** "Upcoming" | "Finished · wrap-up open" | "Finished" */
+  episode_status_label?: string;
   /** True while this episode is on air (recorded or not). */
   on_air?: boolean;
   /** Length of a pre-recorded set booked through Book Slot, in seconds. */
@@ -841,6 +846,7 @@ export interface SeriesDetail extends Series {
 
 /** A row of the host Dashboard: an upcoming episode of any host. */
 export interface UpcomingEpisode {
+  id: number;
   date: string;
   start_time: string | null;
   end_time: string | null;
@@ -848,8 +854,6 @@ export interface UpcomingEpisode {
   host_username: string;
   mode: 'live' | 'prerecorded';
   mode_label: string;
-  /** Set only on the caller's own episodes. */
-  own_episode_id: number | null;
 }
 
 export interface NewSeries {

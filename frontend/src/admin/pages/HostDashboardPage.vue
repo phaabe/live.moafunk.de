@@ -5,7 +5,7 @@ import { episodeDay } from '../episodeRow';
 import BoardIcon from '../components/BoardIcon.vue';
 
 // Flow screen `dashboard` (host at /dashboard): the upcoming episodes of all
-// hosts. Only the host's own rows open the episode.
+// hosts. The episode page shows the owner's screen or a read-only view.
 
 const episodes = ref<UpcomingEpisode[]>([]);
 
@@ -34,19 +34,11 @@ onMounted(async () => {
       </div>
       <div class="board-card-body">
         <ul class="episodes board-rows">
-          <li v-for="(e, i) in episodes" :key="i">
-            <router-link
-              v-if="e.own_episode_id"
-              :to="`/shows/${e.own_episode_id}`"
-              class="board-row"
-            >
+          <li v-for="e in episodes" :key="e.id">
+            <router-link :to="`/shows/${e.id}`" class="board-row">
               <span>{{ left(e) }}</span>
               <span class="tag tag-upcoming">Upcoming · {{ e.mode_label }}</span>
             </router-link>
-            <div v-else class="board-row">
-              <span>{{ left(e) }}</span>
-              <span class="tag tag-upcoming">Upcoming · {{ e.mode_label }}</span>
-            </div>
           </li>
         </ul>
       </div>

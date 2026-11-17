@@ -389,13 +389,13 @@ struct UpcomingRow {
     wrapup_published_at: Option<String>,
     live_ended_at: Option<String>,
     show_name: String,
-    owner_user_id: i64,
     host_username: String,
 }
 
-/// One row of the host Dashboard. Other hosts' episodes carry no id.
+/// One row of the host Dashboard.
 #[derive(Debug, Serialize)]
 pub struct UpcomingEpisode {
+    id: i64,
     date: String,
     start_time: Option<String>,
     end_time: Option<String>,
@@ -405,8 +405,6 @@ pub struct UpcomingEpisode {
     mode: &'static str,
     /// "Live" | "Pre-recorded"
     mode_label: &'static str,
-    /// The episode id, only when the caller owns the show.
-    own_episode_id: Option<i64>,
 }
 
 /// GET /api/upcoming-episodes — the upcoming episodes of all hosts' series,
@@ -415,12 +413,13 @@ pub async fn api_upcoming_episodes(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    let user = require_show_creator(&state, &headers).await?;
+    require_show_creator(&state, &headers).await?;
     // An episode ends at most a day after its date, so older dates are over.
     let rows: Vec<UpcomingRow> = sqlx::query_as(
         "SELECT s.id, s.date, COALESCE(s.start_time, t.start_time) AS start_time, \
                 COALESCE(s.end_time, t.end_time) AS end_time, s.stream_mode, \
-                s.wrapup_published_at, s.live_ended_at, t.name AS show_name, t.owner_user_id, u.username AS host_username \
+                s.wrapup_published_at, s.live_ended_at, t.name AS show_name, \
+                u.username AS host_username \
          FROM shows s \
          JOIN show_templates t ON t.id = s.template_id \
          JOIN users u ON u.id = t.owner_user_id \
@@ -454,7 +453,7 @@ pub async fn api_upcoming_episodes(
         .map(|e| {
             let (mode, mode_label) = series::mode_of(e.stream_mode.as_deref());
             UpcomingEpisode {
-                own_episode_id: (e.owner_user_id == user.id).then_some(e.id),
+                id: e.id,
                 date: e.date,
                 start_time: e.start_time,
                 end_time: e.end_time,

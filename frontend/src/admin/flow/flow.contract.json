@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 7,
+  "rev": 8,
   "screens": [
     {
       "id": "dashboard",
@@ -10,8 +10,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "5a00957e",
-      "notesHash": "9f9a3b2f",
+      "hash": "60a47e42",
+      "notesHash": "6da4d290",
       "elements": [
         {
           "k": "h1",
@@ -31,13 +31,13 @@
           "k": "row",
           "text": "Di 27.10. · 20:00–22:00 · Night Shift · jonas",
           "meta": "Upcoming · Live",
-          "to": null
+          "to": "episode-view"
         },
         {
           "k": "row",
           "text": "Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira",
           "meta": "Upcoming · Pre-recorded",
-          "to": null
+          "to": "episode-view"
         },
         {
           "k": "row",
@@ -600,6 +600,50 @@
           "text": "Open Wrap-up",
           "to": "wrapup",
           "primary": true
+        }
+      ]
+    },
+    {
+      "id": "episode-view",
+      "title": "Episode (other host)",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/44",
+      "hash": "e507e038",
+      "notesHash": "c4d3be8b",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "media",
+          "text": "Show cover",
+          "to": null
+        },
+        {
+          "k": "h1",
+          "text": "Di 27.10. · Night Shift"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Upcoming · Live · 20:00–22:00"
+        },
+        {
+          "k": "text",
+          "text": "Late-night club sounds, every Tuesday from 20:00."
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "row",
+          "text": "Host",
+          "meta": "jonas",
+          "to": null
         }
       ]
     },

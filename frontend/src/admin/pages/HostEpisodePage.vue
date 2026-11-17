@@ -1,21 +1,20 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onUnmounted, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
 import { seriesApi, showsApi, type ShowDetail } from '../api';
 import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '../composables';
 import AudioPlayer from '../components/AudioPlayer.vue';
+import HostEpisodeView from './HostEpisodeView.vue';
 import BoardIcon from '../components/BoardIcon.vue';
 import { episodeDay, setLength } from '../episodeRow';
 import { openReplaceFile } from '../replaceFile';
 import { berlinToUtcDate, isShowEnded } from '../showTime';
 
 // Flow screens `episode`, `episode-pre`, `wrapup` and `done` on one path
-// (/shows/<id>) for the host's own episodes. Anything else (another host's
-// show) keeps today's show page.
-
-const ShowDetailPage = defineAsyncComponent(() => import('./ShowDetailPage.vue'));
+// (/shows/<id>) for the host's own episodes. Another host's episode gets the
+// read-only `episode-view`.
 
 /** The Studio opens this long before the start. */
 const STUDIO_OPENS_MS = 30 * 60 * 1000;
@@ -241,7 +240,7 @@ async function publish() {
 </script>
 
 <template>
-  <ShowDetailPage v-if="show && !isMine" />
+  <HostEpisodeView v-if="show && !isMine" :show="show" />
   <div v-else-if="show" class="episode-page">
     <!-- Done -->
     <template v-if="view === 'done'">

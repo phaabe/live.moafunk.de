@@ -84,10 +84,11 @@ const DETAIL: SeriesDetail = {
 /** The flow's Dashboard rows: lena's own episodes and two of other hosts. */
 const UPCOMING: UpcomingEpisode[] = [
   ['2026-10-25', '12:00', '14:00', 'Brunchtime', 'lena', 'Live', 42],
-  ['2026-10-27', '20:00', '22:00', 'Night Shift', 'jonas', 'Live', null],
-  ['2026-10-30', '18:00', '20:00', 'Dub Kitchen', 'mira', 'Pre-recorded', null],
+  ['2026-10-27', '20:00', '22:00', 'Night Shift', 'jonas', 'Live', 44],
+  ['2026-10-30', '18:00', '20:00', 'Dub Kitchen', 'mira', 'Pre-recorded', 45],
   ['2026-11-08', '12:00', '14:00', 'Brunchtime', 'lena', 'Pre-recorded', 43],
-].map(([date, start_time, end_time, show_name, host_username, mode_label, own_episode_id]) => ({
+].map(([date, start_time, end_time, show_name, host_username, mode_label, id]) => ({
+  id: id as number,
   date: date as string,
   start_time: start_time as string,
   end_time: end_time as string,
@@ -95,7 +96,6 @@ const UPCOMING: UpcomingEpisode[] = [
   host_username: host_username as string,
   mode: mode_label === 'Live' ? 'live' : 'prerecorded',
   mode_label: mode_label as string,
-  own_episode_id: own_episode_id as number | null,
 }));
 
 let app: App | undefined;
@@ -311,7 +311,7 @@ describe('router guard', () => {
 });
 
 describe('Dashboard', () => {
-  it("lists all hosts' upcoming shows and links only the host's own", async () => {
+  it("lists all hosts' upcoming shows, each opening its episode", async () => {
     await mount(HostDashboardPage, 'host');
     await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(4));
     expect(root.querySelector('h1')?.textContent).toBe('Dashboard');
@@ -321,10 +321,13 @@ describe('Dashboard', () => {
     }));
     expect(rows).toEqual([
       { text: 'So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live', href: '/shows/42' },
-      { text: 'Di 27.10. · 20:00–22:00 · Night Shift · jonas | Upcoming · Live', href: null },
+      {
+        text: 'Di 27.10. · 20:00–22:00 · Night Shift · jonas | Upcoming · Live',
+        href: '/shows/44',
+      },
       {
         text: 'Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira | Upcoming · Pre-recorded',
-        href: null,
+        href: '/shows/45',
       },
       {
         text: 'So 08.11. · 12:00–14:00 · Brunchtime · lena | Upcoming · Pre-recorded',
