@@ -12,8 +12,23 @@ use crate::{models, storage, AppError, AppState, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-const SOUNDCLOUD_OAUTH_URL: &str = "https://secure.soundcloud.com/oauth/token";
-const SOUNDCLOUD_API_BASE: &str = "https://api.soundcloud.com";
+/// SoundCloud API base. Tests point it at a local fake.
+fn api_base() -> String {
+    #[cfg(not(test))]
+    let base = "https://api.soundcloud.com".to_string();
+    #[cfg(test)]
+    let base = tests::API_BASE.with(|base| base.borrow().clone());
+    base
+}
+
+/// OAuth token endpoint. Tests use the fake API base for it too.
+fn oauth_url() -> String {
+    #[cfg(not(test))]
+    let url = "https://secure.soundcloud.com/oauth/token".to_string();
+    #[cfg(test)]
+    let url = format!("{}/oauth/token", api_base());
+    url
+}
 
 // ============================================================================
 // API Response Types
@@ -358,7 +373,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
     }
 
     let resp = client
-        .post(format!("{}/tracks", SOUNDCLOUD_API_BASE))
+        .post(format!("{}/tracks", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
         .multipart(form)
         .send()
@@ -437,7 +452,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
 /// treated as success — the track is already gone.
 async fn delete_track(client: &reqwest::Client, access_token: &str, track_id: &str) -> Result<()> {
     let resp = client
-        .delete(format!("{}/tracks/{}", SOUNDCLOUD_API_BASE, track_id))
+        .delete(format!("{}/tracks/{}", api_base(), track_id))
         .header("Authorization", format!("OAuth {}", access_token))
         .send()
         .await
@@ -595,7 +610,7 @@ async fn find_playlist_by_title(
     title: &str,
 ) -> Result<Option<i64>> {
     let resp = client
-        .get(format!("{}/me/playlists", SOUNDCLOUD_API_BASE))
+        .get(format!("{}/me/playlists", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
         .query(&[("limit", "200"), ("linked_partitioning", "false")])
         .send()
@@ -635,7 +650,7 @@ async fn get_playlist_track_ids(
     playlist_id: i64,
 ) -> Result<Vec<i64>> {
     let resp = client
-        .get(format!("{}/playlists/{}", SOUNDCLOUD_API_BASE, playlist_id))
+        .get(format!("{}/playlists/{}", api_base(), playlist_id))
         .header("Authorization", format!("OAuth {}", access_token))
         .send()
         .await
@@ -669,7 +684,7 @@ async fn set_playlist_tracks(
         .map(|id| serde_json::json!({ "id": id }))
         .collect();
     let resp = client
-        .put(format!("{}/playlists/{}", SOUNDCLOUD_API_BASE, playlist_id))
+        .put(format!("{}/playlists/{}", api_base(), playlist_id))
         .header("Authorization", format!("OAuth {}", access_token))
         .json(&serde_json::json!({ "playlist": { "tracks": tracks } }))
         .send()
@@ -695,7 +710,7 @@ async fn create_playlist(
     track_id: i64,
 ) -> Result<i64> {
     let resp = client
-        .post(format!("{}/playlists", SOUNDCLOUD_API_BASE))
+        .post(format!("{}/playlists", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
         .json(&serde_json::json!({
             "playlist": {
@@ -758,7 +773,7 @@ pub async fn set_track_privacy(
 
     let client = reqwest::Client::new();
     let resp = client
-        .put(format!("{}/tracks/{}", SOUNDCLOUD_API_BASE, track_id))
+        .put(format!("{}/tracks/{}", api_base(), track_id))
         .header("Authorization", format!("OAuth {}", access_token))
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({
@@ -853,7 +868,7 @@ pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> 
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(SOUNDCLOUD_OAUTH_URL)
+        .post(oauth_url())
         .form(&[
             ("grant_type", "authorization_code"),
             ("code", code),
@@ -912,18 +927,5 @@ pub async fn get_status(state: &Arc<AppState>) -> SoundCloudStatus {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::should_auto_upload;
-
-    #[test]
-    fn auto_upload_only_when_enabled_and_configured() {
-        // Happy path: on + configured (fires even if the show already has a
-        // track — a new recording replaces that track's audio).
-        assert!(should_auto_upload(true, true));
-
-        // Either blocker prevents the upload.
-        assert!(!should_auto_upload(false, true)); // kill-switch off
-        assert!(!should_auto_upload(true, false)); // not configured
-        assert!(!should_auto_upload(false, false));
-    }
-}
+#[path = "soundcloud_tests.rs"]
+mod tests;
