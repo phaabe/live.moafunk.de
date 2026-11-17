@@ -67,6 +67,16 @@ function episode(overrides: Partial<ShowDetail> = {}): ShowDetail {
   };
 }
 
+const BRUNCHTIME_SERIES = {
+  id: 3,
+  slug: 'brunchtime',
+  name: 'Brunchtime',
+  description: null,
+  cover_url: null,
+  rhythm: { repeat_rule: 'weekly', weekday: 7, start_time: '12:00', end_time: '14:00' },
+  rhythm_line: 'Sundays · 12:00–14:00',
+};
+
 let app: App | undefined;
 let root: HTMLDivElement;
 let current: ShowDetail;
@@ -94,6 +104,12 @@ beforeEach(() => {
         current = { ...current, episode_status: 'finished' };
         return Response.json({ id: 42, status: 'finished', status_label: 'Finished' });
       }
+      if (url === '/api/series/brunchtime')
+        return Response.json({ ...BRUNCHTIME_SERIES, episodes: [] });
+      if (url === '/api/series/brunchtime/slots')
+        return Response.json({
+          slots: [{ date: '2099-01-11', start_time: '12:00', end_time: '14:00' }],
+        });
       if (url === '/api/my-show')
         return Response.json({ assigned: true, shows: [{ ...current, artists: [] }] });
       throw new Error(`Unexpected API request: ${method} ${url}`);
@@ -118,7 +134,7 @@ async function mount(
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
-      { path: '/dashboard', component: stub('Schedule screen') },
+      { path: '/schedule', component: stub('Schedule screen') },
       { path: '/shows', component: stub('My Shows') },
       { path: '/shows/:slug/book', component: stub('Upload Your Set') },
       {
@@ -202,11 +218,53 @@ describe('Episode', () => {
     expect(input.value).toBe('Brunchtime #31');
     input.value = 'Brunchtime #31 · Guest special';
     input.dispatchEvent(new Event('input'));
-    input.dispatchEvent(new Event('change'));
+    button('Save').click();
     await vi.waitFor(() =>
       expect(requests.find((r) => r.method === 'PUT')?.body).toEqual({
         title: 'Brunchtime #31 · Guest special',
       })
+    );
+  });
+
+  it('moves the episode to a free slot and switches its mode with one Save', async () => {
+    await mount();
+    const [dateSelect] = [...root.querySelectorAll('select')] as HTMLSelectElement[];
+    await vi.waitFor(() => expect(dateSelect.options).toHaveLength(2));
+    expect([...dateSelect.options].map((o) => o.text)).toEqual(['So 04.01.2099', 'So 11.01.2099']);
+    dateSelect.value = '2099-01-11';
+    dateSelect.dispatchEvent(new Event('change'));
+    const pre = root.querySelector('input[value="prerecorded"]') as HTMLInputElement;
+    pre.checked = true;
+    pre.dispatchEvent(new Event('change'));
+    await nextTick();
+    button('Save').click();
+    await vi.waitFor(() =>
+      expect(requests.find((r) => r.method === 'PUT')?.body).toEqual({
+        date: '2099-01-11',
+        start_time: '12:00',
+        end_time: '14:00',
+        stream_mode: 'prerecorded',
+      })
+    );
+  });
+
+  it('locks date, time and mode once the episode has started', async () => {
+    current = episode({ date: PAST, on_air: true });
+    await mount();
+    for (const el of root.querySelectorAll('select, input[type="radio"]')) {
+      expect((el as HTMLInputElement).disabled).toBe(true);
+    }
+    expect((root.querySelector('input[type="text"]') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('asks for the set of a pre-recorded episode that has no file yet', async () => {
+    current = episode({ stream_mode: 'prerecorded' });
+    const router = await mount();
+    expect(text()).toContain('Pre-recorded · no file yet · plays at 12:00');
+    expect(text()).toContain('Upload your set before air time.');
+    button('Upload your set').click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book?mode=prerecorded')
     );
   });
 
@@ -314,7 +372,7 @@ describe('Wrap-up and Done', () => {
     await vi.waitFor(() => expect(text()).toContain('Episode published'));
     expect(text()).not.toContain('SoundCloud');
     button('Back to Schedule').click();
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/dashboard'));
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/schedule'));
   });
 
   it('switches between the wrap-up and the episode on one path', async () => {
@@ -396,12 +454,21 @@ describe('Wrap-up and Done', () => {
 });
 
 describe('who sees what', () => {
-  it("keeps today's page for admins and for another host's show", async () => {
+  it("keeps today's page for admins", async () => {
     await mount('admin', 9);
     await vi.waitFor(() => expect(text()).toContain("Today's show page"));
-    app?.unmount();
-    await mount('host', 7);
-    await vi.waitFor(() => expect(text()).toContain("Today's show page"));
+  });
+
+  it("shows another host's episode read-only", async () => {
+    current = episode({ host_username: 'lena', episode_status_label: 'Upcoming' });
+    const router = await mount('host', 7);
+    await vi.waitFor(() => expect(text()).toContain('So 04.01. · Brunchtime'));
+    expect(text()).toContain('Upcoming · Live · 12:00–14:00');
+    expect(text()).toContain('lena');
+    expect(text()).not.toContain("Today's show page");
+    expect(root.querySelectorAll('button, input')).toHaveLength(0);
+    expect(root.querySelector('a')?.getAttribute('href')).toBe('/dashboard');
+    expect(router.currentRoute.value.fullPath).toBe('/shows/42');
   });
 });
 
@@ -438,6 +505,36 @@ describe('flow', () => {
     });
     await mount();
     await expectFlow('episode-pre', root);
+  });
+
+  it('Episode (other host) matches the flow', async () => {
+    current = episode({
+      date: '2026-10-27',
+      start_time: '20:00',
+      end_time: '22:00',
+      series_slug: 'night-shift',
+      series_name: 'Night Shift',
+      series_description: 'Late-night club sounds, every Tuesday from 20:00.',
+      host_user_id: 7,
+      created_by: 7,
+      host_username: 'jonas',
+      episode_status_label: 'Upcoming',
+    });
+    await mount();
+    await expectFlow('episode-view', root);
+  });
+
+  it('Episode · Pre-recorded, no file matches the flow', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-01T10:00:00Z'));
+    current = episode({
+      date: '2026-11-08',
+      title: 'Brunchtime #32',
+      description: 'Guest mix with Juno Park.',
+      stream_mode: 'prerecorded',
+    });
+    await mount();
+    await expectFlow('episode-pre-nofile', root);
   });
 
   it('Wrap-up matches the flow', async () => {

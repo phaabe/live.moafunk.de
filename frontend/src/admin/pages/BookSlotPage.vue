@@ -167,107 +167,120 @@ async function bookSlot() {
         >&lt; {{ series.name }}</router-link
       >
       <h1 class="page-title">Book Slot</h1>
-      <label class="field">
-        <span class="label">Show</span>
-        <select class="input" :value="series.slug" @change="chooseShow">
-          <option v-for="show in myShows" :key="show.slug" :value="show.slug">
-            {{ show.name }}
-          </option>
-        </select>
-      </label>
-      <h2 class="section-title">Mode</h2>
-      <div class="mode">
-        <label><input type="radio" name="mode" value="live" checked /> Live</label>
-        <label>
-          <input type="radio" name="mode" value="prerecorded" @change="choosePrerecorded" />
-          Pre-recorded
-        </label>
-      </div>
     </template>
-
     <template v-else>
       <router-link :to="`/shows/${series.slug}/book`" class="back-link">&lt; Book Slot</router-link>
       <h1 class="page-title">Upload Your Set</h1>
       <p class="intro">Pre-recorded episodes start with the file.</p>
-      <div
-        class="drop-zone"
-        :class="{ dragging }"
-        role="button"
-        tabindex="0"
-        @click="fileInput?.click()"
-        @keydown.enter.prevent="fileInput?.click()"
-        @dragover.prevent="dragging = true"
-        @dragleave="dragging = false"
-        @drop.prevent="onDrop"
-      >
-        <span>Drop your set here · MP3 or WAV</span>
-        <progress v-if="uploading" :value="progress" max="100"></progress>
-      </div>
-      <input
-        ref="fileInput"
-        type="file"
-        accept=".mp3,.wav,audio/mpeg,audio/wav"
-        class="file-input"
-        @change="onPick"
-      />
-      <p v-if="uploaded" class="uploaded">
-        {{ uploaded.filename }} · {{ setLength(uploaded.duration) }} · uploaded
-      </p>
     </template>
 
-    <template v-if="freeChoice">
-      <label class="field">
-        <span class="label">Date</span>
-        <input
-          v-model="freeDate"
-          type="date"
-          class="input"
-          :min="today"
-          :disabled="waitingForFile"
-        />
-      </label>
-      <div class="field">
-        <span class="label">Time</span>
-        <div class="time-range">
+    <section class="board-card">
+      <div class="board-card-body">
+        <template v-if="!isUpload">
+          <label class="field">
+            <span class="label">Show</span>
+            <select class="input" :value="series.slug" @change="chooseShow">
+              <option v-for="show in myShows" :key="show.slug" :value="show.slug">
+                {{ show.name }}
+              </option>
+            </select>
+          </label>
+          <h2 class="section-title">Mode</h2>
+          <div class="mode">
+            <label><input type="radio" name="mode" value="live" checked /> Live</label>
+            <label>
+              <input type="radio" name="mode" value="prerecorded" @change="choosePrerecorded" />
+              Pre-recorded
+            </label>
+          </div>
+        </template>
+
+        <template v-else>
+          <div
+            class="drop-zone"
+            :class="{ dragging }"
+            role="button"
+            tabindex="0"
+            @click="fileInput?.click()"
+            @keydown.enter.prevent="fileInput?.click()"
+            @dragover.prevent="dragging = true"
+            @dragleave="dragging = false"
+            @drop.prevent="onDrop"
+          >
+            <span>Drop your set here · MP3 or WAV</span>
+            <progress v-if="uploading" :value="progress" max="100"></progress>
+          </div>
           <input
-            v-model="freeStart"
-            type="time"
-            class="input"
-            aria-label="Start time"
-            :disabled="waitingForFile"
+            ref="fileInput"
+            type="file"
+            accept=".mp3,.wav,audio/mpeg,audio/wav"
+            class="file-input"
+            @change="onPick"
           />
-          <span>–</span>
-          <input
-            v-model="freeEnd"
-            type="time"
-            class="input"
-            aria-label="End time"
-            :disabled="waitingForFile"
-          />
+          <p v-if="uploaded" class="uploaded">
+            {{ uploaded.filename }} · {{ setLength(uploaded.duration) }} · uploaded
+          </p>
+        </template>
+
+        <template v-if="freeChoice">
+          <label class="field">
+            <span class="label">Date</span>
+            <input
+              v-model="freeDate"
+              type="date"
+              class="input"
+              :min="today"
+              :disabled="waitingForFile"
+            />
+          </label>
+          <div class="field">
+            <span class="label">Time</span>
+            <div class="time-range">
+              <input
+                v-model="freeStart"
+                type="time"
+                class="input"
+                aria-label="Start time"
+                :disabled="waitingForFile"
+              />
+              <span>–</span>
+              <input
+                v-model="freeEnd"
+                type="time"
+                class="input"
+                aria-label="End time"
+                :disabled="waitingForFile"
+              />
+            </div>
+          </div>
+          <p v-if="freeTimeError" class="field-error">{{ freeTimeError }}</p>
+        </template>
+        <template v-else>
+          <label class="field">
+            <span class="label">Date</span>
+            <select v-model="date" class="input" :disabled="waitingForFile || !!replacing">
+              <option v-for="d in dates" :key="d" :value="d">{{ slotDate(d) }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">Time</span>
+            <select v-model="time" class="input" :disabled="waitingForFile || !!replacing">
+              <option v-for="t in times" :key="t" :value="t">{{ t }}</option>
+            </select>
+          </label>
+        </template>
+        <p v-if="!isUpload" class="hint">
+          Pre-recorded shows need the file before you pick a time.
+        </p>
+        <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+
+        <div>
+          <BaseButton :disabled="!canBook" :loading="booking" @click="bookSlot"
+            >Book slot</BaseButton
+          >
         </div>
       </div>
-      <p v-if="freeTimeError" class="field-error">{{ freeTimeError }}</p>
-    </template>
-    <template v-else>
-      <label class="field">
-        <span class="label">Date</span>
-        <select v-model="date" class="input" :disabled="waitingForFile || !!replacing">
-          <option v-for="d in dates" :key="d" :value="d">{{ slotDate(d) }}</option>
-        </select>
-      </label>
-      <label class="field">
-        <span class="label">Time</span>
-        <select v-model="time" class="input" :disabled="waitingForFile || !!replacing">
-          <option v-for="t in times" :key="t" :value="t">{{ t }}</option>
-        </select>
-      </label>
-    </template>
-    <p v-if="!isUpload" class="hint">Pre-recorded shows need the file before you pick a time.</p>
-    <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-
-    <div>
-      <BaseButton :disabled="!canBook" :loading="booking" @click="bookSlot">Book slot</BaseButton>
-    </div>
+    </section>
   </div>
   <p v-else-if="error" class="field-error" role="alert">{{ error }}</p>
 </template>
@@ -277,7 +290,7 @@ async function bookSlot() {
   max-width: 560px;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  gap: var(--spacing-lg);
 }
 
 .back-link {
@@ -317,8 +330,8 @@ async function bookSlot() {
 }
 
 .input {
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border-light);
   border-radius: var(--radius-md);
   color: var(--color-text);
   font-family: var(--font-family);

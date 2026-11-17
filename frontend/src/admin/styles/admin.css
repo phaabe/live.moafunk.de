@@ -85,6 +85,189 @@ body {
   padding: var(--spacing-lg);
 }
 
+/* Host board: cards with a title bar, list rows, status tags and banners */
+.board-card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.board-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.board-card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+}
+
+.board-card-title svg {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+.board-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+}
+
+.board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: var(--spacing-lg);
+  align-items: start;
+}
+
+.board-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+/* a.board-row: beats the grey `.admin-app a` link color. */
+.board-row,
+a.board-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm) var(--spacing-md);
+  min-height: 44px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+a.board-row:hover {
+  background-color: var(--color-surface-alt);
+  border-color: var(--color-border-light);
+  color: var(--color-text);
+}
+
+.tag {
+  padding: 2px var(--spacing-sm);
+  border: 1px solid #8e8e93;
+  border-radius: var(--radius-sm);
+  background-color: rgba(142, 142, 147, 0.2);
+  color: #b8b8c0;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tag-upcoming {
+  border-color: #3478f6;
+  background-color: rgba(52, 120, 246, 0.2);
+  color: #8db4ff;
+}
+
+.tag-wrapup_open {
+  border-color: var(--color-warning);
+  background-color: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+}
+
+.tag-finished {
+  border-color: #34c759;
+  background-color: rgba(52, 199, 89, 0.2);
+  color: #5ee08a;
+}
+
+/* The flow's status line ("pill"), drawn as the old dashboard stream banner. */
+.status-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm) var(--spacing-md);
+  margin: 0;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background-color: rgba(52, 120, 246, 0.08);
+  border: 1px solid var(--color-border);
+  border-left: 4px solid #3478f6;
+  border-radius: var(--radius-lg);
+  font-weight: var(--font-weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-banner.ok {
+  background-color: rgba(34, 197, 94, 0.08);
+  border-left-color: var(--color-success);
+}
+
+.status-banner.warn {
+  background-color: rgba(245, 158, 11, 0.08);
+  border-left-color: var(--color-warning);
+}
+
+.status-banner.live,
+.status-banner.failed {
+  background-color: rgba(239, 68, 68, 0.08);
+  border-left-color: var(--color-error);
+}
+
+.status-banner.live {
+  color: #ff8a80;
+}
+
+.status-banner.processing {
+  background-color: var(--color-surface);
+  border-left-color: var(--color-text-muted);
+}
+
+/* Label over a big value, like the old show status strip. */
+.stat-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--spacing-md);
+  margin: 0;
+}
+
+.stat-tiles > div {
+  padding: var(--spacing-md) var(--spacing-lg);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.stat-tiles dt {
+  margin-bottom: var(--spacing-xs);
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.stat-tiles dd {
+  margin: 0;
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Tables */
 .data-table {
   width: 100%;

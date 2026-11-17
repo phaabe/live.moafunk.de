@@ -11,7 +11,13 @@
 
 **Show** — A single scheduled episode with a date, start/end time, title,
 description, cover image, and zero-or-more assigned artists. The unit everything
-else hangs off. (Code: `Show` / `ShowDetail`.)
+else hangs off. (Code: `Show` / `ShowDetail`.) *Terminology watch:* the host
+flow calls this an **Episode**, and uses **Show** for the series below.
+
+**Series** — A host's recurring programme (for example "Brunchtime") with a
+name, description, cover and rhythm; it owns its episodes. The host flow calls
+it a **Show**. Its owner is the only host who may book, edit or start its
+episodes; every host may view them. (Code: `show_templates`, `Series`.)
 
 **Show type** — Distinguishes editorial formats. `unheard` shows use the legacy
 info-card detail layout; `external` / "brunchtime" shows use the newer dashboard

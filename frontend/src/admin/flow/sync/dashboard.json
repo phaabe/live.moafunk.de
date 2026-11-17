@@ -1,0 +1,13 @@
+{
+  "screen": "dashboard",
+  "hash": "60a47e42",
+  "status": "ok",
+  "leftOut": [
+    {
+      "item": "nav: Pool",
+      "release": "UNHEARD"
+    }
+  ],
+  "missing": [],
+  "extra": []
+}

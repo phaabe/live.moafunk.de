@@ -127,19 +127,25 @@ onUnmounted(() => {
 <template>
   <div class="on-air">
     <h1 class="page-title">Studio</h1>
-    <p class="pill live">On air · {{ elapsed }}<template v-if="recording"> · REC</template></p>
+    <p class="pill status-banner live">
+      On air · {{ elapsed }}<template v-if="recording"> · REC</template>
+    </p>
 
-    <DbMeter
-      :media-stream="audioCapture.processedStream.value ?? audioCapture.mediaStream.value"
-      label="Live level"
-    />
+    <section class="board-card">
+      <div class="board-card-body">
+        <DbMeter
+          :media-stream="audioCapture.processedStream.value ?? audioCapture.mediaStream.value"
+          label="Live level"
+        />
+      </div>
+    </section>
 
-    <dl class="facts">
-      <div class="fact">
+    <dl class="stat-tiles">
+      <div>
         <dt>Listeners now</dt>
         <dd>{{ listeners ?? '—' }}</dd>
       </div>
-      <div class="fact">
+      <div>
         <dt>Connection</dt>
         <dd :class="['connection', connection === 'stable' ? 'ok' : 'warn']">{{ connection }}</dd>
       </div>
@@ -157,53 +163,19 @@ onUnmounted(() => {
 
 <style scoped>
 .on-air {
-  max-width: 560px;
+  max-width: 800px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  gap: var(--spacing-lg);
 }
 
 .page-title {
   margin: 0;
 }
 
-.pill {
-  align-self: flex-start;
-  margin: 0;
-  padding: var(--spacing-xs) var(--spacing-md);
-  border-radius: var(--radius-md);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  font-variant-numeric: tabular-nums;
-}
-
-.pill.live {
-  border-color: var(--color-error);
-  color: var(--color-error);
-  font-weight: var(--font-weight-bold);
-}
-
-.facts {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.fact {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--spacing-md);
-}
-
-.fact dt {
-  color: var(--color-text-muted);
-}
-
-.fact dd {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
+.connection.ok {
+  color: var(--color-success);
 }
 
 .connection.warn {

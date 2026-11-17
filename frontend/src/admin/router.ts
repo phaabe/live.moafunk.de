@@ -21,6 +21,7 @@ const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
 const DashboardPage = () => import('./pages/DashboardPage.vue');
+const HostDashboardPage = () => import('./pages/HostDashboardPage.vue');
 const HostSchedulePage = () => import('./pages/HostSchedulePage.vue');
 const HostMyShowsPage = () => import('./pages/HostMyShowsPage.vue');
 const ConfigPage = () => import('./pages/ConfigPage.vue');
@@ -227,10 +228,16 @@ const router = createRouter({
     {
       path: '/dashboard',
       name: 'dashboard',
-      // Hosts get the Schedule screen; admins keep the Dashboard.
-      component: hostPage(HostSchedulePage, DashboardPage),
+      // Hosts get the flow's Dashboard; admins keep theirs.
+      component: hostPage(HostDashboardPage, DashboardPage),
       // Landing page for everyone except guests.
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+    },
+    {
+      path: '/schedule',
+      name: 'schedule',
+      component: HostSchedulePage,
+      meta: { requiresAuth: true, roles: ['host'] },
     },
     {
       path: '/artists',
@@ -403,7 +410,7 @@ const router = createRouter({
       path: '/calendar',
       name: 'calendar',
       component: CalendarPage,
-      // Admins only: hosts have Schedule instead (the role guard sends them there).
+      // Admins only: hosts have Schedule instead (the role guard sends them to Dashboard).
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {

@@ -119,29 +119,35 @@ onUnmounted(() => {
   <div class="studio">
     <router-link :to="episodePath" class="back-link">&lt; Episode</router-link>
     <h1 class="page-title">Studio</h1>
-    <p class="pill warn">{{ soundcheck }}</p>
+    <p class="pill status-banner warn">{{ soundcheck }}</p>
 
-    <LiveSetupTest studio />
+    <section class="board-card">
+      <div class="board-card-body">
+        <LiveSetupTest studio />
 
-    <label class="check">
-      <input v-model="record" type="checkbox" />
-      Record this show
-    </label>
+        <label class="check">
+          <input v-model="record" type="checkbox" />
+          Record this show
+        </label>
 
-    <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
-    <div>
-      <BaseButton :disabled="!canGoLive" :loading="goingLive" @click="goLive">Go Live</BaseButton>
-    </div>
+        <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
+        <div>
+          <BaseButton :disabled="!canGoLive" :loading="goingLive" @click="goLive"
+            >Go Live</BaseButton
+          >
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
 .studio {
-  max-width: 560px;
+  max-width: 800px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  gap: var(--spacing-lg);
 }
 
 .back-link {
@@ -152,19 +158,6 @@ onUnmounted(() => {
 
 .page-title {
   margin: 0;
-}
-
-.pill {
-  align-self: flex-start;
-  margin: 0;
-  padding: var(--spacing-xs) var(--spacing-md);
-  border-radius: var(--radius-md);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-}
-
-.pill.warn {
-  border-color: var(--color-warning, var(--color-border));
 }
 
 .check {

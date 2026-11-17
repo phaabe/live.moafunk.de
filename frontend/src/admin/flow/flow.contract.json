@@ -2,15 +2,98 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 6,
+  "rev": 9,
   "screens": [
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "60a47e42",
+      "notesHash": "6da4d290",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Dashboard"
+        },
+        {
+          "k": "h2",
+          "text": "Upcoming shows"
+        },
+        {
+          "k": "row",
+          "text": "So 25.10. · 12:00–14:00 · Brunchtime · lena",
+          "meta": "Upcoming · Live",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "Di 27.10. · 20:00–22:00 · Night Shift · jonas",
+          "meta": "Upcoming · Live",
+          "to": "episode-view"
+        },
+        {
+          "k": "row",
+          "text": "Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira",
+          "meta": "Upcoming · Pre-recorded",
+          "to": "episode-view"
+        },
+        {
+          "k": "row",
+          "text": "So 08.11. · 12:00–14:00 · Brunchtime · lena",
+          "meta": "Upcoming · Pre-recorded",
+          "to": "episode-pre"
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "nav",
+          "text": "Schedule",
+          "to": "schedule"
+        },
+        {
+          "k": "nav",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "nav",
+          "text": "Pool",
+          "to": "unheard-pool"
+        },
+        {
+          "k": "nav",
+          "text": "lena",
+          "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Change Password",
+          "to": "set-password"
+        },
+        {
+          "k": "nav",
+          "text": "Recovery Email",
+          "to": "recovery-email"
+        },
+        {
+          "k": "nav",
+          "text": "Logout",
+          "to": "login"
+        }
+      ]
+    },
     {
       "id": "schedule",
       "title": "Schedule",
       "who": "host",
       "lane": "showday",
-      "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "dc7292f1",
+      "path": "admin.live.moafunk.de/#/schedule",
+      "hash": "49407601",
       "notesHash": "767dbae5",
       "elements": [
         {
@@ -60,6 +143,11 @@
         },
         {
           "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "nav",
           "text": "Schedule",
           "to": "schedule"
         },
@@ -101,7 +189,7 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
-      "hash": "19320f7e",
+      "hash": "868f9bba",
       "notesHash": "76a6a531",
       "elements": [
         {
@@ -125,6 +213,11 @@
           "text": "New show",
           "to": "new-show",
           "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -233,8 +326,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "8f0978bf",
-      "notesHash": "152f6c7f",
+      "hash": "86273f6d",
+      "notesHash": "83f80d0a",
       "elements": [
         {
           "k": "back",
@@ -243,7 +336,7 @@
         },
         {
           "k": "media",
-          "text": "Show cover",
+          "text": "Show cover · drop an image",
           "to": null
         },
         {
@@ -259,6 +352,41 @@
           "text": "Book Slot",
           "to": "book-slot",
           "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "field",
+          "text": "Name",
+          "value": "Brunchtime"
+        },
+        {
+          "k": "field",
+          "text": "Description",
+          "value": "Sunday brunch sounds, every week from 12:00."
+        },
+        {
+          "k": "field",
+          "text": "Repeats",
+          "value": "Every week ▾"
+        },
+        {
+          "k": "field",
+          "text": "Day",
+          "value": "Sunday ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": null,
+          "primary": false
         },
         {
           "k": "h2",
@@ -401,8 +529,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "574a351b",
-      "notesHash": "06275bb2",
+      "hash": "87411507",
+      "notesHash": "362f20ac",
       "elements": [
         {
           "k": "back",
@@ -443,8 +571,41 @@
         },
         {
           "k": "field",
+          "text": "Description",
+          "value": "Guest mix with Juno Park."
+        },
+        {
+          "k": "field",
+          "text": "Date",
+          "value": "So 25.10.2026 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "field",
           "text": "Announcements",
           "value": "Story + Post · before and after"
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": null,
+          "primary": false
         },
         {
           "k": "button",
@@ -466,8 +627,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/43",
-      "hash": "56f8c825",
-      "notesHash": "35e32059",
+      "hash": "2867c7b5",
+      "notesHash": "5efe2392",
       "elements": [
         {
           "k": "back",
@@ -507,6 +668,173 @@
           "text": "Open Wrap-up",
           "to": "wrapup",
           "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "field",
+          "text": "Title",
+          "value": "Brunchtime #32"
+        },
+        {
+          "k": "field",
+          "text": "Description",
+          "value": "Guest mix with Juno Park."
+        },
+        {
+          "k": "field",
+          "text": "Date",
+          "value": "So 08.11.2026 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "episode-pre-nofile",
+      "title": "Episode · Pre-recorded, no file",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/43",
+      "hash": "4f432b4a",
+      "notesHash": "7f53b1be",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "h1",
+          "text": "So 08.11. · Brunchtime"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Pre-recorded · no file yet · plays at 12:00"
+        },
+        {
+          "k": "h2",
+          "text": "Next step"
+        },
+        {
+          "k": "text",
+          "text": "Upload your set before air time. Without a file nothing plays."
+        },
+        {
+          "k": "button",
+          "text": "Upload your set",
+          "to": "upload",
+          "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "field",
+          "text": "Title",
+          "value": "Brunchtime #32"
+        },
+        {
+          "k": "field",
+          "text": "Description",
+          "value": "Guest mix with Juno Park."
+        },
+        {
+          "k": "field",
+          "text": "Date",
+          "value": "So 08.11.2026 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "episode-view",
+      "title": "Episode (other host)",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/44",
+      "hash": "e507e038",
+      "notesHash": "c4d3be8b",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "media",
+          "text": "Show cover",
+          "to": null
+        },
+        {
+          "k": "h1",
+          "text": "Di 27.10. · Night Shift"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Upcoming · Live · 20:00–22:00"
+        },
+        {
+          "k": "text",
+          "text": "Late-night club sounds, every Tuesday from 20:00."
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "row",
+          "text": "Host",
+          "meta": "jonas",
+          "to": null
         }
       ]
     },
@@ -750,7 +1078,7 @@
       "who": "host",
       "lane": "unheard",
       "path": "admin.live.moafunk.de/#/artists",
-      "hash": "89872408",
+      "hash": "e0e462bc",
       "notesHash": "d155d113",
       "elements": [
         {
@@ -812,6 +1140,11 @@
           "text": "Copy invite link",
           "to": "submission",
           "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -1041,7 +1374,7 @@
       "who": "host",
       "lane": "signin",
       "path": "admin.live.moafunk.de/#/login",
-      "hash": "830f2c10",
+      "hash": "7076a9ab",
       "notesHash": "69c2144f",
       "elements": [
         {
@@ -1066,7 +1399,7 @@
         {
           "k": "button",
           "text": "Login",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": true
         },
         {
@@ -1160,7 +1493,7 @@
       "who": "host",
       "lane": "first",
       "path": "admin.live.moafunk.de/#/recovery-email",
-      "hash": "04bc981c",
+      "hash": "bacbb3ef",
       "notesHash": "dd46e540",
       "elements": [
         {
@@ -1195,7 +1528,7 @@
         {
           "k": "button",
           "text": "Skip for now",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": false
         }
       ]
@@ -1206,7 +1539,7 @@
       "who": "host",
       "lane": "first",
       "path": "admin.live.moafunk.de/#/verify-email?token=…",
-      "hash": "440e18b0",
+      "hash": "21b819dd",
       "notesHash": "0c9b45ca",
       "elements": [
         {
@@ -1220,7 +1553,7 @@
         {
           "k": "button",
           "text": "Verify Email",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": true
         },
         {

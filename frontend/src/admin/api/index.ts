@@ -509,8 +509,13 @@ export interface ShowDetail {
   /** The Show (series) of this episode, when it is linked to one. */
   series_slug?: string | null;
   series_name?: string | null;
+  /** The Show's description and cover, for hosts who view another host's episode. */
+  series_description?: string | null;
+  series_cover_url?: string | null;
   /** Same rule as the Show page: upcoming, wrap-up open or finished. */
   episode_status?: EpisodeStatus;
+  /** "Upcoming" | "Finished · wrap-up open" | "Finished" */
+  episode_status_label?: string;
   /** True while this episode is on air (recorded or not). */
   on_air?: boolean;
   /** Length of a pre-recorded set booked through Book Slot, in seconds. */
@@ -839,6 +844,18 @@ export interface SeriesDetail extends Series {
   episodes: SeriesEpisode[];
 }
 
+/** A row of the host Dashboard: an upcoming episode of any host. */
+export interface UpcomingEpisode {
+  id: number;
+  date: string;
+  start_time: string | null;
+  end_time: string | null;
+  show_name: string;
+  host_username: string;
+  mode: 'live' | 'prerecorded';
+  mode_label: string;
+}
+
 export interface NewSeries {
   name: string;
   description: string;
@@ -881,6 +898,9 @@ const seriesPath = (slug: string) => `/api/series/${encodeURIComponent(slug)}`;
 
 export const seriesApi = {
   list: () => api.get<{ series: Series[] }>('/api/series'),
+
+  /** All hosts' upcoming episodes, by date and start time. */
+  upcoming: () => api.get<{ episodes: UpcomingEpisode[] }>('/api/upcoming-episodes'),
 
   /** One of the caller's series, or null when it is not theirs (404). */
   get: async (slug: string): Promise<SeriesDetail | null> => {
@@ -941,28 +961,29 @@ export const seriesApi = {
     ),
 
   /** Create a series; the cover goes up in the same request. */
-  create: async (input: NewSeries): Promise<Series> => {
-    const form = new FormData();
-    form.append('name', input.name);
-    form.append('description', input.description);
-    if (input.rhythm) {
-      form.append('repeat_rule', input.rhythm.repeat_rule);
-      form.append('weekday', String(input.rhythm.weekday));
-      form.append('start_time', input.rhythm.start_time);
-      form.append('end_time', input.rhythm.end_time);
-    } else {
-      form.append('repeat_rule', 'none');
-    }
-    if (input.cover) form.append('cover', input.cover);
-    const resp = await fetch('/api/series', {
-      method: 'POST',
-      credentials: 'include',
-      body: form,
-    });
-    if (!resp.ok) throw await errorOf(resp);
-    return resp.json();
-  },
+  create: (input: NewSeries) => sendSeries('POST', '/api/series', input),
+
+  /** The owner edits a Show. The slug stays; a missing cover keeps the old one. */
+  update: (slug: string, input: NewSeries) => sendSeries('PUT', seriesPath(slug), input),
 };
+
+async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries): Promise<Series> {
+  const form = new FormData();
+  form.append('name', input.name);
+  form.append('description', input.description);
+  if (input.rhythm) {
+    form.append('repeat_rule', input.rhythm.repeat_rule);
+    form.append('weekday', String(input.rhythm.weekday));
+    form.append('start_time', input.rhythm.start_time);
+    form.append('end_time', input.rhythm.end_time);
+  } else {
+    form.append('repeat_rule', 'none');
+  }
+  if (input.cover) form.append('cover', input.cover);
+  const resp = await fetch(url, { method, credentials: 'include', body: form });
+  if (!resp.ok) throw await errorOf(resp);
+  return resp.json();
+}
 
 // SoundCloud API
 export interface SoundCloudStatus {

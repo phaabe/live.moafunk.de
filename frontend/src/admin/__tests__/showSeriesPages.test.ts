@@ -54,9 +54,11 @@ function episode(
 let app: App | undefined;
 let root: HTMLDivElement;
 let posted: FormData | undefined;
+let put: FormData | undefined;
 
 beforeEach(() => {
   posted = undefined;
+  put = undefined;
   root = document.createElement('div');
   document.body.appendChild(root);
   vi.stubGlobal(
@@ -65,6 +67,10 @@ beforeEach(() => {
       if (url === '/api/series' && options?.method === 'POST') {
         posted = options.body as FormData;
         return Response.json({ ...BRUNCHTIME, episodes: undefined }, { status: 201 });
+      }
+      if (url === '/api/series/brunchtime' && options?.method === 'PUT') {
+        put = options.body as FormData;
+        return Response.json({ ...BRUNCHTIME, episodes: undefined });
       }
       if (url === '/api/series/brunchtime') return Response.json(BRUNCHTIME);
       if (url === '/api/series/someone-else')
@@ -249,6 +255,24 @@ describe('Show page', () => {
     await vi.waitFor(() =>
       expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book')
     );
+  });
+
+  it('saves the edited Details of the show', async () => {
+    await mount('host', '/shows/brunchtime');
+    await vi.waitFor(() => expect(root.textContent).toContain('Details'));
+    const name = root.querySelector('.form-input input') as HTMLInputElement;
+    expect(name.value).toBe('Brunchtime');
+    input('.form-input input', 'Brunch Club');
+    input('select', 'none', 'change');
+    await nextTick();
+    expect(root.querySelector('input[aria-label="Start time"]')).toBeNull();
+    button('Save').click();
+    await vi.waitFor(() => expect(put).toBeDefined());
+    expect(Object.fromEntries(put!.entries())).toEqual({
+      name: 'Brunch Club',
+      description: 'Sunday brunch sounds, every week from 12:00.',
+      repeat_rule: 'none',
+    });
   });
 
   it("sends a host away from another host's show", async () => {

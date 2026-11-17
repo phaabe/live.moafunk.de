@@ -66,6 +66,13 @@
       ]
     },
     {
+      "screen": "dashboard",
+      "release": "UNHEARD",
+      "items": [
+        "nav: Pool"
+      ]
+    },
+    {
       "screen": "schedule",
       "release": "UNHEARD",
       "items": [
@@ -140,6 +147,14 @@
     }
   ],
   "allowed": [
+    {
+      "screen": "dashboard",
+      "items": [
+        "button: Toggle menu",
+        "button: Close menu"
+      ],
+      "why": "The flow note says the nav folds into a menu on phones."
+    },
     {
       "screen": "schedule",
       "items": [
