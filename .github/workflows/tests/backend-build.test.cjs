@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -13,28 +13,24 @@ const workflow = yaml.load(readFileSync(path.resolve(__dirname, '../backend.yml'
 const build = workflow.jobs['build-and-push'];
 const monitoring = workflow.jobs['deploy-monitoring'];
 const staging = workflow.jobs['deploy-staging'];
-const e2e = workflow.jobs['e2e-staging'];
-const chaos = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-staging.yml'), 'utf8'));
 
 // These workflow conditions use only property reads, booleans and comparisons.
 // GitHub preserves boolean workflow_dispatch inputs in the inputs context.
-const deployed = { 'deploy-staging': { outputs: { deployed: 'true' } } };
-function enabled(condition, event, inputs, ref = 'refs/heads/main', needs = deployed) {
+function enabled(condition, event, inputs, ref = 'refs/heads/main') {
   if (condition === undefined) return true;
   return runInNewContext(
     `Boolean(${condition})`,
     // cancelled() is false: these cases model runs nobody cancelled.
-    { github: { event_name: event, ref }, inputs, needs, cancelled: () => false },
+    { github: { event_name: event, ref }, inputs, cancelled: () => false },
     { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }
   );
 }
 
-test('only image build, staging deploy, its chaos test, the test dashboard and explicitly requested monitoring jobs remain', () => {
+test('only image build, staging deploy, the test dashboard and explicitly requested monitoring jobs remain', () => {
   assert.deepEqual(Object.keys(workflow.jobs).sort(), [
     'build-and-push',
     'deploy-monitoring',
     'deploy-staging',
-    'e2e-staging',
     'test-dashboard',
   ]);
   assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
@@ -51,9 +47,8 @@ test('only image build, staging deploy, its chaos test, the test dashboard and e
 
 const cases = [
   ['push', {}, ['build-and-push']],
-  ['push', {}, ['build-and-push', 'deploy-staging', 'e2e-staging', 'test-dashboard'], 'refs/heads/staging'],
-  // Staging on hold: nothing new deployed, so no chaos test show. The dashboard still runs.
-  ['push', {}, ['build-and-push', 'deploy-staging', 'test-dashboard'], 'refs/heads/staging', { 'deploy-staging': { outputs: {} } }],
+  // A merge into staging deploys and never waits for the chaos test show.
+  ['push', {}, ['build-and-push', 'deploy-staging', 'test-dashboard'], 'refs/heads/staging'],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push'], 'refs/heads/staging'],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push']],
   ['workflow_dispatch', { build: false, deploy_monitoring: false }, []],
@@ -70,11 +65,10 @@ const cases = [
     ['build-and-push'],
   ],
 ];
-for (const [event, inputs, expected, ref = 'refs/heads/main', needs = deployed] of cases) {
-  const hold = needs === deployed ? '' : ' (staging on hold)';
-  test(`${event} on ${ref}${hold} ${JSON.stringify(inputs)} selects ${expected.join(', ') || 'no jobs'}`, () => {
+for (const [event, inputs, expected, ref = 'refs/heads/main'] of cases) {
+  test(`${event} on ${ref} ${JSON.stringify(inputs)} selects ${expected.join(', ') || 'no jobs'}`, () => {
     const selected = Object.entries(workflow.jobs)
-      .filter(([, job]) => enabled(job.if, event, inputs, ref, needs))
+      .filter(([, job]) => enabled(job.if, event, inputs, ref))
       .map(([id]) => id);
     assert.deepEqual(selected, expected);
     for (const id of selected.filter((id) => id === 'build-and-push')) {
@@ -213,35 +207,13 @@ test('staging deploy reaches only the staging box, with the exact image built', 
   assert.match(deploy.run, /root@staging\.live\.moafunk\.de "deploy \$tag \$DIGEST"/);
 });
 
-test('the chaos test show runs after each staging deploy and never next to one', () => {
-  assert.equal(e2e.needs, 'deploy-staging');
-  assert.deepEqual(staging.outputs, { deployed: '${{ steps.deploy.outputs.deployed }}' });
-  assert.equal(e2e.uses, './.github/workflows/e2e-staging.yml');
-  assert.equal(e2e.secrets, 'inherit');
-  assert.deepEqual(Object.keys(chaos.on).sort(), [
-    'pull_request',
-    'schedule',
-    'workflow_call',
-    'workflow_dispatch',
-  ]);
-  assert.deepEqual(chaos.permissions, { contents: 'read' });
-  const job = chaos.jobs['chaos-show'];
-  assert.deepEqual(job.concurrency, staging.concurrency, 'deploys wait for a running test');
-  const text = JSON.stringify(chaos);
-  assert.deepEqual(
-    [...text.matchAll(/secrets\.([A-Z_]+)/g)].map((match) => match[1]),
-    ['BW_ACCESS_TOKEN']
-  );
-  assert.doesNotMatch(text, /HETZNER|178\.104\.160\.103|admin\.live|deploy_hetzner|scp/i);
-  const keys = job.steps.find((step) => step.id === 'secrets');
-  assert.deepEqual(
-    keys.with.secrets.trim().split('\n').map((line) => line.split(' > ')[1]),
-    ['STAGING_DEPLOY_SSH_KEY', 'STAGING_HOST_PASSWORD']
-  );
-  const hostKey = job.steps.find((step) => step.env?.HOST_KEY).env.HOST_KEY;
-  assert.equal(hostKey, staging.steps.find((step) => step.id === 'deploy').env.HOST_KEY);
-  const unhold = job.steps.find((step) => /e2e-unhold/.test(step.run ?? ''));
-  assert.match(unhold.if, /always\(\)/, 'the hold is removed also after a failure');
+test('no staging deploy starts the chaos test show, but a deploy waits for a running one', () => {
+  const chaos = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-staging.yml'), 'utf8'));
+  assert.equal(staging.outputs, undefined, 'nothing reads a deploy result any more');
+  for (const job of Object.values(workflow.jobs)) {
+    assert.notEqual(job.uses, './.github/workflows/e2e-staging.yml');
+  }
+  assert.deepEqual(chaos.jobs['chaos-show'].concurrency, staging.concurrency);
 });
 
 test('staging deploy step passes tag and digest, treats a hold as success, fails otherwise', () => {
@@ -253,7 +225,6 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
   execFileSync('/bin/bash', ['-c', `printf '%s\\n' '#!/bin/bash' 'echo "\${@: -1}" >"$RUNNER_TEMP/ssh-request"' 'exit "\${FAKE_EXIT:-0}"' >"${bin}/ssh" && chmod +x "${bin}/ssh"`]);
   const digest = `sha256:${'c'.repeat(64)}`;
   const source = `abc1234${'d'.repeat(33)}`;
-  const output = path.join(dir, 'output');
   const run = (env) =>
     execFileSync('/bin/bash', ['--noprofile', '--norc', '-e', '-c', deploy.run], {
       env: {
@@ -263,26 +234,15 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
         HOST_KEY: 'staging.live.moafunk.de ssh-ed25519 AAAA',
         SOURCE_SHA: source,
         DIGEST: digest,
-        GITHUB_OUTPUT: output,
         ...env,
       },
       stdio: 'pipe',
     }).toString();
-  // What the step left in GITHUB_OUTPUT; the file is emptied for the next run.
-  const outputs = () => {
-    const text = readFileSync(output, 'utf8');
-    writeFileSync(output, '');
-    return text;
-  };
   try {
-    writeFileSync(output, '');
     run({});
     assert.equal(readFileSync(path.join(dir, 'ssh-request'), 'utf8'), `deploy sha-abc1234 ${digest}\n`);
-    assert.equal(outputs(), 'deployed=true\n');
     assert.match(run({ FAKE_EXIT: '3' }), /Staging is on hold/);
-    assert.equal(outputs(), '', 'a hold deploys nothing, so no chaos test show');
     assert.throws(() => run({ FAKE_EXIT: '1' }));
-    assert.equal(outputs(), '');
     rmSync(path.join(dir, 'ssh-request'));
     assert.throws(() => run({ DIGEST: '' }));
     assert.throws(() => readFileSync(path.join(dir, 'ssh-request')), 'no ssh without a digest');

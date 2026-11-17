@@ -1,15 +1,17 @@
 name: Release gate
 
 # The required check that decides what may go into main (docs/deployment.md):
-# - head release/*: passes only when the chaos test show passed right after
-#   the staging deploy of the head commit (backend.yml, job
-#   "e2e-staging / chaos-show"). Runs named only "chaos-show" (by hand,
-#   nightly, on PRs) do not count: they test whatever staging runs, which
-#   need not be the commit they are attached to.
+# - head release/*: passes only when the chaos test show passed on the head
+#   commit while staging ran exactly its image: check "e2e-staging /
+#   chaos-show", which e2e-release.yml runs on the release PR (it checks the
+#   image first). Runs named only "chaos-show" (by hand, nightly) do not
+#   count: they test whatever staging runs, which need not be the commit they
+#   are attached to. The head must be a branch of this repository: a fork's
+#   PR runs the fork's workflow files, which could fake that check.
 # - head hotfix/* with label hotfix: passes; the chaos test is skipped.
 # - anything else: fails.
-# It runs on PR events only. If the chaos run turns green after the PR was
-# opened, re-run this job.
+# It runs on PR events only, so it fails when the release PR opens.
+# e2e-release.yml re-runs it after a green chaos test show.
 on:
   pull_request:
     branches: [main]
@@ -27,18 +29,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
           case "$HEAD_REF" in
             release/*)
+              [[ "$HEAD_REPO" == "$REPO" ]] ||
+                { echo "::error::a release PR must come from a branch of $REPO, not $HEAD_REPO"; exit 1; }
               name="e2e-staging / chaos-show"
               found="$(gh api -X GET "repos/$REPO/commits/$HEAD_SHA/check-runs" -f check_name="$name" |
                 jq -r '.check_runs[] | select(.app.slug == "github-actions") | "\(.conclusion // .status) \(.html_url)"')"
               echo "$name on $HEAD_SHA: ${found:-no run}"
               grep -q '^success ' <<<"$found" || {
-                echo "::error::no green chaos test show after the staging deploy of $HEAD_SHA. Cut release/* from the commit staging runs. If its chaos test show failed, re-run it, then re-run this job."
+                echo "::error::no green chaos test show on the release commit $HEAD_SHA yet. e2e-release.yml runs it on this PR and then re-runs this job. If it failed, re-run its failed jobs."
                 exit 1
               }
               echo "Release: the chaos test show passed on $HEAD_SHA" ;;

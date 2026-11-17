@@ -13,12 +13,12 @@ The admin SPA ships inside the backend image, so one image covers API and admin.
 ## Rules
 
 1. Every change is a PR into `staging`, squash merged. Each PR has exactly one label `release::feature`, `release::fix` or `release::internal` (check `release-label`). The label sorts the PR into the release notes; `release::internal` is left out. Nobody commits to `staging` or `main` directly. Only release PRs (`release/rN`) and hotfix PRs (`hotfix/<slug>`) go into `main` (check `release-gate`).
-2. Every merge into `staging` builds an image `sha-<7>` and puts exactly that image on staging, then runs the chaos test show on it (`backend.yml`, job `e2e-staging`). On hold, neither the deploy nor the chaos test show happens.
+2. Every merge into `staging` builds an image `sha-<7>` and puts exactly that image on staging (`backend.yml`, job `deploy-staging`). On hold, the deploy does not happen. A merge never waits for the chaos test show: it runs every night on what staging runs, and on each release PR (rule 3). PRs that change `e2e/` run only its typecheck and unit tests (`e2e-unit.yml`).
 3. A release goes like this. `rN` is the next number after the last `r*` tag (`r0` was the first).
    1. On the staging box: `/opt/unheard-staging/staging.sh hold "rN release checks"`. Builds go on, but staging keeps the release candidate. `staging.sh status` prints the tag it runs (`sha-<7>`): that commit is the release.
-   2. Run the release checks on staging: the restore drill (below) and the 90-minute soak of the chaos test show (`backend/staging/README.md`). No check enforces the soak; it is your step.
-   3. `scripts/release.sh pr rN sha-<7>`. It cuts `release/rN` from that commit and opens the release PR `release/rN` → `main`. The PR body holds the release notes since the last tag, grouped by the `release::*` labels. Note the backup's name and the soak run in a comment on the PR.
-   4. Wait until every check of the release PR is green. `release-gate` passes only when the chaos test show passed right after the staging deploy of the release commit (job `e2e-staging`). A run by hand or the nightly run does not count. If that run failed, re-run it (the commit's **BACKEND - Build, Push and Deploy Image** run → Re-run failed jobs), then re-run `release-gate`. Then merge it with a **merge commit**, never a squash: `gh pr merge <n> --merge --delete-branch --match-head-commit <sha>`. A squash would put a commit on `main` that `staging` never has, so the next release would conflict and its notes would miss the PRs.
+   2. The restore drill (below): put the newest production backup into staging.
+   3. `scripts/release.sh pr rN sha-<7>`. It cuts `release/rN` from that commit and opens the release PR `release/rN` → `main`. The PR body holds the release notes since the last tag, grouped by the `release::*` labels. Note the backup's name in a comment on the PR.
+   4. The release PR runs the chaos test show as a 90-minute soak on staging (**E2E - Chaos test show on a release PR**, `e2e-release.yml`). It first checks that staging runs exactly the image of the release commit, so keep the hold until the merge. `release-gate` fails when the PR opens. After a green soak, `e2e-release.yml` re-runs it, and it passes. A run by hand or the nightly run does not count. If the soak failed, fix the cause and re-run its failed jobs (the PR's **E2E - Chaos test show on a release PR** run → Re-run failed jobs). The soak waits while a nightly run is on staging; a merge into `staging` in that time cancels the waiting soak (one waiting job per concurrency group), so re-run it then. When every check is green, merge it with a **merge commit**, never a squash: `gh pr merge <n> --merge --delete-branch --match-head-commit <sha>`. A squash would put a commit on `main` that `staging` never has, so the next release would conflict and its notes would miss the PRs.
    5. `scripts/release.sh tag rN`. It tags `rN` on the merge commit and creates the GitHub Release with the same notes.
    6. When the `main` image build is green, run **Deploy production** with `dry_run` on, then again with `dry_run` off.
    7. `/opt/unheard-staging/staging.sh unhold`.
@@ -92,7 +92,7 @@ Try it: `ssh root@178.104.160.103 'SHOWDAY_FORCE=1 /usr/local/sbin/showday-check
 
 ## Restore drill
 
-Before each release, prove that the latest production backup (`backup.yml`, nightly to `r2-backup:unheard-backups/db/`) restores and works: put it into staging and run the chaos test show on it. Staging is on hold for the release checks, so no deploy replaces the data meanwhile. The backup is scrubbed on the production box before it leaves, as for any copy of production data (`backend/staging/README.md`).
+Before each release, prove that the latest production backup (`backup.yml`, nightly to `r2-backup:unheard-backups/db/`) restores and works: put it into staging before you open the release PR, so the release soak runs on it. Staging is on hold for the release checks, so no deploy replaces the data meanwhile. The backup is scrubbed on the production box before it leaves, as for any copy of production data (`backend/staging/README.md`).
 
 ```bash
 # 1. The newest backup, unpacked on the production box
@@ -103,8 +103,8 @@ ssh root@178.104.160.103 'PROD_DB=/tmp/restore-drill.db bash -s -- export-db' < 
 ssh root@178.104.160.103 'rm -f /tmp/restore-drill.db'
 ```
 
-3. Run **Actions → E2E - Chaos test show on staging → Run workflow** with `duration` 90. It must pass. Log in as `staging-admin` and look at a few episodes and Shows from production.
-4. Note the backup's name and the run in the release PR.
+3. Open the release PR (rule 3, step 3). Its 90-minute soak runs on this data and must pass. Log in as `staging-admin` and look at a few episodes and Shows from production.
+4. Note the backup's name in the release PR.
 
 ## Keys
 

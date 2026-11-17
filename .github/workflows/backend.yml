@@ -128,11 +128,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      # "true" only when this image is now on staging; empty on hold.
-      deployed: ${{ steps.deploy.outputs.deployed }}
-    # Shared with the chaos test show (e2e-staging.yml): a deploy waits for a
-    # running test instead of landing mid-show or being skipped by its hold.
+    # Shared with the chaos test show (e2e-staging.yml, nightly and on release
+    # PRs): a deploy waits for a running test instead of landing mid-show or
+    # being skipped by its hold. The deploy itself never starts the test.
     concurrency:
       group: staging-box
       cancel-in-progress: false
@@ -172,31 +170,15 @@ jobs:
             -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes \
             root@staging.live.moafunk.de "deploy $tag $DIGEST" || code=$?
           if [[ "$code" == 3 ]]; then
-            echo "::notice title=Staging is on hold::$tag was built but not deployed, so its chaos test show does not run. Run staging.sh unhold on the box to resume."
+            echo "::notice title=Staging is on hold::$tag was built but not deployed. Run staging.sh unhold on the box to resume."
             exit 0
           fi
           [[ "$code" == 0 ]] || exit "$code"
-          echo "deployed=true" >>"$GITHUB_OUTPUT"
-
-  e2e-staging:
-    # The chaos test show on what was just deployed (e2e-staging.yml). A
-    # failed run turns this workflow red; staging keeps the deployed image.
-    # Skipped on hold: staging still runs an older image, and a green run
-    # here would let release-gate pass a commit that staging never ran.
-    needs: deploy-staging
-    if: github.event_name == 'push' && github.ref == 'refs/heads/staging' && needs['deploy-staging'].outputs.deployed == 'true'
-    # actions: read only for e2e-staging.yml's dashboard job, which never runs
-    # here; GitHub still checks a nested job's permissions against the caller.
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/e2e-staging.yml
-    secrets: inherit
 
   test-dashboard:
     # Every test level on the test dashboard (test-dashboard.yml), also after
-    # a failed or skipped (hold) chaos test show.
-    needs: [deploy-staging, e2e-staging]
+    # a failed deploy or a hold. The chaos test show keeps its last result.
+    needs: deploy-staging
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging' && !cancelled()
     permissions:
       contents: read
