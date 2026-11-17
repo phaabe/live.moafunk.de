@@ -205,10 +205,6 @@ form.addEventListener('submit', async (e) => {
     return;
   }
 
-  if (artistPicCropper) {
-    await updateCroppedBlob();
-  }
-
   // Gather files for chunked upload
   const track1Input = getRequiredElement<HTMLInputElement>('track1-file');
   const track2Input = getRequiredElement<HTMLInputElement>('track2-file');
@@ -227,6 +223,11 @@ form.addEventListener('submit', async (e) => {
   formMessage.style.display = 'none';
 
   try {
+    // After the button is disabled: a second click while the picture renders must not submit again.
+    if (artistPicCropper) {
+      await updateCroppedBlob();
+    }
+
     // Step 1: Initialize with text fields + images (small, fits under 100MB)
     updateProgress(5, 'Initializing submission...');
 

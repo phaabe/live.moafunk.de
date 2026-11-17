@@ -313,6 +313,18 @@ describe('artist picture', () => {
     el('artist-pic-zoom-out').click();
     expect(FakeCropper.last?.zoomedBy).toEqual([0.1, -0.1]);
   });
+
+  it('starts only one submission when the artist double-clicks submit', async () => {
+    fillRequired();
+    openCropper();
+    // jsdom cannot fill file inputs, so skip the browser's own required check here.
+    el<HTMLFormElement>('uaf-form').noValidate = true;
+    submitBtn().click();
+    submitBtn().click();
+    await vi.waitFor(() => expect(message().style.display).toBe('block'));
+    expect(paths().filter((p) => p === '/api/submit/init')).toHaveLength(1);
+    expect(paths().filter((p) => p === '/api/submit/finalize/s1')).toHaveLength(1);
+  });
 });
 
 describe('chunked upload', () => {
