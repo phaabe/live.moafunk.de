@@ -387,12 +387,19 @@ async fn description_has_bio_and_artist_links() {
     assert_eq!(build_description(&state, id).await.unwrap(), "Show bio");
 
     add_artist(&state, id, "Nova", Some("@nova"), Some("@nova.ig")).await;
-    add_artist(&state, id, "Kai", Some("https://soundcloud.com/kai"), None).await;
+    add_artist(
+        &state,
+        id,
+        "Kai",
+        Some("https://soundcloud.com/kai"),
+        Some("https://www.instagram.com/kai/"),
+    )
+    .await;
     add_artist(&state, id, "Mute", Some(""), Some("")).await;
     assert_eq!(
         build_description(&state, id).await.unwrap(),
         "Show bio\n\n\n\n\
-         Kai\nSoundCloud: https://soundcloud.com/kai\n\n\
+         Kai\nSoundCloud: https://soundcloud.com/kai\nInstagram: https://www.instagram.com/kai/\n\n\
          Nova\nSoundCloud: https://soundcloud.com/nova\nInstagram: https://instagram.com/nova.ig"
     );
 

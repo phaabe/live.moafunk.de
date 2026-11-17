@@ -185,8 +185,13 @@ pub async fn build_description(state: &Arc<AppState>, show_id: i64) -> Result<St
 
             if let Some(ref ig) = artist.instagram {
                 if !ig.is_empty() {
-                    let ig_handle = ig.trim_start_matches('@');
-                    socials.push(format!("Instagram: https://instagram.com/{}", ig_handle));
+                    // The form asks for a profile URL; keep it, build one from a handle.
+                    let ig_link = if ig.starts_with("http") {
+                        ig.clone()
+                    } else {
+                        format!("https://instagram.com/{}", ig.trim_start_matches('@'))
+                    };
+                    socials.push(format!("Instagram: {}", ig_link));
                 }
             }
 
