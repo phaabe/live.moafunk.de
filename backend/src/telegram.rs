@@ -1923,3 +1923,7 @@ async fn handle_non_command_message(bot: Bot, msg: Message, state: Arc<AppState>
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "telegram_tests.rs"]
+mod tests;
