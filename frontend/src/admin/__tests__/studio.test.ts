@@ -285,6 +285,37 @@ describe('On Air', () => {
     expect(text()).toContain('The recording misses some audio.');
   });
 
+  it('is stable again after a short drop, with no notice', async () => {
+    await mountOnAir();
+    mocks.socketState!.value = 'connecting';
+    await nextTick();
+    expect(text()).toContain('Connectionreconnecting…');
+    mocks.socketState!.value = 'live';
+    await nextTick();
+    expect(text()).toContain('Connectionstable');
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('keeps the 10-minute notice after the reconnect', async () => {
+    mocks.socketState!.value = 'connecting';
+    mocks.audioDropped!.value = true;
+    await mountOnAir();
+    mocks.socketState!.value = 'live';
+    await nextTick();
+    expect(text()).toContain('Connectionstable');
+    expect(text()).toContain('The recording misses some audio.');
+  });
+
+  it('shows the server’s reason when the connection is lost', async () => {
+    await mountOnAir();
+    mocks.socketState!.value = 'disconnected';
+    mocks.options.onError!('Another connection took over the stream');
+    await nextTick();
+    expect(text()).toContain('Connectionlost');
+    expect(text()).toContain('Another connection took over the stream');
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
   describe('when the audio input is gone', () => {
     /** What useAudioCapture calls when the device's track ends on air. */
     const captureError = (message: string) =>
@@ -423,13 +454,32 @@ describe('flow', () => {
     await expectFlow('studio-onair', root);
   });
 
-  it('Studio · On Air during a long drop: the flow has no such state yet', async () => {
-    mocks.socketState = ref('connecting');
-    mocks.audioDropped = ref(true);
+  async function mountOnAirAt4210() {
     vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
     const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
     await mountPage(StudioOnAir);
     await vi.advanceTimersByTimeAsync((42 * 60 + 10) * 1000);
-    await expectFlow('studio-onair', root, 'reconnecting');
+  }
+
+  it('Studio · On Air, reconnecting matches the flow (a drop of more than 10 minutes)', async () => {
+    mocks.socketState = ref('connecting');
+    mocks.audioDropped = ref(true);
+    await mountOnAirAt4210();
+    await expectFlow('studio-onair-reconnecting', root);
+  });
+
+  it('Studio · On Air, connection lost matches the flow', async () => {
+    mocks.socketState = ref('disconnected');
+    await mountOnAirAt4210();
+    mocks.options.onError!('Another connection took over the stream');
+    await nextTick();
+    await expectFlow('studio-onair-lost', root);
+  });
+
+  it('Studio · On Air, input gone matches the flow', async () => {
+    await mountOnAirAt4210();
+    (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](DEVICE_ENDED);
+    await nextTick();
+    await expectFlow('studio-onair-noinput', root);
   });
 });

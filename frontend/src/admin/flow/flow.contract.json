@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 9,
+  "rev": 10,
   "screens": [
     {
       "id": "dashboard",
@@ -936,6 +936,218 @@
           "text": "Connection",
           "meta": "stable",
           "to": null
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "wrapup",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair-reconnecting",
+      "title": "Studio · On Air, reconnecting",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "f6d40580",
+      "notesHash": "d8b0b564",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "reconnecting…",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "The connection was down for more than 10 minutes. The recording misses some audio."
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "wrapup",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair-lost",
+      "title": "Studio · On Air, connection lost",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "7492d561",
+      "notesHash": "a7a8aafd",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "lost",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "Another connection took over the stream"
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "wrapup",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair-noinput",
+      "title": "Studio · On Air, input gone",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "5c31e13d",
+      "notesHash": "3aed2b12",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "stable",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "Audio device is no longer active. Re-select your device."
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Select audio input ▾"
         },
         {
           "k": "h2",
