@@ -113,7 +113,7 @@
   <section class="levels" id="levels" aria-label="Levels"></section>
   <footer>
     Levels follow the testing concept, from fast code checks (L0) up to the live site (L8). CI updates this page after each
-    staging deploy and each nightly chaos show. Data: <a href="summary.json">summary.json</a> ·
+    staging deploy and each chaos show (nightly, by hand, release PR). Data: <a href="summary.json">summary.json</a> ·
     <a href="history.json">history.json</a> (last 50 runs) · source
     <a href="https://github.com/phaabe/live.moafunk.de/tree/staging/test-dashboard">test-dashboard/</a>.
   </footer>
@@ -159,7 +159,7 @@
       about: [
         ['Live broadcast', 'The tone reaches listeners on /live.mp3, and the mount is silent after the show ends.'],
         ['Rehearsal', 'A soundcheck reaches /test.mp3 and never the public /live.mp3.']] },
-    L6: { short: 'End-to-end', where: 'staging', when: 'After each staging deploy · nightly',
+    L6: { short: 'End-to-end', where: 'staging', when: 'Nightly · by hand',
       what: 'A real Chromium with a fake mic runs whole shows on staging.live.moafunk.de and listens to the stream like a listener.',
       about: [
         ['1 · Go live', 'Create a show, book a live slot a minute ahead, soundcheck, Go Live.'],
@@ -167,11 +167,11 @@
         ['3 · Finish', 'End Episode, Wrap-up, Publish: the episode is Finished.'],
         ['4 · One recording', 'Exactly one recording, as long as the time on air, is in the archive.'],
         ['Pre-recorded show', 'An uploaded set goes on air by itself at its time, then Wrap-up and Publish.']] },
-    L7: { short: 'Soak', where: 'staging', when: 'By hand before a release',
+    L7: { short: 'Soak', where: 'staging', when: 'Each release PR',
       what: 'Long and rare runs before a release: does the stack hold for a whole show, and can we come back from a backup?',
       about: [
-        ['Soak', 'The chaos test show with 90 extra minutes on air. Start it by hand with duration 90.'],
-        ['Restore drill', 'The latest backup goes into staging, then the chaos test show must pass. By hand, not reported here.']] },
+        ['Soak', 'The chaos test show with 90 extra minutes on air, on each release PR. By hand: duration 90.'],
+        ['Restore drill', 'The latest backup goes into staging before the release PR, so its soak runs on production data. By hand.']] },
     L8: { short: 'Production', where: 'production', when: 'After each production deploy',
       what: 'Read-only checks on the live site. They change nothing.',
       about: [

@@ -10,6 +10,8 @@ const frontendRequire = createRequire(path.resolve(__dirname, '../../../frontend
 const yaml = frontendRequire('js-yaml');
 const workflow = yaml.load(readFileSync(path.resolve(__dirname, '../release-gate.yml'), 'utf8'));
 const job = workflow.jobs['release-gate'];
+const release = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-release.yml'), 'utf8'));
+const chaos = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-staging.yml'), 'utf8'));
 const sha = 'c'.repeat(40);
 
 test('release gate runs on every PR into main and on label changes', () => {
@@ -29,12 +31,13 @@ test('release gate runs on every PR into main and on label changes', () => {
     GH_TOKEN: '${{ github.token }}',
     REPO: '${{ github.repository }}',
     HEAD_REF: '${{ github.event.pull_request.head.ref }}',
+    HEAD_REPO: '${{ github.event.pull_request.head.repo.full_name }}',
     HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
     LABELS: '${{ toJSON(github.event.pull_request.labels.*.name) }}',
   });
 });
 
-test('release gate: release/* needs a green chaos-show after the staging deploy of the head commit, hotfix/* the label', () => {
+test('release gate: release/* needs a green chaos-show of its release PR run on the head commit, hotfix/* the label', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-'));
   const bin = path.join(dir, 'bin');
   mkdirSync(bin);
@@ -58,12 +61,13 @@ console.log(JSON.stringify({ total_count: runs.length, check_runs: runs }));
     app: { slug: 'github-actions' },
     ...extra,
   });
-  const gate = (ref, { labels = [], runs = {} } = {}) =>
+  const gate = (ref, { labels = [], runs = {}, repo = 'phaabe/live.moafunk.de' } = {}) =>
     execFileSync('/bin/bash', ['--noprofile', '--norc', '-e', '-c', job.steps[0].run], {
       env: {
         PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
         REPO: 'phaabe/live.moafunk.de',
         HEAD_REF: ref,
+        HEAD_REPO: repo,
         HEAD_SHA: sha,
         LABELS: JSON.stringify(labels),
         FAKE_RUNS: JSON.stringify(runs),
@@ -73,22 +77,25 @@ console.log(JSON.stringify({ total_count: runs.length, check_runs: runs }));
   const refuses = (ref, opts, message) =>
     assert.throws(() => gate(ref, opts), (err) => message.test(err.stdout.toString()));
   try {
-    // Release: only the green run right after the staging deploy counts.
-    const deployRun = 'e2e-staging / chaos-show';
-    assert.match(gate('release/r1', { runs: { [deployRun]: [runOf('success')] } }), /passed on c{40}/);
+    // Release: only the release PR's run (e2e-release.yml, job e2e-staging) counts.
+    const releaseRun = `${Object.keys(release.jobs)[0]} / ${Object.keys(chaos.jobs)[0]}`;
+    assert.equal(releaseRun, 'e2e-staging / chaos-show');
+    assert.match(gate('release/r1', { runs: { [releaseRun]: [runOf('success')] } }), /passed on c{40}/);
     // A re-run after a failure: one of the runs is green.
-    gate('release/r2', { runs: { [deployRun]: [runOf('failure'), runOf('success')] } });
-    const noGreen = /no green chaos test show after the staging deploy of c{40}/;
+    gate('release/r2', { runs: { [releaseRun]: [runOf('failure'), runOf('success')] } });
+    const noGreen = /no green chaos test show on the release commit c{40} yet/;
     refuses('release/r1', {}, noGreen);
-    refuses('release/r1', { runs: { [deployRun]: [runOf('failure')] } }, noGreen);
-    refuses('release/r1', { runs: { [deployRun]: [runOf(null)] } }, noGreen);
-    refuses('release/r1', { runs: { [deployRun]: [runOf('skipped')] } }, noGreen);
-    refuses('release/r1', { runs: { [deployRun]: [runOf('success', { app: { slug: 'someone-else' } })] } }, noGreen);
-    // Runs by hand, nightly or on PRs test what staging runs, not this commit.
+    refuses('release/r1', { runs: { [releaseRun]: [runOf('failure')] } }, noGreen);
+    refuses('release/r1', { runs: { [releaseRun]: [runOf(null)] } }, noGreen);
+    refuses('release/r1', { runs: { [releaseRun]: [runOf('skipped')] } }, noGreen);
+    refuses('release/r1', { runs: { [releaseRun]: [runOf('success', { app: { slug: 'someone-else' } })] } }, noGreen);
+    // Runs by hand or nightly test what staging runs, not this commit.
     refuses('release/r1', { runs: { 'chaos-show': [runOf('success')] } }, noGreen);
     refuses('release/r1', { runs: { 'chaos-show-x': [runOf('success')] } }, noGreen);
     // The hotfix label alone does not let a release skip the chaos test.
     refuses('release/r1', { labels: ['hotfix'] }, noGreen);
+    // A fork's PR runs the fork's workflow files, which could fake the check.
+    refuses('release/r1', { repo: 'someone/live.moafunk.de', runs: { [releaseRun]: [runOf('success')] } }, /must come from a branch of phaabe\/live\.moafunk\.de/);
 
     // Hotfix: the branch and the label.
     assert.match(gate('hotfix/fix-login', { labels: ['type::backend', 'hotfix'] }), /chaos test is skipped/);
@@ -96,7 +103,7 @@ console.log(JSON.stringify({ total_count: runs.length, check_runs: runs }));
     refuses('hotfix/fix-login', {}, /needs the label hotfix/);
 
     // Anything else.
-    refuses('staging', { runs: { [deployRun]: [runOf('success')] } }, /only release\/\* and hotfix\/\*/);
+    refuses('staging', { runs: { [releaseRun]: [runOf('success')] } }, /only release\/\* and hotfix\/\*/);
     refuses('feat/x', { labels: ['hotfix'] }, /only release\/\* and hotfix\/\*/);
     refuses('fix/release/r1', { labels: ['hotfix'] }, /only release\/\* and hotfix\/\*/);
   } finally {

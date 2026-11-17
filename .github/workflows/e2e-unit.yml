@@ -1,0 +1,33 @@
+name: E2E - Typecheck and unit tests
+
+# The chaos test show's own code checks, on PRs that change it. No staging,
+# no secrets: the show itself runs nightly and on release PRs (e2e-staging.yml).
+on:
+  pull_request:
+    branches: [staging, main]
+    paths: ['e2e/**', '.github/workflows/e2e-unit.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: e2e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run unit

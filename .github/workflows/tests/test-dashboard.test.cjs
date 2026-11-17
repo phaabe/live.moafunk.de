@@ -175,7 +175,7 @@ test('history keeps the last runs only', () => {
   assert.equal(history.at(-1).generated_at, String(KEEP + 4));
 });
 
-test('the dashboard runs after staging deploys and nightly or manual chaos runs, with read access only', () => {
+test('the dashboard runs after staging deploys and after every chaos run, with read access only', () => {
   const dash = load('test-dashboard.yml');
   assert.deepEqual(Object.keys(dash.on), ['workflow_call']);
   assert.deepEqual(dash.permissions, { contents: 'read', actions: 'read' });
@@ -195,17 +195,21 @@ test('the dashboard runs after staging deploys and nightly or manual chaos runs,
   assert.match(steps.at(-1).run, /vercel@\d+\.\d+\.\d+ deploy "\$RUNNER_TEMP\/site" --prod/);
 
   for (const [file, id, needs] of [
-    ['backend.yml', 'test-dashboard', ['deploy-staging', 'e2e-staging']],
+    ['backend.yml', 'test-dashboard', 'deploy-staging'],
     ['e2e-staging.yml', 'dashboard', 'chaos-show'],
   ]) {
     const caller = load(file).jobs[id];
     assert.equal(caller.uses, './.github/workflows/test-dashboard.yml');
     assert.deepEqual(caller.needs, needs);
     assert.deepEqual(caller.permissions, { contents: 'read', actions: 'read' });
-    assert.match(caller.if, /!cancelled\(\)/, `${file}: also after a failed chaos test show`);
+    assert.match(caller.if, /!cancelled\(\)/, `${file}: also after a failed deploy or chaos test show`);
   }
+  // Nightly, by hand and on a release PR; the release soak goes to L7.
+  const chaosDashboard = load('e2e-staging.yml').jobs.dashboard;
+  assert.equal(chaosDashboard.if, '${{ !cancelled() }}');
+  assert.equal(chaosDashboard.with['soak-minutes'], "${{ inputs.duration || '0' }}");
   // The nested dashboard job may ask only for what the caller grants.
-  assert.deepEqual(load('backend.yml').jobs['e2e-staging'].permissions, { contents: 'read', actions: 'read' });
+  assert.deepEqual(load('e2e-release.yml').jobs['e2e-staging'].permissions, { contents: 'read', actions: 'read' });
 });
 
 test('result files only on pushes to staging; frontend PR runs stay plain', () => {

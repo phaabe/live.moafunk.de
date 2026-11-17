@@ -1,0 +1,58 @@
+name: E2E - Chaos test show on a release PR
+
+# The release proof (docs/deployment.md, release step 4): the chaos test show
+# as a 90-minute soak on staging, which must run exactly the image of the
+# release commit (e2e-staging.yml checks it first). Its check
+# "e2e-staging / chaos-show" on the head commit is what release-gate needs.
+# Only for release/* heads; hotfix PRs skip it. Works from the release that
+# brings this file: PR runs use the PR's workflow files.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # The job id names the check that release-gate reads.
+  e2e-staging:
+    if: startsWith(github.head_ref, 'release/')
+    # actions: read for the dashboard job in e2e-staging.yml.
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/e2e-staging.yml
+    with:
+      release_sha: ${{ github.event.pull_request.head.sha }}
+      duration: '90'
+    secrets: inherit
+
+  rerun-release-gate:
+    # release-gate runs on PR events only, so it failed when the PR opened.
+    # A green chaos test show re-runs its newest run on the head commit.
+    needs: e2e-staging
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run release-gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          run="$(gh api -X GET "repos/$REPO/actions/workflows/release-gate.yml/runs" \
+            -f head_sha="$HEAD_SHA" -f event=pull_request -f per_page=1 |
+            jq -r '.workflow_runs[0] // empty | "\(.id) \(.status) \(.conclusion)"')"
+          [[ -n "$run" ]] || { echo "::error::no release-gate run on $HEAD_SHA"; exit 1; }
+          read -r id status conclusion <<<"$run"
+          url="https://github.com/$REPO/actions/runs/$id"
+          if [[ "$status" != completed ]]; then
+            echo "release-gate is $status ($url); it reads the green chaos test show itself"
+          elif [[ "$conclusion" == success ]]; then
+            echo "release-gate passed already ($url)"
+          else
+            gh api -X POST "repos/$REPO/actions/runs/$id/rerun" >/dev/null
+            echo "release-gate re-run: $url"
+          fi

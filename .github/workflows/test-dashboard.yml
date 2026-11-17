@@ -3,8 +3,8 @@ name: Test dashboard
 # Puts the latest result of every test level (L0–L8) and the coverage on
 # SITE_URL: test-dashboard/collect.cjs reads the runs over the API, appends to
 # the live history.json and the Vercel CLI deploys the static page. Called by
-# backend.yml after each staging deploy and by e2e-staging.yml after the
-# nightly or a manual chaos run. Nothing secret goes to Vercel.
+# backend.yml after each staging deploy and by e2e-staging.yml after every
+# chaos run (nightly, by hand, release PR). Nothing secret goes to Vercel.
 on:
   workflow_call:
     inputs:

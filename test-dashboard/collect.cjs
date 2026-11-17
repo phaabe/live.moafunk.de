@@ -181,8 +181,8 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
     })
   );
 
-  // The chaos test show of the calling run: after a staging deploy, every night,
-  // or by hand. A run with extra minutes on air is a soak (L7).
+  // The chaos test show of the calling run: every night, by hand, or on a
+  // release PR. A run with extra minutes on air is a soak (L7).
   const chaos = current?.jobs.find(
     (j) => /(^|\/ )chaos-show$/.test(j.name) && ['success', 'failure', 'timed_out'].includes(j.conclusion)
   );

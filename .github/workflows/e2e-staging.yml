@@ -1,16 +1,22 @@
 name: E2E - Chaos test show on staging
 
 # One test show on https://staging.live.moafunk.de proves the stream, the
-# recording and the self-recovery after a dropout (e2e/). It runs after every
-# staging deploy (backend.yml calls it), every night, and by hand: a soak of
-# `duration` extra minutes on air before each release.
+# recording and the self-recovery after a dropout (e2e/). It runs every night,
+# by hand (a soak of `duration` extra minutes on air), and on each release PR
+# into main (e2e-release.yml calls it with release_sha). Not on PRs into
+# staging and not after a staging deploy: merges into staging never wait for it.
 # Schedule and workflow_dispatch work only once this file is on main.
 on:
   workflow_call:
-  pull_request:
-    branches: [staging]
-    # staging.sh holds the test's e2e-* requests (copied to the box by hand).
-    paths: ['e2e/**', '.github/workflows/e2e-staging.yml', 'backend/staging/staging.sh']
+    inputs:
+      release_sha:
+        description: The release commit; staging must run exactly its image
+        type: string
+        required: true
+      duration:
+        description: Extra minutes on air
+        type: string
+        default: '0'
   schedule:
     - cron: '30 2 * * *'
   workflow_dispatch:
@@ -37,8 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The nightly run tests staging with the staging branch's test.
-          ref: ${{ github.event_name == 'schedule' && 'staging' || '' }}
+          # The nightly run tests staging with the staging branch's test, a
+          # release run with the release commit's test.
+          ref: ${{ github.event_name == 'schedule' && 'staging' || inputs.release_sha || '' }}
 
       - name: Get the staging CI key and the host login from Bitwarden
         id: secrets
@@ -62,6 +69,27 @@ jobs:
             echo "STAGING_SSH_KEY=$RUNNER_TEMP/staging-key"
             echo "STAGING_KNOWN_HOSTS=$RUNNER_TEMP/staging-known-hosts"
           } >>"$GITHUB_ENV"
+
+      - name: Check staging runs the release commit
+        # Only for a release PR. Then nothing in CI can change the image
+        # during the run: a deploy waits (staging-box) and the test holds
+        # staging (e2e-hold), unless the release hold is there already.
+        if: inputs.release_sha != ''
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full commit hash"; exit 1; }
+          status="$(ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            -o UserKnownHostsFile="$STAGING_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de status)"
+          echo "Staging: $(tr '\n' ' ' <<<"$status")"
+          tag="$(sed -n 's/^tag: //p' <<<"$status")"
+          if [[ ! "$tag" =~ ^sha-[0-9a-f]{7,40}$ || "$RELEASE_SHA" != "${tag#sha-}"* ]]; then
+            echo "::error::staging runs ${tag:-no image}, not the release sha-${RELEASE_SHA:0:7}. Put that image on staging and hold it (docs/deployment.md), then re-run this job."
+            exit 1
+          fi
+          echo "Staging runs the release: $tag"
 
       - uses: actions/setup-node@v4
         with:
@@ -103,10 +131,10 @@ jobs:
           retention-days: 14
 
   dashboard:
-    # The test dashboard after the nightly or a manual run (a soak when
-    # duration > 0). After a staging deploy backend.yml updates it instead.
+    # The test dashboard after every run: nightly, by hand or on a release PR
+    # (a soak when duration > 0).
     needs: chaos-show
-    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !cancelled()
+    if: ${{ !cancelled() }}
     permissions:
       contents: read
       actions: read
