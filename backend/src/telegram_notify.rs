@@ -18,10 +18,13 @@ pub fn truncate_caption(caption: &str, limit: usize) -> String {
     if caption.len() <= limit {
         return caption.to_owned();
     }
-    // Find last whitespace before the limit (leave room for "…")
-    let truncate_at = caption[..limit - 1]
-        .rfind(char::is_whitespace)
-        .unwrap_or(limit - 1);
+    // Find last whitespace before the limit (leave room for "…"). Never cut
+    // inside a multi-byte character such as an emoji.
+    let mut end = limit - 1;
+    while !caption.is_char_boundary(end) {
+        end -= 1;
+    }
+    let truncate_at = caption[..end].rfind(char::is_whitespace).unwrap_or(end);
     format!("{}…", &caption[..truncate_at])
 }
 
@@ -71,7 +74,7 @@ struct TgResponse {
 /// Send a photo via the Telegram Bot API using raw reqwest multipart.
 ///
 /// Returns the `message_id` of the sent message on success.
-async fn send_photo_raw(
+pub(crate) async fn send_photo_raw(
     token: &str,
     chat_id: i64,
     photo_bytes: Vec<u8>,

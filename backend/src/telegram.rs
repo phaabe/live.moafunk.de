@@ -250,19 +250,26 @@ async fn send_msg(
     Ok(())
 }
 
-/// Send a photo, optionally targeting a forum topic.
+/// Send a photo, optionally targeting a forum topic. Goes through the raw
+/// API: teloxide panics on a photo upload with a topic id.
 async fn send_img(
     bot: &Bot,
     chat_id: ChatId,
     thread_id: Option<i32>,
-    photo: InputFile,
-) -> Result<(), teloxide::RequestError> {
-    let mut req = bot.send_photo(chat_id, photo);
-    if let Some(tid) = thread_id {
-        req = req.message_thread_id(ThreadId(MessageId(tid)));
-    }
-    req.await?;
-    Ok(())
+    photo: Vec<u8>,
+) -> Result<(), String> {
+    telegram_notify::send_photo_raw(
+        bot.token(),
+        chat_id.0,
+        photo,
+        "preview.jpg".to_string(),
+        "",
+        "",
+        thread_id,
+        None,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Send a text message, splitting into chunks if it exceeds Telegram's 4096-char limit.
@@ -549,8 +556,7 @@ async fn cmd_preview_instagram(
     if let Some(key) = pic_key {
         match storage::download_file(state, key).await {
             Ok((bytes, _content_type)) => {
-                let photo = InputFile::memory(bytes).file_name("preview.jpg");
-                send_img(bot, chat_id, thread_id, photo).await?;
+                send_img(bot, chat_id, thread_id, bytes).await?;
             }
             Err(e) => {
                 send_msg(

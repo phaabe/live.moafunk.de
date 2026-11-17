@@ -380,6 +380,39 @@ async fn long_replies_are_split_by_line() {
     fake.assert_all_sends_in_topic();
 }
 
+/// teloxide panics on a photo upload with a topic id; the picture must go
+/// out through the raw API.
+#[tokio::test]
+async fn preview_instagram_sends_caption_and_picture() {
+    let (r2, endpoint) = FakeR2::serve().await;
+    let (state, _temp, fake) = telegram_state(json!({ "r2_endpoint": endpoint })).await;
+    let nova = add_artist_with(
+        &state,
+        "Nova",
+        "instagram_caption, pic_key, pic_overlay_key",
+        "'Hello IG', 'a/pic.jpg', 'a/overlay.png'",
+    )
+    .await;
+    r2.insert(&state, "a/overlay.png", b"overlay");
+
+    command(
+        &state,
+        ADMIN_CHAT,
+        Some(TOPIC),
+        &format!("/preview_instagram {nova}"),
+    )
+    .await;
+    let sent = fake.of("sendmessage");
+    assert_eq!(
+        sent[0].text(),
+        format!("📝 Caption for Nova (ID: {nova}):\n\nHello IG")
+    );
+    // The overlay wins over the original picture.
+    let photo = &fake.of("sendphoto")[0];
+    assert_eq!(photo.params["photo"]["len"], 7);
+    fake.assert_all_sends_in_topic();
+}
+
 // ── Buttons ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
