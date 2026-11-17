@@ -32,6 +32,8 @@ mod broadcast_tests;
 #[cfg(test)]
 mod fake_r2;
 #[cfg(test)]
+mod fake_telegram;
+#[cfg(test)]
 mod recording_tests;
 #[cfg(test)]
 mod recovery_tests;
