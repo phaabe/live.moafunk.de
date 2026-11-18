@@ -37,14 +37,14 @@
   .legend li, .pill, .chip { display: inline-flex; align-items: center; gap: 6px; }
 
   .icon { flex: none; }
-  .icon circle.solid { fill: var(--none); } .pass .icon circle.solid { fill: var(--pass); } .fail .icon circle.solid { fill: var(--fail); }
+  .icon circle.solid { fill: var(--none); } .icon.pass circle.solid { fill: var(--pass); } .icon.fail circle.solid { fill: var(--fail); }
   .icon circle.ring { fill: none; stroke: var(--none); stroke-width: 1.5; stroke-dasharray: 3 2.5; }
 
   .glance { display: flex; flex-direction: column; gap: 16px; }
   .glance-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
   .glance-head h2 { font-size: 20px; }
-  .cells { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
-  .cell { display: flex; flex-direction: column; gap: 6px; min-height: 96px; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
+  .cells { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .cell { display: flex; flex-direction: column; gap: 6px; min-height: 120px; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
           border-top: 4px solid var(--none); color: var(--ink); text-decoration: none; background: var(--none-tint); }
   .cell.pass { border-top-color: var(--pass); background: var(--card); }
   .cell.fail { border-top-color: var(--fail); background: var(--fail-tint); }
@@ -52,7 +52,9 @@
   .cell .top { display: flex; align-items: center; justify-content: space-between; }
   .cell .name { font-size: 14px; font-weight: 600; line-height: 1.25; }
   .cell .where { margin-top: auto; font-size: 12px; color: var(--muted); }
+  .cell .count { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
   .cell:hover { border-color: var(--accent); }
+  .cell[aria-current] { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   .coverage { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
   .cov { display: flex; flex-direction: column; gap: 10px; }
@@ -90,6 +92,13 @@
   dl { margin: 8px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px 24px; }
   dt { font-size: 13px; font-weight: 600; }
   dd { margin: 2px 0 0; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+  .tests h4 { margin: 0 0 6px; font-size: 15px; }
+  .suite { border-top: 0; padding-top: 0; }
+  .suite summary { padding: 4px 0; font-size: 13px; font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
+  .suite summary .icon { vertical-align: -3px; margin-right: 6px; }
+  .suite summary .muted { margin-left: 10px; font-weight: 400; white-space: nowrap; }
+  .suite ul { list-style: none; margin: 2px 0 8px; padding: 0 0 0 22px; }
+  .suite li { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; overflow-wrap: anywhere; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .error { color: var(--fail); }
   footer { font-size: 13px; color: var(--muted); }
@@ -100,21 +109,22 @@
   <header>
     <div>
       <div class="eyebrow mono">moafunk · staging</div>
-      <h1>Test levels</h1>
+      <h1>Test results</h1>
       <p class="small" id="sub">Loading…</p>
     </div>
     <ul class="legend" id="legend" aria-label="Status legend"></ul>
   </header>
-  <section class="card glance" aria-label="All levels at a glance">
+  <section class="card glance" aria-label="All test types at a glance">
     <div class="glance-head"><h2 id="headline"></h2><span class="small" id="tally"></span></div>
     <div class="cells" id="cells"></div>
+    <p class="small">Click a test type to see all its tests.</p>
   </section>
+  <section class="levels" id="detail" aria-label="Tests of the chosen type" aria-live="polite"></section>
   <section class="coverage" id="coverage" aria-label="Code coverage"></section>
-  <section class="levels" id="levels" aria-label="Levels"></section>
   <footer>
-    Levels follow the testing concept, from fast code checks (L0) up to the live site (L8). CI updates this page after each
+    Test types follow the testing concept, from fast code checks (L0) up to the live site (L8). CI updates this page after each
     staging deploy and each chaos show (nightly, by hand, release PR). Data: <a href="summary.json">summary.json</a> ·
-    <a href="history.json">history.json</a> (last 50 runs) · source
+    <a href="tests.json">tests.json</a> (every test) · <a href="history.json">history.json</a> (last 50 runs) · source
     <a href="https://github.com/phaabe/live.moafunk.de/tree/staging/test-dashboard">test-dashboard/</a>.
   </footer>
 </main>
@@ -154,7 +164,7 @@
     L4: { short: 'Contracts', where: 'CI', when: 'Not built yet',
       what: 'Would build the frontend API types from the Rust structs and fail when the two drift apart.',
       about: [['Parked', 'https://github.com/phaabe/live.moafunk.de/issues/874']] },
-    L5: { short: 'Stream', where: 'CI', when: 'Every PR · backend pushes',
+    L5: { short: 'System', where: 'CI', when: 'Every PR · backend pushes',
       what: 'Runs the real stream chain in CI, with the production images and configs: backend and ffmpeg into Liquidsoap into Icecast. Then it listens to what comes out.',
       about: [
         ['Live broadcast', 'The tone reaches listeners on /live.mp3, and the mount is silent after the show ends.'],
@@ -201,7 +211,7 @@
   const MARK = { pass: 'M5.5 10.5l3 3L14.5 7', fail: 'M6.5 6.5l7 7M13.5 6.5l-7 7', 'not run': 'M6 10h8' };
   function icon(status, size = 18) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('class', 'icon');
+    svg.setAttribute('class', `icon ${cls(status)}`);
     svg.setAttribute('width', size);
     svg.setAttribute('height', size);
     svg.setAttribute('viewBox', '0 0 20 20');
@@ -270,20 +280,45 @@
       note ? el('p', { class: 'small' }, note) : null);
   }
 
+  const countText = (t) =>
+    [t.failed ? `${num(t.failed)} failed` : null, `${num(t.passed)} passed`, t.skipped ? `${num(t.skipped)} skipped` : null].filter(Boolean).join(' · ');
+
+  // Every test of one type, grouped by suite (Rust module or test file).
+  // Suites with a failed test come first and are open.
+  function testList(tests) {
+    const suites = new Map();
+    for (const t of tests) suites.set(t.suite, [...(suites.get(t.suite) ?? []), t]);
+    const rows = [...suites].map(([suite, list]) => {
+      const n = (s) => list.filter((t) => t.status === s).length;
+      return { suite, list, counts: { passed: n('passed'), failed: n('failed'), skipped: n('skipped') } };
+    });
+    rows.sort((a, b) => (b.counts.failed > 0) - (a.counts.failed > 0));
+    const status = { passed: 'pass', failed: 'fail', skipped: 'not run' };
+    return el('div', { class: 'tests' },
+      el('h4', {}, `All ${num(tests.length)} tests of the last run`),
+      ...rows.map(({ suite, list, counts }) =>
+        el('details', counts.failed ? { class: 'suite', open: '' } : { class: 'suite' },
+          el('summary', {},
+            icon(counts.failed ? 'fail' : counts.passed ? 'pass' : 'not run', 14),
+            el('span', { class: 'mono' }, suite), ' ', el('span', { class: 'muted' }, countText(counts))),
+          el('ul', {}, ...list.map((t) =>
+            el('li', {}, icon(status[t.status], 14), el('span', {}, t.name), el('span', { class: 'sr-only' }, `: ${t.status}`)))))));
+  }
+
   function facts(level) {
     const t = level.tests;
     const out = [];
-    if (t) out.push([`${num(t.passed)} passed`, t.failed ? `${num(t.failed)} failed` : null, t.skipped ? `${num(t.skipped)} skipped` : null].filter(Boolean).join(' · '));
+    if (t) out.push(countText(t));
     if (dur(level.seconds)) out.push(dur(level.seconds));
     const c = level.coverage;
     if (c) out.push(`coverage ${[c.rust != null && `Rust ${c.rust}%`, c.frontend != null && `frontend ${c.frontend}%`].filter(Boolean).join(' · ')}`);
     return out;
   }
 
-  function card(level, history) {
+  function card(level, history, tests) {
     const a = ABOUT[level.id] ?? { when: '', what: '', about: [] };
     const run = level.run;
-    return el('article', { class: `card level ${cls(level.status)}`, id: level.id },
+    return el('article', { class: `card level ${cls(level.status)}` },
       el('div', { class: 'level-head' },
         el('span', { class: `pill ${cls(level.status)}` }, icon(level.status), level.status),
         el('h3', {}, el('span', { class: 'mono' }, level.id), level.name),
@@ -297,8 +332,10 @@
       level.checks.length ? el('ul', { class: 'chips', 'aria-label': 'Checks' }, ...level.checks.map((c) =>
         el('li', { class: `chip ${cls(c.status)}` }, icon(c.status, 14), c.name, c.seconds != null ? el('span', { class: 'muted' }, dur(c.seconds)) : null,
           el('span', { class: 'sr-only' }, `: ${c.status}`)))) : null,
-      a.about.length ? el('details', level.status === 'fail' ? { open: '' } : {},
-        el('summary', {}, 'What this level tests'),
+      tests.length ? testList(tests)
+        : level.tests ? el('p', { class: 'small' }, 'The list of single tests is not there for this run.') : null,
+      a.about.length ? el('details', {},
+        el('summary', {}, 'What this type tests'),
         el('dl', {}, ...a.about.map(([name, text]) => el('div', {}, el('dt', {}, name), el('dd', {}, ...linkify(text)))))) : null);
   }
 
@@ -307,7 +344,9 @@
     return el('a', { class: `cell ${cls(level.status)}`, href: `#${level.id}`, 'aria-label': `${level.id} ${level.name}: ${level.status}` },
       el('span', { class: 'top' }, el('span', { class: 'mono muted' }, level.id), icon(level.status)),
       el('span', { class: 'name' }, a.short ?? level.name),
-      el('span', { class: 'where' }, a.where ?? ''));
+      el('span', { class: 'count' }, level.tests ? countText(level.tests)
+        : level.checks.length ? `${level.checks.length} ${level.checks.length === 1 ? 'check' : 'checks'}` : level.status),
+      el('span', { class: 'where' }, [a.where, dur(level.seconds)].filter(Boolean).join(' · ')));
   }
 
   async function load(name) {
@@ -318,12 +357,13 @@
 
   document.getElementById('legend').append(...STATUSES.map((s) => el('li', { class: cls(s) }, icon(s, 16), s)));
 
-  Promise.all([load('summary.json'), load('history.json')])
-    .then(([summary, history]) => {
+  // tests.json is missing on a site built before it existed: then no lists.
+  Promise.all([load('summary.json'), load('history.json'), load('tests.json').catch(() => ({}))])
+    .then(([summary, history, tests]) => {
       const levels = summary.levels;
       const count = (s) => levels.filter((l) => l.status === s);
       const ids = (s) => count(s).map((l) => l.id).join(', ');
-      document.getElementById('headline').textContent = `${count('pass').length} of ${levels.length} levels pass`;
+      document.getElementById('headline').textContent = `${count('pass').length} of ${levels.length} test types pass`;
       document.getElementById('tally').textContent = [
         `${count('fail').length} fail${count('fail').length ? ` (${ids('fail')})` : ''}`,
         count('not run').length && `${count('not run').length} not run (${ids('not run')})`,
@@ -332,15 +372,27 @@
       const sub = document.getElementById('sub');
       sub.textContent = `Updated ${ago(summary.generated_at)}.`;
       // Tests come from the newest finished check run; cancelled runs make it older than the publishing run.
-      const tests = levels.find((l) => l.id === 'L1')?.run;
-      if (tests) sub.append(' Tests and coverage from ', el('a', { href: tests.url }, tests.sha.slice(0, 7)), '.');
+      const testRun = levels.find((l) => l.id === 'L1')?.run;
+      if (testRun) sub.append(' Tests and coverage from ', el('a', { href: testRun.url }, testRun.sha.slice(0, 7)), '.');
       if (summary.run) sub.append(` Published by the ${summary.run.event} run on `, el('a', { href: summary.run.url }, summary.run.sha.slice(0, 7)), '.');
       document.getElementById('cells').append(...levels.map(cell));
       document.getElementById('coverage').append(
         coverageCard(summary, history, 'rust', 'Rust backend', 'backend lines that cargo test runs (L1 and L3), with cargo llvm-cov',
           'The number still includes the inline #[cfg(test)] test code.'),
         coverageCard(summary, history, 'frontend', 'Frontend', 'frontend lines that vitest runs (L1 and L2), with vitest istanbul coverage'));
-      document.getElementById('levels').append(...levels.map((l) => card(l, history)));
+      // The chosen type is in the URL hash (#L1), so a link opens its tests.
+      const detail = document.getElementById('detail');
+      const show = (scroll) => {
+        const level = levels.find((l) => `#${l.id}` === location.hash);
+        for (const c of document.querySelectorAll('.cell')) {
+          if (c.getAttribute('href') === location.hash) c.setAttribute('aria-current', 'true');
+          else c.removeAttribute('aria-current');
+        }
+        detail.replaceChildren(...(level ? [card(level, history, tests[level.id] ?? [])] : []));
+        if (level && scroll) detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
+      addEventListener('hashchange', () => show(true));
+      show(false);
     })
     .catch((err) => {
       const sub = document.getElementById('sub');

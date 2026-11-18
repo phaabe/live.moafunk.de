@@ -7,7 +7,7 @@ const { test } = require('node:test');
 const frontendRequire = createRequire(path.resolve(__dirname, '../../../frontend/package.json'));
 const yaml = frontendRequire('js-yaml');
 const load = (file) => yaml.load(readFileSync(path.resolve(__dirname, '..', file), 'utf8'));
-const { buildSummary, appendHistory, parseCargo, parseVitest, KEEP } = require('../../../test-dashboard/collect.cjs');
+const { buildSummary, buildTests, appendHistory, parseCargo, parseVitest, KEEP } = require('../../../test-dashboard/collect.cjs');
 
 const T0 = '2026-11-16T09:00:00Z';
 const at = (s) => new Date(Date.parse(T0) + s * 1000).toISOString();
@@ -62,8 +62,8 @@ const vitest = {
     {
       name: '/w/frontend/src/admin/__tests__/studio.test.ts',
       assertionResults: [
-        { ancestorTitles: ['Studio'], status: 'passed', duration: 100 },
-        { ancestorTitles: ['Studio'], status: 'skipped' },
+        { ancestorTitles: ['Studio'], title: 'mounts', status: 'passed', duration: 100 },
+        { ancestorTitles: ['Studio'], title: 'later', status: 'skipped' },
         { ancestorTitles: ['Studio', 'flow'], status: 'passed', duration: 1500 },
       ],
     },
@@ -84,14 +84,41 @@ const byId = (summary) => Object.fromEntries(summary.levels.map((l) => [l.id, l]
 
 test('cargo test lines split into unit (L1) and the *_tests integration modules (L3)', () => {
   // stream_system_tests are ignored here: stream-system.yml runs them (L5).
-  assert.deepEqual(parseCargo(cargo), {
+  const { tests, ...counts } = parseCargo(cargo);
+  assert.deepEqual(counts, {
     unit: { passed: 2, failed: 0, skipped: 0 },
     integration: { passed: 1, failed: 1, skipped: 0 },
   });
+  assert.deepEqual(tests.L3, [
+    { suite: 'booking_tests', name: 'books_a_slot', status: 'passed' },
+    { suite: 'booking_tests', name: 'refuses_a_taken_slot', status: 'failed' },
+  ]);
+});
+
+test('tests.json lists every single test of L1, L2 and L3', () => {
+  const tests = buildTests(results);
+  assert.deepEqual(tests.L1, [
+    { suite: 'scheduler::tests', name: 'picks_next_slot', status: 'passed' },
+    { suite: 'auth::tests', name: 'rejects_bad_password', status: 'passed' },
+    { suite: 'src/admin/__tests__/studio.test.ts', name: 'Studio > mounts', status: 'passed' },
+    { suite: 'src/admin/__tests__/studio.test.ts', name: 'Studio > later', status: 'skipped' },
+  ]);
+  assert.deepEqual(tests.L2.map((t) => [t.suite, t.status]), [
+    ['src/admin/__tests__/studio.test.ts', 'passed'],
+    ['src/admin/__tests__/flowSync.test.ts', 'failed'],
+  ]);
+  assert.equal(tests.L3.length, 2);
+  // The lists match the counts on the summary cards.
+  const l = byId(buildSummary(base));
+  for (const id of ['L1', 'L2', 'L3']) {
+    assert.equal(tests[id].length, l[id].tests.passed + l[id].tests.failed + l[id].tests.skipped, id);
+  }
+  assert.deepEqual(buildTests({ cargo: null, vitest: null }), { L1: [], L2: [], L3: [] });
 });
 
 test("vitest tests in describe('flow') and flowSync.test.ts are the screen checks (L2)", () => {
-  assert.deepEqual(parseVitest(vitest), {
+  const { tests: _tests, ...counts } = parseVitest(vitest);
+  assert.deepEqual(counts, {
     unit: { passed: 1, failed: 0, skipped: 1 },
     screens: { passed: 1, failed: 1, skipped: 0, seconds: 2 },
   });
