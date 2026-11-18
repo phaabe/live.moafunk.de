@@ -372,7 +372,7 @@ pub fn ended_by_host(
     }
 }
 
-fn berlin_to_utc(local: NaiveDateTime) -> Option<DateTime<Utc>> {
+pub(crate) fn berlin_to_utc(local: NaiveDateTime) -> Option<DateTime<Utc>> {
     Berlin
         .from_local_datetime(&local)
         .earliest()

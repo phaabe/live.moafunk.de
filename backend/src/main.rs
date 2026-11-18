@@ -1,4 +1,5 @@
 mod ai;
+mod announcements;
 mod audio;
 mod auth;
 mod chat_bridge;
@@ -25,6 +26,8 @@ mod telegram;
 mod telegram_notify;
 mod video;
 
+#[cfg(test)]
+mod announcements_tests;
 #[cfg(test)]
 mod api_tests;
 #[cfg(test)]
@@ -638,6 +641,19 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/shows/:id", get(handlers::api::api_show_detail))
         .route(
+            "/api/shows/:id/announcements",
+            get(handlers::announcements::api_list_announcements),
+        )
+        .route(
+            "/api/shows/:id/announcements/slots",
+            get(handlers::announcements::api_announcement_slots),
+        )
+        .route(
+            "/api/shows/:id/announcements/:slot",
+            axum::routing::put(handlers::announcements::api_put_announcement)
+                .delete(handlers::announcements::api_cancel_announcement),
+        )
+        .route(
             "/api/shows/:id/image-proxy",
             get(handlers::api::api_show_image_proxy),
         )
@@ -758,6 +774,11 @@ async fn main() -> anyhow::Result<()> {
             "/api/users/:id/reset-password",
             post(handlers::api::api_reset_password),
         ) // Settings API (notification toggle)
+        .route(
+            "/api/settings/announcements",
+            get(handlers::announcements::api_get_announcement_settings)
+                .put(handlers::announcements::api_put_announcement_settings),
+        )
         .route(
             "/api/settings/notifications",
             get(handlers::settings::get_notifications).put(handlers::settings::set_notifications),

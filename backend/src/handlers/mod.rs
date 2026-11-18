@@ -1,3 +1,4 @@
+pub mod announcements;
 pub mod api;
 pub mod backup_trigger;
 pub mod booking;
