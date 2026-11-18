@@ -1,4 +1,5 @@
 mod ai;
+mod announcement_image;
 mod announcements;
 mod audio;
 mod auth;
@@ -662,6 +663,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/image-proxy",
             get(handlers::api::api_show_image_proxy),
+        )
+        .route(
+            "/api/shows/:id/announcements/:slot/preview.jpg",
+            get(announcement_image::api_announcement_preview),
         )
         .route(
             "/api/shows/:id/overlays",
