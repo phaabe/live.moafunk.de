@@ -1,6 +1,7 @@
 // Collects the latest result of every test level (L0–L8, see the testing
-// concept) into summary.json, appends it to history.json (last 50 runs) and
-// writes the static site into the folder given as the first argument.
+// concept) into summary.json, appends it to history.json (last 50 runs), lists
+// every single test in tests.json and writes the static site into the folder
+// given as the first argument.
 // Runs in CI (.github/workflows/test-dashboard.yml) with GH_TOKEN (actions: read).
 // Usage: node test-dashboard/collect.cjs <out-dir>
 'use strict';
@@ -54,12 +55,21 @@ const runRef = (run, job) =>
 // `*_tests` modules (booking_tests, broadcast_tests, …) run real handlers with
 // SQLite and a fake R2: that is L3. Everything else is L1, except
 // stream_system_tests: ignored here, stream-system.yml runs them (L5).
+// `tests` lists every test per level for tests.json: { suite, name, status }.
 function parseCargo(text) {
-  const out = { unit: { passed: 0, failed: 0, skipped: 0 }, integration: { passed: 0, failed: 0, skipped: 0 } };
+  const out = {
+    unit: { passed: 0, failed: 0, skipped: 0 },
+    integration: { passed: 0, failed: 0, skipped: 0 },
+    tests: { L1: [], L3: [] },
+  };
   for (const [, name, result] of text.matchAll(/^test (\S+) \.\.\. (ok|FAILED|ignored)/gm)) {
     if (name.startsWith('stream_system_tests::')) continue;
-    const t = /^[a-z_]+_tests::/.test(name) ? out.integration : out.unit;
-    t[{ ok: 'passed', FAILED: 'failed', ignored: 'skipped' }[result]] += 1;
+    const integration = /^[a-z_]+_tests::/.test(name);
+    const status = { ok: 'passed', FAILED: 'failed', ignored: 'skipped' }[result];
+    (integration ? out.integration : out.unit)[status] += 1;
+    const parts = name.split('::');
+    const test = parts.pop();
+    out.tests[integration ? 'L3' : 'L1'].push({ suite: parts.join('::') || 'backend', name: test, status });
   }
   return out;
 }
@@ -70,17 +80,29 @@ function parseVitest(report) {
   const out = {
     unit: { passed: 0, failed: 0, skipped: 0 },
     screens: { passed: 0, failed: 0, skipped: 0, seconds: 0 },
+    tests: { L1: [], L2: [] },
   };
   for (const file of report.testResults ?? []) {
     const flowFile = path.basename(file.name) === 'flowSync.test.ts';
+    const suite = file.name.replace(/^.*\/frontend\//, '');
     for (const a of file.assertionResults ?? []) {
       const t = flowFile || a.ancestorTitles?.includes('flow') ? out.screens : out.unit;
-      t[a.status === 'passed' ? 'passed' : a.status === 'failed' ? 'failed' : 'skipped'] += 1;
+      const status = a.status === 'passed' ? 'passed' : a.status === 'failed' ? 'failed' : 'skipped';
+      t[status] += 1;
       if (t === out.screens) t.seconds += (a.duration ?? 0) / 1000;
+      const name = [...(a.ancestorTitles ?? []), a.title].filter(Boolean).join(' > ');
+      out.tests[t === out.screens ? 'L2' : 'L1'].push({ suite, name, status });
     }
   }
   out.screens.seconds = Math.round(out.screens.seconds);
   return out;
+}
+
+// Every single test of the levels that have result files, for tests.json.
+function buildTests(results) {
+  const cargo = results.cargo ? parseCargo(results.cargo).tests : { L1: [], L3: [] };
+  const vitest = results.vitest ? parseVitest(results.vitest).tests : { L1: [], L2: [] };
+  return { L1: [...cargo.L1, ...vitest.L1], L2: vitest.L2, L3: cargo.L3 };
 }
 
 const addCounts = (a, b) =>
@@ -283,6 +305,7 @@ async function main(outDir) {
   }
   const history = await liveHistory(process.env.SITE_URL);
   const epic = latest('epic-ci.yml', 'branch=staging&event=push');
+  const results = readResults(epic?.run);
   const runs = api('actions/workflows/deploy-production.yml/runs?branch=main&status=completed&per_page=10').workflow_runs;
   const summary = buildSummary({
     now: new Date().toISOString(),
@@ -290,7 +313,7 @@ async function main(outDir) {
     stream: latest('stream-system.yml', 'branch=staging&event=push'),
     deploys: runs.map((run) => ({ run, jobs: jobs(run.id) })),
     current: { run: api(`actions/runs/${process.env.RUN_ID}`), jobs: jobs(process.env.RUN_ID) },
-    results: readResults(epic?.run),
+    results,
     soakMinutes: process.env.SOAK_MINUTES ?? '0',
     previous: history.at(-1) ?? null,
   });
@@ -298,6 +321,7 @@ async function main(outDir) {
   fs.copyFileSync(path.join(__dirname, 'index.html'), path.join(outDir, 'index.html'));
   fs.writeFileSync(path.join(outDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
   fs.writeFileSync(path.join(outDir, 'history.json'), `${JSON.stringify(appendHistory(history, summary))}\n`);
+  fs.writeFileSync(path.join(outDir, 'tests.json'), `${JSON.stringify(buildTests(results))}\n`);
   for (const l of summary.levels) console.log(`${l.id} ${l.status.padEnd(9)} ${l.name}`);
 }
 
@@ -308,4 +332,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildSummary, appendHistory, parseCargo, parseVitest, KEEP };
+module.exports = { buildSummary, buildTests, appendHistory, parseCargo, parseVitest, KEEP };
