@@ -19,6 +19,7 @@ import {
 } from '@admin/composables';
 import { streamApi, recordingApi } from '@admin/api';
 import DbMeter from '@admin/components/DbMeter.vue';
+import BoardIcon from '@admin/components/BoardIcon.vue';
 
 /**
  * On Air for a live episode (flow screen `studio-onair`). Only End Episode
@@ -129,6 +130,12 @@ useAutoBitrate({
   ticks: health.ticks,
   onChange: (kbps) => audioCapture.setStreamBitsPerSecond(kbps * 1000),
 });
+/** Colour of the Connection tile: stable green, reconnecting or slow amber, lost red. */
+const connectionTone = computed(() => {
+  if (connection.value === 'stable') return 'ok';
+  return connection.value === 'lost' ? 'bad' : 'warn';
+});
+
 const connection = computed(() => {
   switch (socket.state.value) {
     case 'live':
@@ -162,36 +169,21 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="on-air">
-    <h1 class="page-title">Studio</h1>
-    <p class="pill status-banner live">
-      On air · {{ elapsed }}<template v-if="recording"> · REC</template>
+  <div class="on-air host-page">
+    <h1 class="page-title studio-title">Studio</h1>
+    <!-- Text stays "On air · 00:42:10 · REC"; the clock is drawn big to read from afar. -->
+    <p class="pill status-banner live on-air-pill">
+      <span class="dot" aria-hidden="true"></span><span class="on-air-label">On air</span
+      ><span class="sep"> · </span><span class="on-air-clock">{{ elapsed }}</span
+      ><template v-if="recording"
+        ><span class="sep"> · </span
+        ><span class="rec"><i aria-hidden="true"></i>REC</span></template
+      >
     </p>
-
-    <section class="board-card">
-      <div class="board-card-body">
-        <DbMeter
-          :media-stream="audioCapture.processedStream.value ?? audioCapture.mediaStream.value"
-          label="Live level"
-        />
-      </div>
-    </section>
-
-    <dl class="stat-tiles">
-      <div>
-        <dt>Listeners now</dt>
-        <dd>{{ listeners ?? '—' }}</dd>
-      </div>
-      <div>
-        <dt>Connection</dt>
-        <dd :class="['connection', connection === 'stable' ? 'ok' : 'warn']">{{ connection }}</dd>
-      </div>
-    </dl>
-
-    <p v-if="socket.audioDropped.value" class="field-error" role="alert">
+    <p v-if="socket.audioDropped.value" class="notice warn" role="alert">
       The connection was down for more than 10 minutes. The recording misses some audio.
     </p>
-    <template v-if="inputGone">
+    <section v-if="inputGone" class="fix">
       <p class="field-error" role="alert">{{ DEVICE_ENDED_MESSAGE }}</p>
       <label class="input-field">
         <span class="label">Audio input</span>
@@ -207,57 +199,215 @@ onUnmounted(() => {
           <option value="screen">Screen audio</option>
         </select>
       </label>
-    </template>
-    <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-    <div>
-      <BaseButton variant="danger" :loading="ending" @click="endEpisode">End Episode</BaseButton>
+    </section>
+    <p v-if="error" class="notice bad" role="alert">{{ error }}</p>
+    <section class="board-card meter">
+      <div class="board-card-body">
+        <DbMeter
+          :media-stream="audioCapture.processedStream.value ?? audioCapture.mediaStream.value"
+          label="Live level"
+        />
+      </div>
+    </section>
+    <dl class="stat-tiles">
+      <div>
+        <dt><BoardIcon name="users" :size="14" />Listeners now</dt>
+        <dd>{{ listeners ?? '—' }}</dd>
+      </div>
+      <div :class="['connection-tile', connectionTone]">
+        <dt><BoardIcon name="wifi" :size="14" />Connection</dt>
+        <dd class="connection">{{ connection }}</dd>
+      </div>
+    </dl>
+    <div class="end">
+      <BaseButton variant="danger" class="xl end-button" :loading="ending" @click="endEpisode"
+        >End Episode</BaseButton
+      >
     </div>
   </div>
 </template>
 
 <style scoped>
 .on-air {
-  max-width: 800px;
+  max-width: 1120px;
   margin: 0 auto;
+}
+
+.studio-title {
+  font-size: 1.25rem;
+  letter-spacing: 0.06em;
+  color: #a8a8bc;
+}
+
+.on-air-pill {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    'dot label rec'
+    'clock clock clock';
+  align-items: center;
+  gap: 6px 10px;
+  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
+}
+
+.on-air-pill .dot {
+  grid-area: dot;
+}
+
+.on-air-label {
+  grid-area: label;
+  font: 700 13px var(--font-ui);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.on-air-clock {
+  grid-area: clock;
+  font: 700 clamp(3.5rem, 12vw, 7.5rem) / 1 var(--font-family);
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+
+.rec {
+  grid-area: rec;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: var(--color-error);
+  color: #000;
+  font: 700 12px var(--font-family);
+  letter-spacing: 0.1em;
+}
+
+.rec i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #000;
+}
+
+.notice {
+  margin: 0;
+  padding: var(--spacing-md);
+  border: 1px solid #5a4416;
+  border-left: 4px solid var(--color-warning);
+  border-radius: var(--radius-xl);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde7b0;
+  font-weight: 600;
+}
+
+.notice.bad,
+.fix {
+  border-color: #6b2424;
+  border-left-color: var(--color-error);
+  background: rgba(239, 68, 68, 0.12);
+  color: #ffd2cc;
+}
+
+.fix {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-lg);
+  gap: 12px;
+  padding: var(--spacing-md);
+  border: 1px solid #6b2424;
+  border-left: 4px solid var(--color-error);
+  border-radius: var(--radius-xl);
 }
 
-.page-title {
-  margin: 0;
-}
-
-.connection.ok {
-  color: var(--color-success);
-}
-
-.connection.warn {
-  color: var(--color-warning);
+.fix .field-error {
+  color: #ffd2cc;
+  font-weight: 700;
 }
 
 .input-field {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xs);
+  gap: 6px;
 }
 
 .input-field .label {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
+  font: 700 11px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffc2bb;
 }
 
 .input-select {
-  padding: var(--spacing-sm) var(--spacing-md);
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
+  min-height: 48px;
+  padding: 0 var(--spacing-md);
+  background: #06060f;
+  border: 2px solid var(--color-primary);
+  border-radius: var(--radius-lg);
+  color: #fff;
+  font: 600 var(--font-size-md) var(--font-ui);
 }
 
-.field-error {
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  margin: 0;
+.stat-tiles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.stat-tiles dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stat-tiles dd {
+  font: 700 2.5rem/1.1 var(--font-family);
+}
+
+.stat-tiles dd.connection {
+  font-size: 1.5rem;
+  line-height: 1.7;
+}
+
+.connection-tile.ok dd {
+  color: #4ade80;
+}
+
+.connection-tile.warn {
+  border-color: #5a4416;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.connection-tile.warn dd {
+  color: #fbbf24;
+}
+
+.connection-tile.bad {
+  border-color: #6b2424;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.connection-tile.bad dd {
+  color: #ff8a80;
+}
+
+.end {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--spacing-md);
+  border-top: 1px solid #1e1e34;
+}
+
+.end-button {
+  min-width: 240px;
+}
+
+/* Phones: End Episode alone in a bar at the bottom, in thumb reach. */
+@media (max-width: 640px) {
+  .end {
+    position: sticky;
+    bottom: 0;
+    padding: var(--spacing-sm) 0 var(--spacing-md);
+    background: #000;
+  }
+
+  .end-button {
+    width: 100%;
+  }
 }
 </style>

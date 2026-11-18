@@ -5,6 +5,7 @@ import router from './router';
 import { staticHostRedirectTarget } from './staticHostRedirect';
 import '@shared/styles/tokens.css';
 import './styles/admin.css';
+import './styles/host.css';
 import 'v-calendar/style.css';
 
 // This bundle is also published to GitHub Pages, where there is no API behind

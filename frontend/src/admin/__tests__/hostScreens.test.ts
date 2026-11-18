@@ -195,6 +195,13 @@ async function mount(component: Component, role: User['role'], path = '/'): Prom
   return router;
 }
 
+/** A row's parts as the flow check reads them: "So 25.10. · Brunchtime | Upcoming · Live". */
+const rowParts = (row: Element | null) =>
+  [...(row?.children ?? [])]
+    .map((c) => (c.textContent ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' | ');
+
 const links = (selector: string) =>
   [...root.querySelectorAll(`${selector} a`)].map((a) => [
     a.textContent?.trim(),
@@ -316,7 +323,7 @@ describe('Dashboard', () => {
     await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(4));
     expect(root.querySelector('h1')?.textContent).toBe('Dashboard');
     const rows = [...root.querySelectorAll('.episodes li')].map((li) => ({
-      text: [...li.querySelectorAll('span')].map((s) => s.textContent).join(' | '),
+      text: rowParts(li.querySelector('.board-row')),
       href: li.querySelector('a')?.getAttribute('href') ?? null,
     }));
     expect(rows).toEqual([
@@ -349,7 +356,7 @@ describe('Schedule', () => {
       expect(text).not.toContain(absent);
     }
     const rows = [...root.querySelectorAll('.episodes a')].map((a) => ({
-      text: [...a.querySelectorAll('span')].map((s) => s.textContent).join(' | '),
+      text: rowParts(a),
       href: a.getAttribute('href'),
     }));
     expect(rows).toEqual([

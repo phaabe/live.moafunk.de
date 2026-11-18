@@ -163,7 +163,7 @@ async function save() {
           </div>
         </div>
       </template>
-      <template v-else>
+      <div v-else class="pair">
         <label class="field">
           <span class="label">Date</span>
           <select v-model="date" class="input" :disabled="started">
@@ -176,7 +176,7 @@ async function save() {
             <option v-for="t in times" :key="t" :value="t">{{ t }}</option>
           </select>
         </label>
-      </template>
+      </div>
 
       <div class="mode">
         <label>
@@ -202,8 +202,11 @@ async function save() {
       </div>
 
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-      <div class="actions">
+      <div>
         <BaseButton variant="secondary" :loading="saving" @click="save">Save</BaseButton>
+      </div>
+      <!-- More buttons (Cancel booking) sit apart from Save. -->
+      <div v-if="$slots.default" class="extra">
         <slot />
       </div>
     </div>
@@ -217,31 +220,21 @@ async function save() {
   gap: var(--spacing-xs);
 }
 
-.label {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
 .input {
-  background-color: var(--color-surface-alt);
-  border: 1px solid var(--color-border-light);
-  border-radius: var(--radius-md);
   color: var(--color-text);
-  font-family: var(--font-family);
   padding: var(--spacing-sm) var(--spacing-md);
 }
 
-.time-range,
-.mode,
-.actions {
+.time-range {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--spacing-md);
+  gap: var(--spacing-xs);
 }
 
-.time-range {
-  gap: var(--spacing-xs);
+.extra {
+  padding-top: var(--spacing-md);
+  border-top: 1px solid #22223a;
 }
 
 .field-error {

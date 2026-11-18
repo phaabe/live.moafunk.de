@@ -227,6 +227,13 @@ describe('New Show', () => {
   });
 });
 
+/** A row's parts as the flow check reads them: "So 25.10. · Brunchtime | Upcoming · Live". */
+const rowParts = (row: Element | null) =>
+  [...(row?.children ?? [])]
+    .map((c) => (c.textContent ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' | ');
+
 describe('Show page', () => {
   it('shows the series and its episodes as the flow lists them', async () => {
     const router = await mount('host', '/shows/brunchtime');
@@ -242,7 +249,7 @@ describe('Show page', () => {
     }
 
     const rows = [...root.querySelectorAll('.episodes li')].map((li) => ({
-      text: [...li.querySelectorAll('span')].map((s) => s.textContent).join(' | '),
+      text: rowParts(li.querySelector('.board-row')),
       href: li.querySelector('a')?.getAttribute('href') ?? null,
     }));
     expect(rows).toEqual([

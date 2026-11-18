@@ -23,97 +23,96 @@ const pill = computed(() => {
 </script>
 
 <template>
-  <div class="episode-view">
-    <router-link to="/dashboard" class="back-link">&lt; Dashboard</router-link>
-    <div class="show-head">
+  <div class="episode-view host-page">
+    <router-link to="/dashboard" class="back-link"
+      ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Dashboard</router-link
+    >
+    <div class="view-head">
       <div class="cover">
         <img v-if="show.series_cover_url" :src="show.series_cover_url" alt="Show cover" />
+        <BoardIcon v-else name="image" :size="40" />
       </div>
       <div class="show-text">
         <h1 class="page-title">{{ heading }}</h1>
+        <p class="pill status-banner"><span class="dot" aria-hidden="true"></span>{{ pill }}</p>
         <p v-if="show.series_description" class="description">{{ show.series_description }}</p>
+        <section v-if="show.host_username" class="board-card">
+          <div class="board-card-head">
+            <h2 class="board-card-title"><BoardIcon name="details" />Details</h2>
+          </div>
+          <dl class="details">
+            <div>
+              <dt>Host</dt>
+              <dd><BoardIcon name="user" :size="16" />{{ show.host_username }}</dd>
+            </div>
+          </dl>
+        </section>
       </div>
     </div>
-    <p class="pill status-banner">{{ pill }}</p>
-    <section v-if="show.host_username" class="board-card">
-      <div class="board-card-head">
-        <h2 class="board-card-title"><BoardIcon name="details" />Details</h2>
-      </div>
-      <div class="board-card-body">
-        <dl class="details">
-          <div>
-            <dt>Host</dt>
-            <dd>{{ show.host_username }}</dd>
-          </div>
-        </dl>
-      </div>
-    </section>
   </div>
 </template>
 
 <style scoped>
 .episode-view {
-  max-width: 960px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-lg);
+  max-width: 1040px;
 }
 
-.back-link {
-  align-self: flex-start;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.show-head {
+.view-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: var(--spacing-lg);
+  align-items: flex-start;
+  gap: var(--spacing-xl);
 }
 
 .cover {
-  width: 72px;
-  height: 72px;
-  flex-shrink: 0;
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  background-color: var(--color-surface-alt);
-}
-
-.cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  flex: 0 1 280px;
+  aspect-ratio: 1 / 1;
+  max-width: 100%;
 }
 
 .show-text {
-  flex: 1;
-  min-width: 200px;
+  flex: 999 1 380px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.page-title,
-.description,
-.details,
-.details dd {
-  margin: 0;
+  gap: var(--spacing-md);
 }
 
 .description {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
+  margin: 0;
+  color: #c8c8d4;
+  font-size: var(--font-size-lg);
+}
+
+.board-card {
+  max-width: 480px;
+}
+
+.details {
+  margin: 0;
+  padding: 0 var(--spacing-md);
 }
 
 .details > div {
   display: flex;
-  gap: var(--spacing-md);
+  align-items: center;
+  justify-content: space-between;
+  min-height: 52px;
 }
 
 .details dt {
-  min-width: 80px;
-  color: var(--color-text-muted);
+  font: 700 11px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a8a8bc;
+}
+
+.details dd {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: #fff;
 }
 </style>

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { seriesApi, showsApi, streamApi, type ShowOverviewItem } from '../api';
-import { episodeDay } from '../episodeRow';
 import BoardIcon from '../components/BoardIcon.vue';
+import DateChip from '../components/DateChip.vue';
 import { isShowRunning } from '../showTime';
 
 // Flow screen `schedule` (host at /schedule): what is on air now and the
@@ -11,8 +11,10 @@ import { isShowRunning } from '../showTime';
 interface Row {
   id: number;
   sortKey: string;
-  left: string;
-  right: string;
+  date: string;
+  show: string;
+  status: string;
+  mode: string;
 }
 
 const onAir = ref(false);
@@ -35,8 +37,10 @@ async function loadEpisodes() {
       next.push({
         id: episode.id,
         sortKey: `${episode.date} ${episode.start_time ?? ''}`,
-        left: `${episodeDay(episode.date)} · ${show.name}`,
-        right: `${episode.status_label} · ${episode.mode_label}`,
+        date: episode.date,
+        show: show.name,
+        status: episode.status_label,
+        mode: episode.mode_label,
       });
     }
   }
@@ -80,11 +84,11 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="schedule-page">
+  <div class="schedule-page host-page">
     <h1 class="page-title">Schedule</h1>
 
-    <section v-if="onAir" class="status-banner live">
-      <h2 class="board-card-title">On air now</h2>
+    <section v-if="onAir" class="status-banner live on-air-strip">
+      <h2 class="strip-title"><span class="dot" aria-hidden="true"></span>On air now</h2>
       <span class="on-air">{{ onAirLine }}</span>
     </section>
 
@@ -92,33 +96,52 @@ onUnmounted(() => {
       <div class="board-card-head">
         <h2 class="board-card-title"><BoardIcon name="calendar" />Your next episodes</h2>
       </div>
-      <div class="board-card-body">
-        <ul class="episodes board-rows">
-          <li v-for="row in rows" :key="row.id">
-            <router-link :to="`/shows/${row.id}`" class="board-row">
-              <span>{{ row.left }}</span>
-              <span class="tag tag-upcoming">{{ row.right }}</span>
-            </router-link>
-          </li>
-        </ul>
-      </div>
+      <ul class="episodes board-rows">
+        <li v-for="row in rows" :key="row.id">
+          <router-link :to="`/shows/${row.id}`" class="board-row">
+            <span class="row-main">
+              <DateChip :date="row.date" tone="mine" />
+              <span class="sep"> · </span>
+              <span class="row-title">{{ row.show }}</span>
+            </span>
+            <span class="row-tags">
+              <span class="tag tag-upcoming">{{ row.status }}</span>
+              <span class="sep"> · </span>
+              <span class="tag">{{ row.mode }}</span>
+            </span>
+            <BoardIcon name="chevron" class="row-icon" />
+          </router-link>
+        </li>
+      </ul>
     </section>
   </div>
 </template>
 
 <style scoped>
 .schedule-page {
-  max-width: 960px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-lg);
+  max-width: 1040px;
 }
 
-.page-title {
+.on-air-strip {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
+}
+
+.strip-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0;
+  font: 700 12px var(--font-family);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #ffb3ab;
 }
 
 .on-air {
-  font-size: var(--font-size-lg);
+  font: 700 1.4rem/1.25 var(--font-family);
+  color: #fff;
 }
 </style>
