@@ -16,6 +16,8 @@ TEST_PW=testtesttesttesttestTEST1
 ADMIN_PW=AdminTypedByHand2026xyz
 HOST_PW='Host pw! with #symbols 2026'
 HOST_HASH='$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aG9zdA'
+E2E_PW=e2ee2ee2ee2ee2ee2ee2ee2eE2E1
+E2E_HASH='$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$ZTJl'
 
 mkdir -p "$TMP/bin" "$BOX"
 cp "$HERE/staging.env.example" "$HERE/stream.env.example" "$BOX/"
@@ -51,6 +53,8 @@ SUPERADMIN_USERNAME=staging-admin
 SUPERADMIN_PASSWORD_HASH='\$argon2id\$v=19\$m=19456,t=2,p=1\$c2FsdA\$aGFzaA'
 STAGING_HOST_USERNAME=staging-host
 STAGING_HOST_PASSWORD_HASH='$HOST_HASH'
+STAGING_E2E_HOST_USERNAME=e2e-host
+STAGING_E2E_HOST_PASSWORD_HASH='$E2E_HASH'
 R2_ACCOUNT_ID=account
 R2_ACCESS_KEY_ID=key
 R2_SECRET_ACCESS_KEY=secret
@@ -171,6 +175,9 @@ case_env "empty recovery mail key" "RECOVERY_MAIL_FROM must not be set" RECOVERY
 case_env "placeholder left in .env" "SECRET_KEY still has a <placeholder>" SECRET_KEY "<STAGING_SECRET_KEY>"
 case_env "host login has no hash" "STAGING_HOST_PASSWORD_HASH must be an argon2 hash" STAGING_HOST_PASSWORD_HASH -
 case_env "host login has no name" "STAGING_HOST_USERNAME must be set" STAGING_HOST_USERNAME -
+case_env "e2e login has no hash" "STAGING_E2E_HOST_PASSWORD_HASH must be an argon2 hash" STAGING_E2E_HOST_PASSWORD_HASH -
+case_env "e2e login is the people's host login" "STAGING_E2E_HOST_USERNAME must be 'e2e-host' (is 'staging-host')" \
+  STAGING_E2E_HOST_USERNAME staging-host
 case_env "unquoted value with a space" "has an unquoted value with a space" SUPERADMIN_USERNAME "Staging Admin"
 case_env "harbor password differs from stream.env" "ICECAST_URL must use HARBOR_LIVE_PASSWORD" ICECAST_URL \
   "icecast://source:otherotherotherotherother1@host.docker.internal:8005/live"
@@ -199,6 +206,7 @@ secrets() {
 STAGING_SECRET_KEY=secretsecretsecretsecretsecret
 STAGING_SUPERADMIN_PASSWORD=$ADMIN_PW
 STAGING_HOST_PASSWORD=$HOST_PW
+STAGING_E2E_HOST_PASSWORD=$E2E_PW
 STAGING_R2_ACCESS_KEY_ID=0123456789abcdef0123456789abcdef
 STAGING_R2_SECRET_ACCESS_KEY=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 STAGING_HARBOR_TEST_PASSWORD=$TEST_PW
@@ -221,7 +229,7 @@ rm -f "$BOX/.env" "$BOX/stream.env"
 expect_ok "install-env writes env files from the secrets" install_env < <(secrets)
 expect_ok "installed env files pass check-env" check
 if grep -q "^SUPERADMIN_PASSWORD_HASH='\$argon2id\\$" "$BOX/.env"; then pass "superadmin hash is single-quoted"; else fail "superadmin hash is single-quoted"; fi
-if grep -rqF -e "$ADMIN_PW" -e "$HOST_PW" "$BOX"; then fail "plaintext login passwords were written"; else pass "plaintext login passwords are not stored"; fi
+if grep -rqF -e "$ADMIN_PW" -e "$HOST_PW" -e "$E2E_PW" "$BOX"; then fail "plaintext login passwords were written"; else pass "plaintext login passwords are not stored"; fi
 if grep -q "^STAGING_HOST_PASSWORD_HASH='\$argon2id\\$" "$BOX/.env"; then pass "host login hash (password with spaces and symbols)"; else fail "host login hash (password with spaces and symbols)"; fi
 if [[ "$(ls -l "$BOX/.env" "$BOX/stream.env" | cut -c1-10 | sort -u)" == "-rw-------" ]]; then
   pass "env files are mode 600"
@@ -339,6 +347,7 @@ expect_ok "seed-db installs a copy from stdin" seed_from_stdin "$TMP/copy.db"
 expect_fact "seed-db adds the staging superadmin" "$BOX/data/unheard.db" \
   "user staging-admin superadmin \$argon2id\$v=19\$m=19456,t=2,p=1\$c2FsdA\$aGFzaA"
 expect_fact "seed-db adds the staging host" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
+expect_fact "seed-db adds the e2e host" "$BOX/data/unheard.db" "user e2e-host host $E2E_HASH"
 expect_fact "seed-db keeps production users unusable" "$BOX/data/unheard.db" "user boss superadmin !"
 
 make_prod_db "$TMP/raw.db"
@@ -350,7 +359,10 @@ python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"UPDA
 expect_ok "users resets the staging logins in the running DB" staging users
 expect_fact "users gives staging-host back its role and Bitwarden password" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
 set_key "$BOX/.env" STAGING_HOST_PASSWORD_HASH -
-expect_refused "users refuses .env without the host hash" "the host login needs a username and an argon2 hash" staging users
+expect_refused "users refuses .env without the host hash" "a host login needs a username and an argon2 hash" staging users
+write_good
+set_key "$BOX/.env" STAGING_E2E_HOST_PASSWORD_HASH -
+expect_refused "users refuses .env without the e2e host hash" "a host login needs a username and an argon2 hash" staging users
 write_good
 
 printf 'not a database' >"$TMP/broken.db"
@@ -442,16 +454,17 @@ INSERT INTO show_templates (id, owner_user_id, name) VALUES
   (1, (SELECT id FROM users WHERE username = 'staging-host'), 'e2e-42-live'),
   (2, (SELECT id FROM users WHERE username = 'staging-host'), 'e2e-42-set'),
   (3, (SELECT id FROM users WHERE username = 'boss'), 'e2e-boss'),
-  (4, (SELECT id FROM users WHERE username = 'staging-host'), 'Real show');
+  (4, (SELECT id FROM users WHERE username = 'staging-host'), 'Real show'),
+  (5, (SELECT id FROM users WHERE username = 'e2e-host'), 'e2e-43-live');
 INSERT INTO series_uploads VALUES ('upload-1', 1);
 INSERT INTO shows (id, title, date, template_id) VALUES (903, 'e2e-42-set #1', '2026-11-17', 2);
 """)
 PY
 out="$(ci e2e-cleanup 2>&1)"
-if [[ "$out" == "deleted 1 test Show(s); kept, with episodes: e2e-42-set" ]]; then
-  pass "e2e-cleanup deletes the host's test Shows without episodes"
+if [[ "$out" == "deleted 2 test Show(s); kept, with episodes: e2e-42-set" ]]; then
+  pass "e2e-cleanup deletes the test hosts' test Shows without episodes"
 else
-  fail "e2e-cleanup deletes the host's test Shows without episodes: $out"
+  fail "e2e-cleanup deletes the test hosts' test Shows without episodes: $out"
 fi
 left="$(python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(','.join(r[0] for r in c.execute('SELECT name FROM show_templates ORDER BY id')), c.execute('SELECT COUNT(*) FROM series_uploads').fetchone()[0])" "$BOX/data/unheard.db")"
 if [[ "$left" == "e2e-42-set,e2e-boss,Real show 0" ]]; then
@@ -512,14 +525,15 @@ cat "$SM"
 EOF
 chmod +x "$TMP/pushbin/bw" "$TMP/pushbin/ssh" "$TMP/pushbin/bws"
 
-# Secrets Manager with the station SoundCloud app (and an unrelated secret).
+# Secrets Manager with the station SoundCloud app, the e2e login (and an unrelated secret).
 sm_secrets() {
   printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"},
     {"key":"SOUNDCLOUD_CLIENT_SECRET","value":"%s"},
     {"key":"INSTAGRAM_ACCESS_TOKEN_DEV","value":"igdevtoken"},
     {"key":"INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV","value":"17841400000000000"},
     {"key":"INSTAGRAM_ACCESS_TOKEN_PROD","value":"igprodtoken"},
-    {"key":"TELEGRAM_BOT_TOKEN","value":"123:abc"}]' "$1" >"$SM"
+    {"key":"STAGING_E2E_HOST_PASSWORD","value":"%s"},
+    {"key":"TELEGRAM_BOT_TOKEN","value":"123:abc"}]' "$1" "${2-$E2E_PW}" >"$SM"
 }
 sm_secrets stationclientsecret
 
@@ -572,19 +586,26 @@ else
   fail "the box gets the SoundCloud app from Secrets Manager"
 fi
 if [[ "$out" != *stationclientsecret* ]]; then pass "push prints no Secrets Manager value"; else fail "push prints no Secrets Manager value"; fi
-if grep -q "123:abc" "$BOX/.env"; then fail "an unrelated Secrets Manager secret reached the box"; else pass "only the SoundCloud app comes from Secrets Manager"; fi
+if grep -q "123:abc" "$BOX/.env"; then fail "an unrelated Secrets Manager secret reached the box"; else pass "only the listed secrets come from Secrets Manager"; fi
 if grep -qx "INSTAGRAM_ACCESS_TOKEN_DEV=igdevtoken" "$BOX/.env" && grep -qx "INSTAGRAM_ACCOUNT=dev" "$BOX/.env"; then
   pass "the box gets the Instagram test account"
 else
   fail "the box gets the Instagram test account"
 fi
 if grep -q "igprodtoken" "$BOX/.env"; then fail "the Instagram station token reached the box"; else pass "the Instagram station token stays off the box"; fi
+if grep -q "^STAGING_E2E_HOST_PASSWORD_HASH='\$argon2id\\$" "$BOX/.env" && ! grep -qF "$E2E_PW" "$BOX/.env"; then
+  pass "the box gets the e2e login from Secrets Manager, only as a hash"
+else
+  fail "the box gets the e2e login from Secrets Manager, only as a hash"
+fi
 
 expect_refused "push without a Secrets Manager token stops" "export BWS_ACCESS_TOKEN" push_without_sm_token
 sm_secrets ""
 expect_refused "an empty SoundCloud secret stops the push" "Secrets Manager secret SOUNDCLOUD_CLIENT_SECRET is empty" push
 printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"}]' >"$SM"
 expect_refused "a missing SoundCloud secret stops the push" "0 Secrets Manager secrets named SOUNDCLOUD_CLIENT_SECRET" push
+sm_secrets stationclientsecret ""
+expect_refused "an empty e2e login stops the push" "Secrets Manager secret STAGING_E2E_HOST_PASSWORD is empty" push
 sm_secrets stationclientsecret
 
 r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
