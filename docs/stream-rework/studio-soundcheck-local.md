@@ -49,8 +49,9 @@ curl http://localhost:8000/mock/mode/no-chunks
 | `no-return` | The server gets audio, the relay sends nothing back. | "Your audio did not come back from the relay." |
 | `no-cors` | The relay sends no CORS header. | The page plays the return feed and asks "Do you hear your audio?" |
 
-Without a mode switch: mute the microphone for "No signal", turn the input
-gain far down for "Too quiet".
+The soundcheck asks for the music, then for the mic, on the same input. Stay
+silent in one of them for "did not arrive", or turn the input gain far down
+for "too quiet".
 
 ## Limits
 

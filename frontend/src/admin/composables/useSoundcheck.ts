@@ -18,16 +18,16 @@ export const RETURN_SIGNAL_DB = -50;
 /** Chunks the server must confirm: one second of the recorder's 250 ms chunks. */
 export const SERVER_MIN_CHUNKS = 4;
 
-export const INPUT_MS = 1500;
-export const LEVEL_MS = 4000;
+/** How long the page listens to the music, then to the mic. */
+export const SOURCE_MS = 5000;
 /** The server reports its counters with each pong, every 2 s. */
 export const SERVER_TIMEOUT_MS = 10000;
 /** The relay runs a few seconds behind. */
 export const RETURN_TIMEOUT_MS = 20000;
 const POLL_MS = 250;
 
-export type SoundcheckStepId = 'input' | 'level' | 'server' | 'return';
-export type SoundcheckStepState = 'pending' | 'running' | 'ok' | 'warn' | 'fail';
+export type SoundcheckStepId = 'music' | 'mic' | 'server' | 'return';
+export type SoundcheckStepState = 'pending' | 'running' | 'ok' | 'warn' | 'fail' | 'skipped';
 export interface SoundcheckStep {
   id: SoundcheckStepId;
   name: string;
@@ -68,11 +68,20 @@ export interface SoundcheckDeps {
 }
 
 const NAMES: Record<SoundcheckStepId, string> = {
-  input: 'Input',
-  level: 'Level',
+  music: 'Music',
+  mic: 'Mic',
   server: 'Server',
   return: 'Return feed',
 };
+
+/**
+ * Music and mic come in on the same audio input, so the page asks for one at
+ * a time and measures what arrives. It cannot tell which source it was.
+ */
+const SOURCES = [
+  { id: 'music', name: 'The music', prompt: 'Play your music now.', skip: 'No music in this show' },
+  { id: 'mic', name: 'The mic', prompt: 'Now talk into the mic.', skip: 'No mic in this show' },
+] as const;
 
 /** "−9 dB", with a real minus sign. */
 export function formatDb(db: number): string {
@@ -99,6 +108,11 @@ export function useSoundcheck(deps: SoundcheckDeps) {
   const problem = ref<string | null>(null);
   /** The server received audio, so the host may confirm against the proposal. */
   const canOverride = ref(false);
+  /** What the host should do now. */
+  const prompt = ref<string | null>(null);
+  /** The label of the skip button while the music or the mic is checked. */
+  const skipLabel = ref<string | null>(null);
+  let skipped = false;
   const listening = ref(false);
   const listenError = ref<string | null>(null);
 
@@ -153,53 +167,74 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     listening.value = false;
   }
 
-  /** Peak and average level over `ms`. */
+  /** Peak and average level over `ms`, or until the host skips. */
   async function measure(token: number, ms: number) {
     let peak = -Infinity;
     let sum = 0;
     let count = 0;
-    await until(token, ms, () => {
+    for (let elapsed = 0; elapsed < ms && !skipped; elapsed += POLL_MS) {
       const level = deps.inputLevel();
       if (level) {
         peak = Math.max(peak, level.peakDb);
         sum += level.rmsDb;
         count++;
       }
-      return false;
-    });
+      await tick(token);
+    }
     return { peak, average: count ? sum / count : -Infinity };
   }
 
-  /** The checks in order. False: a check failed, the rest did not run. */
-  async function checks(token: number): Promise<boolean> {
-    set('input', 'running', 'Checking…');
-    if (!deps.inputLevel()) {
-      set('input', 'fail', 'No audio input');
-      note('No audio input. Pick your input under “Audio input” and allow the microphone.');
+  /** Ask for one source and measure it. True: it gave a signal. */
+  async function checkSource(token: number, source: (typeof SOURCES)[number]): Promise<boolean> {
+    set(source.id, 'running', 'Listening…');
+    prompt.value = source.prompt;
+    skipLabel.value = source.skip;
+    skipped = false;
+    const { peak, average } = await measure(token, SOURCE_MS);
+    skipLabel.value = null;
+    if (skipped) {
+      set(source.id, 'skipped', source.skip);
       return false;
     }
-    if ((await measure(token, INPUT_MS)).peak < SILENT_DB) {
-      set('input', 'fail', 'No signal');
-      note(`No signal from ${deps.inputLabel()}. Unmute it or play something, then run again.`);
-      return false;
-    }
-    set('input', 'ok', `Signal from ${deps.inputLabel()}`);
-
-    set('level', 'running', 'Measuring…');
-    const { peak, average } = await measure(token, LEVEL_MS);
-    if (peak > CLIP_DB) {
-      set('level', 'warn', `Too loud · peak ${formatDb(peak)}`);
+    if (peak < SILENT_DB) {
+      set(source.id, 'fail', 'No signal');
       note(
-        `Too loud: peak ${formatDb(peak)} clips. Turn down the input gain until peaks stay under −3 dB.`
+        `${source.name} did not arrive from ${deps.inputLabel()}. Turn it on or turn up its channel, then run again.`
+      );
+      return false;
+    }
+    if (peak > CLIP_DB) {
+      set(source.id, 'warn', `Too loud · peak ${formatDb(peak)}`);
+      note(
+        `${source.name} is too loud: peak ${formatDb(peak)} clips. Turn down its gain until peaks stay under −3 dB.`
       );
     } else if (peak < QUIET_DB) {
-      set('level', 'warn', `Too quiet · peak ${formatDb(peak)}`);
+      set(source.id, 'warn', `Too quiet · peak ${formatDb(peak)}`);
       note(
-        `Too quiet: peak ${formatDb(peak)}. Turn up the input gain until peaks reach about −12 dB.`
+        `${source.name} is too quiet: peak ${formatDb(peak)}. Turn up its gain until peaks reach about −12 dB.`
       );
     } else {
-      set('level', 'ok', `Peak ${formatDb(peak)} · average ${formatDb(average)}`);
+      set(source.id, 'ok', `Peak ${formatDb(peak)} · average ${formatDb(average)}`);
     }
+    return true;
+  }
+
+  /** The checks in order. They stop when nothing can be sent or the server gets no audio. */
+  async function checks(token: number): Promise<void> {
+    if (!deps.inputLevel()) {
+      set('music', 'fail', 'No audio input');
+      note('No audio input. Pick your input under “Audio input” and allow the microphone.');
+      return;
+    }
+    let heard = false;
+    for (const source of SOURCES) {
+      if (await checkSource(token, source)) heard = true;
+    }
+    if (!heard) {
+      note('Music and mic were both skipped. Run again and check at least one.');
+      return;
+    }
+    prompt.value = 'Keep the sound on until the checks are done.';
 
     set('server', 'running', 'Connecting…');
     try {
@@ -209,7 +244,7 @@ export function useSoundcheck(deps: SoundcheckDeps) {
       const reason = e instanceof Error ? e.message : 'Connection error';
       set('server', 'fail', 'Not connected');
       note(`The test broadcast did not start: ${reason}`);
-      return false;
+      return;
     }
     if (token !== run) throw CANCELLED;
     set('server', 'running', 'Sending a test broadcast…');
@@ -222,7 +257,7 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     if (ended) {
       set('server', 'fail', 'Test broadcast ended');
       note(`The server ended the test broadcast: ${ended}`);
-      return false;
+      return;
     }
     if (!arrived) {
       if (deps.sentChunks() === 0) {
@@ -232,7 +267,7 @@ export function useSoundcheck(deps: SoundcheckDeps) {
         set('server', 'fail', 'No audio arrived');
         note('The server got no audio. Check your internet connection, then run again.');
       }
-      return false;
+      return;
     }
     set('server', 'ok', 'Received your audio');
     canOverride.value = true;
@@ -251,7 +286,6 @@ export function useSoundcheck(deps: SoundcheckDeps) {
         'Your audio did not come back from the relay. Run again; if it stays, tell the tech team.'
       );
     }
-    return true;
   }
 
   /** One click: run all checks, then propose the result. */
@@ -264,6 +298,8 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     canOverride.value = false;
     listenError.value = null;
     deps.setPassed(false);
+    prompt.value = null;
+    skipLabel.value = null;
     running.value = true;
     // Opened in the click, so the browser lets it play later.
     feed = deps.openReturn();
@@ -274,6 +310,7 @@ export function useSoundcheck(deps: SoundcheckDeps) {
       throw e;
     }
     running.value = false;
+    prompt.value = null;
     const manual = steps.value.some((s) => s.id === 'return' && s.state === 'warn');
     if (problem.value) {
       outcome.value = 'problem';
@@ -294,6 +331,8 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     run++;
     teardown();
     running.value = false;
+    prompt.value = null;
+    skipLabel.value = null;
     steps.value = freshSteps();
     outcome.value = null;
     problem.value = null;
@@ -336,10 +375,17 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     }
   }
 
+  /** The show has no music, or no mic: go on with the next check. */
+  function skip() {
+    skipped = true;
+  }
+
   /** Leave: stop everything, keep the result. */
   function dispose() {
     run++;
     running.value = false;
+    prompt.value = null;
+    skipLabel.value = null;
     teardown();
   }
 
@@ -349,9 +395,12 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     outcome,
     problem,
     canOverride,
+    prompt,
+    skipLabel,
     listening,
     listenError,
     start,
+    skip,
     reset,
     confirm,
     reject,

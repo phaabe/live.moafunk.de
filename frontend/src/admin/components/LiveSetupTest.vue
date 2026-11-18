@@ -298,6 +298,7 @@ const STATE_LABELS: Record<SoundcheckStepState, string> = {
   ok: 'OK',
   warn: 'Warning',
   fail: 'Failed',
+  skipped: 'Skipped',
 };
 
 const runLabel = computed(() => {
@@ -383,7 +384,8 @@ onUnmounted(() => {
           </li>
         </ol>
         <div class="sc-result" aria-live="polite">
-          <p v-if="flow.liveTestPassed.value" class="pill status-banner ok">
+          <p v-if="soundcheck.prompt.value" class="sc-question">{{ soundcheck.prompt.value }}</p>
+          <p v-else-if="flow.liveTestPassed.value" class="pill status-banner ok">
             <span class="dot" aria-hidden="true"></span
             >{{
               soundcheck.outcome.value === 'ok'
@@ -399,6 +401,14 @@ onUnmounted(() => {
           </p>
         </div>
         <div class="sc-actions">
+          <button
+            v-if="soundcheck.skipLabel.value"
+            class="ls-btn-secondary"
+            type="button"
+            @click="soundcheck.skip()"
+          >
+            {{ soundcheck.skipLabel.value }}
+          </button>
           <button
             class="ls-btn-secondary"
             type="button"
@@ -982,6 +992,10 @@ onUnmounted(() => {
 
 .sc-step.fail .sc-state::before {
   content: '✕';
+}
+
+.sc-step.skipped .sc-state::before {
+  content: '–';
 }
 
 .sc-step.ok .sc-detail,
