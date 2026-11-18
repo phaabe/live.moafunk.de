@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::api::require_admin;
+use super::api::require_show_editor;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -83,7 +83,8 @@ pub async fn init_recording_upload(
     headers: HeaderMap,
     Json(req): Json<InitRequest>,
 ) -> Result<Json<InitResponse>> {
-    require_admin(&state, &headers).await?;
+    // The show's host (or its creator, or an admin) may upload its recording.
+    require_show_editor(&state, &headers, show_id).await?;
 
     tracing::info!(
         "Chunked recording upload: init for show_id={}, filename={}, total_size={}, total_chunks={}",
@@ -92,16 +93,6 @@ pub async fn init_recording_upload(
         req.total_size,
         req.total_chunks
     );
-
-    // Verify show exists
-    let show_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM shows WHERE id = ?)")
-        .bind(show_id)
-        .fetch_one(&state.db)
-        .await?;
-
-    if !show_exists {
-        return Err(AppError::NotFound("Show not found".to_string()));
-    }
 
     // Generate session ID
     let session_id = Uuid::new_v4().to_string();
@@ -144,7 +135,7 @@ pub async fn upload_recording_chunk(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<ChunkResponse>> {
-    require_admin(&state, &headers).await?;
+    require_show_editor(&state, &headers, show_id).await?;
 
     let chunk_index = query.index;
     tracing::info!(
@@ -260,7 +251,7 @@ pub async fn finalize_recording_upload(
     headers: HeaderMap,
     Json(req): Json<FinalizeRequest>,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
+    let (user, show) = require_show_editor(&state, &headers, show_id).await?;
 
     tracing::info!(
         "Chunked recording upload: finalize for session_id={}, show_id={}",
@@ -308,13 +299,6 @@ pub async fn finalize_recording_upload(
             received_chunks, total_chunks
         )));
     }
-
-    // Fetch show details for the recording key
-    let show: crate::models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-        .bind(show_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
     // Fetch all chunk keys in order
     let chunk_rows: Vec<(String, i64)> = sqlx::query_as(
@@ -441,8 +425,10 @@ pub async fn finalize_recording_upload(
     // Generate presigned URL for the uploaded file
     let recording_url = storage::get_presigned_url(&state, &key, 3600).await.ok();
 
-    // Auto-upload to SoundCloud in background (fire-and-forget)
-    if crate::soundcloud::has_token(&state).await {
+    // Auto-upload to SoundCloud in background (fire-and-forget). Only for an
+    // admin upload: the host page has its own Upload to SoundCloud button, and
+    // upload_track makes a new track on every call.
+    if user.role_enum().can_access_admin() && crate::soundcloud::has_token(&state).await {
         let sc_state = state.clone();
         tokio::spawn(async move {
             tracing::info!(

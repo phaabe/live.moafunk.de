@@ -1418,3 +1418,147 @@ async fn a_refused_user_update_changes_nothing() {
     assert_eq!(update(json!({"artist_id": null})).await, OK);
     assert_eq!(artist_user(&state, 7).await, None);
 }
+
+// ── Episode recording upload ────────────────────────────────────────────────
+
+async fn recording_small(
+    state: &Arc<AppState>,
+    user: Option<i64>,
+    show_id: i64,
+    file: &str,
+) -> (StatusCode, Value) {
+    let parts = [("file", Some(file), &b"mp3"[..])];
+    reply(
+        api::api_upload_show_recording(
+            State(state.clone()),
+            Path(show_id),
+            login(state, user).await,
+            form(&parts).await,
+        )
+        .await,
+    )
+    .await
+}
+
+async fn recording_init(state: &Arc<AppState>, user: i64, show_id: i64) -> (StatusCode, Value) {
+    use handlers::upload_recording_chunked::{init_recording_upload, InitRequest};
+    let request = InitRequest {
+        filename: format!("long-{show_id}.mp3"),
+        total_size: 3,
+        total_chunks: 1,
+        peaks: None,
+    };
+    let headers = headers(state, user).await;
+    reply(init_recording_upload(State(state.clone()), Path(show_id), headers, Json(request)).await)
+        .await
+}
+
+async fn recording_chunk(
+    state: &Arc<AppState>,
+    user: i64,
+    show_id: i64,
+    session: &str,
+) -> StatusCode {
+    use handlers::upload_recording_chunked::{upload_recording_chunk, ChunkQuery};
+    status(
+        upload_recording_chunk(
+            State(state.clone()),
+            Path((show_id, session.to_string())),
+            Query(ChunkQuery { index: 0 }),
+            headers(state, user).await,
+            form(&[("chunk", Some("blob"), b"mp3")]).await,
+        )
+        .await,
+    )
+}
+
+async fn recording_finalize(
+    state: &Arc<AppState>,
+    user: i64,
+    show_id: i64,
+    session: &str,
+) -> (StatusCode, Value) {
+    use handlers::upload_recording_chunked::finalize_recording_upload;
+    let result = finalize_recording_upload(
+        State(state.clone()),
+        Path((show_id, session.to_string())),
+        headers(state, user).await,
+        Json(Default::default()),
+    )
+    .await;
+    reply(result).await
+}
+
+/// How often the background SoundCloud upload read `key` from R2, after the
+/// spawned task had time to run. The test API base is a dead port, so the
+/// upload itself fails after that read.
+async fn soundcloud_reads(state: &Arc<AppState>, r2: &crate::fake_r2::FakeR2, key: &str) -> usize {
+    for _ in 0..50 {
+        if r2.count(state, "GET", key) > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    r2.count(state, "GET", key)
+}
+
+/// The episode's host may upload its recording, in one request or in chunks.
+/// Another host, a guest and nobody may not. Only an admin upload starts
+/// the SoundCloud upload on its own; the host page has a button for it.
+#[tokio::test]
+async fn a_host_uploads_a_recording_only_to_their_own_episode() {
+    let (state, _temp, r2) = setup(json!({ "soundcloud_access_token": "static-token" })).await;
+    let p = people(&state).await;
+    add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    add_show(&state, 2, Some(p.other_host), Some(p.other_host)).await;
+
+    // One request.
+    let (code, body) = recording_small(&state, Some(p.host), 1, "mine.mp3").await;
+    assert_eq!(code, OK);
+    let key = body["key"].as_str().unwrap().to_string();
+    let row = show_row(&state, 1).await.unwrap();
+    assert_eq!(row.recording_key.as_deref(), Some(key.as_str()));
+    assert_eq!(row.recording_filename.as_deref(), Some("mine.mp3"));
+    assert_eq!(soundcloud_reads(&state, &r2, &key).await, 0);
+    for (caller, want) in [
+        (None, NOBODY),
+        (Some(p.guest), DENIED),
+        (Some(p.host), DENIED),
+    ] {
+        assert_eq!(recording_small(&state, caller, 2, "evil.mp3").await.0, want);
+    }
+    assert_eq!(show_row(&state, 2).await.unwrap().recording_key, None);
+
+    // In chunks.
+    let (code, init) = recording_init(&state, p.host, 1).await;
+    assert_eq!(code, OK);
+    let session = init["session_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        recording_chunk(&state, p.other_host, 1, &session).await,
+        DENIED
+    );
+    assert_eq!(recording_chunk(&state, p.host, 1, &session).await, OK);
+    assert_eq!(
+        recording_finalize(&state, p.other_host, 1, &session)
+            .await
+            .0,
+        DENIED
+    );
+    let (code, done) = recording_finalize(&state, p.host, 1, &session).await;
+    assert_eq!(code, OK);
+    let key = done["key"].as_str().unwrap().to_string();
+    assert_eq!(
+        show_row(&state, 1).await.unwrap().recording_key.as_deref(),
+        Some(key.as_str())
+    );
+    assert_eq!(soundcloud_reads(&state, &r2, &key).await, 0);
+    assert_eq!(recording_init(&state, p.host, 2).await.0, DENIED);
+    assert_eq!(recording_init(&state, p.guest, 1).await.0, DENIED);
+    assert_eq!(pending_rows(&state).await, (0, 0));
+
+    // An admin upload to any show still starts SoundCloud in the background.
+    let (code, body) = recording_small(&state, Some(p.admin), 2, "admin.mp3").await;
+    assert_eq!(code, OK);
+    let key = body["key"].as_str().unwrap().to_string();
+    assert!(soundcloud_reads(&state, &r2, &key).await > 0);
+}
