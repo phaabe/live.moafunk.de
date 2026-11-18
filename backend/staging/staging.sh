@@ -45,6 +45,9 @@ STAGING_SOUNDCLOUD_CLIENT_ID STAGING_SOUNDCLOUD_CLIENT_SECRET"
 
 # The station's production SoundCloud account: never the staging account.
 STATION_SOUNDCLOUD_ACCOUNT=radio-moafunk
+# The SoundCloud app's only redirect URI. Production forwards staging logins
+# (state 'staging.…') to this box (SOUNDCLOUD_FORWARD_URL on production).
+PROD_SOUNDCLOUD_CALLBACK=https://admin.live.moafunk.de/api/soundcloud/callback
 
 # Login passwords: stored only as argon2 hashes, so any characters are fine.
 LOGIN_PASSWORDS="STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD"
@@ -147,10 +150,10 @@ check_env() {
   [[ -f "$file" ]] || die "missing $file"
   check_env_file_syntax "$file"
 
-  # Unset bucket names fall back to production buckets, and the SoundCloud
-  # login must come back to this box, so every value here is required explicitly.
+  # Unset bucket names fall back to production buckets, and a SoundCloud login
+  # must use the app's only redirect URI, so every value here is required explicitly.
   for pair in APP_ENV=staging "ADMIN_BASE_URL=https://$DOMAIN" STREAM_OUTPUT=icecast \
-    SOUNDCLOUD_AUTO_UPLOAD=true "SOUNDCLOUD_REDIRECT_URI=https://$DOMAIN/api/soundcloud/callback" \
+    SOUNDCLOUD_AUTO_UPLOAD=true "SOUNDCLOUD_REDIRECT_URI=$PROD_SOUNDCLOUD_CALLBACK" \
     SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=false \
     R2_BUCKET_NAME=unheard-artists-staging R2_SHOWS_BUCKET_NAME=moafunk-staging \
     "ICECAST_STATUS_URL=http://host.docker.internal:$ICECAST_PORT/status-json.xsl"; do

@@ -63,7 +63,7 @@ ICECAST_STATUS_URL=http://host.docker.internal:8010/status-json.xsl
 SOUNDCLOUD_CLIENT_ID=stagingclientid
 SOUNDCLOUD_CLIENT_SECRET=stagingclientsecret
 SOUNDCLOUD_ACCOUNT=moafunk-test
-SOUNDCLOUD_REDIRECT_URI=https://staging.live.moafunk.de/api/soundcloud/callback
+SOUNDCLOUD_REDIRECT_URI=https://admin.live.moafunk.de/api/soundcloud/callback
 SOUNDCLOUD_AUTO_UPLOAD=true
 SOUNDCLOUD_KEEP_TRACKS=10
 TELEGRAM_ENABLED=false
@@ -140,8 +140,8 @@ case_env "missing shows bucket falls back to production" "R2_SHOWS_BUCKET_NAME m
 case_env "production recordings bucket" "R2_BUCKET_NAME must be 'unheard-artists-staging'" R2_BUCKET_NAME unheard-artists-prod
 case_env "production shows bucket" "R2_SHOWS_BUCKET_NAME must be" R2_SHOWS_BUCKET_NAME moafunk-prod
 case_env "SoundCloud auto-upload unset" "SOUNDCLOUD_AUTO_UPLOAD must be 'true'" SOUNDCLOUD_AUTO_UPLOAD -
-case_env "SoundCloud login returns to production" "SOUNDCLOUD_REDIRECT_URI must be 'https://staging.live.moafunk.de/api/soundcloud/callback'" \
-  SOUNDCLOUD_REDIRECT_URI https://admin.live.moafunk.de/api/soundcloud/callback
+case_env "SoundCloud login skips the app's redirect URI" "SOUNDCLOUD_REDIRECT_URI must be 'https://admin.live.moafunk.de/api/soundcloud/callback'" \
+  SOUNDCLOUD_REDIRECT_URI https://staging.live.moafunk.de/api/soundcloud/callback
 case_env "SoundCloud login returns to the localhost default" "SOUNDCLOUD_REDIRECT_URI must be" SOUNDCLOUD_REDIRECT_URI -
 case_env "SoundCloud cleanup unset" "SOUNDCLOUD_KEEP_TRACKS must be '10'" SOUNDCLOUD_KEEP_TRACKS -
 case_env "SoundCloud station account" "SOUNDCLOUD_ACCOUNT must not be the station account radio-moafunk" SOUNDCLOUD_ACCOUNT radio-moafunk
