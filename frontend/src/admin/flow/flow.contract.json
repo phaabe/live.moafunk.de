@@ -859,8 +859,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "30ef559b",
-      "notesHash": "1ec1a3ec",
+      "hash": "5571d749",
+      "notesHash": "f8bde2f6",
       "elements": [
         {
           "k": "back",
@@ -894,13 +894,13 @@
         },
         {
           "k": "row",
-          "text": "Input",
+          "text": "Music",
           "meta": "Not checked yet",
           "to": null
         },
         {
           "k": "row",
-          "text": "Level",
+          "text": "Mic",
           "meta": "Not checked yet",
           "to": null
         },
@@ -937,12 +937,105 @@
       ]
     },
     {
+      "id": "studio-checking",
+      "title": "Studio · Soundcheck, checking",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "65cae7ec",
+      "notesHash": "6c82f5ff",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "button",
+          "text": "Stop soundcheck",
+          "to": "studio",
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Peak −9 dB · average −21 dB",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Listening…",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "Now talk into the mic."
+        },
+        {
+          "k": "button",
+          "text": "No mic in this show",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to the return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
       "id": "studio-ready",
       "title": "Studio · Soundcheck, ready",
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "0039b8dd",
+      "hash": "c9ed66a7",
       "notesHash": "c1721d6d",
       "elements": [
         {
@@ -977,14 +1070,14 @@
         },
         {
           "k": "row",
-          "text": "Input",
-          "meta": "Signal from Focusrite USB",
+          "text": "Music",
+          "meta": "Peak −9 dB · average −21 dB",
           "to": null
         },
         {
           "k": "row",
-          "text": "Level",
-          "meta": "Peak −9 dB · average −21 dB",
+          "text": "Mic",
+          "meta": "Peak −12 dB · average −24 dB",
           "to": null
         },
         {
@@ -1036,8 +1129,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "0e25b0c5",
-      "notesHash": "b1d7a207",
+      "hash": "96309b0f",
+      "notesHash": "b31b1e5b",
       "elements": [
         {
           "k": "back",
@@ -1071,13 +1164,13 @@
         },
         {
           "k": "row",
-          "text": "Input",
-          "meta": "Signal from Focusrite USB",
+          "text": "Music",
+          "meta": "Peak −9 dB · average −21 dB",
           "to": null
         },
         {
           "k": "row",
-          "text": "Level",
+          "text": "Mic",
           "meta": "Too quiet · peak −38 dB",
           "to": null
         },
@@ -1095,7 +1188,7 @@
         },
         {
           "k": "notice",
-          "text": "Too quiet: peak −38 dB. Turn up the input gain until peaks reach about −12 dB."
+          "text": "The mic is too quiet: peak −38 dB. Turn up its gain until peaks reach about −12 dB."
         },
         {
           "k": "button",
