@@ -52,7 +52,7 @@ test('the chaos test show runs nightly, by hand and on release PRs, never on PRs
   );
 });
 
-test('the chaos test show uses only the staging CI key and the host login', () => {
+test('the chaos test show uses only the staging CI key and the e2e host login', () => {
   assert.deepEqual(chaos.permissions, { contents: 'read' });
   assert.deepEqual(job.concurrency, { group: 'staging-box', 'cancel-in-progress': false });
   const text = JSON.stringify(chaos);
@@ -64,7 +64,7 @@ test('the chaos test show uses only the staging CI key and the host login', () =
   const keys = job.steps.find((step) => step.id === 'secrets');
   assert.deepEqual(
     keys.with.secrets.trim().split('\n').map((line) => line.split(' > ')[1]),
-    ['STAGING_DEPLOY_SSH_KEY', 'STAGING_HOST_PASSWORD']
+    ['STAGING_DEPLOY_SSH_KEY', 'STAGING_E2E_HOST_PASSWORD']
   );
   const hostKey = job.steps.find((step) => step.env?.HOST_KEY).env.HOST_KEY;
   const deploy = load('backend.yml').jobs['deploy-staging'].steps.find((step) => step.id === 'deploy');
