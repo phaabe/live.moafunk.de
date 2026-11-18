@@ -449,6 +449,42 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Length of a pre-recorded set booked through Book Slot (from ffprobe).
     add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
     crate::series::migrate(pool).await?;
+    // The host's own Instagram account, without '@'.
+    add_column_if_missing(pool, "show_templates", "instagram_handle", "TEXT").await?;
+    // Announcements of an episode: one per (episode, slot, channel).
+    // scheduled_at is UTC RFC 3339; anchor_offset_minutes is relative to the
+    // episode start.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS announcements (
+            id INTEGER PRIMARY KEY,
+            show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+            slot TEXT NOT NULL CHECK (slot IN ('pre', 'onair', 'post')),
+            channel TEXT NOT NULL DEFAULT 'instagram',
+            state TEXT NOT NULL CHECK (state IN ('draft', 'pending_approval', 'scheduled',
+                'armed', 'waiting_soundcloud', 'sent', 'failed', 'cancelled', 'rejected')),
+            anchor_offset_minutes INTEGER,
+            scheduled_at TEXT,
+            headline TEXT,
+            caption TEXT,
+            image_source TEXT NOT NULL DEFAULT 'cover'
+                CHECK (image_source IN ('cover', 'upload', 'guest')),
+            image_key TEXT,
+            layout TEXT NOT NULL DEFAULT 'band' CHECK (layout IN ('band', 'split')),
+            collaborator INTEGER NOT NULL DEFAULT 1,
+            created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            sent_at TEXT,
+            permalink TEXT,
+            media_id TEXT,
+            error TEXT,
+            UNIQUE (show_id, slot, channel)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)
     sqlx::query(

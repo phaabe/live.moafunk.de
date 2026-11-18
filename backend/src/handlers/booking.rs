@@ -272,6 +272,8 @@ pub async fn api_book_episode(
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
+    // The on-air story is on by default.
+    crate::announcements::arm_onair(&mut tx, id, &slot.date, &slot.start_time, user.id).await?;
     if let Some(upload) = &upload {
         // One file plays in one episode.
         sqlx::query("DELETE FROM series_uploads WHERE session_id = ?")
