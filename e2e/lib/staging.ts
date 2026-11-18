@@ -160,7 +160,11 @@ export async function bookSlot(page: Page, start: Date, end: Date): Promise<numb
   const res = await booked;
   if (!res.ok()) throw new Error(`booking refused (${res.status()}): ${await res.text()}`);
   await page.waitForURL(/#\/shows\/\d+$/);
-  return Number(page.url().match(/#\/shows\/(\d+)$/)![1]);
+  const id = Number(page.url().match(/#\/shows\/(\d+)$/)![1]);
+  // Booking arms the on-air story; without this every live test posts to the Instagram test account.
+  const story = await page.request.delete(`/api/shows/${id}/announcements/onair`);
+  if (!story.ok()) throw new Error(`cancel on-air story: ${story.status()} ${await story.text()}`);
+  return id;
 }
 
 /**
