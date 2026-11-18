@@ -276,7 +276,7 @@ describe('Studio soundcheck', () => {
 
     // After the music nothing goes on by itself: the mic has its own button.
     await vi.advanceTimersByTimeAsync(MUSIC_MS + 60000);
-    expect(rows().Music).toBe('OK: Peak −9 dB · average −21 dB');
+    expect(rows().Music).toBe('OK: Good · peak −9 dB · average −21 dB');
     expect(rowButtons('Music')).toEqual(['Re-run', 'Listen to return feed']);
     expect(rows().Mic).toBe('Waiting: Not checked yet');
     expect(rowButtons('Mic')).toEqual(['Start test', 'Skip']);
@@ -294,8 +294,8 @@ describe('Studio soundcheck', () => {
     // The server and the return feed follow by themselves.
     await vi.advanceTimersByTimeAsync(MIC_MS + 500);
     expect(rows()).toEqual({
-      Music: 'OK: Peak −9 dB · average −21 dB',
-      Mic: 'OK: Peak −12 dB · average −24 dB',
+      Music: 'OK: Good · peak −9 dB · average −21 dB',
+      Mic: 'OK: Good · peak −12 dB · average −24 dB',
       Server: 'OK: Received your audio',
       'Return feed': 'OK: Your audio comes back',
     });
@@ -364,7 +364,7 @@ describe('Studio soundcheck', () => {
       await testMusic();
       mocks.peak!.value = -60;
       await testMic();
-      expect(rows().Music).toBe('OK: Peak −9 dB · average −21 dB');
+      expect(rows().Music).toBe('OK: Good · peak −9 dB · average −21 dB');
       expect(rows().Mic).toBe('Failed: No signal');
       // The music can be sent, so the other checks still ran.
       expect(rows().Server).toBe('OK: Received your audio');
@@ -379,13 +379,13 @@ describe('Studio soundcheck', () => {
       await mount();
       await testMusic();
       // The problem shows at once, while the mic is still open.
-      expect(rows().Music).toBe('Warning: Too quiet · peak −38 dB');
+      expect(rows().Music).toBe('Warning: Too quiet · peak −38 dB · average −21 dB');
       expect(notice()).toBe(
-        'The music is too quiet: peak −38 dB. Turn up its gain until peaks reach about −12 dB.'
+        'The music is too quiet: peak −38 dB, average −21 dB. Turn up its gain until the average is around −20 dB.'
       );
       mocks.peak!.value = -9;
       await testMic();
-      expect(rows().Mic).toBe('OK: Peak −9 dB · average −21 dB');
+      expect(rows().Mic).toBe('OK: Good · peak −9 dB · average −21 dB');
       expect(rows().Server).toBe('OK: Received your audio');
       expect(notice()).toContain('The music is too quiet');
       expect(goLive().disabled).toBe(true);
@@ -396,11 +396,37 @@ describe('Studio soundcheck', () => {
       await testMusic();
       mocks.peak!.value = 0;
       await testMic();
-      expect(rows().Mic).toBe('Warning: Too loud · peak 0 dB');
+      expect(rows().Mic).toBe('Warning: Too loud · peak 0 dB · average −21 dB');
       expect(notice()).toBe(
-        'The mic is too loud: peak 0 dB clips. Turn down its gain until peaks stay under −3 dB.'
+        'The mic is too loud: peak 0 dB, average −21 dB. Turn down its gain until peaks stay under −3 dB.'
       );
       expect(goLive().disabled).toBe(true);
+    });
+
+    it('too quiet or too loud on average, with a good peak', async () => {
+      mocks.db!.value = -40;
+      await mount();
+      await testMusic();
+      expect(rows().Music).toBe('Warning: Too quiet · peak −9 dB · average −40 dB');
+      mocks.db!.value = -6;
+      await testMic();
+      expect(rows().Mic).toBe('Warning: Too loud · peak −9 dB · average −6 dB');
+      expect(notice()).toBe(
+        'The music is too quiet: peak −9 dB, average −40 dB. Turn up its gain until the average is around −20 dB.'
+      );
+      expect(goLive().disabled).toBe(true);
+    });
+
+    it('rates only the time with sound', async () => {
+      // Silence while the track starts, then good music.
+      mocks.db!.value = -60;
+      mocks.peak!.value = -60;
+      await mount();
+      await pressIn('Music', 'Start test', 4900);
+      mocks.db!.value = -21;
+      mocks.peak!.value = -9;
+      await vi.advanceTimersByTimeAsync(MUSIC_MS - 4900);
+      expect(rows().Music).toBe('OK: Good · peak −9 dB · average −21 dB');
     });
 
     it('music and mic both skipped', async () => {
@@ -503,12 +529,12 @@ describe('Studio soundcheck', () => {
     mocks.peak!.value = -38;
     await pressIn('Mic', 'Re-run', 250);
     expect(goLive().disabled).toBe(true);
-    expect(rows().Music).toBe('OK: Peak −9 dB · average −21 dB');
+    expect(rows().Music).toBe('OK: Good · peak −9 dB · average −21 dB');
     expect(rows().Mic).toBe('Checking: Listening…');
     expect(rows().Server).toBe('Waiting: Not checked yet');
 
     await vi.advanceTimersByTimeAsync(MIC_MS + 500);
-    expect(rows().Mic).toBe('Warning: Too quiet · peak −38 dB');
+    expect(rows().Mic).toBe('Warning: Too quiet · peak −38 dB · average −21 dB');
     expect(rows().Server).toBe('OK: Received your audio');
     expect(notice()).toContain('The mic is too quiet');
     expect(mocks.connect).toHaveBeenCalledTimes(2);
@@ -658,6 +684,7 @@ describe('flow', () => {
     await mount('2026-11-15T11:40:00Z');
     await testMusic();
     mocks.peak!.value = -38;
+    mocks.db!.value = -48;
     await testMic(SECOND_MS);
     await at1842();
     await expectFlow('studio-problem', root);

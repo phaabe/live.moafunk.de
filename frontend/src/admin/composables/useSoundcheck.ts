@@ -11,8 +11,12 @@ import { ref } from 'vue';
 export const SILENT_DB = -55;
 /** A peak under this is too quiet to send. */
 export const QUIET_DB = -30;
+/** An average level under this is too quiet, whatever the peak. */
+export const QUIET_AVERAGE_DB = -35;
 /** A peak over this clips. */
 export const CLIP_DB = -1;
+/** An average level over this is too loud, whatever the peak. */
+export const LOUD_AVERAGE_DB = -9;
 /** The return feed carries a signal above this peak. */
 export const RETURN_SIGNAL_DB = -50;
 /** Chunks the server must confirm: one second of the recorder's 250 ms chunks. */
@@ -206,8 +210,11 @@ export function useSoundcheck(deps: SoundcheckDeps) {
       const level = deps.inputLevel();
       if (level) {
         peak = Math.max(peak, level.peakDb);
-        sum += level.rmsDb;
-        count++;
+        // The average counts only the time with sound, not the wait for the track to start.
+        if (level.rmsDb > SILENT_DB) {
+          sum += level.rmsDb;
+          count++;
+        }
       }
       await tick(token);
     }
@@ -218,22 +225,28 @@ export function useSoundcheck(deps: SoundcheckDeps) {
         'No signal',
         `${source.name} did not arrive from ${deps.inputLabel()}. Turn it on or turn up its channel, then run its test again.`
       );
-    } else if (peak > CLIP_DB) {
+      return;
+    }
+    // Rate the loudness by the peak and by the average level.
+    const average = count ? sum / count : SILENT_DB;
+    const levels = `peak ${formatDb(peak)} · average ${formatDb(average)}`;
+    const measured = `peak ${formatDb(peak)}, average ${formatDb(average)}`;
+    if (peak > CLIP_DB || average > LOUD_AVERAGE_DB) {
       set(
         id,
         'warn',
-        `Too loud · peak ${formatDb(peak)}`,
-        `${source.name} is too loud: peak ${formatDb(peak)} clips. Turn down its gain until peaks stay under −3 dB.`
+        `Too loud · ${levels}`,
+        `${source.name} is too loud: ${measured}. Turn down its gain until peaks stay under −3 dB.`
       );
-    } else if (peak < QUIET_DB) {
+    } else if (peak < QUIET_DB || average < QUIET_AVERAGE_DB) {
       set(
         id,
         'warn',
-        `Too quiet · peak ${formatDb(peak)}`,
-        `${source.name} is too quiet: peak ${formatDb(peak)}. Turn up its gain until peaks reach about −12 dB.`
+        `Too quiet · ${levels}`,
+        `${source.name} is too quiet: ${measured}. Turn up its gain until the average is around −20 dB.`
       );
     } else {
-      set(id, 'ok', `Peak ${formatDb(peak)} · average ${formatDb(sum / count)}`);
+      set(id, 'ok', `Good · ${levels}`);
     }
   }
 
