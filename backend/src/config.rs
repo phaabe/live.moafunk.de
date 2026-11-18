@@ -137,6 +137,10 @@ pub struct Config {
     /// configured and authorized; otherwise the auto-upload silently no-ops.
     #[serde(default = "default_true")]
     pub soundcloud_auto_upload: bool,
+    /// SoundCloud account (permalink) this server uploads to. When set, a
+    /// login with any other account is refused (production: the station
+    /// account, staging: the test account).
+    pub soundcloud_account: Option<String>,
 
     // Telegram Bot settings (optional - for admin notifications and control)
     /// Master kill-switch for the Telegram bot. Defaults to `false` (off): the

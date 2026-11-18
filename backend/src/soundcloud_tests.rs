@@ -43,12 +43,15 @@ struct FakeSoundCloud {
     failing: Arc<Mutex<HashMap<String, u16>>>,
     /// `permalink_url` of an uploaded track; `None` leaves it out.
     permalink: Arc<Mutex<Option<String>>>,
+    /// Permalink of the logged-in account (`GET /me`).
+    me: Arc<Mutex<String>>,
 }
 
 impl FakeSoundCloud {
     async fn serve() -> Self {
         let fake = Self::default();
         *fake.permalink.lock().unwrap() = Some("https://soundcloud.com/radio-moafunk/new".into());
+        *fake.me.lock().unwrap() = "moafunk-test".into();
         let app = axum::Router::new()
             .fallback(fake_request)
             .with_state(fake.clone());
@@ -156,6 +159,9 @@ async fn fake_request(
             (StatusCode::CREATED, Json(track)).into_response()
         }
         ("DELETE" | "PUT", ["tracks", _]) => Json(json!({})).into_response(),
+        ("GET", ["me"]) => {
+            Json(json!({ "id": 1, "permalink": *fake.me.lock().unwrap() })).into_response()
+        }
         ("GET", ["me", "playlists"]) => Json(
             playlists
                 .iter()
@@ -529,6 +535,34 @@ async fn code_exchange_needs_client_credentials() {
         "{err}"
     );
     assert!(fake.routes().is_empty());
+}
+
+/// With SOUNDCLOUD_ACCOUNT set, only a login of that account is stored.
+#[tokio::test]
+async fn code_exchange_refuses_another_account() {
+    let (state, _temp, fake, _r2) = setup(json!({
+        "soundcloud_access_token": null,
+        "soundcloud_client_id": "cid",
+        "soundcloud_client_secret": "secret",
+        "soundcloud_account": "radio-moafunk"
+    }))
+    .await;
+    let err = exchange_code(&state, "c").await.unwrap_err().to_string();
+    assert!(
+        err.contains("account 'radio-moafunk', but you logged in as 'moafunk-test'"),
+        "{err}"
+    );
+    assert_eq!(
+        fake.call("GET /me").auth.as_deref(),
+        Some("OAuth new-access")
+    );
+    assert_eq!(stored_token(&state).await, None);
+    assert!(!has_token(&state).await);
+
+    // The right account (in any case) is stored.
+    *fake.me.lock().unwrap() = "Radio-Moafunk".into();
+    exchange_code(&state, "c").await.unwrap();
+    assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
 }
 
 // ── Title and description ───────────────────────────────────────────────────

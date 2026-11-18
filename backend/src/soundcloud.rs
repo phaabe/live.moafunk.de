@@ -599,6 +599,49 @@ async fn delete_track(client: &reqwest::Client, access_token: &str, track_id: &s
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct Me {
+    permalink: String,
+}
+
+/// Permalink (the account name in the profile URL) of the token's account.
+async fn me_permalink(access_token: &str) -> Result<String> {
+    let resp = reqwest::Client::new()
+        .get(format!("{}/me", api_base()))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("SoundCloud /me request failed: {}", e)))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "SoundCloud /me failed ({}): {}",
+            status, body
+        )));
+    }
+    let me: Me = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud /me: {}", e)))?;
+    Ok(me.permalink)
+}
+
+/// Refuse a token of another account than `SOUNDCLOUD_ACCOUNT` (when set).
+async fn check_account(state: &AppState, access_token: &str) -> Result<()> {
+    let Some(want) = state.config.soundcloud_account.as_deref() else {
+        return Ok(());
+    };
+    let got = me_permalink(access_token).await?;
+    if got.eq_ignore_ascii_case(want) {
+        return Ok(());
+    }
+    Err(AppError::BadRequest(format!(
+        "This server uploads to the SoundCloud account '{want}', but you logged in as '{got}'. \
+         Log out of SoundCloud, then connect with '{want}'."
+    )))
+}
+
 /// Whether a just-finalized recording should be auto-uploaded to SoundCloud.
 /// Pure decision so the policy is testable: upload only when the feature is
 /// enabled and the integration is configured. Not gated on "already uploaded":
@@ -1029,6 +1072,9 @@ pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> 
         .json()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud token: {}", e)))?;
+
+    // Only the account this server is meant for (production vs. test account).
+    check_account(state, &token_resp.access_token).await?;
 
     // Store the tokens in DB for persistence across restarts
     store_token(
