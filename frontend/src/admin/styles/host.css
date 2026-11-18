@@ -201,6 +201,7 @@
 .host-page .row-time {
   font: 700 14px var(--font-family);
   color: #d0d0dc;
+  white-space: nowrap;
 }
 
 .host-page .row-title {
@@ -263,9 +264,30 @@
     align-items: flex-start;
   }
 
-  .host-page .row-tags {
-    flex-direction: column;
-    align-items: flex-end;
+  /* Tags go on a second line under the row text, so names keep their width. */
+  .host-page .board-card > .board-rows .board-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'main icon'
+      'tags icon';
+    row-gap: 6px;
+  }
+
+  .host-page .board-row > .row-main {
+    grid-area: main;
+  }
+
+  .host-page .board-row > .row-tags,
+  .host-page .board-row > .tag {
+    grid-area: tags;
+    justify-self: start;
+    justify-content: flex-start;
+    margin-left: 68px;
+  }
+
+  .host-page .board-row > .row-icon {
+    grid-area: icon;
   }
 }
 
@@ -367,6 +389,7 @@
 }
 
 .host-page .board-card .field .label,
+.host-page .board-card .form-input .label,
 .host-page .board-card .field-label {
   font: 700 11px var(--font-ui);
   letter-spacing: 0.08em;
@@ -374,7 +397,8 @@
   color: #a8a8bc;
 }
 
-.host-page .board-card .field .input {
+.host-page .board-card .field .input,
+.host-page .board-card .form-input .input {
   min-height: 44px;
   border: 1px solid #34344c;
   border-radius: var(--radius-lg);

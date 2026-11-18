@@ -107,7 +107,7 @@ watch(slug, load, { immediate: true });
                 <span class="row-main">
                   <DateChip :date="row.date" :tone="CHIP[row.status]" />
                   <span class="sep"> · </span>
-                  <span class="row-title mode"
+                  <span class="row-title row-mode"
                     ><BoardIcon :name="row.live ? 'mic' : 'disc'" :size="16" />{{ row.mode }}</span
                   >
                 </span>
@@ -174,13 +174,13 @@ watch(slug, load, { immediate: true });
   font-size: var(--font-size-sm);
 }
 
-.mode {
+.row-mode {
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
 
-.mode svg {
+.row-mode svg {
   color: #a0a0b4;
 }
 
