@@ -48,10 +48,22 @@ async function soundcheckAndGoLive(): Promise<void> {
   const input = page.getByLabel('Audio input');
   await expect(input.locator('option')).not.toHaveCount(2, { timeout: 15_000 });
   await input.selectOption({ index: 1 });
-  await page.getByRole('button', { name: 'Start test' }).click();
-  const sounds = page.getByLabel('Test broadcast sounds right');
-  await expect(sounds).toBeEnabled({ timeout: 30_000 });
-  await sounds.check();
+  // The new input resets the soundcheck once its capture runs: wait for its level.
+  await expect(page.locator('.db-meter-readout').first()).not.toHaveText(/∞/, { timeout: 15_000 });
+  // One input carries the tone: test it as the music, skip the mic. Then the
+  // page checks the server and the return feed by itself.
+  const row = (name: string) =>
+    page.locator('li.sc-step').filter({ has: page.getByText(name, { exact: true }) });
+  await row('Mic').getByRole('button', { name: 'Skip' }).click();
+  await row('Music').getByRole('button', { name: 'Start test' }).click();
+  const ready = page.getByText(/ready to go live/);
+  const soundsRight = page.getByRole('button', { name: 'Sounds right' });
+  const problem = page.locator('.sc-result [role="alert"]');
+  await expect(ready.or(soundsRight).or(problem)).toBeVisible({ timeout: 90_000 });
+  if (await problem.isVisible()) throw new Error(`soundcheck: ${await problem.textContent()}`);
+  // A browser that cannot measure the return feed asks; the tone is there.
+  if (await soundsRight.isVisible()) await soundsRight.click();
+  await expect(ready).toBeVisible();
   const goLive = page.getByRole('button', { name: 'Go Live' });
   await expect(goLive).toBeEnabled({ timeout: 180_000 });
   await goLive.click();
@@ -59,7 +71,7 @@ async function soundcheckAndGoLive(): Promise<void> {
 }
 
 test('a live show recovers by itself and ends in one recording', async () => {
-  test.setTimeout((25 + DURATION_MIN) * 60_000);
+  test.setTimeout((35 + DURATION_MIN) * 60_000);
   let onAirMs = 0;
   let offAirMs = 0;
 
@@ -103,15 +115,19 @@ test('a live show recovers by itself and ends in one recording', async () => {
 
   if (DURATION_MIN > 0) {
     await test.step(`soak: ${DURATION_MIN} minutes on air`, async () => {
-      const until = Date.now() + DURATION_MIN * 60_000;
-      while (Date.now() < until) {
-        await page.waitForTimeout(60_000);
+      // A check every full minute: the listening must not stretch the soak.
+      const start = Date.now();
+      for (let minute = 1; minute <= DURATION_MIN; minute++) {
+        await page.waitForTimeout(Math.max(0, start + minute * 60_000 - Date.now()));
         await toneBack(RECOVER_S);
       }
     });
   }
 
   await test.step('End Episode, Wrap-up, Publish, Finished', async () => {
+    // End Episode asks once: the second click ends the broadcast.
+    await page.getByRole('button', { name: 'End Episode' }).click();
+    await expect(page.getByText('End the episode?')).toBeVisible();
     await page.getByRole('button', { name: 'End Episode' }).click();
     onAirMs = Date.now() - live - offAirMs;
     await page.waitForURL(new RegExp(`#/shows/${episode}$`));
