@@ -25,7 +25,7 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
    `project::Ai`, `project::unheard-artist-form`, `project::UNHEARD`. Add `bug`/`enhancement`/`documentation`/`later` as fitting.
 3. **Pick the parent goal**: `gh issue list --label goal --state open --json number,title`. Choose the goal
    whose topic fits; a follow-up takes the goal of its source ticket. If none fits, ask the user. Never create a goal.
-   **Milestone**: only when the ticket is part of that feature (a milestone is one feature inside a topic). Otherwise none, and `later` if it is parked.
+   **Milestone**: always ask the user if the ticket goes into a milestone (a milestone is one feature inside a topic). Propose one from `gh api repos/{owner}/{repo}/milestones` (or "none") with a short reason. Never set one without the answer. A parked ticket gets `later` and no milestone.
 4. **Title**: imperative, Conventional-Commit-flavoured when natural — e.g. `feat(stream): add pre-listen page`.
 5. **Body** (this template):
    ```md
@@ -51,7 +51,8 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
 
 ## Hard rules
 - Never create the issue without explicit confirmation of the rendered draft.
-- Every issue gets a goal parent (`--parent`). An issue without one drops out of board 3 and the vault tree.
+- Every issue MUST be part of a topic: it gets a goal parent (`--parent`). An issue without one drops out of board 3 and the vault tree.
+- Always ask the user about the milestone, with a proposal. Never set or skip it silently.
 - Only use labels returned by `gh label list` — if none fit a dimension, say so rather than guessing.
 - Keep it to ONE issue; if the task is clearly multi-part, recommend the decomposition workflow.
 
