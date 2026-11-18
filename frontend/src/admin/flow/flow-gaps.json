@@ -68,58 +68,26 @@
     {
       "screen": "dashboard",
       "release": "UNHEARD",
-      "items": [
-        "nav: Pool"
-      ]
+      "items": ["nav: Pool"]
     },
     {
       "screen": "schedule",
       "release": "UNHEARD",
-      "items": [
-        "nav: Pool"
-      ]
+      "items": ["nav: Pool"]
     },
     {
       "screen": "my-shows",
       "release": "UNHEARD",
-      "items": [
-        "row: UNHEARD | Monthly · 4 artists",
-        "nav: Pool"
-      ]
-    },
-    {
-      "screen": "announce",
-      "release": "R4"
+      "items": ["row: UNHEARD | Monthly · 4 artists", "nav: Pool"]
     },
     {
       "screen": "admin-instagram",
       "release": "R4"
     },
     {
-      "screen": "show",
-      "release": "R4",
-      "items": [
-        "field: Instagram handle"
-      ]
-    },
-    {
-      "screen": "episode",
-      "release": "R4",
-      "items": [
-        "h2: Promotion · Instagram",
-        "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
-        "button: Edit pre-announcement",
-        "button: Cancel pre-announcement",
-        "check: On air · story 9:16 | Sent when you go live",
-        "row: Post · feed post 4:5 | Set up in Wrap-up when the SoundCloud track is public"
-      ]
-    },
-    {
       "screen": "episode",
       "release": "R5",
-      "items": [
-        "button: Create guest link"
-      ]
+      "items": ["button: Create guest link"]
     },
     {
       "screen": "wrapup",
@@ -135,9 +103,6 @@
       "screen": "wrapup",
       "release": "R4",
       "items": [
-        "h2: Post-announcement",
-        "row: Post · feed post 4:5 | Mo 26.10. · 18:00 · waits for the public track",
-        "button: Set up post-announcement",
         "h2: 3 moments for Instagram",
         "check: 00:12:30 | Opening track",
         "check: 00:31:05 | Guest talk",
@@ -147,16 +112,7 @@
     {
       "screen": "done",
       "release": "R2",
-      "items": [
-        "pill: SoundCloud · private track uploaded"
-      ]
-    },
-    {
-      "screen": "done",
-      "release": "R4",
-      "items": [
-        "pill: Instagram · post-announcement Mo 26.10. · 18:00"
-      ]
+      "items": ["pill: SoundCloud · private track uploaded"]
     },
     {
       "screen": "studio-onair",
@@ -212,33 +168,22 @@
   "allowed": [
     {
       "screen": "dashboard",
-      "items": [
-        "button: Toggle menu",
-        "button: Close menu"
-      ],
+      "items": ["button: Toggle menu", "button: Close menu"],
       "why": "The flow note says the nav folds into a menu on phones."
     },
     {
       "screen": "schedule",
-      "items": [
-        "button: Toggle menu",
-        "button: Close menu"
-      ],
+      "items": ["button: Toggle menu", "button: Close menu"],
       "why": "The flow note says the nav folds into a menu on phones."
     },
     {
       "screen": "my-shows",
-      "items": [
-        "button: Toggle menu",
-        "button: Close menu"
-      ],
+      "items": ["button: Toggle menu", "button: Close menu"],
       "why": "The flow note says the nav folds into a menu on phones."
     },
     {
       "screen": "schedule",
-      "items": [
-        "link: On air now | On air · Brunchtime · until 14:00"
-      ],
+      "items": ["link: On air now | On air · Brunchtime · until 14:00"],
       "why": "The flow note says the strip opens On Air when the show on air is yours."
     }
   ],

@@ -2,12 +2,7 @@
   "screen": "show",
   "hash": "25c1eea7",
   "status": "ok",
-  "leftOut": [
-    {
-      "item": "field: Instagram handle",
-      "release": "R4"
-    }
-  ],
+  "leftOut": [],
   "missing": [],
   "extra": []
 }
