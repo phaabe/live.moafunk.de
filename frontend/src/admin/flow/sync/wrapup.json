@@ -1,6 +1,6 @@
 {
   "screen": "wrapup",
-  "hash": "0c51c988",
+  "hash": "2e5906ab",
   "status": "ok",
   "leftOut": [
     {
@@ -18,6 +18,18 @@
     {
       "item": "check: Add to playlist “Brunchtime”",
       "release": "R2"
+    },
+    {
+      "item": "h2: Post-announcement",
+      "release": "R4"
+    },
+    {
+      "item": "row: Post · feed post 4:5 | Mo 26.10. · 18:00 · waits for the public track",
+      "release": "R4"
+    },
+    {
+      "item": "button: Set up post-announcement",
+      "release": "R4"
     },
     {
       "item": "h2: 3 moments for Instagram",

@@ -59,55 +59,86 @@ do NOT conflate:
   states: processing / ready / failed).
 - **Manual upload** — a file an admin uploads after the fact (`recording_*`).
 
-## Promotion (needs reconciliation — see terminology watch)
+## Promotion
 
-**Announcement** — A social-media post about a show. A show has at most **two
-announcement slots**, each optional:
-- **Pre-announcement** — promotes the upcoming show; published before air.
-- **Post-announcement** — shares the recording; published after the show.
+**Announcement** — An Instagram post or story about one episode. Hosts post
+through the station account (`@moafunk_radio`); they never see its login. An
+episode has three **announcement slots**, each optional:
+- **Pre-announcement** — feed post (4:5) before air. Default: 2 days before, 18:00.
+- **On-air story** — story (9:16), sent automatically at go-live. On by default;
+  the host can switch it off. A story carries no link, so it shows
+  "listen at live.moafunk.de" as text.
+- **Post-announcement** — feed post (4:5) after the show. The host can set it up
+  in wrap-up at any time; it is sent only after the SoundCloud track is public.
+  Default: next day, 18:00.
 
-**Channel** — A destination for an announcement: **Instagram** and/or **Telegram**.
-A single announcement slot may target one or both channels.
+Do not call an announcement a "moment". **Moment** means an on-air timecode
+(Mark moment in the Studio). Moment clips for Instagram are a later feature.
 
-**Queued post** — An announcement the host has authored and left to publish
-automatically at its scheduled time (as opposed to publishing on the spot).
+**Channel** — Where an announcement goes. Only **Instagram** is built.
+**Telegram** stays a channel for later.
 
-**Schedule anchor** — Every scheduled announcement time is defined *relative to
-the show's date/time*, so it moves automatically when the show is rescheduled.
-Two anchor models exist:
-- **Offset** — a duration before/after a show landmark, e.g. "3 h before air".
-- **Time-of-day** — a wall-clock time on a day expressed relative to the show,
-  e.g. "18:00 on the day before the show". Still recomputes if the show moves.
+**Station account** — The Instagram account a server posts to. Staging posts to
+the test account; production posts to `@moafunk_radio`.
 
-**Scheduling policy** — Which anchor model *and its timing value* governs an
-announcement's automatic send. Owned entirely by an **admin in Configuration**,
-one policy **per channel × per slot** (Instagram-pre, Instagram-post,
-Telegram-pre, Telegram-post are four independent policies) — deliberately *not*
-editable on the show dashboard. On the dashboard the host owns only *what*
-(caption/content), *where* (which channels), and *whether* (slot on/off); the
-send time is derived and shown read-only, with a manual "Post now" override.
+**Collaborator** — The host's own Instagram account (Instagram handle on the
+show). A feed post invites it as collaborator, so the post also shows on the
+host's profile. Stories take no collaborator.
 
-*Terminology watch — GAP TO BUILD:* none of this exists yet. Today Instagram
-posts fire **immediately** (`postToInstagram` → `instagram_posted_at`), Telegram
-has an on-demand **preview** send, and `scheduler.rs` auto-sends only a fixed
-*artist-preview cadence* (day N after a show → artist N). The slot / queued-post /
-scheduling-policy model above is new.
+**Queued post** — An announcement the host set up to send by itself at its time.
 
-**Send state** — Where a queued announcement is in its life, tracked *per
-channel* (so one slot can be IG-sent / TG-pending):
-- **Pending** — queued, not yet fired; fully editable and cancelable.
-- **Sent** — published; read-only, shows the live post link, guarded manual re-post only.
-- **Failed** — the send was attempted and errored; eligible for retry.
-- **Cancelled** — the host un-queued it before it fired.
+**Post slot** — A fixed send time: 12:00 or 18:00 Europe/Berlin. The on-air
+story has no post slot; it goes at go-live.
 
-**Content freshness** — When a queued post fires, its **caption is frozen** (the
-exact text the host authored) but its **media is resolved live** at send time:
-the image is the show's current cover, and a post-announcement's SoundCloud link
-is whatever exists then (it usually doesn't exist yet when the post is written).
+**Episode limit** — Max announcements per episode. Default 3 (one per slot).
+
+**Station limits** — Max sends for the whole station account. Defaults: 1 feed
+post per day, 5 feed posts per week, 6 stories per day.
+
+**Full slot** — A post slot the station limits do not allow. The post moves to
+the next free slot. It is never dropped. The host sees why it moved.
+
+**Scheduling policy** — The episode limit, station limits, post slots, days
+before for the pre-announcement, and the approval mode. Set by an admin on the
+Instagram queue page. Hosts pick only from free slots.
+
+**Approval mode** — When an admin must approve a post before it is sent:
+- **First posts** (default) — the first 2 posts of a new host.
+- **Always** — every post.
+- **Never** — no approval; admins get a Telegram notice per post.
+
+**Pause** — One admin switch that stops all posting. Queued posts keep their
+time and wait until posting resumes.
+
+**Send state** — Where an announcement is in its life:
+- **Draft** — started, not scheduled yet.
+- **Needs approval** — waits for an admin (see approval mode).
+- **Scheduled** — has a post slot; sends at that time.
+- **Armed** — on-air story, waits for go-live.
+- **Waiting for SoundCloud** — post-announcement, waits for the public track.
+- **Sent** — posted; shows the post link.
+- **Failed** — the send errored; an admin can retry it.
+- **Cancelled** — the host cancelled it before it was sent.
+- **Rejected** — an admin did not approve it. The host can set it up again.
+
+**Edit window** — The host can edit or cancel an announcement only before it is
+sent. After that the caption is frozen (Instagram cannot edit it). Only an admin
+removes a sent post, by hand in the Instagram app.
+
+**Content freshness** — The image is rendered from the station template at send
+time, from the image the host picked (episode cover, uploaded photo or guest
+photo) plus the headline (max 18 characters). The caption (max 600 characters)
+is the host's text, plus the date line and station hashtags.
+
+*Terminology watch:* the admin show and artist Instagram posts
+(`postToInstagram` → `instagram_posted_at`) are an older, separate path; they
+are not announcements. Telegram has an on-demand **preview** send, and
+`scheduler.rs` also sends a fixed *artist-preview cadence* (day N after a show →
+artist N).
 
 **Publish (SoundCloud)** — Uploading a finished recording to SoundCloud and
-setting its visibility (public/private). Separate from an Announcement, though a
-Post-announcement often links to the published SoundCloud track.
+setting its visibility (public/private). Separate from an Announcement, but a
+Post-announcement waits for the public SoundCloud track.
 
 ## Lifecycle
 
@@ -118,7 +149,7 @@ emphasis/default view, they never lock a panel:
   pre-announcement.
 - **Broadcast** — between air time and scheduled end: countdown, then a launchpad
   + "● ON AIR" status strip. Actual stream operation happens in the fullscreen
-  `/stream` flow, not the cockpit.
+  `/stream` flow, not the cockpit. Go-live sends the on-air story.
 - **Wrap-up** — past scheduled end or a recording exists: recording status,
   publish the auto-uploaded SoundCloud track (make public), queue
   post-announcement.

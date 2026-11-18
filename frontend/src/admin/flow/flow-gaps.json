@@ -88,10 +88,30 @@
       ]
     },
     {
+      "screen": "announce",
+      "release": "R4"
+    },
+    {
+      "screen": "admin-instagram",
+      "release": "R4"
+    },
+    {
+      "screen": "show",
+      "release": "R4",
+      "items": [
+        "field: Instagram handle"
+      ]
+    },
+    {
       "screen": "episode",
       "release": "R4",
       "items": [
-        "field: Announcements"
+        "h2: Promotion · Instagram",
+        "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
+        "button: Edit pre-announcement",
+        "button: Cancel pre-announcement",
+        "check: On air · story 9:16 | Sent when you go live",
+        "row: Post · feed post 4:5 | Set up in Wrap-up when the SoundCloud track is public"
       ]
     },
     {
@@ -115,6 +135,9 @@
       "screen": "wrapup",
       "release": "R4",
       "items": [
+        "h2: Post-announcement",
+        "row: Post · feed post 4:5 | Mo 26.10. · 18:00 · waits for the public track",
+        "button: Set up post-announcement",
         "h2: 3 moments for Instagram",
         "check: 00:12:30 | Opening track",
         "check: 00:31:05 | Guest talk",
@@ -132,7 +155,7 @@
       "screen": "done",
       "release": "R4",
       "items": [
-        "pill: Instagram · 3 posts queued"
+        "pill: Instagram · post-announcement Mo 26.10. · 18:00"
       ]
     },
     {

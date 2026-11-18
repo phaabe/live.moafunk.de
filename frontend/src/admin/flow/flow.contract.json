@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 14,
+  "rev": 15,
   "screens": [
     {
       "id": "dashboard",
@@ -326,8 +326,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "86273f6d",
-      "notesHash": "83f80d0a",
+      "hash": "25c1eea7",
+      "notesHash": "81e1aa2b",
       "elements": [
         {
           "k": "back",
@@ -381,6 +381,11 @@
           "k": "field",
           "text": "Time",
           "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Instagram handle",
+          "value": "@brunchtime"
         },
         {
           "k": "button",
@@ -529,8 +534,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "d448a530",
-      "notesHash": "bc86742e",
+      "hash": "e7a8a2aa",
+      "notesHash": "f77489c6",
       "elements": [
         {
           "k": "back",
@@ -597,11 +602,6 @@
           "on": false
         },
         {
-          "k": "field",
-          "text": "Announcements",
-          "value": "Story + Post · before and after"
-        },
-        {
           "k": "button",
           "text": "Save",
           "to": null,
@@ -621,6 +621,44 @@
         },
         {
           "k": "h2",
+          "text": "Promotion · Instagram"
+        },
+        {
+          "k": "text",
+          "text": "Posted by @moafunk_radio. @brunchtime is invited as collaborator."
+        },
+        {
+          "k": "row",
+          "text": "Pre · feed post 4:5",
+          "meta": "Scheduled · Fr 23.10. · 18:00",
+          "to": "announce"
+        },
+        {
+          "k": "button",
+          "text": "Edit pre-announcement",
+          "to": "announce",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Cancel pre-announcement",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "check",
+          "text": "On air · story 9:16",
+          "meta": "Sent when you go live",
+          "on": true
+        },
+        {
+          "k": "row",
+          "text": "Post · feed post 4:5",
+          "meta": "Set up in Wrap-up when the SoundCloud track is public",
+          "to": null
+        },
+        {
+          "k": "h2",
           "text": "Recording"
         },
         {
@@ -632,6 +670,125 @@
           "k": "button",
           "text": "Upload to SoundCloud",
           "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "announce",
+      "title": "Announcement composer",
+      "who": "host",
+      "lane": "promo",
+      "path": "admin.live.moafunk.de/#/shows/42/announce/pre",
+      "hash": "f38f51fd",
+      "notesHash": "422f1fea",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Pre-announcement"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Feed post 4:5 · So 25.10. · Brunchtime"
+        },
+        {
+          "k": "h2",
+          "text": "Image"
+        },
+        {
+          "k": "choice",
+          "text": "Episode cover",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Upload a photo",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Guest photo",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "media",
+          "text": "Image · the station frame, font and filter are added",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Headline on the image",
+          "value": "Sunday brunch"
+        },
+        {
+          "k": "field",
+          "text": "Caption",
+          "value": "Brunchtime is back this Sunday. Two hours of brunch sounds with Juno Park."
+        },
+        {
+          "k": "check",
+          "text": "Invite @brunchtime as collaborator",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "h2",
+          "text": "When"
+        },
+        {
+          "k": "choice",
+          "text": "Fr 23.10. · 18:00",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Sa 24.10. · 12:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 24.10. · 18:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "h2",
+          "text": "Preview"
+        },
+        {
+          "k": "media",
+          "text": "Preview · 4:5 post by moafunk_radio and brunchtime",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "After it is posted, the caption cannot be changed. Until then you can edit or cancel it here."
+        },
+        {
+          "k": "text",
+          "text": "Uses 1 of 3 announcements for this episode."
+        },
+        {
+          "k": "button",
+          "text": "Schedule post",
+          "to": "episode",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Cancel",
+          "to": "back",
           "primary": false
         }
       ]
@@ -1628,8 +1785,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "0c51c988",
-      "notesHash": "a3418514",
+      "hash": "2e5906ab",
+      "notesHash": "3b0cc2d3",
       "elements": [
         {
           "k": "back",
@@ -1668,6 +1825,22 @@
         },
         {
           "k": "h2",
+          "text": "Post-announcement"
+        },
+        {
+          "k": "row",
+          "text": "Post · feed post 4:5",
+          "meta": "Mo 26.10. · 18:00 · waits for the public track",
+          "to": "announce"
+        },
+        {
+          "k": "button",
+          "text": "Set up post-announcement",
+          "to": "announce",
+          "primary": false
+        },
+        {
+          "k": "h2",
           "text": "3 moments for Instagram"
         },
         {
@@ -1702,8 +1875,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "9dfee1cb",
-      "notesHash": "35e32059",
+      "hash": "5e5fd4ef",
+      "notesHash": "d07f892e",
       "elements": [
         {
           "k": "h1",
@@ -1717,7 +1890,7 @@
         {
           "k": "pill",
           "tone": "ok",
-          "text": "Instagram · 3 posts queued"
+          "text": "Instagram · post-announcement Mo 26.10. · 18:00"
         },
         {
           "k": "button",
@@ -2356,6 +2529,140 @@
           "k": "button",
           "text": "Back to login",
           "to": "login",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "admin-instagram",
+      "title": "Instagram queue",
+      "who": "admin",
+      "lane": "promo",
+      "path": "admin.live.moafunk.de/#/admin/instagram",
+      "hash": "eb7876d0",
+      "notesHash": "8dd7ca5f",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Instagram queue"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Posts to @moafunk_radio · token valid to 15.01."
+        },
+        {
+          "k": "button",
+          "text": "Pause all posting",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "This week · 19.–25.10."
+        },
+        {
+          "k": "text",
+          "text": "Feed posts 3 / 5 · stories today 1 / 6"
+        },
+        {
+          "k": "row",
+          "text": "Fr 23.10. · 18:00 · Pre",
+          "meta": "Brunchtime · lena · Needs approval",
+          "to": "episode"
+        },
+        {
+          "k": "button",
+          "text": "Approve",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Reject",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "So 25.10. · at go-live · On air",
+          "meta": "Brunchtime · lena · Armed",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "Mo 26.10. · 18:00 · Post",
+          "meta": "Brunchtime · lena · Waiting for SoundCloud",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "Mi 21.10. · 20:14 · On air",
+          "meta": "Night Shift · jonas · Failed · image URL not reachable",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Retry",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Policy"
+        },
+        {
+          "k": "field",
+          "text": "Announcements per episode",
+          "value": "3"
+        },
+        {
+          "k": "field",
+          "text": "Feed posts per day",
+          "value": "1"
+        },
+        {
+          "k": "field",
+          "text": "Feed posts per week",
+          "value": "5"
+        },
+        {
+          "k": "field",
+          "text": "Stories per day",
+          "value": "6"
+        },
+        {
+          "k": "field",
+          "text": "Pre-announcement days before",
+          "value": "2"
+        },
+        {
+          "k": "field",
+          "text": "Slots (Berlin time)",
+          "value": "12:00, 18:00"
+        },
+        {
+          "k": "choice",
+          "text": "Approve the first 2 posts of a new host",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Approve always",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Never approve",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "Save policy",
+          "to": null,
           "primary": true
         }
       ]
