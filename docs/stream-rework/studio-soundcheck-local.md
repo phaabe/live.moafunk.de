@@ -27,6 +27,18 @@ the Mic row.
 In Claude Code the same two servers are in `.claude/launch.json`
 (`studio-mock`, `frontend-studio`).
 
+## Browser test
+
+`e2e/tests-local/studio-soundcheck.spec.ts` runs the soundcheck in Chromium
+with a tone as the fake mic. It starts the mock and the frontend by itself:
+
+```bash
+cd e2e && npm ci && npx playwright install chromium && npm run local
+```
+
+It covers the pass path, "the server got no audio" and "nothing came back".
+The chaos test show on staging uses the same steps (`e2e/lib/studio.ts`).
+
 ## What the mock does
 
 | Part | Mock |
