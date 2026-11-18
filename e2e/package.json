@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
+    "local": "playwright test -c playwright.local.config.ts",
     "typecheck": "tsc -p .",
     "unit": "node --test lib/*.test.ts"
   },

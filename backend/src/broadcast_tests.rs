@@ -1269,6 +1269,35 @@ async fn first_audio_chunk_lifts_the_no_audio_deadline() {
     assert!(state.soundcheck_state.lock().await.is_active());
 }
 
+/// The Studio soundcheck's "Server" check reads `chunks` from the pong: it
+/// must be 0 while no audio arrived and count each chunk after.
+#[tokio::test]
+async fn test_broadcast_pong_counts_the_audio_the_server_got() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    let mut socket = connect_producer(&state, addr, host, "test=true").await;
+
+    async fn counters(socket: &mut Producer) -> (Option<u64>, Option<u64>) {
+        socket.send(WsMessage::Text("ping:1".into())).await.unwrap();
+        let pong: Value =
+            serde_json::from_str(next_text(socket).await.strip_prefix("pong:").unwrap()).unwrap();
+        (pong["chunks"].as_u64(), pong["bytes"].as_u64())
+    }
+
+    assert_eq!(counters(&mut socket).await, (Some(0), Some(0)));
+    for _ in 0..4 {
+        socket
+            .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        counters(&mut socket).await,
+        (Some(4), Some(4 * WEBM_MAGIC.len() as u64))
+    );
+    close(socket).await;
+}
+
 /// A tone as WebM/Opus, laid out like the browser's MediaRecorder stream.
 async fn webm_tone(frequency: u32, seconds: u32) -> Vec<u8> {
     let out = tokio::process::Command::new("ffmpeg")

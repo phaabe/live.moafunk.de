@@ -14,6 +14,7 @@ import {
   nextMinute,
   toneBack,
 } from '../lib/staging';
+import { soundcheckAndGoLive } from '../lib/studio';
 
 /** After each disturbance /live.mp3 carries the tone again within this. */
 const RECOVER_S = 15;
@@ -42,22 +43,6 @@ test.afterAll(async () => {
   await page.close();
 });
 
-/** From the Studio: pick the (fake) mic, run the soundcheck, Go Live. */
-async function soundcheckAndGoLive(): Promise<void> {
-  await page.waitForURL(/#\/stream\/live/);
-  const input = page.getByLabel('Audio input');
-  await expect(input.locator('option')).not.toHaveCount(2, { timeout: 15_000 });
-  await input.selectOption({ index: 1 });
-  await page.getByRole('button', { name: 'Start test' }).click();
-  const sounds = page.getByLabel('Test broadcast sounds right');
-  await expect(sounds).toBeEnabled({ timeout: 30_000 });
-  await sounds.check();
-  const goLive = page.getByRole('button', { name: 'Go Live' });
-  await expect(goLive).toBeEnabled({ timeout: 180_000 });
-  await goLive.click();
-  await page.waitForURL(/#\/stream\/on-air/, { timeout: 30_000 });
-}
-
 test('a live show recovers by itself and ends in one recording', async () => {
   test.setTimeout((25 + DURATION_MIN) * 60_000);
   let onAirMs = 0;
@@ -72,7 +57,7 @@ test('a live show recovers by itself and ends in one recording', async () => {
 
   const live = await test.step('soundcheck, then Go Live at the start time', async () => {
     await page.getByRole('button', { name: 'Open Studio' }).click();
-    await soundcheckAndGoLive();
+    await soundcheckAndGoLive(page);
     const at = Date.now();
     await toneBack(FIRST_TONE_S);
     return at;
@@ -93,7 +78,7 @@ test('a live show recovers by itself and ends in one recording', async () => {
     const reloaded = Date.now();
     await page.reload();
     // On Air sends a tab that is not live to the Studio.
-    await soundcheckAndGoLive();
+    await soundcheckAndGoLive(page);
     offAirMs += Date.now() - reloaded;
     // Up to 20 s after the reload, the harbor can still play the old page's
     // audio. So the tone must not stop for 15 s until then, and be there after.

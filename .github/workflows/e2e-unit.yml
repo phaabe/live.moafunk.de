@@ -1,11 +1,13 @@
 name: E2E - Typecheck and unit tests
 
-# The chaos test show's own code checks, on PRs that change it. No staging,
-# no secrets: the show itself runs nightly and on release PRs (e2e-staging.yml).
+# The chaos test show's own code checks, on PRs that change it, and the Studio
+# soundcheck in a real browser against the local mock, on PRs that change the
+# frontend. No staging, no secrets: the show itself runs nightly and on release
+# PRs (e2e-staging.yml).
 on:
   pull_request:
     branches: [staging, main]
-    paths: ['e2e/**', '.github/workflows/e2e-unit.yml']
+    paths: ['e2e/**', 'frontend/**', '.github/workflows/e2e-unit.yml']
 
 permissions:
   contents: read
@@ -31,3 +33,45 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run unit
+
+  studio-soundcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            e2e/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install the test, the frontend, the browsers and ffmpeg
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg pulseaudio
+          npm ci --prefix frontend
+          npm ci --prefix e2e
+          cd e2e && npx playwright install --with-deps chromium firefox
+
+      - name: Studio soundcheck against the mock
+        working-directory: e2e
+        # The runner has no sound card. Firefox's audio only runs with an
+        # output device, so PulseAudio gives it a null one.
+        run: |
+          set -euo pipefail
+          pulseaudio --start --exit-idle-time=-1
+          npm run local
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: studio-soundcheck-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 7

@@ -182,13 +182,20 @@ if (args === 'api -X GET ' + repo + '/workflows/release-gate.yml/runs -f head_sh
   }
 });
 
-test('PRs that change e2e/ get its typecheck and unit tests without staging or secrets', () => {
+test('PRs that change e2e/ or the frontend get the e2e checks and the local Studio soundcheck without staging or secrets', () => {
   const unit = load('e2e-unit.yml');
   assert.deepEqual(unit.on, {
-    pull_request: { branches: ['staging', 'main'], paths: ['e2e/**', '.github/workflows/e2e-unit.yml'] },
+    pull_request: {
+      branches: ['staging', 'main'],
+      paths: ['e2e/**', 'frontend/**', '.github/workflows/e2e-unit.yml'],
+    },
   });
   assert.deepEqual(unit.permissions, { contents: 'read' });
-  assert.deepEqual(Object.keys(unit.jobs), ['e2e-unit']);
+  assert.deepEqual(Object.keys(unit.jobs), ['e2e-unit', 'studio-soundcheck']);
+  // The soundcheck runs against the local mock, never the staging show.
+  const soundcheck = unit.jobs['studio-soundcheck'].steps;
+  assert.equal(soundcheck[0].with['persist-credentials'], false);
+  assert.match(soundcheck.at(-2).run, /^npm run local$/m);
   const { steps, defaults } = unit.jobs['e2e-unit'];
   assert.deepEqual(defaults, { run: { 'working-directory': 'e2e' } });
   assert.equal(steps[0].with['persist-credentials'], false);
