@@ -860,7 +860,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
       "hash": "5571d749",
-      "notesHash": "f8bde2f6",
+      "notesHash": "b5d2986d",
       "elements": [
         {
           "k": "back",
@@ -942,8 +942,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "65cae7ec",
-      "notesHash": "6c82f5ff",
+      "hash": "59f737c8",
+      "notesHash": "a61695df",
       "elements": [
         {
           "k": "back",
@@ -984,7 +984,7 @@
         {
           "k": "row",
           "text": "Mic",
-          "meta": "Listening…",
+          "meta": "Waiting for you",
           "to": null
         },
         {
@@ -1000,8 +1000,14 @@
           "to": null
         },
         {
-          "k": "text",
-          "text": "Now talk into the mic."
+          "k": "notice",
+          "text": "The music is checked. Next: the mic."
+        },
+        {
+          "k": "button",
+          "text": "Check the mic",
+          "to": null,
+          "primary": false
         },
         {
           "k": "button",
