@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
 import { seriesApi, type SeriesDetail } from '../api';
-import { episodeDay, episodeTarget } from '../episodeRow';
+import { episodeTarget } from '../episodeRow';
 import BoardIcon from '../components/BoardIcon.vue';
 import CoverDrop from '../components/CoverDrop.vue';
+import DateChip from '../components/DateChip.vue';
 import SeriesFields from '../components/SeriesFields.vue';
 import { draftOf, draftValid, emptyDraft, toNewSeries } from '../seriesDraft';
 
@@ -21,12 +22,17 @@ const draft = ref(emptyDraft());
 const cover = ref<File | null>(null);
 const saving = ref(false);
 
+/** Date chip per status: yellow while upcoming, amber while the wrap-up is open. */
+const CHIP = { upcoming: 'mine', wrapup_open: 'wrapup', finished: '' } as const;
+
 const slug = computed(() => String(route.params.slug));
 
 const rows = computed(() =>
   (series.value?.episodes ?? []).map((episode) => ({
     id: episode.id,
-    left: `${episodeDay(episode.date)} · ${episode.mode_label}`,
+    date: episode.date,
+    mode: episode.mode_label,
+    live: episode.mode === 'live',
     right: episode.status_label,
     status: episode.status,
     to: episodeTarget(episode),
@@ -68,75 +74,78 @@ watch(slug, load, { immediate: true });
 </script>
 
 <template>
-  <div class="show-series-page">
-    <router-link to="/shows" class="back-link">&lt; My Shows</router-link>
+  <div class="show-series-page host-page">
+    <router-link to="/shows" class="back-link"
+      ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>My Shows</router-link
+    >
     <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-
     <template v-if="series">
       <div class="show-head">
-        <CoverDrop v-model="cover" :current-url="series.cover_url" :size="96" />
+        <CoverDrop v-model="cover" :current-url="series.cover_url" :size="112" />
         <div class="show-text">
           <h1 class="page-title">{{ series.name }}</h1>
           <p v-if="series.description" class="description">{{ series.description }}</p>
         </div>
-        <BaseButton @click="router.push(`/shows/${series.slug}/book`)">Book Slot</BaseButton>
+        <BaseButton class="xl book" @click="router.push(`/shows/${series.slug}/book`)"
+          ><BoardIcon name="calendar-plus" />Book Slot</BaseButton
+        >
       </div>
 
-      <section class="board-card">
-        <div class="board-card-head">
-          <h2 class="board-card-title"><BoardIcon name="details" />Details</h2>
-        </div>
-        <div class="board-card-body">
-          <SeriesFields v-model="draft" />
-          <p class="hint">Booked episodes keep their date and time.</p>
-          <div>
-            <BaseButton
-              variant="secondary"
-              :disabled="!draftValid(draft)"
-              :loading="saving"
-              @click="save"
-            >
-              Save
-            </BaseButton>
+      <!-- Episodes first: hosts open them more often than they edit the rhythm. -->
+      <div class="cols">
+        <section class="board-card main">
+          <div class="board-card-head">
+            <h2 class="board-card-title"><BoardIcon name="list" />Episodes</h2>
           </div>
-        </div>
-      </section>
-
-      <section class="board-card">
-        <div class="board-card-head">
-          <h2 class="board-card-title"><BoardIcon name="list" />Episodes</h2>
-        </div>
-        <div class="board-card-body">
           <ul class="episodes board-rows">
             <li v-for="row in rows" :key="row.id">
-              <router-link v-if="row.to" :to="row.to" class="board-row">
-                <span>{{ row.left }}</span>
+              <component
+                :is="row.to ? RouterLink : 'div'"
+                v-bind="row.to ? { to: row.to } : {}"
+                class="board-row"
+              >
+                <span class="row-main">
+                  <DateChip :date="row.date" :tone="CHIP[row.status]" />
+                  <span class="sep"> · </span>
+                  <span class="row-title row-mode"
+                    ><BoardIcon :name="row.live ? 'mic' : 'disc'" :size="16" />{{ row.mode }}</span
+                  >
+                </span>
                 <span :class="['tag', `tag-${row.status}`]">{{ row.right }}</span>
-              </router-link>
-              <div v-else class="board-row">
-                <span>{{ row.left }}</span>
-                <span :class="['tag', `tag-${row.status}`]">{{ row.right }}</span>
-              </div>
+                <BoardIcon v-if="row.to" name="chevron" class="row-icon" />
+                <span v-else class="row-icon none"></span>
+              </component>
             </li>
           </ul>
-        </div>
-      </section>
+        </section>
+
+        <section class="board-card side">
+          <div class="board-card-head">
+            <h2 class="board-card-title"><BoardIcon name="details" />Details</h2>
+          </div>
+          <div class="board-card-body">
+            <SeriesFields v-model="draft" />
+            <p class="hint">Booked episodes keep their date and time.</p>
+            <div>
+              <BaseButton
+                variant="secondary"
+                :disabled="!draftValid(draft)"
+                :loading="saving"
+                @click="save"
+              >
+                Save
+              </BaseButton>
+            </div>
+          </div>
+        </section>
+      </div>
     </template>
   </div>
 </template>
 
 <style scoped>
 .show-series-page {
-  max-width: 960px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-lg);
-}
-
-.back-link {
-  align-self: flex-start;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
+  max-width: 1120px;
 }
 
 .show-head {
@@ -144,37 +153,40 @@ watch(slug, load, { immediate: true });
   flex-wrap: wrap;
   align-items: center;
   gap: var(--spacing-lg);
-  padding-bottom: var(--spacing-lg);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.hint {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
 }
 
 .show-text {
-  flex: 1;
-  min-width: 200px;
+  flex: 1 1 260px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-xs);
 }
 
-.page-title {
-  margin: 0;
-}
-
 .description {
   margin: 0;
-  color: var(--color-text-muted);
+  color: #c8c8d4;
+}
+
+.hint {
+  margin: 0;
+  color: #a0a0b4;
   font-size: var(--font-size-sm);
 }
 
-.field-error {
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  margin: 0;
+.row-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row-mode svg {
+  color: #a0a0b4;
+}
+
+@media (max-width: 640px) {
+  .book {
+    width: 100%;
+  }
 }
 </style>

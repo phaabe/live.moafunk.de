@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 10,
+  "rev": 11,
   "screens": [
     {
       "id": "dashboard",
@@ -11,7 +11,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
       "hash": "60a47e42",
-      "notesHash": "6da4d290",
+      "notesHash": "4e75b568",
       "elements": [
         {
           "k": "h1",
@@ -94,7 +94,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/schedule",
       "hash": "49407601",
-      "notesHash": "767dbae5",
+      "notesHash": "31c6a04d",
       "elements": [
         {
           "k": "h1",
@@ -190,7 +190,7 @@
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
       "hash": "868f9bba",
-      "notesHash": "76a6a531",
+      "notesHash": "72c33776",
       "elements": [
         {
           "k": "h1",
@@ -530,7 +530,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
       "hash": "87411507",
-      "notesHash": "362f20ac",
+      "notesHash": "9d946f55",
       "elements": [
         {
           "k": "back",
@@ -908,7 +908,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
-      "hash": "b0b2f0e3",
+      "hash": "06b0ad1a",
       "notesHash": "5a47a38f",
       "elements": [
         {
@@ -962,7 +962,7 @@
         {
           "k": "button",
           "text": "End Episode",
-          "to": "wrapup",
+          "to": "studio-onair-end",
           "primary": true
         }
       ]
@@ -973,7 +973,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
-      "hash": "f6d40580",
+      "hash": "edbc2161",
       "notesHash": "d8b0b564",
       "elements": [
         {
@@ -1031,7 +1031,7 @@
         {
           "k": "button",
           "text": "End Episode",
-          "to": "wrapup",
+          "to": "studio-onair-end",
           "primary": true
         }
       ]
@@ -1042,7 +1042,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
-      "hash": "7492d561",
+      "hash": "1caa3e80",
       "notesHash": "a7a8aafd",
       "elements": [
         {
@@ -1100,7 +1100,7 @@
         {
           "k": "button",
           "text": "End Episode",
-          "to": "wrapup",
+          "to": "studio-onair-end",
           "primary": true
         }
       ]
@@ -1111,7 +1111,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
-      "hash": "5c31e13d",
+      "hash": "a7aa4b34",
       "notesHash": "3aed2b12",
       "elements": [
         {
@@ -1170,6 +1170,81 @@
           "text": "00:31:05",
           "meta": "Guest talk",
           "to": null
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "studio-onair-end",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair-end",
+      "title": "Studio · On Air, ending",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "029901f4",
+      "notesHash": "1ddc7d23",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "stable",
+          "to": null
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "End the episode?"
+        },
+        {
+          "k": "button",
+          "text": "Keep on air",
+          "to": "studio-onair",
+          "primary": false
         },
         {
           "k": "button",

@@ -166,7 +166,8 @@ onUnmounted(() => {
   if (poll) clearTimeout(poll);
 });
 
-async function openStudio() {
+/** Open Studio; while on air, "Back to On Air" opens On Air (its gate falls back to the Studio). */
+async function openStudio(path: '/stream/live' | '/stream/on-air' = '/stream/live') {
   if (!show.value || !studioOpen.value) return;
   busy.value = true;
   try {
@@ -180,7 +181,7 @@ async function openStudio() {
     if (hostFlow.showId.value !== mine.id) hostFlow.setLiveTestPassed(false);
     hostFlow.selectShow(mine);
     hostFlow.selectMode('live');
-    await router.push({ path: '/stream/live', query: { show: String(mine.id) } });
+    await router.push({ path, query: { show: String(mine.id) } });
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not open the Studio';
   } finally {
@@ -229,7 +230,7 @@ async function publish() {
 
 <template>
   <HostEpisodeView v-if="show && !isMine" :show="show" />
-  <div v-else-if="show" class="episode-page">
+  <div v-else-if="show" class="episode-page host-page">
     <!-- Done -->
     <template v-if="view === 'done'">
       <h1 class="page-title">Episode published</h1>
@@ -240,99 +241,146 @@ async function publish() {
 
     <!-- Wrap-up -->
     <template v-else-if="view === 'wrapup'">
-      <button type="button" class="back-link" @click="view = 'episode'">&lt; Episode</button>
+      <button type="button" class="back-link" @click="view = 'episode'">
+        <BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode
+      </button>
       <h1 class="page-title">Wrap-up</h1>
-      <p :class="['pill', 'status-banner', pill.state]">{{ pill.text }}</p>
+      <p :class="['pill', 'status-banner', pill.state]">
+        <span class="dot" aria-hidden="true"></span>{{ pill.text }}
+      </p>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
       <div>
-        <BaseButton :disabled="pill.state === 'processing'" :loading="busy" @click="publish">
+        <BaseButton
+          class="xl"
+          :disabled="pill.state === 'processing'"
+          :loading="busy"
+          @click="publish"
+        >
           Publish
         </BaseButton>
       </div>
     </template>
 
-    <!-- Episode · Pre-recorded, no file yet -->
-    <template v-else-if="isPrerecorded && !show.prerecorded_filename">
-      <router-link :to="backTo" class="back-link">&lt; {{ showName }}</router-link>
-      <h1 class="page-title">{{ heading }}</h1>
-      <p class="pill status-banner warn">
-        Pre-recorded · no file yet · plays at {{ show.start_time }}
-      </p>
-      <section class="board-card">
-        <div class="board-card-head">
-          <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
-        </div>
-        <div class="board-card-body">
-          <p class="text">Upload your set before air time. Without a file nothing plays.</p>
-          <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-          <div>
-            <BaseButton :disabled="!show.series_slug" @click="replaceFile">
-              Upload your set
-            </BaseButton>
-          </div>
-        </div>
-      </section>
-      <EpisodeDetailsCard :show="show" @saved="load(true)" />
-    </template>
-
-    <!-- Episode · Pre-recorded -->
-    <template v-else-if="isPrerecorded">
-      <router-link :to="backTo" class="back-link">&lt; {{ showName }}</router-link>
-      <h1 class="page-title">{{ heading }}</h1>
-      <p class="pill status-banner ok">
-        Pre-recorded &amp; confirmed · plays at {{ show.start_time }}
-      </p>
-      <section class="board-card">
-        <div class="board-card-head">
-          <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
-        </div>
-        <div class="board-card-body">
-          <p class="text">
-            Nothing to do. The set plays at air time. Wrap-up opens after {{ show.end_time }}.
-          </p>
-          <!-- The player shows no file name, and 0:00 until its first Play. -->
-          <p v-if="setFile" class="set-file">{{ setFile }}</p>
-          <AudioPlayer v-if="show.prerecorded_url" :src="show.prerecorded_url" />
-          <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-          <div class="actions">
-            <BaseButton variant="secondary" :disabled="!show.series_slug" @click="replaceFile">
-              Replace file
-            </BaseButton>
-            <BaseButton :disabled="!ended" @click="view = 'wrapup'">Open Wrap-up</BaseButton>
-          </div>
-        </div>
-      </section>
-      <EpisodeDetailsCard :show="show" @saved="load(true)" />
-    </template>
-
-    <!-- Episode (live) -->
     <template v-else>
-      <router-link :to="backTo" class="back-link">&lt; {{ showName }}</router-link>
+      <router-link :to="backTo" class="back-link"
+        ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span
+        >{{ showName }}</router-link
+      >
       <h1 class="page-title">{{ heading }}</h1>
-      <p class="pill status-banner">Upcoming · Live · {{ slot }}</p>
-      <div class="board-grid">
-        <section class="board-card">
-          <div class="board-card-head">
-            <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
-          </div>
-          <div class="board-card-body">
-            <p class="text">
-              Test your audio before air time. The Studio opens 30 min before the start.
-            </p>
-            <div>
-              <BaseButton :disabled="!studioOpen" :loading="busy" @click="openStudio">
-                Open Studio
+
+      <!-- Episode · Pre-recorded, no file yet -->
+      <template v-if="isPrerecorded && !show.prerecorded_filename">
+        <p class="pill status-banner warn">
+          <span class="dot" aria-hidden="true"></span>Pre-recorded · no file yet · plays at
+          {{ show.start_time }}
+        </p>
+        <div class="cols">
+          <section class="board-card next-step needs-file main">
+            <div class="board-card-head">
+              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
+            </div>
+            <div class="board-card-body">
+              <div class="lead">
+                <span class="lead-icon"><BoardIcon name="music" :size="20" /></span>
+                <p class="text">Upload your set before air time. Without a file nothing plays.</p>
+              </div>
+              <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+              <BaseButton class="block xl" :disabled="!show.series_slug" @click="replaceFile">
+                <BoardIcon name="upload" />Upload your set
               </BaseButton>
             </div>
-          </div>
-        </section>
-        <EpisodeDetailsCard :show="show" @saved="load(true)">
-          <BaseButton variant="danger" :disabled="busy" @click="cancelBooking">
-            Cancel booking
-          </BaseButton>
-        </EpisodeDetailsCard>
-      </div>
-      <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+          </section>
+          <EpisodeDetailsCard class="side" :show="show" @saved="load(true)" />
+        </div>
+      </template>
+
+      <!-- Episode · Pre-recorded -->
+      <template v-else-if="isPrerecorded">
+        <p class="pill status-banner ok">
+          <span class="dot" aria-hidden="true"></span>Pre-recorded &amp; confirmed · plays at
+          {{ show.start_time }}
+        </p>
+        <div class="cols">
+          <section class="board-card next-step main">
+            <div class="board-card-head">
+              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
+            </div>
+            <div class="board-card-body">
+              <p class="lead-text">
+                Nothing to do. The set plays at air time. Wrap-up opens after {{ show.end_time }}.
+              </p>
+              <!-- The player shows no file name, and 0:00 until its first Play. -->
+              <div v-if="setFile || show.prerecorded_url" class="set">
+                <p v-if="setFile" class="set-file">
+                  <BoardIcon name="music" :size="16" />{{ setFile }}
+                </p>
+                <AudioPlayer v-if="show.prerecorded_url" :src="show.prerecorded_url" />
+              </div>
+              <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+              <div class="actions">
+                <BaseButton variant="secondary" :disabled="!show.series_slug" @click="replaceFile">
+                  <BoardIcon name="upload" :size="16" />Replace file
+                </BaseButton>
+                <BaseButton :disabled="!ended" @click="view = 'wrapup'">Open Wrap-up</BaseButton>
+              </div>
+            </div>
+          </section>
+          <EpisodeDetailsCard class="side" :show="show" @saved="load(true)" />
+        </div>
+      </template>
+
+      <!-- Episode (live) -->
+      <template v-else>
+        <p v-if="show.on_air" class="pill status-banner live">
+          <span class="dot" aria-hidden="true"></span>On air · until {{ show.end_time }}
+        </p>
+        <p v-else class="pill status-banner">
+          <span class="dot" aria-hidden="true"></span>Upcoming · Live · {{ slot }}
+        </p>
+        <div class="cols">
+          <section class="board-card next-step side">
+            <div class="board-card-head">
+              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
+            </div>
+            <div class="board-card-body">
+              <div class="lead">
+                <span class="lead-icon"><BoardIcon name="headphones" :size="20" /></span>
+                <p class="text">
+                  Test your audio before air time. The Studio opens 30 min before the start.
+                </p>
+              </div>
+              <BaseButton
+                v-if="show.on_air"
+                class="block xl"
+                :loading="busy"
+                @click="openStudio('/stream/on-air')"
+              >
+                <BoardIcon name="broadcast" />Back to On Air
+              </BaseButton>
+              <BaseButton
+                v-else
+                class="block xl"
+                :disabled="!studioOpen"
+                :loading="busy"
+                @click="openStudio()"
+              >
+                Open Studio<BoardIcon name="next" />
+              </BaseButton>
+            </div>
+          </section>
+          <EpisodeDetailsCard class="main" :show="show" @saved="load(true)">
+            <BaseButton
+              variant="danger"
+              class="quiet-danger"
+              :disabled="busy"
+              @click="cancelBooking"
+            >
+              <BoardIcon name="close" :size="16" />Cancel booking
+            </BaseButton>
+          </EpisodeDetailsCard>
+        </div>
+        <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+      </template>
     </template>
   </div>
   <p v-else-if="error" class="field-error" role="alert">{{ error }}</p>
@@ -340,45 +388,43 @@ async function publish() {
 
 <style scoped>
 .episode-page {
-  max-width: 960px;
+  max-width: 1120px;
+}
+
+.lead-text {
+  margin: 0;
+  color: #dcdce6;
+  line-height: 1.5;
+}
+
+.set {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-lg);
-}
-
-.back-link {
-  align-self: flex-start;
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  cursor: pointer;
-}
-
-.page-title {
-  margin: 0;
-}
-
-.text {
-  margin: 0;
-  color: var(--color-text-muted);
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #2a2a42;
+  border-radius: var(--radius-lg);
+  background: #07071a;
 }
 
 .set-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
   overflow-wrap: anywhere;
+  font: 700 var(--font-size-sm) var(--font-family);
+}
+
+.set-file svg {
+  flex: none;
+  color: var(--color-primary);
 }
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--spacing-md);
-}
-
-.field-error {
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  margin: 0;
 }
 </style>

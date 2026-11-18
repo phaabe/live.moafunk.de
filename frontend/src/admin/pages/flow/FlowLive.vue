@@ -10,6 +10,7 @@ import {
   streamRecordingMimeType,
 } from '@admin/composables';
 import LiveSetupTest from '@admin/components/LiveSetupTest.vue';
+import BoardIcon from '@admin/components/BoardIcon.vue';
 
 /**
  * The Studio (/stream/live, flow screen `studio`): soundcheck, then a manual
@@ -33,12 +34,13 @@ const secondsToStart = computed(() => {
   return Math.ceil((flow.berlinToUtcDate(s.date, s.start_time).getTime() - now.value) / 1000);
 });
 
-const soundcheck = computed(() => {
+/** The pill: "Soundcheck · show starts in 18:42", the clock drawn big. */
+const countdown = computed(() => {
   const left = secondsToStart.value;
-  if (left <= 0) return 'Soundcheck · it is air time';
+  if (left <= 0) return { label: 'Soundcheck · it is air time', clock: '' };
   const mm = String(Math.floor(left / 60)).padStart(2, '0');
   const ss = String(left % 60).padStart(2, '0');
-  return `Soundcheck · show starts in ${mm}:${ss}`;
+  return { label: 'Soundcheck · show starts in ', clock: `${mm}:${ss}` };
 });
 
 const record = computed({
@@ -116,60 +118,82 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="studio">
-    <router-link :to="episodePath" class="back-link">&lt; Episode</router-link>
+  <div class="studio host-page">
+    <router-link :to="episodePath" class="back-link"
+      ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode</router-link
+    >
     <h1 class="page-title">Studio</h1>
-    <p class="pill status-banner warn">{{ soundcheck }}</p>
-
-    <section class="board-card">
-      <div class="board-card-body">
+    <p class="pill status-banner warn countdown">
+      <span class="countdown-label"
+        ><span class="dot" aria-hidden="true"></span>{{ countdown.label }}</span
+      ><span v-if="countdown.clock" class="countdown-clock">{{ countdown.clock }}</span>
+    </p>
+    <div class="cols">
+      <div class="main">
         <LiveSetupTest studio />
-
+      </div>
+      <!-- Phones keep Record and Go Live in a bar at the bottom, in thumb reach. -->
+      <aside class="side go-live">
         <label class="check">
           <input v-model="record" type="checkbox" />
           Record this show
         </label>
-
         <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
-        <div>
-          <BaseButton :disabled="!canGoLive" :loading="goingLive" @click="goLive"
-            >Go Live</BaseButton
-          >
-        </div>
-      </div>
-    </section>
+        <BaseButton class="block xl" :disabled="!canGoLive" :loading="goingLive" @click="goLive"
+          ><BoardIcon name="broadcast" :size="20" />Go Live</BaseButton
+        >
+      </aside>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .studio {
-  max-width: 800px;
+  max-width: 1120px;
   margin: 0 auto;
+}
+
+.countdown {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.countdown-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 700 12px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fde7b0;
+}
+
+.countdown-clock {
+  font: 700 3rem/1 var(--font-family);
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+
+.go-live {
+  position: sticky;
+  top: var(--spacing-md);
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-lg);
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--color-surface);
+  border: 1px solid #2a2a42;
+  border-radius: var(--radius-xl);
 }
 
-.back-link {
-  align-self: flex-start;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.page-title {
-  margin: 0;
-}
-
-.check {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  font-size: var(--font-size-sm);
-}
-
-.field-error {
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  margin: 0;
+@media (max-width: 640px) {
+  .go-live {
+    top: auto;
+    bottom: 0;
+    gap: var(--spacing-sm);
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    background: #05050f;
+  }
 }
 </style>

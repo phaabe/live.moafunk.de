@@ -146,6 +146,7 @@ async function mount(
       },
       { path: '/shows/:slug', component: stub('Show page') },
       { path: '/stream/live', component: stub('Studio') },
+      { path: '/stream/on-air', component: stub('On Air') },
     ],
   });
   const pinia = createPinia();
@@ -205,11 +206,31 @@ describe('Episode', () => {
   });
 
   it('opens the Studio with this episode selected from 30 min before the start', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // 11:45 in Berlin on the show day: 15 min before the 12:00 start.
+      vi.setSystemTime(new Date(`${FUTURE}T10:45:00Z`));
+      const router = await mount();
+      expect(button('Open Studio').disabled).toBe(false);
+      button('Open Studio').click();
+      await vi.waitFor(() =>
+        expect(router.currentRoute.value.fullPath).toBe('/stream/live?show=42')
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('while on air, says so and leads back to On Air', async () => {
     current = episode({ on_air: true });
     const router = await mount();
-    expect(button('Open Studio').disabled).toBe(false);
-    button('Open Studio').click();
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/stream/live?show=42'));
+    expect(text()).toContain('On air · until 14:00');
+    expect(text()).not.toContain('Upcoming · Live');
+    expect(text()).not.toContain('Open Studio');
+    button('Back to On Air').click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/stream/on-air?show=42')
+    );
   });
 
   it('saves the title', async () => {

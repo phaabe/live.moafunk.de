@@ -11,6 +11,7 @@ import {
   type UseStreamSocketOptions,
 } from '@admin/composables';
 import DbMeter from '@admin/components/DbMeter.vue';
+import BoardIcon from '@admin/components/BoardIcon.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
 import { config } from '@/config';
 
@@ -286,69 +287,75 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="studio" class="live-setup">
+  <div v-if="studio" class="live-setup studio-chain">
     <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
-
-    <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input level" />
-
-    <label class="ls-field">
-      <span class="ls-label">Audio input</span>
-      <select v-model="selectedDevice" class="ls-select" @change="handleInputSelect">
-        <option value="">Select audio input</option>
-        <option
-          v-for="device in audioCapture.devices.value"
-          :key="device.deviceId"
-          :value="device.deviceId"
+    <!-- The signal chain: input, then the test, then (on the page) Go Live. -->
+    <section class="studio-step">
+      <span class="step-icon" aria-hidden="true"><BoardIcon name="mic" :size="18" /></span>
+      <div class="step-body">
+        <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input level" />
+        <label class="ls-field">
+          <span class="ls-label">Audio input</span>
+          <select v-model="selectedDevice" class="ls-select" @change="handleInputSelect">
+            <option value="">Select audio input</option>
+            <option
+              v-for="device in audioCapture.devices.value"
+              :key="device.deviceId"
+              :value="device.deviceId"
+            >
+              {{ device.label }}
+            </option>
+            <option value="screen">Screen audio</option>
+          </select>
+        </label>
+        <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
+      </div>
+    </section>
+    <section class="studio-step">
+      <span class="step-icon" aria-hidden="true"><BoardIcon name="headphones" :size="18" /></span>
+      <div class="step-body">
+        <div class="ls-check-row">
+          <label class="ls-check">
+            <input
+              type="checkbox"
+              :checked="flow.liveTestPassed.value"
+              :disabled="!canTickTest"
+              @change="onTestSoundsRight"
+            />
+            Test broadcast sounds right
+          </label>
+          <button v-if="testActive" class="ls-btn-secondary" type="button" @click="retryTest">
+            Stop test
+          </button>
+          <button
+            v-else
+            class="ls-btn-secondary"
+            type="button"
+            :disabled="!browserSupported || !audioCapture.isCapturing.value || !previewUrl"
+            @click="runTest"
+          >
+            Start test
+          </button>
+        </div>
+        <StreamPreviewPlayer v-if="testPhase === 'live' && previewUrl" :src="previewUrl" />
+        <p v-if="testPhase === 'connecting'" class="ls-muted">Connecting to the test stream…</p>
+        <p v-else-if="testPhase === 'live' && sentChunks === 0" class="ls-muted">
+          Waiting for audio… If this stays, check that your input is active.
+        </p>
+        <p v-else-if="testPhase === 'error'" class="ls-error">
+          {{ testError || 'An error occurred during the test.' }}
+        </p>
+        <button
+          v-if="isDev && !flow.liveTestPassed.value"
+          class="ls-dev-skip"
+          type="button"
+          @click="markTestPassed"
         >
-          {{ device.label }}
-        </option>
-        <option value="screen">Screen audio</option>
-      </select>
-    </label>
-    <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
-
-    <div class="ls-check-row">
-      <label class="ls-check">
-        <input
-          type="checkbox"
-          :checked="flow.liveTestPassed.value"
-          :disabled="!canTickTest"
-          @change="onTestSoundsRight"
-        />
-        Test broadcast sounds right
-      </label>
-      <button v-if="testActive" class="ls-btn-secondary" type="button" @click="retryTest">
-        Stop test
-      </button>
-      <button
-        v-else
-        class="ls-btn-secondary"
-        type="button"
-        :disabled="!browserSupported || !audioCapture.isCapturing.value || !previewUrl"
-        @click="runTest"
-      >
-        Start test
-      </button>
-    </div>
-    <StreamPreviewPlayer v-if="testPhase === 'live' && previewUrl" :src="previewUrl" />
-    <p v-if="testPhase === 'connecting'" class="ls-muted">Connecting to the test stream…</p>
-    <p v-else-if="testPhase === 'live' && sentChunks === 0" class="ls-muted">
-      Waiting for audio… If this stays, check that your input is active.
-    </p>
-    <p v-else-if="testPhase === 'error'" class="ls-error">
-      {{ testError || 'An error occurred during the test.' }}
-    </p>
-
-    <button
-      v-if="isDev && !flow.liveTestPassed.value"
-      class="ls-dev-skip"
-      type="button"
-      @click="markTestPassed"
-    >
-      🛠 Skip test (dev)
-    </button>
+          🛠 Skip test (dev)
+        </button>
+      </div>
+    </section>
   </div>
-
   <div v-else class="live-setup">
     <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
 
@@ -763,5 +770,69 @@ onUnmounted(() => {
   border: 2px dashed #000;
   border-radius: var(--radius-md);
   cursor: pointer;
+}
+
+/* Studio: one card per step of the signal chain. */
+.studio-chain {
+  gap: var(--spacing-md);
+}
+
+.studio-step {
+  display: flex;
+  gap: 12px;
+  padding: var(--spacing-md);
+  background: var(--color-surface);
+  border: 1px solid #2a2a42;
+  border-radius: var(--radius-xl);
+}
+
+.step-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1.5px solid var(--color-primary);
+  border-radius: 16px;
+  background: var(--color-surface-alt);
+  color: var(--color-primary);
+}
+
+.step-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.studio-chain .ls-label {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.studio-chain .ls-select {
+  min-height: 44px;
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-md);
+}
+
+.studio-chain .ls-check {
+  min-height: 44px;
+  font-weight: 700;
+  font-size: var(--font-size-md);
+}
+
+.studio-chain .ls-check input {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--color-primary);
+}
+
+.studio-chain .ls-btn-secondary {
+  min-height: 44px;
 }
 </style>
