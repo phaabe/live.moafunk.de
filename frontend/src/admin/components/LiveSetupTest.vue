@@ -14,6 +14,8 @@ import {
   streamRecordingMimeType,
   type UseStreamSocketOptions,
   type ReturnFeed,
+  type SoundcheckSource,
+  type SoundcheckStep,
   type SoundcheckStepState,
 } from '@admin/composables';
 import DbMeter from '@admin/components/DbMeter.vue';
@@ -32,8 +34,9 @@ import { config } from '@/config';
  * survives into the on-air step regardless of which surface ran the test.
  *
  * `studio` renders the flow's Studio card: the input level meter, "Audio
- * input" (screen audio is one of its options) and the soundcheck. One click
- * runs its four checks (useSoundcheck) and proposes the result.
+ * input" (screen audio is one of its options) and the soundcheck: the host
+ * tests the music and the mic, then useSoundcheck checks the server and the
+ * return feed and proposes the result.
  */
 const props = withDefaults(defineProps<{ studio?: boolean }>(), { studio: false });
 
@@ -301,15 +304,10 @@ const STATE_LABELS: Record<SoundcheckStepState, string> = {
   skipped: 'Skipped',
 };
 
-const runLabel = computed(() => {
-  if (soundcheck.running.value) return 'Stop soundcheck';
-  return soundcheck.outcome.value || flow.liveTestPassed.value ? 'Run again' : 'Run soundcheck';
-});
-
-function toggleRun() {
-  if (soundcheck.running.value) soundcheck.reset();
-  else void soundcheck.start();
-}
+// Music and Mic have their buttons in the row; the host starts each test.
+const isSource = (id: SoundcheckStep['id']) => id === 'music' || id === 'mic';
+const testSource = (id: SoundcheckStep['id']) => void soundcheck.test(id as SoundcheckSource);
+const skipSource = (id: SoundcheckStep['id']) => void soundcheck.skip(id as SoundcheckSource);
 
 // Go Live uses the same socket: the page stops the test before it connects.
 defineExpose({ stopTest: () => soundcheck.dispose() });
@@ -365,17 +363,6 @@ onUnmounted(() => {
           </select>
         </label>
         <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
-        <button
-          :class="
-            flow.liveTestPassed.value || soundcheck.running.value
-              ? 'ls-btn-secondary'
-              : 'ls-btn-primary'
-          "
-          type="button"
-          @click="toggleRun"
-        >
-          {{ runLabel }}
-        </button>
         <ol class="sc-steps" aria-live="polite">
           <li
             v-for="step in soundcheck.steps.value"
@@ -383,15 +370,64 @@ onUnmounted(() => {
             :class="['sc-step', step.state]"
           >
             <span class="sc-state" role="img" :aria-label="STATE_LABELS[step.state]"></span>
-            <span class="sc-name">{{ step.name }}</span>
+            <span :id="`sc-name-${step.id}`" class="sc-name">{{ step.name }}</span>
             <span class="sc-detail">{{ step.detail }}</span>
+            <span v-if="isSource(step.id)" class="sc-buttons">
+              <button
+                v-if="step.state === 'running'"
+                class="ls-btn-secondary"
+                type="button"
+                :aria-describedby="`sc-name-${step.id}`"
+                @click="soundcheck.stop()"
+              >
+                Stop
+              </button>
+              <template v-else-if="step.state === 'pending' || step.state === 'skipped'">
+                <button
+                  class="ls-btn-primary"
+                  type="button"
+                  :disabled="soundcheck.running.value"
+                  :aria-describedby="`sc-name-${step.id}`"
+                  @click="testSource(step.id)"
+                >
+                  Start test
+                </button>
+                <button
+                  v-if="step.state === 'pending'"
+                  class="ls-btn-secondary"
+                  type="button"
+                  :disabled="soundcheck.running.value"
+                  :aria-describedby="`sc-name-${step.id}`"
+                  @click="skipSource(step.id)"
+                >
+                  Skip
+                </button>
+              </template>
+              <template v-else>
+                <button
+                  class="ls-btn-secondary"
+                  type="button"
+                  :disabled="soundcheck.running.value"
+                  :aria-describedby="`sc-name-${step.id}`"
+                  @click="testSource(step.id)"
+                >
+                  Re-run
+                </button>
+                <button
+                  class="ls-btn-secondary"
+                  type="button"
+                  :aria-pressed="soundcheck.listening.value"
+                  :aria-describedby="`sc-name-${step.id}`"
+                  @click="soundcheck.setListening(!soundcheck.listening.value)"
+                >
+                  {{ soundcheck.listening.value ? 'Stop listening' : 'Listen to return feed' }}
+                </button>
+              </template>
+            </span>
           </li>
         </ol>
         <div class="sc-result" aria-live="polite">
-          <p v-if="soundcheck.gate.value" class="notice" role="alert">
-            {{ soundcheck.gate.value.text }}
-          </p>
-          <p v-else-if="soundcheck.prompt.value" class="sc-question">
+          <p v-if="soundcheck.prompt.value" class="sc-question">
             {{ soundcheck.prompt.value }}
           </p>
           <p v-else-if="flow.liveTestPassed.value" class="pill status-banner ok">
@@ -410,30 +446,6 @@ onUnmounted(() => {
           </p>
         </div>
         <div class="sc-actions">
-          <button
-            v-if="soundcheck.gate.value"
-            class="ls-btn-primary"
-            type="button"
-            @click="soundcheck.next()"
-          >
-            {{ soundcheck.gate.value.start }}
-          </button>
-          <button
-            v-if="soundcheck.skipLabel.value"
-            class="ls-btn-secondary"
-            type="button"
-            @click="soundcheck.skip()"
-          >
-            {{ soundcheck.skipLabel.value }}
-          </button>
-          <button
-            class="ls-btn-secondary"
-            type="button"
-            :aria-pressed="soundcheck.listening.value"
-            @click="soundcheck.setListening(!soundcheck.listening.value)"
-          >
-            {{ soundcheck.listening.value ? 'Stop listening' : 'Listen to the return feed' }}
-          </button>
           <template v-if="!soundcheck.running.value">
             <button
               v-if="soundcheck.outcome.value === 'manual' && !flow.liveTestPassed.value"
@@ -943,13 +955,40 @@ onUnmounted(() => {
 
 .sc-step {
   display: grid;
-  grid-template-columns: 24px 7.5em 1fr;
+  grid-template-columns: 24px 7.5em 1fr auto;
   align-items: center;
   gap: var(--spacing-sm);
-  min-height: 44px;
-  padding: 0 var(--spacing-md);
+  min-height: 60px;
+  padding: var(--spacing-sm) var(--spacing-md);
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
+}
+
+.sc-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+.sc-buttons .ls-btn-primary {
+  align-self: auto;
+}
+
+.sc-buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Phones: the buttons go under the row's text. */
+@media (max-width: 640px) {
+  .sc-step {
+    grid-template-columns: 24px 1fr;
+  }
+
+  .sc-detail,
+  .sc-buttons {
+    grid-column: 2;
+  }
 }
 
 .sc-step + .sc-step {

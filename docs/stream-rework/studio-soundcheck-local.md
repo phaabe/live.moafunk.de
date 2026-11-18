@@ -21,7 +21,8 @@ Open http://localhost:3000/admin/#/stream/live?show=1
 There is no login: the mock signs in one host (`local-host`) with one live
 episode that started a minute ago, so the pill reads "Soundcheck · it is air
 time" and Go Live opens after a confirmed soundcheck. Allow the microphone,
-pick it under "Audio input", then click "Run soundcheck".
+pick it under "Audio input", then click "Start test" in the Music row and in
+the Mic row.
 
 In Claude Code the same two servers are in `.claude/launch.json`
 (`studio-mock`, `frontend-studio`).
@@ -36,7 +37,7 @@ In Claude Code the same two servers are in `.claude/launch.json`
 
 ## Failure paths
 
-Switch the mode while the mock runs, then click "Run again":
+Switch the mode while the mock runs, then click "Re-run" in a row:
 
 ```bash
 curl http://localhost:8000/mock/mode/no-chunks
@@ -49,9 +50,8 @@ curl http://localhost:8000/mock/mode/no-chunks
 | `no-return` | The server gets audio, the relay sends nothing back. | "Your audio did not come back from the relay." |
 | `no-cors` | The relay sends no CORS header. | The page plays the return feed and asks "Do you hear your audio?" |
 
-The soundcheck asks for the music, then for the mic, on the same input. Stay
-silent in one of them for "did not arrive", or turn the input gain far down
-for "too quiet".
+Music and Mic are tested on the same input. Stay silent in one of them for
+"did not arrive", or turn the input gain far down for "too quiet".
 
 ## Limits
 

@@ -27,6 +27,7 @@ export {
   type ReturnFeed,
   type SoundcheckDeps,
   type SoundcheckStep,
+  type SoundcheckSource,
   type SoundcheckStepState,
   type SoundcheckOutcome,
 } from './useSoundcheck';

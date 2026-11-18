@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, defineComponent, h, nextTick, ref, type App, type Ref } from 'vue';
 
 // The Studio's soundcheck (flow screens `studio`, `studio-ready`,
-// `studio-problem`): one click runs four checks and proposes the result.
+// `studio-checking`, `studio-problem`): the host tests the music and the mic,
+// then the server and the return feed are checked and a result is proposed.
 // The page is real; the audio level, the socket, the recorder and the return
 // feed are fakes that each test sets.
 
@@ -152,19 +153,36 @@ async function sendChunks(count: number) {
 const MUSIC_MS = 10000;
 const MIC_MS = 5000;
 
-/** Run soundcheck: the music is measured, then the page waits for a click. */
-async function checkMusic(run = 'Run soundcheck') {
-  await press(run, MUSIC_MS);
+type RowName = 'Music' | 'Mic' | 'Server' | 'Return feed';
+const row = (name: RowName) =>
+  [...root.querySelectorAll('.sc-step')].find(
+    (li) => li.querySelector('.sc-name')!.textContent === name
+  )!;
+const rowButtons = (name: RowName) =>
+  [...row(name).querySelectorAll('button')].map((b) => b.textContent?.trim());
+const rowButton = (name: RowName, label: string) =>
+  [...row(name).querySelectorAll('button')].find((b) => b.textContent?.trim() === label)!;
+
+/** Press a button in the Music or the Mic row. */
+async function pressIn(name: RowName, label: string, ms = 0) {
+  rowButton(name, label).click();
+  await vi.advanceTimersByTimeAsync(ms);
+  await nextTick();
 }
 
-/** Check the mic: the mic is measured; the server and the return feed answer at once. */
-async function checkMic(more = 0) {
-  await press('Check the mic', MIC_MS + 500 + more);
+/** Start test in the Music row, until the music is measured. */
+async function testMusic() {
+  await pressIn('Music', 'Start test', MUSIC_MS);
 }
 
-async function runAll(more = 0) {
-  await checkMusic();
-  await checkMic(more);
+/** Start test in the Mic row; the server and the return feed answer at once. */
+async function testMic(more = 0) {
+  await pressIn('Mic', 'Start test', MIC_MS + 500 + more);
+}
+
+async function testAll(more = 0) {
+  await testMusic();
+  await testMic(more);
 }
 
 beforeEach(() => {
@@ -226,50 +244,54 @@ afterEach(() => {
 });
 
 describe('Studio soundcheck', () => {
-  it('shows one card with the input, the button and four waiting checks', async () => {
+  it('shows one card with the input and four checks, with buttons for music and mic', async () => {
     await mount();
     expect(text()).toContain('Input level');
     const options = [...root.querySelectorAll('option')].map((o) => o.textContent?.trim());
     expect(options).toEqual(['Select audio input', 'Focusrite USB', 'Built-in', 'Screen audio']);
-    expect(button('Run soundcheck')).toBeTruthy();
     expect(rows()).toEqual({
       Music: 'Waiting: Not checked yet',
       Mic: 'Waiting: Not checked yet',
       Server: 'Waiting: Not checked yet',
       'Return feed': 'Waiting: Not checked yet',
     });
-    for (const gone of ['Start test', 'Play', 'Test broadcast sounds right']) {
+    expect(rowButtons('Music')).toEqual(['Start test', 'Skip']);
+    expect(rowButtons('Mic')).toEqual(['Start test', 'Skip']);
+    expect(rowButtons('Server')).toEqual([]);
+    expect(rowButtons('Return feed')).toEqual([]);
+    for (const gone of ['Run soundcheck', 'Play', 'Test broadcast sounds right']) {
       expect(text()).not.toContain(gone);
     }
     expect(goLive().disabled).toBe(true);
   });
 
-  it('runs all checks after one click, proposes OK and opens Go Live', async () => {
+  it('tests the music, then the mic, proposes OK and opens Go Live', async () => {
     await mount();
-    await press('Run soundcheck');
+    await pressIn('Music', 'Start test');
     expect(rows().Music).toBe('Checking: Listening…');
     expect(text()).toContain('Play your music now.');
-    expect(button('No music in this show')).toBeTruthy();
-    expect(button('Stop soundcheck')).toBeTruthy();
+    expect(rowButtons('Music')).toEqual(['Stop']);
+    expect(rowButton('Mic', 'Start test').disabled).toBe(true);
 
-    // The mic is a bit quieter than the music.
-    // After the music the page waits: nothing goes on without a click.
+    // After the music nothing goes on by itself: the mic has its own button.
     await vi.advanceTimersByTimeAsync(MUSIC_MS + 60000);
     expect(rows().Music).toBe('OK: Peak −9 dB · average −21 dB');
-    expect(rows().Mic).toBe('Checking: Waiting for you');
-    expect(notice()).toBe('The music is checked. Next: the mic.');
-    expect(button('No mic in this show')).toBeTruthy();
+    expect(rowButtons('Music')).toEqual(['Re-run', 'Listen to return feed']);
+    expect(rows().Mic).toBe('Waiting: Not checked yet');
+    expect(rowButtons('Mic')).toEqual(['Start test', 'Skip']);
+    expect(rows().Server).toBe('Waiting: Not checked yet');
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(text()).not.toContain('Play your music now.');
 
     // The mic is a bit quieter than the music.
     mocks.peak!.value = -12;
     mocks.db!.value = -24;
-    await press('Check the mic', 250);
+    await pressIn('Mic', 'Start test', 250);
     expect(rows().Mic).toBe('Checking: Listening…');
     expect(text()).toContain('Now talk into the mic.');
-    expect(notice()).toBeUndefined();
 
+    // The server and the return feed follow by themselves.
     await vi.advanceTimersByTimeAsync(MIC_MS + 500);
-    expect(text()).not.toContain('Now talk into the mic.');
     expect(rows()).toEqual({
       Music: 'OK: Peak −9 dB · average −21 dB',
       Mic: 'OK: Peak −12 dB · average −24 dB',
@@ -285,14 +307,13 @@ describe('Studio soundcheck', () => {
     expect(mocks.setAudible).not.toHaveBeenCalledWith(true);
     expect(text()).not.toContain('headphones');
     expect(goLive().disabled).toBe(false);
-    expect(button('Run again')).toBeTruthy();
   });
 
   it('waits for the server and the relay', async () => {
     mocks.serverChunks = 0;
     mocks.feedPeak = -Infinity;
     await mount();
-    await runAll();
+    await testAll();
     expect(rows().Server).toBe('Checking: Sending a test broadcast…');
     expect(text()).toContain('Keep the sound on until the checks are done.');
 
@@ -311,12 +332,12 @@ describe('Studio soundcheck', () => {
     it('no audio input', async () => {
       mocks.capturing!.value = false;
       await mount();
-      await press('Run soundcheck', MUSIC_MS);
+      await pressIn('Music', 'Start test', 250);
       expect(rows().Music).toBe('Failed: No audio input');
-      expect(rows().Mic).toBe('Waiting: Not checked yet');
       expect(notice()).toBe(
         'No audio input. Pick your input under “Audio input” and allow the microphone.'
       );
+      await pressIn('Mic', 'Skip', 250);
       expect(mocks.connect).not.toHaveBeenCalled();
       expect(button('Confirm anyway')).toBeUndefined();
       expect(goLive().disabled).toBe(true);
@@ -325,12 +346,12 @@ describe('Studio soundcheck', () => {
     it('no signal at all', async () => {
       mocks.peak!.value = -60;
       await mount();
-      await runAll();
+      await testAll();
       expect(rows().Music).toBe('Failed: No signal');
       expect(rows().Mic).toBe('Failed: No signal');
       expect(rows().Server).toBe('Waiting: Not checked yet');
       expect(notice()).toBe(
-        'The music did not arrive from Focusrite USB. Turn it on or turn up its channel, then run again.'
+        'The music did not arrive from Focusrite USB. Turn it on or turn up its channel, then run its test again.'
       );
       expect(mocks.connect).not.toHaveBeenCalled();
       expect(button('Confirm anyway')).toBeUndefined();
@@ -339,15 +360,15 @@ describe('Studio soundcheck', () => {
 
     it('no mic signal after good music', async () => {
       await mount();
-      await checkMusic();
+      await testMusic();
       mocks.peak!.value = -60;
-      await checkMic();
+      await testMic();
       expect(rows().Music).toBe('OK: Peak −9 dB · average −21 dB');
       expect(rows().Mic).toBe('Failed: No signal');
       // The music can be sent, so the other checks still ran.
       expect(rows().Server).toBe('OK: Received your audio');
       expect(notice()).toBe(
-        'The mic did not arrive from Focusrite USB. Turn it on or turn up its channel, then run again.'
+        'The mic did not arrive from Focusrite USB. Turn it on or turn up its channel, then run its test again.'
       );
       expect(goLive().disabled).toBe(true);
     });
@@ -355,23 +376,25 @@ describe('Studio soundcheck', () => {
     it('music too quiet', async () => {
       mocks.peak!.value = -38;
       await mount();
-      await checkMusic();
-      mocks.peak!.value = -9;
-      await checkMic();
+      await testMusic();
+      // The problem shows at once, while the mic is still open.
       expect(rows().Music).toBe('Warning: Too quiet · peak −38 dB');
-      expect(rows().Mic).toBe('OK: Peak −9 dB · average −21 dB');
-      expect(rows().Server).toBe('OK: Received your audio');
       expect(notice()).toBe(
         'The music is too quiet: peak −38 dB. Turn up its gain until peaks reach about −12 dB.'
       );
+      mocks.peak!.value = -9;
+      await testMic();
+      expect(rows().Mic).toBe('OK: Peak −9 dB · average −21 dB');
+      expect(rows().Server).toBe('OK: Received your audio');
+      expect(notice()).toContain('The music is too quiet');
       expect(goLive().disabled).toBe(true);
     });
 
     it('mic clipping', async () => {
       await mount();
-      await checkMusic();
+      await testMusic();
       mocks.peak!.value = 0;
-      await checkMic();
+      await testMic();
       expect(rows().Mic).toBe('Warning: Too loud · peak 0 dB');
       expect(notice()).toBe(
         'The mic is too loud: peak 0 dB clips. Turn down its gain until peaks stay under −3 dB.'
@@ -381,12 +404,13 @@ describe('Studio soundcheck', () => {
 
     it('music and mic both skipped', async () => {
       await mount();
-      await press('Run soundcheck');
-      await press('No music in this show', 250);
-      await press('No mic in this show', 250);
-      expect(rows().Music).toBe('Skipped: No music in this show');
-      expect(rows().Mic).toBe('Skipped: No mic in this show');
-      expect(notice()).toBe('Music and mic were both skipped. Run again and check at least one.');
+      await pressIn('Music', 'Skip', 250);
+      await pressIn('Mic', 'Skip', 250);
+      expect(rows().Music).toBe('Skipped: Not in this show');
+      expect(rows().Mic).toBe('Skipped: Not in this show');
+      // A skipped source can still be tested.
+      expect(rowButtons('Music')).toEqual(['Start test']);
+      expect(notice()).toBe('Music and mic were both skipped. Test at least one.');
       expect(mocks.connect).not.toHaveBeenCalled();
       expect(goLive().disabled).toBe(true);
     });
@@ -394,7 +418,7 @@ describe('Studio soundcheck', () => {
     it('the test broadcast does not connect', async () => {
       mocks.connect.mockRejectedValue(new Error('Connection error'));
       await mount();
-      await runAll();
+      await testAll();
       expect(rows().Server).toBe('Failed: Not connected');
       expect(notice()).toBe(
         'The test broadcast did not start: Failed to connect to the test stream.'
@@ -406,7 +430,7 @@ describe('Studio soundcheck', () => {
     it('the server ends the test broadcast', async () => {
       mocks.serverChunks = 0;
       await mount();
-      await runAll();
+      await testAll();
       mocks.socketOptions.onError!('test stream is not configured on this server');
       await vi.advanceTimersByTimeAsync(250);
       expect(rows().Server).toBe('Failed: Test broadcast ended');
@@ -419,13 +443,13 @@ describe('Studio soundcheck', () => {
     it('the server gets no chunks although the browser sent some', async () => {
       mocks.serverChunks = 0;
       await mount();
-      await runAll();
+      await testAll();
       await sendChunks(8);
       await vi.advanceTimersByTimeAsync(10000);
       expect(rows().Server).toBe('Failed: No audio arrived');
       expect(rows()['Return feed']).toBe('Waiting: Not checked yet');
       expect(notice()).toBe(
-        'The server got no audio. Check your internet connection, then run again.'
+        'The server got no audio. Check your internet connection, then run a test again.'
       );
       // Without audio on the server nothing can be confirmed.
       expect(button('Confirm anyway')).toBeUndefined();
@@ -436,10 +460,10 @@ describe('Studio soundcheck', () => {
     it('the browser sends no chunks', async () => {
       mocks.serverChunks = 0;
       await mount();
-      await runAll(10000);
+      await testAll(10000);
       expect(rows().Server).toBe('Failed: No audio sent');
       expect(notice()).toBe(
-        'The browser sent no audio. Pick your audio input again, then run again.'
+        'The browser sent no audio. Pick your audio input again, then run a test again.'
       );
       expect(goLive().disabled).toBe(true);
     });
@@ -447,37 +471,53 @@ describe('Studio soundcheck', () => {
     it('no signal comes back from the relay', async () => {
       mocks.feedPeak = -Infinity;
       await mount();
-      await runAll(20000);
+      await testAll(20000);
       expect(rows()['Return feed']).toBe('Failed: Only silence came back');
       expect(notice()).toBe(
-        'Your audio did not come back from the relay. Run again; if it stays, tell the tech team.'
+        'Your audio did not come back from the relay. Run a test again; if it stays, tell the tech team.'
       );
       expect(goLive().disabled).toBe(true);
 
       mocks.feedPlaying = false;
-      await checkMusic('Run again');
-      await checkMic(20000);
+      await pressIn('Mic', 'Re-run', MIC_MS + 500 + 20000);
       expect(rows()['Return feed']).toBe('Failed: Nothing came back');
     });
   });
 
   it('passes a show without a mic once the music is good', async () => {
     await mount();
-    await press('Run soundcheck', 1000);
-    expect(button('No mic in this show')).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(MUSIC_MS - 1000);
-    // Skipped at the notice: the mic check never starts.
-    await press('No mic in this show', 500);
-    expect(rows().Mic).toBe('Skipped: No mic in this show');
+    await testMusic();
+    await pressIn('Mic', 'Skip', 500);
+    expect(rows().Mic).toBe('Skipped: Not in this show');
     expect(rows()['Return feed']).toBe('OK: Your audio comes back');
     expect(text()).toContain('Sounds good — ready to go live');
     expect(goLive().disabled).toBe(false);
   });
 
+  it('re-runs one source: the result goes, the server and the relay are checked again', async () => {
+    await mount();
+    await testAll();
+    expect(goLive().disabled).toBe(false);
+
+    mocks.peak!.value = -38;
+    await pressIn('Mic', 'Re-run', 250);
+    expect(goLive().disabled).toBe(true);
+    expect(rows().Music).toBe('OK: Peak −9 dB · average −21 dB');
+    expect(rows().Mic).toBe('Checking: Listening…');
+    expect(rows().Server).toBe('Waiting: Not checked yet');
+
+    await vi.advanceTimersByTimeAsync(MIC_MS + 500);
+    expect(rows().Mic).toBe('Warning: Too quiet · peak −38 dB');
+    expect(rows().Server).toBe('OK: Received your audio');
+    expect(notice()).toContain('The mic is too quiet');
+    expect(mocks.connect).toHaveBeenCalledTimes(2);
+    expect(goLive().disabled).toBe(true);
+  });
+
   it('lets the host confirm against a problem once the server has audio', async () => {
     mocks.peak!.value = -38;
     await mount();
-    await runAll();
+    await testAll();
     await press('Confirm anyway');
     expect(text()).toContain('Soundcheck confirmed · ready to go live');
     expect(goLive().disabled).toBe(false);
@@ -485,17 +525,16 @@ describe('Studio soundcheck', () => {
 
   it('lets the host mark a good result as not OK', async () => {
     await mount();
-    await runAll();
+    await testAll();
     await press('Not OK');
     expect(goLive().disabled).toBe(true);
     expect(notice()).toContain('You marked the soundcheck as not OK.');
-    expect(button('Run again')).toBeTruthy();
   });
 
   it('plays the return feed and asks the host when it cannot be measured', async () => {
     mocks.feedPeak = null;
     await mount();
-    await runAll();
+    await testAll();
     expect(rows()['Return feed']).toBe('Warning: Playing · not measured in this browser');
     expect(text()).toContain('Do you hear your audio?');
     expect(mocks.setAudible).toHaveBeenLastCalledWith(true);
@@ -513,15 +552,16 @@ describe('Studio soundcheck', () => {
     expect(mocks.connect).toHaveBeenLastCalledWith(false, 7, false, true);
   });
 
-  it('plays the return feed on request, without a run', async () => {
+  it('plays the return feed on request, from a tested row', async () => {
     await mount();
-    await press('Listen to the return feed');
+    await testMusic();
+    await pressIn('Music', 'Listen to return feed');
     expect(mocks.connect).toHaveBeenCalledWith(false, undefined, true);
     expect(mocks.setAudible).toHaveBeenLastCalledWith(true);
     expect(text()).toContain('headphones');
-    expect(button('Stop listening')!.getAttribute('aria-pressed')).toBe('true');
+    expect(rowButton('Music', 'Stop listening').getAttribute('aria-pressed')).toBe('true');
 
-    await press('Stop listening');
+    await pressIn('Music', 'Stop listening');
     expect(mocks.stopStream).toHaveBeenCalledOnce();
     expect(mocks.closeFeed).toHaveBeenCalled();
     expect(text()).not.toContain('headphones');
@@ -529,7 +569,7 @@ describe('Studio soundcheck', () => {
 
   it('forgets the result when the audio input changes', async () => {
     await mount();
-    await runAll();
+    await testAll();
     expect(goLive().disabled).toBe(false);
 
     const select = root.querySelector('select')!;
@@ -538,27 +578,27 @@ describe('Studio soundcheck', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.captureDevice).toHaveBeenCalledWith('mic');
     expect(rows().Music).toBe('Waiting: Not checked yet');
+    expect(rows().Mic).toBe('Waiting: Not checked yet');
     expect(text()).not.toContain('ready to go live');
-    expect(button('Run soundcheck')).toBeTruthy();
     expect(goLive().disabled).toBe(true);
   });
 
-  it('stops on request', async () => {
-    mocks.serverChunks = 0;
+  it('stops a test on request and leaves the row open', async () => {
     await mount();
-    await runAll();
-    await press('Stop soundcheck');
-    expect(mocks.stopStream).toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(MUSIC_MS + MIC_MS);
+    await pressIn('Music', 'Start test', 1000);
+    await pressIn('Music', 'Stop');
     expect(rows().Music).toBe('Waiting: Not checked yet');
-    expect(text()).not.toContain('Keep the sound on');
+    expect(rowButtons('Music')).toEqual(['Start test', 'Skip']);
+    expect(text()).not.toContain('Play your music now.');
+    await vi.advanceTimersByTimeAsync(MUSIC_MS);
+    expect(rows().Music).toBe('Waiting: Not checked yet');
     expect(goLive().disabled).toBe(true);
   });
 
   it('stops the test broadcast and the return feed when the host leaves', async () => {
     mocks.serverChunks = 0;
     await mount();
-    await runAll();
+    await testAll();
     expect(mocks.recorder!.state).toBe('recording');
 
     app!.unmount();
@@ -588,8 +628,7 @@ describe('flow', () => {
     vi.setSystemTime(new Date('2026-11-15T11:41:17Z'));
     await vi.advanceTimersByTimeAsync(1000);
   }
-
-  // Whole seconds in total, so the page's clock stays in step.
+  // With this the mic test takes whole seconds, so the page's clock stays in step.
   const SECOND_MS = 500;
 
   it('Studio matches the flow', async () => {
@@ -597,28 +636,28 @@ describe('flow', () => {
     await expectFlow('studio', root);
   });
 
-  it('Studio · Soundcheck, checking matches the flow', async () => {
+  it('Studio · Soundcheck, music tested matches the flow', async () => {
     await mount('2026-11-15T11:40:00Z');
-    await checkMusic();
+    await testMusic();
     await at1842();
     await expectFlow('studio-checking', root);
   });
 
   it('Studio · Soundcheck, ready matches the flow', async () => {
     await mount('2026-11-15T11:40:00Z');
-    await checkMusic();
+    await testMusic();
     mocks.peak!.value = -12;
     mocks.db!.value = -24;
-    await checkMic(SECOND_MS);
+    await testMic(SECOND_MS);
     await at1842();
     await expectFlow('studio-ready', root);
   });
 
   it('Studio · Soundcheck, problem matches the flow', async () => {
     await mount('2026-11-15T11:40:00Z');
-    await checkMusic();
+    await testMusic();
     mocks.peak!.value = -38;
-    await checkMic(SECOND_MS);
+    await testMic(SECOND_MS);
     await at1842();
     await expectFlow('studio-problem', root);
   });
