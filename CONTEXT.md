@@ -68,8 +68,9 @@ episode has three **announcement slots**, each optional:
 - **On-air story** — story (9:16), sent automatically at go-live. On by default;
   the host can switch it off. A story carries no link, so it shows
   "listen at live.moafunk.de" as text.
-- **Post-announcement** — feed post (4:5) after the show. It unlocks when the
-  SoundCloud track is public. Default: next day, 18:00. Set up in wrap-up.
+- **Post-announcement** — feed post (4:5) after the show. The host can set it up
+  in wrap-up at any time; it is sent only after the SoundCloud track is public.
+  Default: next day, 18:00.
 
 Do not call an announcement a "moment". **Moment** means an on-air timecode
 (Mark moment in the Studio). Moment clips for Instagram are a later feature.
@@ -118,6 +119,7 @@ time and wait until posting resumes.
 - **Sent** — posted; shows the post link.
 - **Failed** — the send errored; an admin can retry it.
 - **Cancelled** — the host cancelled it before it was sent.
+- **Rejected** — an admin did not approve it. The host can set it up again.
 
 **Edit window** — The host can edit or cancel an announcement only before it is
 sent. After that the caption is frozen (Instagram cannot edit it). Only an admin
@@ -128,14 +130,15 @@ time, from the image the host picked (episode cover, uploaded photo or guest
 photo) plus the headline (max 18 characters). The caption (max 600 characters)
 is the host's text, plus the date line and station hashtags.
 
-*Terminology watch — GAP TO BUILD:* none of this exists yet. Today Instagram
-posts fire **immediately** (`postToInstagram` → `instagram_posted_at`), Telegram
-has an on-demand **preview** send, and `scheduler.rs` auto-sends only a fixed
-*artist-preview cadence* (day N after a show → artist N).
+*Terminology watch:* the admin show and artist Instagram posts
+(`postToInstagram` → `instagram_posted_at`) are an older, separate path; they
+are not announcements. Telegram has an on-demand **preview** send, and
+`scheduler.rs` also sends a fixed *artist-preview cadence* (day N after a show →
+artist N).
 
 **Publish (SoundCloud)** — Uploading a finished recording to SoundCloud and
-setting its visibility (public/private). Separate from an Announcement, though a
-Post-announcement often links to the published SoundCloud track.
+setting its visibility (public/private). Separate from an Announcement, but a
+Post-announcement waits for the public SoundCloud track.
 
 ## Lifecycle
 
@@ -146,7 +149,7 @@ emphasis/default view, they never lock a panel:
   pre-announcement.
 - **Broadcast** — between air time and scheduled end: countdown, then a launchpad
   + "● ON AIR" status strip. Actual stream operation happens in the fullscreen
-  `/stream` flow, not the cockpit.
+  `/stream` flow, not the cockpit. Go-live sends the on-air story.
 - **Wrap-up** — past scheduled end or a recording exists: recording status,
   publish the auto-uploaded SoundCloud track (make public), queue
   post-announcement.
