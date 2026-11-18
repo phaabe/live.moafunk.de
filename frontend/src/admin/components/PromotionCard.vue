@@ -58,9 +58,10 @@ function cancelPre() {
   run(() => announcementsApi.cancel(props.show.id, 'pre'), 'Could not cancel the announcement');
 }
 
-function toggleOnair(event: Event) {
-  const on = (event.target as HTMLInputElement).checked;
-  run(
+async function toggleOnair(event: Event) {
+  const box = event.target as HTMLInputElement;
+  const on = box.checked;
+  await run(
     () =>
       on
         ? announcementsApi.save(props.show.id, 'onair', {
@@ -74,6 +75,8 @@ function toggleOnair(event: Event) {
         : announcementsApi.cancel(props.show.id, 'onair'),
     'Could not change the on-air story'
   );
+  // A refused change must not leave the box showing the wrong state.
+  box.checked = onairOn.value;
 }
 </script>
 
