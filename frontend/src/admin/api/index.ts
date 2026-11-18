@@ -1456,7 +1456,6 @@ export const hostFlowApi = {
 };
 
 // Instagram announcements: admin queue, policy and account status
-export type AnnouncementSlot = 'pre' | 'onair' | 'post';
 export type ApprovalMode = 'first_two' | 'always' | 'never';
 
 export interface AnnouncementSettings {
