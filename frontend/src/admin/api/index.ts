@@ -787,6 +787,87 @@ export const showsApi = {
   listOverlays: (id: number) => api.get<OverlayListResponse>(`/api/shows/${id}/overlays`),
 };
 
+// Announcements: the three Instagram slots of an episode (CONTEXT.md "Promotion").
+export type AnnouncementSlot = 'pre' | 'onair' | 'post';
+export type AnnouncementState =
+  | 'draft'
+  | 'pending_approval'
+  | 'scheduled'
+  | 'armed'
+  | 'sent'
+  | 'failed'
+  | 'cancelled';
+export type AnnouncementImage = 'cover' | 'upload' | 'guest';
+
+export interface Announcement {
+  id: number;
+  show_id: number;
+  slot: AnnouncementSlot;
+  channel: string;
+  state: AnnouncementState;
+  /** RFC 3339; null for the on-air story and a post slot that waits for SoundCloud. */
+  scheduled_at: string | null;
+  headline: string;
+  caption: string;
+  image_source: AnnouncementImage;
+  image_key: string | null;
+  layout: 'band' | 'split';
+  collaborator: boolean;
+  sent_at: string | null;
+  permalink: string | null;
+  error: string | null;
+}
+
+export interface AnnouncementInput {
+  headline: string;
+  caption: string;
+  image_source: AnnouncementImage;
+  image_key?: string;
+  layout: 'band' | 'split';
+  collaborator: boolean;
+  scheduled_at?: string;
+}
+
+/** A post slot the composer offers. A taken one carries the reason. */
+export interface AnnouncementTime {
+  scheduled_at: string;
+  free: boolean;
+  reason?: string | null;
+  default?: boolean;
+}
+
+const announcementsPath = (showId: number) => `/api/shows/${showId}/announcements`;
+
+export const announcementsApi = {
+  list: async (showId: number): Promise<Announcement[]> => {
+    const r = await api.get<Announcement[] | { announcements: Announcement[] }>(
+      announcementsPath(showId)
+    );
+    return Array.isArray(r) ? r : r.announcements;
+  },
+
+  /** Create or replace a slot. 409 when the slot or a limit is taken. */
+  save: (showId: number, slot: AnnouncementSlot, input: AnnouncementInput) =>
+    api.put<Announcement>(`${announcementsPath(showId)}/${slot}`, input),
+
+  /** Cancel a slot; refused once it is sent. */
+  cancel: (showId: number, slot: AnnouncementSlot) =>
+    api.delete<Announcement>(`${announcementsPath(showId)}/${slot}`),
+
+  times: async (showId: number, slot: AnnouncementSlot): Promise<AnnouncementTime[]> => {
+    const r = await api.get<AnnouncementTime[] | { slots: AnnouncementTime[] }>(
+      `${announcementsPath(showId)}/slots?slot=${slot}`
+    );
+    return Array.isArray(r) ? r : r.slots;
+  },
+
+  previewUrl: (showId: number, slot: AnnouncementSlot, headline: string, layout: string) =>
+    `${API_BASE}${announcementsPath(showId)}/${slot}/preview.jpg?${new URLSearchParams({
+      headline,
+      layout,
+    })}`,
+};
+
 // Show Templates API — per-user reusable (name + cover + description) bundles
 export interface ShowTemplate {
   id: number;
@@ -839,6 +920,8 @@ export interface Series {
   rhythm: SeriesRhythm | null;
   /** e.g. "Sundays · 12:00–14:00" */
   rhythm_line: string | null;
+  /** The host's own Instagram account, without "@"; announcements invite it as collaborator. */
+  instagram_handle?: string | null;
 }
 
 export type EpisodeStatus = 'upcoming' | 'wrapup_open' | 'finished';
@@ -878,6 +961,8 @@ export interface NewSeries {
   cover: File | null;
   /** null: "No fixed rhythm"; each episode books a free date and time. */
   rhythm: SeriesRhythm | null;
+  /** Only the Show page sends it (without "@"); empty means no collaborator. */
+  instagram_handle?: string;
 }
 
 /** A bookable date and time of a series' rhythm. */
@@ -995,6 +1080,7 @@ async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries)
   } else {
     form.append('repeat_rule', 'none');
   }
+  if (input.instagram_handle !== undefined) form.append('instagram_handle', input.instagram_handle);
   if (input.cover) form.append('cover', input.cover);
   const resp = await apiFetch(url, { method, credentials: 'include', body: form });
   if (!resp.ok) throw await errorOf(resp);
