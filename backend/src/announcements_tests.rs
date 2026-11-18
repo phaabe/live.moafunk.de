@@ -343,6 +343,32 @@ async fn feed_per_week_stories_per_day_and_per_episode() {
 }
 
 #[tokio::test]
+async fn on_air_story_can_be_switched_on_after_the_booked_start() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    // Started yesterday 20:00 Berlin: a host who goes live late.
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    episode(&state, 1, host, &yesterday).await;
+
+    let (status, row) = put(&state, host, 1, "onair", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    // A new host's first posts wait for approval; the point is: not refused.
+    assert_eq!(row["state"], "pending_approval");
+    // Feed posts still need a future time.
+    let (status, body) = put(
+        &state,
+        host,
+        1,
+        "post",
+        json!({ "scheduled_at": "2020-01-01T17:00:00Z" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
 async fn sent_is_final_and_cancelled_can_be_recreated() {
     let (state, _t) = state().await;
     let host = add_user(&state, "host", "host").await;

@@ -684,6 +684,15 @@ describe('Episode · Promotion card', () => {
     await vi.waitFor(() => expect(onair().checked).toBe(true));
   });
 
+  it('unchecks the on-air switch again when switching it on is refused', async () => {
+    saveError = Response.json({ error: 'Refused' }, { status: 400 });
+    await mount();
+    expect(onair().checked).toBe(false);
+    onair().click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Refused'));
+    expect(onair().checked).toBe(false);
+  });
+
   it('locks the on-air switch while on air', async () => {
     current = episode({ on_air: true });
     announcements = [announcement('onair')];
