@@ -37,8 +37,8 @@ fn oauth_url() -> String {
 #[derive(Debug, Deserialize)]
 struct OAuthTokenResponse {
     access_token: String,
-    #[allow(dead_code)]
-    expires_in: Option<u64>,
+    refresh_token: Option<String>,
+    expires_in: Option<i64>,
     #[allow(dead_code)]
     token_type: Option<String>,
 }
@@ -61,8 +61,42 @@ pub struct SoundCloudUploadResult {
 // OAuth Token
 // ============================================================================
 
+const ACCESS_KEY: &str = "soundcloud_access_token";
+const REFRESH_KEY: &str = "soundcloud_refresh_token";
+const EXPIRES_KEY: &str = "soundcloud_token_expires_at";
+
+/// Refresh the access token when it expires within this many seconds.
+const REFRESH_MARGIN_SECS: i64 = 300;
+
+/// One refresh at a time: SoundCloud may replace the refresh token on each
+/// refresh, so a parallel refresh with the old one would fail.
+static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The stored OAuth tokens. `expires_at` is a Unix time; `None` means unknown
+/// (a token stored before the expiry was kept).
+struct StoredToken {
+    access: String,
+    refresh: Option<String>,
+    expires_at: Option<i64>,
+}
+
+impl StoredToken {
+    fn expires_within(&self, secs: i64) -> bool {
+        self.expires_at
+            .is_some_and(|at| at - chrono::Utc::now().timestamp() < secs)
+    }
+}
+
+fn not_authorized() -> AppError {
+    AppError::BadRequest(
+        "SoundCloud not authorized. Visit /api/soundcloud/auth to connect your account."
+            .to_string(),
+    )
+}
+
 /// Get a SoundCloud access token.
-/// Priority: 1) static config token, 2) DB-stored OAuth token, 3) error.
+/// Priority: 1) static config token, 2) DB-stored OAuth token, refreshed when
+/// it expires soon, 3) error.
 /// The client_credentials grant does NOT grant upload permissions —
 /// use the authorization_code flow via /api/soundcloud/auth.
 pub async fn get_access_token(state: &Arc<AppState>) -> Result<String> {
@@ -74,46 +108,132 @@ pub async fn get_access_token(state: &Arc<AppState>) -> Result<String> {
 
     // 2. Check DB-stored OAuth token (from authorization_code flow)
     if let Some(token) = get_stored_token(state).await? {
-        tracing::debug!("Using DB-stored SoundCloud OAuth token");
-        return Ok(token);
+        if !token.expires_within(REFRESH_MARGIN_SECS) {
+            tracing::debug!("Using DB-stored SoundCloud OAuth token");
+            return Ok(token.access);
+        }
+        if token.refresh.is_some() {
+            return refresh_access_token(state).await;
+        }
+        if !token.expires_within(0) {
+            // No refresh token, but still valid for a few minutes.
+            return Ok(token.access);
+        }
+        tracing::warn!("Stored SoundCloud token expired and there is no refresh token");
     }
 
     // 3. No valid token available
-    Err(AppError::BadRequest(
-        "SoundCloud not authorized. Visit /api/soundcloud/auth to connect your account."
-            .to_string(),
-    ))
+    Err(not_authorized())
 }
 
-/// Retrieve the stored SoundCloud access token from the app_settings table.
-async fn get_stored_token(state: &Arc<AppState>) -> Result<Option<String>> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM app_settings WHERE key = 'soundcloud_access_token'")
-            .fetch_optional(&state.db)
+/// Get a new access token with the stored refresh token and store both.
+/// When SoundCloud refuses the refresh token (400/401), the stored tokens are
+/// removed, so the status shows "not connected" and the admin reconnects.
+async fn refresh_access_token(state: &Arc<AppState>) -> Result<String> {
+    let _guard = REFRESH_LOCK.lock().await;
+    // Another task may have refreshed while this one waited.
+    let token = get_stored_token(state).await?.ok_or_else(not_authorized)?;
+    if !token.expires_within(REFRESH_MARGIN_SECS) {
+        return Ok(token.access);
+    }
+    let refresh = token.refresh.ok_or_else(not_authorized)?;
+    let (client_id, client_secret) = client_credentials(state)?;
+
+    let resp = reqwest::Client::new()
+        .post(oauth_url())
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh.as_str()),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("SoundCloud token refresh failed: {}", e)))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_else(|_| "no body".to_string());
+        if matches!(status.as_u16(), 400 | 401) {
+            tracing::warn!(%status, "SoundCloud refused the refresh token, removing stored tokens");
+            delete_stored_token(state).await?;
+        }
+        return Err(AppError::Internal(format!(
+            "SoundCloud token refresh failed ({}): {}",
+            status, body
+        )));
+    }
+
+    let new: OAuthTokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud token: {}", e)))?;
+    // Without a new refresh token in the answer, the old one stays valid.
+    let refresh = new.refresh_token.as_deref().unwrap_or(&refresh);
+    store_token(state, &new.access_token, Some(refresh), new.expires_in).await?;
+    tracing::info!("Refreshed SoundCloud access token");
+    Ok(new.access_token)
+}
+
+/// Retrieve the stored SoundCloud tokens from the app_settings table.
+async fn get_stored_token(state: &Arc<AppState>) -> Result<Option<StoredToken>> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, value FROM app_settings WHERE key IN (?, ?, ?)")
+            .bind(ACCESS_KEY)
+            .bind(REFRESH_KEY)
+            .bind(EXPIRES_KEY)
+            .fetch_all(&state.db)
             .await?;
-    Ok(row.map(|(v,)| v))
+    let get = |key: &str| rows.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+    Ok(get(ACCESS_KEY).map(|access| StoredToken {
+        access,
+        refresh: get(REFRESH_KEY),
+        expires_at: get(EXPIRES_KEY).and_then(|v| v.parse().ok()),
+    }))
 }
 
-/// Store a SoundCloud access token in the app_settings table.
-pub async fn store_token(state: &Arc<AppState>, token: &str) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO app_settings (key, value, updated_at) VALUES ('soundcloud_access_token', ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-    )
-    .bind(token)
-    .execute(&state.db)
-    .await?;
-    tracing::info!("Stored SoundCloud access token in database");
+/// Store SoundCloud OAuth tokens in the app_settings table. A missing refresh
+/// token or expiry removes the old value, so it never sticks to a new access token.
+pub async fn store_token(
+    state: &Arc<AppState>,
+    access: &str,
+    refresh: Option<&str>,
+    expires_in: Option<i64>,
+) -> Result<()> {
+    let expires_at = expires_in.map(|secs| (chrono::Utc::now().timestamp() + secs).to_string());
+    let mut tx = state.db.begin().await?;
+    for (key, value) in [
+        (ACCESS_KEY, Some(access)),
+        (REFRESH_KEY, refresh),
+        (EXPIRES_KEY, expires_at.as_deref()),
+    ] {
+        match value {
+            Some(value) => sqlx::query(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            )
+            .bind(key)
+            .bind(value),
+            None => sqlx::query("DELETE FROM app_settings WHERE key = ?").bind(key),
+        }
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    tracing::info!("Stored SoundCloud OAuth tokens in database");
     Ok(())
 }
 
-/// Delete the stored SoundCloud access token from the database.
+/// Delete the stored SoundCloud tokens from the database.
 /// This forces re-authorization on the next upload attempt.
 pub async fn delete_stored_token(state: &Arc<AppState>) -> Result<()> {
-    sqlx::query("DELETE FROM app_settings WHERE key = 'soundcloud_access_token'")
+    sqlx::query("DELETE FROM app_settings WHERE key IN (?, ?, ?)")
+        .bind(ACCESS_KEY)
+        .bind(REFRESH_KEY)
+        .bind(EXPIRES_KEY)
         .execute(&state.db)
         .await?;
-    tracing::info!("Deleted stored SoundCloud access token from database");
+    tracing::info!("Deleted stored SoundCloud tokens from database");
     Ok(())
 }
 
@@ -122,13 +242,17 @@ pub fn is_configured(state: &Arc<AppState>) -> bool {
     state.config.soundcloud_access_token.is_some() || state.config.soundcloud_client_id.is_some()
 }
 
-/// Check if SoundCloud has a valid access token (static, or stored in DB).
+/// Check if SoundCloud has a usable access token (static, or stored in DB).
+/// A stored token without a refresh token stops counting once it expired.
 /// This is an async check unlike is_configured().
 pub async fn has_token(state: &Arc<AppState>) -> bool {
     if state.config.soundcloud_access_token.is_some() {
         return true;
     }
-    matches!(get_stored_token(state).await, Ok(Some(_)))
+    matches!(
+        get_stored_token(state).await,
+        Ok(Some(token)) if token.refresh.is_some() || !token.expires_within(0)
+    )
 }
 
 // ============================================================================
@@ -856,19 +980,26 @@ pub fn get_auth_url(state: &Arc<AppState>) -> Result<String> {
     Ok(url)
 }
 
-/// Exchange an authorization code for an access token and store it in the database.
-pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> {
-    let client_id =
-        state.config.soundcloud_client_id.as_ref().ok_or_else(|| {
-            AppError::BadRequest("SOUNDCLOUD_CLIENT_ID not configured".to_string())
-        })?;
+/// The app's SoundCloud client id and secret.
+fn client_credentials(state: &AppState) -> Result<(&str, &str)> {
+    let client_id = state
+        .config
+        .soundcloud_client_id
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("SOUNDCLOUD_CLIENT_ID not configured".to_string()))?;
     let client_secret = state
         .config
         .soundcloud_client_secret
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| {
             AppError::BadRequest("SOUNDCLOUD_CLIENT_SECRET not configured".to_string())
         })?;
+    Ok((client_id, client_secret))
+}
+
+/// Exchange an authorization code for an access token and store it in the database.
+pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> {
+    let (client_id, client_secret) = client_credentials(state)?;
     let redirect_uri = &state.config.soundcloud_redirect_uri;
 
     let client = reqwest::Client::new();
@@ -899,8 +1030,14 @@ pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> 
         .await
         .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud token: {}", e)))?;
 
-    // Store the token in DB for persistence across restarts
-    store_token(state, &token_resp.access_token).await?;
+    // Store the tokens in DB for persistence across restarts
+    store_token(
+        state,
+        &token_resp.access_token,
+        token_resp.refresh_token.as_deref(),
+        token_resp.expires_in,
+    )
+    .await?;
 
     tracing::info!("SoundCloud OAuth authorization successful, token stored");
     Ok(token_resp.access_token)

@@ -138,6 +138,11 @@ async fn fake_request(
     let path: Vec<&str> = uri.path().trim_start_matches('/').split('/').collect();
     let mut playlists = fake.playlists.lock().unwrap();
     match (method.as_str(), path.as_slice()) {
+        ("POST", ["oauth", "token"]) if body["grant_type"] == "refresh_token" => Json(json!({
+            "access_token": "refreshed-access", "refresh_token": "refreshed-refresh",
+            "expires_in": 3600, "token_type": "bearer"
+        }))
+        .into_response(),
         ("POST", ["oauth", "token"]) => Json(json!({
             "access_token": "new-access", "refresh_token": "new-refresh",
             "expires_in": 3600, "token_type": "bearer"
@@ -236,7 +241,44 @@ async fn show(state: &Arc<AppState>, id: i64) -> models::Show {
 }
 
 async fn stored_token(state: &Arc<AppState>) -> Option<String> {
-    get_stored_token(state).await.unwrap()
+    get_stored_token(state).await.unwrap().map(|t| t.access)
+}
+
+async fn stored_refresh(state: &Arc<AppState>) -> Option<String> {
+    get_stored_token(state)
+        .await
+        .unwrap()
+        .and_then(|t| t.refresh)
+}
+
+/// Seconds until the stored access token expires.
+async fn stored_expires_in(state: &Arc<AppState>) -> Option<i64> {
+    let at = get_stored_token(state).await.unwrap()?.expires_at?;
+    Some(at - chrono::Utc::now().timestamp())
+}
+
+/// Move the stored expiry to `secs` from now (negative: already expired).
+async fn set_expires_in(state: &Arc<AppState>, secs: i64) {
+    sqlx::query("UPDATE app_settings SET value = ? WHERE key = 'soundcloud_token_expires_at'")
+        .bind((chrono::Utc::now().timestamp() + secs).to_string())
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+/// A state with client credentials and no static token, connected through the
+/// code exchange (access "new-access", refresh "new-refresh", 1 h).
+async fn connected() -> (Arc<AppState>, tempfile::TempDir, FakeSoundCloud, FakeR2) {
+    let (state, temp, fake, r2) = setup(json!({
+        "soundcloud_access_token": null,
+        "soundcloud_client_id": "cid",
+        "soundcloud_client_secret": "secret",
+        "soundcloud_redirect_uri": "https://live.test/cb"
+    }))
+    .await;
+    exchange_code(&state, "the-code").await.unwrap();
+    fake.calls.lock().unwrap().clear();
+    (state, temp, fake, r2)
 }
 
 /// A show with a manually attached recording in R2.
@@ -275,8 +317,8 @@ async fn access_token_prefers_config_then_database() {
     let err = get_access_token(&state).await.unwrap_err().to_string();
     assert!(err.contains("Visit /api/soundcloud/auth"), "{err}");
 
-    store_token(&state, "first").await.unwrap();
-    store_token(&state, "second").await.unwrap();
+    store_token(&state, "first", None, None).await.unwrap();
+    store_token(&state, "second", None, None).await.unwrap();
     assert_eq!(get_access_token(&state).await.unwrap(), "second");
     assert!(has_token(&state).await);
 
@@ -284,7 +326,7 @@ async fn access_token_prefers_config_then_database() {
     assert!(!has_token(&state).await);
 
     let (state, _temp, _fake, _r2) = setup(json!({})).await;
-    store_token(&state, "stored").await.unwrap();
+    store_token(&state, "stored", None, None).await.unwrap();
     assert_eq!(get_access_token(&state).await.unwrap(), "static-token");
     assert!(is_configured(&state));
 }
@@ -311,10 +353,9 @@ async fn auth_url_and_status() {
     assert!(!status.configured && !status.authorized && status.auth_url.is_none());
 }
 
-/// The code exchange stores only the access token. The refresh token in the
-/// answer is dropped today (https://github.com/phaabe/live.moafunk.de/issues/302).
+/// The code exchange stores the access token, the refresh token and the expiry.
 #[tokio::test]
-async fn code_exchange_stores_the_access_token() {
+async fn code_exchange_stores_the_tokens() {
     let (state, _temp, fake, _r2) = setup(json!({
         "soundcloud_access_token": null,
         "soundcloud_client_id": "cid",
@@ -336,19 +377,147 @@ async fn code_exchange_stores_the_access_token() {
         })
     );
     assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
-    let keys: Vec<String> =
-        sqlx::query_scalar("SELECT key FROM app_settings WHERE key LIKE 'soundcloud%'")
-            .fetch_all(&state.db)
-            .await
-            .unwrap();
-    assert_eq!(keys, vec!["soundcloud_access_token"]);
+    assert_eq!(stored_refresh(&state).await.as_deref(), Some("new-refresh"));
+    let expires_in = stored_expires_in(&state).await.unwrap();
+    assert!((3590..=3600).contains(&expires_in), "{expires_in}");
     assert_eq!(get_access_token(&state).await.unwrap(), "new-access");
+    assert_eq!(fake.routes().len(), 1, "a fresh token is not refreshed");
 
-    // A refused code keeps the old token.
+    // A refused code keeps the old tokens.
     fake.fail("POST /oauth/token", 401);
     let err = exchange_code(&state, "bad").await.unwrap_err().to_string();
     assert!(err.contains("401") && err.contains("nope"), "{err}");
     assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
+    assert_eq!(stored_refresh(&state).await.as_deref(), Some("new-refresh"));
+
+    // A new access token without refresh token or expiry drops the old ones.
+    store_token(&state, "manual", None, None).await.unwrap();
+    assert_eq!(stored_refresh(&state).await, None);
+    assert_eq!(stored_expires_in(&state).await, None);
+
+    // Disconnect removes all three.
+    store_token(&state, "a", Some("r"), Some(60)).await.unwrap();
+    delete_stored_token(&state).await.unwrap();
+    let left: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM app_settings WHERE key LIKE 'soundcloud%'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// A token that expires within 5 minutes is refreshed before the upload; the
+/// new tokens are stored and used, and the next call needs no refresh.
+#[tokio::test]
+async fn expiring_token_is_refreshed_before_the_upload() {
+    let (state, _temp, fake, r2) = connected().await;
+    let id = show_with_recording(&state, &r2).await;
+    set_expires_in(&state, 120).await;
+
+    let result = upload_track(&state, id).await.unwrap();
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(
+        fake.call("POST /oauth/token").body,
+        json!({
+            "grant_type": "refresh_token", "refresh_token": "new-refresh",
+            "client_id": "cid", "client_secret": "secret"
+        })
+    );
+    assert_eq!(
+        fake.call("POST /tracks").auth.as_deref(),
+        Some("OAuth refreshed-access")
+    );
+    assert_eq!(
+        stored_token(&state).await.as_deref(),
+        Some("refreshed-access")
+    );
+    assert_eq!(
+        stored_refresh(&state).await.as_deref(),
+        Some("refreshed-refresh")
+    );
+    assert!(stored_expires_in(&state).await.unwrap() > 3000);
+
+    fake.calls.lock().unwrap().clear();
+    assert_eq!(get_access_token(&state).await.unwrap(), "refreshed-access");
+    assert!(fake.routes().is_empty());
+}
+
+/// A finalize after the token expired uploads without a manual reconnect.
+#[tokio::test]
+async fn finalize_after_expiry_refreshes_and_uploads() {
+    let (state, _temp, fake, r2) = setup(json!({
+        "soundcloud_access_token": null,
+        "soundcloud_client_id": "cid",
+        "soundcloud_client_secret": "secret",
+        "soundcloud_auto_upload": true
+    }))
+    .await;
+    exchange_code(&state, "the-code").await.unwrap();
+    let id = show_with_recording(&state, &r2).await;
+    set_expires_in(&state, -3600).await;
+    assert!(
+        has_token(&state).await,
+        "a refresh token keeps it connected"
+    );
+
+    auto_upload_on_finalize(&state, id).await;
+    assert_eq!(
+        fake.call("POST /tracks").auth.as_deref(),
+        Some("OAuth refreshed-access")
+    );
+    assert_eq!(
+        show(&state, id).await.soundcloud_track_id.as_deref(),
+        Some("555")
+    );
+}
+
+/// Parallel callers refresh once: the second waits and uses the new token.
+#[tokio::test]
+async fn parallel_callers_refresh_once() {
+    let (state, _temp, fake, _r2) = connected().await;
+    set_expires_in(&state, -1).await;
+    let (a, b) = tokio::join!(get_access_token(&state), get_access_token(&state));
+    assert_eq!(a.unwrap(), "refreshed-access");
+    assert_eq!(b.unwrap(), "refreshed-access");
+    assert_eq!(fake.routes(), vec!["POST /oauth/token"]);
+}
+
+/// Without a refresh token, an expired token is not connected anymore: the
+/// status asks to reconnect and nothing is sent to SoundCloud.
+#[tokio::test]
+async fn expired_token_without_refresh_token_needs_a_reconnect() {
+    let (state, _temp, fake, _r2) = connected().await;
+    store_token(&state, "old", None, Some(120)).await.unwrap();
+    // Still valid for 2 minutes: used as it is.
+    assert_eq!(get_access_token(&state).await.unwrap(), "old");
+    assert!(has_token(&state).await);
+
+    set_expires_in(&state, -1).await;
+    assert!(!has_token(&state).await);
+    assert!(!get_status(&state).await.authorized);
+    let err = get_access_token(&state).await.unwrap_err().to_string();
+    assert!(err.contains("Visit /api/soundcloud/auth"), "{err}");
+    assert!(fake.routes().is_empty());
+}
+
+/// SoundCloud refusing the refresh token removes the stored tokens, so the
+/// status shows "not connected". A server error keeps them for a retry.
+#[tokio::test]
+async fn refused_refresh_clears_the_tokens() {
+    let (state, _temp, fake, _r2) = connected().await;
+    set_expires_in(&state, -1).await;
+
+    fake.fail("POST /oauth/token", 500);
+    let err = get_access_token(&state).await.unwrap_err().to_string();
+    assert!(err.contains("refresh failed (500"), "{err}");
+    assert_eq!(stored_refresh(&state).await.as_deref(), Some("new-refresh"));
+    assert!(has_token(&state).await);
+
+    fake.fail("POST /oauth/token", 400);
+    let err = get_access_token(&state).await.unwrap_err().to_string();
+    assert!(err.contains("refresh failed (400"), "{err}");
+    assert_eq!(stored_token(&state).await, None);
+    assert!(!has_token(&state).await);
 }
 
 #[tokio::test]
@@ -518,7 +687,7 @@ async fn upload_errors() {
     assert!(upload_track(&state, id).await.is_err());
     assert!(fake.routes().is_empty());
 
-    store_token(&state, "stored").await.unwrap();
+    store_token(&state, "stored", None, None).await.unwrap();
     assert!(upload_track(&state, 999).await.is_err());
 
     // The recording is missing in R2.
