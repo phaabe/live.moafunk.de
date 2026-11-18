@@ -10,6 +10,7 @@ Staging runs images from the `staging` branch at https://staging.live.moafunk.de
   - own Liquidsoap and Icecast on this box (harbor 8005, Icecast 8010, as in production) with own passwords
   - own SoundCloud test account (`SOUNDCLOUD_ACCOUNT`, never the station account `radio-moafunk`) on the station's SoundCloud app. The app has one redirect URI, production's (`SOUNDCLOUD_REDIRECT_URI`). Production sends staging logins (state `staging.…`) on to staging (`SOUNDCLOUD_FORWARD_URL=https://staging.live.moafunk.de/api/soundcloud/callback` in production's `.env`). The backend refuses a login of another account. Recordings upload by themselves (`SOUNDCLOUD_AUTO_UPLOAD=true`), and after each upload only the newest 10 tracks stay (`SOUNDCLOUD_KEEP_TRACKS=10`).
   - `TELEGRAM_ENABLED=false`
+  - Instagram announcements post only to the test account: `INSTAGRAM_ACCOUNT=dev` with `INSTAGRAM_ACCESS_TOKEN_DEV` and `INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV` from Secrets Manager. No `*_PROD` value.
   - no `GITHUB_DISPATCH_TOKEN` (it would start the production backup workflow), no `SOUNDCLOUD_ACCESS_TOKEN` or other `SOUNDCLOUD_*` setting, and no other `TELEGRAM_*`, `INSTAGRAM_*`, `FACEBOOK_*`, `OPENAI_*` or `RECOVERY_*` setting
 - Secrets live in Bitwarden (`Moafunk STAGING_*` items, and the station's SoundCloud app in Secrets Manager). `push-secrets.sh` moves them to the box; nobody types or pastes them.
 - The production box has no key for the staging box, and the staging box has no key for production.

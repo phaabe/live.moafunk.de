@@ -736,6 +736,19 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Lets the API offer a download immediately, without a manual finalize.
     add_column_if_missing(pool, "recording_versions", "archive_key", "TEXT").await?;
 
+    // Refreshed Instagram tokens, one row per account (`dev` / `prod`), so a
+    // staging refresh never touches the prod token.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS instagram_tokens (
+            account TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            expires_at TEXT,
+            refreshed_at TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     crate::recovery::migrate(pool).await?;
 
     tracing::info!("Database migrations completed");

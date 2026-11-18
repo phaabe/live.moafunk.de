@@ -99,6 +99,9 @@ Optional environment variables (ZIP artist image stamping):
 	- Path to a `.ttf` font file used to render the artist name.
 	- If unset, the server tries a few common system font paths.
 
+Optional environment variables (Instagram announcements):
+- `INSTAGRAM_ACCOUNT` — `dev` or `prod` (default: `dev`). The account this server posts announcements (stories, feed images) to. Staging uses `dev`, production `prod`. The chosen account needs its `INSTAGRAM_ACCESS_TOKEN_<DEV|PROD>` and `INSTAGRAM_BUSINESS_ACCOUNT_ID_<DEV|PROD>`; without them nothing is posted. Tokens are refreshed weekly and stored per account in the database.
+
 Optional environment variables (Telegram bot):
 - `TELEGRAM_BOT_TOKEN` — BotFather token. If unset, the bot is disabled entirely.
 - `TELEGRAM_ADMIN_CHAT_ID` — Numeric chat ID that is allowed to issue commands and receives notifications. Use a negative value for group chats.

@@ -35,6 +35,8 @@ mod booking_tests;
 #[cfg(test)]
 mod broadcast_tests;
 #[cfg(test)]
+mod fake_instagram;
+#[cfg(test)]
 mod fake_r2;
 #[cfg(test)]
 mod fake_telegram;
@@ -269,6 +271,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Load config
     let config = Config::from_env()?;
+    tracing::info!(
+        "Instagram account for announcements: {}",
+        config.instagram_account
+    );
 
     // Initialize database
     let db = SqlitePoolOptions::new()
@@ -858,6 +864,20 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+
+    // Refresh the long-lived Instagram tokens weekly (first tick at boot; an
+    // account refreshed in the last day is skipped).
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 60 * 60));
+            loop {
+                interval.tick().await;
+                instagram::refresh_tokens(&state).await;
+            }
+        });
+    }
 
     // Recover recordings that a restart or failed finalize left on disk: join
     // and upload `*.segs/` segment dirs, and upload `recording_*.webm` files,
