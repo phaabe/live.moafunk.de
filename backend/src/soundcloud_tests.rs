@@ -45,6 +45,8 @@ struct FakeSoundCloud {
     permalink: Arc<Mutex<Option<String>>>,
     /// Permalink of the logged-in account (`GET /me`).
     me: Arc<Mutex<String>>,
+    /// Track ids of the account (`GET /me/tracks`), in SoundCloud's order.
+    tracks: Arc<Mutex<Vec<i64>>>,
 }
 
 impl FakeSoundCloud {
@@ -162,6 +164,15 @@ async fn fake_request(
         ("GET", ["me"]) => {
             Json(json!({ "id": 1, "permalink": *fake.me.lock().unwrap() })).into_response()
         }
+        ("GET", ["me", "tracks"]) => Json(
+            fake.tracks
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|id| json!({ "id": id }))
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
         ("GET", ["me", "playlists"]) => Json(
             playlists
                 .iter()
@@ -563,6 +574,69 @@ async fn code_exchange_refuses_another_account() {
     *fake.me.lock().unwrap() = "Radio-Moafunk".into();
     exchange_code(&state, "c").await.unwrap();
     assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
+}
+
+// ── Staging cleanup ─────────────────────────────────────────────────────────
+
+/// On staging, an upload keeps the newest SOUNDCLOUD_KEEP_TRACKS tracks of the
+/// test account and deletes the older ones.
+#[tokio::test]
+async fn staging_upload_keeps_the_newest_tracks() {
+    let (state, _temp, fake, r2) = setup(json!({
+        "app_env": "staging",
+        "soundcloud_account": "moafunk-test",
+        "soundcloud_keep_tracks": 2
+    }))
+    .await;
+    *fake.tracks.lock().unwrap() = vec![300, 555, 100, 200];
+    let id = show_with_recording(&state, &r2).await;
+
+    assert!(upload_track(&state, id).await.unwrap().success);
+    let deleted: Vec<String> = fake
+        .routes()
+        .into_iter()
+        .filter(|r| r.starts_with("DELETE"))
+        .collect();
+    assert_eq!(deleted, vec!["DELETE /tracks/200", "DELETE /tracks/100"]);
+}
+
+/// The cleanup deletes nothing outside staging, without an account pin, or
+/// with a token of another account. The upload itself still succeeds.
+#[tokio::test]
+async fn cleanup_never_touches_other_accounts() {
+    for (overrides, me) in [
+        (
+            json!({ "app_env": "production", "soundcloud_account": "moafunk-test" }),
+            "moafunk-test",
+        ),
+        (json!({ "app_env": "staging" }), "moafunk-test"),
+        (
+            json!({ "app_env": "staging", "soundcloud_account": "moafunk-test" }),
+            "radio-moafunk",
+        ),
+        // A wrong pin on the station account itself.
+        (
+            json!({ "app_env": "staging", "soundcloud_account": "Radio-Moafunk" }),
+            "radio-moafunk",
+        ),
+    ] {
+        let mut config = json!({ "soundcloud_keep_tracks": 1 });
+        config
+            .as_object_mut()
+            .unwrap()
+            .extend(overrides.as_object().unwrap().clone());
+        let (state, _temp, fake, r2) = setup(config).await;
+        *fake.me.lock().unwrap() = me.into();
+        *fake.tracks.lock().unwrap() = vec![555, 100, 200];
+        let id = show_with_recording(&state, &r2).await;
+
+        assert!(upload_track(&state, id).await.unwrap().success);
+        let routes = fake.routes();
+        assert!(
+            !routes.iter().any(|r| r.starts_with("DELETE")),
+            "{overrides} as {me}: {routes:?}"
+        );
+    }
 }
 
 // ── Title and description ───────────────────────────────────────────────────

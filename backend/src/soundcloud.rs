@@ -568,6 +568,11 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         );
     }
 
+    // Staging only: drop the test account's old tracks. Best-effort too.
+    if let Err(e) = cleanup_old_tracks(state, &access_token).await {
+        tracing::error!(error = %e, "Uploaded track but failed to delete old tracks");
+    }
+
     Ok(SoundCloudUploadResult {
         success: true,
         track_id: Some(track_id),
@@ -603,6 +608,14 @@ async fn delete_track(client: &reqwest::Client, access_token: &str, track_id: &s
 struct Me {
     permalink: String,
 }
+
+#[derive(Debug, Deserialize)]
+struct TrackSummary {
+    id: i64,
+}
+
+/// The station's production account. The staging cleanup refuses to run on it.
+const STATION_ACCOUNT: &str = "radio-moafunk";
 
 /// Permalink (the account name in the profile URL) of the token's account.
 async fn me_permalink(access_token: &str) -> Result<String> {
@@ -640,6 +653,64 @@ async fn check_account(state: &AppState, access_token: &str) -> Result<()> {
         "This server uploads to the SoundCloud account '{want}', but you logged in as '{got}'. \
          Log out of SoundCloud, then connect with '{want}'."
     )))
+}
+
+/// Staging only: keep the newest `SOUNDCLOUD_KEEP_TRACKS` tracks of the test
+/// account and delete the rest. Needs APP_ENV=staging, SOUNDCLOUD_ACCOUNT and a
+/// token of that account, so it can never delete station tracks.
+async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> {
+    let Some(keep) = state.config.soundcloud_keep_tracks else {
+        return Ok(());
+    };
+    if !state.config.app_env.trim().eq_ignore_ascii_case("staging") {
+        return Err(AppError::Internal(
+            "SOUNDCLOUD_KEEP_TRACKS works only with APP_ENV=staging; no track deleted".to_string(),
+        ));
+    }
+    let Some(account) = state.config.soundcloud_account.as_deref() else {
+        return Err(AppError::Internal(
+            "SOUNDCLOUD_KEEP_TRACKS needs SOUNDCLOUD_ACCOUNT; no track deleted".to_string(),
+        ));
+    };
+    // Even a wrong pin never cleans the station account.
+    if account.eq_ignore_ascii_case(STATION_ACCOUNT) {
+        return Err(AppError::Internal(format!(
+            "SOUNDCLOUD_ACCOUNT is the station account '{STATION_ACCOUNT}'; no track deleted"
+        )));
+    }
+    check_account(state, access_token).await?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/me/tracks", api_base()))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .query(&[("limit", "200"), ("linked_partitioning", "false")])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("List tracks request failed: {}", e)))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "List tracks failed ({}): {}",
+            status, body
+        )));
+    }
+    // shortcut: one page of 200 tracks; enough while cleanup runs after every upload.
+    let mut tracks: Vec<TrackSummary> = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse tracks: {}", e)))?;
+    // Newest first: SoundCloud track ids grow over time.
+    tracks.sort_by(|a, b| b.id.cmp(&a.id));
+    for track in tracks.iter().skip(keep.max(1)) {
+        delete_track(&client, access_token, &track.id.to_string()).await?;
+        tracing::info!(
+            track_id = track.id,
+            "Deleted old SoundCloud track (staging cleanup)"
+        );
+    }
+    Ok(())
 }
 
 /// Whether a just-finalized recording should be auto-uploaded to SoundCloud.

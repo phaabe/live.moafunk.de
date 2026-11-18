@@ -141,6 +141,9 @@ pub struct Config {
     /// login with any other account is refused (production: the station
     /// account, staging: the test account).
     pub soundcloud_account: Option<String>,
+    /// Staging only: after each upload keep this many newest tracks of
+    /// `soundcloud_account` and delete the older ones.
+    pub soundcloud_keep_tracks: Option<usize>,
 
     // Telegram Bot settings (optional - for admin notifications and control)
     /// Master kill-switch for the Telegram bot. Defaults to `false` (off): the
