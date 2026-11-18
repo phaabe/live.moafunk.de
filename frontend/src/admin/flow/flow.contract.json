@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 15,
+  "rev": 16,
   "screens": [
     {
       "id": "dashboard",
@@ -681,7 +681,7 @@
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/shows/42/announce/pre",
       "hash": "f38f51fd",
-      "notesHash": "422f1fea",
+      "notesHash": "22db21f7",
       "elements": [
         {
           "k": "back",
