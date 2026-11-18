@@ -28,6 +28,11 @@ const RECORDING_CHANNEL_CAP: usize = 1024;
 /// stream instead of blocking status, stop and go-live forever.
 const PRODUCER_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// A live producer without audio for this long no longer feeds `/live`, so
+/// its host may soundcheck again. The browser sends a chunk every 250 ms; a
+/// dropped socket can stay open on the server for minutes (nginx: 300 s idle).
+const LIVE_AUDIO_STALE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Where the live producer ffmpeg pushes the encoded audio.
 ///
 /// This selects only the **output** leg of the live-stream ffmpeg (encoder +
@@ -261,6 +266,9 @@ pub struct StreamState {
     /// takes the next value, so a replaced producer can tell that the stream
     /// is no longer its own (see [`StreamState::is_superseded`]).
     generation: u64,
+    /// When the live producer started or last got audio (see
+    /// [`LIVE_AUDIO_STALE`]).
+    last_audio: Option<std::time::Instant>,
     /// Show of the live browser stream, also when it is not recorded.
     live_show: Option<i64>,
     /// Show of a live stream that dropped without "stop", and when. It counts
@@ -291,6 +299,7 @@ impl StreamState {
             recorder_fed: false,
             is_test: false,
             generation: 0,
+            last_audio: None,
             live_show: None,
             dropped_show: None,
         }
@@ -341,6 +350,28 @@ impl StreamState {
     pub(crate) fn set_active_for_test(&mut self, user: &str, child: Child) {
         self.current_user = Some(user.to_string());
         self.ffmpeg_handle = Some(child);
+    }
+
+    /// True while `user` is on air here: pre-recorded, or live and still
+    /// getting audio. That user's soundcheck is then refused; after a drop
+    /// (no audio for [`LIVE_AUDIO_STALE`]) it is allowed again.
+    pub fn is_on_air_by(&self, user: &str) -> bool {
+        self.is_active()
+            && !self.is_test
+            && self.current_user.as_deref() == Some(user)
+            && (self.ffmpeg_stdin.is_none()
+                || self
+                    .last_audio
+                    .is_some_and(|at| at.elapsed() < LIVE_AUDIO_STALE))
+    }
+
+    /// Test stand-in for a live socket that died unnoticed: its last audio
+    /// is [`LIVE_AUDIO_STALE`] old.
+    #[cfg(test)]
+    pub(crate) fn age_audio_for_test(&mut self) {
+        self.last_audio = self
+            .last_audio
+            .and_then(|at| at.checked_sub(LIVE_AUDIO_STALE));
     }
 
     /// Returns true if recording to file is active.
@@ -416,6 +447,7 @@ impl StreamState {
         self.ffmpeg_handle = Some(child);
         self.is_test = is_test;
         self.generation += 1;
+        self.last_audio = Some(std::time::Instant::now());
 
         Ok(self.generation)
     }
@@ -488,6 +520,7 @@ impl StreamState {
         if self.ffmpeg_stdin.is_none() {
             return Err(StreamError::NotStreaming);
         }
+        self.last_audio = Some(std::time::Instant::now());
 
         // Tee to the recording writer task via a bounded, NON-BLOCKING send, so a
         // slow/stuck recorder can never stall the live broadcast. If the queue is
@@ -1099,6 +1132,9 @@ pub enum StreamError {
 
     #[error("Another producer is live ({0})")]
     ProducerBusy(String),
+
+    #[error("Soundcheck not started: you are on air right now")]
+    OnAir,
 }
 
 #[cfg(test)]
@@ -1128,6 +1164,22 @@ mod tests {
         let body = json.to_string();
         assert!(!body.contains("/srv/data"), "path leaked: {body}");
         assert!(!body.contains("disk full"), "error text leaked: {body}");
+    }
+
+    /// A pre-recorded show counts as on air for the user who started it only.
+    #[tokio::test]
+    async fn a_prerecorded_show_is_on_air_by_its_user_only() {
+        let mut state = StreamState::new();
+        // Stand-in for the pre-recorded FFmpeg process (no stdin).
+        let child = Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn sleep");
+        state.set_active_for_test("admin", child);
+
+        assert!(state.is_on_air_by("admin"));
+        assert!(!state.is_on_air_by("host"));
     }
 
     /// B1.1.6: a prerecorded start must refuse, not replace, an active producer.

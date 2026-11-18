@@ -87,6 +87,9 @@ pub struct AppState {
     pub config: Config,
     pub s3_client: aws_sdk_s3::Client,
     pub stream_state: SharedStreamState,
+    /// Soundchecks (`/ws/stream?test=true`) run here, apart from the on-air
+    /// stream, so a soundcheck never stops a show.
+    pub soundcheck_state: SharedStreamState,
     /// Cached Icecast listener/quality telemetry, refreshed by the metrics
     /// poller (`stream_metrics`) and served at `GET /api/stream/metrics`.
     pub stream_metrics: stream_metrics::SharedStreamMetrics,
@@ -337,6 +340,7 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         s3_client,
         stream_state,
+        soundcheck_state: stream_bridge::new_shared_state(),
         stream_metrics: stream_metrics::new_shared(),
         recording_manager,
         recording_finalizer: Arc::default(),

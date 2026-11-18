@@ -92,6 +92,13 @@ pub async fn stream_ws_handler(
 
     crate::auth::authorize_broadcast(&state.db, &user, query.show_id, query.test).await?;
 
+    // A soundcheck has its own slot, so it never stops a show on air.
+    let stream_state = if query.test {
+        state.soundcheck_state.clone()
+    } else {
+        stream_state
+    };
+
     // Check if someone else is streaming
     {
         let stream = stream_state.lock().await;
@@ -203,6 +210,18 @@ async fn handle_stream_socket(
         state.config.producer_target()
     };
 
+    // The host who is on air gets no soundcheck (a second tab). Once their
+    // live socket sends no audio (a drop), the soundcheck before going live
+    // again works.
+    if test && state.stream_state.lock().await.is_on_air_by(&username) {
+        tracing::info!("Refused soundcheck of '{}': on air", username);
+        let _ = sender
+            .send(Message::Text(format!("error: {}", StreamError::OnAir)))
+            .await;
+        let _ = sender.close().await;
+        return;
+    }
+
     // Start the stream. `generation` identifies this connection's stream, so a
     // later reconnect or takeover can replace it without this connection
     // stopping its successor on the way out.
@@ -262,7 +281,7 @@ async fn handle_stream_socket(
     // Send confirmation
     if let Err(e) = sender.send(Message::Text("connected".into())).await {
         tracing::error!("Failed to send connected message: {}", e);
-        if !stop_own_stream(&stream_state, generation).await {
+        if !stop_own_stream(&stream_state, generation).await && !test {
             defer_finalize(&state).await;
         }
         return;
@@ -440,7 +459,8 @@ async fn handle_stream_socket(
     // - replaced       → leave it to the connection that replaced this one.
     // - explicit stop  → finalize + upload now.
     // - network drop    → defer finalize so a reconnect can resume the archive.
-    // - rehearsal       → like a drop: a live show's recording waits on.
+    // - soundcheck     → nothing: it runs in its own slot, apart from any
+    //   live show and its recording.
     if superseded {
         tracing::info!(
             "Stream connection of '{}' was replaced; the current stream keeps running",
@@ -464,7 +484,7 @@ async fn handle_stream_socket(
             Ok(None) => {}
             Err(e) => tracing::error!("Finalize on explicit stop failed: {}", e),
         }
-    } else {
+    } else if !test {
         if let Some(sid) = show_id {
             stream_state.lock().await.note_dropped_show(sid);
         }

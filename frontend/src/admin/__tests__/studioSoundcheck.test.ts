@@ -467,6 +467,21 @@ describe('Studio soundcheck', () => {
       expect(goLive().disabled).toBe(true);
     });
 
+    // https://github.com/phaabe/live.moafunk.de/issues/958: the host is on air in another tab.
+    it('the server refuses the soundcheck of the host who is on air', async () => {
+      mocks.serverChunks = 0;
+      await mount();
+      await testAll();
+      mocks.socketOptions.onError!('Soundcheck not started: you are on air right now');
+      await vi.advanceTimersByTimeAsync(250);
+      expect(rows().Server).toBe('Failed: Test broadcast ended');
+      expect(notice()).toBe(
+        'The server ended the test broadcast: Soundcheck not started: you are on air right now'
+      );
+      expect(button('Confirm anyway')).toBeUndefined();
+      expect(goLive().disabled).toBe(true);
+    });
+
     it('the server gets no chunks although the browser sent some', async () => {
       mocks.serverChunks = 0;
       await mount();
