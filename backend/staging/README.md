@@ -80,11 +80,11 @@ The CI key (`ci-deploy.pub`, private part in Bitwarden Secrets Manager as `STAGI
 
 Staging keeps running (also after a reboot) until `down`.
 
-`up` and `seed-db` create or reset the two logins `staging-admin` (superadmin) and `staging-host` (host) to the Bitwarden passwords. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
+`up` and `seed-db` create or reset three logins to the Bitwarden passwords: `staging-admin` (superadmin) and `staging-host` (host) for people, and `e2e-host` (host) only for the chaos test show. People never use `e2e-host`: one login has only one stream, so a soundcheck as the same user ends the test's live stream. Its password is only in Bitwarden Secrets Manager (`STAGING_E2E_HOST_PASSWORD`), where CI reads it. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
 
 ## Chaos test show
 
-`e2e/` is a Playwright test that runs one live show and one pre-recorded set on staging, as `staging-host` with a fake microphone (a 440 Hz tone). The live show must survive a 20 s network cut, a Liquidsoap restart and a page reload by itself: `/live.mp3` carries the tone again within 15 s each time, and the show ends in exactly one recording as long as its time on air, with its mp3 in the archive.
+`e2e/` is a Playwright test that runs one live show and one pre-recorded set on staging, as `e2e-host` with a fake microphone (a 440 Hz tone). The live show must survive a 20 s network cut, a Liquidsoap restart and a page reload by itself: `/live.mp3` carries the tone again within 15 s each time, and the show ends in exactly one recording as long as its time on air, with its mp3 in the archive.
 
 - It runs every night, and on each release PR into `main` as a 90-minute soak (`e2e-release.yml` calls `e2e-staging.yml`). The release run first checks that staging runs exactly the image of the release commit (`staging.sh status` through the CI key), and stops if not. By hand: **Actions → E2E - Chaos test show on staging → Run workflow**, with `duration` for a soak (nightly and by hand work once the workflow is on `main`).
 - It does not run on PRs into `staging` or after a staging deploy, so a merge never waits for it. PRs that change `e2e/` run only its typecheck and unit tests (`e2e-unit.yml`).
@@ -101,13 +101,13 @@ For the test, the CI key may also run, on the box:
 | `e2e-restart-liquidsoap` | restarts the Liquidsoap container |
 | `e2e-cut <1-60>` | resets the caller's own connections to ports 80 and 443 for that many seconds (`iptables`, removed by a `systemd-run` timer) |
 | `e2e-recordings <show>` | status, length and archive flag of a test episode's recordings (read-only) |
-| `e2e-cleanup` | deletes the `e2e-…` Shows of `staging-host` that have no episodes left (no API route deletes a Show) |
+| `e2e-cleanup` | deletes the `e2e-…` Shows of `e2e-host` (and of `staging-host`, from older runs) that have no episodes left (no API route deletes a Show) |
 
 Run it from your Mac (needs the CI key in `~/.config/moafunk-staging/ci_deploy_ed25519`, ffmpeg and Node):
 
 ```bash
 cd e2e && npm ci && npx playwright install chromium
-STAGING_HOST_PASSWORD="$(bwpw 'Moafunk STAGING_HOST_PASSWORD')" npx playwright test
+STAGING_E2E_HOST_PASSWORD="$(bws secret list --output json | jq -er 'map(select(.key=="STAGING_E2E_HOST_PASSWORD")) | .[0].value')" npx playwright test
 ```
 
 After a change to `staging.sh`, copy it to the box (CI deploys only the image).

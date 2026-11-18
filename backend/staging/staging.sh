@@ -20,7 +20,7 @@
 #   staging.sh status               containers, running tag, health
 #   staging.sh export-db            ON PRODUCTION: write a scrubbed copy of the production DB to stdout
 #   staging.sh seed-db <file|->     replace the staging DB with a scrubbed copy
-#   staging.sh users                set the staging logins (staging-admin, staging-host) from .env
+#   staging.sh users                set the staging logins (staging-admin, staging-host, e2e-host) from .env
 set -euo pipefail
 
 STAGING_DIR="${STAGING_DIR:-/opt/unheard-staging}"
@@ -38,8 +38,8 @@ STAGING_BUCKETS="unheard-artists-staging moafunk-staging"
 PROD_BUCKETS="unheard-artists-prod unheard-artists-dev moafunk-prod"
 
 # Values install-env reads from stdin (push-secrets.sh sends them from Bitwarden).
-SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_R2_ACCESS_KEY_ID
-STAGING_R2_SECRET_ACCESS_KEY STAGING_HARBOR_TEST_PASSWORD STAGING_HARBOR_LIVE_PASSWORD
+SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_E2E_HOST_PASSWORD
+STAGING_R2_ACCESS_KEY_ID STAGING_R2_SECRET_ACCESS_KEY STAGING_HARBOR_TEST_PASSWORD STAGING_HARBOR_LIVE_PASSWORD
 STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD STAGING_ICECAST_RELAY_PASSWORD
 STAGING_SOUNDCLOUD_CLIENT_ID STAGING_SOUNDCLOUD_CLIENT_SECRET
 STAGING_INSTAGRAM_ACCESS_TOKEN_DEV STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV"
@@ -51,7 +51,7 @@ STATION_SOUNDCLOUD_ACCOUNT=radio-moafunk
 PROD_SOUNDCLOUD_CALLBACK=https://admin.live.moafunk.de/api/soundcloud/callback
 
 # Login passwords: stored only as argon2 hashes, so any characters are fine.
-LOGIN_PASSWORDS="STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD"
+LOGIN_PASSWORDS="STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_E2E_HOST_PASSWORD"
 
 STREAM_PASSWORD_KEYS="HARBOR_TEST_PASSWORD HARBOR_LIVE_PASSWORD ICECAST_SOURCE_PASSWORD
 ICECAST_ADMIN_PASSWORD ICECAST_RELAY_PASSWORD"
@@ -158,6 +158,7 @@ check_env() {
   for pair in APP_ENV=staging "ADMIN_BASE_URL=https://$DOMAIN" STREAM_OUTPUT=icecast \
     SOUNDCLOUD_AUTO_UPLOAD=true "SOUNDCLOUD_REDIRECT_URI=$PROD_SOUNDCLOUD_CALLBACK" \
     SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=false INSTAGRAM_ACCOUNT=dev \
+    STAGING_E2E_HOST_USERNAME=e2e-host \
     R2_BUCKET_NAME=unheard-artists-staging R2_SHOWS_BUCKET_NAME=moafunk-staging \
     "ICECAST_STATUS_URL=http://host.docker.internal:$ICECAST_PORT/status-json.xsl"; do
     key="${pair%%=*}"
@@ -178,7 +179,7 @@ check_env() {
   for key in SUPERADMIN_USERNAME STAGING_HOST_USERNAME; do
     [[ "$(env_value "$key" "$file")" =~ ^[a-z0-9-]+$ ]] || problem "$key must be set (lowercase letters, digits, -)"
   done
-  for key in SUPERADMIN_PASSWORD_HASH STAGING_HOST_PASSWORD_HASH; do
+  for key in SUPERADMIN_PASSWORD_HASH STAGING_HOST_PASSWORD_HASH STAGING_E2E_HOST_PASSWORD_HASH; do
     [[ "$(env_value "$key" "$file")" == '$argon2'* ]] || problem "$key must be an argon2 hash"
   done
 
@@ -564,7 +565,8 @@ ci_e2e() {
   fi
 }
 
-# Delete the test Shows ("e2e-…" of staging-host) that have no episodes left:
+# Delete the test Shows ("e2e-…" of e2e-host, or of staging-host from older
+# runs) that have no episodes left:
 # the API has no route that deletes a Show. Their uploads go with them. A Show
 # that still has an episode stays, so the next run's clean-up still finds it.
 e2e_cleanup() {
@@ -574,7 +576,8 @@ import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=30)
 con.execute("PRAGMA foreign_keys = ON")
 test_show = (
-    "name GLOB 'e2e-*' AND owner_user_id = (SELECT id FROM users WHERE username = 'staging-host')"
+    "name GLOB 'e2e-*' AND owner_user_id IN"
+    " (SELECT id FROM users WHERE username IN ('e2e-host', 'staging-host'))"
 )
 has_episodes = "EXISTS (SELECT 1 FROM shows WHERE template_id = show_templates.id)"
 kept = [r[0] for r in con.execute(
@@ -743,9 +746,11 @@ PY
 }
 
 # The staging logins from .env, with passwords from Bitwarden: staging-admin
-# (superadmin) and staging-host (host). Needed because the backend seeds a
-# superadmin only into an empty users table, and every user in a production
-# copy has an unusable password. Resets both to the Bitwarden password.
+# (superadmin), staging-host (host, for people) and e2e-host (host, only for
+# the e2e tests, so a person never takes over a test's stream). Needed because
+# the backend seeds a superadmin only into an empty users table, and every
+# user in a production copy has an unusable password. Resets all to the
+# Bitwarden password.
 staging_users() {
   local env="$STAGING_DIR/.env"
   [[ -f "$1" ]] || die "missing $1 (start staging first)"
@@ -753,16 +758,19 @@ staging_users() {
     ADMIN_HASH="$(env_value SUPERADMIN_PASSWORD_HASH "$env")" \
     HOST_NAME="$(env_value STAGING_HOST_USERNAME "$env")" \
     HOST_HASH="$(env_value STAGING_HOST_PASSWORD_HASH "$env")" \
+    E2E_NAME="$(env_value STAGING_E2E_HOST_USERNAME "$env")" \
+    E2E_HASH="$(env_value STAGING_E2E_HOST_PASSWORD_HASH "$env")" \
     python3 - "$1" <<'PY'
 import os, sqlite3, sys
 
 logins = [
     (os.environ["ADMIN_NAME"], os.environ["ADMIN_HASH"], "superadmin"),
     (os.environ["HOST_NAME"], os.environ["HOST_HASH"], "host"),
+    (os.environ["E2E_NAME"], os.environ["E2E_HASH"], "host"),
 ]
 for name, hashed, role in logins:
     if not name or not hashed.startswith("$argon2"):
-        sys.exit(f"staging: the {role} login needs a username and an argon2 hash in .env (run push-secrets.sh)")
+        sys.exit(f"staging: a {role} login needs a username and an argon2 hash in .env (run push-secrets.sh)")
 # The API may be running: wait for its write lock instead of failing.
 con = sqlite3.connect(sys.argv[1], timeout=30)
 if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
