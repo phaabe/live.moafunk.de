@@ -363,6 +363,10 @@ async fn sent_is_final_and_cancelled_can_be_recreated() {
         put(&state, host, 1, "pre", json!({})).await.0,
         StatusCode::CONFLICT
     );
+    // A sent row says so, even when the edit would also fail a field check.
+    let (status, body) = put(&state, host, 1, "pre", json!({ "headline": "" })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("already sent"), "{body}");
     assert_eq!(cancel(&state, host, 1, "pre").await.0, StatusCode::CONFLICT);
     assert_eq!(
         cancel(&state, host, 1, "post").await.0,

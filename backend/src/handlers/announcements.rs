@@ -196,6 +196,10 @@ pub async fn api_put_announcement(
 ) -> Result<impl IntoResponse> {
     let (user, show) = require_show_editor(&state, &headers, id).await?;
     let slot = parse_slot(&slot)?;
+    // Say "already sent" before the field and time checks, which a sent row fails too.
+    if let Some(row) = load(&mut *state.db.acquire().await?, id, slot).await? {
+        refuse_if_sent(&row)?;
+    }
 
     let headline = input.headline.as_deref().map(str::trim).unwrap_or("");
     if slot.is_feed() && headline.is_empty() {

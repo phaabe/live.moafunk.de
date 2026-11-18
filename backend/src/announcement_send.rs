@@ -41,6 +41,9 @@ pub async fn check_due_announcements(state: &Arc<AppState>, now: DateTime<Utc>) 
     if let Err(e) = fail_interrupted_sends(state, now).await {
         tracing::error!("Announcements: stale claim check failed: {e}");
     }
+    if let Err(e) = expire_missed_stories(state, now).await {
+        tracing::error!("Announcements: missed story check failed: {e}");
+    }
     let due: Vec<i64> = match sqlx::query_scalar(
         "SELECT id FROM announcements WHERE channel = 'instagram' AND state = 'scheduled' \
            AND scheduled_at <= ? AND send_claimed_at IS NULL ORDER BY scheduled_at, id",
@@ -147,6 +150,25 @@ pub async fn unlock_waiting_posts(state: &Arc<AppState>, now: DateTime<Utc>) -> 
         .await?;
         tx.commit().await?;
     }
+    Ok(())
+}
+
+/// An on-air story still armed this long after the booked start: the episode
+/// never went live (or was cancelled), so a late go-live must not post it.
+const MISSED_STORY: Duration = Duration::hours(12);
+
+/// Cancel armed on-air stories whose episode never went live.
+pub async fn expire_missed_stories(state: &Arc<AppState>, now: DateTime<Utc>) -> Result<()> {
+    sqlx::query(
+        "UPDATE announcements SET state = 'cancelled', \
+           error = 'The episode did not go live, so the story was not sent', \
+           updated_at = CURRENT_TIMESTAMP \
+         WHERE slot = 'onair' AND state = 'armed' AND send_claimed_at IS NULL \
+           AND scheduled_at IS NOT NULL AND scheduled_at < ?",
+    )
+    .bind(to_db_time(now - MISSED_STORY))
+    .execute(&state.db)
+    .await?;
     Ok(())
 }
 
