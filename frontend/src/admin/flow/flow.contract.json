@@ -859,7 +859,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "0ddc6e71",
+      "hash": "5e94b0cd",
       "notesHash": "bc9ceae0",
       "elements": [
         {
@@ -885,6 +885,10 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
         },
         {
           "k": "row",
@@ -954,7 +958,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "f18b3fa2",
+      "hash": "61923366",
       "notesHash": "54b583db",
       "elements": [
         {
@@ -980,6 +984,10 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
         },
         {
           "k": "row",
@@ -1049,7 +1057,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "b0793543",
+      "hash": "549b9a8f",
       "notesHash": "d5625cae",
       "elements": [
         {
@@ -1075,6 +1083,10 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
         },
         {
           "k": "row",
@@ -1155,7 +1167,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "5515da87",
+      "hash": "e8c4a22b",
       "notesHash": "d98dbdbe",
       "elements": [
         {
@@ -1181,6 +1193,10 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
         },
         {
           "k": "row",
