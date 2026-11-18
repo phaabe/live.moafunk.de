@@ -116,6 +116,10 @@ pub struct Config {
     // Prod account (moafunk_radio)
     pub instagram_access_token_prod: Option<String>,
     pub instagram_business_account_id_prod: Option<String>,
+    /// Instagram account this server posts announcements to: `dev` (test
+    /// account) or `prod`. Set per environment, never per request.
+    #[serde(default = "default_instagram_account")]
+    pub instagram_account: String,
     // Facebook App credentials for token refresh
     pub facebook_app_id: Option<String>,
     pub facebook_app_secret: Option<String>,
@@ -170,6 +174,10 @@ pub struct Config {
     // Admin panel base URL (used in Telegram notifications to link to artist profiles)
     #[serde(default = "default_admin_base_url")]
     pub admin_base_url: String,
+}
+
+fn default_instagram_account() -> String {
+    "dev".to_string()
 }
 
 fn default_host() -> String {
