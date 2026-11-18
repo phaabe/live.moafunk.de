@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 16,
+  "rev": 17,
   "screens": [
     {
       "id": "dashboard",
@@ -535,7 +535,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
       "hash": "e7a8a2aa",
-      "notesHash": "f77489c6",
+      "notesHash": "7f0ca9e5",
       "elements": [
         {
           "k": "back",
@@ -680,8 +680,8 @@
       "who": "host",
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/shows/42/announce/pre",
-      "hash": "f38f51fd",
-      "notesHash": "22db21f7",
+      "hash": "b3ca3db6",
+      "notesHash": "bc71dd6f",
       "elements": [
         {
           "k": "back",
@@ -759,6 +759,12 @@
         {
           "k": "choice",
           "text": "Sa 24.10. · 18:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Post now",
           "to": null,
           "on": false
         },
@@ -2539,7 +2545,7 @@
       "who": "admin",
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/admin/instagram",
-      "hash": "eb7876d0",
+      "hash": "71ac6ea5",
       "notesHash": "8dd7ca5f",
       "elements": [
         {
@@ -2635,6 +2641,11 @@
           "k": "field",
           "text": "Pre-announcement days before",
           "value": "2"
+        },
+        {
+          "k": "field",
+          "text": "Post-announcement days after",
+          "value": "3"
         },
         {
           "k": "field",
