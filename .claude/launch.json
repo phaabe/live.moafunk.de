@@ -1,0 +1,24 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "studio-mock",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["frontend/scripts/studio-mock.mjs"],
+      "port": 8000
+    },
+    {
+      "name": "frontend-studio",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "VITE_STREAM_ICECAST_TEST_URL=http://localhost:8000/test.mp3",
+        "npm",
+        "--prefix",
+        "frontend",
+        "run",
+        "dev"
+      ],
+      "port": 3000
+    }
+  ]
+}
