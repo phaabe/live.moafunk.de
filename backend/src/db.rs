@@ -486,6 +486,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Set while the scheduler sends the row, so a restart never posts twice.
+    add_column_if_missing(pool, "announcements", "send_claimed_at", "TEXT").await?;
+
     // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)
     sqlx::query(
         r#"

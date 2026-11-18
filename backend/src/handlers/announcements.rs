@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::api::{require_admin, require_show_editor};
 use crate::announcements::{
     self, check_limits, is_slot_time, to_db_time, Announcement, AnnouncementSettings,
-    AnnouncementSlot, ApprovalMode, Booked, ACTIVE_STATES,
+    AnnouncementSlot, Booked, ACTIVE_STATES,
 };
 use crate::{models, series, AppError, AppState, Result};
 
@@ -32,7 +32,10 @@ fn parse_slot(slot: &str) -> Result<AnnouncementSlot> {
 }
 
 /// Episode start in UTC: its own start time, else the series start time.
-async fn episode_start(state: &AppState, show: &models::Show) -> Result<Option<DateTime<Utc>>> {
+pub(crate) async fn episode_start(
+    state: &AppState,
+    show: &models::Show,
+) -> Result<Option<DateTime<Utc>>> {
     let series_start: Option<(Option<String>,)> = sqlx::query_as(
         "SELECT t.start_time FROM shows s JOIN show_templates t ON t.id = s.template_id \
          WHERE s.id = ?",
@@ -61,7 +64,7 @@ fn parse_time(value: &str) -> Result<DateTime<Utc>> {
 
 /// Active announcements with a send time from `from` to `to` (plus the days
 /// the day and week limits look at), except the row of (`show_id`, `slot`).
-async fn others_near(
+pub(crate) async fn others_near(
     conn: &mut sqlx::SqliteConnection,
     show_id: i64,
     slot: AnnouncementSlot,
@@ -90,6 +93,21 @@ async fn others_near(
             })
         })
         .collect())
+}
+
+/// A sent row, or one the scheduler is sending right now, can't change.
+fn refuse_if_sent(row: &Announcement) -> Result<()> {
+    if row.state == "sent" {
+        return Err(AppError::Conflict(
+            "This announcement was already sent".to_string(),
+        ));
+    }
+    if row.send_claimed_at.is_some() {
+        return Err(AppError::Conflict(
+            "This announcement is being sent right now".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn load(
@@ -256,13 +274,8 @@ pub async fn api_put_announcement(
     // Check and write in one write transaction, so two saves can't both take
     // the last free slot.
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    if load(&mut tx, id, slot)
-        .await?
-        .is_some_and(|row| row.state == "sent")
-    {
-        return Err(AppError::Conflict(
-            "This announcement was already sent".to_string(),
-        ));
+    if let Some(row) = load(&mut tx, id, slot).await? {
+        refuse_if_sent(&row)?;
     }
     // Per episode, also counting posts without a send time yet.
     let (in_episode,): (i64,) = sqlx::query_as(&format!(
@@ -290,22 +303,9 @@ pub async fn api_put_announcement(
         check_limits(&settings, &candidate, &others).map_err(AppError::Conflict)?;
     }
 
-    let needs_approval = !user.role_enum().can_access_admin()
-        && match settings.approval_mode {
-            ApprovalMode::Always => true,
-            ApprovalMode::Never => false,
-            ApprovalMode::FirstTwo => {
-                let (sent,): (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*) FROM announcements WHERE created_by = ? AND state = 'sent'",
-                )
-                .bind(user.id)
-                .fetch_one(&mut *tx)
-                .await?;
-                sent < 2
-            }
-        };
-    // shortcut: an untimed post waits for SoundCloud before approval; the
-    // scheduler applies the approval rule when it sets the time.
+    let needs_approval = announcements::needs_approval(&mut tx, &settings, Some(&user)).await?;
+    // An untimed post waits for SoundCloud; `announcement_send` applies the
+    // approval rule when the track goes public and it gets its time.
     let new_state = match (scheduled_at, needs_approval, slot) {
         (None, _, _) => "waiting_soundcloud",
         (_, true, _) => "pending_approval",
@@ -380,11 +380,7 @@ pub async fn api_cancel_announcement(
     let row = load(&mut tx, id, slot)
         .await?
         .ok_or_else(|| AppError::NotFound("No announcement in this slot".to_string()))?;
-    if row.state == "sent" {
-        return Err(AppError::Conflict(
-            "This announcement was already sent".to_string(),
-        ));
-    }
+    refuse_if_sent(&row)?;
     sqlx::query(
         "UPDATE announcements SET state = 'cancelled', updated_at = CURRENT_TIMESTAMP \
          WHERE id = ?",
@@ -510,6 +506,270 @@ pub async fn api_put_announcement_settings(
     input.slots = announcements::parse_slots(&input.slots.join(","))
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::BadRequest("Slots must be one or more HH:MM times".to_string()))?;
+    input.hashtags = input.hashtags.trim().to_string();
     announcements::save_settings(&state.db, &input).await?;
     Ok(Json(input))
+}
+
+/// The first free feed time on Berlin day `first_day` or later, after
+/// `after`. Per day the evening slots come first, then the earlier ones.
+/// `None` when nothing is free within a year.
+pub(crate) async fn next_free_feed_time(
+    conn: &mut sqlx::SqliteConnection,
+    settings: &AnnouncementSettings,
+    show_id: i64,
+    slot: AnnouncementSlot,
+    first_day: NaiveDate,
+    after: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>> {
+    const DAYS: i64 = 366;
+    let others = others_near(conn, show_id, slot, after, after + Duration::days(DAYS + 1)).await?;
+    let (evening, early): (Vec<&String>, Vec<&String>) =
+        settings.slots.iter().partition(|s| s.as_str() >= EVENING);
+    for day in first_day.iter_days().take(DAYS as usize) {
+        for hhmm in evening.iter().chain(&early) {
+            let Some(at) =
+                series::parse_hhmm(hhmm).and_then(|t| series::berlin_to_utc(day.and_time(t)))
+            else {
+                continue;
+            };
+            let candidate = Booked {
+                show_id,
+                slot,
+                scheduled_at: at,
+            };
+            if at > after && check_limits(settings, &candidate, &others).is_ok() {
+                return Ok(Some(at));
+            }
+        }
+    }
+    Ok(None)
+}
+
+// ── Admin queue ─────────────────────────────────────────────────────────────
+
+/// One row of the admin queue.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AdminAnnouncement {
+    pub id: i64,
+    pub show_id: i64,
+    pub show_title: String,
+    /// The series name; the episode title for an episode without a series.
+    pub series_name: String,
+    pub host_handle: Option<String>,
+    pub slot: String,
+    pub state: String,
+    pub scheduled_at: Option<String>,
+    pub sent_at: Option<String>,
+    pub permalink: Option<String>,
+    pub error: Option<String>,
+}
+
+const ADMIN_SELECT: &str = "SELECT a.id, a.show_id, s.title AS show_title, \
+       COALESCE(t.name, s.title) AS series_name, t.instagram_handle AS host_handle, \
+       a.slot, a.state, a.scheduled_at, a.sent_at, a.permalink, a.error \
+     FROM announcements a JOIN shows s ON s.id = a.show_id \
+     LEFT JOIN show_templates t ON t.id = s.template_id";
+
+async fn admin_row(conn: &mut sqlx::SqliteConnection, id: i64) -> Result<AdminAnnouncement> {
+    sqlx::query_as(&format!("{ADMIN_SELECT} WHERE a.id = ?"))
+        .bind(id)
+        .fetch_optional(conn)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Announcement not found".to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RangeQuery {
+    pub from: String,
+    pub to: String,
+}
+
+/// Start of a Berlin day in UTC.
+fn berlin_midnight(day: NaiveDate) -> Result<DateTime<Utc>> {
+    series::berlin_to_utc(day.and_time(chrono::NaiveTime::MIN))
+        .ok_or_else(|| AppError::BadRequest(format!("No midnight on {day}")))
+}
+
+/// GET /api/admin/announcements?from=YYYY-MM-DD&to=YYYY-MM-DD (admin) — rows
+/// sent or due in the Berlin days `from` to `to` (inclusive).
+pub async fn api_admin_list_announcements(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<RangeQuery>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+    let day = |v: &str| {
+        NaiveDate::parse_from_str(v, "%Y-%m-%d")
+            .map_err(|_| AppError::BadRequest("from and to must be YYYY-MM-DD".to_string()))
+    };
+    let from = berlin_midnight(day(&query.from)?)?;
+    let to = berlin_midnight(day(&query.to)? + Duration::days(1))?;
+    let rows: Vec<AdminAnnouncement> = sqlx::query_as(&format!(
+        "{ADMIN_SELECT} WHERE COALESCE(a.sent_at, a.scheduled_at) >= ? \
+           AND COALESCE(a.sent_at, a.scheduled_at) < ? \
+         ORDER BY COALESCE(a.sent_at, a.scheduled_at), a.id"
+    ))
+    .bind(to_db_time(from))
+    .bind(to_db_time(to))
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(rows))
+}
+
+async fn load_by_id(conn: &mut sqlx::SqliteConnection, id: i64) -> Result<Announcement> {
+    sqlx::query_as("SELECT * FROM announcements WHERE id = ?")
+        .bind(id)
+        .fetch_optional(conn)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Announcement not found".to_string()))
+}
+
+/// Puts `row` back in the queue. A story with `keep` is armed again; one
+/// without goes out at once. A feed post keeps a future `keep` time, else it
+/// moves to the next free slot.
+async fn requeue(
+    conn: &mut sqlx::SqliteConnection,
+    settings: &AnnouncementSettings,
+    row: &Announcement,
+    keep: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let slot = parse_slot(&row.slot)?;
+    let (new_state, at) = match (slot, keep) {
+        // An approved story still waits for its episode to go live.
+        (AnnouncementSlot::OnAir, Some(at)) => ("armed", at),
+        (AnnouncementSlot::OnAir, None) => ("scheduled", now),
+        (_, Some(at)) if at > now => ("scheduled", at),
+        _ => {
+            let today = now.with_timezone(&Berlin).date_naive();
+            let at = next_free_feed_time(conn, settings, row.show_id, slot, today, now)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Conflict("No free feed time in the next year".to_string())
+                })?;
+            ("scheduled", at)
+        }
+    };
+    sqlx::query(
+        "UPDATE announcements SET state = ?, scheduled_at = ?, error = NULL, \
+           updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(new_state)
+    .bind(to_db_time(at))
+    .bind(row.id)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// POST /api/admin/announcements/:id/approve — pending_approval → scheduled
+/// (on-air: armed). A feed post whose time passed while it waited moves to
+/// the next free slot.
+pub async fn api_admin_approve_announcement(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+    let settings = announcements::get_settings(&state.db).await;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let row = load_by_id(&mut tx, id).await?;
+    if row.state != "pending_approval" {
+        return Err(AppError::Conflict(
+            "Only a pending announcement can be approved".to_string(),
+        ));
+    }
+    let at = row.scheduled_at.as_deref().map(parse_time).transpose()?;
+    requeue(&mut tx, &settings, &row, at, Utc::now()).await?;
+    let out = admin_row(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// POST /api/admin/announcements/:id/reject — → rejected. Refused once sent.
+pub async fn api_admin_reject_announcement(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let row = load_by_id(&mut tx, id).await?;
+    refuse_if_sent(&row)?;
+    sqlx::query(
+        "UPDATE announcements SET state = 'rejected', updated_at = CURRENT_TIMESTAMP \
+         WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    let out = admin_row(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// POST /api/admin/announcements/:id/retry — failed → scheduled: a story at
+/// once, a feed post at the next free slot.
+pub async fn api_admin_retry_announcement(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+    let settings = announcements::get_settings(&state.db).await;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let row = load_by_id(&mut tx, id).await?;
+    if row.state != "failed" {
+        return Err(AppError::Conflict(
+            "Only a failed announcement can be retried".to_string(),
+        ));
+    }
+    requeue(&mut tx, &settings, &row, None, Utc::now()).await?;
+    let out = admin_row(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+#[derive(Debug, Serialize)]
+pub struct InstagramStatus {
+    pub account: String,
+    pub account_username: &'static str,
+    pub token_expires_at: Option<String>,
+    pub token_refreshed_at: Option<String>,
+    pub quota_used: Option<u32>,
+    pub quota_total: Option<u32>,
+}
+
+/// GET /api/admin/instagram/status (admin) — the account announcements post
+/// to, its stored token dates and the publishing quota (null when unknown).
+pub async fn api_admin_instagram_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_admin(&state, &headers).await?;
+    let account = state.config.instagram_account.clone();
+    let token: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT expires_at, refreshed_at FROM instagram_tokens WHERE account = ?")
+            .bind(&account)
+            .fetch_optional(&state.db)
+            .await?;
+    let (token_expires_at, token_refreshed_at) = token.unwrap_or_default();
+    let quota =
+        match crate::instagram::InstagramClient::for_environment(&state.config, &state.db).await {
+            Ok(client) => client.content_publishing_quota().await.ok(),
+            Err(_) => None,
+        };
+    Ok(Json(InstagramStatus {
+        account_username: if account == "prod" {
+            "moafunk_radio"
+        } else {
+            "moafunk_tester"
+        },
+        account,
+        token_expires_at,
+        token_refreshed_at,
+        quota_used: quota.map(|q| q.0),
+        quota_total: quota.map(|q| q.1),
+    }))
 }

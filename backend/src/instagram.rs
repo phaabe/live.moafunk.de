@@ -858,9 +858,27 @@ impl InstagramClient {
     // Announcements: stories and feed images on the environment's account
     // ────────────────────────────────────────────────────────────────────────
 
+    /// Client for `account` (`prod`, else `dev`) for the admin post buttons.
+    /// Uses the stored refreshed token of that account when there is one.
+    pub async fn for_account(
+        config: &crate::Config,
+        db: &SqlitePool,
+        account: &str,
+    ) -> Result<Self> {
+        let account = if account == "prod" { "prod" } else { "dev" };
+        match account_credentials(config, db, account).await? {
+            Some((access_token, business_account_id)) => Ok(Self {
+                http: reqwest::Client::new(),
+                access_token,
+                business_account_id,
+            }),
+            // Names the missing env value.
+            None => Self::from_config(config, account),
+        }
+    }
+
     /// Client for the account pinned by `INSTAGRAM_ACCOUNT`. Errors (and posts
     /// nothing) when that account has no env token and account id.
-    #[allow(dead_code)] // first caller: the announcement scheduler
     pub async fn for_environment(config: &crate::Config, db: &SqlitePool) -> Result<Self> {
         let account = config.instagram_account.as_str();
         let Some((access_token, business_account_id)) =
@@ -911,7 +929,7 @@ impl InstagramClient {
         let (used, total) = self.content_publishing_quota().await?;
         if used >= total {
             return Err(AppError::External(format!(
-                "Instagram publishing quota used up ({used}/{total} in 24 h)"
+                "{QUOTA_USED_UP} ({used}/{total} in 24 h)"
             )));
         }
         Ok(())
@@ -955,7 +973,6 @@ impl InstagramClient {
     }
 
     /// Publish a story image (JPEG URL), optionally tagging one account.
-    #[allow(dead_code)] // first caller: the announcement scheduler
     pub async fn publish_story_image(
         &self,
         image_url: &str,
@@ -973,7 +990,6 @@ impl InstagramClient {
     }
 
     /// Publish a feed image with caption, alt text and collaborator accounts.
-    #[allow(dead_code)] // first caller: the announcement scheduler
     pub async fn publish_feed_image(
         &self,
         image_url: &str,
@@ -997,6 +1013,23 @@ impl InstagramClient {
         }
         self.publish_media(&params, "Feed image").await
     }
+}
+
+/// Start of the error when the 24 h publishing quota is used up.
+const QUOTA_USED_UP: &str = "Instagram publishing quota used up";
+
+/// The send failed only because the publishing quota is used up.
+pub fn is_quota_used_up(e: &AppError) -> bool {
+    e.to_string().contains(QUOTA_USED_UP)
+}
+
+/// Instagram refuses to refresh a token younger than 24 h (a token just put
+/// into the env). That is not a problem: the next weekly run refreshes it.
+/// shortcut: matches the error text, as Meta documents no error code for it;
+/// if a boot alert still names "24 hours" in other words, extend the match.
+fn is_token_too_young(e: &AppError) -> bool {
+    let msg = e.to_string().to_lowercase();
+    msg.contains("24 hours") || msg.contains("24h")
 }
 
 /// Send a Graph API request and return the body. Errors carry Instagram's
@@ -1083,6 +1116,12 @@ pub async fn refresh_tokens(state: &Arc<AppState>) {
                 expires_in / 86_400
             )),
             Ok(_) => None,
+            Err(e) if is_token_too_young(&e) => {
+                tracing::info!(
+                    "Instagram token for {account} is younger than 24 h, refresh skipped"
+                );
+                None
+            }
             Err(e) => {
                 tracing::error!("Instagram token refresh failed for {account}: {e}");
                 Some(format!("Instagram token refresh failed for {account}: {e}"))
@@ -1140,8 +1179,7 @@ pub async fn post_show_to_instagram(
     show: &crate::models::Show,
     account: &str,
 ) -> Result<InstagramPostResult> {
-    // Check if Instagram is configured
-    let client = InstagramClient::from_config(&state.config, account)?;
+    let client = InstagramClient::for_account(&state.config, &state.db, account).await?;
 
     // Check if cover exists
     if show.cover_generated_at.is_none() {
@@ -1222,7 +1260,7 @@ pub async fn post_artist_to_instagram(
     artist: &crate::models::Artist,
     account: &str,
 ) -> Result<InstagramPostResult> {
-    let client = InstagramClient::from_config(&state.config, account)?;
+    let client = InstagramClient::for_account(&state.config, &state.db, account).await?;
 
     // Require a stored caption
     let caption = artist.instagram_caption.as_deref().ok_or_else(|| {

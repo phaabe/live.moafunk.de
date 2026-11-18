@@ -1059,6 +1059,14 @@ pub async fn set_track_privacy(
         public = public,
         "SoundCloud track privacy updated"
     );
+    // A public track unlocks the episode's post announcement.
+    if public {
+        if let Err(e) =
+            crate::announcement_send::unlock_waiting_posts(state, chrono::Utc::now()).await
+        {
+            tracing::error!("Announcements: post unlock failed: {e}");
+        }
+    }
 
     Ok(SoundCloudUploadResult {
         success: true,
