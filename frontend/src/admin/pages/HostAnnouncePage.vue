@@ -267,6 +267,23 @@ async function schedule() {
   border: 0;
 }
 
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.input {
+  color: var(--color-text);
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.field-error {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  margin: 0;
+}
+
 .choices {
   display: flex;
   flex-wrap: wrap;
