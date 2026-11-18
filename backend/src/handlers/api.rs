@@ -4757,7 +4757,11 @@ pub struct SoundCloudCallbackQuery {
 pub async fn api_soundcloud_callback(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SoundCloudCallbackQuery>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    // A login started on staging: staging exchanges the code with its verifier.
+    if let Some(url) = crate::soundcloud::forward_login(&state, &query.code, &query.state) {
+        return axum::response::Redirect::to(&url).into_response();
+    }
     match crate::soundcloud::exchange_code(&state, &query.code, &query.state).await {
         Ok(_) => axum::response::Html(
             r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
@@ -4766,14 +4770,16 @@ pub async fn api_soundcloud_callback(
             <script>setTimeout(()=>window.close(),3000)</script>
             </body></html>"#
                 .to_string(),
-        ),
+        )
+        .into_response(),
         Err(e) => axum::response::Html(format!(
             r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
             <h2>❌ SoundCloud Authorization Failed</h2>
             <p>{}</p>
             </body></html>"#,
             e
-        )),
+        ))
+        .into_response(),
     }
 }
 

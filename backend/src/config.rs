@@ -144,6 +144,9 @@ pub struct Config {
     /// Staging only: after each upload keep this many newest tracks of
     /// `soundcloud_account` and delete the older ones.
     pub soundcloud_keep_tracks: Option<usize>,
+    /// Production only: staging's SoundCloud callback. The app has one redirect
+    /// URI (production's), so logins started on staging are sent on to it.
+    pub soundcloud_forward_url: Option<String>,
 
     // Telegram Bot settings (optional - for admin notifications and control)
     /// Master kill-switch for the Telegram bot. Defaults to `false` (off): the

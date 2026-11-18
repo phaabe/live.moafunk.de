@@ -1095,11 +1095,17 @@ fn pkce_challenge(verifier: &str) -> String {
     base64_url::encode(&Sha256::digest(verifier.as_bytes()))
 }
 
-/// Open a login and return its OAuth state and PKCE code challenge.
-fn start_login() -> (String, String) {
+/// Open a login and return its OAuth state and PKCE code challenge. The state
+/// starts with the server's APP_ENV (`staging.…`), so production can forward
+/// staging logins (see [`forward_login`]).
+fn start_login(app_env: &str) -> (String, String) {
     let now = chrono::Utc::now().timestamp();
     let login = PendingLogin {
-        state: crate::auth::generate_session_token(),
+        state: format!(
+            "{}.{}",
+            app_env.trim().to_ascii_lowercase(),
+            crate::auth::generate_session_token()
+        ),
         verifier: crate::auth::generate_session_token(),
         created: now,
     };
@@ -1135,7 +1141,7 @@ pub fn get_auth_url(state: &Arc<AppState>) -> Result<String> {
     let encoded_redirect = redirect_uri.replace(':', "%3A").replace('/', "%2F");
 
     // Both are base64url, so they need no encoding.
-    let (oauth_state, challenge) = start_login();
+    let (oauth_state, challenge) = start_login(&state.config.app_env);
     let url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}\
          &code_challenge={}&code_challenge_method=S256&state={}",
@@ -1143,6 +1149,24 @@ pub fn get_auth_url(state: &Arc<AppState>) -> Result<String> {
     );
 
     Ok(url)
+}
+
+/// State prefix of logins started on staging.
+const STAGING_STATE_PREFIX: &str = "staging.";
+
+/// Production only: SoundCloud allows one redirect URI per app, so a login
+/// started on staging comes back to production's callback. Returns where to
+/// send it on (`SOUNDCLOUD_FORWARD_URL` with the same code and state), or
+/// `None` to handle the login here. Staging itself never forwards.
+pub fn forward_login(state: &AppState, code: &str, oauth_state: &str) -> Option<String> {
+    let target = state.config.soundcloud_forward_url.as_deref()?;
+    if state.config.app_env.trim().eq_ignore_ascii_case("staging")
+        || !oauth_state.starts_with(STAGING_STATE_PREFIX)
+    {
+        return None;
+    }
+    let query = serde_urlencoded::to_string([("code", code), ("state", oauth_state)]).ok()?;
+    Some(format!("{target}?{query}"))
 }
 
 /// The app's SoundCloud client id and secret.

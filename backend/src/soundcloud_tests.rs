@@ -387,7 +387,10 @@ async fn auth_url_and_status() {
         "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
     );
     assert_eq!(query_param(&url, "code_challenge").len(), 43);
-    assert_eq!(query_param(&url, "state").len(), 43);
+    // The state names the server, so production can forward staging logins.
+    let oauth_state = query_param(&url, "state");
+    assert!(oauth_state.starts_with("production."), "{oauth_state}");
+    assert_eq!(oauth_state.len(), "production.".len() + 43);
     let again = get_auth_url(&state).unwrap();
     assert_ne!(query_param(&url, "state"), query_param(&again, "state"));
     let status = get_status(&state).await;
@@ -732,6 +735,38 @@ async fn login_state_works_once_and_for_ten_minutes() {
     }
     assert!(refused(old).await.contains("Click Connect again"));
     assert_eq!(fake.routes(), vec!["POST /oauth/token"]);
+}
+
+/// SoundCloud has one redirect URI per app (production's). Production sends a
+/// login started on staging on to SOUNDCLOUD_FORWARD_URL with the same code
+/// and state; its own logins and anything without the setting stay here.
+#[tokio::test]
+async fn production_forwards_staging_logins() {
+    let forward =
+        json!({ "soundcloud_forward_url": "https://staging.test/api/soundcloud/callback" });
+    let (prod, _temp) = crate::broadcast_tests::state_with(forward.clone()).await;
+    assert_eq!(
+        forward_login(&prod, "a b&c", "staging.xyz").as_deref(),
+        Some("https://staging.test/api/soundcloud/callback?code=a+b%26c&state=staging.xyz")
+    );
+    assert_eq!(forward_login(&prod, "c", "production.xyz"), None);
+    assert_eq!(forward_login(&prod, "c", ""), None);
+
+    // Staging never forwards (no loop), and without the setting nothing is sent on.
+    let mut on_staging = forward.clone();
+    on_staging["app_env"] = json!("staging");
+    let (staging, _temp) = crate::broadcast_tests::state_with(on_staging).await;
+    assert_eq!(forward_login(&staging, "c", "staging.xyz"), None);
+    let (plain, _temp) = crate::broadcast_tests::state().await;
+    assert_eq!(forward_login(&plain, "c", "staging.xyz"), None);
+
+    // Staging's own login states carry the prefix production looks for.
+    let mut staging_app = json!({ "app_env": "staging", "soundcloud_client_id": "cid" });
+    staging_app["soundcloud_redirect_uri"] = json!("https://admin.test/api/soundcloud/callback");
+    let (staging, _temp) = crate::broadcast_tests::state_with(staging_app).await;
+    let url = get_auth_url(&staging).unwrap();
+    assert!(query_param(&url, "state").starts_with("staging."), "{url}");
+    assert!(url.contains("redirect_uri=https%3A%2F%2Fadmin.test%2Fapi%2Fsoundcloud%2Fcallback"));
 }
 
 // ── Title and description ───────────────────────────────────────────────────
