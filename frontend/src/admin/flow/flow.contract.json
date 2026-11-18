@@ -958,7 +958,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "61923366",
+      "hash": "8f6dff6c",
       "notesHash": "54b583db",
       "elements": [
         {
@@ -992,7 +992,7 @@
         {
           "k": "row",
           "text": "Music",
-          "meta": "Peak −9 dB · average −21 dB",
+          "meta": "Good · peak −9 dB · average −21 dB",
           "to": null
         },
         {
@@ -1057,7 +1057,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "549b9a8f",
+      "hash": "85fbd85f",
       "notesHash": "d5625cae",
       "elements": [
         {
@@ -1091,7 +1091,7 @@
         {
           "k": "row",
           "text": "Music",
-          "meta": "Peak −9 dB · average −21 dB",
+          "meta": "Good · peak −9 dB · average −21 dB",
           "to": null
         },
         {
@@ -1109,7 +1109,7 @@
         {
           "k": "row",
           "text": "Mic",
-          "meta": "Peak −12 dB · average −24 dB",
+          "meta": "Good · peak −12 dB · average −24 dB",
           "to": null
         },
         {
@@ -1167,8 +1167,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "e8c4a22b",
-      "notesHash": "d98dbdbe",
+      "hash": "753f759c",
+      "notesHash": "eacaa2a2",
       "elements": [
         {
           "k": "back",
@@ -1201,7 +1201,7 @@
         {
           "k": "row",
           "text": "Music",
-          "meta": "Peak −9 dB · average −21 dB",
+          "meta": "Good · peak −9 dB · average −21 dB",
           "to": null
         },
         {
@@ -1219,7 +1219,7 @@
         {
           "k": "row",
           "text": "Mic",
-          "meta": "Too quiet · peak −38 dB",
+          "meta": "Too quiet · peak −38 dB · average −48 dB",
           "to": null
         },
         {
@@ -1248,7 +1248,7 @@
         },
         {
           "k": "notice",
-          "text": "The mic is too quiet: peak −38 dB. Turn up its gain until peaks reach about −12 dB."
+          "text": "The mic is too quiet: peak −38 dB, average −48 dB. Turn up its gain until the average is around −20 dB."
         },
         {
           "k": "button",
