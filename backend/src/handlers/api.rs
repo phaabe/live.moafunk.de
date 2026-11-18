@@ -4744,18 +4744,21 @@ pub async fn api_soundcloud_auth(
     Ok(axum::response::Redirect::temporary(&url))
 }
 
-/// GET /api/soundcloud/callback?code=xxx
+/// GET /api/soundcloud/callback?code=xxx&state=yyy
 /// OAuth callback — exchanges the code for an access token and stores it.
 #[derive(Debug, Deserialize)]
 pub struct SoundCloudCallbackQuery {
     code: String,
+    /// Missing state gives the "click Connect again" page, not a bare 400.
+    #[serde(default)]
+    state: String,
 }
 
 pub async fn api_soundcloud_callback(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SoundCloudCallbackQuery>,
 ) -> impl IntoResponse {
-    match crate::soundcloud::exchange_code(&state, &query.code).await {
+    match crate::soundcloud::exchange_code(&state, &query.code, &query.state).await {
         Ok(_) => axum::response::Html(
             r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
             <h2>✅ SoundCloud Connected</h2>

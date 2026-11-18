@@ -257,6 +257,20 @@ async fn show(state: &Arc<AppState>, id: i64) -> models::Show {
         .unwrap()
 }
 
+/// Value of a query parameter in a URL.
+fn query_param(url: &str, key: &str) -> String {
+    let prefix = format!("{key}=");
+    url.split(['?', '&'])
+        .find_map(|part| part.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("no {key} in {url}"))
+        .to_string()
+}
+
+/// Open a login like the Connect button and return its OAuth state.
+fn login_state(state: &Arc<AppState>) -> String {
+    query_param(&get_auth_url(state).unwrap(), "state")
+}
+
 async fn stored_token(state: &Arc<AppState>) -> Option<String> {
     get_stored_token(state).await.unwrap().map(|t| t.access)
 }
@@ -293,7 +307,9 @@ async fn connected() -> (Arc<AppState>, tempfile::TempDir, FakeSoundCloud, FakeR
         "soundcloud_redirect_uri": "https://live.test/cb"
     }))
     .await;
-    exchange_code(&state, "the-code").await.unwrap();
+    exchange_code(&state, "the-code", &login_state(&state))
+        .await
+        .unwrap();
     fake.calls.lock().unwrap().clear();
     (state, temp, fake, r2)
 }
@@ -355,11 +371,25 @@ async fn auth_url_and_status() {
         "soundcloud_redirect_uri": "https://live.test/api/soundcloud/callback"
     }))
     .await;
-    assert_eq!(
-        get_auth_url(&state).unwrap(),
-        "https://secure.soundcloud.com/authorize?response_type=code&client_id=cid\
-         &redirect_uri=https%3A%2F%2Flive.test%2Fapi%2Fsoundcloud%2Fcallback"
+    let url = get_auth_url(&state).unwrap();
+    assert!(
+        url.starts_with(
+            "https://secure.soundcloud.com/authorize?response_type=code&client_id=cid\
+             &redirect_uri=https%3A%2F%2Flive.test%2Fapi%2Fsoundcloud%2Fcallback\
+             &code_challenge="
+        ),
+        "{url}"
     );
+    assert_eq!(query_param(&url, "code_challenge_method"), "S256");
+    // RFC 7636 appendix B.
+    assert_eq!(
+        pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    );
+    assert_eq!(query_param(&url, "code_challenge").len(), 43);
+    assert_eq!(query_param(&url, "state").len(), 43);
+    let again = get_auth_url(&state).unwrap();
+    assert_ne!(query_param(&url, "state"), query_param(&again, "state"));
     let status = get_status(&state).await;
     assert!(status.configured && !status.authorized);
     assert!(status.auth_url.is_some());
@@ -381,13 +411,25 @@ async fn code_exchange_stores_the_tokens() {
     }))
     .await;
 
+    let url = get_auth_url(&state).unwrap();
     assert_eq!(
-        exchange_code(&state, "the-code").await.unwrap(),
+        exchange_code(&state, "the-code", &query_param(&url, "state"))
+            .await
+            .unwrap(),
         "new-access"
     );
-    let call = fake.call("POST /oauth/token");
+    let mut body = fake.call("POST /oauth/token").body;
+    let verifier = body
+        .as_object_mut()
+        .unwrap()
+        .remove("code_verifier")
+        .unwrap();
     assert_eq!(
-        call.body,
+        pkce_challenge(verifier.as_str().unwrap()),
+        query_param(&url, "code_challenge")
+    );
+    assert_eq!(
+        body,
         json!({
             "grant_type": "authorization_code", "code": "the-code",
             "client_id": "cid", "client_secret": "secret", "redirect_uri": "https://live.test/cb"
@@ -402,7 +444,10 @@ async fn code_exchange_stores_the_tokens() {
 
     // A refused code keeps the old tokens.
     fake.fail("POST /oauth/token", 401);
-    let err = exchange_code(&state, "bad").await.unwrap_err().to_string();
+    let err = exchange_code(&state, "bad", &login_state(&state))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("401") && err.contains("nope"), "{err}");
     assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
     assert_eq!(stored_refresh(&state).await.as_deref(), Some("new-refresh"));
@@ -469,7 +514,9 @@ async fn finalize_after_expiry_refreshes_and_uploads() {
         "soundcloud_auto_upload": true
     }))
     .await;
-    exchange_code(&state, "the-code").await.unwrap();
+    exchange_code(&state, "the-code", &login_state(&state))
+        .await
+        .unwrap();
     let id = show_with_recording(&state, &r2).await;
     set_expires_in(&state, -3600).await;
     assert!(
@@ -540,7 +587,10 @@ async fn refused_refresh_clears_the_tokens() {
 #[tokio::test]
 async fn code_exchange_needs_client_credentials() {
     let (state, _temp, fake, _r2) = setup(json!({ "soundcloud_client_id": "cid" })).await;
-    let err = exchange_code(&state, "c").await.unwrap_err().to_string();
+    let err = exchange_code(&state, "c", &login_state(&state))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("SOUNDCLOUD_CLIENT_SECRET not configured"),
         "{err}"
@@ -558,7 +608,10 @@ async fn code_exchange_refuses_another_account() {
         "soundcloud_account": "radio-moafunk"
     }))
     .await;
-    let err = exchange_code(&state, "c").await.unwrap_err().to_string();
+    let err = exchange_code(&state, "c", &login_state(&state))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("account 'radio-moafunk', but you logged in as 'moafunk-test'"),
         "{err}"
@@ -572,7 +625,9 @@ async fn code_exchange_refuses_another_account() {
 
     // The right account (in any case) is stored.
     *fake.me.lock().unwrap() = "Radio-Moafunk".into();
-    exchange_code(&state, "c").await.unwrap();
+    exchange_code(&state, "c", &login_state(&state))
+        .await
+        .unwrap();
     assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
 }
 
@@ -637,6 +692,46 @@ async fn cleanup_never_touches_other_accounts() {
             "{overrides} as {me}: {routes:?}"
         );
     }
+}
+
+/// A login state works once and for 10 minutes. Without one, nothing is sent
+/// to SoundCloud and the admin is asked to click Connect again.
+#[tokio::test]
+async fn login_state_works_once_and_for_ten_minutes() {
+    let (state, _temp, fake, _r2) = setup(json!({
+        "soundcloud_access_token": null,
+        "soundcloud_client_id": "cid",
+        "soundcloud_client_secret": "secret"
+    }))
+    .await;
+    let refused = |oauth_state: String| {
+        let state = state.clone();
+        async move {
+            exchange_code(&state, "c", &oauth_state)
+                .await
+                .unwrap_err()
+                .to_string()
+        }
+    };
+
+    for oauth_state in ["", "made-up"] {
+        let err = refused(oauth_state.to_string()).await;
+        assert!(err.contains("Click Connect again"), "{err}");
+    }
+    assert!(fake.routes().is_empty());
+
+    let used = login_state(&state);
+    exchange_code(&state, "c", &used).await.unwrap();
+    assert!(refused(used).await.contains("Click Connect again"));
+
+    let old = login_state(&state);
+    for login in PENDING_LOGINS.lock().unwrap().iter_mut() {
+        if login.state == old {
+            login.created -= LOGIN_TTL_SECS;
+        }
+    }
+    assert!(refused(old).await.contains("Click Connect again"));
+    assert_eq!(fake.routes(), vec!["POST /oauth/token"]);
 }
 
 // ── Title and description ───────────────────────────────────────────────────

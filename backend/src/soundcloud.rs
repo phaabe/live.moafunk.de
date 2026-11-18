@@ -1074,7 +1074,55 @@ pub async fn set_track_privacy(
 
 const SOUNDCLOUD_AUTHORIZE_URL: &str = "https://secure.soundcloud.com/authorize";
 
+/// A login link works this long and only once.
+const LOGIN_TTL_SECS: i64 = 600;
+/// Most open login links kept; the oldest goes first.
+const MAX_PENDING_LOGINS: usize = 200;
+
+/// An open login: its OAuth `state` and PKCE code verifier.
+struct PendingLogin {
+    state: String,
+    verifier: String,
+    created: i64,
+}
+
+/// Open logins, in memory: after a restart the admin clicks Connect again.
+static PENDING_LOGINS: std::sync::Mutex<Vec<PendingLogin>> = std::sync::Mutex::new(Vec::new());
+
+/// PKCE S256 code challenge of a verifier.
+fn pkce_challenge(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    base64_url::encode(&Sha256::digest(verifier.as_bytes()))
+}
+
+/// Open a login and return its OAuth state and PKCE code challenge.
+fn start_login() -> (String, String) {
+    let now = chrono::Utc::now().timestamp();
+    let login = PendingLogin {
+        state: crate::auth::generate_session_token(),
+        verifier: crate::auth::generate_session_token(),
+        created: now,
+    };
+    let opened = (login.state.clone(), pkce_challenge(&login.verifier));
+    let mut pending = PENDING_LOGINS.lock().unwrap_or_else(|e| e.into_inner());
+    pending.retain(|l| now - l.created < LOGIN_TTL_SECS);
+    if pending.len() >= MAX_PENDING_LOGINS {
+        pending.remove(0);
+    }
+    pending.push(login);
+    opened
+}
+
+/// The code verifier of an open login. Each state works once.
+fn take_login(oauth_state: &str) -> Option<String> {
+    let mut pending = PENDING_LOGINS.lock().unwrap_or_else(|e| e.into_inner());
+    let i = pending.iter().position(|l| l.state == oauth_state)?;
+    let login = pending.remove(i);
+    (chrono::Utc::now().timestamp() - login.created < LOGIN_TTL_SECS).then_some(login.verifier)
+}
+
 /// Build the SoundCloud OAuth authorization URL that the admin should visit.
+/// Each call opens a new login (OAuth state + PKCE, which SoundCloud requires).
 pub fn get_auth_url(state: &Arc<AppState>) -> Result<String> {
     let client_id =
         state.config.soundcloud_client_id.as_ref().ok_or_else(|| {
@@ -1086,9 +1134,12 @@ pub fn get_auth_url(state: &Arc<AppState>) -> Result<String> {
     // Simple percent-encoding for the redirect URI (only chars that need encoding in our URLs)
     let encoded_redirect = redirect_uri.replace(':', "%3A").replace('/', "%2F");
 
+    // Both are base64url, so they need no encoding.
+    let (oauth_state, challenge) = start_login();
     let url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}",
-        SOUNDCLOUD_AUTHORIZE_URL, client_id, encoded_redirect,
+        "{}?response_type=code&client_id={}&redirect_uri={}\
+         &code_challenge={}&code_challenge_method=S256&state={}",
+        SOUNDCLOUD_AUTHORIZE_URL, client_id, encoded_redirect, challenge, oauth_state,
     );
 
     Ok(url)
@@ -1112,9 +1163,16 @@ fn client_credentials(state: &AppState) -> Result<(&str, &str)> {
 }
 
 /// Exchange an authorization code for an access token and store it in the database.
-pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> {
+/// `oauth_state` must be the state of an open login from [`get_auth_url`].
+pub async fn exchange_code(state: &Arc<AppState>, code: &str, oauth_state: &str) -> Result<String> {
     let (client_id, client_secret) = client_credentials(state)?;
     let redirect_uri = &state.config.soundcloud_redirect_uri;
+    let verifier = take_login(oauth_state).ok_or_else(|| {
+        AppError::BadRequest(
+            "This SoundCloud login is unknown, used or older than 10 minutes. Click Connect again."
+                .to_string(),
+        )
+    })?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -1125,6 +1183,7 @@ pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> 
             ("client_id", client_id),
             ("client_secret", client_secret),
             ("redirect_uri", redirect_uri),
+            ("code_verifier", verifier.as_str()),
         ])
         .send()
         .await
