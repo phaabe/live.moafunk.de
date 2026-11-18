@@ -400,13 +400,29 @@ describe('On Air', () => {
     });
   });
 
-  it('End Episode stops the stream and opens the Wrap-up', async () => {
+  const press = async (label: string) => {
+    [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === label)!.click();
+    await vi.advanceTimersByTimeAsync(0);
+  };
+
+  it('End Episode asks once; Keep on air goes back and stops nothing', async () => {
+    await mountOnAir();
+    await press('End Episode');
+    expect(text()).toContain('End the episode?');
+    expect(mocks.stopStream).not.toHaveBeenCalled();
+    await press('Keep on air');
+    expect(text()).not.toContain('End the episode?');
+    expect(root.querySelectorAll('button')).toHaveLength(1);
+    expect(mocks.stopStream).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('End Episode, asked and confirmed, stops the stream and opens the Wrap-up', async () => {
     mocks.socketState!.value = 'error';
     await mountOnAir();
-    [...root.querySelectorAll('button')]
-      .find((b) => b.textContent?.includes('End Episode'))!
-      .click();
-    await vi.advanceTimersByTimeAsync(0);
+    await press('End Episode');
+    expect(mocks.stopStream).not.toHaveBeenCalled();
+    await press('End Episode');
     expect(mocks.stopStream).toHaveBeenCalledOnce();
     expect(mocks.capture.stopCapture).toHaveBeenCalledOnce();
     expect(mocks.push).toHaveBeenCalledWith({ path: '/shows/7', state: { episodeEnded: 7 } });
@@ -474,6 +490,15 @@ describe('flow', () => {
     mocks.options.onError!('Another connection took over the stream');
     await nextTick();
     await expectFlow('studio-onair-lost', root);
+  });
+
+  it('Studio · On Air, ending matches the flow (End Episode asks once)', async () => {
+    await mountOnAirAt4210();
+    [...root.querySelectorAll('button')]
+      .find((b) => b.textContent?.trim() === 'End Episode')!
+      .click();
+    await nextTick();
+    await expectFlow('studio-onair-end', root);
   });
 
   it('Studio · On Air, input gone matches the flow', async () => {

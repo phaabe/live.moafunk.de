@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { RouterLink } from 'vue-router';
 import { seriesApi, showsApi, streamApi, type ShowOverviewItem } from '../api';
 import BoardIcon from '../components/BoardIcon.vue';
 import DateChip from '../components/DateChip.vue';
@@ -60,19 +61,34 @@ async function loadStatus() {
 }
 
 /** "On air · <Show> · until <HH:MM>", from the schedule entry airing now. */
+/** The schedule entry airing now. */
+const running = computed(() => schedule.value.find((s) => isShowRunning(s)) ?? null);
+
+/** "On air · <Show> · until <HH:MM>", from the schedule entry airing now. */
 const onAirLine = computed(() => {
-  const running = schedule.value.find((s) => isShowRunning(s));
-  if (!running) return 'On air';
-  const name = showNameOf.value.get(running.id) ?? running.title;
-  return `On air · ${name} · until ${running.end_time}`;
+  const show = running.value;
+  if (!show) return 'On air';
+  const name = showNameOf.value.get(show.id) ?? show.title;
+  return `On air · ${name} · until ${show.end_time}`;
 });
+
+/** The strip opens On Air when the show on air is the host's own. */
+const onAirLink = computed(() =>
+  running.value && showNameOf.value.has(running.value.id)
+    ? { path: '/stream/on-air', query: { show: String(running.value.id) } }
+    : null
+);
+const episodesError = ref<string | null>(null);
 
 function logError(what: string) {
   return (e: unknown) => console.error(`Failed to load ${what}:`, e);
 }
 
 onMounted(() => {
-  loadEpisodes().catch(logError('episodes'));
+  loadEpisodes().catch((e) => {
+    logError('episodes')(e);
+    episodesError.value = 'Could not load your episodes.';
+  });
   loadStatus().catch(logError('stream status'));
   pollTimer = setInterval(() => loadStatus().catch(logError('stream status')), 10000);
 });
@@ -87,15 +103,21 @@ onUnmounted(() => {
   <div class="schedule-page host-page">
     <h1 class="page-title">Schedule</h1>
 
-    <section v-if="onAir" class="status-banner live on-air-strip">
+    <component
+      :is="onAirLink ? RouterLink : 'section'"
+      v-if="onAir"
+      v-bind="onAirLink ? { to: onAirLink } : {}"
+      class="status-banner live on-air-strip"
+    >
       <h2 class="strip-title"><span class="dot" aria-hidden="true"></span>On air now</h2>
       <span class="on-air">{{ onAirLine }}</span>
-    </section>
+    </component>
 
     <section class="board-card">
       <div class="board-card-head">
         <h2 class="board-card-title"><BoardIcon name="calendar" />Your next episodes</h2>
       </div>
+      <p v-if="episodesError" class="empty field-error" role="alert">{{ episodesError }}</p>
       <ul class="episodes board-rows">
         <li v-for="row in rows" :key="row.id">
           <router-link :to="`/shows/${row.id}`" class="board-row">
@@ -138,6 +160,10 @@ onUnmounted(() => {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: #ffb3ab;
+}
+
+a.on-air-strip:hover {
+  background-color: rgba(239, 68, 68, 0.16);
 }
 
 .on-air {

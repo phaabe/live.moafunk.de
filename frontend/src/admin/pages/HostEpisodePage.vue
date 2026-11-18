@@ -166,7 +166,8 @@ onUnmounted(() => {
   if (poll) clearTimeout(poll);
 });
 
-async function openStudio() {
+/** Open Studio; while on air, "Back to On Air" opens On Air (its gate falls back to the Studio). */
+async function openStudio(path: '/stream/live' | '/stream/on-air' = '/stream/live') {
   if (!show.value || !studioOpen.value) return;
   busy.value = true;
   try {
@@ -180,7 +181,7 @@ async function openStudio() {
     if (hostFlow.showId.value !== mine.id) hostFlow.setLiveTestPassed(false);
     hostFlow.selectShow(mine);
     hostFlow.selectMode('live');
-    await router.push({ path: '/stream/live', query: { show: String(mine.id) } });
+    await router.push({ path, query: { show: String(mine.id) } });
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not open the Studio';
   } finally {
@@ -330,7 +331,10 @@ async function publish() {
 
       <!-- Episode (live) -->
       <template v-else>
-        <p class="pill status-banner">
+        <p v-if="show.on_air" class="pill status-banner live">
+          <span class="dot" aria-hidden="true"></span>On air · until {{ show.end_time }}
+        </p>
+        <p v-else class="pill status-banner">
           <span class="dot" aria-hidden="true"></span>Upcoming · Live · {{ slot }}
         </p>
         <div class="cols">
@@ -346,10 +350,19 @@ async function publish() {
                 </p>
               </div>
               <BaseButton
+                v-if="show.on_air"
+                class="block xl"
+                :loading="busy"
+                @click="openStudio('/stream/on-air')"
+              >
+                <BoardIcon name="broadcast" />Back to On Air
+              </BaseButton>
+              <BaseButton
+                v-else
                 class="block xl"
                 :disabled="!studioOpen"
                 :loading="busy"
-                @click="openStudio"
+                @click="openStudio()"
               >
                 Open Studio<BoardIcon name="next" />
               </BaseButton>

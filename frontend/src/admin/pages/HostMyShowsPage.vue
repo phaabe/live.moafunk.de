@@ -16,7 +16,8 @@ onMounted(async () => {
   try {
     shows.value = (await seriesApi.list()).series;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Could not load your shows';
+    console.error('Failed to load shows:', e);
+    error.value = 'Could not load your shows.';
   }
 });
 </script>
@@ -34,6 +35,10 @@ onMounted(async () => {
       <ul class="shows board-rows">
         <li v-for="show in shows" :key="show.slug">
           <router-link :to="`/shows/${show.slug}`" class="board-row show-row">
+            <div class="cover thumb">
+              <img v-if="show.cover_url" :src="show.cover_url" alt="" />
+              <BoardIcon v-else name="image" :size="24" />
+            </div>
             <span class="name row-title big">{{ show.name }}</span>
             <span class="rhythm row-sub"
               ><BoardIcon v-if="show.rhythm_line" name="repeat" :size="14" />{{
@@ -65,20 +70,29 @@ onMounted(async () => {
    link, so the row reads "Brunchtime | Sundays · 12:00–14:00". */
 .host-page .board-card > .board-rows .show-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas:
-    'name icon'
-    'rhythm icon';
+    'cover name icon'
+    'cover rhythm icon';
   gap: 4px var(--spacing-md);
   min-height: 84px;
 }
 
+.thumb {
+  grid-area: cover;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-lg);
+}
+
 .name {
   grid-area: name;
+  align-self: end;
 }
 
 .rhythm {
   grid-area: rhythm;
+  align-self: start;
   display: inline-flex;
   align-items: center;
   gap: 6px;

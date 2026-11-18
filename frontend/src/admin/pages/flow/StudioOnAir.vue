@@ -150,6 +150,9 @@ const connection = computed(() => {
 });
 
 // ─── End Episode ────────────────────────────────────────────────────────────
+// The first End Episode only asks; the stream and the recording go on until
+// the second one.
+const confirming = ref(false);
 async function endEpisode() {
   ending.value = true;
   // "stop" ends the stream and the recording on the backend.
@@ -219,8 +222,20 @@ onUnmounted(() => {
         <dd class="connection">{{ connection }}</dd>
       </div>
     </dl>
-    <div class="end">
-      <BaseButton variant="danger" class="xl end-button" :loading="ending" @click="endEpisode"
+    <!-- End Episode asks once (flow screen studio-onair-end): one slip must not end the broadcast. -->
+    <div :class="['end', { confirming }]">
+      <template v-if="confirming">
+        <p class="end-question">End the episode?</p>
+        <div class="end-actions">
+          <BaseButton variant="secondary" class="xl" :disabled="ending" @click="confirming = false"
+            >Keep on air</BaseButton
+          >
+          <BaseButton variant="danger" class="xl" :loading="ending" @click="endEpisode"
+            >End Episode</BaseButton
+          >
+        </div>
+      </template>
+      <BaseButton v-else variant="danger" class="xl end-button" @click="confirming = true"
         >End Episode</BaseButton
       >
     </div>
@@ -395,6 +410,28 @@ onUnmounted(() => {
 
 .end-button {
   min-width: 240px;
+}
+
+.end.confirming {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  border: 2px solid #5c2020;
+  border-radius: var(--radius-xl);
+  background: #120808;
+}
+
+.end-question {
+  margin: 0;
+  font: 700 1.25rem var(--font-family);
+  color: #fff;
+}
+
+.end-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--spacing-sm);
 }
 
 /* Phones: End Episode alone in a bar at the bottom, in thumb reach. */

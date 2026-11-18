@@ -10,6 +10,8 @@ import DateChip from '../components/DateChip.vue';
 
 const auth = useAuthStore();
 const episodes = ref<UpcomingEpisode[]>([]);
+const loaded = ref(false);
+const error = ref<string | null>(null);
 
 /** "12:00–14:00" */
 function time(e: UpcomingEpisode): string | null {
@@ -26,6 +28,9 @@ onMounted(async () => {
     episodes.value = (await seriesApi.upcoming()).episodes;
   } catch (e) {
     console.error('Failed to load upcoming shows:', e);
+    error.value = 'Could not load the upcoming shows.';
+  } finally {
+    loaded.value = true;
   }
 });
 </script>
@@ -38,6 +43,8 @@ onMounted(async () => {
       <div class="board-card-head">
         <h2 class="board-card-title"><BoardIcon name="calendar" />Upcoming shows</h2>
       </div>
+      <p v-if="error" class="empty field-error" role="alert">{{ error }}</p>
+      <p v-else-if="loaded && !episodes.length" class="empty">No upcoming shows.</p>
       <!-- Row text stays "So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live". -->
       <ul class="episodes board-rows">
         <li v-for="e in episodes" :key="e.id">
