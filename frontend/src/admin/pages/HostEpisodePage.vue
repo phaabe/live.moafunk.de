@@ -7,6 +7,7 @@ import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '../composables';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import EpisodeDetailsCard from '../components/EpisodeDetailsCard.vue';
+import EpisodeRecordingCard from '../components/EpisodeRecordingCard.vue';
 import HostEpisodeView from './HostEpisodeView.vue';
 import BoardIcon from '../components/BoardIcon.vue';
 import { episodeDay, setLength } from '../episodeRow';
@@ -378,6 +379,7 @@ async function publish() {
               <BoardIcon name="close" :size="16" />Cancel booking
             </BaseButton>
           </EpisodeDetailsCard>
+          <EpisodeRecordingCard class="side" :show="show" @uploaded="load(false)" />
         </div>
         <p v-if="error" class="field-error" role="alert">{{ error }}</p>
       </template>

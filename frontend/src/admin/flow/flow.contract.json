@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 11,
+  "rev": 12,
   "screens": [
     {
       "id": "dashboard",
@@ -529,8 +529,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "87411507",
-      "notesHash": "9d946f55",
+      "hash": "d448a530",
+      "notesHash": "bc86742e",
       "elements": [
         {
           "k": "back",
@@ -616,6 +616,21 @@
         {
           "k": "button",
           "text": "Cancel booking",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Recording"
+        },
+        {
+          "k": "field",
+          "text": "Recording file",
+          "value": "MP3 or WAV"
+        },
+        {
+          "k": "button",
+          "text": "Upload to SoundCloud",
           "to": null,
           "primary": false
         }
