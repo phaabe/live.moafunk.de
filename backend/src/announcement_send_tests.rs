@@ -231,6 +231,26 @@ async fn on_air_story_goes_out_at_go_live_unless_cancelled() {
 }
 
 #[tokio::test]
+async fn an_armed_story_of_an_episode_that_never_went_live_expires() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let story = add(&state, SHOW, "onair", "armed", Some(berlin(5, 20)), host).await;
+
+    // Still armed during and soon after the booked time: the host may start late.
+    check_due_announcements(&state, berlin(6, 7)).await;
+    assert_eq!(row(&state, story).await.state, "armed");
+
+    check_due_announcements(&state, berlin(6, 9)).await;
+    let a = row(&state, story).await;
+    assert_eq!(a.state, "cancelled");
+    assert!(a.error.unwrap_or_default().contains("did not go live"));
+    // A late go-live no longer posts it.
+    announce_on_air(&state, SHOW, berlin(6, 10)).await;
+    assert!(media_posts(&ig).is_empty());
+}
+
+#[tokio::test]
 async fn post_unlock_sets_the_time_then_approval_and_pending_is_never_sent() {
     let (state, _t, _tg, ig, _r2) = setup().await;
     let host = add_user(&state, "host", "host").await;
