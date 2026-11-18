@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 13,
+  "rev": 14,
   "screens": [
     {
       "id": "dashboard",
@@ -11,7 +11,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
       "hash": "60a47e42",
-      "notesHash": "4e75b568",
+      "notesHash": "4a66ed6e",
       "elements": [
         {
           "k": "h1",
@@ -94,7 +94,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/schedule",
       "hash": "49407601",
-      "notesHash": "31c6a04d",
+      "notesHash": "67e71cb5",
       "elements": [
         {
           "k": "h1",
@@ -190,7 +190,7 @@
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
       "hash": "868f9bba",
-      "notesHash": "72c33776",
+      "notesHash": "ea6f100c",
       "elements": [
         {
           "k": "h1",
@@ -1734,7 +1734,7 @@
       "lane": "unheard",
       "path": "admin.live.moafunk.de/#/artists",
       "hash": "e0e462bc",
-      "notesHash": "d155d113",
+      "notesHash": "d0328353",
       "elements": [
         {
           "k": "back",
