@@ -24,8 +24,8 @@ Create a single, well-scoped GitHub issue on `phaabe/live.moafunk.de` from `$ARG
    `project::ImgGen`, `project::Upload`, `project::Backup`, `project::Infrastructure`, `project::ExternalShows`,
    `project::Ai`, `project::unheard-artist-form`, `project::UNHEARD`. Add `bug`/`enhancement`/`documentation`/`later` as fitting.
 3. **Pick the parent goal**: `gh issue list --label goal --state open --json number,title`. Choose the goal
-   whose Area fits; a follow-up takes the goal of its source ticket. If none fits, ask the user. Never create a goal.
-   **Milestone**: only when the user plans the ticket for that release. Otherwise none, and `later` if it is parked.
+   whose topic fits; a follow-up takes the goal of its source ticket. If none fits, ask the user. Never create a goal.
+   **Milestone**: only when the ticket is part of that feature (a milestone is one feature inside a topic). Otherwise none, and `later` if it is parked.
 4. **Title**: imperative, Conventional-Commit-flavoured when natural — e.g. `feat(stream): add pre-listen page`.
 5. **Body** (this template):
    ```md
