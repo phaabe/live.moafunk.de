@@ -859,8 +859,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "5571d749",
-      "notesHash": "b5d2986d",
+      "hash": "0ddc6e71",
+      "notesHash": "bc9ceae0",
       "elements": [
         {
           "k": "back",
@@ -887,22 +887,40 @@
           "value": "Focusrite USB ▾"
         },
         {
-          "k": "button",
-          "text": "Run soundcheck",
-          "to": "studio-ready",
-          "primary": false
-        },
-        {
           "k": "row",
           "text": "Music",
           "meta": "Not checked yet",
           "to": null
         },
         {
+          "k": "button",
+          "text": "Start test",
+          "to": "studio-checking",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Skip",
+          "to": null,
+          "primary": false
+        },
+        {
           "k": "row",
           "text": "Mic",
           "meta": "Not checked yet",
           "to": null
+        },
+        {
+          "k": "button",
+          "text": "Start test",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Skip",
+          "to": null,
+          "primary": false
         },
         {
           "k": "row",
@@ -915,12 +933,6 @@
           "text": "Return feed",
           "meta": "Not checked yet",
           "to": null
-        },
-        {
-          "k": "button",
-          "text": "Listen to the return feed",
-          "to": null,
-          "primary": false
         },
         {
           "k": "check",
@@ -938,12 +950,12 @@
     },
     {
       "id": "studio-checking",
-      "title": "Studio · Soundcheck, checking",
+      "title": "Studio · Soundcheck, music tested",
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "59f737c8",
-      "notesHash": "a61695df",
+      "hash": "f18b3fa2",
+      "notesHash": "54b583db",
       "elements": [
         {
           "k": "back",
@@ -970,22 +982,40 @@
           "value": "Focusrite USB ▾"
         },
         {
-          "k": "button",
-          "text": "Stop soundcheck",
-          "to": "studio",
-          "primary": false
-        },
-        {
           "k": "row",
           "text": "Music",
           "meta": "Peak −9 dB · average −21 dB",
           "to": null
         },
         {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
           "k": "row",
           "text": "Mic",
-          "meta": "Waiting for you",
+          "meta": "Not checked yet",
           "to": null
+        },
+        {
+          "k": "button",
+          "text": "Start test",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Skip",
+          "to": "studio-ready",
+          "primary": false
         },
         {
           "k": "row",
@@ -998,28 +1028,6 @@
           "text": "Return feed",
           "meta": "Not checked yet",
           "to": null
-        },
-        {
-          "k": "notice",
-          "text": "The music is checked. Next: the mic."
-        },
-        {
-          "k": "button",
-          "text": "Check the mic",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "No mic in this show",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Listen to the return feed",
-          "to": null,
-          "primary": false
         },
         {
           "k": "check",
@@ -1041,8 +1049,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "c9ed66a7",
-      "notesHash": "c1721d6d",
+      "hash": "b0793543",
+      "notesHash": "d5625cae",
       "elements": [
         {
           "k": "back",
@@ -1069,22 +1077,40 @@
           "value": "Focusrite USB ▾"
         },
         {
-          "k": "button",
-          "text": "Run again",
-          "to": null,
-          "primary": false
-        },
-        {
           "k": "row",
           "text": "Music",
           "meta": "Peak −9 dB · average −21 dB",
           "to": null
         },
         {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
           "k": "row",
           "text": "Mic",
           "meta": "Peak −12 dB · average −24 dB",
           "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
         },
         {
           "k": "row",
@@ -1102,12 +1128,6 @@
           "k": "pill",
           "tone": "ok",
           "text": "Sounds good — ready to go live"
-        },
-        {
-          "k": "button",
-          "text": "Listen to the return feed",
-          "to": null,
-          "primary": false
         },
         {
           "k": "button",
@@ -1135,8 +1155,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "96309b0f",
-      "notesHash": "b31b1e5b",
+      "hash": "5515da87",
+      "notesHash": "d98dbdbe",
       "elements": [
         {
           "k": "back",
@@ -1163,22 +1183,40 @@
           "value": "Focusrite USB ▾"
         },
         {
-          "k": "button",
-          "text": "Run again",
-          "to": "studio-ready",
-          "primary": false
-        },
-        {
           "k": "row",
           "text": "Music",
           "meta": "Peak −9 dB · average −21 dB",
           "to": null
         },
         {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
           "k": "row",
           "text": "Mic",
           "meta": "Too quiet · peak −38 dB",
           "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
         },
         {
           "k": "row",
@@ -1198,12 +1236,6 @@
         },
         {
           "k": "button",
-          "text": "Listen to the return feed",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
           "text": "Confirm anyway",
           "to": null,
           "primary": false
@@ -1217,8 +1249,8 @@
         {
           "k": "button",
           "text": "Go Live",
-          "to": "studio-onair",
-          "primary": true
+          "to": null,
+          "primary": false
         }
       ]
     },
