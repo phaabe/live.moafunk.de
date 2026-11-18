@@ -5613,6 +5613,12 @@ pub async fn start_prerecorded_show_stream(
         return Err(e);
     }
 
+    // The episode's on-air story, if its host left it on.
+    let (state, show_id) = (state.clone(), show.id);
+    tokio::spawn(async move {
+        crate::announcement_send::announce_on_air(&state, show_id, chrono::Utc::now()).await
+    });
+
     Ok(true)
 }
 

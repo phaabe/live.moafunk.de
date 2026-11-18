@@ -68,6 +68,9 @@ pub struct Announcement {
     pub permalink: Option<String>,
     pub media_id: Option<String>,
     pub error: Option<String>,
+    /// Set while the scheduler sends this row; see `announcement_send`.
+    #[serde(skip)]
+    pub send_claimed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +113,13 @@ pub struct AnnouncementSettings {
     pub slots: Vec<String>,
     pub approval_mode: ApprovalMode,
     pub paused: bool,
+    /// Added to every feed caption.
+    #[serde(default = "default_hashtags")]
+    pub hashtags: String,
+}
+
+fn default_hashtags() -> String {
+    "#moafunk".to_string()
 }
 
 impl Default for AnnouncementSettings {
@@ -123,6 +133,7 @@ impl Default for AnnouncementSettings {
             slots: vec!["12:00".to_string(), "18:00".to_string()],
             approval_mode: ApprovalMode::FirstTwo,
             paused: false,
+            hashtags: default_hashtags(),
         }
     }
 }
@@ -162,6 +173,9 @@ pub async fn get_settings(db: &SqlitePool) -> AnnouncementSettings {
     if let Some(paused) = get("announce_paused").await {
         s.paused = paused.trim() == "true";
     }
+    if let Some(tags) = get("announce_hashtags").await {
+        s.hashtags = tags;
+    }
     s
 }
 
@@ -181,11 +195,38 @@ pub async fn save_settings(db: &SqlitePool, s: &AnnouncementSettings) -> Result<
             s.approval_mode.as_str().to_string(),
         ),
         ("announce_paused", s.paused.to_string()),
+        ("announce_hashtags", s.hashtags.trim().to_string()),
     ];
     for (key, value) in pairs {
         db::set_setting(db, key, &value).await?;
     }
     Ok(())
+}
+
+/// Whether a post by `user` needs an admin's approval. Admins never do; a
+/// missing user (deleted) is treated as a host.
+pub async fn needs_approval(
+    conn: &mut sqlx::SqliteConnection,
+    settings: &AnnouncementSettings,
+    user: Option<&crate::models::User>,
+) -> Result<bool, sqlx::Error> {
+    if user.is_some_and(|u| u.role_enum().can_access_admin()) {
+        return Ok(false);
+    }
+    Ok(match settings.approval_mode {
+        ApprovalMode::Always => true,
+        ApprovalMode::Never => false,
+        ApprovalMode::FirstTwo => {
+            let Some(user) = user else { return Ok(true) };
+            let (sent,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM announcements WHERE created_by = ? AND state = 'sent'",
+            )
+            .bind(user.id)
+            .fetch_one(conn)
+            .await?;
+            sent < 2
+        }
+    })
 }
 
 /// Arms the on-air story of a newly booked episode at its start. Keeps an

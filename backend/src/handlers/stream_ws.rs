@@ -274,6 +274,13 @@ async fn handle_stream_socket(
             .go_live(LiveFinalize::new(&state), recorded_show)
             .await;
     }
+    // The episode's on-air story, if its host left it on.
+    if let Some(sid) = show_id {
+        let state = state.clone();
+        tokio::spawn(async move {
+            crate::announcement_send::announce_on_air(&state, sid, chrono::Utc::now()).await
+        });
+    }
     if let Some(sid) = recorded_show {
         if let Err(e) = crate::handlers::recording::ensure_recording_started(&state, sid).await {
             tracing::error!("Failed to auto-start recording for show {}: {}", sid, e);

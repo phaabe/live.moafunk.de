@@ -47,6 +47,10 @@ pub(crate) struct FakeInstagram {
     refresh_fails: Arc<Mutex<bool>>,
     /// Lifetime of a refreshed token in seconds.
     expires_in: Arc<Mutex<i64>>,
+    /// The token refresh fails because the token is younger than 24 h.
+    refresh_too_young: Arc<Mutex<bool>>,
+    /// `media_publish` fails.
+    publish_fails: Arc<Mutex<bool>>,
 }
 
 impl FakeInstagram {
@@ -57,6 +61,8 @@ impl FakeInstagram {
             quota: Arc::new(Mutex::new((3, 100))),
             refresh_fails: Arc::default(),
             expires_in: Arc::new(Mutex::new(60 * 24 * 60 * 60)),
+            refresh_too_young: Arc::default(),
+            publish_fails: Arc::default(),
         };
         let app = axum::Router::new()
             .fallback(fake_request)
@@ -92,6 +98,14 @@ impl FakeInstagram {
         *self.refresh_fails.lock().unwrap() = true;
     }
 
+    pub(crate) fn refresh_too_young(&self) {
+        *self.refresh_too_young.lock().unwrap() = true;
+    }
+
+    pub(crate) fn fail_publish(&self, fail: bool) {
+        *self.publish_fails.lock().unwrap() = fail;
+    }
+
     pub(crate) fn set_expires_in(&self, secs: i64) {
         *self.expires_in.lock().unwrap() = secs;
     }
@@ -114,6 +128,17 @@ async fn fake_request(State(fake): State<FakeInstagram>, uri: Uri, request: Requ
 
     let fields = call.param("fields").unwrap_or_default();
     let answer = if path == "/refresh_access_token" {
+        if *fake.refresh_too_young.lock().unwrap() {
+            // Assumed wording: Meta documents the 24 h rule, not its error.
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {
+                    "message": "The access token must be at least 24 hours old to be refreshed",
+                    "type": "OAuthException", "code": 190
+                }})),
+            )
+                .into_response();
+        }
         if *fake.refresh_fails.lock().unwrap() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -134,6 +159,18 @@ async fn fake_request(State(fake): State<FakeInstagram>, uri: Uri, request: Requ
         json!({"data": [{"quota_usage": used, "config": {"quota_total": total, "quota_duration": 86400}}]})
     } else if method == "POST" && path.ends_with("/media") {
         json!({"id": "container-1"})
+    } else if method == "POST"
+        && path.ends_with("/media_publish")
+        && *fake.publish_fails.lock().unwrap()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {
+                "message": "The user is not an Instagram Business",
+                "type": "OAuthException", "code": 10
+            }})),
+        )
+            .into_response();
     } else if method == "POST" && path.ends_with("/media_publish") {
         json!({"id": "media-1"})
     } else if fields == "status_code" {

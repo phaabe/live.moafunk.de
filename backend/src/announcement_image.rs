@@ -455,7 +455,6 @@ fn post(input: &AnnouncementRender, f: &Fonts, logo: &RgbaImage) -> RgbaImage {
 
 /// Store a rendered announcement at `shows/{id}/announcements/{slot}.jpg` and
 /// return the key, for a presigned URL Meta can fetch.
-#[allow(dead_code)] // The publish scheduler calls this; it lands separately.
 pub async fn store_announcement_jpeg(
     state: &Arc<AppState>,
     show_id: i64,
@@ -501,12 +500,7 @@ pub async fn api_announcement_preview(
         )));
     }
 
-    // The episode cover; a show without one gets the default black cover.
-    let image = match storage::download_file(&state, &format!("shows/{id}/cover.png")).await {
-        Ok((data, _)) => image::load_from_memory(&data)
-            .map_err(|e| AppError::Internal(format!("Cover is not an image: {e}")))?,
-        Err(_) => DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, BLACK)),
-    };
+    let image = load_announcement_image(&state, id, None).await?;
     let input = announcement_for_show(&state, &show, kind, query, image).await?;
     let jpeg = tokio::task::spawn_blocking(move || render_announcement_jpeg(&input))
         .await
@@ -521,6 +515,25 @@ pub async fn api_announcement_preview(
         ],
         jpeg,
     ))
+}
+
+/// The photo of an announcement: the uploaded `image_key`, else the episode
+/// cover. A show without a cover gets the default black cover.
+pub async fn load_announcement_image(
+    state: &Arc<AppState>,
+    show_id: i64,
+    image_key: Option<&str>,
+) -> Result<DynamicImage> {
+    let cover = format!("shows/{show_id}/cover.png");
+    let data = match storage::download_file(state, image_key.unwrap_or(&cover)).await {
+        Ok((data, _)) => data,
+        Err(_) if image_key.is_none() => {
+            return Ok(DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, BLACK)))
+        }
+        Err(e) => return Err(e),
+    };
+    image::load_from_memory(&data)
+        .map_err(|e| AppError::Internal(format!("Announcement photo is not an image: {e}")))
 }
 
 /// Render input from the episode row. `image` is the seam for uploaded or

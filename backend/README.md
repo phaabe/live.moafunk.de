@@ -206,6 +206,29 @@ sudo certbot --nginx -d admin.live.moafunk.de
 sudo systemctl reload nginx
 ```
 
+## Instagram announcements
+
+The scheduler checks every 60 s and posts due announcements of an episode:
+
+- **pre** and **post**: feed images at a configured slot time. The caption gets the station hashtags (setting `hashtags`, default `#moafunk`).
+- **onair**: a story, sent when the episode goes live, only if the host left it on.
+- **post** gets its time only when the episode's SoundCloud track is public: the next day, evening slot first, else the next free slot.
+- Posts that need approval wait in `pending_approval` and are never sent. When their time passes they stay pending; approving moves a feed post to the next free slot.
+- The pause switch in the admin settings stops all sends.
+- Each sent or failed post sends a notice to the admin Telegram topic. Admins retry failed posts in the admin queue.
+
+### Staging
+
+- Staging must run with `INSTAGRAM_ACCOUNT=dev` (test account `moafunk_tester`) and the dev token only. Never put a prod token on staging.
+- Manual test on staging, before production:
+  1. Book a test episode. Plan a pre post, leave the on-air story on, plan a post.
+  2. Check the pre post on `moafunk_tester` at its time.
+  3. Go live: check the on-air story.
+  4. Make the SoundCloud track public: the post gets its time; check it at that time.
+  5. Cancel an announcement: nothing is posted.
+  6. Make a send fail (for example a wrong dev token): the row is `failed`, Telegram shows the error, and **Retry** in the admin queue works after the fix.
+- Pilot: 2 hosts use announcements on staging (test account) before production posts to `@moafunk_radio`.
+
 ## Telegram Bot
 
 The backend optionally runs a Telegram bot (via [teloxide](https://docs.rs/teloxide)) alongside the HTTP server. It is fully disabled when `TELEGRAM_BOT_TOKEN` is not set.

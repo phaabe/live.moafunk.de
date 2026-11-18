@@ -1,5 +1,6 @@
 mod ai;
 mod announcement_image;
+mod announcement_send;
 mod announcements;
 mod audio;
 mod auth;
@@ -786,6 +787,26 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::api::api_reset_password),
         ) // Settings API (notification toggle)
         .route(
+            "/api/admin/announcements",
+            get(handlers::announcements::api_admin_list_announcements),
+        )
+        .route(
+            "/api/admin/announcements/:id/approve",
+            post(handlers::announcements::api_admin_approve_announcement),
+        )
+        .route(
+            "/api/admin/announcements/:id/reject",
+            post(handlers::announcements::api_admin_reject_announcement),
+        )
+        .route(
+            "/api/admin/announcements/:id/retry",
+            post(handlers::announcements::api_admin_retry_announcement),
+        )
+        .route(
+            "/api/admin/instagram/status",
+            get(handlers::announcements::api_admin_instagram_status),
+        )
+        .route(
             "/api/settings/announcements",
             get(handlers::announcements::api_get_announcement_settings)
                 .put(handlers::announcements::api_put_announcement_settings),
@@ -944,6 +965,19 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 scheduler::check_prerecorded_show_start(state.clone(), chrono::Utc::now()).await;
+            }
+        });
+    }
+
+    // Send due Instagram announcements (feed posts, missed on-air stories)
+    // and set post times once a SoundCloud track is public.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                announcement_send::check_due_announcements(&state, chrono::Utc::now()).await;
             }
         });
     }
