@@ -13,7 +13,16 @@ import {
 } from '../api';
 import BoardIcon from '../components/BoardIcon.vue';
 import { episodeDay } from '../episodeRow';
-import { CAPTION_MAX, EPISODE_LIMIT, HEADLINE_MAX, inSlot, postTime } from '../promotion';
+import {
+  CAPTION_MAX,
+  EPISODE_LIMIT,
+  HEADLINE_MAX,
+  inSlot,
+  PAUSED_NOTE,
+  PHOTO_MAX_MB,
+  photoError as checkPhoto,
+  postTime,
+} from '../promotion';
 
 // Flow screen `announce`: the composer of the pre- or post-announcement
 // (/shows/<id>/announce/<pre|post>). The post slot uses the same screen.
@@ -30,8 +39,14 @@ const list = ref<Announcement[]>([]);
 const times = ref<AnnouncementTime[]>([]);
 const error = ref<string | null>(null);
 const saving = ref(false);
+const paused = ref(false);
+const needsApproval = ref(false);
 
 const image = ref<AnnouncementImage>('cover');
+/** The uploaded photo; only used with `image === 'upload'`. */
+const imageKey = ref<string | null>(null);
+const uploading = ref(false);
+const photoError = ref<string | null>(null);
 const headline = ref('');
 const caption = ref('');
 const collaborator = ref(true);
@@ -61,18 +76,23 @@ const valid = computed(
     !captionError.value &&
     headline.value.trim() !== '' &&
     caption.value.trim() !== '' &&
+    (image.value !== 'upload' || !!imageKey.value) &&
+    !uploading.value &&
     (!needsTime.value || when.value !== '')
 );
 
 async function load() {
   error.value = null;
   try {
-    const [loaded, announcements, offered] = await Promise.all([
+    const [loaded, announcements, offered, meta] = await Promise.all([
       showsApi.get(id.value),
       announcementsApi.list(id.value),
       announcementsApi.times(id.value, slot.value),
+      announcementsApi.meta(id.value),
     ]);
     show.value = loaded;
+    paused.value = meta.paused;
+    needsApproval.value = meta.needs_approval;
     list.value = announcements;
     times.value = offered;
     const series = loaded.series_slug ? await seriesApi.get(loaded.series_slug) : null;
@@ -80,6 +100,7 @@ async function load() {
 
     const a = current.value;
     image.value = a?.image_source ?? 'cover';
+    imageKey.value = a?.image_key ?? null;
     headline.value = a?.headline ?? '';
     // The caption draft comes from the episode description.
     caption.value = a?.caption ?? loaded.description ?? '';
@@ -101,7 +122,7 @@ watch([id, slot], load, { immediate: true });
 const preview = ref('');
 let previewTimer: ReturnType<typeof setTimeout> | null = null;
 watch(
-  [headline, layout, id, slot],
+  [headline, layout, image, imageKey, id, slot],
   () => {
     if (previewTimer) clearTimeout(previewTimer);
     previewTimer = setTimeout(() => {
@@ -109,7 +130,9 @@ watch(
         id.value,
         slot.value,
         headline.value,
-        layout.value
+        layout.value,
+        image.value,
+        image.value === 'upload' ? imageKey.value : null
       );
     }, 400);
   },
@@ -118,6 +141,27 @@ watch(
 onUnmounted(() => {
   if (previewTimer) clearTimeout(previewTimer);
 });
+
+/** Check the picked photo, then upload it at once. */
+async function pickPhoto(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  photoError.value = checkPhoto(file);
+  if (photoError.value) {
+    input.value = '';
+    return;
+  }
+  uploading.value = true;
+  try {
+    imageKey.value = (await announcementsApi.upload(id.value, file)).image_key;
+  } catch (e) {
+    photoError.value = e instanceof Error ? e.message : 'Could not upload the photo';
+    input.value = '';
+  } finally {
+    uploading.value = false;
+  }
+}
 
 const back = () => router.push(`/shows/${id.value}`);
 
@@ -130,6 +174,7 @@ async function schedule() {
       headline: headline.value.trim(),
       caption: caption.value.trim(),
       image_source: image.value,
+      ...(image.value === 'upload' && imageKey.value ? { image_key: imageKey.value } : {}),
       layout: layout.value,
       collaborator: !!handle.value && collaborator.value,
       ...(when.value ? { scheduled_at: when.value } : {}),
@@ -164,18 +209,33 @@ async function schedule() {
                 <label class="check"
                   ><input v-model="image" type="radio" value="cover" />Episode cover</label
                 >
-                <!-- No upload endpoint yet. -->
                 <label class="check"
-                  ><input v-model="image" type="radio" value="upload" disabled />Upload a
-                  photo</label
+                  ><input v-model="image" type="radio" value="upload" />Upload a photo</label
                 >
                 <label class="check"
                   ><input v-model="image" type="radio" value="guest" />Guest photo</label
                 >
               </div>
-              <p class="hint">
-                The station frame, font and filter are added. Photo upload comes later.
-              </p>
+              <template v-if="image === 'upload'">
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png"
+                  aria-label="Photo file"
+                  :disabled="uploading"
+                  @change="pickPhoto"
+                />
+                <p class="hint">
+                  {{
+                    uploading
+                      ? 'Uploading photo…'
+                      : imageKey
+                        ? 'Photo uploaded.'
+                        : `JPEG or PNG, max ${PHOTO_MAX_MB} MB.`
+                  }}
+                </p>
+                <p v-if="photoError" class="field-error">{{ photoError }}</p>
+              </template>
+              <p class="hint">The station frame, font and filter are added.</p>
               <label class="field">
                 <span class="label">Headline on the image</span>
                 <input v-model="headline" type="text" class="input" />
@@ -231,6 +291,10 @@ async function schedule() {
               :src="preview"
               :alt="`Preview · 4:5 post by moafunk_radio${handle && collaborator ? ` and ${handle}` : ''}`"
             />
+            <p v-if="paused" class="notice">{{ PAUSED_NOTE }}</p>
+            <p v-if="needsApproval" class="hint">
+              An admin checks this post first. It is scheduled after the approval.
+            </p>
             <p class="notice">
               After it is posted, the caption cannot be changed. Until then you can edit or cancel
               it here.
@@ -241,8 +305,12 @@ async function schedule() {
             <p v-if="error" class="field-error" role="alert">{{ error }}</p>
             <div class="actions">
               <BaseButton variant="secondary" @click="back">Cancel</BaseButton>
-              <BaseButton class="xl" :disabled="!valid || sent" :loading="saving" @click="schedule"
-                >Schedule post</BaseButton
+              <BaseButton
+                class="xl"
+                :disabled="!valid || sent"
+                :loading="saving"
+                @click="schedule"
+                >{{ needsApproval ? 'Send for approval' : 'Schedule post' }}</BaseButton
               >
             </div>
           </div>
