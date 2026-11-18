@@ -15,7 +15,10 @@ on:
       - staging
 
 # Both checks must exist for every PR, including documentation-only changes.
-# Keep path filters out of this workflow so these names can be required.
+# Keep path filters out of `on:` so these names can be required: a required
+# check that never starts blocks the merge. Instead, on PRs into staging,
+# backend-ci is skipped by its `if` when the PR touches nothing it checks.
+# A skipped job reports success.
 permissions:
   contents: read
 
@@ -24,8 +27,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  backend-scope:
+    name: backend-ci scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.touches.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR merge commit and its parents, for scripts/pr-touches.sh.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check what the PR changes
+        id: touches
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          backend="$(scripts/pr-touches.sh '^backend/|\.sh$|^scripts/coverage-floors\.cjs$|^\.github/workflows/epic-ci\.yml$')"
+          echo "backend=$backend" >>"$GITHUB_OUTPUT"
+
   backend:
     name: backend-ci
+    needs: backend-scope
+    # Runs unless the scope says false, so a failed scope job never skips it.
+    if: ${{ !cancelled() && needs.backend-scope.outputs.backend != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
@@ -50,6 +79,14 @@ jobs:
         uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
+
+      # Restores the dependency builds of the last staging push. Only staging
+      # pushes save, so PR runs cannot evict each other's caches.
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
 
       - name: Check backend formatting
         run: cargo fmt --check
