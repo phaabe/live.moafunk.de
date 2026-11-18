@@ -366,7 +366,11 @@ onUnmounted(() => {
         </label>
         <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
         <button
-          :class="flow.liveTestPassed.value ? 'ls-btn-secondary' : 'ls-btn-primary'"
+          :class="
+            flow.liveTestPassed.value || soundcheck.running.value
+              ? 'ls-btn-secondary'
+              : 'ls-btn-primary'
+          "
           type="button"
           @click="toggleRun"
         >
@@ -384,7 +388,12 @@ onUnmounted(() => {
           </li>
         </ol>
         <div class="sc-result" aria-live="polite">
-          <p v-if="soundcheck.prompt.value" class="sc-question">{{ soundcheck.prompt.value }}</p>
+          <p v-if="soundcheck.gate.value" class="notice" role="alert">
+            {{ soundcheck.gate.value.text }}
+          </p>
+          <p v-else-if="soundcheck.prompt.value" class="sc-question">
+            {{ soundcheck.prompt.value }}
+          </p>
           <p v-else-if="flow.liveTestPassed.value" class="pill status-banner ok">
             <span class="dot" aria-hidden="true"></span
             >{{
@@ -401,6 +410,14 @@ onUnmounted(() => {
           </p>
         </div>
         <div class="sc-actions">
+          <button
+            v-if="soundcheck.gate.value"
+            class="ls-btn-primary"
+            type="button"
+            @click="soundcheck.next()"
+          >
+            {{ soundcheck.gate.value.start }}
+          </button>
           <button
             v-if="soundcheck.skipLabel.value"
             class="ls-btn-secondary"

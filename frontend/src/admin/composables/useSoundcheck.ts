@@ -18,8 +18,10 @@ export const RETURN_SIGNAL_DB = -50;
 /** Chunks the server must confirm: one second of the recorder's 250 ms chunks. */
 export const SERVER_MIN_CHUNKS = 4;
 
-/** How long the page listens to the music, then to the mic. */
-export const SOURCE_MS = 5000;
+/** How long the page listens to the music: time to start a track. */
+export const MUSIC_MS = 10000;
+/** How long the page listens to the mic. */
+export const MIC_MS = 5000;
 /** The server reports its counters with each pong, every 2 s. */
 export const SERVER_TIMEOUT_MS = 10000;
 /** The relay runs a few seconds behind. */
@@ -79,8 +81,23 @@ const NAMES: Record<SoundcheckStepId, string> = {
  * a time and measures what arrives. It cannot tell which source it was.
  */
 const SOURCES = [
-  { id: 'music', name: 'The music', prompt: 'Play your music now.', skip: 'No music in this show' },
-  { id: 'mic', name: 'The mic', prompt: 'Now talk into the mic.', skip: 'No mic in this show' },
+  {
+    id: 'music',
+    name: 'The music',
+    ms: MUSIC_MS,
+    prompt: 'Play your music now.',
+    skip: 'No music in this show',
+    gate: null,
+  },
+  {
+    id: 'mic',
+    name: 'The mic',
+    ms: MIC_MS,
+    prompt: 'Now talk into the mic.',
+    skip: 'No mic in this show',
+    // The host has to stop the music first, so this check waits for a click.
+    gate: { text: 'The music is checked. Next: the mic.', start: 'Check the mic' },
+  },
 ] as const;
 
 /** "−9 dB", with a real minus sign. */
@@ -112,7 +129,10 @@ export function useSoundcheck(deps: SoundcheckDeps) {
   const prompt = ref<string | null>(null);
   /** The label of the skip button while the music or the mic is checked. */
   const skipLabel = ref<string | null>(null);
+  /** The page waits for the host: a notice, and the label of the button that goes on. */
+  const gate = ref<{ text: string; start: string } | null>(null);
   let skipped = false;
+  let proceed = false;
   const listening = ref(false);
   const listenError = ref<string | null>(null);
 
@@ -186,11 +206,19 @@ export function useSoundcheck(deps: SoundcheckDeps) {
 
   /** Ask for one source and measure it. True: it gave a signal. */
   async function checkSource(token: number, source: (typeof SOURCES)[number]): Promise<boolean> {
-    set(source.id, 'running', 'Listening…');
-    prompt.value = source.prompt;
     skipLabel.value = source.skip;
     skipped = false;
-    const { peak, average } = await measure(token, SOURCE_MS);
+    if (source.gate) {
+      set(source.id, 'running', 'Waiting for you');
+      prompt.value = null;
+      gate.value = source.gate;
+      proceed = false;
+      while (!proceed && !skipped) await tick(token);
+      gate.value = null;
+    }
+    set(source.id, 'running', 'Listening…');
+    prompt.value = source.prompt;
+    const { peak, average } = await measure(token, source.ms);
     skipLabel.value = null;
     if (skipped) {
       set(source.id, 'skipped', source.skip);
@@ -300,6 +328,7 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     deps.setPassed(false);
     prompt.value = null;
     skipLabel.value = null;
+    gate.value = null;
     running.value = true;
     // Opened in the click, so the browser lets it play later.
     feed = deps.openReturn();
@@ -333,6 +362,7 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     running.value = false;
     prompt.value = null;
     skipLabel.value = null;
+    gate.value = null;
     steps.value = freshSteps();
     outcome.value = null;
     problem.value = null;
@@ -375,6 +405,11 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     }
   }
 
+  /** The host is ready for the check the page waits with. */
+  function next() {
+    proceed = true;
+  }
+
   /** The show has no music, or no mic: go on with the next check. */
   function skip() {
     skipped = true;
@@ -386,6 +421,7 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     running.value = false;
     prompt.value = null;
     skipLabel.value = null;
+    gate.value = null;
     teardown();
   }
 
@@ -397,9 +433,11 @@ export function useSoundcheck(deps: SoundcheckDeps) {
     canOverride,
     prompt,
     skipLabel,
+    gate,
     listening,
     listenError,
     start,
+    next,
     skip,
     reset,
     confirm,
