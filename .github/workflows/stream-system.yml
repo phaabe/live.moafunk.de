@@ -62,7 +62,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          stream="$(scripts/pr-touches.sh '^backend/src/(handlers/(stream_ws|recording)|stream_[a-z_]+|recording[a-z_]*|broadcast_tests|audio|auth|config|main|metrics|telegram_notify)\.rs$|^backend/Cargo\.(toml|lock)$|^docs/stream-rework/prod/|^\.github/workflows/stream-system\.yml$|^scripts/pr-touches\.sh$')"
+          stream="$(scripts/pr-touches.sh '^backend/src/(handlers/(stream_ws|recording)|stream_[a-z_]+|recording[a-z_]*|broadcast_tests|audio|auth|config|main|metrics|telegram_notify)\.rs$|^backend/Cargo\.(toml|lock)$|^docs/stream-rework/prod/|^\.github/workflows/stream-system\.yml$|^\.github/actions/apt-install/|^scripts/pr-touches\.sh$')"
           echo "stream=$stream" >>"$GITHUB_OUTPUT"
 
   system:
@@ -81,10 +81,10 @@ jobs:
           persist-credentials: false
 
       - name: Install ffmpeg
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg
+          options: --no-install-recommends
 
       - name: Pull the stream stack images
         run: |
