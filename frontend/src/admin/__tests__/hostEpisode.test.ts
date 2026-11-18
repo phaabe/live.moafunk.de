@@ -37,6 +37,11 @@ vi.mock('../components/AudioPlayer.vue', () => ({
   },
 }));
 
+// jsdom cannot decode audio; the upload goes on without peaks.
+vi.mock('../../pages/waveformExtractor', () => ({
+  extractWaveformPeaksJson: async () => undefined,
+}));
+
 import HostEpisodePage from '../pages/HostEpisodePage.vue';
 
 const FUTURE = '2099-01-04';
@@ -81,10 +86,18 @@ let app: App | undefined;
 let root: HTMLDivElement;
 let current: ShowDetail;
 let requests: { url: string; method: string; body: unknown }[];
+let uploaded: FormData | undefined;
+let soundcloud: Response;
 
 beforeEach(() => {
   current = episode();
   requests = [];
+  uploaded = undefined;
+  soundcloud = Response.json({
+    success: true,
+    track_id: '555',
+    track_url: 'https://soundcloud.com/radio-moafunk/brunchtime-31',
+  });
   root = document.createElement('div');
   document.body.appendChild(root);
   vi.stubGlobal(
@@ -112,6 +125,13 @@ beforeEach(() => {
         });
       if (url === '/api/my-show')
         return Response.json({ assigned: true, shows: [{ ...current, artists: [] }] });
+      if (url === '/api/shows/42/upload-recording' && method === 'POST') {
+        uploaded = options?.body as FormData;
+        const name = (uploaded.get('file') as File).name;
+        current = { ...current, recording_filename: name, recording_url: `https://r2/${name}` };
+        return Response.json({ success: true, key: `recordings/${name}` });
+      }
+      if (url === '/api/shows/42/soundcloud/upload' && method === 'POST') return soundcloud;
       throw new Error(`Unexpected API request: ${method} ${url}`);
     })
   );
@@ -200,7 +220,9 @@ describe('Episode', () => {
     ]) {
       expect(text()).toContain(part);
     }
-    for (const part of LEFT_OUT) expect(text()).not.toContain(part);
+    for (const part of LEFT_OUT.filter((p) => p !== 'SoundCloud')) {
+      expect(text()).not.toContain(part);
+    }
     expect(button('Open Studio').disabled).toBe(true);
     expect(root.querySelector('a')?.getAttribute('href')).toBe('/shows/brunchtime');
   });
@@ -301,6 +323,67 @@ describe('Episode', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime'));
     expect(confirm).toHaveBeenCalledTimes(2);
     expect(requests.find((r) => r.url.endsWith('/booking'))?.method).toBe('DELETE');
+  });
+});
+
+describe('Episode · Recording', () => {
+  function pick(name: string) {
+    const label = [...root.querySelectorAll('label')].find((l) =>
+      l.textContent?.includes('Recording file')
+    );
+    const input = label?.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', {
+      value: [new File(['mp3'], name, { type: 'audio/mpeg' })],
+      configurable: true,
+    });
+    input.dispatchEvent(new Event('change'));
+  }
+
+  it('uploads a picked file as the episode recording', async () => {
+    await mount();
+    expect(button('Upload to SoundCloud').disabled).toBe(true);
+    pick('brunchtime-2510.mp3');
+    await vi.waitFor(() => expect(text()).toContain('brunchtime-2510.mp3'));
+    expect((uploaded?.get('file') as File).name).toBe('brunchtime-2510.mp3');
+    // Reloaded, so the button sees the new recording.
+    expect(requests.filter((r) => r.url === '/api/shows/42').length).toBe(2);
+    expect(button('Upload to SoundCloud').disabled).toBe(false);
+  });
+
+  it('sends the recording to SoundCloud and shows the track link', async () => {
+    current = episode({ recording_filename: 'set.mp3', recording_url: 'https://r2/set.mp3' });
+    await mount();
+    button('Upload to SoundCloud').click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('a[href^="https://soundcloud.com"]')?.textContent).toBe(
+        'https://soundcloud.com/radio-moafunk/brunchtime-31'
+      )
+    );
+    expect(requests.filter((r) => r.url.endsWith('/soundcloud/upload'))).toHaveLength(1);
+  });
+
+  it('shows the SoundCloud error, and asks an admin to reconnect when not authorized', async () => {
+    current = episode({ recording_filename: 'set.mp3' });
+    soundcloud = Response.json({ success: false, error: 'SoundCloud API error (500): down' });
+    await mount();
+    button('Upload to SoundCloud').click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+        'SoundCloud API error (500): down'
+      )
+    );
+
+    soundcloud = Response.json(
+      { error: 'SoundCloud not authorized. Visit /api/soundcloud/auth to connect your account.' },
+      { status: 400 }
+    );
+    button('Upload to SoundCloud').click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+        'SoundCloud is not connected. An admin must connect the account again.'
+      )
+    );
+    expect(root.querySelector('a[href^="https://soundcloud.com"]')).toBeNull();
   });
 });
 

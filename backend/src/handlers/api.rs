@@ -4246,14 +4246,8 @@ pub async fn api_upload_show_recording(
     headers: HeaderMap,
     mut multipart: axum::extract::Multipart,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
-
-    // Fetch show to get date and title
-    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+    // The show's host (or its creator, or an admin) may upload its recording.
+    let (user, show) = require_show_editor(&state, &headers, id).await?;
 
     // Process uploaded file
     let mut file_data: Option<(String, Vec<u8>, String)> = None;
@@ -4335,8 +4329,10 @@ pub async fn api_upload_show_recording(
         .execute(&state.db)
         .await?;
 
-    // Auto-upload to SoundCloud in background (fire-and-forget)
-    if crate::soundcloud::has_token(&state).await {
+    // Auto-upload to SoundCloud in background (fire-and-forget). Only for an
+    // admin upload: the host page has its own Upload to SoundCloud button, and
+    // upload_track makes a new track on every call.
+    if user.role_enum().can_access_admin() && crate::soundcloud::has_token(&state).await {
         let sc_state = state.clone();
         let sc_show_id = id;
         tokio::spawn(async move {
