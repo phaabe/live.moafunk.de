@@ -344,7 +344,9 @@ pub async fn api_put_announcement(
         }
     };
     if let Some(at) = scheduled_at {
-        if at <= Utc::now() {
+        // The on-air story goes out at go-live, not at its time, so a host who
+        // starts late can still switch it on; a missed one expires later.
+        if slot != AnnouncementSlot::OnAir && at <= Utc::now() {
             return Err(AppError::BadRequest(
                 "The send time is in the past".to_string(),
             ));
