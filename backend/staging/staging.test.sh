@@ -67,6 +67,9 @@ SOUNDCLOUD_REDIRECT_URI=https://admin.live.moafunk.de/api/soundcloud/callback
 SOUNDCLOUD_AUTO_UPLOAD=true
 SOUNDCLOUD_KEEP_TRACKS=10
 TELEGRAM_ENABLED=false
+INSTAGRAM_ACCOUNT=dev
+INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
+INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
 EOF
   cat >"$BOX/stream.env" <<EOF
 HARBOR_PORT=8005
@@ -159,6 +162,9 @@ case_env "Telegram setting added later" "TELEGRAM_NEW_SETTING must not be set" T
 case_env "SoundCloud static token set" "SOUNDCLOUD_ACCESS_TOKEN must not be set" SOUNDCLOUD_ACCESS_TOKEN x
 case_env "SoundCloud setting added later" "SOUNDCLOUD_NEW_SETTING must not be set" SOUNDCLOUD_NEW_SETTING x
 case_env "Instagram token set" "INSTAGRAM_ACCESS_TOKEN_PROD must not be set" INSTAGRAM_ACCESS_TOKEN_PROD x
+case_env "Instagram prod account id set" "INSTAGRAM_BUSINESS_ACCOUNT_ID_PROD must not be set" INSTAGRAM_BUSINESS_ACCOUNT_ID_PROD 1
+case_env "Instagram station account" "INSTAGRAM_ACCOUNT must be 'dev'" INSTAGRAM_ACCOUNT prod
+case_env "Instagram account unset" "INSTAGRAM_ACCOUNT must be 'dev'" INSTAGRAM_ACCOUNT -
 case_env "Facebook secret set" "FACEBOOK_APP_SECRET must not be set" FACEBOOK_APP_SECRET x
 case_env "OpenAI key set" "OPENAI_API_KEY must not be set" OPENAI_API_KEY sk-x
 case_env "empty recovery mail key" "RECOVERY_MAIL_FROM must not be set" RECOVERY_MAIL_FROM ""
@@ -202,6 +208,8 @@ STAGING_ICECAST_ADMIN_PASSWORD=adminadminadminadminadmin1
 STAGING_ICECAST_RELAY_PASSWORD=relayrelayrelayrelayrelay1
 STAGING_SOUNDCLOUD_CLIENT_ID=stagingclientid
 STAGING_SOUNDCLOUD_CLIENT_SECRET=stagingclientsecret
+STAGING_INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
+STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
 EOF
 }
 
@@ -508,6 +516,9 @@ chmod +x "$TMP/pushbin/bw" "$TMP/pushbin/ssh" "$TMP/pushbin/bws"
 sm_secrets() {
   printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"},
     {"key":"SOUNDCLOUD_CLIENT_SECRET","value":"%s"},
+    {"key":"INSTAGRAM_ACCESS_TOKEN_DEV","value":"igdevtoken"},
+    {"key":"INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV","value":"17841400000000000"},
+    {"key":"INSTAGRAM_ACCESS_TOKEN_PROD","value":"igprodtoken"},
     {"key":"TELEGRAM_BOT_TOKEN","value":"123:abc"}]' "$1" >"$SM"
 }
 sm_secrets stationclientsecret
@@ -562,6 +573,12 @@ else
 fi
 if [[ "$out" != *stationclientsecret* ]]; then pass "push prints no Secrets Manager value"; else fail "push prints no Secrets Manager value"; fi
 if grep -q "123:abc" "$BOX/.env"; then fail "an unrelated Secrets Manager secret reached the box"; else pass "only the SoundCloud app comes from Secrets Manager"; fi
+if grep -qx "INSTAGRAM_ACCESS_TOKEN_DEV=igdevtoken" "$BOX/.env" && grep -qx "INSTAGRAM_ACCOUNT=dev" "$BOX/.env"; then
+  pass "the box gets the Instagram test account"
+else
+  fail "the box gets the Instagram test account"
+fi
+if grep -q "igprodtoken" "$BOX/.env"; then fail "the Instagram station token reached the box"; else pass "the Instagram station token stays off the box"; fi
 
 expect_refused "push without a Secrets Manager token stops" "export BWS_ACCESS_TOKEN" push_without_sm_token
 sm_secrets ""
