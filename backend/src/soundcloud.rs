@@ -1251,6 +1251,13 @@ pub struct SoundCloudStatus {
     pub auth_url: Option<String>,
 }
 
+/// The account behind the current token, asked live at SoundCloud (`GET /me`).
+/// Uses the same token as an upload, so a dead or unrefreshable token fails here.
+pub async fn check_connection(state: &Arc<AppState>) -> Result<String> {
+    let token = get_access_token(state).await?;
+    me_permalink(&token).await
+}
+
 pub async fn get_status(state: &Arc<AppState>) -> SoundCloudStatus {
     let configured = is_configured(state);
     let authorized = has_token(state).await;

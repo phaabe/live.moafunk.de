@@ -723,6 +723,10 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::api::api_soundcloud_status),
         )
         .route(
+            "/api/soundcloud/check",
+            get(handlers::api::api_soundcloud_check),
+        )
+        .route(
             "/api/soundcloud/auth",
             get(handlers::api::api_soundcloud_auth),
         )

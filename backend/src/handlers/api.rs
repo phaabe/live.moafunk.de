@@ -4732,6 +4732,18 @@ pub async fn api_soundcloud_status(
     Ok(Json(status))
 }
 
+/// GET /api/soundcloud/check
+/// Asks SoundCloud which account the stored token belongs to (refreshing it
+/// first when it expires soon). The nightly e2e test checks staging with it.
+pub async fn api_soundcloud_check(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_show_creator(&state, &headers).await?;
+    let account = crate::soundcloud::check_connection(&state).await?;
+    Ok(Json(serde_json::json!({ "account": account })))
+}
+
 /// GET /api/soundcloud/auth
 /// Redirects the admin to SoundCloud's OAuth authorization page.
 pub async fn api_soundcloud_auth(

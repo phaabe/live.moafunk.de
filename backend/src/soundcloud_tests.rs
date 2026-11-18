@@ -634,6 +634,27 @@ async fn code_exchange_refuses_another_account() {
     assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
 }
 
+/// The check asks SoundCloud for the account with the current token, and
+/// refreshes an expiring token first, like an upload would.
+#[tokio::test]
+async fn connection_check_returns_the_account() {
+    let (state, _temp, fake, _r2) = connected().await;
+    assert_eq!(check_connection(&state).await.unwrap(), "moafunk-test");
+    assert_eq!(
+        fake.call("GET /me").auth.as_deref(),
+        Some("OAuth new-access")
+    );
+
+    set_expires_in(&state, -1).await;
+    fake.calls.lock().unwrap().clear();
+    assert_eq!(check_connection(&state).await.unwrap(), "moafunk-test");
+    assert_eq!(fake.routes(), vec!["POST /oauth/token", "GET /me"]);
+
+    delete_stored_token(&state).await.unwrap();
+    let err = check_connection(&state).await.unwrap_err().to_string();
+    assert!(err.contains("Visit /api/soundcloud/auth"), "{err}");
+}
+
 // ── Staging cleanup ─────────────────────────────────────────────────────────
 
 /// On staging, an upload keeps the newest SOUNDCLOUD_KEEP_TRACKS tracks of the
