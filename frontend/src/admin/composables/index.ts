@@ -20,6 +20,16 @@ export {
 } from './useAudioCapture';
 export { useAudioMeter } from './useAudioMeter';
 export { useDbMeter, dbToLevel, DB_FLOOR, DB_CEIL } from './useDbMeter';
+export {
+  useSoundcheck,
+  createReturnFeed,
+  formatDb,
+  type ReturnFeed,
+  type SoundcheckDeps,
+  type SoundcheckStep,
+  type SoundcheckStepState,
+  type SoundcheckOutcome,
+} from './useSoundcheck';
 export { useSpectrum, groupBands, SPECTRUM_BANDS } from './useSpectrum';
 export {
   useUploadHealth,

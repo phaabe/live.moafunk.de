@@ -15,8 +15,8 @@ import BoardIcon from '@admin/components/BoardIcon.vue';
 /**
  * The Studio (/stream/live, flow screen `studio`): soundcheck, then a manual
  * Go Live. Nothing goes live by itself. The router gate opens it 30 min
- * before the start. Go Live works from the start time once the test
- * broadcast sounds right.
+ * before the start. Go Live works from the start time once the soundcheck
+ * is confirmed.
  */
 const router = useRouter();
 const flow = useHostFlow();
@@ -48,6 +48,9 @@ const record = computed({
   set: (value: boolean) => flow.setRecordStream(value),
 });
 
+// The soundcheck card. Its test broadcast uses the socket that Go Live needs.
+const soundcheck = ref<{ stopTest?: () => void } | null>(null);
+
 const goingLive = ref(false);
 const wentLive = ref(false);
 const goLiveError = ref<string | null>(null);
@@ -71,6 +74,8 @@ async function goLive() {
   const showId = show.value.id;
   goingLive.value = true;
   goLiveError.value = null;
+  // A test broadcast the host still listens to: connect() would reuse its socket.
+  soundcheck.value?.stopTest?.();
   // Take over the socket's callbacks from the soundcheck: this connection is
   // the broadcast. On Air registers its own once it opens.
   const socket = useStreamSocket({
@@ -130,7 +135,7 @@ onUnmounted(() => {
     </p>
     <div class="cols">
       <div class="main">
-        <LiveSetupTest studio />
+        <LiveSetupTest ref="soundcheck" studio />
       </div>
       <!-- Phones keep Record and Go Live in a bar at the bottom, in thumb reach. -->
       <aside class="side go-live">
