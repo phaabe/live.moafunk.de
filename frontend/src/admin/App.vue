@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 import { NavBar } from '@shared/components';
 import FlashToast from './components/FlashToast.vue';
+import BrowserWarning from './components/BrowserWarning.vue';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -14,6 +15,7 @@ const showNav = computed(() => authStore.isAuthenticated && route.name !== 'logi
 <template>
   <div class="admin-app">
     <NavBar v-if="showNav" />
+    <BrowserWarning v-if="showNav" />
     <main class="main-content">
       <router-view v-slot="{ Component, route }">
         <keep-alive :include="['ShowDetailPage', 'ArtistDetailPage']">

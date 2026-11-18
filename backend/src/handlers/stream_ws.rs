@@ -117,9 +117,19 @@ pub async fn stream_ws_handler(
         }
     }
 
+    // Which browser a host streams with: logged at the start, to see which
+    // versions are in use and to explain a stream that does not work.
+    let browser = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .chars()
+        .take(200)
+        .collect::<String>();
+
     // Upgrade to WebSocket
     Ok(ws.on_upgrade(move |socket| {
-        handle_stream_socket(socket, state, stream_state, username, query)
+        handle_stream_socket(socket, state, stream_state, username, query, browser)
     }))
 }
 
@@ -182,6 +192,7 @@ async fn handle_stream_socket(
     stream_state: SharedStreamState,
     username: String,
     query: StreamQuery,
+    browser: String,
 ) {
     // A test broadcast never records, so it ignores show_id entirely.
     let test = query.test;
@@ -288,9 +299,10 @@ async fn handle_stream_socket(
     }
 
     tracing::info!(
-        "Stream started for user '{}'{}",
+        "Stream started for user '{}'{}, browser {:?}",
         username,
-        if test { " (test)" } else { "" }
+        if test { " (test)" } else { "" },
+        browser
     );
 
     // Notify admin via Telegram (fire-and-forget). A test broadcast stays silent
