@@ -15,6 +15,9 @@ export async function pickInput(page: Page): Promise<void> {
   const device = input.locator('option:not([value=""]):not([value="screen"])').first();
   await expect(device).toBeAttached({ timeout: 15_000 });
   await input.selectOption((await device.getAttribute('value'))!);
+  // The new input resets the soundcheck once its capture runs: wait for its
+  // level, or that reset cancels the first test.
+  await expect(page.locator('.db-meter-readout').first()).not.toHaveText(/∞/, { timeout: 15_000 });
 }
 
 /**

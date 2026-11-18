@@ -44,7 +44,7 @@ test.afterAll(async () => {
 });
 
 test('a live show recovers by itself and ends in one recording', async () => {
-  test.setTimeout((25 + DURATION_MIN) * 60_000);
+  test.setTimeout((35 + DURATION_MIN) * 60_000);
   let onAirMs = 0;
   let offAirMs = 0;
 
@@ -88,15 +88,19 @@ test('a live show recovers by itself and ends in one recording', async () => {
 
   if (DURATION_MIN > 0) {
     await test.step(`soak: ${DURATION_MIN} minutes on air`, async () => {
-      const until = Date.now() + DURATION_MIN * 60_000;
-      while (Date.now() < until) {
-        await page.waitForTimeout(60_000);
+      // A check every full minute: the listening must not stretch the soak.
+      const start = Date.now();
+      for (let minute = 1; minute <= DURATION_MIN; minute++) {
+        await page.waitForTimeout(Math.max(0, start + minute * 60_000 - Date.now()));
         await toneBack(RECOVER_S);
       }
     });
   }
 
   await test.step('End Episode, Wrap-up, Publish, Finished', async () => {
+    // End Episode asks once: the second click ends the broadcast.
+    await page.getByRole('button', { name: 'End Episode' }).click();
+    await expect(page.getByText('End the episode?')).toBeVisible();
     await page.getByRole('button', { name: 'End Episode' }).click();
     onAirMs = Date.now() - live - offAirMs;
     await page.waitForURL(new RegExp(`#/shows/${episode}$`));
