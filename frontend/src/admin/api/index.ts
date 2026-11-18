@@ -807,6 +807,8 @@ export interface Announcement {
   state: AnnouncementState;
   /** RFC 3339; null for the on-air story and a post slot that waits for SoundCloud. */
   scheduled_at: string | null;
+  /** RFC 3339; the time the host picked. Differs from `scheduled_at` when the post was moved. */
+  requested_at: string | null;
   headline: string;
   caption: string;
   image_source: AnnouncementImage;
@@ -836,6 +838,14 @@ export interface AnnouncementTime {
   default?: boolean;
 }
 
+/** What the host's Promotion card and composer must say before a post is saved. */
+export interface AnnouncementMeta {
+  /** An admin has paused all posting. */
+  paused: boolean;
+  /** This host's posts wait for an admin first. */
+  needs_approval: boolean;
+}
+
 const announcementsPath = (showId: number) => `/api/shows/${showId}/announcements`;
 
 export const announcementsApi = {
@@ -861,10 +871,37 @@ export const announcementsApi = {
     return Array.isArray(r) ? r : r.slots;
   },
 
-  previewUrl: (showId: number, slot: AnnouncementSlot, headline: string, layout: string) =>
+  meta: (showId: number) => api.get<AnnouncementMeta>(`${announcementsPath(showId)}/meta`),
+
+  /** Upload a JPEG or PNG photo for an announcement; save it with `image_source: 'upload'`. */
+  upload: async (showId: number, file: File): Promise<{ image_key: string }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await apiFetch(`${API_BASE}${announcementsPath(showId)}/uploads`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+      throw new Error(error.error || 'Upload failed');
+    }
+    return response.json();
+  },
+
+  previewUrl: (
+    showId: number,
+    slot: AnnouncementSlot,
+    headline: string,
+    layout: string,
+    image: AnnouncementImage = 'cover',
+    imageKey: string | null = null
+  ) =>
     `${API_BASE}${announcementsPath(showId)}/${slot}/preview.jpg?${new URLSearchParams({
       headline,
       layout,
+      image_source: image,
+      ...(imageKey ? { image_key: imageKey } : {}),
     })}`,
 };
 

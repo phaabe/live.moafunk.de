@@ -93,6 +93,7 @@ function announcement(slot: AnnouncementSlot, overrides: Partial<Announcement> =
     channel: 'instagram',
     state: slot === 'onair' ? 'armed' : 'scheduled',
     scheduled_at: null,
+    requested_at: null,
     headline: 'Sunday brunch',
     caption: 'Brunchtime is back this Sunday.',
     image_source: 'cover',
@@ -120,6 +121,8 @@ let saveError: Response | undefined;
 let requests: { url: string; method: string; body: unknown }[];
 let uploaded: FormData | undefined;
 let soundcloud: Response;
+let meta: { paused: boolean; needs_approval: boolean };
+let photoUpload: Response | undefined;
 
 beforeEach(() => {
   current = episode();
@@ -128,6 +131,8 @@ beforeEach(() => {
   saveError = undefined;
   requests = [];
   uploaded = undefined;
+  meta = { paused: false, needs_approval: false };
+  photoUpload = undefined;
   soundcloud = Response.json({
     success: true,
     track_id: '555',
@@ -168,6 +173,11 @@ beforeEach(() => {
       }
       if (url === '/api/shows/42/soundcloud/upload' && method === 'POST') return soundcloud;
       if (url === '/api/shows/42/announcements') return Response.json(announcements);
+      if (url === '/api/shows/42/announcements/meta') return Response.json(meta);
+      if (url === '/api/shows/42/announcements/uploads' && method === 'POST') {
+        uploaded = options?.body as FormData;
+        return photoUpload ?? Response.json({ image_key: 'shows/42/announcements/uploads/a.jpg' });
+      }
       if (url.startsWith('/api/shows/42/announcements/slots?'))
         return Response.json({ slots: times });
       const slot = url.match(/^\/api\/shows\/42\/announcements\/(pre|onair|post)$/)?.[1] as
@@ -710,6 +720,54 @@ describe('Episode · Promotion card', () => {
     await mount();
     expect(row('Post')?.textContent).toContain('Waiting for SoundCloud');
   });
+
+  it('says when an admin has paused all posting', async () => {
+    meta = { paused: true, needs_approval: false };
+    await mount();
+    expect(root.querySelector('.promotion .notice')?.textContent).toBe(
+      'Posting is paused by the station.'
+    );
+  });
+
+  it('has no paused note while posting runs', async () => {
+    await mount();
+    expect(text()).not.toContain('Posting is paused by the station.');
+  });
+
+  it('says from which time a moved post was moved', async () => {
+    announcements = [
+      announcement('pre', {
+        scheduled_at: FR_2310_1800,
+        requested_at: '2026-10-23T10:00:00Z',
+      }),
+    ];
+    await mount();
+    expect(row('Pre')?.textContent).toContain('Scheduled · Fr 23.10. · 18:00');
+    expect(row('Pre')?.textContent).toContain(
+      'Moved from 12:00: the station already posts that day.'
+    );
+  });
+
+  it('names the day when a post moved to another day', async () => {
+    announcements = [
+      announcement('pre', {
+        scheduled_at: '2026-10-24T10:00:00Z',
+        requested_at: FR_2310_1800,
+      }),
+    ];
+    await mount();
+    expect(row('Pre')?.textContent).toContain(
+      'Moved from Fr 23.10. · 18:00: the station already posts that day.'
+    );
+  });
+
+  it('has no moved note when the post kept its time', async () => {
+    announcements = [
+      announcement('pre', { scheduled_at: FR_2310_1800, requested_at: '2026-10-23T16:00:00.000Z' }),
+    ];
+    await mount();
+    expect(text()).not.toContain('Moved from');
+  });
 });
 
 describe('Pre-announcement composer', () => {
@@ -734,9 +792,9 @@ describe('Pre-announcement composer', () => {
     ];
   });
 
-  async function open(slot = 'pre') {
+  async function open(slot = 'pre', action = 'Schedule post') {
     const router = await mount('host', 1, undefined, `/shows/42/announce/${slot}`);
-    await vi.waitFor(() => expect(text()).toContain('Schedule post'));
+    await vi.waitFor(() => expect(text()).toContain(action));
     return router;
   }
 
@@ -746,7 +804,7 @@ describe('Pre-announcement composer', () => {
     expect(radio('Fr 23.10. · 18:00').checked).toBe(true);
     expect(radio('Fr 23.10. · 12:00').disabled).toBe(true);
     expect(text()).toContain('Fr 23.10. · 12:00 · Taken by another show');
-    expect(radio('Upload a photo').disabled).toBe(true);
+    expect(radio('Upload a photo').disabled).toBe(false);
     expect(text()).toContain('After it is posted, the caption cannot be changed.');
     expect(text()).toContain('Uses 1 of 3 announcements for this episode.');
 
@@ -823,6 +881,87 @@ describe('Pre-announcement composer', () => {
     const put = requests.find((r) => r.method === 'PUT')!;
     expect(put.url).toBe('/api/shows/42/announcements/post');
     expect(put.body).not.toHaveProperty('scheduled_at');
+  });
+
+  it('says when posting is paused and when an admin checks the post first', async () => {
+    meta = { paused: true, needs_approval: true };
+    await open('pre', 'Send for approval');
+    expect(text()).toContain('Posting is paused by the station.');
+    expect(text()).toContain('An admin checks this post first.');
+    expect(button('Send for approval')).toBeTruthy();
+  });
+
+  it('has no paused or approval note by default', async () => {
+    await open();
+    expect(text()).not.toContain('Posting is paused by the station.');
+    expect(text()).not.toContain('An admin checks this post first.');
+  });
+
+  describe('photo upload', () => {
+    const photo = () => root.querySelector('input[type="file"]') as HTMLInputElement;
+    const pick = async (file: File) => {
+      Object.defineProperty(photo(), 'files', { value: [file], configurable: true });
+      photo().dispatchEvent(new Event('change'));
+      await settle();
+    };
+    const jpeg = (size = 1000, type = 'image/jpeg') =>
+      new File([new Uint8Array(size)], 'brunch.jpg', { type });
+
+    async function choose() {
+      await open();
+      radio('Upload a photo').click();
+      await nextTick();
+      expect(photo().accept).toBe('image/jpeg,image/png');
+    }
+
+    it('uploads a picked photo and schedules the post with its key', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+      const router = await open();
+      radio('Upload a photo').click();
+      await nextTick();
+      expect(button('Schedule post').disabled).toBe(true);
+      await pick(jpeg());
+      expect((uploaded?.get('file') as File).name).toBe('brunch.jpg');
+      expect(text()).toContain('Photo uploaded.');
+      type('Headline on the image', 'Sunday brunch');
+      await nextTick();
+      vi.advanceTimersByTime(500);
+      await nextTick();
+      const src = (root.querySelector('img.preview') as HTMLImageElement).getAttribute('src')!;
+      const query = new URLSearchParams(src.split('?')[1]);
+      expect(query.get('image_source')).toBe('upload');
+      expect(query.get('image_key')).toBe('shows/42/announcements/uploads/a.jpg');
+      vi.useRealTimers();
+
+      button('Schedule post').click();
+      await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/42'));
+      expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({
+        image_source: 'upload',
+        image_key: 'shows/42/announcements/uploads/a.jpg',
+      });
+    });
+
+    it('refuses a file that is not a JPEG or PNG', async () => {
+      await choose();
+      await pick(jpeg(1000, 'image/gif'));
+      expect(text()).toContain('Use a JPEG or PNG photo.');
+      expect(requests.some((r) => r.url.endsWith('/uploads'))).toBe(false);
+    });
+
+    it('refuses a photo over 10 MB', async () => {
+      await choose();
+      await pick(jpeg(10 * 1024 * 1024 + 1));
+      expect(text()).toContain('The photo is too big. Max 10 MB.');
+      expect(requests.some((r) => r.url.endsWith('/uploads'))).toBe(false);
+    });
+
+    it('shows why the upload failed', async () => {
+      photoUpload = Response.json({ error: 'Not an image' }, { status: 400 });
+      await choose();
+      await pick(jpeg());
+      expect(text()).toContain('Not an image');
+      expect(button('Schedule post').disabled).toBe(true);
+    });
   });
 });
 

@@ -36,6 +36,7 @@ const view = ref<'episode' | 'wrapup' | 'done'>('episode');
 const error = ref<string | null>(null);
 const busy = ref(false);
 const announcements = ref<Announcement[]>([]);
+const paused = ref(false);
 /** The Show's Instagram handle (collaborator), without "@". */
 const handle = ref<string | null>(null);
 const now = ref(Date.now());
@@ -159,11 +160,13 @@ async function load(resetView: boolean) {
 
 async function loadPromotion() {
   const slug = show.value?.series_slug;
-  const [list, series] = await Promise.all([
+  const [list, meta, series] = await Promise.all([
     announcementsApi.list(id.value),
+    announcementsApi.meta(id.value),
     slug ? seriesApi.get(slug) : null,
   ]);
   announcements.value = list;
+  paused.value = meta.paused;
   handle.value = series?.instagram_handle || null;
 }
 
@@ -478,6 +481,7 @@ async function publish() {
             :show="show"
             :announcements="announcements"
             :handle="handle"
+            :paused="paused"
             @changed="reloadPromotion"
           />
           <EpisodeRecordingCard class="side" :show="show" @uploaded="load(false)" />

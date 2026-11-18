@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
 import { announcementsApi, type Announcement, type ShowDetail } from '../api';
-import { editable, inSlot, slotState } from '../promotion';
+import { editable, inSlot, movedNote, PAUSED_NOTE, slotState } from '../promotion';
 import BoardIcon from './BoardIcon.vue';
 
 // Episode page "Promotion · Instagram": the three announcement slots.
@@ -14,6 +14,8 @@ const props = defineProps<{
   announcements: Announcement[];
   /** The Show's Instagram handle, without "@". */
   handle: string | null;
+  /** An admin has paused all posting. */
+  paused: boolean;
 }>();
 const emit = defineEmits<{ changed: [] }>();
 
@@ -85,10 +87,12 @@ function toggleOnair(event: Event) {
         Posted by @moafunk_radio.
         <template v-if="handle">@{{ handle }} is invited as collaborator.</template>
       </p>
+      <p v-if="paused" class="notice">{{ PAUSED_NOTE }}</p>
       <ul class="slots">
         <li class="slot">
           <span class="slot-name">Pre · feed post 4:5</span>
           <span class="slot-state">{{ slotState(announcements, 'pre') }}</span>
+          <span v-if="movedNote(pre)" class="slot-note">{{ movedNote(pre) }}</span>
           <span v-if="pre?.permalink" class="slot-link">
             <a :href="pre.permalink" target="_blank" rel="noopener">Open post</a>
           </span>
@@ -129,6 +133,7 @@ function toggleOnair(event: Event) {
               ? slotState(announcements, 'post', !!show.soundcloud_public)
               : 'Set up in Wrap-up when the SoundCloud track is public'
           }}</span>
+          <span v-if="movedNote(post)" class="slot-note">{{ movedNote(post) }}</span>
           <span v-if="post?.permalink" class="slot-link">
             <a :href="post.permalink" target="_blank" rel="noopener">Open post</a>
           </span>
@@ -170,6 +175,20 @@ function toggleOnair(event: Event) {
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
   font-weight: 400;
+}
+
+.slot-note {
+  flex-basis: 100%;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.notice {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #6b5a1e;
+  border-radius: var(--radius-lg);
+  color: #f3d77a;
 }
 
 .slot-actions {

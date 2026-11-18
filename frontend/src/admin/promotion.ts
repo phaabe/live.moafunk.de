@@ -29,6 +29,32 @@ export function postTime(iso: string): string {
   return `${episodeDay(berlin.slice(0, 10))} · ${berlin.slice(11, 16)}`;
 }
 
+/** Announcement photo upload: JPEG or PNG, max 10 MB (the backend checks it too). */
+export const PHOTO_MAX_MB = 10;
+const PHOTO_TYPES = ['image/jpeg', 'image/png'];
+
+/** Why a picked photo cannot be uploaded, or null when it can. */
+export function photoError(file: File): string | null {
+  if (!PHOTO_TYPES.includes(file.type)) return 'Use a JPEG or PNG photo.';
+  if (file.size > PHOTO_MAX_MB * 1024 * 1024)
+    return `The photo is too big. Max ${PHOTO_MAX_MB} MB.`;
+  return null;
+}
+
+export const PAUSED_NOTE = 'Posting is paused by the station.';
+
+/**
+ * "Moved from 12:00: the station already posts that day." when the post was moved
+ * off the time the host picked. The day is named only when it changed.
+ */
+export function movedNote(a: Announcement | undefined): string | null {
+  if (!a?.requested_at || !a.scheduled_at) return null;
+  if (new Date(a.requested_at).getTime() === new Date(a.scheduled_at).getTime()) return null;
+  const from = postTime(a.requested_at);
+  const sameDay = from.slice(0, -8) === postTime(a.scheduled_at).slice(0, -8);
+  return `Moved from ${sameDay ? from.slice(-5) : from}: the station already posts that day.`;
+}
+
 /** Default time of the post slot: the day after the episode at 18:00. */
 export function defaultPostTime(date: string): string {
   return `${episodeDay(nextDayDateStr(date))} · 18:00`;
