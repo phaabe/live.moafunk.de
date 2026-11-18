@@ -50,13 +50,13 @@ jobs:
             e2e/package-lock.json
             frontend/package-lock.json
 
-      - name: Install the test, the frontend, Chromium and ffmpeg
+      - name: Install the test, the frontend, the browsers and ffmpeg
         run: |
           set -euo pipefail
           sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
           npm ci --prefix frontend
           npm ci --prefix e2e
-          cd e2e && npx playwright install --with-deps chromium
+          cd e2e && npx playwright install --with-deps chromium firefox
 
       - name: Studio soundcheck against the mock
         working-directory: e2e

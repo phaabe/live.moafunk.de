@@ -11,9 +11,10 @@ export function soundcheckRow(page: Page, name: string): Locator {
 /** Pick the (fake) mic. */
 export async function pickInput(page: Page): Promise<void> {
   const input = page.getByLabel('Audio input');
-  // "Select audio input" and "Screen audio" are always there.
-  await expect(input.locator('option')).not.toHaveCount(2, { timeout: 15_000 });
-  await input.selectOption({ index: 1 });
+  // Not "Select audio input" and not "Screen audio".
+  const device = input.locator('option:not([value=""]):not([value="screen"])').first();
+  await expect(device).toBeAttached({ timeout: 15_000 });
+  await input.selectOption((await device.getAttribute('value'))!);
 }
 
 /**

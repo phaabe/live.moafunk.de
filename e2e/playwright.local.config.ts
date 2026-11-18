@@ -9,6 +9,25 @@ export default defineConfig({
   globalSetup: './local-setup.ts',
   globalTeardown: undefined,
   use: { ...staging.use, baseURL: 'http://localhost:3000' },
+  projects: [
+    { name: 'chromium' },
+    {
+      name: 'firefox',
+      use: {
+        browserName: 'firefox',
+        // Firefox has no "microphone" permission in Playwright: prefs grant it.
+        permissions: [],
+        launchOptions: {
+          firefoxUserPrefs: {
+            // Firefox's own fake mic: a tone, not our WAV.
+            'media.navigator.streams.fake': true,
+            'media.navigator.permission.disabled': true,
+            'media.autoplay.default': 0,
+          },
+        },
+      },
+    },
+  ],
   webServer: [
     {
       command: 'node scripts/studio-mock.mjs',
