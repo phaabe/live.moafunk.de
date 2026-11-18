@@ -1,15 +1,35 @@
 {
   "screen": "episode",
-  "hash": "d448a530",
+  "hash": "e7a8a2aa",
   "status": "ok",
   "leftOut": [
     {
-      "item": "field: Announcements",
+      "item": "button: Create guest link",
+      "release": "R5"
+    },
+    {
+      "item": "h2: Promotion · Instagram",
       "release": "R4"
     },
     {
-      "item": "button: Create guest link",
-      "release": "R5"
+      "item": "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
+      "release": "R4"
+    },
+    {
+      "item": "button: Edit pre-announcement",
+      "release": "R4"
+    },
+    {
+      "item": "button: Cancel pre-announcement",
+      "release": "R4"
+    },
+    {
+      "item": "check: On air · story 9:16 | Sent when you go live",
+      "release": "R4"
+    },
+    {
+      "item": "row: Post · feed post 4:5 | Set up in Wrap-up when the SoundCloud track is public",
+      "release": "R4"
     }
   ],
   "missing": [],
