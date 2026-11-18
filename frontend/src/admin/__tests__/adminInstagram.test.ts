@@ -49,7 +49,7 @@ const row = (r: Partial<QueuedAnnouncement> & Pick<QueuedAnnouncement, 'id' | 's
 const ROWS: QueuedAnnouncement[] = [
   row({ id: 1, slot: 'pre', state: 'pending_approval', scheduled_at: '2026-10-23T16:00:00Z' }),
   row({ id: 2, slot: 'onair', state: 'armed', scheduled_at: '2026-10-25T11:00:00Z' }),
-  row({ id: 3, slot: 'post', state: 'waiting_soundcloud', scheduled_at: '2026-10-26T17:00:00Z' }),
+  row({ id: 3, slot: 'post', state: 'waiting_soundcloud', scheduled_at: '2026-10-28T17:00:00Z' }),
   row({
     id: 4,
     show_id: 39,
@@ -155,7 +155,7 @@ describe('Instagram queue', () => {
     expect(text).toEqual([
       'Fr 23.10. · 18:00 · Pre | Brunchtime · lena · Needs approval',
       'So 25.10. · at go-live · On air | Brunchtime · lena · Armed',
-      'Mo 26.10. · 18:00 · Post | Brunchtime · lena · Waiting for SoundCloud',
+      'Mi 28.10. · 18:00 · Post | Brunchtime · lena · Waiting for SoundCloud',
       'Mi 21.10. · 20:14 · On air | Night Shift · jonas · Failed · image URL not reachable',
     ]);
     expect(rowEl(0).querySelector('a')?.getAttribute('href')).toBe('/shows/42');

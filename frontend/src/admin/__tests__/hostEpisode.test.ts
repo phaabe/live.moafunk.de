@@ -112,6 +112,8 @@ function announcement(slot: AnnouncementSlot, overrides: Partial<Announcement> =
 const FR_2310_1800 = '2026-10-23T16:00:00Z';
 /** Mo 26.10. · 18:00 Berlin (winter time). */
 const MO_2610_1800 = '2026-10-26T17:00:00Z';
+/** Mi 28.10. · 18:00 Berlin: the post default, 3 days after So 25.10. */
+const MI_2810_1800 = '2026-10-28T17:00:00Z';
 
 let app: App | undefined;
 let root: HTMLDivElement;
@@ -1173,7 +1175,7 @@ describe('flow', () => {
       latest_recording: recordingReady,
       soundcloud_public: true,
     });
-    announcements = [announcement('post', { scheduled_at: MO_2610_1800 })];
+    announcements = [announcement('post', { scheduled_at: MI_2810_1800 })];
     await mount();
     await expectFlow('done', root);
   });

@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 17,
+  "rev": 18,
   "screens": [
     {
       "id": "dashboard",
@@ -1791,7 +1791,7 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "2e5906ab",
+      "hash": "831e0603",
       "notesHash": "3b0cc2d3",
       "elements": [
         {
@@ -1836,7 +1836,7 @@
         {
           "k": "row",
           "text": "Post · feed post 4:5",
-          "meta": "Mo 26.10. · 18:00 · waits for the public track",
+          "meta": "Mi 28.10. · 18:00 · waits for the public track",
           "to": "announce"
         },
         {
@@ -1881,7 +1881,7 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "5e5fd4ef",
+      "hash": "bed29c37",
       "notesHash": "d07f892e",
       "elements": [
         {
@@ -1896,7 +1896,7 @@
         {
           "k": "pill",
           "tone": "ok",
-          "text": "Instagram · post-announcement Mo 26.10. · 18:00"
+          "text": "Instagram · post-announcement Mi 28.10. · 18:00"
         },
         {
           "k": "button",
@@ -2545,7 +2545,7 @@
       "who": "admin",
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/admin/instagram",
-      "hash": "71ac6ea5",
+      "hash": "807be5fd",
       "notesHash": "8dd7ca5f",
       "elements": [
         {
@@ -2597,7 +2597,7 @@
         },
         {
           "k": "row",
-          "text": "Mo 26.10. · 18:00 · Post",
+          "text": "Mi 28.10. · 18:00 · Post",
           "meta": "Brunchtime · lena · Waiting for SoundCloud",
           "to": "episode"
         },
