@@ -169,7 +169,7 @@ describe('Studio', () => {
     expect(goLiveButton().disabled).toBe(true);
   });
 
-  it('opens Go Live at the start once the test sounds right', async () => {
+  it('opens Go Live at the start once the soundcheck is confirmed', async () => {
     await mountStudio('2026-11-15T11:59:58Z');
     await vi.advanceTimersByTimeAsync(2000);
     expect(goLiveButton().disabled).toBe(true);
@@ -429,39 +429,8 @@ describe('On Air', () => {
   });
 });
 
-// Keep this block last: it swaps in the real LiveSetupTest.
+// The Studio's own flow checks are in studioSoundcheck.test.ts.
 describe('flow', () => {
-  afterEach(() => {
-    // Unmount before the stubbed navigator goes: LiveSetupTest unhooks from it.
-    app?.unmount();
-    app = null;
-    vi.unstubAllGlobals();
-    vi.doMock('@admin/components/LiveSetupTest.vue', () => ({
-      __esModule: true,
-      default: { render: () => h('div', 'Audio input') },
-    }));
-  });
-
-  it('Studio matches the flow', async () => {
-    // The flow names the audio controls, so check the real ones.
-    vi.doUnmock('@admin/components/LiveSetupTest.vue');
-    Object.assign(mocks.capture, {
-      devices: ref([]),
-      selectedDeviceId: ref(''),
-      refreshDevices: vi.fn(),
-      listDevices: vi.fn(),
-    });
-    vi.stubGlobal('navigator', {
-      ...navigator,
-      mediaDevices: { addEventListener: vi.fn(), removeEventListener: vi.fn() },
-    });
-    mocks.passed = ref(true);
-    vi.setSystemTime(new Date('2026-11-15T11:41:18Z'));
-    const { default: FlowLive } = await import('../pages/flow/FlowLive.vue');
-    await mountPage(FlowLive);
-    await expectFlow('studio', root);
-  });
-
   it('Studio · On Air matches the flow', async () => {
     vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
     const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');

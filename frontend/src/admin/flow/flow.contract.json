@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 12,
+  "rev": 13,
   "screens": [
     {
       "id": "dashboard",
@@ -859,8 +859,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "9191bf61",
-      "notesHash": "3bdf2dca",
+      "hash": "5e94b0cd",
+      "notesHash": "bc9ceae0",
       "elements": [
         {
           "k": "back",
@@ -887,10 +887,32 @@
           "value": "Focusrite USB ▾"
         },
         {
-          "k": "check",
-          "text": "Test broadcast sounds right",
-          "meta": "",
-          "on": true
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Start test",
+          "to": "studio-checking",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Skip",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Not checked yet",
+          "to": null
         },
         {
           "k": "button",
@@ -899,8 +921,21 @@
           "primary": false
         },
         {
-          "k": "media",
-          "text": "Test player · what listeners hear",
+          "k": "button",
+          "text": "Skip",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Not checked yet",
           "to": null
         },
         {
@@ -914,6 +949,324 @@
           "text": "Go Live",
           "to": "studio-onair",
           "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-checking",
+      "title": "Studio · Soundcheck, music tested",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "8f6dff6c",
+      "notesHash": "54b583db",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Good · peak −9 dB · average −21 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Start test",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Skip",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "studio-ready",
+      "title": "Studio · Soundcheck, ready",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "85fbd85f",
+      "notesHash": "d5625cae",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Good · peak −9 dB · average −21 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Good · peak −12 dB · average −24 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Received your audio",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Your audio comes back",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Sounds good — ready to go live"
+        },
+        {
+          "k": "button",
+          "text": "Not OK",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": "studio-onair",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-problem",
+      "title": "Studio · Soundcheck, problem",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "753f759c",
+      "notesHash": "eacaa2a2",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Good · peak −9 dB · average −21 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Too quiet · peak −38 dB · average −48 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Received your audio",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Your audio comes back",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "The mic is too quiet: peak −38 dB, average −48 dB. Turn up its gain until the average is around −20 dB."
+        },
+        {
+          "k": "button",
+          "text": "Confirm anyway",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": null,
+          "primary": false
         }
       ]
     },
