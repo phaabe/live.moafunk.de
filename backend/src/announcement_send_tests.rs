@@ -256,9 +256,13 @@ async fn post_unlock_sets_the_time_then_approval_and_pending_is_never_sent() {
     let host = add_user(&state, "host", "host").await;
     let admin = add_user(&state, "admin", "admin").await;
     episode(&state, SHOW, host, 5).await;
-    episode(&state, 2, host, 12).await;
+    episode(&state, 2, host, 5).await;
     let by_host = add(&state, SHOW, "post", "waiting_soundcloud", None, host).await;
     let by_admin = add(&state, 2, "post", "waiting_soundcloud", None, admin).await;
+    // One day after the episode, so "the next day" below.
+    crate::db::set_setting(&state.db, "announce_post_days_after", "1")
+        .await
+        .unwrap();
 
     // Not public yet: nothing changes.
     unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
@@ -293,6 +297,9 @@ async fn full_day_pushes_the_post_to_the_next_free_slot() {
     crate::db::set_setting(&state.db, "announce_feed_per_day", "2")
         .await
         .unwrap();
+    crate::db::set_setting(&state.db, "announce_post_days_after", "1")
+        .await
+        .unwrap();
     episode(&state, SHOW, admin, 5).await;
     episode(&state, 2, admin, 9).await;
     episode(&state, 3, admin, 10).await;
@@ -323,6 +330,182 @@ async fn full_day_pushes_the_post_to_the_next_free_slot() {
         row(&state, post).await.scheduled_at,
         Some(to_db_time(berlin(7, 18)))
     );
+}
+
+#[tokio::test]
+async fn post_defaults_to_three_days_after_the_episode_at_the_evening_slot() {
+    let (state, _t, _tg, _ig, _r2) = setup().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, SHOW, admin, 5).await;
+    let post = add(&state, SHOW, "post", "waiting_soundcloud", None, admin).await;
+    sqlx::query("UPDATE shows SET soundcloud_public = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    // The slots endpoint suggests the same time the unlock picks.
+    let (status, body) = outcome(
+        ann::api_announcement_slots(
+            State(state.clone()),
+            Path(SHOW),
+            Query(ann::SlotsQuery {
+                slot: "post".to_string(),
+            }),
+            headers(&state, admin).await,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let defaults: Vec<&Value> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["default"] == true)
+        .collect();
+    assert_eq!(defaults.len(), 1);
+    assert_eq!(defaults[0]["scheduled_at"], to_db_time(berlin(8, 18)));
+
+    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
+    let a = row(&state, post).await;
+    assert_eq!(a.state, "scheduled");
+    assert_eq!(a.scheduled_at, Some(to_db_time(berlin(8, 18))));
+}
+
+#[tokio::test]
+async fn track_public_late_takes_the_next_free_slot_from_now() {
+    let (state, _t, _tg, _ig, _r2) = setup().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, SHOW, admin, 5).await;
+    let post = add(&state, SHOW, "post", "waiting_soundcloud", None, admin).await;
+    sqlx::query("UPDATE shows SET soundcloud_public = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    // The 8th is long gone; on the 10th both slots have passed at 19:00.
+    unlock_waiting_posts(&state, berlin(10, 19)).await.unwrap();
+    assert_eq!(
+        row(&state, post).await.scheduled_at,
+        Some(to_db_time(berlin(11, 18)))
+    );
+}
+
+async fn put_pre(state: &Arc<AppState>, user: i64, show: i64, body: Value) -> (StatusCode, Value) {
+    outcome(
+        ann::api_put_announcement(
+            State(state.clone()),
+            Path((show, "pre".to_string())),
+            headers(state, user).await,
+            axum::Json(serde_json::from_value(body).unwrap()),
+        )
+        .await,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn send_now_pre_is_scheduled_now_and_sent_by_the_next_tick() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, SHOW, admin, 5).await;
+    let before = Utc::now() - Duration::seconds(1);
+    let (status, body) = put_pre(
+        &state,
+        admin,
+        SHOW,
+        json!({ "headline": "Soon", "send_now": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "scheduled");
+    assert_eq!(body["send_now"], true);
+    let at = body["scheduled_at"].as_str().unwrap().to_string();
+    assert!(
+        at >= to_db_time(before) && at <= to_db_time(Utc::now()),
+        "{at}"
+    );
+
+    check_due_announcements(&state, Utc::now() + Duration::seconds(30)).await;
+    assert_eq!(
+        row(&state, body["id"].as_i64().unwrap()).await.state,
+        "sent"
+    );
+    assert_eq!(media_posts(&ig).len(), 1);
+}
+
+#[tokio::test]
+async fn send_now_is_refused_when_the_day_is_full() {
+    let (state, _t, _tg, _ig, _r2) = setup().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, SHOW, admin, 5).await;
+    episode(&state, 2, admin, 6).await;
+    add(&state, 2, "pre", "scheduled", Some(Utc::now()), admin).await;
+    let (status, body) = put_pre(
+        &state,
+        admin,
+        SHOW,
+        json!({ "headline": "Soon", "send_now": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("per day"), "{body}");
+}
+
+#[tokio::test]
+async fn send_now_of_a_new_host_waits_for_approval_then_goes_at_once() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, SHOW, host, 5).await;
+    let (status, body) = put_pre(
+        &state,
+        host,
+        SHOW,
+        json!({ "headline": "Soon", "send_now": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "pending_approval");
+    let id = body["id"].as_i64().unwrap();
+    check_due_announcements(&state, Utc::now() + Duration::seconds(30)).await;
+    assert!(media_posts(&ig).is_empty());
+
+    let (status, body) = outcome(
+        ann::api_admin_approve_announcement(
+            State(state.clone()),
+            Path(id),
+            headers(&state, admin).await,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "scheduled");
+    assert_eq!(body["send_now"], true);
+    assert_eq!(body["requested_at"], Value::Null);
+    assert!(body["scheduled_at"].as_str().unwrap() <= to_db_time(Utc::now()).as_str());
+
+    check_due_announcements(&state, Utc::now() + Duration::seconds(30)).await;
+    assert_eq!(row(&state, id).await.state, "sent");
+}
+
+#[tokio::test]
+async fn host_put_without_send_now_resets_it() {
+    let (state, _t, _tg, _ig, _r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let (_, body) = put_pre(
+        &state,
+        host,
+        SHOW,
+        json!({ "headline": "Soon", "send_now": true }),
+    )
+    .await;
+    assert_eq!(body["send_now"], true);
+    let (status, body) = put_pre(&state, host, SHOW, json!({ "headline": "Soon" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["send_now"], false);
+    assert_eq!(body["scheduled_at"], to_db_time(berlin(3, 18)));
 }
 
 #[tokio::test]

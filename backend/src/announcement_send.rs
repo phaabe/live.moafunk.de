@@ -93,8 +93,9 @@ pub async fn announce_on_air(state: &Arc<AppState>, show_id: i64, now: DateTime<
 }
 
 /// Every post that waits for SoundCloud and whose track is now public gets
-/// the default post time (the next day, evening slot first, else the next
-/// free slot) and then the approval rule.
+/// the default post time (`post_days_after` days after the episode, evening
+/// slot first, else the next free slot; from now on if that passed) and then
+/// the approval rule.
 pub async fn unlock_waiting_posts(state: &Arc<AppState>, now: DateTime<Utc>) -> Result<()> {
     let settings = announcements::get_settings(&state.db).await;
     let rows: Vec<(i64, i64, Option<i64>)> = sqlx::query_as(
@@ -104,7 +105,6 @@ pub async fn unlock_waiting_posts(state: &Arc<AppState>, now: DateTime<Utc>) -> 
     )
     .fetch_all(&state.db)
     .await?;
-    let first_day = now.with_timezone(&Berlin).date_naive() + Duration::days(1);
     for (id, show_id, created_by) in rows {
         let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
             .bind(show_id)
@@ -119,6 +119,7 @@ pub async fn unlock_waiting_posts(state: &Arc<AppState>, now: DateTime<Utc>) -> 
             .fetch_optional(&state.db)
             .await?;
 
+        let first_day = crate::handlers::announcements::post_day(&settings, start, now);
         let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
         let Some(at) = crate::handlers::announcements::next_free_feed_time(
             &mut tx,
