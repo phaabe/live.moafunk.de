@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 12,
+  "rev": 13,
   "screens": [
     {
       "id": "dashboard",
@@ -859,8 +859,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "9191bf61",
-      "notesHash": "3bdf2dca",
+      "hash": "30ef559b",
+      "notesHash": "1ec1a3ec",
       "elements": [
         {
           "k": "back",
@@ -887,21 +887,227 @@
           "value": "Focusrite USB ▾"
         },
         {
+          "k": "button",
+          "text": "Run soundcheck",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Input",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Level",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Listen to the return feed",
+          "to": null,
+          "primary": false
+        },
+        {
           "k": "check",
-          "text": "Test broadcast sounds right",
+          "text": "Record this show",
           "meta": "",
           "on": true
         },
         {
           "k": "button",
-          "text": "Start test",
+          "text": "Go Live",
+          "to": "studio-onair",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-ready",
+      "title": "Studio · Soundcheck, ready",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "0039b8dd",
+      "notesHash": "c1721d6d",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "button",
+          "text": "Run again",
           "to": null,
           "primary": false
         },
         {
-          "k": "media",
-          "text": "Test player · what listeners hear",
+          "k": "row",
+          "text": "Input",
+          "meta": "Signal from Focusrite USB",
           "to": null
+        },
+        {
+          "k": "row",
+          "text": "Level",
+          "meta": "Peak −9 dB · average −21 dB",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Received your audio",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Your audio comes back",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Sounds good — ready to go live"
+        },
+        {
+          "k": "button",
+          "text": "Listen to the return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Not OK",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": "studio-onair",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-problem",
+      "title": "Studio · Soundcheck, problem",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "0e25b0c5",
+      "notesHash": "b1d7a207",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "button",
+          "text": "Run again",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Input",
+          "meta": "Signal from Focusrite USB",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Level",
+          "meta": "Too quiet · peak −38 dB",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Received your audio",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Your audio comes back",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "Too quiet: peak −38 dB. Turn up the input gain until peaks reach about −12 dB."
+        },
+        {
+          "k": "button",
+          "text": "Listen to the return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Confirm anyway",
+          "to": null,
+          "primary": false
         },
         {
           "k": "check",
