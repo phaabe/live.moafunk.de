@@ -43,12 +43,17 @@ struct FakeSoundCloud {
     failing: Arc<Mutex<HashMap<String, u16>>>,
     /// `permalink_url` of an uploaded track; `None` leaves it out.
     permalink: Arc<Mutex<Option<String>>>,
+    /// Permalink of the logged-in account (`GET /me`).
+    me: Arc<Mutex<String>>,
+    /// Track ids of the account (`GET /me/tracks`), in SoundCloud's order.
+    tracks: Arc<Mutex<Vec<i64>>>,
 }
 
 impl FakeSoundCloud {
     async fn serve() -> Self {
         let fake = Self::default();
         *fake.permalink.lock().unwrap() = Some("https://soundcloud.com/radio-moafunk/new".into());
+        *fake.me.lock().unwrap() = "moafunk-test".into();
         let app = axum::Router::new()
             .fallback(fake_request)
             .with_state(fake.clone());
@@ -138,6 +143,11 @@ async fn fake_request(
     let path: Vec<&str> = uri.path().trim_start_matches('/').split('/').collect();
     let mut playlists = fake.playlists.lock().unwrap();
     match (method.as_str(), path.as_slice()) {
+        ("POST", ["oauth", "token"]) if body["grant_type"] == "refresh_token" => Json(json!({
+            "access_token": "refreshed-access", "refresh_token": "refreshed-refresh",
+            "expires_in": 3600, "token_type": "bearer"
+        }))
+        .into_response(),
         ("POST", ["oauth", "token"]) => Json(json!({
             "access_token": "new-access", "refresh_token": "new-refresh",
             "expires_in": 3600, "token_type": "bearer"
@@ -151,6 +161,18 @@ async fn fake_request(
             (StatusCode::CREATED, Json(track)).into_response()
         }
         ("DELETE" | "PUT", ["tracks", _]) => Json(json!({})).into_response(),
+        ("GET", ["me"]) => {
+            Json(json!({ "id": 1, "permalink": *fake.me.lock().unwrap() })).into_response()
+        }
+        ("GET", ["me", "tracks"]) => Json(
+            fake.tracks
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|id| json!({ "id": id }))
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
         ("GET", ["me", "playlists"]) => Json(
             playlists
                 .iter()
@@ -235,8 +257,61 @@ async fn show(state: &Arc<AppState>, id: i64) -> models::Show {
         .unwrap()
 }
 
+/// Value of a query parameter in a URL.
+fn query_param(url: &str, key: &str) -> String {
+    let prefix = format!("{key}=");
+    url.split(['?', '&'])
+        .find_map(|part| part.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("no {key} in {url}"))
+        .to_string()
+}
+
+/// Open a login like the Connect button and return its OAuth state.
+fn login_state(state: &Arc<AppState>) -> String {
+    query_param(&get_auth_url(state).unwrap(), "state")
+}
+
 async fn stored_token(state: &Arc<AppState>) -> Option<String> {
-    get_stored_token(state).await.unwrap()
+    get_stored_token(state).await.unwrap().map(|t| t.access)
+}
+
+async fn stored_refresh(state: &Arc<AppState>) -> Option<String> {
+    get_stored_token(state)
+        .await
+        .unwrap()
+        .and_then(|t| t.refresh)
+}
+
+/// Seconds until the stored access token expires.
+async fn stored_expires_in(state: &Arc<AppState>) -> Option<i64> {
+    let at = get_stored_token(state).await.unwrap()?.expires_at?;
+    Some(at - chrono::Utc::now().timestamp())
+}
+
+/// Move the stored expiry to `secs` from now (negative: already expired).
+async fn set_expires_in(state: &Arc<AppState>, secs: i64) {
+    sqlx::query("UPDATE app_settings SET value = ? WHERE key = 'soundcloud_token_expires_at'")
+        .bind((chrono::Utc::now().timestamp() + secs).to_string())
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+/// A state with client credentials and no static token, connected through the
+/// code exchange (access "new-access", refresh "new-refresh", 1 h).
+async fn connected() -> (Arc<AppState>, tempfile::TempDir, FakeSoundCloud, FakeR2) {
+    let (state, temp, fake, r2) = setup(json!({
+        "soundcloud_access_token": null,
+        "soundcloud_client_id": "cid",
+        "soundcloud_client_secret": "secret",
+        "soundcloud_redirect_uri": "https://live.test/cb"
+    }))
+    .await;
+    exchange_code(&state, "the-code", &login_state(&state))
+        .await
+        .unwrap();
+    fake.calls.lock().unwrap().clear();
+    (state, temp, fake, r2)
 }
 
 /// A show with a manually attached recording in R2.
@@ -275,8 +350,8 @@ async fn access_token_prefers_config_then_database() {
     let err = get_access_token(&state).await.unwrap_err().to_string();
     assert!(err.contains("Visit /api/soundcloud/auth"), "{err}");
 
-    store_token(&state, "first").await.unwrap();
-    store_token(&state, "second").await.unwrap();
+    store_token(&state, "first", None, None).await.unwrap();
+    store_token(&state, "second", None, None).await.unwrap();
     assert_eq!(get_access_token(&state).await.unwrap(), "second");
     assert!(has_token(&state).await);
 
@@ -284,7 +359,7 @@ async fn access_token_prefers_config_then_database() {
     assert!(!has_token(&state).await);
 
     let (state, _temp, _fake, _r2) = setup(json!({})).await;
-    store_token(&state, "stored").await.unwrap();
+    store_token(&state, "stored", None, None).await.unwrap();
     assert_eq!(get_access_token(&state).await.unwrap(), "static-token");
     assert!(is_configured(&state));
 }
@@ -296,11 +371,28 @@ async fn auth_url_and_status() {
         "soundcloud_redirect_uri": "https://live.test/api/soundcloud/callback"
     }))
     .await;
-    assert_eq!(
-        get_auth_url(&state).unwrap(),
-        "https://secure.soundcloud.com/authorize?response_type=code&client_id=cid\
-         &redirect_uri=https%3A%2F%2Flive.test%2Fapi%2Fsoundcloud%2Fcallback"
+    let url = get_auth_url(&state).unwrap();
+    assert!(
+        url.starts_with(
+            "https://secure.soundcloud.com/authorize?response_type=code&client_id=cid\
+             &redirect_uri=https%3A%2F%2Flive.test%2Fapi%2Fsoundcloud%2Fcallback\
+             &code_challenge="
+        ),
+        "{url}"
     );
+    assert_eq!(query_param(&url, "code_challenge_method"), "S256");
+    // RFC 7636 appendix B.
+    assert_eq!(
+        pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    );
+    assert_eq!(query_param(&url, "code_challenge").len(), 43);
+    // The state names the server, so production can forward staging logins.
+    let oauth_state = query_param(&url, "state");
+    assert!(oauth_state.starts_with("production."), "{oauth_state}");
+    assert_eq!(oauth_state.len(), "production.".len() + 43);
+    let again = get_auth_url(&state).unwrap();
+    assert_ne!(query_param(&url, "state"), query_param(&again, "state"));
     let status = get_status(&state).await;
     assert!(status.configured && !status.authorized);
     assert!(status.auth_url.is_some());
@@ -311,10 +403,9 @@ async fn auth_url_and_status() {
     assert!(!status.configured && !status.authorized && status.auth_url.is_none());
 }
 
-/// The code exchange stores only the access token. The refresh token in the
-/// answer is dropped today (https://github.com/phaabe/live.moafunk.de/issues/302).
+/// The code exchange stores the access token, the refresh token and the expiry.
 #[tokio::test]
-async fn code_exchange_stores_the_access_token() {
+async fn code_exchange_stores_the_tokens() {
     let (state, _temp, fake, _r2) = setup(json!({
         "soundcloud_access_token": null,
         "soundcloud_client_id": "cid",
@@ -323,43 +414,380 @@ async fn code_exchange_stores_the_access_token() {
     }))
     .await;
 
+    let url = get_auth_url(&state).unwrap();
     assert_eq!(
-        exchange_code(&state, "the-code").await.unwrap(),
+        exchange_code(&state, "the-code", &query_param(&url, "state"))
+            .await
+            .unwrap(),
         "new-access"
     );
-    let call = fake.call("POST /oauth/token");
+    let mut body = fake.call("POST /oauth/token").body;
+    let verifier = body
+        .as_object_mut()
+        .unwrap()
+        .remove("code_verifier")
+        .unwrap();
     assert_eq!(
-        call.body,
+        pkce_challenge(verifier.as_str().unwrap()),
+        query_param(&url, "code_challenge")
+    );
+    assert_eq!(
+        body,
         json!({
             "grant_type": "authorization_code", "code": "the-code",
             "client_id": "cid", "client_secret": "secret", "redirect_uri": "https://live.test/cb"
         })
     );
     assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
-    let keys: Vec<String> =
-        sqlx::query_scalar("SELECT key FROM app_settings WHERE key LIKE 'soundcloud%'")
-            .fetch_all(&state.db)
-            .await
-            .unwrap();
-    assert_eq!(keys, vec!["soundcloud_access_token"]);
+    assert_eq!(stored_refresh(&state).await.as_deref(), Some("new-refresh"));
+    let expires_in = stored_expires_in(&state).await.unwrap();
+    assert!((3590..=3600).contains(&expires_in), "{expires_in}");
     assert_eq!(get_access_token(&state).await.unwrap(), "new-access");
+    assert_eq!(fake.routes().len(), 1, "a fresh token is not refreshed");
 
-    // A refused code keeps the old token.
+    // A refused code keeps the old tokens.
     fake.fail("POST /oauth/token", 401);
-    let err = exchange_code(&state, "bad").await.unwrap_err().to_string();
+    let err = exchange_code(&state, "bad", &login_state(&state))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("401") && err.contains("nope"), "{err}");
     assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
+    assert_eq!(stored_refresh(&state).await.as_deref(), Some("new-refresh"));
+
+    // A new access token without refresh token or expiry drops the old ones.
+    store_token(&state, "manual", None, None).await.unwrap();
+    assert_eq!(stored_refresh(&state).await, None);
+    assert_eq!(stored_expires_in(&state).await, None);
+
+    // Disconnect removes all three.
+    store_token(&state, "a", Some("r"), Some(60)).await.unwrap();
+    delete_stored_token(&state).await.unwrap();
+    let left: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM app_settings WHERE key LIKE 'soundcloud%'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// A token that expires within 5 minutes is refreshed before the upload; the
+/// new tokens are stored and used, and the next call needs no refresh.
+#[tokio::test]
+async fn expiring_token_is_refreshed_before_the_upload() {
+    let (state, _temp, fake, r2) = connected().await;
+    let id = show_with_recording(&state, &r2).await;
+    set_expires_in(&state, 120).await;
+
+    let result = upload_track(&state, id).await.unwrap();
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(
+        fake.call("POST /oauth/token").body,
+        json!({
+            "grant_type": "refresh_token", "refresh_token": "new-refresh",
+            "client_id": "cid", "client_secret": "secret"
+        })
+    );
+    assert_eq!(
+        fake.call("POST /tracks").auth.as_deref(),
+        Some("OAuth refreshed-access")
+    );
+    assert_eq!(
+        stored_token(&state).await.as_deref(),
+        Some("refreshed-access")
+    );
+    assert_eq!(
+        stored_refresh(&state).await.as_deref(),
+        Some("refreshed-refresh")
+    );
+    assert!(stored_expires_in(&state).await.unwrap() > 3000);
+
+    fake.calls.lock().unwrap().clear();
+    assert_eq!(get_access_token(&state).await.unwrap(), "refreshed-access");
+    assert!(fake.routes().is_empty());
+}
+
+/// A finalize after the token expired uploads without a manual reconnect.
+#[tokio::test]
+async fn finalize_after_expiry_refreshes_and_uploads() {
+    let (state, _temp, fake, r2) = setup(json!({
+        "soundcloud_access_token": null,
+        "soundcloud_client_id": "cid",
+        "soundcloud_client_secret": "secret",
+        "soundcloud_auto_upload": true
+    }))
+    .await;
+    exchange_code(&state, "the-code", &login_state(&state))
+        .await
+        .unwrap();
+    let id = show_with_recording(&state, &r2).await;
+    set_expires_in(&state, -3600).await;
+    assert!(
+        has_token(&state).await,
+        "a refresh token keeps it connected"
+    );
+
+    auto_upload_on_finalize(&state, id).await;
+    assert_eq!(
+        fake.call("POST /tracks").auth.as_deref(),
+        Some("OAuth refreshed-access")
+    );
+    assert_eq!(
+        show(&state, id).await.soundcloud_track_id.as_deref(),
+        Some("555")
+    );
+}
+
+/// Parallel callers refresh once: the second waits and uses the new token.
+#[tokio::test]
+async fn parallel_callers_refresh_once() {
+    let (state, _temp, fake, _r2) = connected().await;
+    set_expires_in(&state, -1).await;
+    let (a, b) = tokio::join!(get_access_token(&state), get_access_token(&state));
+    assert_eq!(a.unwrap(), "refreshed-access");
+    assert_eq!(b.unwrap(), "refreshed-access");
+    assert_eq!(fake.routes(), vec!["POST /oauth/token"]);
+}
+
+/// Without a refresh token, an expired token is not connected anymore: the
+/// status asks to reconnect and nothing is sent to SoundCloud.
+#[tokio::test]
+async fn expired_token_without_refresh_token_needs_a_reconnect() {
+    let (state, _temp, fake, _r2) = connected().await;
+    store_token(&state, "old", None, Some(120)).await.unwrap();
+    // Still valid for 2 minutes: used as it is.
+    assert_eq!(get_access_token(&state).await.unwrap(), "old");
+    assert!(has_token(&state).await);
+
+    set_expires_in(&state, -1).await;
+    assert!(!has_token(&state).await);
+    assert!(!get_status(&state).await.authorized);
+    let err = get_access_token(&state).await.unwrap_err().to_string();
+    assert!(err.contains("Visit /api/soundcloud/auth"), "{err}");
+    assert!(fake.routes().is_empty());
+}
+
+/// SoundCloud refusing the refresh token removes the stored tokens, so the
+/// status shows "not connected". A server error keeps them for a retry.
+#[tokio::test]
+async fn refused_refresh_clears_the_tokens() {
+    let (state, _temp, fake, _r2) = connected().await;
+    set_expires_in(&state, -1).await;
+
+    fake.fail("POST /oauth/token", 500);
+    let err = get_access_token(&state).await.unwrap_err().to_string();
+    assert!(err.contains("refresh failed (500"), "{err}");
+    assert_eq!(stored_refresh(&state).await.as_deref(), Some("new-refresh"));
+    assert!(has_token(&state).await);
+
+    fake.fail("POST /oauth/token", 400);
+    let err = get_access_token(&state).await.unwrap_err().to_string();
+    assert!(err.contains("refresh failed (400"), "{err}");
+    assert_eq!(stored_token(&state).await, None);
+    assert!(!has_token(&state).await);
 }
 
 #[tokio::test]
 async fn code_exchange_needs_client_credentials() {
     let (state, _temp, fake, _r2) = setup(json!({ "soundcloud_client_id": "cid" })).await;
-    let err = exchange_code(&state, "c").await.unwrap_err().to_string();
+    let err = exchange_code(&state, "c", &login_state(&state))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("SOUNDCLOUD_CLIENT_SECRET not configured"),
         "{err}"
     );
     assert!(fake.routes().is_empty());
+}
+
+/// With SOUNDCLOUD_ACCOUNT set, only a login of that account is stored.
+#[tokio::test]
+async fn code_exchange_refuses_another_account() {
+    let (state, _temp, fake, _r2) = setup(json!({
+        "soundcloud_access_token": null,
+        "soundcloud_client_id": "cid",
+        "soundcloud_client_secret": "secret",
+        "soundcloud_account": "radio-moafunk"
+    }))
+    .await;
+    let err = exchange_code(&state, "c", &login_state(&state))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("account 'radio-moafunk', but you logged in as 'moafunk-test'"),
+        "{err}"
+    );
+    assert_eq!(
+        fake.call("GET /me").auth.as_deref(),
+        Some("OAuth new-access")
+    );
+    assert_eq!(stored_token(&state).await, None);
+    assert!(!has_token(&state).await);
+
+    // The right account (in any case) is stored.
+    *fake.me.lock().unwrap() = "Radio-Moafunk".into();
+    exchange_code(&state, "c", &login_state(&state))
+        .await
+        .unwrap();
+    assert_eq!(stored_token(&state).await.as_deref(), Some("new-access"));
+}
+
+/// The check asks SoundCloud for the account with the current token, and
+/// refreshes an expiring token first, like an upload would.
+#[tokio::test]
+async fn connection_check_returns_the_account() {
+    let (state, _temp, fake, _r2) = connected().await;
+    assert_eq!(check_connection(&state).await.unwrap(), "moafunk-test");
+    assert_eq!(
+        fake.call("GET /me").auth.as_deref(),
+        Some("OAuth new-access")
+    );
+
+    set_expires_in(&state, -1).await;
+    fake.calls.lock().unwrap().clear();
+    assert_eq!(check_connection(&state).await.unwrap(), "moafunk-test");
+    assert_eq!(fake.routes(), vec!["POST /oauth/token", "GET /me"]);
+
+    delete_stored_token(&state).await.unwrap();
+    let err = check_connection(&state).await.unwrap_err().to_string();
+    assert!(err.contains("Visit /api/soundcloud/auth"), "{err}");
+}
+
+// ── Staging cleanup ─────────────────────────────────────────────────────────
+
+/// On staging, an upload keeps the newest SOUNDCLOUD_KEEP_TRACKS tracks of the
+/// test account and deletes the older ones.
+#[tokio::test]
+async fn staging_upload_keeps_the_newest_tracks() {
+    let (state, _temp, fake, r2) = setup(json!({
+        "app_env": "staging",
+        "soundcloud_account": "moafunk-test",
+        "soundcloud_keep_tracks": 2
+    }))
+    .await;
+    *fake.tracks.lock().unwrap() = vec![300, 555, 100, 200];
+    let id = show_with_recording(&state, &r2).await;
+
+    assert!(upload_track(&state, id).await.unwrap().success);
+    let deleted: Vec<String> = fake
+        .routes()
+        .into_iter()
+        .filter(|r| r.starts_with("DELETE"))
+        .collect();
+    assert_eq!(deleted, vec!["DELETE /tracks/200", "DELETE /tracks/100"]);
+}
+
+/// The cleanup deletes nothing outside staging, without an account pin, or
+/// with a token of another account. The upload itself still succeeds.
+#[tokio::test]
+async fn cleanup_never_touches_other_accounts() {
+    for (overrides, me) in [
+        (
+            json!({ "app_env": "production", "soundcloud_account": "moafunk-test" }),
+            "moafunk-test",
+        ),
+        (json!({ "app_env": "staging" }), "moafunk-test"),
+        (
+            json!({ "app_env": "staging", "soundcloud_account": "moafunk-test" }),
+            "radio-moafunk",
+        ),
+        // A wrong pin on the station account itself.
+        (
+            json!({ "app_env": "staging", "soundcloud_account": "Radio-Moafunk" }),
+            "radio-moafunk",
+        ),
+    ] {
+        let mut config = json!({ "soundcloud_keep_tracks": 1 });
+        config
+            .as_object_mut()
+            .unwrap()
+            .extend(overrides.as_object().unwrap().clone());
+        let (state, _temp, fake, r2) = setup(config).await;
+        *fake.me.lock().unwrap() = me.into();
+        *fake.tracks.lock().unwrap() = vec![555, 100, 200];
+        let id = show_with_recording(&state, &r2).await;
+
+        assert!(upload_track(&state, id).await.unwrap().success);
+        let routes = fake.routes();
+        assert!(
+            !routes.iter().any(|r| r.starts_with("DELETE")),
+            "{overrides} as {me}: {routes:?}"
+        );
+    }
+}
+
+/// A login state works once and for 10 minutes. Without one, nothing is sent
+/// to SoundCloud and the admin is asked to click Connect again.
+#[tokio::test]
+async fn login_state_works_once_and_for_ten_minutes() {
+    let (state, _temp, fake, _r2) = setup(json!({
+        "soundcloud_access_token": null,
+        "soundcloud_client_id": "cid",
+        "soundcloud_client_secret": "secret"
+    }))
+    .await;
+    let refused = |oauth_state: String| {
+        let state = state.clone();
+        async move {
+            exchange_code(&state, "c", &oauth_state)
+                .await
+                .unwrap_err()
+                .to_string()
+        }
+    };
+
+    for oauth_state in ["", "made-up"] {
+        let err = refused(oauth_state.to_string()).await;
+        assert!(err.contains("Click Connect again"), "{err}");
+    }
+    assert!(fake.routes().is_empty());
+
+    let used = login_state(&state);
+    exchange_code(&state, "c", &used).await.unwrap();
+    assert!(refused(used).await.contains("Click Connect again"));
+
+    let old = login_state(&state);
+    for login in PENDING_LOGINS.lock().unwrap().iter_mut() {
+        if login.state == old {
+            login.created -= LOGIN_TTL_SECS;
+        }
+    }
+    assert!(refused(old).await.contains("Click Connect again"));
+    assert_eq!(fake.routes(), vec!["POST /oauth/token"]);
+}
+
+/// SoundCloud has one redirect URI per app (production's). Production sends a
+/// login started on staging on to SOUNDCLOUD_FORWARD_URL with the same code
+/// and state; its own logins and anything without the setting stay here.
+#[tokio::test]
+async fn production_forwards_staging_logins() {
+    let forward =
+        json!({ "soundcloud_forward_url": "https://staging.test/api/soundcloud/callback" });
+    let (prod, _temp) = crate::broadcast_tests::state_with(forward.clone()).await;
+    assert_eq!(
+        forward_login(&prod, "a b&c", "staging.xyz").as_deref(),
+        Some("https://staging.test/api/soundcloud/callback?code=a+b%26c&state=staging.xyz")
+    );
+    assert_eq!(forward_login(&prod, "c", "production.xyz"), None);
+    assert_eq!(forward_login(&prod, "c", ""), None);
+
+    // Staging never forwards (no loop), and without the setting nothing is sent on.
+    let mut on_staging = forward.clone();
+    on_staging["app_env"] = json!("staging");
+    let (staging, _temp) = crate::broadcast_tests::state_with(on_staging).await;
+    assert_eq!(forward_login(&staging, "c", "staging.xyz"), None);
+    let (plain, _temp) = crate::broadcast_tests::state().await;
+    assert_eq!(forward_login(&plain, "c", "staging.xyz"), None);
+
+    // Staging's own login states carry the prefix production looks for.
+    let mut staging_app = json!({ "app_env": "staging", "soundcloud_client_id": "cid" });
+    staging_app["soundcloud_redirect_uri"] = json!("https://admin.test/api/soundcloud/callback");
+    let (staging, _temp) = crate::broadcast_tests::state_with(staging_app).await;
+    let url = get_auth_url(&staging).unwrap();
+    assert!(query_param(&url, "state").starts_with("staging."), "{url}");
+    assert!(url.contains("redirect_uri=https%3A%2F%2Fadmin.test%2Fapi%2Fsoundcloud%2Fcallback"));
 }
 
 // ── Title and description ───────────────────────────────────────────────────
@@ -518,7 +946,7 @@ async fn upload_errors() {
     assert!(upload_track(&state, id).await.is_err());
     assert!(fake.routes().is_empty());
 
-    store_token(&state, "stored").await.unwrap();
+    store_token(&state, "stored", None, None).await.unwrap();
     assert!(upload_track(&state, 999).await.is_err());
 
     // The recording is missing in R2.

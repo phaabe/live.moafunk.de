@@ -4732,6 +4732,18 @@ pub async fn api_soundcloud_status(
     Ok(Json(status))
 }
 
+/// GET /api/soundcloud/check
+/// Asks SoundCloud which account the stored token belongs to (refreshing it
+/// first when it expires soon). The nightly e2e test checks staging with it.
+pub async fn api_soundcloud_check(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_show_creator(&state, &headers).await?;
+    let account = crate::soundcloud::check_connection(&state).await?;
+    Ok(Json(serde_json::json!({ "account": account })))
+}
+
 /// GET /api/soundcloud/auth
 /// Redirects the admin to SoundCloud's OAuth authorization page.
 pub async fn api_soundcloud_auth(
@@ -4744,18 +4756,25 @@ pub async fn api_soundcloud_auth(
     Ok(axum::response::Redirect::temporary(&url))
 }
 
-/// GET /api/soundcloud/callback?code=xxx
+/// GET /api/soundcloud/callback?code=xxx&state=yyy
 /// OAuth callback — exchanges the code for an access token and stores it.
 #[derive(Debug, Deserialize)]
 pub struct SoundCloudCallbackQuery {
     code: String,
+    /// Missing state gives the "click Connect again" page, not a bare 400.
+    #[serde(default)]
+    state: String,
 }
 
 pub async fn api_soundcloud_callback(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SoundCloudCallbackQuery>,
-) -> impl IntoResponse {
-    match crate::soundcloud::exchange_code(&state, &query.code).await {
+) -> axum::response::Response {
+    // A login started on staging: staging exchanges the code with its verifier.
+    if let Some(url) = crate::soundcloud::forward_login(&state, &query.code, &query.state) {
+        return axum::response::Redirect::to(&url).into_response();
+    }
+    match crate::soundcloud::exchange_code(&state, &query.code, &query.state).await {
         Ok(_) => axum::response::Html(
             r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
             <h2>✅ SoundCloud Connected</h2>
@@ -4763,14 +4782,16 @@ pub async fn api_soundcloud_callback(
             <script>setTimeout(()=>window.close(),3000)</script>
             </body></html>"#
                 .to_string(),
-        ),
+        )
+        .into_response(),
         Err(e) => axum::response::Html(format!(
             r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
             <h2>❌ SoundCloud Authorization Failed</h2>
             <p>{}</p>
             </body></html>"#,
             e
-        )),
+        ))
+        .into_response(),
     }
 }
 

@@ -60,7 +60,12 @@ STREAM_OUTPUT=icecast
 ICECAST_URL=icecast://source:$LIVE_PW@host.docker.internal:8005/live
 ICECAST_TEST_URL=icecast://source:$TEST_PW@host.docker.internal:8005/test
 ICECAST_STATUS_URL=http://host.docker.internal:8010/status-json.xsl
-SOUNDCLOUD_AUTO_UPLOAD=false
+SOUNDCLOUD_CLIENT_ID=stagingclientid
+SOUNDCLOUD_CLIENT_SECRET=stagingclientsecret
+SOUNDCLOUD_ACCOUNT=moafunk-test
+SOUNDCLOUD_REDIRECT_URI=https://admin.live.moafunk.de/api/soundcloud/callback
+SOUNDCLOUD_AUTO_UPLOAD=true
+SOUNDCLOUD_KEEP_TRACKS=10
 TELEGRAM_ENABLED=false
 EOF
   cat >"$BOX/stream.env" <<EOF
@@ -134,7 +139,14 @@ expect_ok "safe staging settings pass" check
 case_env "missing shows bucket falls back to production" "R2_SHOWS_BUCKET_NAME must be 'moafunk-staging'" R2_SHOWS_BUCKET_NAME -
 case_env "production recordings bucket" "R2_BUCKET_NAME must be 'unheard-artists-staging'" R2_BUCKET_NAME unheard-artists-prod
 case_env "production shows bucket" "R2_SHOWS_BUCKET_NAME must be" R2_SHOWS_BUCKET_NAME moafunk-prod
-case_env "SoundCloud auto-upload not off" "SOUNDCLOUD_AUTO_UPLOAD must be 'false'" SOUNDCLOUD_AUTO_UPLOAD -
+case_env "SoundCloud auto-upload unset" "SOUNDCLOUD_AUTO_UPLOAD must be 'true'" SOUNDCLOUD_AUTO_UPLOAD -
+case_env "SoundCloud login skips the app's redirect URI" "SOUNDCLOUD_REDIRECT_URI must be 'https://admin.live.moafunk.de/api/soundcloud/callback'" \
+  SOUNDCLOUD_REDIRECT_URI https://staging.live.moafunk.de/api/soundcloud/callback
+case_env "SoundCloud login returns to the localhost default" "SOUNDCLOUD_REDIRECT_URI must be" SOUNDCLOUD_REDIRECT_URI -
+case_env "SoundCloud cleanup unset" "SOUNDCLOUD_KEEP_TRACKS must be '10'" SOUNDCLOUD_KEEP_TRACKS -
+case_env "SoundCloud station account" "SOUNDCLOUD_ACCOUNT must not be the station account radio-moafunk" SOUNDCLOUD_ACCOUNT radio-moafunk
+case_env "SoundCloud test account unset" "SOUNDCLOUD_ACCOUNT must be set" SOUNDCLOUD_ACCOUNT -
+case_env "SoundCloud app secret unset" "SOUNDCLOUD_CLIENT_SECRET must be set" SOUNDCLOUD_CLIENT_SECRET -
 case_env "Telegram switched on" "TELEGRAM_ENABLED must be 'false'" TELEGRAM_ENABLED true
 case_env "production admin URL" "ADMIN_BASE_URL must be" ADMIN_BASE_URL https://admin.live.moafunk.de
 case_env "production app env" "APP_ENV must be 'staging'" APP_ENV production
@@ -144,7 +156,8 @@ case_env "status from the production Icecast" "ICECAST_STATUS_URL must be" ICECA
 case_env "GitHub dispatch token set" "GITHUB_DISPATCH_TOKEN must not be set" GITHUB_DISPATCH_TOKEN ghp_x
 case_env "Telegram bot token set" "TELEGRAM_BOT_TOKEN must not be set" TELEGRAM_BOT_TOKEN 123:abc
 case_env "Telegram setting added later" "TELEGRAM_NEW_SETTING must not be set" TELEGRAM_NEW_SETTING x
-case_env "SoundCloud secret set" "SOUNDCLOUD_CLIENT_SECRET must not be set" SOUNDCLOUD_CLIENT_SECRET x
+case_env "SoundCloud static token set" "SOUNDCLOUD_ACCESS_TOKEN must not be set" SOUNDCLOUD_ACCESS_TOKEN x
+case_env "SoundCloud setting added later" "SOUNDCLOUD_NEW_SETTING must not be set" SOUNDCLOUD_NEW_SETTING x
 case_env "Instagram token set" "INSTAGRAM_ACCESS_TOKEN_PROD must not be set" INSTAGRAM_ACCESS_TOKEN_PROD x
 case_env "Facebook secret set" "FACEBOOK_APP_SECRET must not be set" FACEBOOK_APP_SECRET x
 case_env "OpenAI key set" "OPENAI_API_KEY must not be set" OPENAI_API_KEY sk-x
@@ -187,6 +200,8 @@ STAGING_HARBOR_LIVE_PASSWORD=$LIVE_PW
 STAGING_ICECAST_SOURCE_PASSWORD=sourcesourcesourcesource1
 STAGING_ICECAST_ADMIN_PASSWORD=adminadminadminadminadmin1
 STAGING_ICECAST_RELAY_PASSWORD=relayrelayrelayrelayrelay1
+STAGING_SOUNDCLOUD_CLIENT_ID=stagingclientid
+STAGING_SOUNDCLOUD_CLIENT_SECRET=stagingclientsecret
 EOF
 }
 
@@ -480,7 +495,22 @@ cat >"$TMP/pushbin/ssh" <<EOF
 #!/usr/bin/env bash
 PATH="$TMP/bin:\$PATH" STAGING_DIR="$BOX" bash "$HERE/staging.sh" install-env
 EOF
-chmod +x "$TMP/pushbin/bw" "$TMP/pushbin/ssh"
+SM="$TMP/sm.json"
+cat >"$TMP/pushbin/bws" <<EOF
+#!/usr/bin/env bash
+[[ -n "\${BWS_ACCESS_TOKEN:-}" ]] || { echo "Missing access token" >&2; exit 1; }
+[[ "\$*" == "secret list --output json" ]] || { echo "stub bws: \$*" >&2; exit 1; }
+cat "$SM"
+EOF
+chmod +x "$TMP/pushbin/bw" "$TMP/pushbin/ssh" "$TMP/pushbin/bws"
+
+# Secrets Manager with the station SoundCloud app (and an unrelated secret).
+sm_secrets() {
+  printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"},
+    {"key":"SOUNDCLOUD_CLIENT_SECRET","value":"%s"},
+    {"key":"TELEGRAM_BOT_TOKEN","value":"123:abc"}]' "$1" >"$SM"
+}
+sm_secrets stationclientsecret
 
 r2_items() {
   printf '[{"name":"Moafunk STAGING_R2_ACCESS_KEY_ID","login":{"password":"0123456789abcdef0123456789abcdef"}},
@@ -488,7 +518,11 @@ r2_items() {
 }
 
 push() {
-  PATH="$TMP/pushbin:$PATH" BW_FOLDER=Staging bash "$HERE/push-secrets.sh" root@staging.test
+  PATH="$TMP/pushbin:$PATH" BW_FOLDER=Staging BWS_ACCESS_TOKEN=sm-token bash "$HERE/push-secrets.sh" root@staging.test
+}
+
+push_without_sm_token() {
+  PATH="$TMP/pushbin:$PATH" BW_FOLDER=Staging env -u BWS_ACCESS_TOKEN bash "$HERE/push-secrets.sh" root@staging.test
 }
 
 # Password of the vault item NAME (empty when it is not a string).
@@ -521,6 +555,20 @@ else
   fail "the host item has the username and 24 characters"
 fi
 if out="$(push 2>&1)" && [[ "$out" != *created* ]]; then pass "a second run creates nothing"; else fail "a second run creates nothing: $out"; fi
+if grep -qx "SOUNDCLOUD_CLIENT_ID=stationclientid" "$BOX/.env" && grep -qx "SOUNDCLOUD_CLIENT_SECRET=stationclientsecret" "$BOX/.env"; then
+  pass "the box gets the SoundCloud app from Secrets Manager"
+else
+  fail "the box gets the SoundCloud app from Secrets Manager"
+fi
+if [[ "$out" != *stationclientsecret* ]]; then pass "push prints no Secrets Manager value"; else fail "push prints no Secrets Manager value"; fi
+if grep -q "123:abc" "$BOX/.env"; then fail "an unrelated Secrets Manager secret reached the box"; else pass "only the SoundCloud app comes from Secrets Manager"; fi
+
+expect_refused "push without a Secrets Manager token stops" "export BWS_ACCESS_TOKEN" push_without_sm_token
+sm_secrets ""
+expect_refused "an empty SoundCloud secret stops the push" "Secrets Manager secret SOUNDCLOUD_CLIENT_SECRET is empty" push
+printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"}]' >"$SM"
+expect_refused "a missing SoundCloud secret stops the push" "0 Secrets Manager secrets named SOUNDCLOUD_CLIENT_SECRET" push
+sm_secrets stationclientsecret
 
 r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 jq '.[1:]' "$VAULT" >"$VAULT.new" && mv "$VAULT.new" "$VAULT"
