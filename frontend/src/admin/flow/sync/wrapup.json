@@ -1,7 +1,7 @@
 {
   "screen": "wrapup",
   "hash": "2e5906ab",
-  "status": "ok",
+  "status": "drift",
   "leftOut": [
     {
       "item": "h2: SoundCloud",
@@ -36,6 +36,10 @@
       "release": "R4"
     }
   ],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "row: Post · feed post 4:5 | Mo 26.10. · 18:00 · waits for the public track"
+  ],
+  "extra": [
+    "row: Post · feed post 4:5 | Mi 28.10. · 18:00 · waits for the public track"
+  ]
 }

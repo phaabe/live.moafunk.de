@@ -27,6 +27,7 @@ const SETTINGS: AnnouncementSettings = {
   feed_per_week: 5,
   stories_per_day: 6,
   pre_days_before: 2,
+  post_days_after: 3,
   slots: ['12:00', '18:00'],
   approval_mode: 'first_two',
   paused: false,
@@ -199,6 +200,7 @@ describe('Instagram queue', () => {
   it('saves the policy', async () => {
     await mount();
     field('feed_per_week', '4');
+    field('post_days_after', '5');
     field('slots', '12:00,18:00, 20:30');
     (root.querySelectorAll('input[name="approval"]')[1] as HTMLInputElement).click();
     await nextTick();
@@ -210,6 +212,7 @@ describe('Instagram queue', () => {
       body: {
         ...SETTINGS,
         feed_per_week: 4,
+        post_days_after: 5,
         slots: ['12:00', '18:00', '20:30'],
         approval_mode: 'always',
       },
@@ -226,6 +229,8 @@ describe('Instagram queue', () => {
     ['slots', '', 'Slots: enter times like 12:00, 18:00.'],
     ['feed_per_day', '-1', 'Feed posts per day: enter a whole number, 0 or more.'],
     ['stories_per_day', '', 'Stories per day: enter a whole number, 0 or more.'],
+    ['post_days_after', '-1', 'Post-announcement days after: enter a whole number, 0 or more.'],
+    ['post_days_after', '1.5', 'Post-announcement days after: enter a whole number, 0 or more.'],
     ['limit_per_episode', '4', 'Announcements per episode: at most 3.'],
   ])('refuses %s = "%s"', async (name, value, message) => {
     await mount();

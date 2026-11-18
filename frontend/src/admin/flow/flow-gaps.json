@@ -183,5 +183,14 @@
       "why": "The flow note says the strip opens On Air when the show on air is yours."
     }
   ],
-  "drift": []
+  "drift": [
+    {
+      "screen": "wrapup",
+      "items": [
+        "row: Post · feed post 4:5 | Mo 26.10. · 18:00 · waits for the public track",
+        "row: Post · feed post 4:5 | Mi 28.10. · 18:00 · waits for the public track"
+      ],
+      "why": "Flow rev 17 notes say the post default is 3 days after the episode (So 25.10. -> Mi 28.10.), but the example row still says Mo 26.10. Fix the example in Flow Lab."
+    }
+  ]
 }

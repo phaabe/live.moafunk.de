@@ -818,6 +818,8 @@ export interface Announcement {
   sent_at: string | null;
   permalink: string | null;
   error: string | null;
+  /** The host chose "Post now". */
+  send_now: boolean;
 }
 
 export interface AnnouncementInput {
@@ -828,6 +830,8 @@ export interface AnnouncementInput {
   layout: 'band' | 'split';
   collaborator: boolean;
   scheduled_at?: string;
+  /** Send within a minute instead of at `scheduled_at` (pre slot only). */
+  send_now?: boolean;
 }
 
 /** A post slot the composer offers. A taken one carries the reason. */
@@ -1501,6 +1505,7 @@ export interface AnnouncementSettings {
   feed_per_week: number;
   stories_per_day: number;
   pre_days_before: number;
+  post_days_after: number;
   /** "HH:MM", Berlin time. */
   slots: string[];
   approval_mode: ApprovalMode;
