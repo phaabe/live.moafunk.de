@@ -428,6 +428,12 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
+      path: '/admin/instagram',
+      name: 'admin-instagram',
+      component: () => import('./pages/AdminInstagramPage.vue'),
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+    },
+    {
       path: '/overlay-editor/:id?',
       name: 'overlay-editor',
       component: OverlayEditorPage,

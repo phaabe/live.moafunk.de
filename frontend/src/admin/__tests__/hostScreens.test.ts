@@ -237,6 +237,7 @@ describe('nav', () => {
       'Recording',
       'Users',
       'Config',
+      'Instagram',
     ]);
     expect(root.querySelector('.mobile-menu-links')?.textContent).toContain('Radio');
   });

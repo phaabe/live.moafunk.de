@@ -48,6 +48,12 @@ const navItems: NavItem[] = [
   { label: 'Recording', path: '/recording', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Users', path: '/users', roles: ['admin', 'superadmin'], category: 'Configuration' },
   { label: 'Config', path: '/config', roles: ['admin', 'superadmin'], category: 'Configuration' },
+  {
+    label: 'Instagram',
+    path: '/admin/instagram',
+    roles: ['admin', 'superadmin'],
+    category: 'Configuration',
+  },
 ];
 
 // Preserve category order

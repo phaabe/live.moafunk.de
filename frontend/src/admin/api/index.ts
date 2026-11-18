@@ -1454,3 +1454,54 @@ export const hostFlowApi = {
     return finalizeResponse.json();
   },
 };
+
+// Instagram announcements: admin queue, policy and account status
+export type AnnouncementSlot = 'pre' | 'onair' | 'post';
+export type ApprovalMode = 'first_two' | 'always' | 'never';
+
+export interface AnnouncementSettings {
+  limit_per_episode: number;
+  feed_per_day: number;
+  feed_per_week: number;
+  stories_per_day: number;
+  pre_days_before: number;
+  /** "HH:MM", Berlin time. */
+  slots: string[];
+  approval_mode: ApprovalMode;
+  paused: boolean;
+}
+
+export interface QueuedAnnouncement {
+  id: number;
+  show_id: number;
+  show_title: string;
+  series_name: string;
+  host_handle: string | null;
+  slot: AnnouncementSlot;
+  state: string;
+  scheduled_at: string | null;
+  sent_at: string | null;
+  permalink: string | null;
+  error: string | null;
+}
+
+export interface InstagramStatus {
+  account: 'dev' | 'prod';
+  account_username: string;
+  token_expires_at: string | null;
+  token_refreshed_at: string | null;
+  quota_used: number | null;
+  quota_total: number | null;
+}
+
+export const instagramAdminApi = {
+  getSettings: () => api.get<AnnouncementSettings>('/api/settings/announcements'),
+  saveSettings: (settings: AnnouncementSettings) =>
+    api.put<AnnouncementSettings>('/api/settings/announcements', settings),
+  /** `from` and `to` are Berlin dates, YYYY-MM-DD. */
+  list: (from: string, to: string) =>
+    api.get<QueuedAnnouncement[]>(`/api/admin/announcements?from=${from}&to=${to}`),
+  act: (id: number, action: 'approve' | 'reject' | 'retry') =>
+    api.post<QueuedAnnouncement>(`/api/admin/announcements/${id}/${action}`),
+  status: () => api.get<InstagramStatus>('/api/admin/instagram/status'),
+};

@@ -81,10 +81,6 @@
       "items": ["row: UNHEARD | Monthly · 4 artists", "nav: Pool"]
     },
     {
-      "screen": "admin-instagram",
-      "release": "R4"
-    },
-    {
       "screen": "episode",
       "release": "R5",
       "items": ["button: Create guest link"]
