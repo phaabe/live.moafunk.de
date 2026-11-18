@@ -2,17 +2,19 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
-import { seriesApi, showsApi, type ShowDetail } from '../api';
+import { announcementsApi, seriesApi, showsApi, type Announcement, type ShowDetail } from '../api';
 import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '../composables';
 import AudioPlayer from '../components/AudioPlayer.vue';
 import EpisodeDetailsCard from '../components/EpisodeDetailsCard.vue';
 import EpisodeRecordingCard from '../components/EpisodeRecordingCard.vue';
+import PromotionCard from '../components/PromotionCard.vue';
 import HostEpisodeView from './HostEpisodeView.vue';
 import BoardIcon from '../components/BoardIcon.vue';
 import { episodeDay, setLength } from '../episodeRow';
 import { openReplaceFile } from '../replaceFile';
 import { berlinToUtcDate, isShowEnded } from '../showTime';
+import { defaultPostTime, editable, inSlot, postTime, slotState } from '../promotion';
 
 // Flow screens `episode`, `episode-pre`, `wrapup` and `done` on one path
 // (/shows/<id>) for the host's own episodes. Another host's episode gets the
@@ -33,6 +35,9 @@ const show = ref<ShowDetail | null>(null);
 const view = ref<'episode' | 'wrapup' | 'done'>('episode');
 const error = ref<string | null>(null);
 const busy = ref(false);
+const announcements = ref<Announcement[]>([]);
+/** The Show's Instagram handle (collaborator), without "@". */
+const handle = ref<string | null>(null);
 const now = ref(Date.now());
 const clock = setInterval(() => (now.value = Date.now()), 15000);
 let poll: ReturnType<typeof setTimeout> | null = null;
@@ -145,10 +150,63 @@ async function load(resetView: boolean) {
     const loaded = await showsApi.get(id.value);
     show.value = loaded;
     if (resetView) view.value = defaultView(loaded);
+    if (isMine.value) await loadPromotion();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the episode';
   }
   schedulePoll();
+}
+
+async function loadPromotion() {
+  const slug = show.value?.series_slug;
+  const [list, series] = await Promise.all([
+    announcementsApi.list(id.value),
+    slug ? seriesApi.get(slug) : null,
+  ]);
+  announcements.value = list;
+  handle.value = series?.instagram_handle || null;
+}
+
+async function reloadPromotion() {
+  try {
+    await loadPromotion();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Could not load the announcements';
+  }
+}
+
+const trackPublic = computed(() => !!show.value?.soundcloud_public);
+const post = computed(() => inSlot(announcements.value, 'post'));
+/** Wrap-up row of the post slot; it is sent only when the SoundCloud track is public. */
+const postReading = computed(() => {
+  if (post.value) return slotState(announcements.value, 'post', trackPublic.value);
+  if (trackPublic.value) return 'Not set up';
+  return show.value ? `${defaultPostTime(show.value.date)} · waits for the public track` : '';
+});
+const instagramPill = computed(() => {
+  const p = post.value;
+  if (!p || p.state === 'draft') return 'Instagram · no post-announcement';
+  if (p.state === 'sent') return 'Instagram · post-announcement sent';
+  if (!trackPublic.value) return 'Instagram · waits for the public SoundCloud track';
+  return p.scheduled_at
+    ? `Instagram · post-announcement ${postTime(p.scheduled_at)}`
+    : 'Instagram · post-announcement';
+});
+
+const openComposer = (slot: 'pre' | 'post') => router.push(`/shows/${id.value}/announce/${slot}`);
+
+async function cancelPost() {
+  if (!window.confirm('Cancel the post-announcement?')) return;
+  busy.value = true;
+  error.value = null;
+  try {
+    await announcementsApi.cancel(id.value, 'post');
+    await loadPromotion();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Could not cancel the announcement';
+  } finally {
+    busy.value = false;
+  }
 }
 
 /** While the recording is processing, look again every 10 s. */
@@ -235,6 +293,9 @@ async function publish() {
     <!-- Done -->
     <template v-if="view === 'done'">
       <h1 class="page-title">Episode published</h1>
+      <p class="pill status-banner ok">
+        <span class="dot" aria-hidden="true"></span>{{ instagramPill }}
+      </p>
       <div>
         <BaseButton @click="router.push('/schedule')">Back to Schedule</BaseButton>
       </div>
@@ -249,6 +310,39 @@ async function publish() {
       <p :class="['pill', 'status-banner', pill.state]">
         <span class="dot" aria-hidden="true"></span>{{ pill.text }}
       </p>
+      <section class="board-card post-announcement">
+        <div class="board-card-head">
+          <h2 class="board-card-title"><BoardIcon name="image" />Post-announcement</h2>
+        </div>
+        <div class="board-card-body">
+          <ul class="post-slot">
+            <li>
+              <span class="slot-name">Post · feed post 4:5</span>
+              <span class="slot-state">{{ postReading }}</span>
+            </li>
+          </ul>
+          <p class="hint">
+            Sent at its time only when the track is public. Publish does not need it.
+          </p>
+          <div class="actions">
+            <template v-if="editable(post)">
+              <BaseButton variant="secondary" :disabled="busy" @click="openComposer('post')"
+                >Edit post-announcement</BaseButton
+              >
+              <BaseButton variant="secondary" :disabled="busy" @click="cancelPost"
+                >Cancel post-announcement</BaseButton
+              >
+            </template>
+            <BaseButton
+              v-else-if="post?.state !== 'sent'"
+              variant="secondary"
+              :disabled="busy"
+              @click="openComposer('post')"
+              >Set up post-announcement</BaseButton
+            >
+          </div>
+        </div>
+      </section>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
       <div>
         <BaseButton
@@ -379,6 +473,13 @@ async function publish() {
               <BoardIcon name="close" :size="16" />Cancel booking
             </BaseButton>
           </EpisodeDetailsCard>
+          <PromotionCard
+            class="main"
+            :show="show"
+            :announcements="announcements"
+            :handle="handle"
+            @changed="reloadPromotion"
+          />
           <EpisodeRecordingCard class="side" :show="show" @uploaded="load(false)" />
         </div>
         <p v-if="error" class="field-error" role="alert">{{ error }}</p>
@@ -421,6 +522,29 @@ async function publish() {
 .set-file svg {
   flex: none;
   color: var(--color-primary);
+}
+
+.post-slot {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.post-slot li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.slot-name {
+  font-weight: 700;
+}
+
+.slot-state,
+.hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .actions {

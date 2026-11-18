@@ -43,6 +43,8 @@ vi.mock('../../pages/waveformExtractor', () => ({
 }));
 
 import HostEpisodePage from '../pages/HostEpisodePage.vue';
+import HostAnnouncePage from '../pages/HostAnnouncePage.vue';
+import type { Announcement, AnnouncementSlot, AnnouncementTime } from '../api';
 
 const FUTURE = '2099-01-04';
 const PAST = '2020-01-05';
@@ -80,17 +82,50 @@ const BRUNCHTIME_SERIES = {
   cover_url: null,
   rhythm: { repeat_rule: 'weekly', weekday: 7, start_time: '12:00', end_time: '14:00' },
   rhythm_line: 'Sundays · 12:00–14:00',
+  instagram_handle: 'brunchtime',
 };
+
+function announcement(slot: AnnouncementSlot, overrides: Partial<Announcement> = {}): Announcement {
+  return {
+    id: { pre: 1, onair: 2, post: 3 }[slot],
+    show_id: 42,
+    slot,
+    channel: 'instagram',
+    state: slot === 'onair' ? 'armed' : 'scheduled',
+    scheduled_at: null,
+    headline: 'Sunday brunch',
+    caption: 'Brunchtime is back this Sunday.',
+    image_source: 'cover',
+    image_key: null,
+    layout: 'band',
+    collaborator: slot !== 'onair',
+    sent_at: null,
+    permalink: null,
+    error: null,
+    ...overrides,
+  };
+}
+
+/** Fr 23.10. · 18:00 Berlin (summer time). */
+const FR_2310_1800 = '2026-10-23T16:00:00Z';
+/** Mo 26.10. · 18:00 Berlin (winter time). */
+const MO_2610_1800 = '2026-10-26T17:00:00Z';
 
 let app: App | undefined;
 let root: HTMLDivElement;
 let current: ShowDetail;
+let announcements: Announcement[];
+let times: AnnouncementTime[];
+let saveError: Response | undefined;
 let requests: { url: string; method: string; body: unknown }[];
 let uploaded: FormData | undefined;
 let soundcloud: Response;
 
 beforeEach(() => {
   current = episode();
+  announcements = [];
+  times = [];
+  saveError = undefined;
   requests = [];
   uploaded = undefined;
   soundcloud = Response.json({
@@ -132,6 +167,24 @@ beforeEach(() => {
         return Response.json({ success: true, key: `recordings/${name}` });
       }
       if (url === '/api/shows/42/soundcloud/upload' && method === 'POST') return soundcloud;
+      if (url === '/api/shows/42/announcements') return Response.json(announcements);
+      if (url.startsWith('/api/shows/42/announcements/slots?'))
+        return Response.json({ slots: times });
+      const slot = url.match(/^\/api\/shows\/42\/announcements\/(pre|onair|post)$/)?.[1] as
+        | AnnouncementSlot
+        | undefined;
+      if (slot && method === 'PUT') {
+        if (saveError) return saveError;
+        const saved = announcement(slot, body as Partial<Announcement>);
+        announcements = [...announcements.filter((a) => a.slot !== slot), saved];
+        return Response.json(saved);
+      }
+      if (slot && method === 'DELETE') {
+        announcements = announcements.map((a) =>
+          a.slot === slot ? { ...a, state: 'cancelled' } : a
+        );
+        return Response.json(announcements.find((a) => a.slot === slot));
+      }
       throw new Error(`Unexpected API request: ${method} ${url}`);
     })
   );
@@ -148,7 +201,8 @@ afterEach(() => {
 async function mount(
   role: User['role'] = 'host',
   userId = 1,
-  state?: Record<string, number>
+  state?: Record<string, number>,
+  path = '/shows/42'
 ): Promise<Router> {
   const stub = (text: string) => ({ render: () => h('div', text) });
   const router = createRouter({
@@ -164,6 +218,7 @@ async function mount(
           async () => (await import('../pages/ShowDetailPage.vue')).default
         ),
       },
+      { path: '/shows/:id(\\d+)/announce/:slot(pre|post)', component: HostAnnouncePage },
       { path: '/shows/:slug', component: stub('Show page') },
       { path: '/stream/live', component: stub('Studio') },
       { path: '/stream/on-air', component: stub('On Air') },
@@ -173,7 +228,7 @@ async function mount(
   app = createApp({ render: () => h(RouterView) });
   app.use(pinia).use(router);
   useAuthStore(pinia).user = { id: userId, username: 'lena', role };
-  await router.push(state ? { path: '/shows/42', state } : '/shows/42');
+  await router.push(state ? { path, state } : path);
   await router.isReady();
   app.mount(root);
   await settle();
@@ -220,7 +275,8 @@ describe('Episode', () => {
     ]) {
       expect(text()).toContain(part);
     }
-    for (const part of LEFT_OUT.filter((p) => p !== 'SoundCloud')) {
+    // The Promotion card names Instagram and the SoundCloud track.
+    for (const part of LEFT_OUT.filter((p) => p !== 'SoundCloud' && p !== 'Instagram')) {
       expect(text()).not.toContain(part);
     }
     expect(button('Open Studio').disabled).toBe(true);
@@ -557,6 +613,260 @@ describe('Wrap-up and Done', () => {
   });
 });
 
+describe('Episode · Promotion card', () => {
+  const row = (name: string) =>
+    [...root.querySelectorAll('.promotion li')].find((li) => li.textContent?.includes(name));
+  const onair = () => root.querySelector('.promotion input[type="checkbox"]') as HTMLInputElement;
+  const buttons = () => [...root.querySelectorAll('.promotion button')].map((b) => b.textContent);
+
+  it('shows a scheduled pre-announcement with Edit and Cancel', async () => {
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
+    const router = await mount();
+    expect(text()).toContain('Promotion · Instagram');
+    expect(text()).toContain('@brunchtime is invited as collaborator.');
+    expect(row('Pre')?.textContent).toContain('Scheduled · Fr 23.10. · 18:00');
+    button('Edit pre-announcement').click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/shows/42/announce/pre')
+    );
+  });
+
+  it('cancels the pre-announcement after one confirm', async () => {
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
+    await mount();
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    button('Cancel pre-announcement').click();
+    await vi.waitFor(() => expect(row('Pre')?.textContent).toContain('Cancelled'));
+    expect(requests.find((r) => r.method === 'DELETE')?.url).toBe(
+      '/api/shows/42/announcements/pre'
+    );
+    expect(buttons()).toContain('Set up pre-announcement');
+  });
+
+  it('offers to set up a pre slot that is not set up', async () => {
+    await mount();
+    expect(row('Pre')?.textContent).toContain('Not set up');
+    expect(buttons()).toEqual(['Set up pre-announcement']);
+    expect(row('Post')?.textContent).toContain(
+      'Set up in Wrap-up when the SoundCloud track is public'
+    );
+  });
+
+  it('switches the armed on-air story off and on again', async () => {
+    announcements = [announcement('onair')];
+    await mount();
+    expect(onair().checked).toBe(true);
+    onair().click();
+    await vi.waitFor(() =>
+      expect(requests.find((r) => r.method === 'DELETE')?.url).toBe(
+        '/api/shows/42/announcements/onair'
+      )
+    );
+    await vi.waitFor(() => expect(onair().disabled).toBe(false));
+    expect(onair().checked).toBe(false);
+    onair().click();
+    await vi.waitFor(() =>
+      expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({
+        image_source: 'cover',
+        collaborator: false,
+      })
+    );
+    await vi.waitFor(() => expect(onair().checked).toBe(true));
+  });
+
+  it('locks the on-air switch while on air', async () => {
+    current = episode({ on_air: true });
+    announcements = [announcement('onair')];
+    await mount();
+    expect(onair().disabled).toBe(true);
+  });
+
+  it('shows a sent post with its link and no Edit', async () => {
+    announcements = [
+      announcement('pre', {
+        state: 'sent',
+        scheduled_at: FR_2310_1800,
+        sent_at: FR_2310_1800,
+        permalink: 'https://instagram.com/p/abc',
+      }),
+    ];
+    await mount();
+    expect(row('Pre')?.textContent).toContain('Sent · Fr 23.10. · 18:00');
+    expect(root.querySelector('.promotion a')?.getAttribute('href')).toBe(
+      'https://instagram.com/p/abc'
+    );
+    expect(buttons()).toEqual([]);
+  });
+
+  it('shows why a post failed', async () => {
+    announcements = [announcement('pre', { state: 'failed', error: 'Token expired' })];
+    await mount();
+    expect(row('Pre')?.textContent).toContain('Failed · Token expired');
+    expect(buttons()).toContain('Edit pre-announcement');
+  });
+
+  it('shows a post slot that waits for SoundCloud', async () => {
+    announcements = [announcement('post')];
+    await mount();
+    expect(row('Post')?.textContent).toContain('Waiting for SoundCloud');
+  });
+});
+
+describe('Pre-announcement composer', () => {
+  const field = (name: string) =>
+    [...root.querySelectorAll('label')]
+      .find((l) => l.querySelector('.label')?.textContent === name)
+      ?.querySelector('input, textarea') as HTMLInputElement;
+  const type = (name: string, value: string) => {
+    field(name).value = value;
+    field(name).dispatchEvent(new Event('input'));
+  };
+  const radio = (text: string) =>
+    [...root.querySelectorAll('label')]
+      .find((l) => l.textContent?.trim().startsWith(text))
+      ?.querySelector('input') as HTMLInputElement;
+
+  beforeEach(() => {
+    current = episode({ description: 'Guest mix with Juno Park.' });
+    times = [
+      { scheduled_at: '2026-10-23T10:00:00Z', free: false, reason: 'Taken by another show' },
+      { scheduled_at: FR_2310_1800, free: true, default: true },
+    ];
+  });
+
+  async function open(slot = 'pre') {
+    const router = await mount('host', 1, undefined, `/shows/42/announce/${slot}`);
+    await vi.waitFor(() => expect(text()).toContain('Schedule post'));
+    return router;
+  }
+
+  it('drafts the caption from the episode and schedules the default time', async () => {
+    const router = await open();
+    expect(field('Caption').value).toBe('Guest mix with Juno Park.');
+    expect(radio('Fr 23.10. · 18:00').checked).toBe(true);
+    expect(radio('Fr 23.10. · 12:00').disabled).toBe(true);
+    expect(text()).toContain('Fr 23.10. · 12:00 · Taken by another show');
+    expect(radio('Upload a photo').disabled).toBe(true);
+    expect(text()).toContain('After it is posted, the caption cannot be changed.');
+    expect(text()).toContain('Uses 1 of 3 announcements for this episode.');
+
+    type('Headline on the image', 'Sunday brunch');
+    await nextTick();
+    button('Schedule post').click();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/42'));
+    expect(requests.find((r) => r.method === 'PUT')).toEqual({
+      url: '/api/shows/42/announcements/pre',
+      method: 'PUT',
+      body: {
+        headline: 'Sunday brunch',
+        caption: 'Guest mix with Juno Park.',
+        image_source: 'cover',
+        layout: 'band',
+        collaborator: true,
+        scheduled_at: FR_2310_1800,
+      },
+    });
+  });
+
+  it('refuses a headline over 18 and a caption over 600 characters', async () => {
+    await open();
+    type('Headline on the image', 'A headline too long');
+    await nextTick();
+    expect(text()).toContain('Headline: max 18 characters.');
+    expect(button('Schedule post').disabled).toBe(true);
+
+    type('Headline on the image', 'Sunday brunch');
+    type('Caption', 'x'.repeat(601));
+    await nextTick();
+    expect(text()).toContain('Caption: max 600 characters.');
+    expect(button('Schedule post').disabled).toBe(true);
+
+    type('Caption', 'x'.repeat(600));
+    await nextTick();
+    expect(button('Schedule post').disabled).toBe(false);
+  });
+
+  it('shows why a time is taken when the backend refuses it', async () => {
+    saveError = Response.json({ error: 'The station already posts that day.' }, { status: 409 });
+    const router = await open();
+    type('Headline on the image', 'Sunday brunch');
+    await nextTick();
+    button('Schedule post').click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+        'The station already posts that day.'
+      )
+    );
+    expect(router.currentRoute.value.fullPath).toBe('/shows/42/announce/pre');
+  });
+
+  it('opens a set-up slot with its own values', async () => {
+    announcements = [
+      announcement('pre', { headline: 'Brunch!', caption: 'Mine', scheduled_at: FR_2310_1800 }),
+      announcement('onair'),
+    ];
+    await open();
+    expect(field('Headline on the image').value).toBe('Brunch!');
+    expect(field('Caption').value).toBe('Mine');
+    expect(text()).toContain('Uses 2 of 3 announcements for this episode.');
+  });
+
+  it('lets the post slot wait for SoundCloud without a time', async () => {
+    times = [];
+    await open('post');
+    expect(text()).toContain('Post-announcement');
+    expect(text()).toContain('Waiting for SoundCloud');
+    type('Headline on the image', 'Listen back');
+    await nextTick();
+    button('Schedule post').click();
+    await vi.waitFor(() => expect(requests.find((r) => r.method === 'PUT')).toBeDefined());
+    const put = requests.find((r) => r.method === 'PUT')!;
+    expect(put.url).toBe('/api/shows/42/announcements/post');
+    expect(put.body).not.toHaveProperty('scheduled_at');
+  });
+});
+
+describe('Wrap-up · Post-announcement', () => {
+  const wrapup = (overrides: Partial<ShowDetail> = {}) =>
+    episode({ date: '2026-10-25', episode_status: 'wrapup_open', ...overrides });
+  const postRow = () => root.querySelector('.post-slot li')?.textContent ?? '';
+
+  it('waits for the public track and does not hold up Publish', async () => {
+    current = wrapup({ live_recorded: false });
+    const router = await mount();
+    expect(postRow()).toContain('Mo 26.10. · 18:00 · waits for the public track');
+    expect(button('Publish').disabled).toBe(false);
+    button('Set up post-announcement').click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/shows/42/announce/post')
+    );
+  });
+
+  it('shows a set-up post with Edit and Cancel once the track is public', async () => {
+    current = wrapup({ soundcloud_public: true });
+    announcements = [announcement('post', { scheduled_at: MO_2610_1800 })];
+    await mount();
+    expect(postRow()).toContain('Scheduled · Mo 26.10. · 18:00');
+    expect(button('Edit post-announcement')).toBeTruthy();
+    expect(button('Cancel post-announcement')).toBeTruthy();
+  });
+
+  it.each([
+    ['no post slot', [], false, 'Instagram · no post-announcement'],
+    [
+      'a private track',
+      [announcement('post')],
+      false,
+      'Instagram · waits for the public SoundCloud track',
+    ],
+  ])('says on Done when there is %s', async (_name, list, isPublic, pill) => {
+    current = wrapup({ episode_status: 'finished', soundcloud_public: isPublic });
+    announcements = list;
+    await mount();
+    expect(text()).toContain(pill);
+  });
+});
+
 describe('who sees what', () => {
   it("keeps today's page for admins", async () => {
     await mount('admin', 9);
@@ -592,8 +902,21 @@ describe('flow', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-20T10:00:00Z'));
     current = episode({ date: '2026-10-25' });
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 }), announcement('onair')];
     await mount();
     await expectFlow('episode', root);
+  });
+
+  it('Pre-announcement matches the flow', async () => {
+    current = episode({ date: '2026-10-25', description: 'Guest mix with Juno Park.' });
+    times = [
+      { scheduled_at: FR_2310_1800, free: true, default: true },
+      { scheduled_at: '2026-10-24T10:00:00Z', free: true },
+      { scheduled_at: '2026-10-24T16:00:00Z', free: true },
+    ];
+    await mount('host', 1, undefined, '/shows/42/announce/pre');
+    await vi.waitFor(() => expect(text()).toContain('Fr 23.10. · 18:00'));
+    await expectFlow('announce', root);
   });
 
   it('Episode · Pre-recorded matches the flow', async () => {
@@ -643,7 +966,7 @@ describe('flow', () => {
 
   it('Wrap-up matches the flow', async () => {
     current = episode({
-      date: PAST,
+      date: '2026-10-25',
       episode_status: 'wrapup_open',
       latest_recording: recordingReady,
     });
@@ -652,7 +975,13 @@ describe('flow', () => {
   });
 
   it('Published matches the flow', async () => {
-    current = episode({ date: PAST, episode_status: 'finished', latest_recording: recordingReady });
+    current = episode({
+      date: '2026-10-25',
+      episode_status: 'finished',
+      latest_recording: recordingReady,
+      soundcloud_public: true,
+    });
+    announcements = [announcement('post', { scheduled_at: MO_2610_1800 })];
     await mount();
     await expectFlow('done', root);
   });

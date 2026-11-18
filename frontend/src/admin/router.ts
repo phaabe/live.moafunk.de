@@ -12,6 +12,7 @@ const ShowsPage = () => import('./pages/ShowsPage.vue');
 const ShowCreatePage = () => import('./pages/ShowCreatePage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
 const HostEpisodePage = () => import('./pages/HostEpisodePage.vue');
+const HostAnnouncePage = () => import('./pages/HostAnnouncePage.vue');
 const ShowSeriesPage = () => import('./pages/ShowSeriesPage.vue');
 const BookSlotPage = () => import('./pages/BookSlotPage.vue');
 const RecordingPage = () => import('./pages/RecordingPage.vue');
@@ -290,6 +291,13 @@ const router = createRouter({
       // detail of the show they're assigned to. Finer-grained edit gating lives
       // in ShowDetailPage + the backend (which restricts guests to their show).
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host', 'guest'] },
+    },
+    {
+      // Flow screen `announce`: the composer of an episode's pre- or post-announcement.
+      path: '/shows/:id(\\d+)/announce/:slot(pre|post)',
+      name: 'show-announce',
+      component: HostAnnouncePage,
+      meta: { requiresAuth: true, roles: ['host'] },
     },
     {
       path: '/stream',

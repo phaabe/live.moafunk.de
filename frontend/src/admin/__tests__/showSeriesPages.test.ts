@@ -279,7 +279,25 @@ describe('Show page', () => {
       name: 'Brunch Club',
       description: 'Sunday brunch sounds, every week from 12:00.',
       repeat_rule: 'none',
+      instagram_handle: '',
     });
+  });
+
+  it('saves the Instagram handle without "@" and refuses a wrong one', async () => {
+    await mount('host', '/shows/brunchtime');
+    await vi.waitFor(() => expect(root.textContent).toContain('Instagram handle'));
+    const handle = 'input[placeholder="@brunchtime"]';
+    input(handle, 'bad handle!');
+    await nextTick();
+    expect(root.textContent).toContain('Use up to 30 letters, numbers, dots or underscores.');
+    expect(button('Save').disabled).toBe(true);
+
+    input(handle, '@brunch.club');
+    await nextTick();
+    expect(button('Save').disabled).toBe(false);
+    button('Save').click();
+    await vi.waitFor(() => expect(put).toBeDefined());
+    expect(put!.get('instagram_handle')).toBe('brunch.club');
   });
 
   it("sends a host away from another host's show", async () => {

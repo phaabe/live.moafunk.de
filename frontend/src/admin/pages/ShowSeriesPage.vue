@@ -9,6 +9,7 @@ import CoverDrop from '../components/CoverDrop.vue';
 import DateChip from '../components/DateChip.vue';
 import SeriesFields from '../components/SeriesFields.vue';
 import { draftOf, draftValid, emptyDraft, toNewSeries } from '../seriesDraft';
+import { cleanHandle, handleError } from '../promotion';
 
 // Flow screen `show`: one Show (series) with its episodes, newest first.
 // Only the owner opens it, so Details always edits the Show.
@@ -21,6 +22,9 @@ const error = ref<string | null>(null);
 const draft = ref(emptyDraft());
 const cover = ref<File | null>(null);
 const saving = ref(false);
+/** The host's Instagram account; announcements invite it as collaborator. */
+const handle = ref('');
+const handleProblem = computed(() => handleError(cleanHandle(handle.value)));
 
 /** Date chip per status: yellow while upcoming, amber while the wrap-up is open. */
 const CHIP = { upcoming: 'mine', wrapup_open: 'wrapup', finished: '' } as const;
@@ -50,6 +54,7 @@ async function load() {
     }
     series.value = found;
     draft.value = draftOf(found);
+    handle.value = found.instagram_handle ? `@${found.instagram_handle}` : '';
     cover.value = null;
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the show';
@@ -57,11 +62,14 @@ async function load() {
 }
 
 async function save() {
-  if (!series.value || !draftValid(draft.value) || saving.value) return;
+  if (!series.value || !draftValid(draft.value) || handleProblem.value || saving.value) return;
   saving.value = true;
   error.value = null;
   try {
-    await seriesApi.update(series.value.slug, toNewSeries(draft.value, cover.value));
+    await seriesApi.update(series.value.slug, {
+      ...toNewSeries(draft.value, cover.value),
+      instagram_handle: cleanHandle(handle.value),
+    });
     await load();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not save the show';
@@ -125,11 +133,16 @@ watch(slug, load, { immediate: true });
           </div>
           <div class="board-card-body">
             <SeriesFields v-model="draft" />
+            <label class="field">
+              <span class="label">Instagram handle</span>
+              <input v-model="handle" type="text" class="input" placeholder="@brunchtime" />
+            </label>
+            <p v-if="handleProblem" class="field-error">{{ handleProblem }}</p>
             <p class="hint">Booked episodes keep their date and time.</p>
             <div>
               <BaseButton
                 variant="secondary"
-                :disabled="!draftValid(draft)"
+                :disabled="!draftValid(draft) || !!handleProblem"
                 :loading="saving"
                 @click="save"
               >
