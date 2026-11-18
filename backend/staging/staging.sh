@@ -40,7 +40,11 @@ PROD_BUCKETS="unheard-artists-prod unheard-artists-dev moafunk-prod"
 # Values install-env reads from stdin (push-secrets.sh sends them from Bitwarden).
 SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_R2_ACCESS_KEY_ID
 STAGING_R2_SECRET_ACCESS_KEY STAGING_HARBOR_TEST_PASSWORD STAGING_HARBOR_LIVE_PASSWORD
-STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD STAGING_ICECAST_RELAY_PASSWORD"
+STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD STAGING_ICECAST_RELAY_PASSWORD
+STAGING_SOUNDCLOUD_CLIENT_ID STAGING_SOUNDCLOUD_CLIENT_SECRET"
+
+# The station's production SoundCloud account: never the staging account.
+STATION_SOUNDCLOUD_ACCOUNT=radio-moafunk
 
 # Login passwords: stored only as argon2 hashes, so any characters are fine.
 LOGIN_PASSWORDS="STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD"
@@ -131,6 +135,8 @@ check_env_file_syntax() {
 forbidden_key() {
   case "$1" in
     SOUNDCLOUD_AUTO_UPLOAD | TELEGRAM_ENABLED) return 1 ;;
+    # The SoundCloud app and the test account (check_env pins them).
+    SOUNDCLOUD_CLIENT_ID | SOUNDCLOUD_CLIENT_SECRET | SOUNDCLOUD_REDIRECT_URI | SOUNDCLOUD_ACCOUNT | SOUNDCLOUD_KEEP_TRACKS) return 1 ;;
     SOUNDCLOUD_* | TELEGRAM_* | INSTAGRAM_* | FACEBOOK_* | OPENAI_* | RECOVERY_* | GITHUB_DISPATCH_TOKEN) return 0 ;;
   esac
   return 1
@@ -141,10 +147,11 @@ check_env() {
   [[ -f "$file" ]] || die "missing $file"
   check_env_file_syntax "$file"
 
-  # Unset bucket names fall back to production buckets, and SoundCloud
-  # auto-upload defaults to on, so every value here is required explicitly.
+  # Unset bucket names fall back to production buckets, and the SoundCloud
+  # login must come back to this box, so every value here is required explicitly.
   for pair in APP_ENV=staging "ADMIN_BASE_URL=https://$DOMAIN" STREAM_OUTPUT=icecast \
-    SOUNDCLOUD_AUTO_UPLOAD=false TELEGRAM_ENABLED=false \
+    SOUNDCLOUD_AUTO_UPLOAD=true "SOUNDCLOUD_REDIRECT_URI=https://$DOMAIN/api/soundcloud/callback" \
+    SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=false \
     R2_BUCKET_NAME=unheard-artists-staging R2_SHOWS_BUCKET_NAME=moafunk-staging \
     "ICECAST_STATUS_URL=http://host.docker.internal:$ICECAST_PORT/status-json.xsl"; do
     key="${pair%%=*}"
@@ -168,6 +175,16 @@ check_env() {
   for key in SUPERADMIN_PASSWORD_HASH STAGING_HOST_PASSWORD_HASH; do
     [[ "$(env_value "$key" "$file")" == '$argon2'* ]] || problem "$key must be an argon2 hash"
   done
+
+  # Uploads go to the test account; the backend refuses a login of any other
+  # account and deletes old tracks of this one (SOUNDCLOUD_KEEP_TRACKS).
+  for key in SOUNDCLOUD_CLIENT_ID SOUNDCLOUD_CLIENT_SECRET; do
+    [[ -n "$(env_value "$key" "$file")" ]] || problem "$key must be set (the SoundCloud app)"
+  done
+  value="$(env_value SOUNDCLOUD_ACCOUNT "$file")"
+  [[ "$value" =~ ^[a-z0-9_-]+$ ]] || problem "SOUNDCLOUD_ACCOUNT must be set (permalink of the test account)"
+  [[ "$value" != "$STATION_SOUNDCLOUD_ACCOUNT" ]] ||
+    problem "SOUNDCLOUD_ACCOUNT must not be the station account $STATION_SOUNDCLOUD_ACCOUNT"
 
   for key in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$file" | cut -d= -f1); do
     if forbidden_key "$key"; then problem "$key must not be set in staging"; fi

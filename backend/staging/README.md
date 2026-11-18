@@ -8,9 +8,10 @@ Staging runs images from the `staging` branch at https://staging.live.moafunk.de
   - own SQLite DB (empty, or a scrubbed copy of production, see `seed-db`)
   - own R2 buckets (`unheard-artists-staging`, `moafunk-staging`) with a token that can only reach them. `check-r2` proves it: the token must list the staging buckets and get 403 from `unheard-artists-prod`, `unheard-artists-dev` and `moafunk-prod`.
   - own Liquidsoap and Icecast on this box (harbor 8005, Icecast 8010, as in production) with own passwords
-  - `SOUNDCLOUD_AUTO_UPLOAD=false`, `TELEGRAM_ENABLED=false`
-  - no `GITHUB_DISPATCH_TOKEN` (it would start the production backup workflow), and no other `SOUNDCLOUD_*`, `TELEGRAM_*`, `INSTAGRAM_*`, `FACEBOOK_*`, `OPENAI_*` or `RECOVERY_*` setting
-- Secrets live in Bitwarden (`Moafunk STAGING_*` items). `push-secrets.sh` moves them to the box; nobody types or pastes them.
+  - own SoundCloud test account (`SOUNDCLOUD_ACCOUNT`, never the station account `radio-moafunk`) on the station's SoundCloud app. SoundCloud allows one app per account, so the app's redirect URIs list both callbacks, separated by a comma. The login must return to staging (`SOUNDCLOUD_REDIRECT_URI`). The backend refuses a login of another account. Recordings upload by themselves (`SOUNDCLOUD_AUTO_UPLOAD=true`), and after each upload only the newest 10 tracks stay (`SOUNDCLOUD_KEEP_TRACKS=10`).
+  - `TELEGRAM_ENABLED=false`
+  - no `GITHUB_DISPATCH_TOKEN` (it would start the production backup workflow), no `SOUNDCLOUD_ACCESS_TOKEN` or other `SOUNDCLOUD_*` setting, and no other `TELEGRAM_*`, `INSTAGRAM_*`, `FACEBOOK_*`, `OPENAI_*` or `RECOVERY_*` setting
+- Secrets live in Bitwarden (`Moafunk STAGING_*` items, and the station's SoundCloud app in Secrets Manager). `push-secrets.sh` moves them to the box; nobody types or pastes them.
 - The production box has no key for the staging box, and the staging box has no key for production.
 - Start and stop staging only with `staging.sh`, never with `docker` by hand.
 
