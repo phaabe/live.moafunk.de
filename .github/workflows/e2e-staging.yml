@@ -97,11 +97,15 @@ jobs:
           cache: npm
           cache-dependency-path: e2e/package-lock.json
 
-      - name: Install the test, Chromium and ffmpeg
+      - name: Install ffmpeg
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg
+
+      - name: Install the test and Chromium
         working-directory: e2e
         run: |
           set -euo pipefail
-          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
           npm ci
           npx playwright install --with-deps chromium
           npm run typecheck

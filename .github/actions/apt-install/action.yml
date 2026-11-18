@@ -1,0 +1,70 @@
+name: Install apt packages (cached)
+description: >-
+  Runs apt-get install with the downloaded .deb files kept in the Actions
+  cache, so a slow Ubuntu mirror does not stall the job. Every job restores
+  the cache; only a job with save 'true' writes it.
+
+inputs:
+  packages:
+    description: Packages to install, separated by spaces.
+    required: true
+  options:
+    description: Extra apt-get install options, for example --no-install-recommends.
+    required: false
+    default: ''
+  save:
+    description: "'true' saves the cache after the install."
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # One cache per runner image. A new image starts a new cache from the
+    # newest old one, so updated packages get saved about once a week.
+    # ImageOS and ImageVersion are runner variables, not in the env context.
+    - name: Name the apt cache
+      id: name
+      shell: bash
+      run: |
+        set -euo pipefail
+        prefix="apt-debs-${ImageOS:-unknown}-"
+        echo "prefix=$prefix" >>"$GITHUB_OUTPUT"
+        echo "key=$prefix${ImageVersion:-unknown}" >>"$GITHUB_OUTPUT"
+
+    - name: Restore the apt cache
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/apt-debs/*.deb
+        key: ${{ steps.name.outputs.key }}
+        restore-keys: ${{ steps.name.outputs.prefix }}
+
+    # The config also covers later apt calls in the job, such as
+    # playwright install --with-deps. apt downloads only what is missing.
+    - name: Install the packages
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        OPTIONS: ${{ inputs.options }}
+      run: |
+        set -euo pipefail
+        mkdir -p ~/apt-debs/partial
+        printf 'Dir::Cache::Archives "%s/apt-debs/";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME" |
+          sudo tee /etc/apt/apt.conf.d/99-ci-deb-cache >/dev/null
+        sudo apt-get update -q
+        # shellcheck disable=SC2086 # one word per package and option
+        sudo apt-get install -y -q $OPTIONS $PACKAGES
+
+    # Drops .debs that are no longer on the mirror, so the cache does not grow.
+    - name: Clean the apt cache
+      if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: sudo apt-get autoclean -q
+
+    - name: Save the apt cache
+      if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/apt-debs/*.deb
+        key: ${{ steps.name.outputs.key }}

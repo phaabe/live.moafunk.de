@@ -138,6 +138,7 @@ test('the scope patterns cover what each check tests', () => {
     'scripts/pr-touches.sh',
     'scripts/coverage-floors.cjs',
     '.github/workflows/epic-ci.yml',
+    '.github/actions/apt-install/action.yml',
   ]) {
     assert.ok(matches(backend, file), `backend-ci must run for ${file}`);
   }
@@ -161,6 +162,7 @@ test('the scope patterns cover what each check tests', () => {
     'docs/stream-rework/prod/moafunk.liq',
     'docs/stream-rework/prod/icecast-kh.Dockerfile',
     '.github/workflows/stream-system.yml',
+    '.github/actions/apt-install/action.yml',
     'scripts/pr-touches.sh',
   ]) {
     assert.ok(matches(stream, file), `stream-system must run for ${file}`);

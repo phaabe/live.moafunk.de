@@ -187,7 +187,7 @@ test('PRs that change e2e/ or the frontend get the e2e checks and the local Stud
   assert.deepEqual(unit.on, {
     pull_request: {
       branches: ['staging', 'main'],
-      paths: ['e2e/**', 'frontend/**', '.github/workflows/e2e-unit.yml'],
+      paths: ['e2e/**', 'frontend/**', '.github/workflows/e2e-unit.yml', '.github/actions/apt-install/**'],
     },
   });
   assert.deepEqual(unit.permissions, { contents: 'read' });
