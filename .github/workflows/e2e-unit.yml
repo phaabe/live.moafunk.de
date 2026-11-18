@@ -53,14 +53,19 @@ jobs:
       - name: Install the test, the frontend, the browsers and ffmpeg
         run: |
           set -euo pipefail
-          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg pulseaudio
           npm ci --prefix frontend
           npm ci --prefix e2e
           cd e2e && npx playwright install --with-deps chromium firefox
 
       - name: Studio soundcheck against the mock
         working-directory: e2e
-        run: npm run local
+        # The runner has no sound card. Firefox's audio only runs with an
+        # output device, so PulseAudio gives it a null one.
+        run: |
+          set -euo pipefail
+          pulseaudio --start --exit-idle-time=-1
+          npm run local
 
       - uses: actions/upload-artifact@v4
         if: failure()

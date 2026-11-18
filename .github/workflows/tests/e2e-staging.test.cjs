@@ -195,7 +195,7 @@ test('PRs that change e2e/ or the frontend get the e2e checks and the local Stud
   // The soundcheck runs against the local mock, never the staging show.
   const soundcheck = unit.jobs['studio-soundcheck'].steps;
   assert.equal(soundcheck[0].with['persist-credentials'], false);
-  assert.equal(soundcheck.at(-2).run, 'npm run local');
+  assert.match(soundcheck.at(-2).run, /^npm run local$/m);
   const { steps, defaults } = unit.jobs['e2e-unit'];
   assert.deepEqual(defaults, { run: { 'working-directory': 'e2e' } });
   assert.equal(steps[0].with['persist-credentials'], false);
