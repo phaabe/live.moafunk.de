@@ -8,7 +8,10 @@ name: STREAM - System test
 
 on:
   # Every PR, without path filters: stream-system is a required check, and a
-  # required check that does not run blocks the merge.
+  # required check that does not start blocks the merge. On PRs into staging
+  # the job is skipped by its `if` when the PR touches nothing in the stream
+  # chain (a skipped job reports success). Pushes to staging and PRs into
+  # main always run it, so a miss shows up after the merge, before a release.
   pull_request:
     branches: [main, staging]
   push:
@@ -37,8 +40,36 @@ env:
   ICECAST_SOURCE_PASSWORD: ci-icecast-source
 
 jobs:
+  stream-scope:
+    name: stream-system scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      stream: ${{ steps.touches.outputs.stream }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR merge commit and its parents, for scripts/pr-touches.sh.
+          fetch-depth: 2
+          persist-credentials: false
+
+      # The stream chain: the stream handler and what it calls, the test
+      # helpers, dependencies and the production Liquidsoap/Icecast configs.
+      - name: Check what the PR changes
+        id: touches
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          stream="$(scripts/pr-touches.sh '^backend/src/(handlers/(stream_ws|recording)|stream_[a-z_]+|recording[a-z_]*|broadcast_tests|audio|auth|config|main|metrics|telegram_notify)\.rs$|^backend/Cargo\.(toml|lock)$|^docs/stream-rework/prod/|^\.github/workflows/stream-system\.yml$|^scripts/pr-touches\.sh$')"
+          echo "stream=$stream" >>"$GITHUB_OUTPUT"
+
   system:
     name: stream-system
+    needs: stream-scope
+    # Runs unless the scope says false, so a failed scope job never skips it.
+    if: ${{ !cancelled() && needs.stream-scope.outputs.stream != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -125,6 +156,14 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.98.0
+
+      # Restores the dependency builds of the last staging push. Only staging
+      # pushes save, so PR runs cannot evict each other's caches.
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
 
       - name: Run the system tests
         working-directory: backend
