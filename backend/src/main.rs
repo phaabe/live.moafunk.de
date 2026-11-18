@@ -657,6 +657,14 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::announcements::api_announcement_slots),
         )
         .route(
+            "/api/shows/:id/announcements/meta",
+            get(handlers::announcements::api_announcement_meta),
+        )
+        .route(
+            "/api/shows/:id/announcements/uploads",
+            post(handlers::announcements::api_upload_announcement_image),
+        )
+        .route(
             "/api/shows/:id/announcements/:slot",
             axum::routing::put(handlers::announcements::api_put_announcement)
                 .delete(handlers::announcements::api_cancel_announcement),

@@ -21,7 +21,7 @@ use crate::announcement_image::{
     store_announcement_jpeg, AnnouncementKind, AnnouncementLayout, PreviewQuery,
 };
 use crate::announcements::{
-    self, to_db_time, Announcement, AnnouncementSettings, AnnouncementSlot,
+    self, to_db_time, Announcement, AnnouncementSettings, AnnouncementSlot, KEEP_REQUESTED_AT,
 };
 use crate::instagram::{is_quota_used_up, InstagramClient, PublishedMedia};
 use crate::{models, storage, telegram_notify, AppError, AppState, Result};
@@ -131,15 +131,17 @@ pub async fn unlock_waiting_posts(state: &Arc<AppState>, now: DateTime<Utc>) -> 
             continue;
         };
         let pending = announcements::needs_approval(&mut tx, &settings, creator.as_ref()).await?;
-        sqlx::query(
-            "UPDATE announcements SET state = ?, scheduled_at = ?, anchor_offset_minutes = ?, \
-               updated_at = CURRENT_TIMESTAMP WHERE id = ? AND state = 'waiting_soundcloud'",
-        )
+        sqlx::query(&format!(
+            "UPDATE announcements SET state = ?, {KEEP_REQUESTED_AT}, scheduled_at = ?, \
+               anchor_offset_minutes = ?, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ? AND state = 'waiting_soundcloud'"
+        ))
         .bind(if pending {
             "pending_approval"
         } else {
             "scheduled"
         })
+        .bind(to_db_time(at))
         .bind(to_db_time(at))
         .bind(start.map(|s| (at - s).num_minutes()))
         .bind(id)

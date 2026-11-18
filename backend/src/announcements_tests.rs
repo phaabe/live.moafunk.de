@@ -737,7 +737,245 @@ fn slots_route_does_not_clash_with_slot_param() {
             axum::routing::get(ann::api_announcement_slots),
         )
         .route(
+            "/api/shows/:id/announcements/meta",
+            axum::routing::get(ann::api_announcement_meta),
+        )
+        .route(
+            "/api/shows/:id/announcements/uploads",
+            axum::routing::post(ann::api_upload_announcement_image),
+        )
+        .route(
             "/api/shows/:id/announcements/:slot",
             axum::routing::put(ann::api_put_announcement).delete(ann::api_cancel_announcement),
         );
+}
+
+// ── Host signals: meta, requested_at ────────────────────────────────────────
+
+async fn meta(state: &Arc<AppState>, user: i64, show: i64) -> (StatusCode, Value) {
+    outcome(
+        ann::api_announcement_meta(State(state.clone()), Path(show), headers(state, user).await)
+            .await,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn meta_tells_paused_and_needs_approval() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, 1, host, "2030-06-05").await;
+    episode(&state, 2, host, "2030-06-12").await;
+
+    assert_eq!(
+        meta(&state, host, 1).await,
+        (
+            StatusCode::OK,
+            json!({ "paused": false, "needs_approval": true })
+        )
+    );
+    assert_eq!(
+        meta(&state, admin, 1).await.1,
+        json!({ "paused": false, "needs_approval": false })
+    );
+    assert_eq!(meta(&state, other, 1).await.0, StatusCode::FORBIDDEN);
+
+    // Two sent posts: the host's next post goes straight out.
+    put(&state, host, 1, "pre", json!({})).await;
+    put(&state, host, 2, "pre", json!({})).await;
+    mark(&state, 1, "pre", "sent").await;
+    mark(&state, 2, "pre", "sent").await;
+    set(&state, "announce_paused", "true").await;
+    assert_eq!(
+        meta(&state, host, 1).await.1,
+        json!({ "paused": true, "needs_approval": false })
+    );
+}
+
+#[tokio::test]
+async fn approve_move_keeps_the_host_time_until_the_host_saves() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, 1, host, "2030-06-05").await;
+    let (_, row) = put(&state, host, 1, "pre", json!({})).await;
+    assert_eq!(row["requested_at"], Value::Null);
+    let id = row["id"].as_i64().unwrap();
+
+    // The time passed while it waited for approval: approve moves it.
+    sqlx::query("UPDATE announcements SET scheduled_at = '2020-01-01T17:00:00Z' WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let (status, body) = outcome(
+        ann::api_admin_approve_announcement(
+            State(state.clone()),
+            Path(id),
+            headers(&state, admin).await,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["requested_at"], "2020-01-01T17:00:00Z");
+    let (_, rows) = list(&state, host, 1).await;
+    assert_eq!(rows[0]["requested_at"], "2020-01-01T17:00:00Z");
+    assert_ne!(rows[0]["scheduled_at"], "2020-01-01T17:00:00Z");
+
+    // The host picks a time again: nothing was moved.
+    let (status, row) = put(&state, host, 1, "pre", json!({ "scheduled_at": at(3, 18) })).await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["requested_at"], Value::Null);
+}
+
+// ── Photo upload and preview ────────────────────────────────────────────────
+
+fn encoded(format: image::ImageFormat) -> Vec<u8> {
+    let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        4,
+        4,
+        image::Rgb([200, 30, 30]),
+    ));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, format).unwrap();
+    out.into_inner()
+}
+
+/// POSTs `data` as multipart field `field` to the upload route of `show`,
+/// through a router with the production body limit.
+async fn upload(
+    state: &Arc<AppState>,
+    user: i64,
+    show: i64,
+    field: &str,
+    data: &[u8],
+) -> (StatusCode, Value) {
+    let app = axum::Router::new()
+        .route(
+            "/api/shows/:id/announcements/uploads",
+            axum::routing::post(ann::api_upload_announcement_image),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            state.config.max_request_body_bytes(),
+        ))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let mut body = format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{field}\"; \
+         filename=\"photo\"\r\nContent-Type: image/jpeg\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{addr}/api/shows/{show}/announcements/uploads"
+        ))
+        .headers(headers(state, user).await)
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn photo_upload_takes_jpeg_and_png_only() {
+    let (r2, endpoint) = crate::fake_r2::FakeR2::serve().await;
+    let (state, _t) = crate::broadcast_tests::state_with(json!({ "r2_endpoint": endpoint })).await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    episode(&state, 1, host, "2030-06-05").await;
+
+    let jpeg = encoded(image::ImageFormat::Jpeg);
+    let png = encoded(image::ImageFormat::Png);
+    for (data, ext) in [(&jpeg, "jpg"), (&png, "png")] {
+        let (status, body) = upload(&state, host, 1, "file", data).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let key = body["image_key"].as_str().unwrap();
+        assert!(key.starts_with("shows/1/announcements/uploads/"), "{key}");
+        assert!(key.ends_with(&format!(".{ext}")), "{key}");
+        assert_eq!(r2.object(&state, key).as_ref(), Some(data));
+    }
+
+    // The bytes decide, not the declared content type.
+    let (status, _) = upload(&state, host, 1, "file", b"GIF89a not a photo").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let mut big = jpeg.clone();
+    big.resize(10 * 1024 * 1024 + 1, 0);
+    let (status, body) = upload(&state, host, 1, "file", &big).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.to_string().contains("10 MB"), "{body}");
+    assert_eq!(
+        upload(&state, host, 1, "photo", &jpeg).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        upload(&state, other, 1, "file", &jpeg).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        r2.keys_in(
+            &state.config.r2_bucket_name,
+            "shows/1/announcements/uploads/"
+        )
+        .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn preview_renders_an_uploaded_photo_and_refuses_a_foreign_key() {
+    use crate::announcement_image::{api_announcement_preview, PreviewQuery};
+    let (_r2, endpoint) = crate::fake_r2::FakeR2::serve().await;
+    let (state, _t) = crate::broadcast_tests::state_with(json!({ "r2_endpoint": endpoint })).await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, 1, host, "2030-06-05").await;
+    let (_, body) = upload(&state, host, 1, "file", &encoded(image::ImageFormat::Png)).await;
+    let key = body["image_key"].as_str().unwrap().to_string();
+
+    let preview = |source: &str, key: &str| {
+        let state = state.clone();
+        let image = json!({ "image_source": source, "image_key": key });
+        async move {
+            api_announcement_preview(
+                State(state.clone()),
+                Path((1, "pre".to_string())),
+                Query(PreviewQuery {
+                    headline: "Tonight".into(),
+                    layout: Default::default(),
+                }),
+                Query(serde_json::from_value(image).unwrap()),
+                headers(&state, host).await,
+            )
+            .await
+            .map(IntoResponse::into_response)
+        }
+    };
+    let response = preview("upload", &key).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+    assert!(image::load_from_memory(&bytes).is_ok());
+
+    for (source, key) in [
+        ("upload", "shows/2/announcements/uploads/x.png"),
+        ("guest", "covers/1.png"),
+        ("poster", key.as_str()),
+    ] {
+        let status = outcome(preview(source, key).await).await.0;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{source} {key}");
+    }
 }

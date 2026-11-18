@@ -485,10 +485,12 @@ pub struct PreviewQuery {
 
 /// Preview of one announcement slot with unsaved composer values.
 /// GET /api/shows/:id/announcements/:slot/preview.jpg?headline=…&layout=band|split
+/// &image_source=cover|upload|guest&image_key=… (image fields checked like a save)
 pub async fn api_announcement_preview(
     State(state): State<Arc<AppState>>,
     Path((id, slot)): Path<(i64, String)>,
     Query(query): Query<PreviewQuery>,
+    Query(image): Query<crate::handlers::announcements::AnnouncementInput>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let (_user, show) = require_show_editor(&state, &headers, id).await?;
@@ -500,7 +502,8 @@ pub async fn api_announcement_preview(
         )));
     }
 
-    let image = load_announcement_image(&state, id, None).await?;
+    let (_, image_key) = crate::handlers::announcements::image_of(id, &image)?;
+    let image = load_announcement_image(&state, id, image_key.as_deref()).await?;
     let input = announcement_for_show(&state, &show, kind, query, image).await?;
     let jpeg = tokio::task::spawn_blocking(move || render_announcement_jpeg(&input))
         .await
@@ -743,6 +746,7 @@ mod tests {
                         headline: "Tonight".into(),
                         layout: AnnouncementLayout::Split,
                     }),
+                    Query(Default::default()),
                     headers(&state, user).await,
                 )
                 .await

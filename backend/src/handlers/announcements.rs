@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::api::{require_admin, require_show_editor};
 use crate::announcements::{
     self, check_limits, is_slot_time, to_db_time, Announcement, AnnouncementSettings,
-    AnnouncementSlot, Booked, ACTIVE_STATES,
+    AnnouncementSlot, Booked, ACTIVE_STATES, KEEP_REQUESTED_AT,
 };
 use crate::{models, series, AppError, AppState, Result};
 
@@ -144,6 +144,88 @@ pub async fn api_list_announcements(
     Ok(Json(rows))
 }
 
+#[derive(Debug, Serialize)]
+pub struct AnnouncementMeta {
+    pub paused: bool,
+    /// Whether a post this user saves now goes to an admin first.
+    pub needs_approval: bool,
+}
+
+/// GET /api/shows/:id/announcements/meta
+pub async fn api_announcement_meta(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let (user, _show) = require_show_editor(&state, &headers, id).await?;
+    let settings = announcements::get_settings(&state.db).await;
+    let mut conn = state.db.acquire().await?;
+    let needs_approval = announcements::needs_approval(&mut conn, &settings, Some(&user)).await?;
+    Ok(Json(AnnouncementMeta {
+        paused: settings.paused,
+        needs_approval,
+    }))
+}
+
+const UPLOAD_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// POST /api/shows/:id/announcements/uploads — multipart `file`, a JPEG or
+/// PNG up to 10 MB. Returns `{ "image_key": ... }` for a later PUT.
+pub async fn api_upload_announcement_image(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> Result<impl IntoResponse> {
+    require_show_editor(&state, &headers, id).await?;
+    let mut data = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {e}")))?
+    {
+        if field.name() == Some("file") {
+            data = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Failed to read file: {e}")))?,
+            );
+        }
+    }
+    let data = data.ok_or_else(|| AppError::BadRequest("No file provided".to_string()))?;
+    if data.len() > UPLOAD_MAX_BYTES {
+        return Err(AppError::BadRequest(
+            "The photo is larger than 10 MB".to_string(),
+        ));
+    }
+    // By content, not by the client's content type.
+    let (ext, content_type) = if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        ("jpg", "image/jpeg")
+    } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ("png", "image/png")
+    } else {
+        return Err(AppError::BadRequest(
+            "The photo must be a JPEG or PNG".to_string(),
+        ));
+    };
+    let key = format!(
+        "shows/{id}/announcements/uploads/{}.{ext}",
+        uuid::Uuid::new_v4()
+    );
+    state
+        .s3_client
+        .put_object()
+        .bucket(&state.config.r2_bucket_name)
+        .key(&key)
+        .body(aws_sdk_s3::primitives::ByteStream::from(data))
+        .content_type(content_type)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to upload photo: {e}")))?;
+    Ok(Json(serde_json::json!({ "image_key": key })))
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct AnnouncementInput {
     /// RFC 3339. `pre`: defaults to `pre_days_before` days before;
@@ -162,7 +244,10 @@ pub struct AnnouncementInput {
 }
 
 /// Checked image fields: (image_source, image_key).
-fn image_of(show_id: i64, input: &AnnouncementInput) -> Result<(&'static str, Option<String>)> {
+pub(crate) fn image_of(
+    show_id: i64,
+    input: &AnnouncementInput,
+) -> Result<(&'static str, Option<String>)> {
     let source = match input.image_source.as_deref().unwrap_or("cover") {
         "cover" => return Ok(("cover", None)),
         "upload" => "upload",
@@ -324,7 +409,7 @@ pub async fn api_put_announcement(
            caption = excluded.caption, image_source = excluded.image_source, \
            image_key = excluded.image_key, layout = excluded.layout, \
            collaborator = excluded.collaborator, updated_at = CURRENT_TIMESTAMP, \
-           sent_at = NULL, permalink = NULL, media_id = NULL, error = NULL",
+           requested_at = NULL, sent_at = NULL, permalink = NULL, media_id = NULL, error = NULL",
     )
     .bind(id)
     .bind(slot.as_str())
@@ -560,6 +645,7 @@ pub struct AdminAnnouncement {
     pub slot: String,
     pub state: String,
     pub scheduled_at: Option<String>,
+    pub requested_at: Option<String>,
     pub sent_at: Option<String>,
     pub permalink: Option<String>,
     pub error: Option<String>,
@@ -567,7 +653,7 @@ pub struct AdminAnnouncement {
 
 const ADMIN_SELECT: &str = "SELECT a.id, a.show_id, s.title AS show_title, \
        COALESCE(t.name, s.title) AS series_name, t.instagram_handle AS host_handle, \
-       a.slot, a.state, a.scheduled_at, a.sent_at, a.permalink, a.error \
+       a.slot, a.state, a.scheduled_at, a.requested_at, a.sent_at, a.permalink, a.error \
      FROM announcements a JOIN shows s ON s.id = a.show_id \
      LEFT JOIN show_templates t ON t.id = s.template_id";
 
@@ -651,11 +737,12 @@ async fn requeue(
             ("scheduled", at)
         }
     };
-    sqlx::query(
-        "UPDATE announcements SET state = ?, scheduled_at = ?, error = NULL, \
-           updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    )
+    sqlx::query(&format!(
+        "UPDATE announcements SET state = ?, {KEEP_REQUESTED_AT}, scheduled_at = ?, \
+           error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ))
     .bind(new_state)
+    .bind(to_db_time(at))
     .bind(to_db_time(at))
     .bind(row.id)
     .execute(conn)
