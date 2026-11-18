@@ -250,3 +250,55 @@ async fn rehearsal_reaches_the_test_mount_and_never_the_public_one() {
 
     tone.stop_broadcast(events).await;
 }
+
+/// Issue 958: the next host soundchecks while a show is on air. Listeners
+/// must hear the show on /live.mp3 the whole time, while the soundcheck
+/// reaches /test.mp3, and after the soundcheck ends.
+#[tokio::test]
+#[ignore = "needs Liquidsoap and Icecast; run by the stream-system CI job"]
+async fn a_soundcheck_of_another_user_leaves_the_show_on_air() {
+    let stack = Stack::from_env();
+    let (state, _temp, addr) = serve_stream_socket_with(stack.config()).await;
+    let admin = add_user(&state, "admin", "admin").await;
+    let next = add_user(&state, "next", "host").await;
+    let live = stack.mount("live.mp3");
+
+    let (sink, live_events) = go_live(&state, addr, admin, "").await.split();
+    let show = Tone::start(sink);
+    let heard = listen_until(&live, true).await;
+    assert!(
+        heard.mean_db > TONE_DB,
+        "the show never reached /live.mp3 (mean {} dB)",
+        heard.mean_db
+    );
+
+    let (sink, events) = go_live(&state, addr, next, "test=true").await.split();
+    let soundcheck = Tone::start(sink);
+    let heard = listen_until(&stack.mount("test.mp3"), true).await;
+    assert!(
+        heard.mean_db > TONE_DB,
+        "the soundcheck never reached /test.mp3 (mean {} dB)",
+        heard.mean_db
+    );
+    let heard = listen(&live, 3).await;
+    assert!(
+        heard.mean_db > TONE_DB,
+        "the show went silent during the soundcheck (mean {} dB)",
+        heard.mean_db
+    );
+
+    soundcheck.stop_broadcast(events).await;
+    let heard = listen(&live, 3).await;
+    assert!(
+        heard.mean_db > TONE_DB,
+        "the show went silent after the soundcheck (mean {} dB)",
+        heard.mean_db
+    );
+    {
+        let stream = state.stream_state.lock().await;
+        assert!(stream.get_status().active);
+        assert_eq!(stream.current_user.as_deref(), Some("admin"));
+    }
+
+    show.stop_broadcast(live_events).await;
+}
