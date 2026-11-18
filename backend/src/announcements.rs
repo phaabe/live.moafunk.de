@@ -55,6 +55,8 @@ pub struct Announcement {
     pub state: String,
     pub anchor_offset_minutes: Option<i64>,
     pub scheduled_at: Option<String>,
+    /// The host's time when the backend moved the post; see [`KEEP_REQUESTED_AT`].
+    pub requested_at: Option<String>,
     pub headline: Option<String>,
     pub caption: Option<String>,
     pub image_source: String,
@@ -265,6 +267,12 @@ pub struct Booked {
     pub slot: AnnouncementSlot,
     pub scheduled_at: DateTime<Utc>,
 }
+
+/// SET clause for an UPDATE in which the backend moves `scheduled_at` to the
+/// time bound to its `?`: keeps the host's first time in `requested_at`.
+pub const KEEP_REQUESTED_AT: &str = "requested_at = CASE \
+    WHEN scheduled_at IS NOT NULL AND scheduled_at <> ? \
+    THEN COALESCE(requested_at, scheduled_at) ELSE requested_at END";
 
 /// The stored form of a send time.
 pub fn to_db_time(t: DateTime<Utc>) -> String {
