@@ -247,6 +247,7 @@ describe('Studio soundcheck', () => {
   it('shows one card with the input and four checks, with buttons for music and mic', async () => {
     await mount();
     expect(text()).toContain('Input level');
+    expect(text()).toContain('Music and mic use this one input. You do not need two');
     const options = [...root.querySelectorAll('option')].map((o) => o.textContent?.trim());
     expect(options).toEqual(['Select audio input', 'Focusrite USB', 'Built-in', 'Screen audio']);
     expect(rows()).toEqual({

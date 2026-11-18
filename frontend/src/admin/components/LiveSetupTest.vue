@@ -362,6 +362,10 @@ onUnmounted(() => {
             <option value="screen">Screen audio</option>
           </select>
         </label>
+        <p class="ls-muted">
+          Music and mic use this one input. You do not need two: test them one after the other
+          below.
+        </p>
         <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
         <ol class="sc-steps" aria-live="polite">
           <li
