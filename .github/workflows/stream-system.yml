@@ -165,9 +165,28 @@ jobs:
           workspaces: backend
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
 
+      # cargo is green with "0 passed" when the filter matches nothing, so
+      # the step checks that every system test in the source ran and passed.
       - name: Run the system tests
         working-directory: backend
-        run: cargo test --locked stream_system_tests -- --ignored --test-threads=1
+        env:
+          # The workflow tests point this at a fixture.
+          SYSTEM_TESTS_SOURCE: src/stream_system_tests.rs
+        run: |
+          set -euo pipefail
+          expected=$(grep -cE '#\[ignore = ".*run by the stream-system CI job"]' "$SYSTEM_TESTS_SOURCE") || true
+          if [[ ! "$expected" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::No system tests found in $SYSTEM_TESTS_SOURCE"
+            exit 1
+          fi
+          log="$RUNNER_TEMP/stream-system-tests.log"
+          # No color, so the "... ok" lines below match.
+          cargo test --locked stream_system_tests -- --ignored --test-threads=1 --color never | tee "$log"
+          passed=$(grep -cE '^test stream_system_tests::[^ ]+ \.\.\. ok$' "$log") || true
+          if [[ "$passed" != "$expected" ]]; then
+            echo "::error::$passed of $expected system tests passed"
+            exit 1
+          fi
 
       - name: Show stream stack logs
         if: failure()
