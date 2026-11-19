@@ -532,10 +532,11 @@ async fn admin_settings_round_trip() {
     assert_eq!(body["slots"], json!(["12:00", "18:00"]));
     assert_eq!(body["approval_mode"], "first_two");
     assert_eq!(body["pre_days_before"], 2);
+    assert_eq!(body["post_days_after"], 3);
 
     let new = json!({ "limit_per_episode": 2, "feed_per_day": 2, "feed_per_week": 7,
-        "stories_per_day": 4, "pre_days_before": 3, "slots": ["19:30", "09:00"], "approval_mode": "always",
-        "paused": true });
+        "stories_per_day": 4, "pre_days_before": 3, "post_days_after": 5,
+        "slots": ["19:30", "09:00"], "approval_mode": "always", "paused": true });
     let (status, body) = outcome(
         ann::api_put_announcement_settings(
             State(state.clone()),
@@ -553,6 +554,8 @@ async fn admin_settings_round_trip() {
     assert_eq!(saved.feed_per_week, 7);
     assert_eq!(saved.pre_days_before, 3);
     assert_eq!(body["pre_days_before"], 3);
+    assert_eq!(saved.post_days_after, 5);
+    assert_eq!(body["post_days_after"], 5);
 
     let bad = json!({ "limit_per_episode": 2, "feed_per_day": 2, "feed_per_week": 7, "pre_days_before": 3,
         "stories_per_day": 4, "slots": ["7pm"], "approval_mode": "never", "paused": false });

@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use super::api::{require_admin, require_show_editor};
 use crate::announcements::{
-    self, check_limits, is_slot_time, to_db_time, Announcement, AnnouncementSettings,
-    AnnouncementSlot, Booked, ACTIVE_STATES, KEEP_REQUESTED_AT,
+    self, check_limits, check_limits_send_now, is_slot_time, to_db_time, Announcement,
+    AnnouncementSettings, AnnouncementSlot, Booked, ACTIVE_STATES, KEEP_REQUESTED_AT,
 };
 use crate::{models, series, AppError, AppState, Result};
 
@@ -241,6 +241,9 @@ pub struct AnnouncementInput {
     /// band | split (default band)
     pub layout: Option<String>,
     pub collaborator: Option<bool>,
+    /// `pre` only: "Post now" instead of a slot. The tick sends it within a
+    /// minute; still bound by the per-episode, day and week limits.
+    pub send_now: Option<bool>,
 }
 
 /// Checked image fields: (image_source, image_key).
@@ -310,6 +313,12 @@ pub async fn api_put_announcement(
         }
     };
     let (image_source, image_key) = image_of(id, &input)?;
+    let send_now = input.send_now.unwrap_or(false);
+    if send_now && slot != AnnouncementSlot::Pre {
+        return Err(AppError::BadRequest(
+            "Only the pre announcement can be posted now".to_string(),
+        ));
+    }
 
     let settings = announcements::get_settings(&state.db).await;
     let start = episode_start(&state, &show).await?;
@@ -319,6 +328,7 @@ pub async fn api_put_announcement(
         AnnouncementSlot::Pre => {
             let start = start.ok_or_else(need_start)?;
             let at = match input.scheduled_at.as_deref() {
+                _ if send_now => Utc::now(),
                 Some(at) => parse_time(at)?,
                 None => default_pre(&settings, start).ok_or_else(|| {
                     AppError::BadRequest("No posting slot is configured".to_string())
@@ -343,7 +353,7 @@ pub async fn api_put_announcement(
             at
         }
     };
-    if let Some(at) = scheduled_at {
+    if let Some(at) = scheduled_at.filter(|_| !send_now) {
         // The on-air story goes out at go-live, not at its time, so a host who
         // starts late can still switch it on; a missed one expires later.
         if slot != AnnouncementSlot::OnAir && at <= Utc::now() {
@@ -391,7 +401,12 @@ pub async fn api_put_announcement(
             scheduled_at: at,
         };
         let others = others_near(&mut tx, id, slot, at, at).await?;
-        check_limits(&settings, &candidate, &others).map_err(AppError::Conflict)?;
+        let check = if send_now {
+            check_limits_send_now
+        } else {
+            check_limits
+        };
+        check(&settings, &candidate, &others).map_err(AppError::Conflict)?;
     }
 
     let needs_approval = announcements::needs_approval(&mut tx, &settings, Some(&user)).await?;
@@ -407,14 +422,14 @@ pub async fn api_put_announcement(
     sqlx::query(
         "INSERT INTO announcements (show_id, slot, channel, state, anchor_offset_minutes, \
            scheduled_at, headline, caption, image_source, image_key, layout, collaborator, \
-           created_by) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+           created_by, send_now) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (show_id, slot, channel) DO UPDATE SET \
            state = excluded.state, anchor_offset_minutes = excluded.anchor_offset_minutes, \
            scheduled_at = excluded.scheduled_at, headline = excluded.headline, \
            caption = excluded.caption, image_source = excluded.image_source, \
            image_key = excluded.image_key, layout = excluded.layout, \
-           collaborator = excluded.collaborator, updated_at = CURRENT_TIMESTAMP, \
+           collaborator = excluded.collaborator, send_now = excluded.send_now, updated_at = CURRENT_TIMESTAMP, \
            requested_at = NULL, sent_at = NULL, permalink = NULL, media_id = NULL, error = NULL",
     )
     .bind(id)
@@ -430,6 +445,7 @@ pub async fn api_put_announcement(
     .bind(layout)
     .bind(input.collaborator.unwrap_or(true))
     .bind(user.id)
+    .bind(send_now)
     .execute(&mut *tx)
     .await?;
     let row = load(&mut tx, id, slot)
@@ -457,6 +473,21 @@ const EVENING: &str = "18:00";
 /// The Berlin day of the default pre post.
 fn pre_day(settings: &AnnouncementSettings, start: DateTime<Utc>) -> NaiveDate {
     start.with_timezone(&Berlin).date_naive() - Duration::days(i64::from(settings.pre_days_before))
+}
+
+/// The first Berlin day of the default post time: `post_days_after` days
+/// after the episode day, but not before today (track public late).
+pub(crate) fn post_day(
+    settings: &AnnouncementSettings,
+    start: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> NaiveDate {
+    let today = now.with_timezone(&Berlin).date_naive();
+    start.map_or(today, |start| {
+        let day = start.with_timezone(&Berlin).date_naive()
+            + Duration::days(i64::from(settings.post_days_after));
+        day.max(today)
+    })
 }
 
 /// DELETE /api/shows/:id/announcements/:slot — cancel. Refused once sent.
@@ -502,8 +533,9 @@ pub struct SlotTime {
 }
 
 /// GET /api/shows/:id/announcements/slots?slot=pre|post — feed times before
-/// (pre) or in the week after (post) the episode start, free or taken. Post
-/// is empty while the SoundCloud track is not public.
+/// (pre) or after (post) the episode start, free or taken. Post is empty
+/// while the SoundCloud track is not public; its default is the time
+/// `unlock_waiting_posts` would pick.
 pub async fn api_announcement_slots(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -524,19 +556,27 @@ pub async fn api_announcement_slots(
         .await?
         .ok_or_else(|| AppError::BadRequest("The episode has no start time".to_string()))?;
     let settings = announcements::get_settings(&state.db).await;
-    let days = 7.max(i64::from(settings.pre_days_before) + 1);
+    let now = Utc::now();
     let (from, to) = match slot {
-        AnnouncementSlot::Pre => (start - Duration::days(days), start),
-        _ => (start, start + Duration::days(7)),
+        AnnouncementSlot::Pre => {
+            let days = 7.max(i64::from(settings.pre_days_before) + 1);
+            (start - Duration::days(days), start)
+        }
+        _ => {
+            let days = 7.max(i64::from(settings.post_days_after) + 1);
+            (start, start.max(now) + Duration::days(days))
+        }
     };
     let mut conn = state.db.acquire().await?;
     let others = others_near(&mut conn, id, slot, from, to).await?;
 
-    let now = Utc::now();
     let first_day = from.with_timezone(&Berlin).date_naive();
     // (time, Berlin day, Berlin "HH:MM", check)
     let mut found = Vec::new();
-    for day in first_day.iter_days().take(days as usize + 2) {
+    for day in first_day
+        .iter_days()
+        .take((to - from).num_days() as usize + 2)
+    {
         for hhmm in &settings.slots {
             let Some(at) =
                 series::parse_hhmm(hhmm).and_then(|t| series::berlin_to_utc(day.and_time(t)))
@@ -555,15 +595,28 @@ pub async fn api_announcement_slots(
         }
     }
 
-    // Preference: (pre: the pre day) and evening, then the pre day, then any.
-    let pre_day = (slot == AnnouncementSlot::Pre).then(|| pre_day(&settings, start));
-    let on_day = |day: NaiveDate| pre_day.is_none_or(|d| d == day);
     let free = |i: &usize| found[*i].3.is_ok();
-    let default = (0..found.len())
-        .filter(free)
-        .find(|&i| on_day(found[i].1) && found[i].2.as_str() >= EVENING)
-        .or_else(|| (0..found.len()).filter(free).find(|&i| on_day(found[i].1)))
-        .or_else(|| (0..found.len()).find(free));
+    let default = if slot == AnnouncementSlot::Pre {
+        // The pre day and evening, then the pre day, then any.
+        let pre_day = pre_day(&settings, start);
+        (0..found.len())
+            .filter(free)
+            .find(|&i| found[i].1 == pre_day && found[i].2.as_str() >= EVENING)
+            .or_else(|| {
+                (0..found.len())
+                    .filter(free)
+                    .find(|&i| found[i].1 == pre_day)
+            })
+            .or_else(|| (0..found.len()).find(free))
+    } else {
+        // As `next_free_feed_time`: from the post day on, per day evening first.
+        let post_day = post_day(&settings, Some(start), now);
+        (0..found.len())
+            .filter(free)
+            .filter(|&i| found[i].1 >= post_day)
+            .min_by_key(|&i| (found[i].1, found[i].2.as_str() < EVENING, found[i].2))
+            .or_else(|| (0..found.len()).find(free))
+    };
 
     let times: Vec<SlotTime> = found
         .into_iter()
@@ -655,11 +708,13 @@ pub struct AdminAnnouncement {
     pub sent_at: Option<String>,
     pub permalink: Option<String>,
     pub error: Option<String>,
+    pub send_now: bool,
 }
 
 const ADMIN_SELECT: &str = "SELECT a.id, a.show_id, s.title AS show_title, \
        COALESCE(t.name, s.title) AS series_name, t.instagram_handle AS host_handle, \
-       a.slot, a.state, a.scheduled_at, a.requested_at, a.sent_at, a.permalink, a.error \
+       a.slot, a.state, a.scheduled_at, a.requested_at, a.sent_at, a.permalink, a.error, \
+       a.send_now \
      FROM announcements a JOIN shows s ON s.id = a.show_id \
      LEFT JOIN show_templates t ON t.id = s.template_id";
 
@@ -758,7 +813,7 @@ async fn requeue(
 
 /// POST /api/admin/announcements/:id/approve — pending_approval → scheduled
 /// (on-air: armed). A feed post whose time passed while it waited moves to
-/// the next free slot.
+/// the next free slot; a "Post now" one goes out at the next tick.
 pub async fn api_admin_approve_announcement(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -773,8 +828,19 @@ pub async fn api_admin_approve_announcement(
             "Only a pending announcement can be approved".to_string(),
         ));
     }
-    let at = row.scheduled_at.as_deref().map(parse_time).transpose()?;
-    requeue(&mut tx, &settings, &row, at, Utc::now()).await?;
+    if row.send_now {
+        sqlx::query(
+            "UPDATE announcements SET state = 'scheduled', scheduled_at = ?, error = NULL, \
+               updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(to_db_time(Utc::now()))
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        let at = row.scheduled_at.as_deref().map(parse_time).transpose()?;
+        requeue(&mut tx, &settings, &row, at, Utc::now()).await?;
+    }
     let out = admin_row(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(out))

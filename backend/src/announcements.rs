@@ -70,6 +70,8 @@ pub struct Announcement {
     pub permalink: Option<String>,
     pub media_id: Option<String>,
     pub error: Option<String>,
+    /// The host chose "Post now": sent at the next tick, not at a slot.
+    pub send_now: bool,
     /// Set while the scheduler sends this row; see `announcement_send`.
     #[serde(skip)]
     pub send_claimed_at: Option<String>,
@@ -111,6 +113,9 @@ pub struct AnnouncementSettings {
     pub stories_per_day: u32,
     /// Days before the episode the pre post goes out by default.
     pub pre_days_before: u32,
+    /// Days after the episode the post post goes out by default.
+    #[serde(default = "default_post_days_after")]
+    pub post_days_after: u32,
     /// Feed post times, "HH:MM" Europe/Berlin.
     pub slots: Vec<String>,
     pub approval_mode: ApprovalMode,
@@ -118,6 +123,10 @@ pub struct AnnouncementSettings {
     /// Added to every feed caption.
     #[serde(default = "default_hashtags")]
     pub hashtags: String,
+}
+
+fn default_post_days_after() -> u32 {
+    3
 }
 
 fn default_hashtags() -> String {
@@ -132,6 +141,7 @@ impl Default for AnnouncementSettings {
             feed_per_week: 5,
             stories_per_day: 6,
             pre_days_before: 2,
+            post_days_after: default_post_days_after(),
             slots: vec!["12:00".to_string(), "18:00".to_string()],
             approval_mode: ApprovalMode::FirstTwo,
             paused: false,
@@ -163,6 +173,7 @@ pub async fn get_settings(db: &SqlitePool) -> AnnouncementSettings {
     s.feed_per_week = num(get("announce_feed_per_week").await, s.feed_per_week);
     s.stories_per_day = num(get("announce_stories_per_day").await, s.stories_per_day);
     s.pre_days_before = num(get("announce_pre_days_before").await, s.pre_days_before);
+    s.post_days_after = num(get("announce_post_days_after").await, s.post_days_after);
     if let Some(slots) = get("announce_slots").await.and_then(|v| parse_slots(&v)) {
         s.slots = slots;
     }
@@ -191,6 +202,7 @@ pub async fn save_settings(db: &SqlitePool, s: &AnnouncementSettings) -> Result<
         ("announce_feed_per_week", s.feed_per_week.to_string()),
         ("announce_stories_per_day", s.stories_per_day.to_string()),
         ("announce_pre_days_before", s.pre_days_before.to_string()),
+        ("announce_post_days_after", s.post_days_after.to_string()),
         ("announce_slots", s.slots.join(",")),
         (
             "announce_approval_mode",
@@ -299,6 +311,25 @@ pub fn check_limits(
     candidate: &Booked,
     others: &[Booked],
 ) -> Result<(), String> {
+    limits(settings, candidate, others, true)
+}
+
+/// [`check_limits`] for a "Post now" feed post: no slot time and no
+/// same-time clash, but the per-episode, day and week limits.
+pub fn check_limits_send_now(
+    settings: &AnnouncementSettings,
+    candidate: &Booked,
+    others: &[Booked],
+) -> Result<(), String> {
+    limits(settings, candidate, others, false)
+}
+
+fn limits(
+    settings: &AnnouncementSettings,
+    candidate: &Booked,
+    others: &[Booked],
+    at_slot: bool,
+) -> Result<(), String> {
     let others: Vec<&Booked> = others
         .iter()
         .filter(|o| !(o.show_id == candidate.show_id && o.slot == candidate.slot))
@@ -317,16 +348,17 @@ pub fn check_limits(
 
     let day = berlin_day(candidate.scheduled_at);
     if candidate.slot.is_feed() {
-        if !is_slot_time(settings, candidate.scheduled_at) {
+        if at_slot && !is_slot_time(settings, candidate.scheduled_at) {
             return Err(format!(
                 "Feed posts can only go out at {} (Berlin time)",
                 settings.slots.join(", ")
             ));
         }
         let feed: Vec<&&Booked> = others.iter().filter(|o| o.slot.is_feed()).collect();
-        if feed
-            .iter()
-            .any(|o| o.scheduled_at == candidate.scheduled_at)
+        if at_slot
+            && feed
+                .iter()
+                .any(|o| o.scheduled_at == candidate.scheduled_at)
         {
             return Err("This time slot is already taken".to_string());
         }
