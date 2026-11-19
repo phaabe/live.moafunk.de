@@ -676,15 +676,17 @@ PY
 # Make room for a test booking. The API refuses a slot that overlaps another
 # show of the same day, and staging has copies of production shows and people's
 # own test shows. Every show in the way moves to the day before. The rule is
-# the API's (time_windows_overlap in handlers/api.rs). Only for a day next to
-# today, so a wrong call cannot move shows far away.
+# the API's (time_windows_overlap in handlers/api.rs). Only for yesterday to
+# two days ahead, so a wrong call cannot move shows far away: a test books up
+# to a day ahead in Berlin time, which can be two days ahead of this box's UTC
+# date.
 e2e_free_slot() {
   python3 - "$STAGING_DIR/data/unheard.db" "$@" <<'PY'
 import datetime, sqlite3, sys
 db, day, start, end = sys.argv[1:5]
 today = datetime.datetime.now(datetime.timezone.utc).date()
-if abs((datetime.date.fromisoformat(day) - today).days) > 1:
-    sys.exit(f"e2e-free-slot: {day} is not today or a day next to it")
+if not -1 <= (datetime.date.fromisoformat(day) - today).days <= 2:
+    sys.exit(f"e2e-free-slot: {day} is not between yesterday and two days ahead")
 # The API may be running: wait for its write lock instead of failing.
 con = sqlite3.connect(db, timeout=30)
 in_the_way = (
