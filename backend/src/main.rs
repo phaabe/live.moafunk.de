@@ -990,6 +990,22 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Notice tracks made public on soundcloud.com: the next announcement
+    // tick then sets their post times.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let every = soundcloud::PUBLIC_CHECK_EVERY.to_std().expect("positive");
+            let mut interval = tokio::time::interval(every);
+            loop {
+                interval.tick().await;
+                if let Err(e) = soundcloud::sync_public_tracks(&state).await {
+                    tracing::error!("SoundCloud public track check failed: {e}");
+                }
+            }
+        });
+    }
+
     // Spawn the Icecast listener/quality telemetry poller (#177). No-op if no
     // status URL is configured (or derivable from icecast_url).
     stream_metrics::spawn_poller(state.clone());

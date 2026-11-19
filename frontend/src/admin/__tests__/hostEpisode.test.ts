@@ -180,6 +180,11 @@ beforeEach(() => {
         return Response.json({ success: true, key: `recordings/${name}` });
       }
       if (url === '/api/shows/42/soundcloud/upload' && method === 'POST') return soundcloud;
+      if (url === '/api/shows/42/soundcloud/privacy' && method === 'POST') {
+        const isPublic = (body as { public: boolean }).public;
+        current = { ...current, soundcloud_public: isPublic };
+        return Response.json({ success: true, track_id: '555', track_url: current.soundcloud_url });
+      }
       if (url === '/api/shows/42/announcements') return Response.json(announcements);
       if (url === '/api/shows/42/announcements/meta') return Response.json(meta);
       if (url === '/api/shows/42/announcements/uploads' && method === 'POST') {
@@ -434,6 +439,41 @@ describe('Episode · Recording', () => {
       )
     );
     expect(requests.filter((r) => r.url.endsWith('/soundcloud/upload'))).toHaveLength(1);
+  });
+
+  it('makes a fresh private track public, which unlocks the post-announcement', async () => {
+    current = episode({ recording_filename: 'set.mp3', recording_url: 'https://r2/set.mp3' });
+    await mount();
+    button('Upload to SoundCloud').click();
+    await vi.waitFor(() => expect(text()).toContain('Private on SoundCloud'));
+    button('Make track public').click();
+    await vi.waitFor(() => expect(text()).toContain('Public on SoundCloud'));
+    expect(requests.find((r) => r.url.endsWith('/soundcloud/privacy'))?.body).toEqual({
+      public: true,
+    });
+    // Reloaded, so the page sees the public track.
+    await vi.waitFor(() => expect(button('Make track private')).toBeTruthy());
+  });
+
+  it('lets the host switch a public track back to private', async () => {
+    current = episode({
+      soundcloud_url: 'https://soundcloud.com/radio-moafunk/brunchtime-31',
+      soundcloud_public: true,
+    });
+    await mount();
+    expect(text()).toContain('Public on SoundCloud');
+    button('Make track private').click();
+    await vi.waitFor(() => expect(text()).toContain('Private on SoundCloud'));
+    expect(requests.find((r) => r.url.endsWith('/soundcloud/privacy'))?.body).toEqual({
+      public: false,
+    });
+    expect(button('Make track public')).toBeTruthy();
+  });
+
+  it('has no switch before the track is on SoundCloud', async () => {
+    current = episode({ recording_filename: 'set.mp3' });
+    await mount();
+    expect(text()).not.toContain('Make track public');
   });
 
   it('shows the SoundCloud error, and asks an admin to reconnect when not authorized', async () => {

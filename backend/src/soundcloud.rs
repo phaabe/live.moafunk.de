@@ -987,6 +987,67 @@ async fn create_playlist(
 // ============================================================================
 
 /// Set a SoundCloud track's sharing to public or private.
+/// How often the scheduler asks SoundCloud about tracks that posts wait for.
+pub const PUBLIC_CHECK_EVERY: chrono::Duration = chrono::Duration::minutes(15);
+
+/// A track made public on soundcloud.com, not in the app, never set
+/// `soundcloud_public`. For every episode whose post-announcement waits for
+/// SoundCloud and whose track is private here, ask SoundCloud for the
+/// track's sharing and mark the public ones. Returns the shows marked public.
+pub async fn sync_public_tracks(state: &Arc<AppState>) -> Result<Vec<i64>> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT DISTINCT s.id, s.soundcloud_track_id FROM shows s \
+         JOIN announcements a ON a.show_id = s.id \
+         WHERE a.slot = 'post' AND a.state = 'waiting_soundcloud' \
+           AND s.soundcloud_track_id IS NOT NULL AND COALESCE(s.soundcloud_public, 0) = 0 \
+         ORDER BY s.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() || !is_configured(state) || !has_token(state).await {
+        return Ok(Vec::new());
+    }
+    let access_token = get_access_token(state).await?;
+
+    #[derive(Deserialize)]
+    struct Sharing {
+        sharing: Option<String>,
+    }
+    let client = reqwest::Client::new();
+    let mut marked = Vec::new();
+    for (show_id, track_id) in rows {
+        let resp = client
+            .get(format!("{}/tracks/{}", api_base(), track_id))
+            .header("Authorization", format!("OAuth {}", access_token))
+            .send()
+            .await;
+        let track = match resp {
+            Ok(r) if r.status().is_success() => r.json::<Sharing>().await.ok(),
+            Ok(r) => {
+                tracing::warn!(show_id, track_id, status = %r.status(), "SoundCloud track check refused");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(show_id, track_id, "SoundCloud track check failed: {e}");
+                None
+            }
+        };
+        if track.and_then(|t| t.sharing).as_deref() == Some("public") {
+            sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = ?")
+                .bind(show_id)
+                .execute(&state.db)
+                .await?;
+            tracing::info!(
+                show_id,
+                track_id,
+                "SoundCloud track is public on SoundCloud"
+            );
+            marked.push(show_id);
+        }
+    }
+    Ok(marked)
+}
+
 pub async fn set_track_privacy(
     state: &Arc<AppState>,
     show_id: i64,
@@ -1059,6 +1120,19 @@ pub async fn set_track_privacy(
         public = public,
         "SoundCloud track privacy updated"
     );
+    // Back to private: a post not sent yet must not link to a private track,
+    // so it waits again; going public sets its time anew.
+    if !public {
+        sqlx::query(
+            "UPDATE announcements SET state = 'waiting_soundcloud', scheduled_at = NULL, \
+               updated_at = CURRENT_TIMESTAMP \
+             WHERE show_id = ? AND slot = 'post' AND state IN ('scheduled', 'pending_approval') \
+               AND send_claimed_at IS NULL",
+        )
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+    }
     // A public track unlocks the episode's post announcement.
     if public {
         if let Err(e) =
