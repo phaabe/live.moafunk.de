@@ -224,20 +224,13 @@ describe('On Air', () => {
       'Studio',
       'On air · 00:00:03 · REC',
       'Live level',
+      'Listeners now37',
       'Connectionstable',
       'End Episode',
     ]) {
       expect(text()).toContain(part);
     }
-    for (const gone of [
-      'Listeners',
-      'Reconnect',
-      'Stream Ended',
-      'Ends in',
-      'chat',
-      'Moments',
-      'Stop',
-    ]) {
+    for (const gone of ['Reconnect', 'Stream Ended', 'Ends in', 'chat', 'Moments', 'Stop']) {
       expect(text()).not.toContain(gone);
     }
     expect(root.querySelectorAll('button')).toHaveLength(1);
