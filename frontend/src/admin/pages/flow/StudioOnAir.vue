@@ -155,6 +155,8 @@ const connection = computed(() => {
 const confirming = ref(false);
 async function endEpisode() {
   ending.value = true;
+  // Send the recorder's last chunk before "stop" closes the stream.
+  await audioCapture.stopRecordingAndFlush();
   // "stop" ends the stream and the recording on the backend.
   socket.stopStream();
   audioCapture.stopCapture();
