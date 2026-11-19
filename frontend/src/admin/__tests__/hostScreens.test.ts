@@ -116,6 +116,10 @@ beforeEach(() => {
   failing = [];
   root = document.createElement('div');
   document.body.appendChild(root);
+  // Pin the clock to 12:30 or 13:30 in Berlin today. With the real clock the
+  // 00:00–23:59 show has ended in the last minute before midnight.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(`${getBerlinNowISO().slice(0, 10)}T11:30:00Z`));
   const today = getBerlinNowISO().slice(0, 10);
   vi.stubGlobal(
     'fetch',
@@ -167,6 +171,7 @@ afterEach(() => {
   app = undefined;
   root.remove();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function mount(component: Component, role: User['role'], path = '/'): Promise<Router> {
@@ -493,16 +498,10 @@ describe('My Shows states', () => {
 });
 
 describe('flow', () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it('Schedule matches the flow', async () => {
     streamActive = true;
+    // The clock is pinned to 12:30 or 13:30 in Berlin, so this show is on air.
     onAir = { start: '12:00', end: '14:00' };
-    vi.useFakeTimers({ toFake: ['Date'] });
-    // 12:30 or 13:30 in Berlin, so the 12:00–14:00 show is on air.
-    vi.setSystemTime(new Date(`${getBerlinNowISO().slice(0, 10)}T11:30:00Z`));
     mySeries = [BRUNCHTIME];
     await mount({ render: () => [h(NavBar), h(HostSchedulePage)] }, 'host');
     await vi.waitFor(() => expect(root.textContent).toContain('On air now'));
