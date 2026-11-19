@@ -175,22 +175,22 @@ async fn fake_request(
         ("GET", ["me"]) => {
             Json(json!({ "id": 1, "permalink": *fake.me.lock().unwrap() })).into_response()
         }
-        ("GET", ["me", "tracks"]) => Json(
+        ("GET", ["me", "tracks"]) => list_answer(
+            &uri,
             fake.tracks
                 .lock()
                 .unwrap()
                 .iter()
                 .map(|id| json!({ "id": id }))
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
-        ("GET", ["me", "playlists"]) => Json(
+                .collect(),
+        ),
+        ("GET", ["me", "playlists"]) => list_answer(
+            &uri,
             playlists
                 .iter()
                 .map(|(id, title, _)| json!({"id": id, "title": title}))
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
+                .collect(),
+        ),
         ("GET", ["playlists", id]) => {
             let id: i64 = id.parse().unwrap();
             let (_, _, tracks) = playlists.iter().find(|p| p.0 == id).unwrap();
@@ -208,6 +208,20 @@ async fn fake_request(
                 .into_response()
         }
         _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// A list as SoundCloud answers it: wrapped in `collection` for a paginated
+/// request, a plain array without `linked_partitioning=true`.
+fn list_answer(uri: &Uri, items: Vec<Value>) -> Response {
+    if uri
+        .query()
+        .unwrap_or_default()
+        .contains("linked_partitioning=true")
+    {
+        Json(json!({ "collection": items, "next_href": null })).into_response()
+    } else {
+        Json(items).into_response()
     }
 }
 
@@ -664,6 +678,28 @@ async fn connection_check_returns_the_account() {
     delete_stored_token(&state).await.unwrap();
     let err = check_connection(&state).await.unwrap_err().to_string();
     assert!(err.contains("Visit /api/soundcloud/auth"), "{err}");
+}
+
+/// SoundCloud wraps a paginated list in `collection`. The old code read only
+/// a plain array, so the staging cleanup and the show playlists failed live.
+#[test]
+fn list_items_reads_paginated_and_plain_lists() {
+    let ids = |body: &str| -> Vec<i64> {
+        list_items::<TrackSummary>(body)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect()
+    };
+    assert_eq!(
+        ids(r#"{"collection":[{"id":2},{"id":1}],"next_href":null}"#),
+        vec![2, 1]
+    );
+    assert_eq!(ids(r#"[{"id":3}]"#), vec![3]);
+    let err = list_items::<TrackSummary>(r#"{"errors":[]}"#)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("expected a sequence"), "{err}");
 }
 
 // ── Staging cleanup ─────────────────────────────────────────────────────────

@@ -615,6 +615,18 @@ struct TrackSummary {
     id: i64,
 }
 
+/// The items of a list answer. SoundCloud wraps a paginated list in
+/// `{"collection": [...]}`; the old plain array is deprecated but still read.
+fn list_items<T: serde::de::DeserializeOwned>(
+    body: &str,
+) -> std::result::Result<Vec<T>, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(body)?;
+    if let Some(collection) = value.get_mut("collection") {
+        value = collection.take();
+    }
+    serde_json::from_value(value)
+}
+
 /// The station's production account. The staging cleanup refuses to run on it.
 const STATION_ACCOUNT: &str = "radio-moafunk";
 
@@ -685,7 +697,7 @@ async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> 
     let resp = client
         .get(format!("{}/me/tracks", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
-        .query(&[("limit", "200"), ("linked_partitioning", "false")])
+        .query(&[("limit", "200"), ("linked_partitioning", "true")])
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("List tracks request failed: {}", e)))?;
@@ -698,9 +710,11 @@ async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> 
         )));
     }
     // shortcut: one page of 200 tracks; enough while cleanup runs after every upload.
-    let mut tracks: Vec<TrackSummary> = resp
-        .json()
+    let body = resp
+        .text()
         .await
+        .map_err(|e| AppError::Internal(format!("Failed to read tracks: {}", e)))?;
+    let mut tracks: Vec<TrackSummary> = list_items(&body)
         .map_err(|e| AppError::Internal(format!("Failed to parse tracks: {}", e)))?;
     // Newest first: SoundCloud track ids grow over time.
     tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
@@ -874,7 +888,7 @@ async fn find_playlist_by_title(
     let resp = client
         .get(format!("{}/me/playlists", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
-        .query(&[("limit", "200"), ("linked_partitioning", "false")])
+        .query(&[("limit", "200"), ("linked_partitioning", "true")])
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("List playlists request failed: {}", e)))?;
@@ -888,9 +902,11 @@ async fn find_playlist_by_title(
         )));
     }
 
-    let playlists: Vec<PlaylistSummary> = resp
-        .json()
+    let body = resp
+        .text()
         .await
+        .map_err(|e| AppError::Internal(format!("Failed to read playlists: {}", e)))?;
+    let playlists: Vec<PlaylistSummary> = list_items(&body)
         .map_err(|e| AppError::Internal(format!("Failed to parse playlists: {}", e)))?;
 
     let wanted = title.trim().to_lowercase();
