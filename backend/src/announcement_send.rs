@@ -32,7 +32,8 @@ const STALE_CLAIM: Duration = Duration::minutes(15);
 /// The scheduler tick (every 60 s).
 pub async fn check_due_announcements(state: &Arc<AppState>, now: DateTime<Utc>) {
     let settings = announcements::get_settings(&state.db).await;
-    if settings.paused {
+    // Instagram turned off works like a pause: posts keep their slot and wait.
+    if settings.paused || crate::instagram::ensure_enabled(state).await.is_err() {
         return;
     }
     if let Err(e) = unlock_waiting_posts(state, now).await {
@@ -70,7 +71,7 @@ pub async fn check_due_announcements(state: &Arc<AppState>, now: DateTime<Utc>) 
 /// The episode went live: send its on-air story if the host left it armed.
 pub async fn announce_on_air(state: &Arc<AppState>, show_id: i64, now: DateTime<Utc>) {
     let settings = announcements::get_settings(&state.db).await;
-    if settings.paused {
+    if settings.paused || crate::instagram::ensure_enabled(state).await.is_err() {
         return;
     }
     let id: Option<i64> = match sqlx::query_scalar(

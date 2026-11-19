@@ -1237,3 +1237,32 @@ async fn auto_upload_runs_only_when_switched_on() {
         Some("555")
     );
 }
+
+/// SoundCloud turned off by an admin: uploads and privacy changes are refused,
+/// auto-upload is skipped, and nothing reaches SoundCloud.
+#[tokio::test]
+async fn turned_off_refuses_every_write() {
+    let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": true })).await;
+    let id = show_with_recording(&state, &r2).await;
+    crate::db::set_setting(&state.db, crate::db::SOUNDCLOUD_ENABLED, "false")
+        .await
+        .unwrap();
+
+    let err = upload_track(&state, id).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::ServiceUnavailable(ref m) if m == "SoundCloud is temporarily not available."),
+        "{err}"
+    );
+    assert!(matches!(
+        set_track_privacy(&state, id, true).await,
+        Err(AppError::ServiceUnavailable(_))
+    ));
+    auto_upload_on_finalize(&state, id).await;
+    assert!(fake.calls.lock().unwrap().is_empty(), "{:?}", fake.routes());
+
+    // Back on: the upload goes through.
+    crate::db::set_setting(&state.db, crate::db::SOUNDCLOUD_ENABLED, "true")
+        .await
+        .unwrap();
+    assert!(upload_track(&state, id).await.unwrap().success);
+}

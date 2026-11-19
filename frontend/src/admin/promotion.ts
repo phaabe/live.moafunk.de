@@ -42,6 +42,8 @@ export function photoError(file: File): string | null {
 }
 
 export const PAUSED_NOTE = 'Posting is paused by the station.';
+/** An admin turned the Instagram connection off. */
+export const INSTAGRAM_OFF_NOTE = 'Instagram is temporarily not available.';
 
 /**
  * "Moved from 12:00: the station already posts that day." when the post was moved

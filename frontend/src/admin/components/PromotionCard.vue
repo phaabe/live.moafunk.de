@@ -3,7 +3,14 @@ import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
 import { announcementsApi, type Announcement, type ShowDetail } from '../api';
-import { editable, inSlot, movedNote, PAUSED_NOTE, slotState } from '../promotion';
+import {
+  editable,
+  inSlot,
+  INSTAGRAM_OFF_NOTE,
+  movedNote,
+  PAUSED_NOTE,
+  slotState,
+} from '../promotion';
 import BoardIcon from './BoardIcon.vue';
 
 // Episode page "Promotion · Instagram": the three announcement slots.
@@ -16,6 +23,8 @@ const props = defineProps<{
   handle: string | null;
   /** An admin has paused all posting. */
   paused: boolean;
+  /** An admin turned Instagram off: nothing can be set up. */
+  instagramOff?: boolean;
 }>();
 const emit = defineEmits<{ changed: [] }>();
 
@@ -35,7 +44,11 @@ const onairMeta = computed(() =>
 );
 /** The story can be switched off until go-live. */
 const onairLocked = computed(
-  () => busy.value || !!props.show.on_air || props.show.episode_status !== 'upcoming'
+  () =>
+    busy.value ||
+    props.instagramOff ||
+    !!props.show.on_air ||
+    props.show.episode_status !== 'upcoming'
 );
 
 const composer = () => router.push(`/shows/${props.show.id}/announce/pre`);
@@ -90,6 +103,7 @@ async function toggleOnair(event: Event) {
         Posted by @moafunk_radio.
         <template v-if="handle">@{{ handle }} is invited as collaborator.</template>
       </p>
+      <p v-if="instagramOff" class="notice">{{ INSTAGRAM_OFF_NOTE }}</p>
       <p v-if="paused" class="notice">{{ PAUSED_NOTE }}</p>
       <ul class="slots">
         <li class="slot">
@@ -101,7 +115,7 @@ async function toggleOnair(event: Event) {
           </span>
           <span class="slot-actions">
             <template v-if="editable(pre)">
-              <BaseButton variant="secondary" :disabled="busy" @click="composer"
+              <BaseButton variant="secondary" :disabled="busy || instagramOff" @click="composer"
                 >Edit pre-announcement</BaseButton
               >
               <BaseButton variant="secondary" :disabled="busy" @click="cancelPre"
@@ -111,7 +125,7 @@ async function toggleOnair(event: Event) {
             <BaseButton
               v-else-if="pre?.state !== 'sent'"
               variant="secondary"
-              :disabled="busy || show.episode_status !== 'upcoming'"
+              :disabled="busy || instagramOff || show.episode_status !== 'upcoming'"
               @click="composer"
               >Set up pre-announcement</BaseButton
             >

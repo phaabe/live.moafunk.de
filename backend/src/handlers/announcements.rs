@@ -149,6 +149,8 @@ pub struct AnnouncementMeta {
     pub paused: bool,
     /// Whether a post this user saves now goes to an admin first.
     pub needs_approval: bool,
+    /// The admin service switches; off reads "temporarily not available".
+    pub services: crate::handlers::settings::ServiceSettings,
 }
 
 /// GET /api/shows/:id/announcements/meta
@@ -164,6 +166,7 @@ pub async fn api_announcement_meta(
     Ok(Json(AnnouncementMeta {
         paused: settings.paused,
         needs_approval,
+        services: crate::handlers::settings::load_services(&state).await,
     }))
 }
 
@@ -283,6 +286,7 @@ pub async fn api_put_announcement(
     Json(input): Json<AnnouncementInput>,
 ) -> Result<impl IntoResponse> {
     let (user, show) = require_show_editor(&state, &headers, id).await?;
+    crate::instagram::ensure_enabled(&state).await?;
     let slot = parse_slot(&slot)?;
     // Say "already sent" before the field and time checks, which a sent row fails too.
     if let Some(row) = load(&mut *state.db.acquire().await?, id, slot).await? {

@@ -822,6 +822,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/settings/notifications",
             get(handlers::settings::get_notifications).put(handlers::settings::set_notifications),
+        )
+        .route(
+            "/api/settings/services",
+            get(handlers::settings::get_services).put(handlers::settings::set_services),
         ) // Download routes (needed by SPA)
         .route(
             "/artists/:id/download",

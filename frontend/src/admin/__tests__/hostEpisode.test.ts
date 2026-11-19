@@ -44,7 +44,7 @@ vi.mock('../../pages/waveformExtractor', () => ({
 
 import HostEpisodePage from '../pages/HostEpisodePage.vue';
 import HostAnnouncePage from '../pages/HostAnnouncePage.vue';
-import type { Announcement, AnnouncementSlot, AnnouncementTime } from '../api';
+import type { Announcement, AnnouncementMeta, AnnouncementSlot, AnnouncementTime } from '../api';
 
 const FUTURE = '2099-01-04';
 const PAST = '2020-01-05';
@@ -124,7 +124,8 @@ let saveError: Response | undefined;
 let requests: { url: string; method: string; body: unknown }[];
 let uploaded: FormData | undefined;
 let soundcloud: Response;
-let meta: { paused: boolean; needs_approval: boolean };
+let meta: AnnouncementMeta;
+const ON = { soundcloud: true, instagram: true };
 let photoUpload: Response | undefined;
 /** Holds GET /api/series/brunchtime until it resolves. */
 let seriesGate: Promise<void> | undefined;
@@ -136,7 +137,7 @@ beforeEach(() => {
   saveError = undefined;
   requests = [];
   uploaded = undefined;
-  meta = { paused: false, needs_approval: false };
+  meta = { paused: false, needs_approval: false, services: ON };
   photoUpload = undefined;
   seriesGate = undefined;
   soundcloud = Response.json({
@@ -427,6 +428,19 @@ describe('Episode · Recording', () => {
     // Reloaded, so the button sees the new recording.
     expect(requests.filter((r) => r.url === '/api/shows/42').length).toBe(2);
     expect(button('Upload to SoundCloud').disabled).toBe(false);
+  });
+
+  it('says SoundCloud is not available when an admin turned it off', async () => {
+    meta = { paused: false, needs_approval: false, services: { ...ON, soundcloud: false } };
+    current = episode({
+      recording_filename: 'set.mp3',
+      recording_url: 'https://r2/set.mp3',
+      soundcloud_url: 'https://soundcloud.com/radio-moafunk/brunchtime-31',
+    });
+    await mount();
+    expect(text()).toContain('SoundCloud is temporarily not available.');
+    expect(button('Upload to SoundCloud').disabled).toBe(true);
+    expect(button('Make track public').disabled).toBe(true);
   });
 
   it('sends the recording to SoundCloud and shows the track link', async () => {
@@ -779,11 +793,22 @@ describe('Episode · Promotion card', () => {
   });
 
   it('says when an admin has paused all posting', async () => {
-    meta = { paused: true, needs_approval: false };
+    meta = { paused: true, needs_approval: false, services: ON };
     await mount();
     expect(root.querySelector('.promotion .notice')?.textContent).toBe(
       'Posting is paused by the station.'
     );
+  });
+
+  it('says Instagram is not available and blocks set-up when an admin turned it off', async () => {
+    meta = { paused: false, needs_approval: false, services: { ...ON, instagram: false } };
+    await mount();
+    expect(root.querySelector('.promotion .notice')?.textContent).toBe(
+      'Instagram is temporarily not available.'
+    );
+    expect(button('Set up pre-announcement').disabled).toBe(true);
+    const onair = root.querySelector('.onair input') as HTMLInputElement;
+    expect(onair.disabled).toBe(true);
   });
 
   it('has no paused note while posting runs', async () => {
@@ -981,7 +1006,7 @@ describe('Pre-announcement composer', () => {
   });
 
   it('opens a sent-now row with Post now selected and asks for approval', async () => {
-    meta = { paused: false, needs_approval: true };
+    meta = { paused: false, needs_approval: true, services: ON };
     announcements = [
       announcement('pre', { state: 'pending_approval', send_now: true, headline: 'Now!' }),
     ];
@@ -999,11 +1024,18 @@ describe('Pre-announcement composer', () => {
   });
 
   it('says when posting is paused and when an admin checks the post first', async () => {
-    meta = { paused: true, needs_approval: true };
+    meta = { paused: true, needs_approval: true, services: ON };
     await open('pre', 'Send for approval');
     expect(text()).toContain('Posting is paused by the station.');
     expect(text()).toContain('An admin checks this post first.');
     expect(button('Send for approval')).toBeTruthy();
+  });
+
+  it('blocks scheduling while an admin has Instagram turned off', async () => {
+    meta = { paused: false, needs_approval: false, services: { ...ON, instagram: false } };
+    await open();
+    expect(text()).toContain('Instagram is temporarily not available.');
+    expect(button('Schedule post').disabled).toBe(true);
   });
 
   it('has no paused or approval note by default', async () => {

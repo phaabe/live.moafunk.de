@@ -806,12 +806,12 @@ async fn meta_tells_paused_and_needs_approval() {
         meta(&state, host, 1).await,
         (
             StatusCode::OK,
-            json!({ "paused": false, "needs_approval": true })
+            json!({ "paused": false, "needs_approval": true, "services": { "soundcloud": true, "instagram": true } })
         )
     );
     assert_eq!(
         meta(&state, admin, 1).await.1,
-        json!({ "paused": false, "needs_approval": false })
+        json!({ "paused": false, "needs_approval": false, "services": { "soundcloud": true, "instagram": true } })
     );
     assert_eq!(meta(&state, other, 1).await.0, StatusCode::FORBIDDEN);
 
@@ -821,9 +821,11 @@ async fn meta_tells_paused_and_needs_approval() {
     mark(&state, 1, "pre", "sent").await;
     mark(&state, 2, "pre", "sent").await;
     set(&state, "announce_paused", "true").await;
+    set(&state, crate::db::INSTAGRAM_ENABLED, "false").await;
     assert_eq!(
         meta(&state, host, 1).await.1,
-        json!({ "paused": true, "needs_approval": false })
+        json!({ "paused": true, "needs_approval": false,
+                "services": { "soundcloud": true, "instagram": false } })
     );
 }
 

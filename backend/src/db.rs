@@ -1108,6 +1108,15 @@ pub async fn is_notifications_enabled(pool: &SqlitePool) -> bool {
     }
 }
 
+/// Admin switches for the outside services (ticket 1012).
+pub const SOUNDCLOUD_ENABLED: &str = "soundcloud_enabled";
+pub const INSTAGRAM_ENABLED: &str = "instagram_enabled";
+
+/// Whether the service switch `key` is on. Missing or unreadable means on.
+pub async fn is_service_enabled(pool: &SqlitePool, key: &str) -> bool {
+    !matches!(get_setting(pool, key).await, Ok(Some(v)) if v == "false")
+}
+
 /// Claim a scheduled prerecorded start. Returns true only for the first caller;
 /// every later tick, catch-up or restart gets false and must not start or alert.
 pub async fn claim_prerecorded_occurrence(

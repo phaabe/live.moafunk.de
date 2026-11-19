@@ -2,7 +2,14 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
-import { announcementsApi, seriesApi, showsApi, type Announcement, type ShowDetail } from '../api';
+import {
+  announcementsApi,
+  seriesApi,
+  showsApi,
+  type Announcement,
+  type ServiceSettings,
+  type ShowDetail,
+} from '../api';
 import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '../composables';
 import AudioPlayer from '../components/AudioPlayer.vue';
@@ -14,7 +21,14 @@ import BoardIcon from '../components/BoardIcon.vue';
 import { episodeDay, setLength } from '../episodeRow';
 import { openReplaceFile } from '../replaceFile';
 import { berlinToUtcDate, isShowEnded } from '../showTime';
-import { defaultPostTime, editable, inSlot, postTime, slotState } from '../promotion';
+import {
+  defaultPostTime,
+  editable,
+  inSlot,
+  INSTAGRAM_OFF_NOTE,
+  postTime,
+  slotState,
+} from '../promotion';
 
 // Flow screens `episode`, `episode-pre`, `wrapup` and `done` on one path
 // (/shows/<id>) for the host's own episodes. Another host's episode gets the
@@ -37,6 +51,8 @@ const error = ref<string | null>(null);
 const busy = ref(false);
 const announcements = ref<Announcement[]>([]);
 const paused = ref(false);
+/** Admin switches; off reads "temporarily not available". */
+const services = ref<ServiceSettings>({ soundcloud: true, instagram: true });
 /** The Show's Instagram handle (collaborator), without "@". */
 const handle = ref<string | null>(null);
 const now = ref(Date.now());
@@ -167,6 +183,7 @@ async function loadPromotion() {
   ]);
   announcements.value = list;
   paused.value = meta.paused;
+  services.value = meta.services;
   handle.value = series?.instagram_handle || null;
 }
 
@@ -327,9 +344,13 @@ async function publish() {
           <p class="hint">
             Sent at its time only when the track is public. Publish does not need it.
           </p>
+          <p v-if="!services.instagram" class="notice">{{ INSTAGRAM_OFF_NOTE }}</p>
           <div class="actions">
             <template v-if="editable(post)">
-              <BaseButton variant="secondary" :disabled="busy" @click="openComposer('post')"
+              <BaseButton
+                variant="secondary"
+                :disabled="busy || !services.instagram"
+                @click="openComposer('post')"
                 >Edit post-announcement</BaseButton
               >
               <BaseButton variant="secondary" :disabled="busy" @click="cancelPost"
@@ -339,7 +360,7 @@ async function publish() {
             <BaseButton
               v-else-if="post?.state !== 'sent'"
               variant="secondary"
-              :disabled="busy"
+              :disabled="busy || !services.instagram"
               @click="openComposer('post')"
               >Set up post-announcement</BaseButton
             >
@@ -482,11 +503,13 @@ async function publish() {
             :announcements="announcements"
             :handle="handle"
             :paused="paused"
+            :instagram-off="!services.instagram"
             @changed="reloadPromotion"
           />
           <EpisodeRecordingCard
             class="side"
             :show="show"
+            :soundcloud-off="!services.soundcloud"
             @uploaded="load(false)"
             @changed="load(false)"
           />
@@ -554,6 +577,14 @@ async function publish() {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
+}
+
+.notice {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #6b5a1e;
+  border-radius: var(--radius-lg);
+  color: #f3d77a;
 }
 
 .actions {
