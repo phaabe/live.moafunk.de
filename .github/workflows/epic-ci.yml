@@ -166,16 +166,18 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # No install scripts, and the workflow tests run first: no code from a
+      # dependency runs before they read the checkout.
       - name: Install dependencies
         id: dependencies
-        run: npm ci
-
-      - name: Run frontend lint
-        run: npm run lint
+        run: npm ci --ignore-scripts
 
       - name: Test workflow rules
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: node --test ../.github/workflows/tests/*.test.cjs
+
+      - name: Run frontend lint
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: npm run lint
 
       - name: Run frontend typecheck
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}

@@ -269,15 +269,25 @@ test('the workflow tests always run on main and staging PRs and pushes, once, wi
   assert.equal(job.environment, undefined);
   assert.equal(job.uses, undefined);
   assert.equal(job.steps[0].with['persist-credentials'], false);
-  const tests = job.steps.find((step) => step.run === 'node --test ../.github/workflows/tests/*.test.cjs');
-  assert.ok(tests, 'frontend-ci runs every workflow test');
-  // A failed lint does not skip them; only a failed install does.
-  assert.equal(tests.if, "${{ !cancelled() && steps.dependencies.outcome == 'success' }}");
-  assert.equal(tests['continue-on-error'], undefined);
+  // The first two commands: install without scripts, then the workflow tests.
+  // So no code from a dependency runs before they read the checkout.
+  const [checkout, node, install, tests] = job.steps;
+  assert.deepEqual([checkout.uses, node.uses], ['actions/checkout@v4', 'actions/setup-node@v4']);
+  assert.equal(install.run, 'npm ci --ignore-scripts');
+  assert.equal(tests.run, 'node --test ../.github/workflows/tests/*.test.cjs');
+  for (const step of [install, tests]) {
+    assert.equal(step.if, undefined);
+    assert.equal(step['continue-on-error'], undefined);
+  }
   assert.doesNotMatch(JSON.stringify(job), /secrets\.|bitwarden|docker\/|\bssh\b|\bscp\b|packages|id-token/i);
-  // No other workflow runs them a second time.
+  // No other job runs them a second time.
   const runners = readdirSync(path.resolve(__dirname, '..'))
     .filter((file) => /\.ya?ml$/.test(file))
-    .filter((file) => /workflows\/tests\//.test(readFileSync(path.resolve(__dirname, '..', file), 'utf8')));
-  assert.deepEqual(runners, ['epic-ci.yml']);
+    .flatMap((file) => {
+      const jobs = yaml.load(readFileSync(path.resolve(__dirname, '..', file), 'utf8')).jobs ?? {};
+      return Object.entries(jobs)
+        .filter(([, j]) => (j.steps ?? []).some((step) => /workflows\/tests\//.test(step.run ?? '')))
+        .map(([id]) => `${file}:${id}`);
+    });
+  assert.deepEqual(runners, ['epic-ci.yml:frontend']);
 });
