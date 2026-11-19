@@ -117,8 +117,9 @@ export async function toneBack(withinS: number): Promise<number> {
 
 /** Log in on the admin as the e2e host (people use staging-host, so they never take over this stream). */
 export async function login(page: Page): Promise<void> {
-  // shortcut: the nightly run takes its workflow from main, which sends only
-  // STAGING_HOST_PASSWORD until the next release; drop the fallback after it.
+  // shortcut: until nightly.yml is on main, the nightly run takes its workflow
+  // from main, which sends only STAGING_HOST_PASSWORD. Drop the fallback once
+  // a nightly run started by nightly.yml (from staging) is green.
   const e2e = process.env.STAGING_E2E_HOST_PASSWORD;
   const [username, password] = e2e ? ['e2e-host', e2e] : ['staging-host', process.env.STAGING_HOST_PASSWORD];
   if (!password) throw new Error('set STAGING_E2E_HOST_PASSWORD (Bitwarden Secrets Manager)');

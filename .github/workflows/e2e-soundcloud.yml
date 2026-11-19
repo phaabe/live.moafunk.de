@@ -4,11 +4,10 @@ name: TEST - SoundCloud on staging
 # SoundCloud test account and that a host can send a recording there
 # (e2e/tests/soundcloud.spec.ts). The chaos show (e2e-staging.yml) runs the
 # same test inside its full suite; this job shows a SoundCloud failure on its
-# own. It runs at 02:00 UTC, before the chaos show at 02:30. Schedule and
-# workflow_dispatch work only once this file is on main.
+# own. nightly.yml starts it on the staging branch at 02:00 UTC, before the
+# chaos show at 02:30. workflow_dispatch works only once this file is on main
+# (GitHub's rule); the run then uses the file from the branch it names.
 on:
-  schedule:
-    - cron: '0 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -26,10 +25,8 @@ jobs:
     env:
       E2E_RUN: ${{ github.run_id }}
     steps:
+      # The branch the run is on; the nightly run is on staging.
       - uses: actions/checkout@v4
-        with:
-          # The nightly run tests staging with the staging branch's test.
-          ref: ${{ github.event_name == 'schedule' && 'staging' || '' }}
 
       - name: Get the staging CI key and the e2e host login from Bitwarden
         id: secrets

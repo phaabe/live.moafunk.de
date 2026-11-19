@@ -32,8 +32,8 @@ function runner(fakes) {
 }
 
 test('the chaos test show runs nightly, by hand and on release PRs, never on PRs into staging', () => {
-  assert.deepEqual(Object.keys(chaos.on).sort(), ['schedule', 'workflow_call', 'workflow_dispatch']);
-  assert.deepEqual(chaos.on.schedule, [{ cron: '30 2 * * *' }]);
+  // The nightly run is a workflow_dispatch on staging (nightly.test.cjs).
+  assert.deepEqual(Object.keys(chaos.on).sort(), ['workflow_call', 'workflow_dispatch']);
   assert.deepEqual(chaos.on.workflow_call.inputs, {
     release_sha: { description: 'The release commit; staging must run exactly its image', type: 'string', required: true },
     duration: { description: 'Extra minutes on air', type: 'string', default: '0' },
@@ -45,11 +45,8 @@ test('the chaos test show runs nightly, by hand and on release PRs, never on PRs
     .flatMap((file) => Object.entries(load(file).jobs ?? {}).map(([id, j]) => [file, id, j]))
     .filter(([, , j]) => j.uses === './.github/workflows/e2e-staging.yml');
   assert.deepEqual(callers.map(([file, id]) => `${file}:${id}`), ['e2e-release.yml:e2e-staging']);
-  // The nightly test comes from staging, a release run's from the release commit.
-  assert.equal(
-    job.steps[0].with.ref,
-    "${{ github.event_name == 'schedule' && 'staging' || inputs.release_sha || '' }}"
-  );
+  // A release run's test comes from the release commit, others from the run's branch.
+  assert.equal(job.steps[0].with.ref, "${{ inputs.release_sha || '' }}");
 });
 
 test('the chaos test show uses only the staging CI key and the e2e host login', () => {

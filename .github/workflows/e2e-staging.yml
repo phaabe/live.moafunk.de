@@ -7,7 +7,8 @@ name: TEST - Chaos show on staging
 # by hand (a soak of `duration` extra minutes on air), and on each release PR
 # into main (e2e-release.yml calls it with release_sha). Not on PRs into
 # staging and not after a staging deploy: merges into staging never wait for it.
-# Schedule and workflow_dispatch work only once this file is on main.
+# nightly.yml starts the nightly run on the staging branch, so it uses this
+# file and the tests from staging, not the old copy on main.
 on:
   workflow_call:
     inputs:
@@ -19,8 +20,6 @@ on:
         description: Extra minutes on air
         type: string
         default: '0'
-  schedule:
-    - cron: '30 2 * * *'
   workflow_dispatch:
     inputs:
       duration:
@@ -58,9 +57,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The nightly run tests staging with the staging branch's test, a
-          # release run with the release commit's test.
-          ref: ${{ github.event_name == 'schedule' && 'staging' || inputs.release_sha || '' }}
+          # A release run tests with the release commit's test. Other runs use
+          # the branch they run on; the nightly run is on staging.
+          ref: ${{ inputs.release_sha || '' }}
 
       - name: Get the staging CI key and the e2e host login from Bitwarden
         id: secrets
