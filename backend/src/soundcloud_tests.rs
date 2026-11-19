@@ -46,7 +46,10 @@ struct FakeSoundCloud {
     /// Permalink of the logged-in account (`GET /me`).
     me: Arc<Mutex<String>>,
     /// Track ids of the account (`GET /me/tracks`), in SoundCloud's order.
+    /// Each track is one minute long.
     tracks: Arc<Mutex<Vec<i64>>>,
+    /// `quota.upload_seconds_left` of `GET /me`; `None` leaves the quota out.
+    seconds_left: Arc<Mutex<Option<i64>>>,
     /// Tracks that `GET /tracks/:id` reports as public; others are private.
     public: Arc<Mutex<Vec<i64>>>,
 }
@@ -173,7 +176,12 @@ async fn fake_request(
             Json(json!({ "id": id, "sharing": sharing })).into_response()
         }
         ("GET", ["me"]) => {
-            Json(json!({ "id": 1, "permalink": *fake.me.lock().unwrap() })).into_response()
+            let mut me = json!({ "id": 1, "permalink": *fake.me.lock().unwrap() });
+            if let Some(left) = *fake.seconds_left.lock().unwrap() {
+                me["quota"] =
+                    json!({ "unlimited_upload_quota": false, "upload_seconds_left": left });
+            }
+            Json(me).into_response()
         }
         ("GET", ["me", "tracks"]) => list_answer(
             &uri,
@@ -181,7 +189,7 @@ async fn fake_request(
                 .lock()
                 .unwrap()
                 .iter()
-                .map(|id| json!({ "id": id }))
+                .map(|id| json!({ "id": id, "duration": 60_000 }))
                 .collect(),
         ),
         ("GET", ["me", "playlists"]) => list_answer(
@@ -704,8 +712,19 @@ fn list_items_reads_paginated_and_plain_lists() {
 
 // ── Staging cleanup ─────────────────────────────────────────────────────────
 
-/// On staging, an upload keeps the newest SOUNDCLOUD_KEEP_TRACKS tracks of the
-/// test account and deletes the older ones.
+/// The routes from the first `DELETE` to the upload (`POST /tracks`).
+fn deletes_before_the_upload(fake: &FakeSoundCloud) -> Vec<String> {
+    let routes = fake.routes();
+    let upload = routes.iter().position(|r| r == "POST /tracks").unwrap();
+    routes[..upload]
+        .iter()
+        .filter(|r| r.starts_with("DELETE"))
+        .cloned()
+        .collect()
+}
+
+/// On staging, an upload first deletes old tracks of the test account, so
+/// that with the new track the newest SOUNDCLOUD_KEEP_TRACKS tracks stay.
 #[tokio::test]
 async fn staging_upload_keeps_the_newest_tracks() {
     let (state, _temp, fake, r2) = setup(json!({
@@ -714,16 +733,73 @@ async fn staging_upload_keeps_the_newest_tracks() {
         "soundcloud_keep_tracks": 2
     }))
     .await;
-    *fake.tracks.lock().unwrap() = vec![300, 555, 100, 200];
+    *fake.tracks.lock().unwrap() = vec![300, 100, 200];
     let id = show_with_recording(&state, &r2).await;
 
     assert!(upload_track(&state, id).await.unwrap().success);
-    let deleted: Vec<String> = fake
-        .routes()
-        .into_iter()
-        .filter(|r| r.starts_with("DELETE"))
-        .collect();
-    assert_eq!(deleted, vec!["DELETE /tracks/200", "DELETE /tracks/100"]);
+    assert_eq!(
+        deletes_before_the_upload(&fake),
+        vec!["DELETE /tracks/200", "DELETE /tracks/100"]
+    );
+    assert_eq!(
+        fake.routes()
+            .iter()
+            .filter(|r| r.starts_with("DELETE"))
+            .count(),
+        2
+    );
+}
+
+/// SoundCloud refuses every upload while the account has no upload time left.
+/// So the oldest tracks go before the upload, until there is time again.
+#[tokio::test]
+async fn staging_upload_makes_room_on_an_account_over_its_upload_time() {
+    let (state, _temp, fake, r2) = setup(json!({
+        "app_env": "staging",
+        "soundcloud_account": "moafunk-test",
+        "soundcloud_keep_tracks": 10
+    }))
+    .await;
+    *fake.tracks.lock().unwrap() = vec![300, 100, 200];
+    // 90 s over: two tracks of one minute must go.
+    *fake.seconds_left.lock().unwrap() = Some(-90);
+    let id = show_with_recording(&state, &r2).await;
+
+    assert!(upload_track(&state, id).await.unwrap().success);
+    assert_eq!(
+        deletes_before_the_upload(&fake),
+        vec!["DELETE /tracks/200", "DELETE /tracks/100"]
+    );
+}
+
+#[test]
+fn tracks_to_keep_counts_tracks_and_upload_time() {
+    // Newest first, lengths in minutes.
+    let tracks = |minutes: &[i64]| -> Vec<TrackSummary> {
+        minutes
+            .iter()
+            .enumerate()
+            .map(|(i, m)| TrackSummary {
+                id: 100 - i as i64,
+                duration: Some(m * 60_000),
+            })
+            .collect()
+    };
+    let soak = tracks(&[92, 1, 1, 92]);
+    // The upload adds one track: 2 of "keep 3" stay.
+    assert_eq!(tracks_to_keep(&soak, 3, None), 2);
+    assert_eq!(tracks_to_keep(&soak, 1, None), 0);
+    // Time left: nothing more goes.
+    assert_eq!(tracks_to_keep(&soak, 10, Some(1)), 4);
+    // 66 minutes over: only the old soak track (92 min) goes.
+    assert_eq!(tracks_to_keep(&soak, 10, Some(-66 * 60)), 3);
+    // Exactly 0 left is still refused: one more track goes.
+    assert_eq!(tracks_to_keep(&soak, 10, Some(-92 * 60)), 2);
+    // Far over: everything goes.
+    assert_eq!(tracks_to_keep(&soak, 10, Some(-100_000)), 0);
+    // The tracks cut by the count already free time.
+    assert_eq!(tracks_to_keep(&soak, 4, Some(-66 * 60)), 3);
+    assert_eq!(tracks_to_keep(&[], 10, Some(-5)), 0);
 }
 
 /// The cleanup deletes nothing outside staging, without an account pin, or
