@@ -68,6 +68,8 @@ For release checks, stop the automatic deploys so the release candidate stays on
 /opt/unheard-staging/staging.sh unhold                     # after the production deploy
 ```
 
+During a hold, `up` and `down` by hand refuse: a hand deploy in the middle of a release soak broke the r2 soak. `hold` and `unhold` refuse while a chaos test run holds staging (it removes its own hold). If you really must, prefix the command with `STAGING_IGNORE_HOLD=1`. Plain `docker compose` on the box bypasses all of this, so don't use it while staging is on hold.
+
 By hand, on the box:
 
 ```bash

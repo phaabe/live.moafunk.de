@@ -396,6 +396,13 @@ else
   fail "a CI deploy during a hold changes nothing and exits 3: exit $code, $out"
 fi
 if [[ "$(ci status)" == *"hold: "*"R1 release checks"* ]]; then pass "status shows the hold"; else fail "status shows the hold: $(ci status 2>&1)"; fi
+: >"$CALLS"
+expect_refused "up by hand refuses during a hold" "R1 release checks): up refused" staging up sha-abc1234
+expect_refused "down by hand refuses during a hold" "down refused" staging down
+if [[ ! -s "$CALLS" ]]; then pass "a refused up or down runs no docker"; else fail "a refused up or down runs no docker: $(cat "$CALLS")"; fi
+expect_refused "STAGING_IGNORE_HOLD=1 lets up go on" "run staging.sh setup first" env STAGING_IGNORE_HOLD=1 \
+  PATH="$TMP/bin:$PATH" STAGING_DIR="$BOX" bash "$HERE/staging.sh" up sha-abc1234
+expect_ok "hold replaces a release hold" staging hold "R1 release checks"
 expect_ok "unhold resumes CI deploys" staging unhold
 expect_refused "after unhold a CI deploy reaches up" "run staging.sh setup first" ci "deploy sha-abc1234 $DIGEST"
 
@@ -403,6 +410,9 @@ echo "--- the chaos test show through the CI key"
 rm -f "$BOX/hold"
 expect_ok "e2e-hold holds an idle staging" ci "e2e-hold 42"
 if [[ "$(cat "$BOX/hold")" == *" | e2e run 42" ]]; then pass "the hold names the run"; else fail "the hold names the run: $(cat "$BOX/hold")"; fi
+expect_refused "unhold by hand refuses a test run's hold" "e2e run 42): unhold refused" staging unhold
+expect_refused "hold by hand refuses to replace a test run's hold" "hold refused" staging hold "R1 release checks"
+if [[ "$(cat "$BOX/hold")" == *" | e2e run 42" ]]; then pass "the test run keeps its hold"; else fail "the test run keeps its hold: $(cat "$BOX/hold")"; fi
 expect_ok "e2e-unhold of another run" ci "e2e-unhold 43"
 if [[ -f "$BOX/hold" ]]; then pass "leaves the run's hold"; else fail "leaves the run's hold"; fi
 expect_ok "e2e-unhold removes its own hold" ci "e2e-unhold 42"
