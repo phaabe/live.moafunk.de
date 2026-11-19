@@ -1,4 +1,4 @@
-name: E2E - Typecheck and unit tests
+name: TEST - E2E code and Studio soundcheck
 
 # The chaos test show's own code checks, on PRs that change it, and the Studio
 # soundcheck in a real browser against the local mock, on PRs that change the

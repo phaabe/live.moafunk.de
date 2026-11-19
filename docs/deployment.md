@@ -6,7 +6,7 @@
 |--------|--------|---------------------|
 | feature branch | none | CI only, through a PR into `staging` |
 | `staging` | https://staging.live.moafunk.de (Hetzner `cx23` `moafunk-staging`) | automatically, on every push (`backend.yml`, job `deploy-staging`) |
-| `main` | https://admin.live.moafunk.de (production) | by hand, with the workflow **Deploy production** |
+| `main` | https://admin.live.moafunk.de (production) | by hand, with the workflow **DEPLOY - Release to production** |
 
 The admin SPA ships inside the backend image, so one image covers API and admin. The public site on GitHub Pages deploys from `main` (`frontend.yml`).
 
@@ -18,19 +18,19 @@ The admin SPA ships inside the backend image, so one image covers API and admin.
    1. On the staging box: `/opt/unheard-staging/staging.sh hold "rN release checks"`. Builds go on, but staging keeps the release candidate. `staging.sh status` prints the tag it runs (`sha-<7>`): that commit is the release.
    2. The restore drill (below): put the newest production backup into staging.
    3. `scripts/release.sh pr rN sha-<7>`. It cuts `release/rN` from that commit and opens the release PR `release/rN` → `main`. The PR body holds the release notes since the last tag, grouped by the `release::*` labels. Note the backup's name in a comment on the PR.
-   4. The release PR runs the chaos test show as a 90-minute soak on staging (**E2E - Chaos test show on a release PR**, `e2e-release.yml`). It first checks that staging runs exactly the image of the release commit, so keep the hold until the merge. `release-gate` fails when the PR opens. After a green soak, `e2e-release.yml` re-runs it, and it passes. A run by hand or the nightly run does not count. If the soak failed, fix the cause and re-run its failed jobs (the PR's **E2E - Chaos test show on a release PR** run → Re-run failed jobs). The soak waits while a nightly run is on staging; a merge into `staging` in that time cancels the waiting soak (one waiting job per concurrency group), so re-run it then. When every check is green, merge it with a **merge commit**, never a squash: `gh pr merge <n> --merge --delete-branch --match-head-commit <sha>`. A squash would put a commit on `main` that `staging` never has, so the next release would conflict and its notes would miss the PRs.
+   4. The release PR runs the chaos test show as a 90-minute soak on staging (**TEST - Release soak**, `e2e-release.yml`). It first checks that staging runs exactly the image of the release commit, so keep the hold until the merge. `release-gate` fails when the PR opens. After a green soak, `e2e-release.yml` re-runs it, and it passes. A run by hand or the nightly run does not count. If the soak failed, fix the cause and re-run its failed jobs (the PR's **TEST - Release soak** run → Re-run failed jobs). The soak waits while a nightly run is on staging; a merge into `staging` in that time cancels the waiting soak (one waiting job per concurrency group), so re-run it then. When every check is green, merge it with a **merge commit**, never a squash: `gh pr merge <n> --merge --delete-branch --match-head-commit <sha>`. A squash would put a commit on `main` that `staging` never has, so the next release would conflict and its notes would miss the PRs.
    5. `scripts/release.sh tag rN`. It tags `rN` on the merge commit and creates the GitHub Release with the same notes.
-   6. When the `main` image build is green, run **Deploy production** with `dry_run` on, then again with `dry_run` off.
+   6. When the `main` image build is green, run **DEPLOY - Release to production** with `dry_run` on, then again with `dry_run` off.
    7. `/opt/unheard-staging/staging.sh unhold`.
 4. Deploy to production only release commits on `main` that passed the checks on staging, or a hotfix (rule 5). Never during a show or in the 2 hours before one. The best time is soon after a show, so there is a week to fix problems.
 5. A hotfix skips the chaos test and goes to `main` at once:
    1. Branch `hotfix/<slug>` from `main`. Open a PR into `main` with the label `hotfix`. The unit tests must pass; the chaos test does not run (`release-gate` checks only the branch name and the label).
    2. Squash merge it: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
-   3. When the `main` image build is green, run **Deploy production** with `hotfix` on, first with `dry_run` on. It skips only the staging check, and only while `main`'s head commit is that hotfix merge.
+   3. When the `main` image build is green, run **DEPLOY - Release to production** with `hotfix` on, first with `dry_run` on. It skips only the staging check, and only while `main`'s head commit is that hotfix merge.
    4. Right after: the same fix as a normal PR into `staging`, label `release::fix`. Cherry-pick the commit from `main` onto a branch from `origin/staging` (`git cherry-pick <commit>`). Without it, the next release conflicts with the fix or removes it.
-6. Rollback: run **Deploy production** with `rollback_tag` set to the earlier tag (the deploy log prints it). This skips the staging check but keeps all other checks. Restore the DB backup only if a migration broke data; migrations only go forward.
+6. Rollback: run **DEPLOY - Release to production** with `rollback_tag` set to the earlier tag (the deploy log prints it). This skips the staging check but keeps all other checks. Restore the DB backup only if a migration broke data; migrations only go forward.
 
-## What Deploy production checks
+## What the production deploy checks
 
 It stops, and changes nothing, when:
 
@@ -123,4 +123,4 @@ These need a repository admin (phaabe), see https://github.com/phaabe/live.moafu
 - ruleset on `main`: PR required, merge commit and squash allowed, required checks `backend-ci`, `frontend-ci`, `stream-system` and `release-gate`, no direct push, no bypass
 - required approvers on the environment `api-production`
 
-**Deploy production** can be started only after its workflow file is on `main`, so the first release that contains it also brings it.
+**DEPLOY - Release to production** can be started only after its workflow file is on `main`, so the first release that contains it also brings it.

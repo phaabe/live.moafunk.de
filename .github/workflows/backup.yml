@@ -1,4 +1,4 @@
-name: BACKUP - Database and R2 Storage
+name: OPS - Back up database and R2
 
 on:
   # Weekly scheduled backup (Sunday 3am UTC)

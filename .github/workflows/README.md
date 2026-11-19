@@ -2,7 +2,6 @@
 
 `backend.yml` builds and publishes images on matching `main` pushes and manual
 runs with `build: true`. It no longer deploys the API or restarts Liquidsoap.
-The workflow name stays unchanged because existing guards refer to it.
 Native amd64 builds, the BuildKit mirror and Dockerfile base mirrors are retained.
 
 Images retain `latest` and short SHA tags and add a full SHA tag. The build

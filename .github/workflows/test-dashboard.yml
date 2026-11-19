@@ -1,4 +1,4 @@
-name: Test dashboard
+name: OPS - Publish test dashboard
 
 # Puts the latest result of every test level (L0–L8) and the coverage on
 # SITE_URL: test-dashboard/collect.cjs reads the runs over the API, appends to

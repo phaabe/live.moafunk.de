@@ -1,4 +1,4 @@
-name: STREAM - System test
+name: TEST - Stream system
 
 # Runs the live stream chain end to end: the backend's stream handler and
 # producer ffmpeg push a tone into Liquidsoap, and the tests decode what

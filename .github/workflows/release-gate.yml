@@ -1,4 +1,4 @@
-name: Release gate
+name: GATE - Require release checks
 
 # The required check that decides what may go into main (docs/deployment.md):
 # - head release/*: passes only when the chaos test show passed on the head

@@ -130,7 +130,7 @@ function level(id, fields) {
  * Builds one summary from API data that main() fetched.
  * - epic: { run, jobs } latest finished epic-ci push run on staging
  * - stream: { run, jobs } latest finished stream-system push run on staging
- * - deploys: [{ run, jobs }] latest Deploy production runs, newest first
+ * - deploys: [{ run, jobs }] latest runs of deploy-production.yml, newest first
  * - current: { run, jobs } the run that calls this script
  * - results: { cargo, vitest, rustCoverage, frontendCoverage } from the epic-ci artifacts, each may be null
  * - soakMinutes: the chaos run's `duration` input (0 = no soak)

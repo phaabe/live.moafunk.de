@@ -1,4 +1,4 @@
-name: Release label
+name: GATE - Require release label
 
 # Every PR into staging needs exactly one label release::feature,
 # release::fix or release::internal. The label puts the PR into a group of the

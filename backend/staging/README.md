@@ -86,7 +86,7 @@ Staging keeps running (also after a reboot) until `down`.
 
 `e2e/` is a Playwright test that runs one live show and one pre-recorded set on staging, as `e2e-host` with a fake microphone (a 440 Hz tone). The live show must survive a 20 s network cut, a Liquidsoap restart and a page reload by itself: `/live.mp3` carries the tone again within 15 s each time, and the show ends in exactly one recording as long as its time on air, with its mp3 in the archive.
 
-- It runs every night, and on each release PR into `main` as a 90-minute soak (`e2e-release.yml` calls `e2e-staging.yml`). The release run first checks that staging runs exactly the image of the release commit (`staging.sh status` through the CI key), and stops if not. By hand: **Actions → E2E - Chaos test show on staging → Run workflow**, with `duration` for a soak (nightly and by hand work once the workflow is on `main`).
+- It runs every night, and on each release PR into `main` as a 90-minute soak (`e2e-release.yml` calls `e2e-staging.yml`). The release run first checks that staging runs exactly the image of the release commit (`staging.sh status` through the CI key), and stops if not. By hand: **Actions → TEST - Chaos show on staging → Run workflow**, with `duration` for a soak (nightly and by hand work once the workflow is on `main`).
 - It does not run on PRs into `staging` or after a staging deploy, so a merge never waits for it. PRs that change `e2e/` run only its typecheck and unit tests (`e2e-unit.yml`).
 - A deploy waits while a test runs (both use the concurrency group `staging-box`). The test also holds staging, and removes only its own hold, so a release hold stays.
 - The test deletes its episodes and Show. Their files stay in the staging buckets (no API removes them).
