@@ -183,5 +183,41 @@
       "why": "The flow note says the strip opens On Air when the show on air is yours."
     }
   ],
-  "drift": []
+  "drift": [
+    {
+      "screen": "studio-onair",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-onair-reconnecting",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-onair-lost",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-onair-noinput",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-onair-end",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    }
+  ]
 }
