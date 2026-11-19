@@ -52,7 +52,7 @@ After a real deploy (not a dry run) the run ends with a read-only smoke test fro
 
 `backend/deploy/showday-check.sh` runs on the production box every 15 minutes from a systemd timer. The day before a show (from 18:00 Berlin) and in the hour before it, it checks the box and posts the result to the MoafunkBot topic of the Telegram group, with the backend's own bot settings (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`, `TELEGRAM_TOPIC_ID` in `/opt/unheard-backend/.env`). Each show gets each post once. It needs no CI key and changes nothing.
 
-It checks: the API is healthy, `https://admin.live.moafunk.de` answers, the TLS certificate is valid for 14 more days, Icecast has `/live.mp3` and `/test.mp3`, Liquidsoap runs, 5 GB are free, and the newest DB backup is at most 30 hours old. The post also says if a pre-recorded set is not confirmed.
+It checks: the API is healthy, `https://admin.live.moafunk.de` answers, the TLS certificate is valid for 14 more days, Icecast has `/live.mp3` and `/test.mp3`, Liquidsoap runs and takes audio on both harbor mounts `/test` and `/live` (an upload without a password must get 401; 404 means the mount is missing, and `systemctl restart liquidsoap` brings it back), 5 GB are free, and the newest DB backup is at most 30 hours old. The post also says if a pre-recorded set is not confirmed.
 
 Install it once (Anton, from the repo root on your Mac):
 
