@@ -135,7 +135,7 @@ jobs:
 
       - name: Run Clippy
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        run: cargo clippy --locked --all-targets
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Check the shell scripts (shellcheck)
         if: ${{ !cancelled() }}
