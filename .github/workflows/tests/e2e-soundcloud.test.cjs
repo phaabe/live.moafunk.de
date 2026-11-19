@@ -12,11 +12,10 @@ const job = soundcloud.jobs.soundcloud;
 const chaos = load('e2e-staging.yml').jobs['chaos-show'];
 const step = (name) => job.steps.find((s) => s.name === name);
 
-test('the SoundCloud test runs nightly before the chaos show, and by hand', () => {
-  assert.deepEqual(Object.keys(soundcloud.on).sort(), ['schedule', 'workflow_dispatch']);
-  assert.deepEqual(soundcloud.on.schedule, [{ cron: '0 2 * * *' }]);
-  assert.deepEqual(load('e2e-staging.yml').on.schedule, [{ cron: '30 2 * * *' }]);
-  assert.equal(job.steps[0].with.ref, "${{ github.event_name == 'schedule' && 'staging' || '' }}");
+test('the SoundCloud test runs by hand; nightly.yml starts it each night on staging', () => {
+  assert.deepEqual(soundcloud.on, { workflow_dispatch: null });
+  // The test comes from the run's branch: staging for the nightly run.
+  assert.deepEqual(job.steps[0], { uses: 'actions/checkout@v4' });
 });
 
 test('the SoundCloud test runs only its own spec', () => {

@@ -1,0 +1,58 @@
+name: OPS - Start nightly tests
+
+# GitHub runs a schedule only from the file on main, and main changes only
+# with a release. So this file only starts the real tests on the staging
+# branch: each run then uses the workflow file and the tests from staging.
+# workflow_dispatch also needs the started file on main (GitHub's rule). So
+# this file and e2e-soundcloud.yml work only once they reach main: with the
+# next release, or with a hotfix PR (label hotfix).
+on:
+  schedule:
+    # The SoundCloud test (e2e-soundcloud.yml), before the chaos show.
+    - cron: '0 2 * * *'
+    # The chaos test show (e2e-staging.yml).
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test:
+        description: Which test to start on staging
+        type: choice
+        options: [both, soundcloud, chaos-show]
+        default: both
+
+permissions:
+  contents: read
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # gh workflow run; nothing else.
+      actions: write
+    steps:
+      - name: Start the test on the staging branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SCHEDULE: ${{ github.event.schedule }}
+          TEST: ${{ inputs.test }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SCHEDULE" ]]; then
+            case "$SCHEDULE" in
+              '0 2 * * *') TEST=soundcloud ;;
+              '30 2 * * *') TEST=chaos-show ;;
+              *) echo "::error::no test for the schedule '$SCHEDULE'"; exit 1 ;;
+            esac
+          fi
+          case "$TEST" in
+            soundcloud) files=(e2e-soundcloud.yml) ;;
+            chaos-show) files=(e2e-staging.yml) ;;
+            both) files=(e2e-soundcloud.yml e2e-staging.yml) ;;
+            *) echo "::error::unknown test '$TEST'"; exit 1 ;;
+          esac
+          for file in "${files[@]}"; do
+            gh workflow run "$file" --ref staging
+            echo "Started $file on staging."
+          done
