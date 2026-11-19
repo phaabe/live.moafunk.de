@@ -54,6 +54,13 @@ SOURCE_COUNT=$(rclone size "$RCLONE_SOURCE:$SOURCE_BUCKET" --json 2>/dev/null | 
 SOURCE_SIZE=$(rclone size "$RCLONE_SOURCE:$SOURCE_BUCKET" --json 2>/dev/null | jq -r '.bytes // 0' | numfmt --to=iec 2>/dev/null || echo "unknown")
 echo "  Source contains $SOURCE_COUNT objects ($SOURCE_SIZE)"
 
+# An empty or unreadable source would empty r2-latest, or make an empty
+# snapshot that pushes the good ones out of the retention window.
+if [[ ! "$SOURCE_COUNT" =~ ^[0-9]+$ ]] || [[ "$SOURCE_COUNT" -eq 0 ]]; then
+    echo "Error: source has no objects (count: '$SOURCE_COUNT'); nothing synced" >&2
+    exit 1
+fi
+
 if [[ "$FULL_BACKUP" == "--full" ]]; then
     # Full snapshot backup (dated folder)
     DEST_PATH="$RCLONE_BACKUP:$BACKUP_BUCKET/r2-snapshots/$TIMESTAMP"
@@ -65,7 +72,14 @@ if [[ "$FULL_BACKUP" == "--full" ]]; then
         --stats 30s \
         --transfers 8 \
         --checkers 16
-    
+
+    # A short snapshot must not push good ones out of the retention window.
+    SNAPSHOT_OBJECTS=$(rclone size "$DEST_PATH" --json | jq -r '.count // 0')
+    if [[ ! "$SNAPSHOT_OBJECTS" =~ ^[0-9]+$ ]] || (( SNAPSHOT_OBJECTS * 10 < SOURCE_COUNT * 9 )); then
+        echo "Error: snapshot has $SNAPSHOT_OBJECTS objects, source has $SOURCE_COUNT (need 90 %); old snapshots kept" >&2
+        exit 1
+    fi
+
     # Cleanup old snapshots
     echo ""
     echo "Cleaning up old snapshots (keeping last $BACKUP_RETENTION)..."

@@ -36,7 +36,13 @@ BACKEND_NETWORK="${BACKEND_NETWORK:-unheard-backend_default}"
 GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-admin}"
 
 SSH_HOST="$SSH_USER@$IP"
-SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new)
+# SSH_KNOWN_HOSTS: a file with the pinned host key (CI); a different key stops
+# the deploy. ssh keeps the first value of an option, so pick one, not both.
+if [[ -n "${SSH_KNOWN_HOSTS:-}" ]]; then
+  SSH_OPTS=(-i "$SSH_KEY" -o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
+else
+  SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new)
+fi
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
