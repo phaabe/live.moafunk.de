@@ -484,6 +484,48 @@ else
 fi
 expect_refused "e2e-cleanup takes no arguments" "the CI key may only run" ci "e2e-cleanup 1"
 
+today="$(date -u +%F)"
+python3 - "$BOX/data/unheard.db" "$today" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+day = sys.argv[2]
+con.execute("ALTER TABLE shows ADD COLUMN start_time TEXT")
+con.execute("ALTER TABLE shows ADD COLUMN end_time TEXT")
+con.executemany(
+    "INSERT INTO shows (id, title, date, start_time, end_time) VALUES (?, ?, ?, ?, ?)",
+    [
+        (910, "Copied show", day, "20:00", None),  # no end: a point inside the slot
+        (911, "Own test show", day, "19:10", "21:07"),
+        (912, "Earlier show", day, "17:00", "19:30"),  # ends when the slot starts
+        (913, "No start time", day, None, None),
+        (914, "Another day", "2026-01-01", "20:00", None),
+    ],
+)
+con.commit()
+PY
+slot_days() { # the shows 910-914 as id:days from today
+  python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(' '.join(f'{i}:{d}' for i, d in c.execute(\"SELECT id, CAST(julianday(date) - julianday(?) AS INTEGER) FROM shows WHERE id BETWEEN 910 AND 913 ORDER BY id\", (sys.argv[2],))), c.execute('SELECT date FROM shows WHERE id = 914').fetchone()[0])" "$BOX/data/unheard.db" "$today"
+}
+out="$(ci "e2e-free-slot $today 19:30 21:59" 2>&1)"
+if [[ "$out" == "slot $today 19:30-21:59: moved 2 show(s) to the day before: 910 Copied show, 911 Own test show" ]]; then
+  pass "e2e-free-slot moves the shows in the slot to the day before"
+else
+  fail "e2e-free-slot moves the shows in the slot to the day before: $out"
+fi
+if [[ "$(slot_days)" == "910:-1 911:-1 912:0 913:0 2026-01-01" ]]; then
+  pass "e2e-free-slot leaves shows outside the slot alone"
+else
+  fail "e2e-free-slot leaves shows outside the slot alone: $(slot_days)"
+fi
+if [[ "$(ci "e2e-free-slot $today 19:30 21:59")" == "slot $today 19:30-21:59: free" ]]; then
+  pass "e2e-free-slot on a free slot changes nothing"
+else
+  fail "e2e-free-slot on a free slot changes nothing"
+fi
+expect_refused "e2e-free-slot refuses a day far from today" "is not today or a day next to it" ci "e2e-free-slot 2026-01-01 19:30 21:59"
+expect_refused "e2e-free-slot needs a date and two times" "the CI key may only run" ci "e2e-free-slot $today 25:00 26:00"
+expect_refused "e2e-free-slot cannot add commands" "the CI key may only run" ci "e2e-free-slot $today 19:30 21:59; reboot"
+
 announce() { # the announce_* settings, sorted
   python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(' '.join(f'{k}={v}' for k, v in c.execute(\"SELECT key, value FROM app_settings WHERE key GLOB 'announce_*' ORDER BY key\")))" "$BOX/data/unheard.db"
 }

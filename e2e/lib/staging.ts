@@ -149,6 +149,8 @@ export async function bookSlot(page: Page, start: Date, end: Date): Promise<numb
   const to = berlinSlot(end);
   // shortcut: a slot that runs past midnight is cut at 23:59; runs start long before.
   const endTime = to.date === from.date ? to.time : '23:59';
+  // Staging has copies of production shows and people's own test shows: move the ones in this slot away.
+  console.log(staging(`e2e-free-slot ${from.date} ${from.time} ${endTime}`));
   await page.getByLabel('Date').fill(from.date);
   await page.getByLabel('Start time').fill(from.time);
   await page.getByLabel('End time').fill(endTime);
