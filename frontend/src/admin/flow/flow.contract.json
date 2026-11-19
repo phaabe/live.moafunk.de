@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 18,
+  "rev": 20,
   "screens": [
     {
       "id": "dashboard",
@@ -535,7 +535,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
       "hash": "e7a8a2aa",
-      "notesHash": "7f0ca9e5",
+      "notesHash": "ef8dddf8",
       "elements": [
         {
           "k": "back",

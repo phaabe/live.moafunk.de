@@ -484,7 +484,12 @@ async function publish() {
             :paused="paused"
             @changed="reloadPromotion"
           />
-          <EpisodeRecordingCard class="side" :show="show" @uploaded="load(false)" />
+          <EpisodeRecordingCard
+            class="side"
+            :show="show"
+            @uploaded="load(false)"
+            @changed="load(false)"
+          />
         </div>
         <p v-if="error" class="field-error" role="alert">{{ error }}</p>
       </template>

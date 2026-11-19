@@ -47,6 +47,8 @@ struct FakeSoundCloud {
     me: Arc<Mutex<String>>,
     /// Track ids of the account (`GET /me/tracks`), in SoundCloud's order.
     tracks: Arc<Mutex<Vec<i64>>>,
+    /// Tracks that `GET /tracks/:id` reports as public; others are private.
+    public: Arc<Mutex<Vec<i64>>>,
 }
 
 impl FakeSoundCloud {
@@ -161,6 +163,15 @@ async fn fake_request(
             (StatusCode::CREATED, Json(track)).into_response()
         }
         ("DELETE" | "PUT", ["tracks", _]) => Json(json!({})).into_response(),
+        ("GET", ["tracks", id]) => {
+            let id: i64 = id.parse().unwrap();
+            let sharing = if fake.public.lock().unwrap().contains(&id) {
+                "public"
+            } else {
+                "private"
+            };
+            Json(json!({ "id": id, "sharing": sharing })).into_response()
+        }
         ("GET", ["me"]) => {
             Json(json!({ "id": 1, "permalink": *fake.me.lock().unwrap() })).into_response()
         }
@@ -1112,6 +1123,100 @@ async fn privacy_toggle_updates_the_track() {
     assert!(!result.success);
     assert!(result.error.unwrap().contains("500"));
     assert_eq!(show(&state, id).await.soundcloud_public, Some(true));
+}
+
+#[tokio::test]
+async fn back_to_private_puts_an_unsent_post_back_to_waiting() {
+    let (state, _temp, _fake, _r2) = setup(json!({})).await;
+    let id = add_show(&state, "Late Night", None).await;
+    sqlx::query("UPDATE shows SET soundcloud_track_id = '555', soundcloud_public = 1 WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO announcements (show_id, slot, state, scheduled_at) \
+         VALUES (?, 'post', 'scheduled', '2026-11-22T17:00:00Z'), (?, 'pre', 'scheduled', '2026-11-20T17:00:00Z')",
+    )
+    .bind(id)
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    assert!(set_track_privacy(&state, id, false).await.unwrap().success);
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT slot, state, scheduled_at FROM announcements WHERE show_id = ? ORDER BY slot",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [
+            ("post".into(), "waiting_soundcloud".into(), None),
+            (
+                "pre".into(),
+                "scheduled".into(),
+                Some("2026-11-20T17:00:00Z".into())
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_track_made_public_on_soundcloud_unlocks_the_waiting_post() {
+    let (state, _temp, fake, _r2) = setup(json!({})).await;
+    let waiting = add_show(&state, "Late Night", None).await;
+    let no_post = add_show(&state, "Early Bird", None).await;
+    for (id, track) in [(waiting, "555"), (no_post, "556")] {
+        sqlx::query("UPDATE shows SET soundcloud_track_id = ?, soundcloud_public = 0 WHERE id = ?")
+            .bind(track)
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO announcements (show_id, slot, state) VALUES (?, 'post', 'waiting_soundcloud')",
+    )
+    .bind(waiting)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    // Still private on SoundCloud: nothing changes.
+    assert!(sync_public_tracks(&state).await.unwrap().is_empty());
+    assert_eq!(
+        fake.routes(),
+        ["GET /tracks/555"],
+        "only episodes with a waiting post"
+    );
+    assert_eq!(
+        fake.call("GET /tracks/555").auth.as_deref(),
+        Some("OAuth static-token")
+    );
+
+    fake.public.lock().unwrap().extend([555, 556]);
+    assert_eq!(sync_public_tracks(&state).await.unwrap(), [waiting]);
+    assert_eq!(show(&state, waiting).await.soundcloud_public, Some(true));
+    assert_eq!(show(&state, no_post).await.soundcloud_public, Some(false));
+
+    // Marked public: not asked again.
+    fake.calls.lock().unwrap().clear();
+    assert!(sync_public_tracks(&state).await.unwrap().is_empty());
+    assert!(fake.routes().is_empty());
+
+    // A failed check leaves the track private and asks again next time.
+    sqlx::query("UPDATE shows SET soundcloud_public = 0 WHERE id = ?")
+        .bind(waiting)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    fake.fail("GET /tracks/555", 500);
+    assert!(sync_public_tracks(&state).await.unwrap().is_empty());
+    assert_eq!(show(&state, waiting).await.soundcloud_public, Some(false));
 }
 
 #[tokio::test]
