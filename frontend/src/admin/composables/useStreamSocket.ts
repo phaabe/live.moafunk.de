@@ -72,8 +72,17 @@ let currentCallbacks: {
 // The server stops the stream on any close. Without 'stop' it treats a reload
 // like a dropped connection: the episode stays on air for the reconnect grace,
 // so the host can open the Studio again and go back on air.
+// While on air, the browser asks first ("Leave site?"). The close waits for
+// pagehide: closing in beforeunload would end the stream even when the host
+// clicks Stay, and a 1000 close never reconnects.
 if (typeof window !== 'undefined') {
-  window.addEventListener('beforeunload', () => {
+  window.addEventListener('beforeunload', (event) => {
+    if (liveStreamShowId() === null) return;
+    event.preventDefault();
+    // Some browsers show the prompt only when returnValue is set.
+    event.returnValue = '';
+  });
+  window.addEventListener('pagehide', () => {
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.close(1000, 'Page unload');
     }

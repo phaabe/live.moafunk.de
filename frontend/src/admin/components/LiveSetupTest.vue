@@ -36,9 +36,13 @@ import { config } from '@/config';
  * `studio` renders the flow's Studio card: the input level meter, "Audio
  * input" (screen audio is one of its options) and the soundcheck: the host
  * tests the music and the mic, then useSoundcheck checks the server and the
- * return feed and proposes the result.
+ * return feed and proposes the result. With `inputOnly` (Studio · Back on
+ * air) the card shows only the meter and the input, no soundcheck.
  */
-const props = withDefaults(defineProps<{ studio?: boolean }>(), { studio: false });
+const props = withDefaults(defineProps<{ studio?: boolean; inputOnly?: boolean }>(), {
+  studio: false,
+  inputOnly: false,
+});
 
 const emit = defineEmits<{
   /** The host confirmed the test stream sounds right (test marked passed). */
@@ -362,12 +366,12 @@ onUnmounted(() => {
             <option value="screen">Screen audio</option>
           </select>
         </label>
-        <p class="ls-muted">
+        <p v-if="!inputOnly" class="ls-muted">
           Music and mic use this one input. You do not need two: test them one after the other
           below.
         </p>
         <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
-        <ol class="sc-steps" aria-live="polite">
+        <ol v-if="!inputOnly" class="sc-steps" aria-live="polite">
           <li
             v-for="step in soundcheck.steps.value"
             :key="step.id"
@@ -430,7 +434,7 @@ onUnmounted(() => {
             </span>
           </li>
         </ol>
-        <div class="sc-result" aria-live="polite">
+        <div v-if="!inputOnly" class="sc-result" aria-live="polite">
           <p v-if="soundcheck.prompt.value" class="sc-question">
             {{ soundcheck.prompt.value }}
           </p>
@@ -449,7 +453,7 @@ onUnmounted(() => {
             {{ soundcheck.problem.value }}
           </p>
         </div>
-        <div class="sc-actions">
+        <div v-if="!inputOnly" class="sc-actions">
           <template v-if="!soundcheck.running.value">
             <button
               v-if="soundcheck.outcome.value === 'manual' && !flow.liveTestPassed.value"
@@ -485,7 +489,7 @@ onUnmounted(() => {
           {{ soundcheck.listenError.value }}
         </p>
         <button
-          v-if="isDev && !flow.liveTestPassed.value"
+          v-if="isDev && !inputOnly && !flow.liveTestPassed.value"
           class="ls-dev-skip"
           type="button"
           @click="markTestPassed"

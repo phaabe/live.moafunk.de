@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
+import { showsApi } from '@admin/api';
 import {
   useHostFlow,
   useAudioCapture,
@@ -17,6 +18,11 @@ import BoardIcon from '@admin/components/BoardIcon.vue';
  * Go Live. Nothing goes live by itself. The router gate opens it 30 min
  * before the start. Go Live works from the start time once the soundcheck
  * is confirmed.
+ *
+ * Studio · Back on air (`studio-backonair`): the episode is still on air but
+ * no tab sends audio, e.g. after a reload. The server keeps it on air for
+ * 5 minutes after a drop. Going back on air needs only an input: the show
+ * passed its soundcheck before.
  */
 const router = useRouter();
 const flow = useHostFlow();
@@ -55,10 +61,28 @@ const goingLive = ref(false);
 const wentLive = ref(false);
 const goLiveError = ref<string | null>(null);
 
+// The router opens On Air when this tab is live, so on air here means this tab
+// does not send: a reload, a closed tab or a lost connection. (If another tab
+// of the host is live, going back on air takes over, as Go Live does.)
+const backOnAir = ref(false);
+
+/** Is the episode on air? Null when the server cannot say. */
+async function onAirNow(showId: number): Promise<boolean | null> {
+  try {
+    return (await showsApi.get(showId)).on_air === true;
+  } catch {
+    return null;
+  }
+}
+
+onMounted(async () => {
+  if (show.value) backOnAir.value = (await onAirNow(show.value.id)) === true;
+});
+
 const canGoLive = computed(
   () =>
     !!show.value &&
-    flow.liveTestPassed.value &&
+    (backOnAir.value || flow.liveTestPassed.value) &&
     audioCapture.isCapturing.value &&
     secondsToStart.value <= 0
 );
@@ -74,6 +98,16 @@ async function goLive() {
   const showId = show.value.id;
   goingLive.value = true;
   goLiveError.value = null;
+  if (backOnAir.value) {
+    // This click is a user gesture: resume audio before the request.
+    audioCapture.resumeAudioContext();
+    // The 5 minutes ran out: the normal soundcheck. If the server cannot say, go on.
+    if ((await onAirNow(showId)) === false) {
+      backOnAir.value = false;
+      goingLive.value = false;
+      return;
+    }
+  }
   // A test broadcast the host still listens to: connect() would reuse its socket.
   soundcheck.value?.stopTest?.();
   // Take over the socket's callbacks from the soundcheck: this connection is
@@ -128,24 +162,34 @@ onUnmounted(() => {
       ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode</router-link
     >
     <h1 class="page-title">Studio</h1>
-    <p class="pill status-banner warn countdown">
+    <template v-if="backOnAir">
+      <p class="pill status-banner live">
+        <span class="dot" aria-hidden="true"></span>Still on air · no audio
+      </p>
+      <p class="notice" role="alert">
+        Your show is still on air, but no audio arrives. Listeners hear silence.
+      </p>
+    </template>
+    <p v-else class="pill status-banner warn countdown">
       <span class="countdown-label"
         ><span class="dot" aria-hidden="true"></span>{{ countdown.label }}</span
       ><span v-if="countdown.clock" class="countdown-clock">{{ countdown.clock }}</span>
     </p>
     <div class="cols">
       <div class="main">
-        <LiveSetupTest ref="soundcheck" studio />
+        <LiveSetupTest ref="soundcheck" studio :input-only="backOnAir" />
       </div>
       <!-- Phones keep Record and Go Live in a bar at the bottom, in thumb reach. -->
       <aside class="side go-live">
-        <label class="check">
+        <label v-if="!backOnAir" class="check">
           <input v-model="record" type="checkbox" />
           Record this show
         </label>
         <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
         <BaseButton class="block xl" :disabled="!canGoLive" :loading="goingLive" @click="goLive"
-          ><BoardIcon name="broadcast" :size="20" />Go Live</BaseButton
+          ><BoardIcon name="broadcast" :size="20" />{{
+            backOnAir ? 'Go back on air' : 'Go Live'
+          }}</BaseButton
         >
       </aside>
     </div>
@@ -178,6 +222,17 @@ onUnmounted(() => {
   font: 700 3rem/1 var(--font-family);
   font-variant-numeric: tabular-nums;
   color: #fff;
+}
+
+.notice {
+  margin: 0 0 var(--spacing-md);
+  padding: var(--spacing-md);
+  border: 1px solid #5a4416;
+  border-left: 4px solid var(--color-warning);
+  border-radius: var(--radius-xl);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde7b0;
+  font-weight: 600;
 }
 
 .go-live {

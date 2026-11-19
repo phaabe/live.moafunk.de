@@ -31,9 +31,12 @@ const mocks = vi.hoisted(() => ({
   setAudible: vi.fn(),
   closeFeed: vi.fn(),
   captureDevice: vi.fn(),
+  // GET /api/shows/:id: `on_air` opens Studio · Back on air.
+  showsGet: vi.fn(),
 }));
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }));
+vi.mock('@admin/api', () => ({ showsApi: { get: mocks.showsGet } }));
 vi.mock('@/config', () => ({
   config: { stream: { icecastTestUrl: 'https://test.example/test.mp3' } },
 }));
@@ -204,6 +207,7 @@ beforeEach(() => {
   mocks.setAudible.mockReset();
   mocks.closeFeed.mockReset();
   mocks.captureDevice.mockReset().mockResolvedValue(true);
+  mocks.showsGet.mockReset().mockResolvedValue({ on_air: false });
   vi.stubGlobal('navigator', {
     ...navigator,
     mediaDevices: { addEventListener: vi.fn(), removeEventListener: vi.fn() },
@@ -664,6 +668,53 @@ describe('Studio soundcheck', () => {
   });
 });
 
+describe('Studio · Back on air', () => {
+  const back = () => button('Go back on air')!;
+
+  it('goes back on air with only an input, no soundcheck', async () => {
+    mocks.showsGet.mockResolvedValue({ on_air: true });
+    await mount();
+    expect(mocks.showsGet).toHaveBeenCalledWith(7);
+    expect(text()).toContain('Still on air · no audio');
+    expect(notice()).toBe(
+      'Your show is still on air, but no audio arrives. Listeners hear silence.'
+    );
+    expect(button('Start test')).toBeUndefined();
+    expect(text()).not.toContain('Record this show');
+
+    mocks.capturing!.value = false;
+    await nextTick();
+    expect(back().disabled).toBe(true);
+    mocks.capturing!.value = true;
+    await nextTick();
+    await press('Go back on air');
+    expect(mocks.connect).toHaveBeenCalledWith(false, 7, false, true);
+  });
+
+  it('shows the normal soundcheck when the 5 minutes ran out', async () => {
+    mocks.showsGet.mockResolvedValueOnce({ on_air: true }).mockResolvedValue({ on_air: false });
+    await mount();
+    await press('Go back on air');
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(text()).toContain('Soundcheck · it is air time');
+    expect(goLive().disabled).toBe(true);
+  });
+
+  it('goes back on air when the server cannot say', async () => {
+    mocks.showsGet.mockResolvedValueOnce({ on_air: true }).mockRejectedValue(new Error('offline'));
+    await mount();
+    await press('Go back on air');
+    expect(mocks.connect).toHaveBeenCalledWith(false, 7, false, true);
+  });
+
+  it('opens the normal Studio when the server cannot say at the start', async () => {
+    mocks.showsGet.mockRejectedValue(new Error('offline'));
+    await mount();
+    expect(button('Go back on air')).toBeUndefined();
+    expect(goLive().disabled).toBe(true);
+  });
+});
+
 describe('flow', () => {
   /** The flow's example: "show starts in 18:42". */
   async function at1842() {
@@ -703,5 +754,11 @@ describe('flow', () => {
     await testMic(SECOND_MS);
     await at1842();
     await expectFlow('studio-problem', root);
+  });
+
+  it('Studio · Back on air matches the flow', async () => {
+    mocks.showsGet.mockResolvedValue({ on_air: true });
+    await mount();
+    await expectFlow('studio-backonair', root);
   });
 });

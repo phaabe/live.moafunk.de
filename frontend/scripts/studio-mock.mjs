@@ -7,7 +7,9 @@
 // - /ws/stream: counts the audio chunks the browser sends and reports them in
 //   each pong, like the backend.
 // - /test.mp3: the test broadcast as MP3 (through ffmpeg), like the relay.
-// - /mock/mode/<mode>: ok | no-chunks | no-return | no-cors
+// - /mock/mode/<mode>: ok | no-chunks | no-return | no-cors. It also ends the
+//   show, so each test starts off air.
+// - /mock/live: how many LIVE broadcasts are open.
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -20,6 +22,20 @@ const TAIL_CUT = /File ended prematurely|Error parsing Opus packet header/;
 let mode = 'ok';
 
 const user = { id: 1, username: 'local-host', role: 'host', has_show: true };
+
+// Like the backend: the show is on air while a LIVE broadcast is open, and
+// for 5 minutes after one dropped without "stop".
+const GRACE_MS = 300_000;
+const live = new Set();
+let droppedAt = -Infinity;
+const onAir = () => live.size > 0 || Date.now() - droppedAt < GRACE_MS;
+
+function endShow() {
+  const open = [...live];
+  live.clear();
+  droppedAt = -Infinity;
+  for (const ws of open) ws.terminate();
+}
 
 /** One live episode that started a minute ago, Berlin time. */
 function show() {
@@ -43,7 +59,7 @@ function show() {
     stream_mode: 'live',
     status: 'scheduled',
     artists: [],
-    on_air: false,
+    on_air: onAir(),
   };
 }
 
@@ -65,8 +81,13 @@ const server = createServer((req, res) => {
   if (path.startsWith('/mock/mode/')) {
     const wanted = path.slice('/mock/mode/'.length);
     if (MODES.includes(wanted)) mode = wanted;
+    endShow();
     console.log(`mode: ${mode}`);
     res.writeHead(200, { 'content-type': 'text/plain' }).end(`mode: ${mode}\n`);
+    return;
+  }
+  if (path === '/mock/live') {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(`{"live":${live.size}}`);
     return;
   }
   if (path === '/test.mp3') {
@@ -90,6 +111,8 @@ sockets.on('connection', (ws, req) => {
   let bytes = 0;
   let stream = null;
   let ended = false;
+  let stopped = false;
+  if (!test) live.add(ws);
   // The relay: WebM/Opus in, MP3 out to every listener. Started on the first
   // chunk: an ffmpeg that gets no data at all fails with "Error opening input".
   let relay = null;
@@ -136,12 +159,15 @@ sockets.on('connection', (ws, req) => {
     } else if (text.startsWith('stream:')) {
       stream = text.slice(7);
     } else if (text === 'stop') {
+      stopped = true;
       ws.close(1000);
     }
   });
   ws.on('close', () => {
     console.log(`broadcast ended: ${chunks} chunks / ${bytes} bytes received`);
     ended = true;
+    // endShow() already took it off air.
+    if (live.delete(ws)) droppedAt = stopped ? -Infinity : Date.now();
     relay?.stdin.end();
   });
 });

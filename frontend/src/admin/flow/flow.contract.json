@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 20,
+  "rev": 21,
   "screens": [
     {
       "id": "dashboard",
@@ -535,7 +535,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
       "hash": "e7a8a2aa",
-      "notesHash": "ef8dddf8",
+      "notesHash": "38d6a67d",
       "elements": [
         {
           "k": "back",
@@ -681,7 +681,7 @@
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/shows/42/announce/pre",
       "hash": "b3ca3db6",
-      "notesHash": "bc71dd6f",
+      "notesHash": "db3d3c75",
       "elements": [
         {
           "k": "back",
@@ -1440,7 +1440,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
       "hash": "06b0ad1a",
-      "notesHash": "5a47a38f",
+      "notesHash": "22c11896",
       "elements": [
         {
           "k": "h1",
@@ -1786,13 +1786,58 @@
       ]
     },
     {
+      "id": "studio-backonair",
+      "title": "Studio · Back on air",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "3186c3da",
+      "notesHash": "1c0357c7",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "Still on air · no audio"
+        },
+        {
+          "k": "notice",
+          "text": "Your show is still on air, but no audio arrives. Listeners hear silence."
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Select audio input ▾"
+        },
+        {
+          "k": "button",
+          "text": "Go back on air",
+          "to": "studio-onair",
+          "primary": true
+        }
+      ]
+    },
+    {
       "id": "wrapup",
       "title": "Wrap-up",
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
       "hash": "831e0603",
-      "notesHash": "3b0cc2d3",
+      "notesHash": "d4b89a34",
       "elements": [
         {
           "k": "back",
