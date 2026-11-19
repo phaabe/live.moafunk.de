@@ -16,7 +16,7 @@ import {
   useAutoBitrate,
   type UploadQualityMode,
 } from '@admin/composables';
-import { streamApi, recordingApi } from '@admin/api';
+import { recordingApi } from '@admin/api';
 import DbMeter from '@admin/components/DbMeter.vue';
 
 /**
@@ -66,19 +66,6 @@ async function pollRecording() {
 const recordingPoll = flow.recordStream.value ? setInterval(pollRecording, 3000) : null;
 if (recordingPoll) void pollRecording();
 
-// ─── Listeners now ──────────────────────────────────────────────────────────
-const listeners = ref<number | null>(null);
-async function pollListeners() {
-  try {
-    const metrics = await streamApi.metrics();
-    listeners.value = metrics.online ? metrics.total_listeners : null;
-  } catch {
-    listeners.value = null;
-  }
-}
-const listenerPoll = setInterval(pollListeners, 10000);
-void pollListeners();
-
 // ─── Connection ─────────────────────────────────────────────────────────────
 // The upload telemetry also drives the automatic quality step-down that the
 // old connection card ran, so a weak line still adapts.
@@ -119,7 +106,6 @@ async function endEpisode() {
 
 onUnmounted(() => {
   clearInterval(clock);
-  clearInterval(listenerPoll);
   if (recordingPoll) clearInterval(recordingPoll);
 });
 </script>
@@ -135,10 +121,6 @@ onUnmounted(() => {
     />
 
     <dl class="facts">
-      <div class="fact">
-        <dt>Listeners now</dt>
-        <dd>{{ listeners ?? '—' }}</dd>
-      </div>
       <div class="fact">
         <dt>Connection</dt>
         <dd :class="['connection', connection === 'stable' ? 'ok' : 'warn']">{{ connection }}</dd>
