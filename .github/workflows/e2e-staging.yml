@@ -1,7 +1,9 @@
 name: TEST - Chaos show on staging
 
 # One test show on https://staging.live.moafunk.de proves the stream, the
-# recording and the self-recovery after a dropout (e2e/). It runs every night,
+# recording and the self-recovery after a dropout (e2e/). A second job,
+# instagram-e2e, posts a host's announcements to the Instagram test account.
+# It runs every night,
 # by hand (a soak of `duration` extra minutes on air), and on each release PR
 # into main (e2e-release.yml calls it with release_sha). Not on PRs into
 # staging and not after a staging deploy: merges into staging never wait for it.
@@ -30,6 +32,18 @@ permissions:
 
 jobs:
   chaos-show:
+    # One leg per e2e job, one after the other: the chaos test show, then the
+    # Instagram announcements (own check on the dashboard, own job name).
+    name: ${{ matrix.job }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - job: chaos-show
+            project: chaos
+          - job: instagram-e2e
+            project: instagram
     runs-on: ubuntu-latest
     timeout-minutes: 150
     # Two runs never share staging, and a deploy (backend.yml, same group)
@@ -111,11 +125,20 @@ jobs:
           npm run typecheck
           npm run unit
 
-      - name: Run the chaos test show
+      - name: Run the e2e tests of this job
         working-directory: e2e
         env:
           STAGING_E2E_HOST_PASSWORD: ${{ steps.secrets.outputs.STAGING_E2E_HOST_PASSWORD }}
-        run: npx playwright test
+          PROJECT: ${{ matrix.project }}
+        run: npx playwright test --project "$PROJECT"
+
+      - name: Restore the announcement settings (also after a failure)
+        # The test restores them itself; this covers a timeout or a cancel.
+        if: always() && matrix.project == 'instagram' && env.STAGING_SSH_KEY != ''
+        run: |
+          ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o UserKnownHostsFile="$STAGING_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de "e2e-instagram off"
 
       - name: Remove this run's hold (also after a failure)
         if: always() && env.STAGING_SSH_KEY != ''
@@ -128,7 +151,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-staging-${{ github.run_id }}
+          name: e2e-staging-${{ matrix.project }}-${{ github.run_id }}
           path: |
             e2e/playwright-report/
             e2e/test-results/
