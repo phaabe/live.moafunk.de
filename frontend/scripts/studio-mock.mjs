@@ -10,10 +10,13 @@
 // - /mock/mode/<mode>: ok | no-chunks | no-return | no-cors
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { WebSocketServer } from 'ws';
 
 const PORT = Number(process.env.PORT ?? 8000);
 const MODES = ['ok', 'no-chunks', 'no-return', 'no-cors'];
+/** What ffmpeg says about a WebM stream that ends inside a block. */
+const TAIL_CUT = /File ended prematurely|Error parsing Opus packet header/;
 let mode = 'ok';
 
 const user = { id: 1, username: 'local-host', role: 'host', has_show: true };
@@ -86,21 +89,33 @@ sockets.on('connection', (ws, req) => {
   let chunks = 0;
   let bytes = 0;
   let stream = null;
-  // The relay: WebM/Opus in, MP3 out to every listener.
-  const relay = spawn(
-    'ffmpeg',
-    ['-loglevel', 'error', '-i', 'pipe:0', '-vn', '-c:a', 'libmp3lame', '-b:a', '128k'].concat([
-      '-f',
-      'mp3',
-      'pipe:1',
-    ]),
-    { stdio: ['pipe', 'pipe', 'inherit'] }
-  );
-  relay.stdin.on('error', () => {});
-  relay.stdout.on('data', (data) => {
-    if (mode === 'no-return' || mode === 'no-chunks') return;
-    for (const listener of listeners) listener.write(data);
-  });
+  let ended = false;
+  // The relay: WebM/Opus in, MP3 out to every listener. Started on the first
+  // chunk: an ffmpeg that gets no data at all fails with "Error opening input".
+  let relay = null;
+  function startRelay() {
+    const ffmpeg = spawn(
+      'ffmpeg',
+      ['-loglevel', 'error', '-i', 'pipe:0', '-vn', '-c:a', 'libmp3lame', '-b:a', '128k'].concat([
+        '-f',
+        'mp3',
+        'pipe:1',
+      ]),
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    ffmpeg.stdin.on('error', () => {});
+    ffmpeg.stdout.on('data', (data) => {
+      if (mode === 'no-return' || mode === 'no-chunks') return;
+      for (const listener of listeners) listener.write(data);
+    });
+    createInterface({ input: ffmpeg.stderr }).on('line', (line) => {
+      // The Studio closes the socket before the recorder's last chunk, so the
+      // broadcast can end inside a WebM block: expected, not an error.
+      if (ended && TAIL_CUT.test(line)) return;
+      console.error(line);
+    });
+    return ffmpeg;
+  }
   console.log(`${test ? 'test broadcast' : 'LIVE broadcast'} connected (mode ${mode})`);
   ws.send('connected');
 
@@ -110,6 +125,7 @@ sockets.on('connection', (ws, req) => {
       if (mode === 'no-chunks') return;
       chunks++;
       bytes += data.length;
+      relay ??= startRelay();
       relay.stdin.write(data);
       return;
     }
@@ -125,7 +141,8 @@ sockets.on('connection', (ws, req) => {
   });
   ws.on('close', () => {
     console.log(`broadcast ended: ${chunks} chunks / ${bytes} bytes received`);
-    relay.stdin.end();
+    ended = true;
+    relay?.stdin.end();
   });
 });
 
