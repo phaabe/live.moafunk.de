@@ -204,19 +204,22 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
   );
 
   // The e2e jobs of the calling run: every night, by hand, or on a release
-  // PR. A chaos run with extra minutes on air is a soak (L7).
+  // PR; the SoundCloud test also runs on its own (e2e-soundcloud.yml). A
+  // chaos run with extra minutes on air is a soak (L7).
   const finished = (name) =>
     current?.jobs.find(
       (j) => new RegExp(`(^|/ )${name}$`).test(j.name) && ['success', 'failure', 'timed_out'].includes(j.conclusion)
     );
   const chaos = finished('chaos-show');
   const instagram = finished('instagram-e2e');
+  const soundcloud = finished('soundcloud');
   const check = (job, name) => ({ name, status: statusOf(job.conclusion), seconds: seconds(job.started_at, job.completed_at) });
   const soak = Number(soakMinutes) > 0;
   // L6 has one check per e2e job; a job this run lacks keeps its last result.
   const e2e = [
     [chaos && !soak && chaos, 'chaos test show'],
     [instagram, 'Instagram announcements'],
+    [soundcloud, 'SoundCloud'],
   ];
   const l6 = e2e
     .map(([job, name]) => (job ? check(job, name) : prev('L6')?.checks.find((c) => c.name === name)))

@@ -221,6 +221,42 @@ test('the Instagram e2e job is its own check in L6 and keeps its result when a r
   assert.equal(l.run.url, igJob.html_url);
 });
 
+test('L6 shows the chaos test show and the SoundCloud test, each with its last result', () => {
+  const previous = buildSummary(base);
+  const soundcloudJob = job('soundcloud', [], { conclusion: 'success', started_at: at(0), completed_at: at(20) });
+  const soundcloudRun = {
+    ...base,
+    current: { run: run(7, '1111111'), jobs: [soundcloudJob, job('dashboard / dashboard', [], { conclusion: null })] },
+    previous,
+  };
+  const l = byId(buildSummary(soundcloudRun));
+  assert.deepEqual(l.L6.checks.map((c) => [c.name, c.status, c.seconds]), [
+    ['chaos test show', 'fail', 500],
+    ['SoundCloud', 'pass', 20],
+  ]);
+  assert.equal(l.L6.status, 'fail');
+  assert.equal(l.L6.run.url, soundcloudJob.html_url);
+  assert.deepEqual(l.L7, byId(previous).L7);
+
+  // The next chaos run keeps the SoundCloud result.
+  const next = byId(buildSummary({ ...base, previous: buildSummary(soundcloudRun) }));
+  assert.deepEqual(next.L6.checks.map((c) => [c.name, c.status]), [
+    ['chaos test show', 'fail'],
+    ['SoundCloud', 'pass'],
+  ]);
+  assert.equal(next.L6.run.url, chaosJob.html_url);
+
+  // A soak keeps both L6 checks as they were.
+  const soak = byId(buildSummary({ ...base, soakMinutes: '90', previous: buildSummary(soundcloudRun) }));
+  assert.deepEqual(soak.L6, l.L6);
+
+  // The first SoundCloud run on an empty dashboard: one check.
+  const failed = { ...soundcloudJob, conclusion: 'failure' };
+  const first = byId(buildSummary({ ...soundcloudRun, previous: null, current: { run: run(8, '2222222'), jobs: [failed] } }));
+  assert.deepEqual(first.L6.checks.map((c) => [c.name, c.status]), [['SoundCloud', 'fail']]);
+  assert.equal(first.L6.status, 'fail');
+});
+
 test('history keeps the last runs only', () => {
   let history = [];
   for (let i = 0; i < KEEP + 5; i++) history = appendHistory(history, { generated_at: String(i) });
@@ -230,7 +266,7 @@ test('history keeps the last runs only', () => {
   assert.equal(history.at(-1).generated_at, String(KEEP + 4));
 });
 
-test('the dashboard runs after staging deploys and after every chaos run, with read access only', () => {
+test('the dashboard runs after staging deploys and after every chaos and SoundCloud run, with read access only', () => {
   const dash = load('test-dashboard.yml');
   assert.deepEqual(Object.keys(dash.on), ['workflow_call']);
   assert.deepEqual(dash.permissions, { contents: 'read', actions: 'read' });
@@ -252,12 +288,13 @@ test('the dashboard runs after staging deploys and after every chaos run, with r
   for (const [file, id, needs] of [
     ['backend.yml', 'test-dashboard', 'deploy-staging'],
     ['e2e-staging.yml', 'dashboard', 'chaos-show'],
+    ['e2e-soundcloud.yml', 'dashboard', 'soundcloud'],
   ]) {
     const caller = load(file).jobs[id];
     assert.equal(caller.uses, './.github/workflows/test-dashboard.yml');
     assert.deepEqual(caller.needs, needs);
     assert.deepEqual(caller.permissions, { contents: 'read', actions: 'read' });
-    assert.match(caller.if, /!cancelled\(\)/, `${file}: also after a failed deploy or chaos test show`);
+    assert.match(caller.if, /!cancelled\(\)/, `${file}: also after a failed deploy or test run`);
   }
   // Nightly, by hand and on a release PR; the release soak goes to L7.
   const chaosDashboard = load('e2e-staging.yml').jobs.dashboard;
