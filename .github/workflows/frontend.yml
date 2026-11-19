@@ -1,13 +1,10 @@
 name: FRONTEND - Build and Deploy
 
+# Not on PRs: frontend-ci (epic-ci.yml) runs the lint, the tests and the
+# build there, without the SoundCloud secrets.
 on:
   push:
     branches: [main]
-    paths:
-      - frontend/**
-      - .github/workflows/frontend.yml
-  pull_request:
-    branches: [main, staging]
     paths:
       - frontend/**
       - .github/workflows/frontend.yml

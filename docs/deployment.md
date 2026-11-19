@@ -119,8 +119,8 @@ The staging box has no key for production, and the staging key has no access to 
 
 These need a repository admin (phaabe), see https://github.com/phaabe/live.moafunk.de/issues/890:
 
-- ruleset on `staging`: PR required, squash only, required checks `backend-ci`, `frontend-ci`, `stream-system`, `backend-build-tests` and `release-label`
-- ruleset on `main`: PR required, merge commit and squash allowed, the same four checks and `release-gate`, no direct push, no bypass
+- ruleset on `staging`: PR required, squash only, required checks `backend-ci`, `frontend-ci`, `stream-system` and `release-label`
+- ruleset on `main`: PR required, merge commit and squash allowed, required checks `backend-ci`, `frontend-ci`, `stream-system` and `release-gate`, no direct push, no bypass
 - required approvers on the environment `api-production`
 
 **Deploy production** can be started only after its workflow file is on `main`, so the first release that contains it also brings it.
