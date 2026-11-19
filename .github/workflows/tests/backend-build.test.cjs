@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -342,4 +342,64 @@ test('the workflow tests always run on main and staging PRs and pushes, once, wi
         .map(([id]) => `${file}:${id}`);
     });
   assert.deepEqual(runners, ['epic-ci.yml:frontend']);
+});
+
+// shortcut: only `**` and `*` are handled, enough for these path filters.
+function globToRegExp(glob) {
+  const body = glob
+    .split('**')
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*'))
+    .join('.*');
+  return new RegExp(`^${body}$`);
+}
+
+// Sources of the build-context COPY lines (not COPY --from=<stage>).
+function copySources(dockerfile) {
+  return dockerfile
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([cmd, ...args]) => cmd === 'COPY' && !args.some((arg) => arg.startsWith('--from=')))
+    .flatMap(([, ...args]) => args.filter((arg) => !arg.startsWith('--')).slice(0, -1));
+}
+
+// A source is missing when no paths entry matches it. For a directory, a file
+// deep inside it must match, so the whole tree is covered.
+function uncoveredSources(sources, paths, isDir) {
+  const patterns = paths.map(globToRegExp);
+  return sources.filter((source) => {
+    const sample = isDir(source) ? `${source}/zz-any/zz-file.ts` : source.replace(/\*/g, 'x');
+    return !patterns.some((pattern) => pattern.test(sample));
+  });
+}
+
+test('glob helper matches like the GitHub path filter for ** and *', () => {
+  assert.ok(globToRegExp('frontend/**').test('frontend/src/shared/api.ts'));
+  assert.ok(globToRegExp('frontend/package*.json').test('frontend/package-lock.json'));
+  assert.ok(!globToRegExp('frontend/package*.json').test('frontend/src/package.json'));
+  assert.ok(!globToRegExp('frontend/src/admin/**').test('frontend/src/shared/api.ts'));
+  assert.ok(!globToRegExp('backend/**').test('backend-old/x'));
+});
+
+test('a COPY source with no paths entry is reported', () => {
+  const dockerfile = 'COPY --chown=1 frontend ./\nCOPY --from=builder /app/x ./x\nCOPY a.txt b.txt ./\n';
+  assert.deepEqual(copySources(dockerfile), ['frontend', 'a.txt', 'b.txt']);
+  // The old filter: a change in frontend/src/shared built no image (issue 1017).
+  const oldPaths = ['backend/**', 'frontend/src/admin/**', 'frontend/package*.json'];
+  assert.deepEqual(uncoveredSources(['frontend'], oldPaths, () => true), ['frontend']);
+  assert.deepEqual(uncoveredSources(['frontend/package*.json'], oldPaths, () => false), []);
+});
+
+test('every file the backend Dockerfile copies triggers an image build', () => {
+  const root = path.resolve(__dirname, '../../..');
+  const sources = copySources(readFileSync(path.join(root, 'backend/Dockerfile'), 'utf8'));
+  assert.ok(sources.includes('frontend'), 'the admin build copies all of frontend/');
+  const isDir = (source) => {
+    try {
+      return statSync(path.join(root, source)).isDirectory();
+    } catch {
+      return false; // a glob such as frontend/package*.json
+    }
+  };
+  assert.deepEqual(uncoveredSources(sources, workflow.on.push.paths, isDir), []);
+  assert.ok(workflow.on.push.paths.includes('.github/workflows/backend.yml'));
 });
