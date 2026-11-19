@@ -469,6 +469,29 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
   }
 
   /**
+   * Stop the recorder and wait until its last chunk went to onData. The
+   * recorder sends that chunk after stop(), so a caller that closes the
+   * socket right away loses it. Waits at most `timeoutMs`.
+   */
+  async function stopRecordingAndFlush(timeoutMs = 1000): Promise<void> {
+    const recorder = mediaRecorder;
+    const stopped =
+      recorder && recorder.state !== 'inactive'
+        ? new Promise<void>((resolve) =>
+            recorder.addEventListener('stop', () => resolve(), { once: true })
+          )
+        : Promise.resolve();
+    stopRecording();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    });
+    // The last dataavailable comes before 'stop', so chunkReads holds its read.
+    await Promise.race([stopped.then(() => chunkReads), timeout]);
+    clearTimeout(timer);
+  }
+
+  /**
    * Restart the MediaRecorder to get a fresh WebM container with proper EBML header.
    * Use this when starting a file recording to ensure the WebM is valid from the start.
    * The stream continues uninterrupted.
@@ -534,6 +557,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
     resumeAudioContext,
     startRecording,
     stopRecording,
+    stopRecordingAndFlush,
     restartRecording,
     stopCapture,
   };

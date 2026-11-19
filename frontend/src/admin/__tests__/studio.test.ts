@@ -123,6 +123,7 @@ beforeEach(() => {
     setOnData: vi.fn(),
     startRecording: vi.fn(() => true),
     stopRecording: vi.fn(),
+    stopRecordingAndFlush: vi.fn(() => Promise.resolve()),
     stopCapture: vi.fn(),
     setStreamBitsPerSecond: vi.fn(),
     devices: ref([{ deviceId: 'mic-2', label: 'Focusrite USB' }]),
@@ -426,6 +427,23 @@ describe('On Air', () => {
     expect(mocks.stopStream).toHaveBeenCalledOnce();
     expect(mocks.capture.stopCapture).toHaveBeenCalledOnce();
     expect(mocks.push).toHaveBeenCalledWith({ path: '/shows/7', state: { episodeEnded: 7 } });
+  });
+
+  it('End Episode sends the last recorder chunk before it stops the stream', async () => {
+    let flush!: () => void;
+    (mocks.capture.stopRecordingAndFlush as Mock).mockReturnValue(
+      new Promise<void>((r) => (flush = r))
+    );
+    await mountOnAir();
+    await press('End Episode');
+    await press('End Episode');
+    expect(mocks.capture.stopRecordingAndFlush).toHaveBeenCalledOnce();
+    expect(mocks.stopStream).not.toHaveBeenCalled();
+
+    flush();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.stopStream).toHaveBeenCalledOnce();
+    expect(mocks.capture.stopCapture).toHaveBeenCalledOnce();
   });
 });
 

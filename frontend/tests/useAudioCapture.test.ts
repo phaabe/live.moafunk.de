@@ -68,6 +68,7 @@ class FakeMediaRecorder {
     | ((event: { data: { size: number; arrayBuffer: () => Promise<ArrayBuffer> } }) => void)
     | null = null;
   onerror: ((e: unknown) => void) | null = null;
+  stopListeners: (() => void)[] = [];
   constructor() {
     FakeMediaRecorder.instances.push(this);
   }
@@ -77,8 +78,16 @@ class FakeMediaRecorder {
   stop() {
     this.state = 'inactive';
   }
+  addEventListener(type: string, listener: () => void) {
+    if (type === 'stop') this.stopListeners.push(listener);
+  }
   emit(size: number) {
     this.ondataavailable?.({ data: { size, arrayBuffer: async () => new ArrayBuffer(size) } });
+  }
+  /** What a browser does some time after stop(): the last chunk, then 'stop'. */
+  finish(lastSize: number) {
+    this.emit(lastSize);
+    for (const listener of this.stopListeners) listener();
   }
 }
 
@@ -171,6 +180,45 @@ describe('useAudioCapture recording', () => {
       [2, false],
       [3, true],
     ]);
+  });
+
+  it('stopRecordingAndFlush waits until the last chunk went to onData', async () => {
+    const sent: number[] = [];
+    const capture = useAudioCapture({ onData: (data) => sent.push(data.byteLength) });
+    await capture.captureDevice('mic');
+    capture.startRecording();
+    const recorder = FakeMediaRecorder.instances[0];
+    recorder.emit(1);
+
+    let flushed = false;
+    const flush = capture.stopRecordingAndFlush().then(() => (flushed = true));
+    expect(capture.isRecording.value).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(flushed).toBe(false);
+
+    // The browser sends the last chunk after stop(), then fires 'stop'.
+    recorder.finish(2);
+    await flush;
+    expect(sent).toEqual([1, 2]);
+  });
+
+  it('stopRecordingAndFlush gives up after the timeout when the recorder never stops', async () => {
+    const capture = useAudioCapture({ onData: vi.fn() });
+    await capture.captureDevice('mic');
+    capture.startRecording();
+
+    let flushed = false;
+    void capture.stopRecordingAndFlush(500).then(() => (flushed = true));
+    await vi.advanceTimersByTimeAsync(499);
+    expect(flushed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(flushed).toBe(true);
+  });
+
+  it('stopRecordingAndFlush returns at once without a recorder', async () => {
+    const capture = useAudioCapture({ onData: vi.fn() });
+    await capture.stopRecordingAndFlush();
+    expect(capture.isRecording.value).toBe(false);
   });
 
   it('does not report a recorder that was stopped in time', async () => {
