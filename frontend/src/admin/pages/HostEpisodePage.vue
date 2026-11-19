@@ -114,6 +114,9 @@ const pill = computed<Pill>(() => {
       text: length ? `Recording ready · ${setLength(length)}` : 'Recording ready',
     };
   }
+  // While on air (or still saving) an older version is not the final one, and
+  // the server refuses Publish.
+  if (s.on_air) return { state: 'processing', text: 'Recording processing…' };
   const r = s.latest_recording;
   if (r?.status === 'failed') {
     return {
@@ -129,7 +132,7 @@ const pill = computed<Pill>(() => {
         : 'Recording ready',
     };
   }
-  if (r || s.on_air) return { state: 'processing', text: 'Recording processing…' };
+  if (r) return { state: 'processing', text: 'Recording processing…' };
   if (s.live_recorded === false) {
     return { state: 'failed', text: 'No usable recording · Record this show was off.' };
   }
