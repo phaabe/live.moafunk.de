@@ -36,25 +36,12 @@ ice_port       = int_of_string(default=8010, environment.get("ICECAST_PORT"))
 # 256 kbps MP3 preserves it transparently. ~2x listener egress vs the old 128k.
 enc = %mp3(bitrate=256, samplerate=44100, stereo=true)
 
-# --- preview chain: harbor "test" → Icecast /test.mp3 -------------------------
+# --- public chain: harbor "live" → Icecast /live.mp3 --------------------------
 # mksafe serves silence (never 404) until the broadcaster connects.
 # NOTE: do NOT add blank.strip on a source wrapped in mksafe (CPU-spike breakups,
 # liquidsoap #3439/#3474). Dead-air auto-fill would be a fallback to a `single`
 # track, not blank.strip+mksafe — left out until a fallback asset exists.
-test_src = mksafe(input.harbor("test", port=harbor_port, password=harbor_test_pw))
-output.icecast(
-  enc,
-  host=ice_host, port=ice_port, password=ice_source_pw,
-  mount="/test.mp3",
-  name="Moafunk (test)",
-  description="Broadcaster preview mount",
-  genre="radio",
-  public=false,
-  test_src
-)
-
-# --- public chain: harbor "live" → Icecast /live.mp3 --------------------------
-live_src = mksafe(input.harbor("live", port=harbor_port, password=harbor_live_pw))
+live_in = input.harbor("live", port=harbor_port, password=harbor_live_pw)
 output.icecast(
   enc,
   host=ice_host, port=ice_port, password=ice_source_pw,
@@ -63,5 +50,30 @@ output.icecast(
   description="Moafunk live radio",
   genre="radio",
   public=true,
-  live_src
+  mksafe(live_in)
 )
+
+# --- preview chain: harbor "test" → Icecast /test.mp3 -------------------------
+# Started only after the live input has its harbor mount. Each chain runs in
+# its own clock thread, and Liquidsoap's harbor opens a port without a lock
+# (harbor.ml, get_handler). Two inputs that start at the same moment can both
+# open port 8005: one fails with EADDRINUSE, and its mount (/test or /live) is
+# missing until the next restart. Seen on staging 2026-11-19.
+preview_started = ref(false)
+def start_preview() =
+  if not preview_started() then
+    preview_started := true
+    test_src = mksafe(input.harbor("test", port=harbor_port, password=harbor_test_pw))
+    ignore(output.icecast(
+      enc,
+      host=ice_host, port=ice_port, password=ice_source_pw,
+      mount="/test.mp3",
+      name="Moafunk (test)",
+      description="Broadcaster preview mount",
+      genre="radio",
+      public=false,
+      test_src
+    ))
+  end
+end
+live_in.on_wake_up(synchronous=false, start_preview)
