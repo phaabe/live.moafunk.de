@@ -135,6 +135,34 @@ test('a release run first checks that staging runs exactly the release image', (
   }
 });
 
+test('a release run checks the staging image again after the tests', () => {
+  const names = job.steps.map((step) => step.name ?? step.uses);
+  const start = job.steps.find((step) => step.name === 'Check staging runs the release commit');
+  const end = job.steps.find((step) => step.name === 'Check staging still runs the release commit');
+  // Right after the tests, so the run's own hold is still there.
+  assert.equal(names.indexOf(end.name), names.indexOf('Run the e2e tests of this job') + 1);
+  assert.ok(names.indexOf(end.name) < names.indexOf('Remove this run\'s hold (also after a failure)'));
+  // Same script as the start check (YAML anchor), so the two cannot drift.
+  assert.equal(end.run, start.run);
+  assert.deepEqual(end.env, start.env);
+  // Skipped on nightly and manual runs (no release_sha) and after a cancel.
+  assert.equal(end.if, "${{ !cancelled() && inputs.release_sha != '' && env.STAGING_SSH_KEY != '' }}");
+
+  const { run, done } = runner({ ssh: '#!/bin/bash\nprintf \'%b\\n\' "$FAKE_STATUS"\n' });
+  const check = (tag) =>
+    run(end.run, { STAGING_SSH_KEY: '/k', STAGING_KNOWN_HOSTS: '/h', RELEASE_SHA: sha, FAKE_STATUS: `tag: ${tag}` });
+  try {
+    assert.match(check('sha-abc1234'), /Staging runs the release: sha-abc1234/);
+    // Someone redeployed staging during the run.
+    assert.throws(
+      () => check('sha-fff0000'),
+      (err) => /staging runs sha-fff0000, not the release sha-abc1234/.test(err.stdout.toString())
+    );
+  } finally {
+    done();
+  }
+});
+
 test('a release PR into main runs the chaos test show as a 90-minute soak of its head commit', () => {
   assert.deepEqual(release.on, { pull_request: { branches: ['main'] } });
   assert.deepEqual(release.permissions, { contents: 'read' });
@@ -151,8 +179,9 @@ test('a release PR into main runs the chaos test show as a 90-minute soak of its
 test('a green chaos test show re-runs a failed release-gate, and nothing else', () => {
   const rerun = release.jobs['rerun-release-gate'];
   assert.equal(rerun.needs, 'e2e-staging');
-  assert.equal(rerun.if, undefined, 'only after a green chaos test show');
-  assert.deepEqual(rerun.permissions, { actions: 'write' });
+  // Runs also when the instagram-e2e leg failed; reads the chaos-show check itself.
+  assert.equal(rerun.if, "${{ !cancelled() && needs.e2e-staging.result != 'skipped' }}");
+  assert.deepEqual(rerun.permissions, { actions: 'write', checks: 'read' });
   assert.doesNotMatch(JSON.stringify(rerun), /secrets\.|bitwarden|\bssh\b/i);
   assert.equal(rerun.steps.length, 1);
   const step = rerun.steps[0];
@@ -162,13 +191,18 @@ test('a green chaos test show re-runs a failed release-gate, and nothing else', 
     HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
   });
 
-  // Fake gh: answers the runs list from FAKE_RUN (one run or none), records a re-run.
+  // Fake gh: answers the chaos-show check runs from FAKE_CHECKS, the runs list
+  // from FAKE_RUN (one run or none), records a re-run.
   const { dir, run, done } = runner({
     gh: `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2).join(' ');
 const repo = 'repos/phaabe/live.moafunk.de/actions';
-if (args === 'api -X GET ' + repo + '/workflows/release-gate.yml/runs -f head_sha=' + process.env.HEAD_SHA + ' -f event=pull_request -f per_page=1') {
+const checks = 'api -X GET repos/phaabe/live.moafunk.de/commits/' + process.env.HEAD_SHA + '/check-runs -f check_name=e2e-staging / chaos-show';
+if (args === checks) {
+  const runs = JSON.parse(process.env.FAKE_CHECKS);
+  console.log(JSON.stringify({ total_count: runs.length, check_runs: runs }));
+} else if (args === 'api -X GET ' + repo + '/workflows/release-gate.yml/runs -f head_sha=' + process.env.HEAD_SHA + ' -f event=pull_request -f per_page=1') {
   const runs = process.env.FAKE_RUN ? [JSON.parse(process.env.FAKE_RUN)] : [];
   console.log(JSON.stringify({ total_count: runs.length, workflow_runs: runs }));
 } else if (args === 'api -X POST ' + repo + '/runs/77/rerun') {
@@ -176,11 +210,22 @@ if (args === 'api -X GET ' + repo + '/workflows/release-gate.yml/runs -f head_sh
 } else process.exit(9);
 `,
   });
-  const gate = (status, conclusion) =>
+  const check = (conclusion, started_at, id) => ({
+    status: 'completed',
+    conclusion,
+    started_at,
+    id,
+    html_url: `https://github.com/phaabe/live.moafunk.de/actions/runs/1/job/${id}`,
+    app: { slug: 'github-actions' },
+  });
+  const t1 = '2026-11-18T10:00:00Z';
+  const t2 = '2026-11-18T12:00:00Z';
+  const gate = (status, conclusion, checks = [check('success', t1, 1)]) =>
     run(step.run, {
       OUT: dir,
       REPO: 'phaabe/live.moafunk.de',
       HEAD_SHA: sha,
+      FAKE_CHECKS: JSON.stringify(checks),
       FAKE_RUN: status ? JSON.stringify({ id: 77, status, conclusion }) : '',
     });
   const rerunDone = () => {
@@ -197,6 +242,15 @@ if (args === 'api -X GET ' + repo + '/workflows/release-gate.yml/runs -f head_sh
     assert.match(gate('in_progress', null), /release-gate is in_progress/);
     assert.equal(rerunDone(), false);
     assert.throws(() => gate(null), (err) => /no release-gate run on abc1234d{33}/.test(err.stdout.toString()));
+    // A red or missing chaos show: no re-run; the job stays green, the red check shows it.
+    const notGreen = /not green, release-gate stays as it is/;
+    assert.match(gate('completed', 'failure', []), notGreen);
+    assert.match(gate('completed', 'failure', [check('failure', t1, 1)]), notGreen);
+    // Only the newest run counts: an old green does not hide a newer red.
+    assert.match(gate('completed', 'failure', [check('success', t1, 1), check('failure', t2, 2)]), notGreen);
+    assert.equal(rerunDone(), false);
+    gate('completed', 'failure', [check('success', t2, 2), check('failure', t1, 1)]);
+    assert.equal(rerunDone(), true);
   } finally {
     done();
   }

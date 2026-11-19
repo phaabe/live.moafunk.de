@@ -81,9 +81,22 @@ console.log(JSON.stringify({ total_count: runs.length, check_runs: runs }));
     const releaseRun = `${Object.keys(release.jobs)[0]} / ${Object.keys(chaos.jobs)[0]}`;
     assert.equal(releaseRun, 'e2e-staging / chaos-show');
     assert.match(gate('release/r1', { runs: { [releaseRun]: [runOf('success')] } }), /passed on c{40}/);
-    // A re-run after a failure: one of the runs is green.
-    gate('release/r2', { runs: { [releaseRun]: [runOf('failure'), runOf('success')] } });
-    const noGreen = /no green chaos test show on the release commit c{40} yet/;
+    const noGreen = /the newest chaos test show on the release commit c{40} is not green/;
+    // Only the newest run counts (by start time, then id), in any API order.
+    const at = (conclusion, started_at, id) => runOf(conclusion, { started_at, id });
+    const t1 = '2026-11-18T10:00:00Z';
+    const t2 = '2026-11-18T12:00:00Z';
+    gate('release/r2', { runs: { [releaseRun]: [at('success', t2, 2), at('failure', t1, 1)] } });
+    gate('release/r2', { runs: { [releaseRun]: [at('failure', t1, 1), at('success', t2, 2)] } });
+    refuses('release/r2', { runs: { [releaseRun]: [at('success', t1, 1), at('failure', t2, 2)] } }, noGreen);
+    refuses('release/r2', { runs: { [releaseRun]: [at('failure', t2, 2), at('success', t1, 1)] } }, noGreen);
+    refuses('release/r2', { runs: { [releaseRun]: [at('success', t1, 1), at(null, t2, 2)] } }, noGreen);
+    refuses('release/r2', { runs: { [releaseRun]: [at('failure', t1, 2), at('success', t1, 1)] } }, noGreen);
+    gate('release/r2', { runs: { [releaseRun]: [at('success', t1, 2), at('failure', t1, 1)] } });
+    // A newer run by another app does not hide the newest github-actions run.
+    gate('release/r2', {
+      runs: { [releaseRun]: [at('success', t1, 1), runOf('failure', { started_at: t2, id: 2, app: { slug: 'someone-else' } })] },
+    });
     refuses('release/r1', {}, noGreen);
     refuses('release/r1', { runs: { [releaseRun]: [runOf('failure')] } }, noGreen);
     refuses('release/r1', { runs: { [releaseRun]: [runOf(null)] } }, noGreen);

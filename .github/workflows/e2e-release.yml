@@ -2,7 +2,7 @@ name: TEST - Release soak
 
 # The release proof (docs/deployment.md, release step 4): the chaos test show
 # as a 90-minute soak on staging, which must run exactly the image of the
-# release commit (e2e-staging.yml checks it first). Its check
+# release commit (e2e-staging.yml checks it before and after the test). Its check
 # "e2e-staging / chaos-show" on the head commit is what release-gate needs.
 # Only for release/* heads; hotfix PRs skip it. Works from the release that
 # brings this file: PR runs use the PR's workflow files.
@@ -30,10 +30,14 @@ jobs:
   rerun-release-gate:
     # release-gate runs on PR events only, so it failed when the PR opened.
     # A green chaos test show re-runs its newest run on the head commit.
+    # The gate needs only the chaos-show leg, so a red instagram-e2e leg must
+    # not block it: run after any finished call and read that leg's check.
     needs: e2e-staging
+    if: ${{ !cancelled() && needs.e2e-staging.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       actions: write
+      checks: read
     steps:
       - name: Re-run release-gate
         env:
@@ -42,6 +46,15 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          # Same newest-run rule as release-gate.yml.
+          name="e2e-staging / chaos-show"
+          found="$(gh api -X GET "repos/$REPO/commits/$HEAD_SHA/check-runs" -f check_name="$name" |
+            jq -r '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at, .id) | last // empty
+              | "\(.conclusion // .status) \(.html_url)"')"
+          echo "$name on $HEAD_SHA: ${found:-no run}"
+          # Exit 0: the red chaos-show check and the red gate already show the
+          # problem; a red job here would only add noise.
+          [[ "$found" == "success "* ]] || { echo "The chaos test show is not green, release-gate stays as it is"; exit 0; }
           run="$(gh api -X GET "repos/$REPO/actions/workflows/release-gate.yml/runs" \
             -f head_sha="$HEAD_SHA" -f event=pull_request -f per_page=1 |
             jq -r '.workflow_runs[0] // empty | "\(.id) \(.status) \(.conclusion)"')"
