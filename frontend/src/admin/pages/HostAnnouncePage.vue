@@ -39,6 +39,8 @@ const list = ref<Announcement[]>([]);
 const times = ref<AnnouncementTime[]>([]);
 const error = ref<string | null>(null);
 const saving = ref(false);
+/** Until load() is done its values would overwrite what the host typed. */
+const loading = ref(true);
 const paused = ref(false);
 const needsApproval = ref(false);
 
@@ -80,11 +82,13 @@ const valid = computed(
     caption.value.trim() !== '' &&
     (image.value !== 'upload' || !!imageKey.value) &&
     !uploading.value &&
+    !loading.value &&
     (!needsTime.value || when.value !== '')
 );
 
 async function load() {
   error.value = null;
+  loading.value = true;
   try {
     const [loaded, announcements, offered, meta] = await Promise.all([
       showsApi.get(id.value),
@@ -116,6 +120,8 @@ async function load() {
           : (free.find((t) => t.default) ?? free[0])?.scheduled_at) ?? '');
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the announcement';
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -206,7 +212,7 @@ async function schedule() {
       <div class="cols">
         <section class="board-card main">
           <div class="board-card-body">
-            <fieldset class="group" :disabled="sent">
+            <fieldset class="group" :disabled="sent || loading">
               <h2 class="board-card-title"><BoardIcon name="image" />Image</h2>
               <div class="choices">
                 <label class="check"
@@ -263,7 +269,7 @@ async function schedule() {
               >
             </fieldset>
 
-            <fieldset class="group" :disabled="sent">
+            <fieldset class="group" :disabled="sent || loading">
               <h2 class="board-card-title"><BoardIcon name="calendar" />When</h2>
               <div v-if="times.length || slot === 'pre'" class="choices">
                 <label v-for="t in times" :key="t.scheduled_at" class="check"

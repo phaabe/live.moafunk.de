@@ -126,6 +126,8 @@ let uploaded: FormData | undefined;
 let soundcloud: Response;
 let meta: { paused: boolean; needs_approval: boolean };
 let photoUpload: Response | undefined;
+/** Holds GET /api/series/brunchtime until it resolves. */
+let seriesGate: Promise<void> | undefined;
 
 beforeEach(() => {
   current = episode();
@@ -136,6 +138,7 @@ beforeEach(() => {
   uploaded = undefined;
   meta = { paused: false, needs_approval: false };
   photoUpload = undefined;
+  seriesGate = undefined;
   soundcloud = Response.json({
     success: true,
     track_id: '555',
@@ -160,8 +163,10 @@ beforeEach(() => {
         current = { ...current, episode_status: 'finished' };
         return Response.json({ id: 42, status: 'finished', status_label: 'Finished' });
       }
-      if (url === '/api/series/brunchtime')
+      if (url === '/api/series/brunchtime') {
+        await seriesGate;
         return Response.json({ ...BRUNCHTIME_SERIES, episodes: [] });
+      }
       if (url === '/api/series/brunchtime/slots')
         return Response.json({
           slots: [{ date: '2099-01-11', start_time: '12:00', end_time: '14:00' }],
@@ -836,6 +841,22 @@ describe('Pre-announcement composer', () => {
         scheduled_at: FR_2310_1800,
       },
     });
+  });
+
+  it('keeps the fields locked until its data is loaded, so nothing typed is lost', async () => {
+    let release!: () => void;
+    seriesGate = new Promise((resolve) => (release = resolve));
+    await mount('host', 1, undefined, '/shows/42/announce/pre');
+    await vi.waitFor(() => expect(text()).toContain('Schedule post'));
+    const fieldsets = [...root.querySelectorAll('fieldset')];
+    expect(fieldsets.length).toBeGreaterThan(0);
+    expect(fieldsets.every((f) => f.disabled)).toBe(true);
+    expect(button('Schedule post').disabled).toBe(true);
+
+    release();
+    await settle();
+    expect(fieldsets.some((f) => f.disabled)).toBe(false);
+    expect(field('Caption').value).toBe('Guest mix with Juno Park.');
   });
 
   it('refuses a headline over 18 and a caption over 600 characters', async () => {
