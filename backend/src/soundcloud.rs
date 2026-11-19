@@ -502,6 +502,13 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         }
     }
 
+    // Staging only: make room on the test account first. An account over its
+    // upload time refuses every upload, so cleaning up after an upload would
+    // never run again. Best effort.
+    if let Err(e) = cleanup_old_tracks(state, &access_token).await {
+        tracing::error!(error = %e, "Failed to delete old tracks before the upload");
+    }
+
     let resp = client
         .post(format!("{}/tracks", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
@@ -569,11 +576,6 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         );
     }
 
-    // Staging only: drop the test account's old tracks. Best-effort too.
-    if let Err(e) = cleanup_old_tracks(state, &access_token).await {
-        tracing::error!(error = %e, "Uploaded track but failed to delete old tracks");
-    }
-
     Ok(SoundCloudUploadResult {
         success: true,
         track_id: Some(track_id),
@@ -608,11 +610,39 @@ async fn delete_track(client: &reqwest::Client, access_token: &str, track_id: &s
 #[derive(Debug, Deserialize)]
 struct Me {
     permalink: String,
+    quota: Option<Quota>,
+}
+
+/// Upload time of the account. A Free account has 2 hours.
+#[derive(Debug, Deserialize)]
+struct Quota {
+    #[serde(default)]
+    unlimited_upload_quota: bool,
+    upload_seconds_left: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TrackSummary {
     id: i64,
+    /// Length in milliseconds.
+    duration: Option<i64>,
+}
+
+/// How many of `tracks` (newest first) stay before an upload; the rest is
+/// deleted. The upload adds one track, so `keep - 1` stay. Then the oldest go
+/// until the account has upload time left: SoundCloud refuses an upload (401)
+/// while `upload_seconds_left` is 0 or less, and takes any length above 0.
+fn tracks_to_keep(tracks: &[TrackSummary], keep: usize, seconds_left: Option<i64>) -> usize {
+    let seconds = |t: &TrackSummary| t.duration.unwrap_or(0) / 1000;
+    let mut kept = (keep.max(1) - 1).min(tracks.len());
+    if let Some(mut left) = seconds_left {
+        left += tracks[kept..].iter().map(seconds).sum::<i64>();
+        while left <= 0 && kept > 0 {
+            kept -= 1;
+            left += seconds(&tracks[kept]);
+        }
+    }
+    kept
 }
 
 /// The items of a list answer. SoundCloud wraps a paginated list in
@@ -632,6 +662,11 @@ const STATION_ACCOUNT: &str = "radio-moafunk";
 
 /// Permalink (the account name in the profile URL) of the token's account.
 async fn me_permalink(access_token: &str) -> Result<String> {
+    Ok(fetch_me(access_token).await?.permalink)
+}
+
+/// The token's account (`GET /me`).
+async fn fetch_me(access_token: &str) -> Result<Me> {
     let resp = reqwest::Client::new()
         .get(format!("{}/me", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
@@ -646,11 +681,9 @@ async fn me_permalink(access_token: &str) -> Result<String> {
             status, body
         )));
     }
-    let me: Me = resp
-        .json()
+    resp.json()
         .await
-        .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud /me: {}", e)))?;
-    Ok(me.permalink)
+        .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud /me: {}", e)))
 }
 
 /// Refuse a token of another account than `SOUNDCLOUD_ACCOUNT` (when set).
@@ -668,9 +701,11 @@ async fn check_account(state: &AppState, access_token: &str) -> Result<()> {
     )))
 }
 
-/// Staging only: keep the newest `SOUNDCLOUD_KEEP_TRACKS` tracks of the test
-/// account and delete the rest. Needs APP_ENV=staging, SOUNDCLOUD_ACCOUNT and a
-/// token of that account, so it can never delete station tracks.
+/// Staging only, before an upload: make room on the test account. With the
+/// new track, the newest `SOUNDCLOUD_KEEP_TRACKS` tracks stay; more go while
+/// the account has no upload time left (see `tracks_to_keep`). Needs
+/// APP_ENV=staging, SOUNDCLOUD_ACCOUNT and a token of that account, so it can
+/// never delete station tracks.
 async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> {
     let Some(keep) = state.config.soundcloud_keep_tracks else {
         return Ok(());
@@ -691,7 +726,17 @@ async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> 
             "SOUNDCLOUD_ACCOUNT is the station account '{STATION_ACCOUNT}'; no track deleted"
         )));
     }
-    check_account(state, access_token).await?;
+    let me = fetch_me(access_token).await?;
+    if !me.permalink.eq_ignore_ascii_case(account) {
+        return Err(AppError::Internal(format!(
+            "The token belongs to '{}', not to '{account}'; no track deleted",
+            me.permalink
+        )));
+    }
+    let seconds_left = me
+        .quota
+        .filter(|q| !q.unlimited_upload_quota)
+        .and_then(|q| q.upload_seconds_left);
 
     let client = reqwest::Client::new();
     let resp = client
@@ -709,7 +754,7 @@ async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> 
             status, body
         )));
     }
-    // shortcut: one page of 200 tracks; enough while cleanup runs after every upload.
+    // shortcut: one page of 200 tracks; enough while cleanup runs before every upload.
     let body = resp
         .text()
         .await
@@ -718,7 +763,8 @@ async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> 
         .map_err(|e| AppError::Internal(format!("Failed to parse tracks: {}", e)))?;
     // Newest first: SoundCloud track ids grow over time.
     tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
-    for track in tracks.iter().skip(keep.max(1)) {
+    let kept = tracks_to_keep(&tracks, keep, seconds_left);
+    for track in &tracks[kept..] {
         delete_track(&client, access_token, &track.id.to_string()).await?;
         tracing::info!(
             track_id = track.id,
