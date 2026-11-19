@@ -1071,7 +1071,13 @@ pub(crate) async fn concat_segments(seg_dir: &Path, output: &Path) -> Result<(),
             "-i",
         ])
         .arg(&list_path)
-        .args(["-c", "copy", "-f", "mpegts"])
+        .args(["-c", "copy"])
+        // The concat demuxer reads each segment about 60 ms too short, so the
+        // segments' timestamps overlap and the joined length is too short
+        // (0.6 % at 10 s segments). Number the timestamps by AAC frame
+        // (1024 samples each) instead.
+        .args(["-bsf:a", "setts=ts=N*1024/(SR*TB)"])
+        .args(["-f", "mpegts"])
         .arg(output)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1361,6 +1367,31 @@ mod tests {
         let err = concat_segments(dir.path(), &out).await.unwrap_err();
         assert!(matches!(err, StreamError::RecordingError(_)));
         assert!(!out.exists());
+    }
+
+    /// Needs ffmpeg, as the recorder does. Each join used to lose about 58 ms
+    /// of the stored length: a 90-minute show read 31 s too short.
+    #[tokio::test]
+    async fn a_joined_recording_is_as_long_as_its_audio() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 20 s of audio in 20 segments, written as the recorder writes them.
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "sine=frequency=440:duration=20"])
+            .args(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"])
+            .args(["-f", "segment", "-segment_time", "1"])
+            .args(["-segment_format", "mpegts", "-reset_timestamps", "1"])
+            .arg(dir.path().join("seg_%05d.ts"))
+            .status()
+            .await
+            .expect("spawn ffmpeg");
+        assert!(status.success());
+        let out = dir.path().join("raw.webm");
+
+        concat_segments(dir.path(), &out).await.unwrap();
+
+        let ms = crate::audio::get_duration(&out).await.unwrap();
+        assert!(ms.abs_diff(20_000) < 150, "joined length is {ms} ms");
     }
 
     #[test]
