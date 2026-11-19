@@ -1,0 +1,97 @@
+name: TEST - SoundCloud on staging
+
+# Checks every night that https://staging.live.moafunk.de is connected to the
+# SoundCloud test account and that a host can send a recording there
+# (e2e/tests/soundcloud.spec.ts). The chaos show (e2e-staging.yml) runs the
+# same test inside its full suite; this job shows a SoundCloud failure on its
+# own. It runs at 02:00 UTC, before the chaos show at 02:30. Schedule and
+# workflow_dispatch work only once this file is on main.
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  soundcloud:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The test deletes every leftover e2e-* Show when it starts, so it must
+    # never run during a chaos show; a deploy also waits for it.
+    concurrency:
+      group: staging-box
+      cancel-in-progress: false
+    env:
+      E2E_RUN: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The nightly run tests staging with the staging branch's test.
+          ref: ${{ github.event_name == 'schedule' && 'staging' || '' }}
+
+      - name: Get the staging CI key and the e2e host login from Bitwarden
+        id: secrets
+        uses: bitwarden/sm-action@v2
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            ba04c03e-d633-40a6-a49f-b50301724312 > STAGING_DEPLOY_SSH_KEY
+            4a6cfb10-f992-43de-94f6-b50600a71958 > STAGING_E2E_HOST_PASSWORD
+
+      - name: Write the CI key and the pinned host key
+        env:
+          DEPLOY_KEY: ${{ steps.secrets.outputs.STAGING_DEPLOY_SSH_KEY }}
+          # Same host key as the deploy in backend.yml.
+          HOST_KEY: staging.live.moafunk.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHw+kqXgS8FmHdVOw2gaNMRzTQ+0SjGKYvsuqu8HyFQp
+        run: |
+          set -euo pipefail
+          (umask 077 && printf '%s\n' "$DEPLOY_KEY" >"$RUNNER_TEMP/staging-key")
+          printf '%s\n' "$HOST_KEY" >"$RUNNER_TEMP/staging-known-hosts"
+          {
+            echo "STAGING_SSH_KEY=$RUNNER_TEMP/staging-key"
+            echo "STAGING_KNOWN_HOSTS=$RUNNER_TEMP/staging-known-hosts"
+          } >>"$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install ffmpeg
+        # The test setup makes the uploaded set with it.
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg
+
+      - name: Install the test and Chromium
+        working-directory: e2e
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run the SoundCloud test
+        working-directory: e2e
+        env:
+          STAGING_E2E_HOST_PASSWORD: ${{ steps.secrets.outputs.STAGING_E2E_HOST_PASSWORD }}
+        run: npx playwright test tests/soundcloud.spec.ts
+
+      - name: Remove this run's hold (also after a failure)
+        if: always() && env.STAGING_SSH_KEY != ''
+        run: |
+          ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o UserKnownHostsFile="$STAGING_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de "e2e-unhold $E2E_RUN"
+
+      - name: Keep the trace and screenshots of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-soundcloud-${{ github.run_id }}
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 14
