@@ -155,8 +155,6 @@ fn make_show_collage_sync(
     let canvas: u32 = tile * 2;
     let mut out = image::RgbaImage::from_pixel(canvas, canvas, Rgba([0, 0, 0, 255]));
 
-    let fonts = fonts;
-
     for idx in 0..4usize {
         let x0 = if idx % 2 == 0 { 0 } else { tile };
         let y0 = if idx < 2 { 0 } else { tile };
@@ -849,6 +847,7 @@ fn draw_entity_name(
 ///
 /// Each name is drawn centered in its quadrant. Positions are fixed:
 ///   tile 0: top-left, tile 1: top-right, tile 2: bottom-left, tile 3: bottom-right
+#[allow(clippy::too_many_arguments)]
 fn draw_tile_names(
     img: &mut RgbaImage,
     names: &[String],

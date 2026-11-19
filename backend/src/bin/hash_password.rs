@@ -19,11 +19,11 @@ fn main() {
     match argon2.hash_password(password.as_bytes(), &salt) {
         Ok(hash) => {
             println!("Password hash:");
-            println!("{}", hash.to_string());
+            println!("{}", hash);
             println!();
             println!("Add this to your .env file (single quotes are required —");
             println!("the hash contains '$' which dotenvy would otherwise expand):");
-            println!("SUPERADMIN_PASSWORD_HASH='{}'", hash.to_string());
+            println!("SUPERADMIN_PASSWORD_HASH='{}'", hash);
         }
         Err(e) => {
             eprintln!("Error hashing password: {}", e);

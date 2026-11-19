@@ -70,12 +70,10 @@ pub async fn stream_ws_handler(
         .and_then(|v| v.to_str().ok())
         .and_then(|cookies| {
             cookies.split(';').find_map(|cookie| {
-                let cookie = cookie.trim();
-                if cookie.starts_with("session=") {
-                    Some(cookie[8..].to_string())
-                } else {
-                    None
-                }
+                cookie
+                    .trim()
+                    .strip_prefix("session=")
+                    .map(|token| token.to_string())
             })
         });
 
@@ -248,9 +246,7 @@ async fn handle_stream_socket(
             }
             Err(e) => {
                 tracing::error!("Failed to start stream: {}", e);
-                let _ = sender
-                    .send(Message::Text(format!("error: {}", e).into()))
-                    .await;
+                let _ = sender.send(Message::Text(format!("error: {}", e))).await;
                 let _ = sender.close().await;
                 return;
             }
@@ -443,7 +439,7 @@ async fn handle_stream_socket(
                             "offset": offset,
                         });
                         if sender
-                            .send(Message::Text(format!("pong:{}", payload).into()))
+                            .send(Message::Text(format!("pong:{}", payload)))
                             .await
                             .is_err()
                         {
@@ -545,12 +541,10 @@ pub async fn stream_stop(
         .and_then(|v| v.to_str().ok())
         .and_then(|cookies| {
             cookies.split(';').find_map(|cookie| {
-                let cookie = cookie.trim();
-                if cookie.starts_with("session=") {
-                    Some(cookie[8..].to_string())
-                } else {
-                    None
-                }
+                cookie
+                    .trim()
+                    .strip_prefix("session=")
+                    .map(|token| token.to_string())
             })
         });
 

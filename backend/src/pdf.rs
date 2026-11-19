@@ -67,7 +67,7 @@ fn wrap_text_lines(text: &str, max_chars: usize) -> Vec<String> {
 pub fn build_recording_infos_pdf(show: &models::Show, artists: &[models::Artist]) -> Vec<u8> {
     let mut lines: Vec<(u32, String)> = Vec::new();
 
-    lines.push((16, format!("UNHEARD – Recording Infos")));
+    lines.push((16, "UNHEARD – Recording Infos".to_string()));
     lines.push((12, format!("Show: {}", show.title.trim())));
     lines.push((12, format!("Date: {}", show.date.trim())));
     lines.push((12, String::new()));
@@ -140,16 +140,13 @@ pub fn build_recording_infos_pdf(show: &models::Show, artists: &[models::Artist]
     let content_bytes = content.into_bytes();
 
     // Assemble PDF objects.
-    let mut objects: Vec<Vec<u8>> = Vec::new();
-
-    objects.push(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj".to_vec());
-    objects.push(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj".to_vec());
-    objects.push(
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj".to_vec(),
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj".to_vec(),
         b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj"
             .to_vec(),
-    );
-    objects
-        .push(b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj".to_vec());
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj".to_vec(),
+    ];
 
     let stream_obj = {
         let mut s = Vec::new();
@@ -203,7 +200,7 @@ pub fn generate_artist_pdf(
 ) -> Result<Vec<u8>, crate::AppError> {
     let mut lines: Vec<(u32, String)> = Vec::new();
 
-    lines.push((16, format!("UNHEARD – Artist Info")));
+    lines.push((16, "UNHEARD – Artist Info".to_string()));
     lines.push((12, String::new()));
 
     lines.push((14, format!("Artist: {}", artist.name.trim())));
@@ -290,15 +287,13 @@ pub fn generate_artist_pdf(
     let content_bytes = content.into_bytes();
 
     // Assemble PDF objects
-    let mut objects: Vec<Vec<u8>> = Vec::new();
-    objects.push(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj".to_vec());
-    objects.push(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj".to_vec());
-    objects.push(
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj".to_vec(),
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj".to_vec(),
         b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj"
             .to_vec(),
-    );
-    objects
-        .push(b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj".to_vec());
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj".to_vec(),
+    ];
 
     let stream_obj = {
         let mut s = Vec::new();
