@@ -28,6 +28,8 @@ fi
 case "$*" in
   *127.0.0.1:8000/health*) echo '{"app":"unheard-backend","status":"healthy"}' ;;
   *status-json.xsl*) echo "${FAKE_MOUNTS-"listenurl /live.mp3 /test.mp3"}" ;;
+  *"-X PUT"*:8005/test) echo "${FAKE_HARBOR_TEST:-401}" ;;
+  *"-X PUT"*:8005/live) echo "${FAKE_HARBOR_LIVE:-401}" ;;
   *) echo ok ;;
 esac
 EOF
@@ -119,6 +121,37 @@ if [[ "$code" == 1 && "$(posts)" == 1 && "$out" == *"SOMETHING IS WRONG"* && "$o
   pass "a failed check is posted and exits 1"
 else
   fail "a failed check is posted and exits 1: exit $code, $(posts) posts, $out"
+fi
+
+rm -rf "$TMP/state"
+: >"$FAKE/posts"
+out="$(check 2026-11-16T18:05:00+01:00)"
+if [[ "$out" == *"✅ Liquidsoap takes audio on /test and /live"* ]]; then
+  pass "both harbor mounts answer 401: ok"
+else
+  fail "both harbor mounts answer 401: ok ($out)"
+fi
+rm -rf "$TMP/state"
+: >"$FAKE/posts"
+set +e
+out="$(check 2026-11-16T18:05:00+01:00 FAKE_HARBOR_TEST=404)"
+code=$?
+set -e
+if [[ "$code" == 1 && "$out" == *"❌ Liquidsoap takes no audio on /test (HTTP 404): run systemctl restart liquidsoap"* && "$out" != *"/live (HTTP"* ]]; then
+  pass "a missing harbor mount fails the check, though Icecast and the container look fine"
+else
+  fail "a missing harbor mount fails the check: exit $code, $out"
+fi
+rm -rf "$TMP/state"
+: >"$FAKE/posts"
+set +e
+out="$(check 2026-11-16T18:05:00+01:00 FAKE_HARBOR_LIVE=000)"
+code=$?
+set -e
+if [[ "$code" == 1 && "$out" == *"❌ Liquidsoap takes no audio on /live (HTTP 000)"* ]]; then
+  pass "a harbor that does not answer fails the check"
+else
+  fail "a harbor that does not answer fails the check: exit $code, $out"
 fi
 
 rm -rf "$TMP/state"
