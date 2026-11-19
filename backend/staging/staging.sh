@@ -11,7 +11,9 @@
 #   staging.sh check-r2             the R2 token reaches the staging buckets and no production bucket
 #   staging.sh up sha-<commit> [sha256:<digest>]
 #                                   check, then pull and start that image with the stream chain
-#   staging.sh hold <reason>        pause CI deploys (for release checks); staging.sh unhold resumes them
+#   staging.sh hold <reason>        pause CI deploys (for release checks); staging.sh unhold resumes them.
+#                                   During a hold, up and down refuse, and hold and unhold refuse a test run's
+#                                   hold; STAGING_IGNORE_HOLD=1 overrides
 #   staging.sh ci-deploy            forced command of the CI key: "status" or "deploy sha-<commit> sha256:<digest>"
 #                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap, e2e-cut,
 #                                   e2e-recordings, e2e-cleanup; for the Instagram test: e2e-instagram on <HH:MM>|off)
@@ -475,7 +477,6 @@ cmd_up() {
   # One deploy at a time (CI and a person can meet here).
   exec 9>"$STAGING_DIR/.deploy.lock"
   flock -w 900 9 || die "another deploy is still running"
-  [[ ! -f "$STAGING_DIR/hold" ]] || echo "note: staging is on hold ($(cat "$STAGING_DIR/hold")); deploying by hand anyway"
   check_all_env
   check_r2
   STAGING_TAG="$tag"
@@ -515,6 +516,20 @@ cmd_hold() {
   printf '%s | %s | %s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$(cat "$STAGING_DIR/tag" 2>/dev/null || echo none)" "$reason" \
     >"$STAGING_DIR/hold"
   echo "staging is on hold: CI deploys are skipped until staging.sh unhold"
+}
+
+# A command by hand that would break a held staging: a release candidate under
+# test, or a running chaos test show. With "e2e" only the hold of a test run
+# counts (hold, unhold). STAGING_IGNORE_HOLD=1 overrides.
+guard_hold() { # command [e2e]
+  local hold
+  hold="$(cat "$STAGING_DIR/hold" 2>/dev/null)" || return 0
+  [[ "${2:-}" != e2e || "$hold" == *" | e2e run "* ]] || return 0
+  if [[ "${STAGING_IGNORE_HOLD:-}" == 1 ]]; then
+    echo "note: staging is on hold ($hold); STAGING_IGNORE_HOLD=1, so $1 goes on"
+    return 0
+  fi
+  die "staging is on hold ($hold): $1 refused. Ask who set the hold, or override with STAGING_IGNORE_HOLD=1."
 }
 
 cmd_unhold() {
@@ -902,18 +917,30 @@ main() {
       echo "env ok"
       ;;
     check-r2) check_r2 ;;
-    up) cmd_up "${1:-}" "${2:-}" ;;
-    hold) cmd_hold "$@" ;;
-    unhold) cmd_unhold ;;
+    up)
+      guard_hold up
+      cmd_up "${1:-}" "${2:-}"
+      ;;
+    hold)
+      guard_hold hold e2e
+      cmd_hold "$@"
+      ;;
+    unhold)
+      guard_hold unhold e2e
+      cmd_unhold
+      ;;
     ci-deploy) cmd_ci_deploy ;;
     install-ci-key) cmd_install_ci_key ;;
-    down) cmd_down ;;
+    down)
+      guard_hold down
+      cmd_down
+      ;;
     status) cmd_status ;;
     export-db) cmd_export_db ;;
     seed-db) cmd_seed_db "${1:-}" ;;
     users) staging_users "$STAGING_DIR/data/unheard.db" ;;
     *)
-      sed -n '7,23p' "$0" >&2
+      sed -n '7,25p' "$0" >&2
       exit 2
       ;;
   esac
