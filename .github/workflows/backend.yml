@@ -126,13 +126,17 @@ jobs:
     needs: build-and-push
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
+    # The wait for a test's hold (deploy step) plus the deploy.
+    timeout-minutes: 180
     permissions:
       contents: read
-    # Shared with the chaos test show (e2e-staging.yml, nightly and on release
-    # PRs): a deploy waits for a running test instead of landing mid-show or
-    # being skipped by its hold. The deploy itself never starts the test.
+    # Not the test's group staging-box: GitHub keeps one waiting job per group
+    # and cancels the older one, so a shared group dropped deploys and tests
+    # (https://github.com/phaabe/live.moafunk.de/issues/1014). Here a newer
+    # deploy replaces only an older waiting deploy. A running test holds the
+    # box; the deploy step waits for that hold to end.
     concurrency:
-      group: staging-box
+      group: staging-deploy
       cancel-in-progress: false
     environment:
       name: staging
@@ -155,24 +159,40 @@ jobs:
           DIGEST: ${{ needs.build-and-push.outputs.digest }}
           # Pinned host key of the staging server; a different key stops the deploy.
           HOST_KEY: staging.live.moafunk.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHw+kqXgS8FmHdVOw2gaNMRzTQ+0SjGKYvsuqu8HyFQp
+          # A test holds the box for at most its time limit (e2e-staging.yml: 150 min).
+          WAIT_MINUTES: '160'
+          RETRY_SECONDS: '60'
         run: |
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "missing image digest" >&2; exit 1; }
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "missing source commit" >&2; exit 1; }
           key="$RUNNER_TEMP/staging-deploy-key"
           known="$RUNNER_TEMP/staging-known-hosts"
-          trap 'rm -f "$key" "$known"' EXIT
+          out="$RUNNER_TEMP/staging-deploy-output"
+          trap 'rm -f "$key" "$known" "$out"' EXIT
           (umask 077 && printf '%s\n' "$DEPLOY_KEY" >"$key")
           printf '%s\n' "$HOST_KEY" >"$known"
           tag="sha-${SOURCE_SHA:0:7}"
-          code=0
-          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
-            -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes \
-            root@staging.live.moafunk.de "deploy $tag $DIGEST" || code=$?
-          if [[ "$code" == 3 ]]; then
-            echo "::notice title=Staging is on hold::$tag was built but not deployed. Run staging.sh unhold on the box to resume."
-            exit 0
-          fi
+          deadline=$((SECONDS + WAIT_MINUTES * 60))
+          while true; do
+            code=0
+            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+              -o UserKnownHostsFile="$known" -o StrictHostKeyChecking=yes \
+              root@staging.live.moafunk.de "deploy $tag $DIGEST" 2>&1 | tee "$out" || code=$?
+            [[ "$code" == 3 ]] || break
+            # A test's hold ("... | e2e run <id>") ends with the test: wait.
+            # Any other hold is a person's release check: skip this image.
+            if ! grep -q '| e2e run [0-9]' "$out"; then
+              echo "::notice title=Staging is on hold::$tag was built but not deployed. Run staging.sh unhold on the box to resume."
+              exit 0
+            fi
+            if ((SECONDS >= deadline)); then
+              echo "::error title=Staging stays on a test hold::$tag not deployed after $WAIT_MINUTES min. If no test runs, remove the hold with staging.sh unhold on the box."
+              exit 1
+            fi
+            echo "A test holds staging; next try in $RETRY_SECONDS s."
+            sleep "$RETRY_SECONDS"
+          done
           [[ "$code" == 0 ]] || exit "$code"
 
   test-dashboard:

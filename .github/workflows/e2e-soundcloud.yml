@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # The test deletes every leftover e2e-* Show when it starts, so it must
-    # never run during a chaos show; a deploy also waits for it.
+    # never run during a chaos show; a deploy waits for its hold.
     concurrency:
       group: staging-box
       cancel-in-progress: false
@@ -53,6 +53,15 @@ jobs:
             echo "STAGING_SSH_KEY=$RUNNER_TEMP/staging-key"
             echo "STAGING_KNOWN_HOSTS=$RUNNER_TEMP/staging-known-hosts"
           } >>"$GITHUB_ENV"
+
+      - name: Hold staging for this run
+        # Before the install, so a deploy that started just before has ended
+        # when the test starts. A deploy (backend.yml) waits for this hold.
+        # A hold someone else set stays theirs.
+        run: |
+          ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            -o UserKnownHostsFile="$STAGING_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de "e2e-hold $E2E_RUN"
 
       - uses: actions/setup-node@v4
         with:

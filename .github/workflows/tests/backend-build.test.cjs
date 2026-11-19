@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, readdirSync, readFileSync, rmSync } = require('node:fs');
+const { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -184,7 +184,7 @@ test('image summary records the exact image and source without contacting a host
 test('staging deploy reaches only the staging box, with the exact image built', () => {
   assert.equal(staging.needs, 'build-and-push');
   assert.deepEqual(staging.permissions, { contents: 'read' });
-  assert.deepEqual(staging.concurrency, { group: 'staging-box', 'cancel-in-progress': false });
+  assert.deepEqual(staging.concurrency, { group: 'staging-deploy', 'cancel-in-progress': false });
   assert.deepEqual(staging.environment, { name: 'staging', url: 'https://staging.live.moafunk.de' });
   const text = JSON.stringify(staging);
   assert.deepEqual(
@@ -207,22 +207,56 @@ test('staging deploy reaches only the staging box, with the exact image built', 
   assert.match(deploy.run, /root@staging\.live\.moafunk\.de "deploy \$tag \$DIGEST"/);
 });
 
-test('no staging deploy starts the chaos test show, but a deploy waits for a running one', () => {
-  const chaos = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-staging.yml'), 'utf8'));
+test('no staging deploy starts the chaos test show, and deploys never share the tests\' concurrency group', () => {
+  const load = (file) => yaml.load(readFileSync(path.resolve(__dirname, '..', file), 'utf8'));
   assert.equal(staging.outputs, undefined, 'nothing reads a deploy result any more');
   for (const job of Object.values(workflow.jobs)) {
     assert.notEqual(job.uses, './.github/workflows/e2e-staging.yml');
   }
-  assert.deepEqual(chaos.jobs['chaos-show'].concurrency, staging.concurrency);
+  // GitHub keeps one waiting job per group and cancels the older one, so a
+  // shared group drops deploys and test runs (issue 1014). A test holds the
+  // box instead, and the deploy waits for that hold.
+  const tests = [load('e2e-staging.yml').jobs['chaos-show'], load('e2e-soundcloud.yml').jobs.soundcloud];
+  for (const job of tests) {
+    assert.notEqual(job.concurrency.group, staging.concurrency.group);
+    const names = job.steps.map((step) => step.name ?? step.uses);
+    const hold = job.steps.find((step) => step.name === 'Hold staging for this run');
+    assert.match(hold.run, /StrictHostKeyChecking=yes/);
+    assert.match(hold.run, /"e2e-hold \$E2E_RUN"/);
+    assert.ok(names.indexOf(hold.name) < names.indexOf('actions/setup-node@v4'), 'hold before the install');
+  }
+  assert.ok(staging['timeout-minutes'] > Number(staging.steps.find((step) => step.id === 'deploy').env.WAIT_MINUTES));
+  assert.ok(Number(staging.steps.find((step) => step.id === 'deploy').env.WAIT_MINUTES) > tests[0]['timeout-minutes']);
 });
 
-test('staging deploy step passes tag and digest, treats a hold as success, fails otherwise', () => {
+test('staging deploy step passes tag and digest, waits for a test hold, skips a release hold, fails otherwise', () => {
   const deploy = staging.steps.find((step) => step.id === 'deploy');
   const dir = mkdtempSync(path.join(tmpdir(), 'staging-deploy-'));
   const bin = path.join(dir, 'bin');
   execFileSync('/bin/mkdir', [bin]);
-  // Fake ssh: records its last argument and exits with FAKE_EXIT.
-  execFileSync('/bin/bash', ['-c', `printf '%s\\n' '#!/bin/bash' 'echo "\${@: -1}" >"$RUNNER_TEMP/ssh-request"' 'exit "\${FAKE_EXIT:-0}"' >"${bin}/ssh" && chmod +x "${bin}/ssh"`]);
+  // Fake ssh: records its last argument, counts its calls, prints FAKE_OUT and
+  // exits with FAKE_EXIT; from call FAKE_OK_FROM on it exits 0.
+  writeFileSync(
+    path.join(bin, 'ssh'),
+    [
+      '#!/bin/bash',
+      'echo "${@: -1}" >"$RUNNER_TEMP/ssh-request"',
+      'echo x >>"$RUNNER_TEMP/ssh-calls"',
+      'calls=$(wc -l <"$RUNNER_TEMP/ssh-calls")',
+      '[[ -n "${FAKE_OK_FROM:-}" && "$calls" -ge "$FAKE_OK_FROM" ]] && { echo deployed; exit 0; }',
+      'printf "%b\\n" "${FAKE_OUT:-}"',
+      'exit "${FAKE_EXIT:-0}"',
+    ].join('\n')
+  );
+  chmodSync(path.join(bin, 'ssh'), 0o755);
+  const calls = () => {
+    const file = path.join(dir, 'ssh-calls');
+    const n = readFileSync(file, 'utf8').trim().split('\n').length;
+    rmSync(file);
+    return n;
+  };
+  const testHold = 'staging is on hold (2026-11-19T10:00Z | sha-1111111 | e2e run 44507662622); sha-abc1234 was not deployed';
+  const releaseHold = 'staging is on hold (2026-11-19T10:00Z | sha-1111111 | r2 release checks); sha-abc1234 was not deployed';
   const digest = `sha256:${'c'.repeat(64)}`;
   const source = `abc1234${'d'.repeat(33)}`;
   const run = (env) =>
@@ -234,6 +268,8 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
         HOST_KEY: 'staging.live.moafunk.de ssh-ed25519 AAAA',
         SOURCE_SHA: source,
         DIGEST: digest,
+        WAIT_MINUTES: '5',
+        RETRY_SECONDS: '0',
         ...env,
       },
       stdio: 'pipe',
@@ -241,8 +277,24 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
   try {
     run({});
     assert.equal(readFileSync(path.join(dir, 'ssh-request'), 'utf8'), `deploy sha-abc1234 ${digest}\n`);
-    assert.match(run({ FAKE_EXIT: '3' }), /Staging is on hold/);
+    assert.equal(calls(), 1);
+    // A person's release hold: skip this image, green, with a notice.
+    assert.match(run({ FAKE_EXIT: '3', FAKE_OUT: releaseHold }), /Staging is on hold/);
+    assert.equal(calls(), 1);
+    // A test's hold: try again until the test has removed it, then deploy.
+    const waited = run({ FAKE_EXIT: '3', FAKE_OUT: testHold, FAKE_OK_FROM: '3' });
+    assert.match(waited, /A test holds staging/);
+    assert.match(waited, /deployed/);
+    assert.doesNotMatch(waited, /Staging is on hold/);
+    assert.equal(calls(), 3);
+    // A test's hold that does not end: red, not a silent skip.
+    assert.throws(
+      () => run({ FAKE_EXIT: '3', FAKE_OUT: testHold, WAIT_MINUTES: '0' }),
+      (error) => /Staging stays on a test hold/.test(error.stdout.toString())
+    );
+    assert.equal(calls(), 1);
     assert.throws(() => run({ FAKE_EXIT: '1' }));
+    calls();
     rmSync(path.join(dir, 'ssh-request'));
     assert.throws(() => run({ DIGEST: '' }));
     assert.throws(() => readFileSync(path.join(dir, 'ssh-request')), 'no ssh without a digest');

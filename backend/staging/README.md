@@ -88,7 +88,8 @@ Staging keeps running (also after a reboot) until `down`.
 
 - It runs every night, and on each release PR into `main` as a 90-minute soak (`e2e-release.yml` calls `e2e-staging.yml`). The release run first checks that staging runs exactly the image of the release commit (`staging.sh status` through the CI key), and stops if not. By hand: **Actions → TEST - Chaos show on staging → Run workflow**, with `duration` for a soak (nightly and by hand work once the workflow is on `main`).
 - It does not run on PRs into `staging` or after a staging deploy, so a merge never waits for it. PRs that change `e2e/` run only its typecheck and unit tests (`e2e-unit.yml`).
-- A deploy waits while a test runs (both use the concurrency group `staging-box`). The test also holds staging, and removes only its own hold, so a release hold stays.
+- A deploy waits while a test runs. The test holds staging from its start and removes only its own hold, so a release hold stays. The deploy retries every minute while a test holds staging (at most 160 minutes, then it fails). On a release hold it skips the image with a notice.
+- Test runs share the concurrency group `staging-box`, so they never overlap. Deploys use their own group `staging-deploy`: GitHub keeps only one waiting job per group and cancels the older one, so a shared group used to drop deploys and test runs.
 - The test deletes its episodes and Show. Their files stay in the staging buckets (no API removes them).
 - A failed run keeps the Playwright trace and screenshots as a workflow artifact for 14 days.
 
