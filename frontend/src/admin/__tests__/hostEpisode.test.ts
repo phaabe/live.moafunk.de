@@ -649,6 +649,24 @@ describe('Wrap-up and Done', () => {
     expect(button('Publish').disabled).toBe(true);
   });
 
+  it.each([
+    [
+      'an older failed version',
+      { id: 1, version: 'v1', status: 'failed' as const, error_message: 'recovered' },
+    ],
+    [
+      'an older saved version',
+      { id: 1, version: 'v1', status: 'raw' as const, download_url: 'https://r2.example/v1.mp3' },
+    ],
+  ])('waits while on air, also with %s', async (_name, latest_recording) => {
+    // A restart mid-show leaves an older version; the server refuses Publish
+    // until the current session is saved.
+    current = episode({ on_air: true, latest_recording });
+    await mount('host', 1, { episodeEnded: 42 });
+    expect(text()).toContain('Recording processing…');
+    expect(button('Publish').disabled).toBe(true);
+  });
+
   it('counts the recording wait from an early End Episode', async () => {
     // Ended 20 min ago, long before its scheduled end; no recording was saved.
     current = episode({
