@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const { mkdtempSync, readdirSync, readFileSync, rmSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -252,38 +252,32 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
   }
 });
 
-test('regression CI always checks main and staging PRs and pushes without publishing or production access', () => {
-  const ci = yaml.load(readFileSync(path.resolve(__dirname, '../backend-build-tests.yml'), 'utf8'));
-  assert.deepEqual(ci.on, {
-    pull_request: { branches: ['main', 'staging'] },
-    push: { branches: ['main', 'staging'] },
-  });
+test('the workflow tests always run on main and staging PRs and pushes, once, without publishing or production access', () => {
+  const ci = yaml.load(readFileSync(path.resolve(__dirname, '../epic-ci.yml'), 'utf8'));
+  for (const event of ['pull_request', 'push']) {
+    assert.equal(ci.on[event].paths, undefined, `${event}: no path filter`);
+    for (const branch of ['main', 'staging']) {
+      assert.ok(ci.on[event].branches.includes(branch), `${event} on ${branch}`);
+    }
+  }
   assert.deepEqual(ci.permissions, { contents: 'read' });
-  assert.deepEqual(Object.keys(ci.jobs), ['backend-build-tests']);
-  const job = ci.jobs['backend-build-tests'];
+  const job = ci.jobs.frontend;
+  assert.equal(job.name, 'frontend-ci');
   assert.equal(job.if, undefined);
+  assert.equal(job.needs, undefined);
   assert.equal(job.permissions, undefined);
   assert.equal(job.environment, undefined);
   assert.equal(job.uses, undefined);
-  assert.deepEqual(
-    job.steps.filter((step) => step.uses).map((step) => step.uses),
-    ['actions/checkout@v4', 'actions/setup-node@v4']
-  );
   assert.equal(job.steps[0].with['persist-credentials'], false);
-  assert.deepEqual(
-    job.steps.filter((step) => step.run).map((step) => [step.run, step['working-directory']]),
-    [
-      ['npm ci --ignore-scripts', 'frontend'],
-      ['node --test .github/workflows/tests/backend-build.test.cjs', undefined],
-      ['node --test .github/workflows/tests/deploy-production.test.cjs', undefined],
-    ]
-  );
-  for (const step of job.steps) {
-    assert.equal(step.if, undefined);
-    assert.equal(step['continue-on-error'], undefined);
-  }
-  assert.doesNotMatch(
-    JSON.stringify(ci),
-    /secrets\.|bitwarden|docker\/|\bssh\b|\bscp\b|packages|id-token|upload-artifact/i
-  );
+  const tests = job.steps.find((step) => step.run === 'node --test ../.github/workflows/tests/*.test.cjs');
+  assert.ok(tests, 'frontend-ci runs every workflow test');
+  // A failed lint does not skip them; only a failed install does.
+  assert.equal(tests.if, "${{ !cancelled() && steps.dependencies.outcome == 'success' }}");
+  assert.equal(tests['continue-on-error'], undefined);
+  assert.doesNotMatch(JSON.stringify(job), /secrets\.|bitwarden|docker\/|\bssh\b|\bscp\b|packages|id-token/i);
+  // No other workflow runs them a second time.
+  const runners = readdirSync(path.resolve(__dirname, '..'))
+    .filter((file) => /\.ya?ml$/.test(file))
+    .filter((file) => /workflows\/tests\//.test(readFileSync(path.resolve(__dirname, '..', file), 'utf8')));
+  assert.deepEqual(runners, ['epic-ci.yml']);
 });

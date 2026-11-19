@@ -37,10 +37,12 @@ any API replacement, list legacy runs across all refs, drain or cancel them,
 and reconcile their remote processes. Cancelling Actions does not prove that
 an SSH child exited. Until this is verified, deployment exclusion is unproven.
 
-`backend-build-tests.yml` runs on every PR to and push on `main`. It has only
-`contents: read`, no production secrets and no image build or publish step.
-It checks job selection, permissions, deployment removal, independent
-concurrency, preserved mirrors and digest reporting. Run locally:
+The tests in `.github/workflows/tests/` run in the `frontend-ci` job of
+`epic-ci.yml`, on every PR to and push on `main` and `staging`. The job has
+only `contents: read`, no production secrets and no image build or publish
+step. `backend-build.test.cjs` checks job selection, permissions, deployment
+removal, independent concurrency, preserved mirrors and digest reporting.
+Run locally:
 
 ```sh
 npm ci --ignore-scripts --prefix frontend
