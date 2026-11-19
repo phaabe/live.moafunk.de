@@ -238,11 +238,13 @@ jobs:
         env:
           HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
           HETZNER_SSH_KEY: ${{ steps.bitwarden-secrets.outputs.HETZNER_SSH_KEY }}
+          # Pinned host key of the production server; a different key stops the deploy.
+          PROD_HOST_KEY: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL76nCwfiKTFFhXYlN68sxFT4jd0m9IAQpmbLFyL/nru
         run: |
           mkdir -p ~/.ssh
           echo "$HETZNER_SSH_KEY" > ~/.ssh/hetzner.pem
           chmod 600 ~/.ssh/hetzner.pem
-          ssh-keyscan -H "$HETZNER_IP" >> ~/.ssh/known_hosts 2>/dev/null
+          printf '%s %s\n' "$HETZNER_IP" "$PROD_HOST_KEY" > ~/.ssh/prod_known_hosts
 
       - name: Deploy observability stack
         env:
@@ -252,6 +254,7 @@ jobs:
         run: |
           IP="$IP" \
           SSH_KEY=~/.ssh/hetzner.pem \
+          SSH_KNOWN_HOSTS=~/.ssh/prod_known_hosts \
           TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
           TELEGRAM_ADMIN_CHAT_ID="$TELEGRAM_ADMIN_CHAT_ID" \
           ./backend/scripts/deploy_monitoring.sh
