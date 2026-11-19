@@ -105,7 +105,7 @@ For the test, the CI key may also run, on the box:
 | `e2e-cut <1-60>` | resets the caller's own connections to ports 80 and 443 for that many seconds (`iptables`, removed by a `systemd-run` timer) |
 | `e2e-recordings <show>` | status, length and archive flag of a test episode's recordings (read-only) |
 | `e2e-cleanup` | deletes the `e2e-…` Shows of `e2e-host` (and of `staging-host`, from older runs) that have no episodes left (no API route deletes a Show) |
-| `e2e-free-slot <date> <HH:MM> <HH:MM>` | moves every show that overlaps this slot to the day before, so the test can always book it. This also moves copies of production shows and your own test shows. Only for today or a day next to it |
+| `e2e-free-slot <date> <HH:MM> <HH:MM>` | moves every show that overlaps this slot to the day before, so the test can always book it. This also moves copies of production shows and your own test shows. Only from yesterday to two days ahead |
 
 Run it from your Mac (needs the CI key in `~/.config/moafunk-staging/ci_deploy_ed25519`, ffmpeg and Node):
 

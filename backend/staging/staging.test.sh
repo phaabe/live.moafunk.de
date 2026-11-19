@@ -522,7 +522,16 @@ if [[ "$(ci "e2e-free-slot $today 19:30 21:59")" == "slot $today 19:30-21:59: fr
 else
   fail "e2e-free-slot on a free slot changes nothing"
 fi
-expect_refused "e2e-free-slot refuses a day far from today" "is not today or a day next to it" ci "e2e-free-slot 2026-01-01 19:30 21:59"
+expect_refused "e2e-free-slot refuses a day far from today" "is not between yesterday and two days ahead" ci "e2e-free-slot 2026-01-01 19:30 21:59"
+# A test books a day ahead in Berlin time: up to two days ahead of the box's UTC date.
+ahead="$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=2))")"
+if [[ "$(ci "e2e-free-slot $ahead 00:03 01:03")" == "slot $ahead 00:03-01:03: free" ]]; then
+  pass "e2e-free-slot takes a slot two days ahead"
+else
+  fail "e2e-free-slot takes a slot two days ahead"
+fi
+far="$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=3))")"
+expect_refused "e2e-free-slot refuses three days ahead" "is not between yesterday and two days ahead" ci "e2e-free-slot $far 00:03 01:03"
 expect_refused "e2e-free-slot needs a date and two times" "the CI key may only run" ci "e2e-free-slot $today 25:00 26:00"
 expect_refused "e2e-free-slot cannot add commands" "the CI key may only run" ci "e2e-free-slot $today 19:30 21:59; reboot"
 
