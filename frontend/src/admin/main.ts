@@ -3,6 +3,7 @@ import { createPinia } from 'pinia';
 import App from './App.vue';
 import router from './router';
 import { staticHostRedirectTarget } from './staticHostRedirect';
+import { reloadOnStaleChunk } from './chunkReload';
 import '@shared/styles/tokens.css';
 import './styles/admin.css';
 import './styles/host.css';
@@ -14,6 +15,8 @@ const redirect = staticHostRedirectTarget(window.location);
 if (redirect) {
   window.location.replace(redirect);
 } else {
+  window.addEventListener('vite:preloadError', () => reloadOnStaleChunk());
+
   const app = createApp(App);
 
   app.use(createPinia());
