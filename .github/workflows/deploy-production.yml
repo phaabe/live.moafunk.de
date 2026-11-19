@@ -1,4 +1,4 @@
-name: Deploy production
+name: DEPLOY - Release to production
 
 # Manual production deploy of one release image (docs/deployment.md).
 # - Runs only from main, only for the people in the gate step, one at a time.

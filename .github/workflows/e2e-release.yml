@@ -1,4 +1,4 @@
-name: E2E - Chaos test show on a release PR
+name: TEST - Release soak
 
 # The release proof (docs/deployment.md, release step 4): the chaos test show
 # as a 90-minute soak on staging, which must run exactly the image of the

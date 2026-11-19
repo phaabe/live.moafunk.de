@@ -1,4 +1,4 @@
-name: Generate re-listen.html page
+name: OPS - Build re-listen page
 
 on:
   workflow_dispatch: # Manual trigger

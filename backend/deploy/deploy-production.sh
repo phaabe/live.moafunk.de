@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy one API image to production. Runs ON the production box: the
-# "Deploy production" workflow pipes it in over ssh, and it also runs by hand:
+# "DEPLOY - Release to production" workflow pipes it in over ssh, and it also runs by hand:
 #   ssh root@<prod> 'TAG=sha-1234567 DIGEST=sha256:<64 hex> DRY_RUN=1 bash -s' < backend/deploy/deploy-production.sh
 #
 # Refuses when a show is on air or due within 2 hours, or when the pulled

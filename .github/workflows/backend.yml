@@ -1,4 +1,4 @@
-name: BACKEND - Build, Push and Deploy Image (GHCR)
+name: DEPLOY - Build image, deploy staging
 
 on:
   push:

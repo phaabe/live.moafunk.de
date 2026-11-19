@@ -1,4 +1,4 @@
-name: E2E - Chaos test show on staging
+name: TEST - Chaos show on staging
 
 # One test show on https://staging.live.moafunk.de proves the stream, the
 # recording and the self-recovery after a dropout (e2e/). It runs every night,

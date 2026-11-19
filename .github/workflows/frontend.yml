@@ -1,4 +1,4 @@
-name: FRONTEND - Build and Deploy
+name: DEPLOY - Build and publish public site
 
 # Not on PRs: frontend-ci (epic-ci.yml) runs the lint, the tests and the
 # build there, without the SoundCloud secrets.

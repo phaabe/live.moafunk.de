@@ -15,7 +15,7 @@ const chaos = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-staging.yml
 const sha = 'c'.repeat(40);
 
 test('release gate runs on every PR into main and on label changes', () => {
-  assert.equal(workflow.name, 'Release gate');
+  assert.equal(workflow.name, 'GATE - Require release checks');
   assert.deepEqual(Object.keys(workflow.on), ['pull_request']);
   assert.deepEqual(workflow.on.pull_request.branches, ['main']);
   assert.deepEqual(
